@@ -3,6 +3,7 @@ import path from 'node:path';
 
 export const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+export const USER_AGENT = 'screenplay-bot/0.1.0';
 
 const EXT_BY_TYPE = {
   'image/png': 'png',
@@ -57,7 +58,7 @@ export async function fetchImageFromUrl(sourceUrl) {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error(`Unsupported URL scheme: ${parsed.protocol}`);
   }
-  const res = await fetch(sourceUrl);
+  const res = await fetch(sourceUrl, { headers: { 'User-Agent': USER_AGENT } });
   if (!res.ok) throw new Error(`Failed to download image (${res.status} ${res.statusText})`);
   const declared = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
   const buffer = Buffer.from(await res.arrayBuffer());
