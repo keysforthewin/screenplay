@@ -13,7 +13,10 @@ export async function connectMongo() {
   logger.info(`Mongo connected: ${config.mongo.db}`);
 
   await db.collection('characters').createIndex({ name_lower: 1 }, { unique: true });
-  await db.collection('conversations').createIndex({ channel_id: 1 }, { unique: true });
+  await db.collection('messages').createIndex({ channel_id: 1, created_at: 1 });
+  await db
+    .collection('images.files')
+    .createIndex({ 'metadata.owner_type': 1, 'metadata.owner_id': 1 });
 
   process.on('SIGINT', async () => {
     if (client) await client.close();

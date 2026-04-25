@@ -22,5 +22,11 @@ export const config = {
   pdf: {
     exportDir: process.env.PDF_EXPORT_DIR || '/data/exports',
   },
+  gemini: {
+    apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || null,
+  },
+  tmdb: {
+    readAccessToken: process.env.TMDB_READ_ACCESS_TOKEN || null,
+  },
   logLevel: process.env.LOG_LEVEL || 'info',
 };

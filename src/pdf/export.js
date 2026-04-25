@@ -4,8 +4,10 @@ import path from 'node:path';
 import { config } from '../config.js';
 import { listCharacters, getCharacter } from '../mongo/characters.js';
 import { getPlot } from '../mongo/plots.js';
+import { readImageBuffer } from '../mongo/images.js';
+import { logger } from '../log.js';
 
-export function renderScreenplayPdf({ title = 'Untitled Screenplay', characters, plot }) {
+export function renderScreenplayPdf({ title = 'Untitled Screenplay', characters, plot, beatImages = {} }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margins: { top: 72, bottom: 72, left: 90, right: 72 } });
     const chunks = [];
@@ -42,11 +44,21 @@ export function renderScreenplayPdf({ title = 'Untitled Screenplay', characters,
     doc.moveDown();
     doc.font('Times-Bold').fontSize(13).text('Beats');
     doc.font('Times-Roman').fontSize(11);
-    const beats = [...(plot.beats || [])].sort((a, b) => a.order - b.order);
+    const beats = [...(plot.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
     for (const b of beats) {
       doc.font('Times-Bold').text(`${b.order}. ${b.title}`);
       doc.font('Times-Roman').text(b.description);
       if (b.characters?.length) doc.font('Times-Italic').text(`Characters: ${b.characters.join(', ')}`);
+      const beatId = b._id ? b._id.toString() : null;
+      const imgBuf = beatId ? beatImages[beatId] : null;
+      if (imgBuf) {
+        doc.moveDown(0.3);
+        try {
+          doc.image(imgBuf, { fit: [400, 280], align: 'center' });
+        } catch (e) {
+          logger.warn(`failed to embed beat image: ${e.message}`);
+        }
+      }
       doc.moveDown(0.5);
     }
     if (plot.notes) {
@@ -59,11 +71,26 @@ export function renderScreenplayPdf({ title = 'Untitled Screenplay', characters,
   });
 }
 
+async function loadBeatImages(plot) {
+  const out = {};
+  for (const b of plot.beats || []) {
+    if (!b.main_image_id || !b._id) continue;
+    try {
+      const res = await readImageBuffer(b.main_image_id);
+      if (res) out[b._id.toString()] = res.buffer;
+    } catch (e) {
+      logger.warn(`could not load main image for beat ${b._id}: ${e.message}`);
+    }
+  }
+  return out;
+}
+
 export async function exportToPdf({ title } = {}) {
   const names = await listCharacters();
   const characters = await Promise.all(names.map((n) => getCharacter(n._id.toString())));
   const plot = await getPlot();
-  const buf = await renderScreenplayPdf({ title, characters, plot });
+  const beatImages = await loadBeatImages(plot);
+  const buf = await renderScreenplayPdf({ title, characters, plot, beatImages });
   await fs.mkdir(config.pdf.exportDir, { recursive: true });
   const filename = `screenplay-${Date.now()}.pdf`;
   const filepath = path.join(config.pdf.exportDir, filename);

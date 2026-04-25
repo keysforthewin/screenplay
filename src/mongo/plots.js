@@ -1,21 +1,273 @@
+import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
 
 const col = () => getDb().collection('plots');
 
+function maybeOid(s) {
+  return /^[a-f0-9]{24}$/i.test(s) ? new ObjectId(s) : null;
+}
+
+function dedupeNames(arr) {
+  const seen = new Set();
+  const out = [];
+  for (const x of arr || []) {
+    if (x === null || x === undefined) continue;
+    const k = String(x).toLowerCase();
+    if (!seen.has(k)) {
+      seen.add(k);
+      out.push(String(x));
+    }
+  }
+  return out;
+}
+
+async function ensureBeatIds(plot) {
+  let changed = false;
+  const beats = (plot.beats || []).map((b) => {
+    const next = { ...b };
+    if (!next._id) {
+      next._id = new ObjectId();
+      changed = true;
+    }
+    if (!Array.isArray(next.images)) {
+      next.images = [];
+      changed = true;
+    }
+    if (next.main_image_id === undefined) {
+      next.main_image_id = null;
+      changed = true;
+    }
+    if (!Array.isArray(next.characters)) {
+      next.characters = [];
+      changed = true;
+    }
+    return next;
+  });
+  if (changed) {
+    await col().updateOne(
+      { _id: 'main' },
+      { $set: { beats, updated_at: new Date() } },
+    );
+  }
+  return { ...plot, beats };
+}
+
 export async function getPlot() {
-  const existing = await col().findOne({ _id: 'main' });
-  if (existing) return existing;
-  const seed = { _id: 'main', synopsis: '', beats: [], notes: '', updated_at: new Date() };
-  await col().insertOne(seed);
-  return seed;
+  let existing = await col().findOne({ _id: 'main' });
+  if (!existing) {
+    existing = {
+      _id: 'main',
+      synopsis: '',
+      beats: [],
+      notes: '',
+      current_beat_id: null,
+      updated_at: new Date(),
+    };
+    await col().insertOne(existing);
+    return existing;
+  }
+  if (existing.current_beat_id === undefined) {
+    existing.current_beat_id = null;
+    await col().updateOne({ _id: 'main' }, { $set: { current_beat_id: null } });
+  }
+  return ensureBeatIds(existing);
 }
 
 export async function updatePlot(patch) {
   await getPlot();
   const set = { updated_at: new Date() };
   if (patch.synopsis !== undefined) set.synopsis = patch.synopsis;
-  if (Array.isArray(patch.beats)) set.beats = patch.beats;
   if (patch.notes !== undefined) set.notes = patch.notes;
   await col().updateOne({ _id: 'main' }, { $set: set });
   return getPlot();
+}
+
+function findBeat(plot, identifier) {
+  if (identifier === undefined || identifier === null || identifier === '') return null;
+  const beats = plot.beats || [];
+  const oid = maybeOid(identifier);
+  if (oid) {
+    const m = beats.find((b) => b._id && oid.equals(b._id));
+    if (m) return m;
+  }
+  if (/^\d+$/.test(String(identifier))) {
+    const order = Number(identifier);
+    const m = beats.find((b) => b.order === order);
+    if (m) return m;
+  }
+  const t = String(identifier).toLowerCase();
+  return beats.find((b) => (b.title || '').toLowerCase() === t) || null;
+}
+
+export async function listBeats() {
+  const p = await getPlot();
+  return [...(p.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+}
+
+export async function getBeat(identifier) {
+  const plot = await getPlot();
+  if (identifier === undefined || identifier === null || identifier === '') {
+    if (!plot.current_beat_id) return null;
+    return (plot.beats || []).find((b) => b._id && plot.current_beat_id.equals(b._id)) || null;
+  }
+  return findBeat(plot, identifier);
+}
+
+async function persistBeats(beats, extraSet = {}) {
+  await col().updateOne(
+    { _id: 'main' },
+    { $set: { beats, updated_at: new Date(), ...extraSet } },
+  );
+}
+
+export async function createBeat({ title, description = '', characters = [], order }) {
+  if (!title || !title.trim()) throw new Error('Beat title is required');
+  const plot = await getPlot();
+  const beats = [...(plot.beats || [])];
+  let nextOrder = order;
+  if (nextOrder === undefined || nextOrder === null) {
+    nextOrder = beats.length ? Math.max(...beats.map((b) => b.order || 0)) + 1 : 1;
+  }
+  const beat = {
+    _id: new ObjectId(),
+    order: Number(nextOrder),
+    title: String(title).trim(),
+    description: String(description || ''),
+    characters: dedupeNames(characters),
+    images: [],
+    main_image_id: null,
+  };
+  beats.push(beat);
+  beats.sort((a, b) => (a.order || 0) - (b.order || 0));
+  const extra = plot.current_beat_id ? {} : { current_beat_id: beat._id };
+  await persistBeats(beats, extra);
+  return beat;
+}
+
+export async function updateBeat(identifier, patch) {
+  const plot = await getPlot();
+  const beat = findBeat(plot, identifier);
+  if (!beat) throw new Error(`Beat not found: ${identifier}`);
+  const beats = (plot.beats || []).map((b) => {
+    if (!b._id || !b._id.equals(beat._id)) return b;
+    const next = { ...b };
+    if (patch.title !== undefined) next.title = String(patch.title);
+    if (patch.description !== undefined) next.description = String(patch.description);
+    if (patch.order !== undefined && patch.order !== null) next.order = Number(patch.order);
+    if (Array.isArray(patch.characters)) next.characters = dedupeNames(patch.characters);
+    return next;
+  });
+  beats.sort((a, b) => (a.order || 0) - (b.order || 0));
+  await persistBeats(beats);
+  return beats.find((b) => b._id && b._id.equals(beat._id));
+}
+
+export async function deleteBeat(identifier) {
+  const plot = await getPlot();
+  const beat = findBeat(plot, identifier);
+  if (!beat) throw new Error(`Beat not found: ${identifier}`);
+  const beats = (plot.beats || []).filter((b) => !(b._id && b._id.equals(beat._id)));
+  const extra =
+    plot.current_beat_id && plot.current_beat_id.equals(beat._id)
+      ? { current_beat_id: null }
+      : {};
+  await persistBeats(beats, extra);
+  return {
+    _id: beat._id,
+    title: beat.title,
+    image_ids: (beat.images || []).map((i) => i._id),
+  };
+}
+
+export async function linkCharacterToBeat(identifier, characterName) {
+  const plot = await getPlot();
+  const beat = findBeat(plot, identifier);
+  if (!beat) throw new Error(`Beat not found: ${identifier}`);
+  const characters = dedupeNames([...(beat.characters || []), characterName]);
+  return updateBeat(beat._id.toString(), { characters });
+}
+
+export async function unlinkCharacterFromBeat(identifier, characterName) {
+  const plot = await getPlot();
+  const beat = findBeat(plot, identifier);
+  if (!beat) throw new Error(`Beat not found: ${identifier}`);
+  const lower = String(characterName).toLowerCase();
+  const characters = (beat.characters || []).filter((c) => String(c).toLowerCase() !== lower);
+  return updateBeat(beat._id.toString(), { characters });
+}
+
+export async function pushBeatImage(beatIdentifier, imageMeta, setAsMain = false) {
+  const plot = await getPlot();
+  const beat = findBeat(plot, beatIdentifier);
+  if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
+  const beats = (plot.beats || []).map((b) => {
+    if (!b._id || !b._id.equals(beat._id)) return b;
+    const images = [...(b.images || []), imageMeta];
+    const promote = !!setAsMain || !b.main_image_id;
+    return {
+      ...b,
+      images,
+      main_image_id: promote ? imageMeta._id : b.main_image_id,
+    };
+  });
+  await persistBeats(beats);
+  const updated = beats.find((b) => b._id && b._id.equals(beat._id));
+  return { beat: updated, is_main: !!(updated.main_image_id && updated.main_image_id.equals(imageMeta._id)) };
+}
+
+export async function setBeatMainImage(beatIdentifier, imageId) {
+  const plot = await getPlot();
+  const beat = findBeat(plot, beatIdentifier);
+  if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
+  const oid = imageId instanceof ObjectId ? imageId : new ObjectId(String(imageId));
+  if (!(beat.images || []).some((i) => i._id.equals(oid))) {
+    throw new Error(`Image ${imageId} is not attached to this beat`);
+  }
+  const beats = (plot.beats || []).map((b) =>
+    b._id && b._id.equals(beat._id) ? { ...b, main_image_id: oid } : b,
+  );
+  await persistBeats(beats);
+  return beats.find((b) => b._id && b._id.equals(beat._id));
+}
+
+export async function pullBeatImage(beatIdentifier, imageId) {
+  const plot = await getPlot();
+  const beat = findBeat(plot, beatIdentifier);
+  if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
+  const oid = imageId instanceof ObjectId ? imageId : new ObjectId(String(imageId));
+  const images = (beat.images || []).filter((i) => !i._id.equals(oid));
+  if (images.length === (beat.images || []).length) {
+    throw new Error(`Image ${imageId} is not attached to this beat`);
+  }
+  const wasMain = beat.main_image_id && beat.main_image_id.equals(oid);
+  const newMain = wasMain ? images[0]?._id || null : beat.main_image_id || null;
+  const beats = (plot.beats || []).map((b) =>
+    b._id && b._id.equals(beat._id) ? { ...b, images, main_image_id: newMain } : b,
+  );
+  await persistBeats(beats);
+  return { beat: beats.find((b) => b._id && b._id.equals(beat._id)), removed: oid };
+}
+
+export async function setCurrentBeat(identifier) {
+  const plot = await getPlot();
+  const beat = findBeat(plot, identifier);
+  if (!beat) throw new Error(`Beat not found: ${identifier}`);
+  await col().updateOne(
+    { _id: 'main' },
+    { $set: { current_beat_id: beat._id, updated_at: new Date() } },
+  );
+  return beat;
+}
+
+export async function getCurrentBeat() {
+  const plot = await getPlot();
+  if (!plot.current_beat_id) return null;
+  return (plot.beats || []).find((b) => b._id && plot.current_beat_id.equals(b._id)) || null;
+}
+
+export async function clearCurrentBeat() {
+  await col().updateOne(
+    { _id: 'main' },
+    { $set: { current_beat_id: null, updated_at: new Date() } },
+  );
 }
