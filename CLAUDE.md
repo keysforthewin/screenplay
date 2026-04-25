@@ -1,0 +1,74 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+- `npm run dev` — run the bot locally with `node --watch` (needs Mongo on `MONGO_URI`, default `mongodb://localhost:27017`).
+- `npm start` — run without watch.
+- `npm test` — run the full Vitest suite once (`vitest run`).
+- `npx vitest run tests/beats.test.js` — run a single test file.
+- `npx vitest run -t "createBeat"` — run a single test by name.
+- `docker compose up --build -d` — production-style run (bot + Mongo).
+
+`tests/setup.js` (loaded via `vitest.config.js`) populates the env vars `src/config.js` requires, so tests can be run without a real `.env`.
+
+## Architecture
+
+Single-purpose Discord bot: every non-bot message in `MOVIE_CHANNEL_ID` triggers an agentic loop that mutates screenplay state in MongoDB. There is no HTTP server and no slash commands — the entire UI is one Discord channel.
+
+### Request lifecycle (`src/discord/messageHandler.js` → `src/agent/loop.js`)
+
+1. `handleMessage` filters for the configured channel, extracts allowed image attachments (PNG/JPEG/WEBP), and serializes per-channel work through `keyedMutex` so two messages in the same channel can never interleave.
+2. `loadHistoryForLlm` reads the last 60 docs from the `messages` collection and converts each to an Anthropic SDK message (`docToLlmMessage` in `src/mongo/messages.js`) — including raw `tool_use` / `tool_result` blocks. The agent therefore "remembers" prior tool calls across turns.
+3. `runAgent` rebuilds the **system prompt from current Mongo state on every iteration** (`buildSystem` calls `listCharacters`, `getCharacterTemplate`, `getPlotTemplate`, `getPlot` each loop). When a tool call mutates state mid-loop, the next iteration's system prompt reflects the change — tools that update the template (e.g. `update_character_template`) rely on this.
+4. The loop runs at most `MAX_TOOL_ITERATIONS = 12` Anthropic round-trips. Anything else returns a "(Agent hit max tool iterations.)" message.
+5. After the assistant returns non-tool text, the user/assistant turns from this run (everything from `agentStart` onward, including tool blocks) are persisted via `recordAgentTurns` so they appear in next turn's history.
+
+### Tool result sentinel protocol
+
+Some tool handlers can't return their payload as JSON — they need to upload a file to Discord. The convention (`src/agent/loop.js` → `interceptAttachment`):
+
+- Handler returns `__PDF_PATH__:<absolute path>` → loop pushes path onto `attachmentPaths`, replaces the tool result with `"PDF generated and queued for upload."`.
+- Handler returns `__IMAGE_PATH__:<absolute path>|<note>` → same, with the optional note becoming the tool result.
+
+`sendReply` then attaches every collected file to the final Discord reply, and `cleanupTmpAttachments` deletes anything inside `os.tmpdir()` afterwards. **Never use these sentinels for non-tmp paths** — the cleanup pass refuses to touch files outside `os.tmpdir()`, but the assumption that `attachmentPaths` are temporary is baked in.
+
+### Tool / handler parity
+
+`src/agent/tools.js` is the JSON schema list sent to Anthropic; `src/agent/handlers.js` exports `HANDLERS` keyed by tool name. `tests/tools-schema.test.js` enforces a 1:1 mapping — adding a tool requires adding both halves or the test fails. `dispatchTool` wraps every handler so a thrown error becomes `"Tool error (name): message"` text returned to the model rather than crashing the loop.
+
+### MongoDB layout (`src/mongo/`)
+
+- `characters` — one doc per character. Custom template fields live under `fields.{...}`; core fields (`name`, `plays_self`, `hollywood_actor`, `own_voice`) are top-level. `name_lower` has a unique index. `getCharacter` accepts either a 24-char hex `_id` or a case-insensitive name.
+- `plots` — singleton `{ _id: 'main' }` with an **embedded `beats` array** (no separate beats collection). Each beat has its own ObjectId, an `images[]` of metadata, and a `main_image_id`. `getPlot` lazily backfills `_id`, `images`, `main_image_id`, `current_beat_id` on legacy docs (see `ensureBeatIds`) — keep that path working when changing the schema.
+- `messages` — rolling Discord transcript. Indexed on `(channel_id, created_at)`. The `recordAgentTurns` writer assigns `created_at = Date.now() + i` to preserve intra-turn ordering. (Note: the README mentions a `conversations` collection — that's stale, the code uses `messages`.)
+- `prompts` — singleton docs `_id: 'character_template'` and `_id: 'plot_template'`, seeded by `src/seed/defaults.js` on startup. Removing fields marked `core: true` is rejected.
+- **Two GridFS buckets**, easy to confuse:
+  - `images` (`src/mongo/images.js`) — for beat images **and** generated/library images. Filtered by `metadata.owner_type` (`'beat'` or `null` for library) and `metadata.owner_id`. Indexed on `(metadata.owner_type, metadata.owner_id)`. New image work should use this bucket.
+  - `character_images` (`src/mongo/files.js`) — older bucket used only for character portrait images. `metadata.character_id` only. Don't merge these without a migration.
+
+### Optional integrations
+
+- `src/gemini/client.js` — Nano Banana image generation (`gemini-2.5-flash-image`). If `GEMINI_API_KEY` is unset, the `generate_image` handler returns a friendly error string; the rest of the bot keeps working.
+- `src/tmdb/client.js` — TMDB v4 read-only. Same pattern: `tmdb_*` tools short-circuit with an error when `TMDB_READ_ACCESS_TOKEN` is missing. `tmdb_show_image` only accepts URLs on `image.tmdb.org` (enforced by `isTmdbImageUrl`).
+
+When adding a new optional integration, follow this pattern (return user-facing error string, don't throw) so a missing API key doesn't break the agent loop.
+
+### Image validation (`src/mongo/imageBytes.js`)
+
+`fetchImageFromUrl` enforces: HTTP(S) only, `<= 25 MB`, content type in `{image/png, image/jpeg, image/webp}`, **and** sniffed magic bytes must match the declared/picked content type. Don't bypass this when adding new image entry points — `validateImageBuffer` is the equivalent for in-memory bytes (e.g. Gemini output).
+
+## Testing patterns
+
+Mongo-touching tests use the in-memory fake from `tests/_fakeMongo.js`, mocked in via:
+
+```js
+const fakeDb = createFakeDb();
+vi.mock('../src/mongo/client.js', () => ({
+  getDb: () => fakeDb,
+  connectMongo: async () => fakeDb,
+}));
+```
+
+Then `await import('../src/mongo/plots.js')` (dynamic import after the mock is registered). Call `fakeDb.reset()` in `beforeEach` to isolate tests. The fake supports `findOne`/`insertOne`/`insertMany`/`updateOne` with `$set`/`$push`/`$pull`, plus a `find().sort().limit().toArray()` cursor — extend it there if a new code path needs more.

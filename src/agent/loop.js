@@ -22,9 +22,47 @@ async function buildSystem() {
   return buildSystemPrompt({ characters, characterTemplate, plotTemplate, plot });
 }
 
-export async function runAgent({ history, userText }) {
-  const messages = [...history, { role: 'user', content: [{ type: 'text', text: userText }] }];
-  const pdfPaths = [];
+function buildUserContent(userText, attachments) {
+  const content = [];
+  for (const a of attachments) {
+    content.push({ type: 'image', source: { type: 'url', url: a.url } });
+  }
+  let text = userText || '';
+  if (attachments.length) {
+    const lines = attachments.map(
+      (a) => `- ${a.filename} (${a.contentType}, ${a.size} bytes) at ${a.url}`,
+    );
+    const prelude = `Attached images:\n${lines.join('\n')}`;
+    text = text ? `${prelude}\n\n${text}` : `${prelude}\n\n(no message)`;
+  }
+  content.push({ type: 'text', text });
+  return content;
+}
+
+function interceptAttachment(result, attachmentPaths) {
+  if (typeof result !== 'string') return result;
+  if (result.startsWith('__PDF_PATH__:')) {
+    attachmentPaths.push(result.slice('__PDF_PATH__:'.length));
+    return 'PDF generated and queued for upload.';
+  }
+  if (result.startsWith('__IMAGE_PATH__:')) {
+    const rest = result.slice('__IMAGE_PATH__:'.length);
+    const sep = rest.indexOf('|');
+    const filepath = sep >= 0 ? rest.slice(0, sep) : rest;
+    const note = sep >= 0 ? rest.slice(sep + 1) : '';
+    attachmentPaths.push(filepath);
+    return note || 'Image queued for upload.';
+  }
+  return result;
+}
+
+export async function runAgent({ history, userText, attachments = [] }) {
+  const messages = [
+    ...history,
+    { role: 'user', content: buildUserContent(userText, attachments) },
+  ];
+  const agentStart = messages.length;
+  const attachmentPaths = [];
 
   for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
     const system = await buildSystem();
@@ -46,22 +84,23 @@ export async function runAgent({ history, userText }) {
         .map((b) => b.text)
         .join('\n')
         .trim();
-      return { messages, text, pdfPaths };
+      return { text, attachmentPaths, agentMessages: messages.slice(agentStart) };
     }
 
     const toolUses = resp.content.filter((b) => b.type === 'tool_use');
     const results = [];
     for (const tu of toolUses) {
       logger.info(`tool_use: ${tu.name}`);
-      let result = await dispatchTool(tu.name, tu.input);
-      if (typeof result === 'string' && result.startsWith('__PDF_PATH__:')) {
-        pdfPaths.push(result.slice('__PDF_PATH__:'.length));
-        result = 'PDF generated and queued for upload.';
-      }
+      const raw = await dispatchTool(tu.name, tu.input);
+      const result = interceptAttachment(raw, attachmentPaths);
       results.push({ type: 'tool_result', tool_use_id: tu.id, content: result });
     }
     messages.push({ role: 'user', content: results });
   }
 
-  return { messages, text: '(Agent hit max tool iterations.)', pdfPaths };
+  return {
+    text: '(Agent hit max tool iterations.)',
+    attachmentPaths,
+    agentMessages: messages.slice(agentStart),
+  };
 }
