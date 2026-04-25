@@ -33,8 +33,9 @@ export function buildImagePrompt({ userPrompt, beat, recentMessages } = {}) {
 
   if (beat) {
     const lines = [];
-    if (beat.title) lines.push(`Scene title: ${beat.title}`);
-    if (beat.description) lines.push(`Description: ${trimText(beat.description, 700)}`);
+    if (beat.name) lines.push(`Scene name: ${beat.name}`);
+    if (beat.desc) lines.push(`Summary: ${trimText(beat.desc, 300)}`);
+    if (beat.body) lines.push(`Details: ${trimText(beat.body, 700)}`);
     const chars = beat.characters || [];
     if (chars.length) lines.push(`Characters present: ${chars.join(', ')}`);
     if (lines.length) sections.push(`Scene context:\n${lines.join('\n')}`);

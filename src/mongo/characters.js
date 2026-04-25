@@ -14,6 +14,10 @@ export async function listCharacters() {
     .toArray();
 }
 
+export async function findAllCharacters() {
+  return col().find({}).sort({ name: 1 }).toArray();
+}
+
 export async function getCharacter(identifier) {
   const c = col();
   const id = maybeId(identifier);

@@ -20,6 +20,7 @@
     "@google/genai": "^1.50.1",
     "discord.js": "^14.26.3",
     "dotenv": "^17.4.2",
+    "express": "^5.2.1",
     "mongodb": "^6.21.0",
     "pdfkit": "^0.18.0"
   },

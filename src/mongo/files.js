@@ -79,6 +79,22 @@ export async function setMainCharacterImage({ character, imageId }) {
   return { character: c.name, main_image_id: oid };
 }
 
+export async function readCharacterImageBuffer(imageId) {
+  const oid = toObjectId(imageId);
+  const cursor = getBucket().find({ _id: oid });
+  const arr = await cursor.toArray();
+  if (!arr.length) return null;
+  const file = arr[0];
+  const chunks = [];
+  await new Promise((resolve, reject) => {
+    const dl = getBucket().openDownloadStream(file._id);
+    dl.on('data', (c) => chunks.push(c));
+    dl.on('error', reject);
+    dl.on('end', resolve);
+  });
+  return { buffer: Buffer.concat(chunks), file };
+}
+
 export async function removeCharacterImage({ character, imageId }) {
   const c = await getCharacter(character);
   if (!c) throw new Error(`Character not found: ${character}`);

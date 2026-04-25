@@ -1,5 +1,10 @@
 export const TOOLS = [
   {
+    name: 'get_overview',
+    description: 'Single-call snapshot of EVERYTHING in the screenplay: synopsis + notes preview, every character (with casting, voice, fill ratio, image counts, one descriptive field preview), every beat (with name, full desc, body length, characters, image counts, current marker), and overall counts. Use this whenever the user asks for a summary, "show me everything", "what do we have", "what state is this in", "give me a rundown", "what beats need bodies", "which characters are missing images", or any other holistic question. Returns rich JSON; render it as markdown for Discord (the bot will auto-split long messages). Don\'t bombard the user with the entire payload — pick the angle that answers their question.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
     name: 'list_characters',
     description: 'Return a list of all characters on file (id and name only). Use this to see what characters exist before creating a new one.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
@@ -105,47 +110,61 @@ export const TOOLS = [
   },
   {
     name: 'list_beats',
-    description: 'Return a compact list of all beats with id, order, title, a short description preview, character count, image count, and whether each is the current beat. Sorted by order.',
+    description: 'Return a compact list of all beats with id, order, name, a short desc preview, body length, character count, image count, and whether each is the current beat. Sorted by order. For substring/fuzzy lookup across name+desc+body, use search_beats instead.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'get_beat',
-    description: 'Fetch the full beat document. If no identifier is provided, returns the current beat (or null if none is set). Identifier accepts a beat _id (24-char hex), an order number as a string, or a beat title (case-insensitive exact match).',
+    description: 'Fetch the full beat document (name, desc, body, characters, images, main_image_id). If no identifier is provided, returns the current beat (or null if none is set). Identifier accepts a beat _id (24-char hex), an order number as a string, or a beat name (case-insensitive exact match). For fuzzy matches like "the diner one" use search_beats first.',
     input_schema: {
       type: 'object',
       properties: {
-        identifier: { type: 'string', description: 'Beat _id, order, or title. Omit to use the current beat.' },
+        identifier: { type: 'string', description: 'Beat _id, order, or name. Omit to use the current beat.' },
       },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'search_beats',
+    description: 'Substring search across beat name, desc, and body (case-insensitive). Returns ranked candidates so you can disambiguate when the user gestures at a beat ("the diner argument", "that scene where Alice leaves"). Use this before set_current_beat / update_beat when the user references a beat by description rather than an exact name. Each result is { _id, order, name, desc_preview, matched_field, score }.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Substring to look for in name, desc, or body.' },
+      },
+      required: ['query'],
       additionalProperties: false,
     },
   },
   {
     name: 'create_beat',
-    description: 'Append a new beat to the plot. If `order` is omitted, the beat goes to the end. The first beat created automatically becomes the current beat. Beats are the per-scene unit — they hold a description, character list, and images.',
+    description: 'Create a new beat. A beat has THREE text fields: `name` (short identifier, ~3-6 words), `desc` (1-2 sentence summary set on creation — the elevator pitch for the beat), and `body` (long-form developing content that grows over time as the user adds lore). Always pass `desc`. You SHOULD pass `name` too — generate a concise title-cased phrase from the user\'s description (e.g., "Diner Argument", "Alice Confronts Bob"). If `name` is omitted the system derives one from `desc`. Pass `body` only if the user gave you initial body content; otherwise leave it empty and use append_to_beat_body later. The first beat created automatically becomes the current beat.',
     input_schema: {
       type: 'object',
       properties: {
-        title: { type: 'string' },
-        description: { type: 'string' },
+        name: { type: 'string', description: 'Short identifier (3-6 words). Generate from the user\'s prose.' },
+        desc: { type: 'string', description: '1-2 sentence summary of what the beat is about.' },
+        body: { type: 'string', description: 'Optional initial long-form content. Usually omit on creation; add later with append_to_beat_body.' },
         characters: { type: 'array', items: { type: 'string' }, description: 'Names of characters present in this beat.' },
         order: { type: 'number', description: 'Optional explicit order. Omit to append.' },
       },
-      required: ['title'],
+      required: ['desc'],
       additionalProperties: false,
     },
   },
   {
     name: 'update_beat',
-    description: 'Patch fields on an existing beat. Only provide fields to change. To replace characters, pass the full new array.',
+    description: 'Patch fields on an existing beat. Only provide fields to change. NOTE: `body` here REPLACES the existing body — to add to body without overwriting, use append_to_beat_body instead. To replace characters, pass the full new array.',
     input_schema: {
       type: 'object',
       properties: {
-        identifier: { type: 'string', description: 'Beat _id, order, or title.' },
+        identifier: { type: 'string', description: 'Beat _id, order, or name.' },
         patch: {
           type: 'object',
           properties: {
-            title: { type: 'string' },
-            description: { type: 'string' },
+            name: { type: 'string' },
+            desc: { type: 'string' },
+            body: { type: 'string', description: 'REPLACES existing body. Use append_to_beat_body to append.' },
             order: { type: 'number' },
             characters: { type: 'array', items: { type: 'string' } },
           },
@@ -157,11 +176,24 @@ export const TOOLS = [
     },
   },
   {
+    name: 'append_to_beat_body',
+    description: 'Append content to a beat\'s `body` field without overwriting. Inserts a blank-line separator between the existing body and the new content. Prefer this over update_beat when the user is dumping additional lore onto an existing beat ("also, in this scene Bob says X..." → append). If `beat` is omitted, the current beat is used.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use the current beat.' },
+        content: { type: 'string', description: 'Text to append to the beat body.' },
+      },
+      required: ['content'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'delete_beat',
     description: 'Delete a beat and any images attached to it. If the deleted beat was the current beat, the current pointer is cleared.',
     input_schema: {
       type: 'object',
-      properties: { identifier: { type: 'string', description: 'Beat _id, order, or title.' } },
+      properties: { identifier: { type: 'string', description: 'Beat _id, order, or name.' } },
       required: ['identifier'],
       additionalProperties: false,
     },
@@ -172,7 +204,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        beat: { type: 'string', description: 'Beat _id, order, or title. Omit to use current.' },
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
         character: { type: 'string' },
       },
       required: ['character'],
@@ -197,7 +229,7 @@ export const TOOLS = [
     description: 'Set the bot\'s "current beat" pointer. Tools that take an optional `beat` argument default to this one. Useful when the user is focused on a specific beat (e.g., "let\'s work on the diner scene").',
     input_schema: {
       type: 'object',
-      properties: { identifier: { type: 'string', description: 'Beat _id, order, or title.' } },
+      properties: { identifier: { type: 'string', description: 'Beat _id, order, or name.' } },
       required: ['identifier'],
       additionalProperties: false,
     },
@@ -219,7 +251,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        beat: { type: 'string', description: 'Beat _id, order, or title. Omit to use current.' },
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
         source_url: { type: 'string', description: 'HTTP(S) URL to the image' },
         filename: { type: 'string' },
         caption: { type: 'string' },
@@ -235,7 +267,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        beat: { type: 'string', description: 'Beat _id, order, or title. Omit to use current.' },
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
       },
       additionalProperties: false,
     },
@@ -303,7 +335,7 @@ export const TOOLS = [
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'Free-form prompt fragment to include verbatim.' },
-        include_beat: { type: 'boolean', description: 'When true, weave the beat\'s title/description/characters into the prompt.' },
+        include_beat: { type: 'boolean', description: 'When true, weave the beat\'s name/desc/body/characters into the prompt.' },
         beat: { type: 'string', description: 'Identifier for the beat to draw from when include_beat is true. Defaults to the current beat.' },
         include_recent_chat: { type: 'boolean', description: 'When true, include a short summary of recent conversation in the prompt.' },
         aspect_ratio: { type: 'string', enum: ['1:1', '16:9', '9:16', '4:3', '3:4'], description: 'Optional aspect ratio. Defaults to 16:9.' },
@@ -432,6 +464,63 @@ export const TOOLS = [
       properties: {
         url: { type: 'string', description: 'TMDB image URL (must be on image.tmdb.org).' },
         caption: { type: 'string', description: 'Optional short caption to send alongside the image.' },
+      },
+      required: ['url'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'tavily_search',
+    description:
+      'Search the live web via Tavily. Returns an LLM-friendly answer summary, top-ranked results (title, url, snippet), and related image URLs with descriptions. Use for real-world people, current events, historical topics, or to enrich TMDB lookups (you can call this and tmdb_* tools in the same turn). If TAVILY_API_KEY is not configured, returns a friendly error.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Natural-language search query.' },
+        max_results: {
+          type: 'number',
+          description: 'How many results to return. Default 5, max 10.',
+        },
+        search_depth: {
+          type: 'string',
+          enum: ['basic', 'advanced'],
+          description:
+            "'advanced' (default) returns better-curated content chunks at 2 credits/call; 'basic' is 1 credit/call and fine for casual lookups.",
+        },
+        topic: {
+          type: 'string',
+          enum: ['general', 'news'],
+          description: "Use 'news' to bias toward recent news sources.",
+        },
+        time_range: {
+          type: 'string',
+          enum: ['day', 'week', 'month', 'year'],
+          description: 'Restrict results to the given recency window.',
+        },
+        include_domains: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Only return results from these domains (e.g. ["wikipedia.org"]).',
+        },
+        exclude_domains: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Drop results from these domains.',
+        },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'tavily_show_image',
+    description:
+      'Download an image URL returned by tavily_search and display it in Discord. Validates protocol, size (≤25 MB), and content type. Optional caption is shown alongside. Do not pass non-image URLs — they will be rejected.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Image URL from a tavily_search result.' },
+        caption: { type: 'string', description: 'Optional caption shown with the image.' },
       },
       required: ['url'],
       additionalProperties: false,

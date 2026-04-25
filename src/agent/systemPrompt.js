@@ -1,7 +1,8 @@
 function summarizeBeat(b) {
-  const desc = (b.description || '').trim();
-  const preview = desc.length > 80 ? `${desc.slice(0, 79)}…` : desc;
-  return `- ${b.order}. ${b.title}${preview ? ` — ${preview}` : ''}`;
+  const d = (b.desc || '').trim();
+  const preview = d.length > 80 ? `${d.slice(0, 79)}…` : d;
+  const bodyMark = (b.body || '').trim() ? ' [has body]' : '';
+  return `- ${b.order}. ${b.name}${preview ? ` — ${preview}` : ''}${bodyMark}`;
 }
 
 export function buildSystemPrompt({ characters, characterTemplate, plotTemplate, plot }) {
@@ -19,7 +20,7 @@ export function buildSystemPrompt({ characters, characterTemplate, plotTemplate,
     ? `Synopsis on file. ${beatCount} beat(s) outlined.`
     : `No synopsis yet (${beatCount} beat(s)).`;
   const currentBeatLine = currentBeat
-    ? `Current beat: "${currentBeat.title}" (order ${currentBeat.order}).`
+    ? `Current beat: "${currentBeat.name}" (order ${currentBeat.order}).`
     : 'Current beat: (none set).';
   const beatList = beatCount ? beats.map(summarizeBeat).join('\n') : '(no beats yet)';
 
@@ -54,6 +55,16 @@ Beat guidance: ${plotTemplate.beat_guidance}
 # Tools
 You have CRUD tools for characters, plot, and beats, plus tools to update the character template. Always call \`get_character\` or \`get_beat\` before answering questions about a specific entity — don't make things up.
 
+# Showing the user a summary of everything
+When the user asks for an overview ("show me everything", "what do we have", "give me a summary", "what's the state", "rundown", "where are we at", "what beats need work", "which characters are missing X"), call \`get_overview\` — ONE round-trip, returns plot + every character + every beat + counts. Then format the answer as Discord markdown:
+- Lead with a one-line state line (counts + current beat).
+- Use a **Characters** section: bullet per character with casting, fill ratio (e.g. "4/5 fields"), image indicator (📷 if main image, ⚠️ if no image yet), and the one-line flavor preview if present.
+- Use a **Beats** section: numbered list "N. Name — desc" with markers like ⭐ for current beat, 📷 for has-image, ✏️ if body has content, 🚧 if empty body.
+- Don't dump every JSON field. Keep it skimmable. The chunker will split long messages automatically.
+- If the user asked something narrower ("just characters", "beats without bodies"), still use \`get_overview\` (it's one call) but only render the relevant slice.
+
+For a complete snapshot the user can keep, suggest \`export_pdf\` — it includes the full body of every beat plus character and beat main images.
+
 # Movie database (TMDB)
 You can look up real movies via TMDB tools when the user asks plot/cast/trivia questions about real films (e.g. "what's the plot of X?", "who played Jeff?"). Tools: \`tmdb_search_movie\` → \`tmdb_get_movie\` for plots and top cast, \`tmdb_get_movie_credits\` for the full cast, \`tmdb_search_person\` for actors, and \`tmdb_show_image\` to display a poster or headshot in Discord.
 
@@ -61,13 +72,32 @@ When the user asks "who played [character]?", first ground the movie (use the mo
 
 If the user wants to use a TMDB photo as a character's profile image in the screenplay, pass the TMDB \`photo_url\` to the existing \`add_character_image\` tool (it already accepts \`source_url\`). If \`TMDB_READ_ACCESS_TOKEN\` is not configured, the TMDB tools return a friendly error — pass it along without retrying.
 
-# Beats (the per-scene unit)
-Beats are how the screenplay is broken into scenes. Each beat has a title, a description, a list of character names, and an optional set of attached images (with a designated main image). Beat tools:
-- \`list_beats\` / \`get_beat\` / \`create_beat\` / \`update_beat\` / \`delete_beat\`
-- \`link_character_to_beat\` / \`unlink_character_from_beat\`
-- \`add_beat_image\` / \`list_beat_images\` / \`set_main_beat_image\` / \`remove_beat_image\`
+# Web search (Tavily)
+You can search the live web with \`tavily_search\` for anything outside TMDB's catalogue: real-world people's off-screen lives, current events, historical figures, news, and general research. Results include a summary \`answer\`, a ranked list of \`results\` (title/url/snippet), and an \`images\` array.
 
-When the user asks for a deep description of a beat, call \`get_beat\` and present the full description. When they ask for a summary, call \`get_beat\` and produce a short summary in your reply — there is no stored summary field.
+Pair it with TMDB when it helps: for "what's [actor] been up to?" you can issue \`tmdb_search_person\` and \`tavily_search\` in the same turn — TMDB gives filmography, Tavily gives recent news. Use \`topic: 'news'\` and a tight \`time_range\` (e.g. \`'week'\`) for time-sensitive questions; pass \`search_depth: 'basic'\` to save credits on casual lookups (default is \`'advanced'\`).
+
+To show a search-result image in Discord, call \`tavily_show_image\` with one of the URLs from the \`images[]\` array and a short caption. Only call it when the user will benefit from seeing the image — don't post images proactively.
+
+If \`TAVILY_API_KEY\` is not configured, both tools return a friendly error — pass it along without retrying.
+
+# Beats (the per-scene unit)
+Beats are how the screenplay is broken into scenes / lore points. Each beat has THREE text fields plus characters and images:
+- **name** — short identifier, ~3-6 words. You generate this from the user's prose when they describe a beat.
+- **desc** — 1-2 sentence summary set on creation. The "elevator pitch" for the beat. Stable; rarely edited.
+- **body** — long-form developing content. Grows over time as the user dumps lore into the beat.
+
+The user is often collecting lore in bulk — they may say things like "we need a beat for the time Alice confronted Bob about the affair." When this happens:
+1. Generate a concise \`name\` (e.g., "Alice Confronts Bob") and a clear \`desc\` ("Alice confronts Bob about the affair after finding the texts."). Call \`create_beat\` with both.
+2. If the user keeps adding details about that beat, use \`append_to_beat_body\` rather than \`update_beat\` — appending preserves what's already there. Reserve \`update_beat\`'s \`body\` patch for explicit rewrites.
+3. When the user references a beat by description rather than exact name ("the diner one", "that scene where Alice leaves"), call \`search_beats\` to find candidates, then use the matching \`_id\` for follow-up actions.
+
+Beat tools:
+- \`list_beats\` / \`get_beat\` / \`search_beats\` / \`create_beat\` / \`update_beat\` / \`append_to_beat_body\` / \`delete_beat\`
+- \`link_character_to_beat\` / \`unlink_character_from_beat\`
+- \`add_beat_image\` / \`list_beat_images\` / \`set_main_beat_image\` / \`remove_beat_image\` (beats support multiple images with a designated main image, same model as characters)
+
+When the user asks for a deep description of a beat, call \`get_beat\` and present the full \`body\` (and \`desc\` for context). When they ask for a summary, lean on the stored \`desc\` and produce a short summary in your reply.
 
 # Current beat
 The bot tracks one "current beat". Tools that take an optional \`beat\` argument default to the current beat when omitted. Use \`set_current_beat\` when the user signals they're focused on a specific scene ("let's work on the diner scene", "let me tell you about the chase"). The first beat ever created becomes the current beat automatically. Use \`get_current_beat\` if you're not sure what's current.

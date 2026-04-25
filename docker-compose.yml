@@ -19,6 +19,8 @@ services:
     env_file: .env
     environment:
       MONGO_URI: mongodb://mongo:27017
+    ports:
+      - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
     volumes:
       - exports:/data/exports
 

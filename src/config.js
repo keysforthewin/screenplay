@@ -22,11 +22,18 @@ export const config = {
   pdf: {
     exportDir: process.env.PDF_EXPORT_DIR || '/data/exports',
   },
+  web: {
+    port: Number(process.env.WEB_PORT) || 3000,
+    publicBaseUrl: process.env.WEB_PUBLIC_BASE_URL || null,
+  },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || null,
   },
   tmdb: {
     readAccessToken: process.env.TMDB_READ_ACCESS_TOKEN || null,
+  },
+  tavily: {
+    apiKey: process.env.TAVILY_API_KEY || null,
   },
   logLevel: process.env.LOG_LEVEL || 'info',
 };

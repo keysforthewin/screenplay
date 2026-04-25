@@ -1,4 +1,5 @@
 import { AttachmentBuilder } from 'discord.js';
+import { pdfLink } from '../server/index.js';
 
 const MAX_LEN = 1900;
 
@@ -16,6 +17,13 @@ export function chunk(text) {
   return out;
 }
 
+function buildPdfLinkMessage(files) {
+  const links = (files || []).map(pdfLink).filter(Boolean);
+  if (!links.length) return null;
+  if (links.length === 1) return `PDF download fallback: ${links[0]}`;
+  return `PDF download fallbacks:\n${links.map((l) => `- ${l}`).join('\n')}`;
+}
+
 export async function sendReply(channel, text, files = []) {
   const parts = chunk(text);
   for (let i = 0; i < parts.length; i++) {
@@ -25,5 +33,9 @@ export async function sendReply(channel, text, files = []) {
   }
   if (!parts.length && files.length) {
     await channel.send({ files: files.map((f) => new AttachmentBuilder(f)) });
+  }
+  const linkMsg = buildPdfLinkMessage(files);
+  if (linkMsg) {
+    await channel.send({ content: linkMsg });
   }
 }

@@ -21,6 +21,15 @@ function dedupeNames(arr) {
   return out;
 }
 
+function deriveName(desc) {
+  const t = String(desc || '').trim();
+  if (!t) return 'Untitled Beat';
+  const firstClause = t.split(/[.!?\n]/)[0].trim();
+  const words = firstClause.split(/\s+/).slice(0, 6).join(' ');
+  const trimmed = words.replace(/[,;:—-]+$/u, '').trim();
+  return trimmed || 'Untitled Beat';
+}
+
 async function ensureBeatIds(plot) {
   let changed = false;
   const beats = (plot.beats || []).map((b) => {
@@ -39,6 +48,26 @@ async function ensureBeatIds(plot) {
     }
     if (!Array.isArray(next.characters)) {
       next.characters = [];
+      changed = true;
+    }
+    if (next.name === undefined) {
+      next.name = next.title ? String(next.title) : '';
+      changed = true;
+    }
+    if (next.title !== undefined) {
+      delete next.title;
+      changed = true;
+    }
+    if (next.body === undefined) {
+      next.body = next.description !== undefined ? String(next.description) : '';
+      changed = true;
+    }
+    if (next.description !== undefined) {
+      delete next.description;
+      changed = true;
+    }
+    if (next.desc === undefined) {
+      next.desc = '';
       changed = true;
     }
     return next;
@@ -96,7 +125,7 @@ function findBeat(plot, identifier) {
     if (m) return m;
   }
   const t = String(identifier).toLowerCase();
-  return beats.find((b) => (b.title || '').toLowerCase() === t) || null;
+  return beats.find((b) => (b.name || '').toLowerCase() === t) || null;
 }
 
 export async function listBeats() {
@@ -113,6 +142,37 @@ export async function getBeat(identifier) {
   return findBeat(plot, identifier);
 }
 
+export async function searchBeats(query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return [];
+  const plot = await getPlot();
+  const beats = [...(plot.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+  const matches = [];
+  for (const b of beats) {
+    const name = (b.name || '').toLowerCase();
+    const desc = (b.desc || '').toLowerCase();
+    const body = (b.body || '').toLowerCase();
+    let score = 0;
+    let matched_field = null;
+    if (name === q) {
+      score = 100;
+      matched_field = 'name';
+    } else if (name.includes(q)) {
+      score = 50;
+      matched_field = 'name';
+    } else if (desc.includes(q)) {
+      score = 30;
+      matched_field = 'desc';
+    } else if (body.includes(q)) {
+      score = 10;
+      matched_field = 'body';
+    }
+    if (score > 0) matches.push({ beat: b, score, matched_field });
+  }
+  matches.sort((a, b) => b.score - a.score || (a.beat.order || 0) - (b.beat.order || 0));
+  return matches;
+}
+
 async function persistBeats(beats, extraSet = {}) {
   await col().updateOne(
     { _id: 'main' },
@@ -120,8 +180,13 @@ async function persistBeats(beats, extraSet = {}) {
   );
 }
 
-export async function createBeat({ title, description = '', characters = [], order }) {
-  if (!title || !title.trim()) throw new Error('Beat title is required');
+export async function createBeat({ name, desc = '', body = '', characters = [], order } = {}) {
+  const finalDesc = String(desc || '').trim();
+  let finalName = String(name || '').trim();
+  if (!finalName) finalName = deriveName(finalDesc);
+  if (!finalDesc && !name) {
+    throw new Error('Beat requires a `desc` or an explicit `name`.');
+  }
   const plot = await getPlot();
   const beats = [...(plot.beats || [])];
   let nextOrder = order;
@@ -131,8 +196,9 @@ export async function createBeat({ title, description = '', characters = [], ord
   const beat = {
     _id: new ObjectId(),
     order: Number(nextOrder),
-    title: String(title).trim(),
-    description: String(description || ''),
+    name: finalName,
+    desc: finalDesc,
+    body: String(body || ''),
     characters: dedupeNames(characters),
     images: [],
     main_image_id: null,
@@ -151,13 +217,30 @@ export async function updateBeat(identifier, patch) {
   const beats = (plot.beats || []).map((b) => {
     if (!b._id || !b._id.equals(beat._id)) return b;
     const next = { ...b };
-    if (patch.title !== undefined) next.title = String(patch.title);
-    if (patch.description !== undefined) next.description = String(patch.description);
+    if (patch.name !== undefined) next.name = String(patch.name);
+    if (patch.desc !== undefined) next.desc = String(patch.desc);
+    if (patch.body !== undefined) next.body = String(patch.body);
     if (patch.order !== undefined && patch.order !== null) next.order = Number(patch.order);
     if (Array.isArray(patch.characters)) next.characters = dedupeNames(patch.characters);
     return next;
   });
   beats.sort((a, b) => (a.order || 0) - (b.order || 0));
+  await persistBeats(beats);
+  return beats.find((b) => b._id && b._id.equals(beat._id));
+}
+
+export async function appendBeatBody(identifier, content) {
+  const plot = await getPlot();
+  const beat = findBeat(plot, identifier);
+  if (!beat) throw new Error(`Beat not found: ${identifier}`);
+  const addition = String(content || '').trim();
+  if (!addition) throw new Error('No content provided to append.');
+  const existing = String(beat.body || '');
+  const separator = existing.trim() ? '\n\n' : '';
+  const newBody = `${existing}${separator}${addition}`;
+  const beats = (plot.beats || []).map((b) =>
+    b._id && b._id.equals(beat._id) ? { ...b, body: newBody } : b,
+  );
   await persistBeats(beats);
   return beats.find((b) => b._id && b._id.equals(beat._id));
 }
@@ -174,7 +257,7 @@ export async function deleteBeat(identifier) {
   await persistBeats(beats, extra);
   return {
     _id: beat._id,
-    title: beat.title,
+    name: beat.name,
     image_ids: (beat.images || []).map((i) => i._id),
   };
 }

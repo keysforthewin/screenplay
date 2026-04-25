@@ -4,11 +4,13 @@ import * as Prompts from '../mongo/prompts.js';
 import * as Files from '../mongo/files.js';
 import * as Images from '../mongo/images.js';
 import * as Tmdb from '../tmdb/client.js';
+import * as Tavily from '../tavily/client.js';
 import { generateImage as generateImageBytes } from '../gemini/client.js';
 import { buildImagePrompt } from '../gemini/promptBuilder.js';
 import { loadHistoryForLlm } from '../mongo/messages.js';
 import { config } from '../config.js';
 import { exportToPdf } from '../pdf/export.js';
+import { buildOverview } from './overview.js';
 
 function compact(obj) {
   return JSON.stringify(obj, null, 2);
@@ -25,8 +27,9 @@ function serializeBeatSummary(b, currentId) {
   return {
     _id: b._id.toString(),
     order: b.order,
-    title: b.title,
-    description_preview: preview(b.description),
+    name: b.name,
+    desc_preview: preview(b.desc),
+    body_length: (b.body || '').length,
     character_count: (b.characters || []).length,
     image_count: (b.images || []).length,
     is_current: !!(currentId && b._id.equals(currentId)),
@@ -37,8 +40,9 @@ function serializeBeat(b) {
   return {
     _id: b._id.toString(),
     order: b.order,
-    title: b.title,
-    description: b.description || '',
+    name: b.name,
+    desc: b.desc || '',
+    body: b.body || '',
     characters: b.characters || [],
     images: (b.images || []).map((i) => ({
       _id: i._id.toString(),
@@ -70,6 +74,10 @@ async function resolveBeat(identifier, { allowCurrent = true } = {}) {
 }
 
 export const HANDLERS = {
+  async get_overview() {
+    return compact(await buildOverview());
+  },
+
   async list_characters() {
     const list = await Characters.listCharacters();
     return compact(list.map((c) => ({ _id: c._id.toString(), name: c.name })));
@@ -139,37 +147,59 @@ export const HANDLERS = {
     return compact(serializeBeat(b));
   },
 
-  async create_beat({ title, description, characters, order }) {
-    const b = await Plots.createBeat({ title, description, characters, order });
-    return `Created beat "${b.title}" (order ${b.order}, _id ${b._id}). It is now the current beat if none was set.`;
+  async create_beat({ name, desc, body, characters, order }) {
+    const b = await Plots.createBeat({ name, desc, body, characters, order });
+    return `Created beat "${b.name}" (order ${b.order}, _id ${b._id}). It is now the current beat if none was set.`;
   },
 
   async update_beat({ identifier, patch }) {
     const b = await Plots.updateBeat(identifier, patch);
-    return `Updated beat "${b.title}".\n${compact(serializeBeat(b))}`;
+    return `Updated beat "${b.name}".\n${compact(serializeBeat(b))}`;
+  },
+
+  async append_to_beat_body({ beat, content }) {
+    const target = await resolveBeat(beat);
+    const updated = await Plots.appendBeatBody(target._id.toString(), content);
+    return `Appended ${String(content || '').length} chars to beat "${updated.name}". Body is now ${updated.body.length} chars.`;
+  },
+
+  async search_beats({ query }) {
+    const matches = await Plots.searchBeats(query);
+    return compact({
+      query,
+      result_count: matches.length,
+      results: matches.map((m) => ({
+        _id: m.beat._id.toString(),
+        order: m.beat.order,
+        name: m.beat.name,
+        desc_preview: preview(m.beat.desc),
+        matched_field: m.matched_field,
+        score: m.score,
+      })),
+    });
   },
 
   async delete_beat({ identifier }) {
     const res = await Plots.deleteBeat(identifier);
     await Images.deleteImages(res.image_ids);
-    return `Deleted beat "${res.title}" and ${res.image_ids.length} image(s).`;
+    return `Deleted beat "${res.name}" and ${res.image_ids.length} image(s).`;
   },
 
   async link_character_to_beat({ beat, character }) {
     const target = await resolveBeat(beat);
     const updated = await Plots.linkCharacterToBeat(target._id.toString(), character);
-    return `Linked ${character} to beat "${updated.title}". Characters now: ${updated.characters.join(', ') || '(none)'}.`;
+    return `Linked ${character} to beat "${updated.name}". Characters now: ${updated.characters.join(', ') || '(none)'}.`;
   },
 
   async unlink_character_from_beat({ beat, character }) {
     const target = await resolveBeat(beat);
     const updated = await Plots.unlinkCharacterFromBeat(target._id.toString(), character);
-    return `Unlinked ${character} from beat "${updated.title}". Characters now: ${updated.characters.join(', ') || '(none)'}.`;
+    return `Unlinked ${character} from beat "${updated.name}". Characters now: ${updated.characters.join(', ') || '(none)'}.`;
   },
 
   async set_current_beat({ identifier }) {
     const b = await Plots.setCurrentBeat(identifier);
-    return `Current beat is now "${b.title}" (_id ${b._id}).`;
+    return `Current beat is now "${b.name}" (_id ${b._id}).`;
   },
 
   async get_current_beat() {
@@ -203,7 +233,7 @@ export const HANDLERS = {
       uploaded_at: file.uploaded_at,
     };
     const { is_main } = await Plots.pushBeatImage(target._id.toString(), meta, set_as_main);
-    return `Added image to beat "${target.title}".\n${compact({
+    return `Added image to beat "${target.name}".\n${compact({
       _id: meta._id.toString(),
       filename: meta.filename,
       content_type: meta.content_type,
@@ -215,7 +245,7 @@ export const HANDLERS = {
   async list_beat_images({ beat } = {}) {
     const target = await resolveBeat(beat);
     return compact({
-      beat: { _id: target._id.toString(), title: target.title },
+      beat: { _id: target._id.toString(), name: target.name },
       main_image_id: target.main_image_id ? target.main_image_id.toString() : null,
       images: (target.images || []).map((i) => ({
         _id: i._id.toString(),
@@ -233,14 +263,14 @@ export const HANDLERS = {
   async set_main_beat_image({ beat, image_id }) {
     const target = await resolveBeat(beat);
     const updated = await Plots.setBeatMainImage(target._id.toString(), image_id);
-    return `Main image for beat "${updated.title}" set to ${updated.main_image_id.toString()}.`;
+    return `Main image for beat "${updated.name}" set to ${updated.main_image_id.toString()}.`;
   },
 
   async remove_beat_image({ beat, image_id }) {
     const target = await resolveBeat(beat);
     const { removed, beat: updated } = await Plots.pullBeatImage(target._id.toString(), image_id);
     await Images.deleteImage(removed);
-    return `Removed image ${removed.toString()} from beat "${updated.title}". Main image is now ${
+    return `Removed image ${removed.toString()} from beat "${updated.name}". Main image is now ${
       updated.main_image_id ? updated.main_image_id.toString() : 'none'
     }.`;
   },
@@ -264,7 +294,7 @@ export const HANDLERS = {
       file.metadata?.owner_id &&
       file.metadata.owner_id.equals(target._id)
     ) {
-      return `Image ${image_id} is already attached to beat "${target.title}".`;
+      return `Image ${image_id} is already attached to beat "${target.name}".`;
     }
     if (file.metadata?.owner_type === 'beat') {
       throw new Error(
@@ -284,7 +314,7 @@ export const HANDLERS = {
       uploaded_at: file.uploadDate,
     };
     const { is_main } = await Plots.pushBeatImage(target._id.toString(), meta, set_as_main);
-    return `Attached image to beat "${target.title}"${is_main ? ' (now main image)' : ''}.`;
+    return `Attached image to beat "${target.name}"${is_main ? ' (now main image)' : ''}.`;
   },
 
   async show_image({ image_id }) {
@@ -365,7 +395,7 @@ export const HANDLERS = {
     }
 
     const { path: filepath } = await Images.streamImageToTmp(file._id);
-    const where = shouldAttach && current ? `attached to beat "${current.title}"` : 'saved to library';
+    const where = shouldAttach && current ? `attached to beat "${current.name}"` : 'saved to library';
     return `__IMAGE_PATH__:${filepath}|Generated image (${file._id.toString()}) ${where}.`;
   },
 
@@ -500,6 +530,69 @@ export const HANDLERS = {
     }
     const { path: filepath } = await Tmdb.fetchTmdbImageToTmp(url);
     const note = caption?.trim() || 'TMDB image.';
+    return `__IMAGE_PATH__:${filepath}|${note}`;
+  },
+
+  async tavily_search({
+    query,
+    max_results,
+    search_depth,
+    topic,
+    time_range,
+    include_domains,
+    exclude_domains,
+  }) {
+    if (!config.tavily.apiKey) {
+      return 'Error: TAVILY_API_KEY is not configured. Cannot run web search.';
+    }
+    if (!query || !String(query).trim()) {
+      return 'Error: tavily_search requires a non-empty query.';
+    }
+    const requested = Math.min(Math.max(Number(max_results) || 5, 1), 10);
+    const body = {
+      query: String(query).trim(),
+      search_depth: search_depth === 'basic' ? 'basic' : 'advanced',
+      topic: topic === 'news' ? 'news' : 'general',
+      max_results: requested,
+      include_answer: 'advanced',
+      include_images: true,
+      include_image_descriptions: true,
+    };
+    if (time_range) body.time_range = time_range;
+    if (Array.isArray(include_domains) && include_domains.length) {
+      body.include_domains = include_domains;
+    }
+    if (Array.isArray(exclude_domains) && exclude_domains.length) {
+      body.exclude_domains = exclude_domains;
+    }
+
+    const data = await Tavily.search(body);
+
+    const results = (data.results || []).slice(0, requested).map((r) => ({
+      title: r.title,
+      url: r.url,
+      snippet: typeof r.content === 'string' ? r.content.slice(0, 600) : '',
+      score: r.score,
+    }));
+    const images = (data.images || []).slice(0, 5).map((img) =>
+      typeof img === 'string'
+        ? { url: img }
+        : { url: img.url, description: img.description || null },
+    );
+    return compact({
+      query: data.query || query,
+      answer: data.answer || null,
+      results,
+      images,
+    });
+  },
+
+  async tavily_show_image({ url, caption }) {
+    if (!url || typeof url !== 'string') {
+      return 'Error: tavily_show_image requires a url.';
+    }
+    const { path: filepath } = await Tavily.fetchTavilyImageToTmp(url);
+    const note = caption?.trim() || 'Web image.';
     return `__IMAGE_PATH__:${filepath}|${note}`;
   },
 };

@@ -33,7 +33,7 @@ describe('buildSystemPrompt', () => {
     expect(out).toContain('(none set)');
   });
 
-  it('renders the current beat title when set', () => {
+  it('renders the current beat name when set', () => {
     const beatId = new ObjectId();
     const out = buildSystemPrompt({
       characters: [],
@@ -41,13 +41,14 @@ describe('buildSystemPrompt', () => {
       plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
       plot: {
         synopsis: 'A test.',
-        beats: [{ _id: beatId, order: 1, title: 'Diner Morning', description: 'd' }],
+        beats: [{ _id: beatId, order: 1, name: 'Diner Morning', desc: 'morning vibes', body: '' }],
         current_beat_id: beatId,
       },
     });
     expect(out).toContain('1 beat(s) outlined');
     expect(out).toContain('Current beat: "Diner Morning"');
     expect(out).toContain('1. Diner Morning');
+    expect(out).toContain('morning vibes');
   });
 
   it('mentions Nano Banana and the explicit-only generation policy', () => {
