@@ -75,6 +75,15 @@ export function docToLlmMessage(doc) {
   return { role: 'user', content: blocks };
 }
 
+function isOrphanToolResultDoc(doc) {
+  return (
+    doc.role === 'user' &&
+    Array.isArray(doc.content) &&
+    doc.content.length > 0 &&
+    doc.content.every((b) => b && b.type === 'tool_result')
+  );
+}
+
 export async function loadHistoryForLlm(channelId) {
   const docs = await col()
     .find({ channel_id: channelId })
@@ -82,5 +91,8 @@ export async function loadHistoryForLlm(channelId) {
     .limit(HISTORY_LIMIT)
     .toArray();
   docs.reverse();
+  while (docs.length && isOrphanToolResultDoc(docs[0])) {
+    docs.shift();
+  }
   return docs.map(docToLlmMessage);
 }
