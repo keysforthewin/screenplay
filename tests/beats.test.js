@@ -26,8 +26,8 @@ describe('plots beat CRUD', () => {
   });
 
   it('createBeat assigns an _id, increments order, and auto-sets current beat', async () => {
-    const a = await Plots.createBeat({ title: 'Open' });
-    const b = await Plots.createBeat({ title: 'Inciting incident' });
+    const a = await Plots.createBeat({ name: 'Open', desc: 'Opening scene' });
+    const b = await Plots.createBeat({ name: 'Inciting', desc: 'Inciting incident' });
 
     expect(a._id).toBeInstanceOf(ObjectId);
     expect(a.order).toBe(1);
@@ -38,47 +38,116 @@ describe('plots beat CRUD', () => {
     expect(plot.current_beat_id.equals(a._id)).toBe(true);
   });
 
+  it('createBeat stores name, desc, and body separately; body defaults to empty', async () => {
+    const beat = await Plots.createBeat({
+      name: 'Diner Argument',
+      desc: 'Alice and Bob argue at the diner.',
+    });
+    expect(beat.name).toBe('Diner Argument');
+    expect(beat.desc).toBe('Alice and Bob argue at the diner.');
+    expect(beat.body).toBe('');
+  });
+
+  it('createBeat derives name from desc when name is omitted', async () => {
+    const beat = await Plots.createBeat({
+      desc: 'The time when Alice told Bob she was leaving for good.',
+    });
+    expect(beat.name).toBe('The time when Alice told Bob');
+    expect(beat.desc).toBe('The time when Alice told Bob she was leaving for good.');
+  });
+
+  it('createBeat without desc or name throws', async () => {
+    await expect(Plots.createBeat({})).rejects.toThrow(/desc/);
+  });
+
   it('createBeat dedupes characters case-insensitively', async () => {
     const beat = await Plots.createBeat({
-      title: 'Diner',
+      name: 'Diner',
+      desc: 'A diner scene.',
       characters: ['Alice', 'alice', 'Bob'],
     });
     expect(beat.characters).toEqual(['Alice', 'Bob']);
   });
 
-  it('getBeat resolves by _id, by order string, by title, and falls back to current', async () => {
-    const a = await Plots.createBeat({ title: 'Open' });
-    const b = await Plots.createBeat({ title: 'Twist' });
+  it('getBeat resolves by _id, by order string, by name, and falls back to current', async () => {
+    const a = await Plots.createBeat({ name: 'Open', desc: 'd1' });
+    const b = await Plots.createBeat({ name: 'Twist', desc: 'd2' });
 
     const byId = await Plots.getBeat(a._id.toString());
-    expect(byId.title).toBe('Open');
+    expect(byId.name).toBe('Open');
 
     const byOrder = await Plots.getBeat('2');
-    expect(byOrder.title).toBe('Twist');
+    expect(byOrder.name).toBe('Twist');
 
-    const byTitle = await Plots.getBeat('twist');
-    expect(byTitle._id.equals(b._id)).toBe(true);
+    const byName = await Plots.getBeat('twist');
+    expect(byName._id.equals(b._id)).toBe(true);
 
     const current = await Plots.getBeat();
     expect(current._id.equals(a._id)).toBe(true);
   });
 
-  it('updateBeat patches title/description/order/characters', async () => {
-    const a = await Plots.createBeat({ title: 'Open', description: 'orig', characters: ['Alice'] });
+  it('updateBeat patches name/desc/body/order/characters', async () => {
+    const a = await Plots.createBeat({
+      name: 'Open',
+      desc: 'orig desc',
+      body: 'orig body',
+      characters: ['Alice'],
+    });
     const updated = await Plots.updateBeat(a._id.toString(), {
-      title: 'Opening Sequence',
-      description: 'rev',
+      name: 'Opening Sequence',
+      desc: 'rev desc',
+      body: 'rev body',
       characters: ['Bob'],
     });
-    expect(updated.title).toBe('Opening Sequence');
-    expect(updated.description).toBe('rev');
+    expect(updated.name).toBe('Opening Sequence');
+    expect(updated.desc).toBe('rev desc');
+    expect(updated.body).toBe('rev body');
     expect(updated.characters).toEqual(['Bob']);
   });
 
-  it('deleteBeat removes the beat and clears current_beat_id when it pointed there', async () => {
-    const a = await Plots.createBeat({ title: 'Open' });
+  it('appendBeatBody adds to existing body with a blank-line separator', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'first paragraph' });
+    const updated = await Plots.appendBeatBody(a._id.toString(), 'second paragraph');
+    expect(updated.body).toBe('first paragraph\n\nsecond paragraph');
+  });
+
+  it('appendBeatBody on empty body has no leading separator', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd' });
+    const updated = await Plots.appendBeatBody(a._id.toString(), 'first content');
+    expect(updated.body).toBe('first content');
+  });
+
+  it('appendBeatBody throws on empty content', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd' });
+    await expect(Plots.appendBeatBody(a._id.toString(), '   ')).rejects.toThrow(/content/);
+  });
+
+  it('searchBeats finds matches across name, desc, and body, ranked by field', async () => {
+    const a = await Plots.createBeat({ name: 'Diner Scene', desc: 'morning at the diner' });
+    const b = await Plots.createBeat({ name: 'Roadhouse', desc: 'they reach the diner outskirts' });
+    const c = await Plots.createBeat({ name: 'Climax', desc: 'final confrontation', body: 'they end up back at the diner' });
+
+    const results = await Plots.searchBeats('diner');
+    expect(results).toHaveLength(3);
+    expect(results[0].beat._id.equals(a._id)).toBe(true);
+    expect(results[0].matched_field).toBe('name');
+    expect(results[1].beat._id.equals(b._id)).toBe(true);
+    expect(results[1].matched_field).toBe('desc');
+    expect(results[2].beat._id.equals(c._id)).toBe(true);
+    expect(results[2].matched_field).toBe('body');
+  });
+
+  it('searchBeats returns empty array for blank query', async () => {
+    await Plots.createBeat({ name: 'X', desc: 'Y' });
+    expect(await Plots.searchBeats('')).toEqual([]);
+    expect(await Plots.searchBeats('   ')).toEqual([]);
+  });
+
+  it('deleteBeat removes the beat, returns name, and clears current_beat_id when it pointed there', async () => {
+    const a = await Plots.createBeat({ name: 'Open', desc: 'd' });
     const res = await Plots.deleteBeat(a._id.toString());
     expect(res._id.equals(a._id)).toBe(true);
+    expect(res.name).toBe('Open');
 
     const plot = await Plots.getPlot();
     expect(plot.beats).toHaveLength(0);
@@ -86,7 +155,7 @@ describe('plots beat CRUD', () => {
   });
 
   it('linkCharacterToBeat is idempotent (no duplicates)', async () => {
-    const a = await Plots.createBeat({ title: 'Open' });
+    const a = await Plots.createBeat({ name: 'Open', desc: 'd' });
     await Plots.linkCharacterToBeat(a._id.toString(), 'Alice');
     await Plots.linkCharacterToBeat(a._id.toString(), 'alice');
     const beat = await Plots.getBeat(a._id.toString());
@@ -94,7 +163,7 @@ describe('plots beat CRUD', () => {
   });
 
   it('unlinkCharacterFromBeat removes case-insensitively', async () => {
-    const a = await Plots.createBeat({ title: 'Open', characters: ['Alice', 'Bob'] });
+    const a = await Plots.createBeat({ name: 'Open', desc: 'd', characters: ['Alice', 'Bob'] });
     await Plots.unlinkCharacterFromBeat(a._id.toString(), 'alice');
     const beat = await Plots.getBeat(a._id.toString());
     expect(beat.characters).toEqual(['Bob']);
@@ -115,7 +184,7 @@ describe('beat images', () => {
   }
 
   it('pushBeatImage appends and auto-promotes the first image to main', async () => {
-    const a = await Plots.createBeat({ title: 'Open' });
+    const a = await Plots.createBeat({ name: 'Open', desc: 'd' });
     const m1 = fakeMeta('1');
     const { is_main } = await Plots.pushBeatImage(a._id.toString(), m1);
     expect(is_main).toBe(true);
@@ -126,7 +195,7 @@ describe('beat images', () => {
   });
 
   it('pushBeatImage with set_as_main:true overrides existing main', async () => {
-    const a = await Plots.createBeat({ title: 'Open' });
+    const a = await Plots.createBeat({ name: 'Open', desc: 'd' });
     const m1 = fakeMeta('1');
     const m2 = fakeMeta('2');
     await Plots.pushBeatImage(a._id.toString(), m1);
@@ -139,7 +208,7 @@ describe('beat images', () => {
   });
 
   it('pullBeatImage promotes the next remaining image when removing main', async () => {
-    const a = await Plots.createBeat({ title: 'Open' });
+    const a = await Plots.createBeat({ name: 'Open', desc: 'd' });
     const m1 = fakeMeta('1');
     const m2 = fakeMeta('2');
     await Plots.pushBeatImage(a._id.toString(), m1);
@@ -152,7 +221,7 @@ describe('beat images', () => {
   });
 
   it('setBeatMainImage requires the image to be attached', async () => {
-    const a = await Plots.createBeat({ title: 'Open' });
+    const a = await Plots.createBeat({ name: 'Open', desc: 'd' });
     const stranger = new ObjectId();
     await expect(Plots.setBeatMainImage(a._id.toString(), stranger)).rejects.toThrow(/not attached/);
   });
@@ -160,8 +229,8 @@ describe('beat images', () => {
 
 describe('current beat lifecycle', () => {
   it('setCurrentBeat / getCurrentBeat / clearCurrentBeat round-trip', async () => {
-    const a = await Plots.createBeat({ title: 'Open' });
-    const b = await Plots.createBeat({ title: 'Climax' });
+    const a = await Plots.createBeat({ name: 'Open', desc: 'd' });
+    const b = await Plots.createBeat({ name: 'Climax', desc: 'd' });
 
     await Plots.setCurrentBeat(b._id.toString());
     const cur = await Plots.getCurrentBeat();
@@ -190,5 +259,25 @@ describe('legacy beat backfill', () => {
     expect(plot.beats[0].images).toEqual([]);
     expect(plot.beats[0].main_image_id).toBe(null);
     expect(plot.current_beat_id).toBe(null);
+  });
+
+  it('migrates legacy title→name and description→body, defaults desc to empty', async () => {
+    const legacyPlot = {
+      _id: 'main',
+      synopsis: '',
+      notes: '',
+      beats: [
+        { order: 1, title: 'Old Title', description: 'Old description prose.', characters: [] },
+      ],
+      updated_at: new Date(),
+    };
+    await fakeDb.collection('plots').insertOne(legacyPlot);
+
+    const plot = await Plots.getPlot();
+    expect(plot.beats[0].name).toBe('Old Title');
+    expect(plot.beats[0].body).toBe('Old description prose.');
+    expect(plot.beats[0].desc).toBe('');
+    expect(plot.beats[0].title).toBeUndefined();
+    expect(plot.beats[0].description).toBeUndefined();
   });
 });

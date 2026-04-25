@@ -14,7 +14,7 @@ const DEFAULT_CHARACTER_FIELDS = [
 
 const DEFAULT_PLOT_TEMPLATE = {
   synopsis_guidance: 'A 3-5 sentence summary of the movie. What it is about, the protagonist, the central conflict.',
-  beat_guidance: 'A beat is a major plot point. Each beat has order (number), title, description, and which characters are involved. Aim for 8-15 beats covering setup, inciting incident, escalations, climax, resolution.',
+  beat_guidance: 'A beat is a per-scene unit of the story. Each beat has order (number), name (short identifier), desc (1-2 sentence summary set on creation), body (long-form developing content), and characters. Beats are created on the fly whenever the user describes an event or scene; the bot generates a name and desc from the description, then accumulates body content as the user adds lore. Aim for 8-15 beats covering setup, inciting incident, escalations, climax, resolution — but expect lots of supporting beats for character moments and lore.',
 };
 
 export async function seedDefaults() {

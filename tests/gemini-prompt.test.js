@@ -10,12 +10,14 @@ describe('buildImagePrompt', () => {
   it('includes scene context when beat is given', () => {
     const out = buildImagePrompt({
       beat: {
-        title: 'Diner Morning',
-        description: 'Sun streams through dusty windows.',
+        name: 'Diner Morning',
+        desc: 'Morning at the diner.',
+        body: 'Sun streams through dusty windows.',
         characters: ['Alice', 'Bob'],
       },
     });
-    expect(out).toContain('Scene title: Diner Morning');
+    expect(out).toContain('Scene name: Diner Morning');
+    expect(out).toContain('Summary: Morning at the diner.');
     expect(out).toContain('Sun streams');
     expect(out).toContain('Alice, Bob');
   });
@@ -23,11 +25,11 @@ describe('buildImagePrompt', () => {
   it('combines all three input types', () => {
     const out = buildImagePrompt({
       userPrompt: 'film noir style',
-      beat: { title: 'T', description: 'D', characters: ['X'] },
+      beat: { name: 'T', desc: 'D', body: 'B', characters: ['X'] },
       recentMessages: [{ role: 'user', content: 'looks moody' }],
     });
     expect(out).toContain('film noir style');
-    expect(out).toContain('Scene title: T');
+    expect(out).toContain('Scene name: T');
     expect(out).toContain('Recent conversation');
     expect(out).toContain('looks moody');
   });
@@ -49,9 +51,9 @@ describe('buildImagePrompt', () => {
     expect(out).toContain('assistant: hi');
   });
 
-  it('truncates long descriptions', () => {
+  it('truncates long bodies', () => {
     const long = 'x'.repeat(2000);
-    const out = buildImagePrompt({ beat: { title: 'T', description: long, characters: [] } });
+    const out = buildImagePrompt({ beat: { name: 'T', desc: 'D', body: long, characters: [] } });
     expect(out.length).toBeLessThan(900);
     expect(out).toContain('…');
   });
