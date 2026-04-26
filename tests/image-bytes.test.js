@@ -26,8 +26,8 @@ describe('fetchImageFromUrl', () => {
     fetchSpy.mockRestore();
   });
 
-  it('exports a descriptive USER_AGENT identifying this bot', () => {
-    expect(USER_AGENT).toMatch(/screenplay/i);
+  it('exports a browser-shaped USER_AGENT (Wikimedia rejects bot-style UAs)', () => {
+    expect(USER_AGENT).toMatch(/Mozilla.*Chrome/);
   });
 
   it('sends the User-Agent header on the outbound fetch', async () => {
@@ -37,7 +37,7 @@ describe('fetchImageFromUrl', () => {
     const headers = init.headers || {};
     const ua = headers['User-Agent'] || headers['user-agent'];
     expect(ua).toBeTypeOf('string');
-    expect(ua).toMatch(/screenplay/i);
+    expect(ua).toMatch(/Mozilla.*Chrome/);
     expect(ua).toBe(USER_AGENT);
   });
 

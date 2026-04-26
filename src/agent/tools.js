@@ -21,21 +21,21 @@ export const TOOLS = [
   },
   {
     name: 'create_character',
-    description: 'Create a new character with at minimum the core fields. Returns the new character.',
+    description: 'Create a new character. Only `name` is required — call this as soon as the user names someone, even if other fields aren\'t known yet. Defaults: plays_self=true, own_voice=true. Use `update_character` later to fill in details as the conversation provides them.',
     input_schema: {
       type: 'object',
       properties: {
         name: { type: 'string' },
-        plays_self: { type: 'boolean' },
+        plays_self: { type: 'boolean', description: 'Defaults to true if omitted.' },
         hollywood_actor: { type: 'string', description: 'Required when plays_self is false.' },
-        own_voice: { type: 'boolean' },
+        own_voice: { type: 'boolean', description: 'Defaults to true if omitted.' },
         fields: {
           type: 'object',
           description: 'Any additional template-defined fields you have values for at creation time.',
           additionalProperties: true,
         },
       },
-      required: ['name', 'plays_self', 'own_voice'],
+      required: ['name'],
       additionalProperties: false,
     },
   },

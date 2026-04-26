@@ -90,10 +90,16 @@ export const HANDLERS = {
   },
 
   async create_character(input) {
-    if (!input.plays_self && !input.hollywood_actor) {
+    const playsSelf = input.plays_self === undefined ? true : !!input.plays_self;
+    const ownVoice = input.own_voice === undefined ? true : !!input.own_voice;
+    if (!playsSelf && !input.hollywood_actor) {
       return 'Error: when plays_self is false, hollywood_actor is required.';
     }
-    const c = await Characters.createCharacter(input);
+    const c = await Characters.createCharacter({
+      ...input,
+      plays_self: playsSelf,
+      own_voice: ownVoice,
+    });
     return `Created character ${c.name} (_id ${c._id}).`;
   },
 
@@ -331,8 +337,8 @@ export const HANDLERS = {
     attach_to_current_beat,
     set_as_main,
   }) {
-    if (!config.gemini.apiKey) {
-      return 'Error: GEMINI_API_KEY is not configured. Cannot generate images.';
+    if (!config.gemini.apiKey && !config.gemini.vertex.project) {
+      return 'Error: Gemini is not configured. Set GEMINI_VERTEX_PROJECT (+ GOOGLE_APPLICATION_CREDENTIALS) for Vertex AI, or GEMINI_API_KEY for the Developer API.';
     }
     if (!prompt && !include_beat && !include_recent_chat) {
       return 'Error: provide at least one of `prompt`, `include_beat: true`, or `include_recent_chat: true`.';

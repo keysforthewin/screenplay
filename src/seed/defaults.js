@@ -2,13 +2,13 @@ import { getCharacterTemplate, setCharacterTemplate, getPlotTemplate, setPlotTem
 
 const DEFAULT_CHARACTER_FIELDS = [
   { name: 'name', description: "The character's name.", required: true, core: true },
-  { name: 'plays_self', description: 'Whether the real person plays themselves (true) or a Hollywood actor portrays them (false).', required: true, core: true },
+  { name: 'plays_self', description: 'Whether the real person plays themselves (true) or a Hollywood actor portrays them (false). Defaults to true.', required: false, core: true },
   { name: 'hollywood_actor', description: 'Name of the actor playing this character. Required when plays_self is false.', required: false, core: true },
-  { name: 'own_voice', description: 'Whether the character uses their own voice (true) or is dubbed by the actor (false).', required: true, core: true },
-  { name: 'background_story', description: 'Backstory before the events of the movie.', required: true, core: false },
-  { name: 'origin_story', description: 'How the character came to be who they are at the start.', required: true, core: false },
-  { name: 'arc', description: 'How the character develops throughout the movie.', required: true, core: false },
-  { name: 'events', description: 'Notable things that happen to them during the story.', required: true, core: false },
+  { name: 'own_voice', description: 'Whether the character uses their own voice (true) or is dubbed by the actor (false). Defaults to true.', required: false, core: true },
+  { name: 'background_story', description: 'Backstory before the events of the movie.', required: false, core: false },
+  { name: 'origin_story', description: 'How the character came to be who they are at the start.', required: false, core: false },
+  { name: 'arc', description: 'How the character develops throughout the movie.', required: false, core: false },
+  { name: 'events', description: 'Notable things that happen to them during the story.', required: false, core: false },
   { name: 'memes', description: 'Memes, catchphrases, or running jokes associated with them.', required: false, core: false },
 ];
 

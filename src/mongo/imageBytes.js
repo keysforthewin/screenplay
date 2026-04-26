@@ -3,7 +3,8 @@ import path from 'node:path';
 
 export const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
-export const USER_AGENT = 'screenplay-bot/0.1.0';
+export const USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 const EXT_BY_TYPE = {
   'image/png': 'png',

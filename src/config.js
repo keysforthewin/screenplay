@@ -28,6 +28,10 @@ export const config = {
   },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || null,
+    vertex: {
+      project: process.env.GEMINI_VERTEX_PROJECT || null,
+      location: process.env.GEMINI_VERTEX_LOCATION || 'us-central1',
+    },
   },
   tmdb: {
     readAccessToken: process.env.TMDB_READ_ACCESS_TOKEN || null,
