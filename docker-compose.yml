@@ -23,6 +23,7 @@ services:
       - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
     volumes:
       - exports:/data/exports
+      - /home/mulligan/alexa2.json:/secrets/alexa2.json:ro
 
 volumes:
   mongo-data:

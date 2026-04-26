@@ -5,11 +5,19 @@ const MODEL = 'gemini-2.5-flash-image';
 
 let client;
 function getClient() {
-  if (!config.gemini.apiKey) {
-    throw new Error('GEMINI_API_KEY is not configured.');
-  }
-  if (!client) {
+  if (client) return client;
+  if (config.gemini.vertex.project) {
+    client = new GoogleGenAI({
+      vertexai: true,
+      project: config.gemini.vertex.project,
+      location: config.gemini.vertex.location,
+    });
+  } else if (config.gemini.apiKey) {
     client = new GoogleGenAI({ apiKey: config.gemini.apiKey });
+  } else {
+    throw new Error(
+      'Gemini is not configured. Set GEMINI_VERTEX_PROJECT (+ GOOGLE_APPLICATION_CREDENTIALS) for Vertex AI, or GEMINI_API_KEY for the Developer API.',
+    );
   }
   return client;
 }
