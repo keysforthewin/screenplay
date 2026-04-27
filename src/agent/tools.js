@@ -684,6 +684,51 @@ export const TOOLS = [
     },
   },
   {
+    name: 'search_message_history',
+    description:
+      "Search the channel's full message history (beyond the recent 60-message window already in your context) using a regex. Use when the operator asks you to recall something they mentioned earlier — names, descriptions, decisions — that isn't in your immediate history. CRAFT THE REGEX TO COVER ALTERNATE SPELLINGS, PLURALS, AND RELATED WORDS. Examples: for \"mustache\" use `must(?:a|ac)he?|moustache|stache|mustachio`; for \"the diner scene\" use `diner|coffee.?shop|caf[eé]|restaurant`. Default flag is case-insensitive. Use `since_days` and/or `until_days` for time windows (\"last week\" → since_days:7; \"about 2-3 weeks ago\" → since_days:21, until_days:7). Returns role/timestamp/excerpt/match for each hit, plus a `scan_limit_hit` flag warning that older messages weren't reached. Includes attachment filenames; skips image bytes and tool_use ids.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        pattern: {
+          type: 'string',
+          description: 'JS regex pattern (no slashes/flags). Be liberal with alternation.',
+        },
+        flags: {
+          type: 'string',
+          description: 'Subset of "imsu". Default "i" (case-insensitive).',
+        },
+        since_days: {
+          type: 'number',
+          description: 'Only search the last N days. Omit for all history.',
+        },
+        until_days: {
+          type: 'number',
+          description: 'Skip the most recent N days. Combine with since_days for windows.',
+        },
+        role: {
+          type: 'string',
+          enum: ['user', 'assistant', 'any'],
+          description: 'Default "any".',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 50,
+          description: 'Max matches to return. Default 20.',
+        },
+        context_chars: {
+          type: 'integer',
+          minimum: 40,
+          maximum: 500,
+          description: 'Chars of context around each match. Default 200.',
+        },
+      },
+      required: ['pattern'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'analyze_dramatic_arc',
     description:
       'Score each beat\'s sentiment and identify the climax — either the beat that deviates most from the baseline (max_deviation), or the beat with the steepest sentiment drop from the previous beat (steepest_drop). Reports the climax with its normalized position (0.0–1.0 by index in the ordered list); a healthy three-act climax sits around 0.75–0.90, so the response flags whether the detected position falls in that window. Use when the user asks "is my pacing right?", "where is the climax?", or "is the climax in the right place?". Requires at least 3 beats; returns no_signal if all beats have identical sentiment.',

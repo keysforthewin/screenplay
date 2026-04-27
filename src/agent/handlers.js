@@ -7,7 +7,7 @@ import * as Tmdb from '../tmdb/client.js';
 import * as Tavily from '../tavily/client.js';
 import { generateImage as generateImageBytes } from '../gemini/client.js';
 import { buildImagePrompt } from '../gemini/promptBuilder.js';
-import { loadHistoryForLlm } from '../mongo/messages.js';
+import * as Messages from '../mongo/messages.js';
 import { config } from '../config.js';
 import { exportToPdf } from '../pdf/export.js';
 import { buildOverview } from './overview.js';
@@ -584,7 +584,7 @@ export const HANDLERS = {
 
     let recentMessages = [];
     if (include_recent_chat) {
-      const history = await loadHistoryForLlm(config.discord.movieChannelId);
+      const history = await Messages.loadHistoryForLlm(config.discord.movieChannelId);
       recentMessages = history.slice(-10);
     }
 
@@ -1079,6 +1079,52 @@ export const HANDLERS = {
     return `Similarity scan for ${label} (query: \`${query}\`)\n\n${
       analysis || '(no analysis returned)'
     }`;
+  },
+
+  async search_message_history({
+    pattern,
+    flags,
+    since_days,
+    until_days,
+    role,
+    limit,
+    context_chars,
+  } = {}) {
+    if (!pattern || typeof pattern !== 'string') {
+      return 'Error: `pattern` is required.';
+    }
+    const safeFlags = String(flags || 'i').replace(/[^imsu]/g, '');
+    let regex;
+    try {
+      regex = new RegExp(pattern, safeFlags);
+    } catch (e) {
+      return `Error: invalid regex /${pattern}/${safeFlags}: ${e.message}`;
+    }
+    const { results, scanned, scan_limit_hit } = await Messages.searchMessages({
+      channelId: config.discord.movieChannelId,
+      regex,
+      sinceDays: since_days,
+      untilDays: until_days,
+      role: role === 'user' || role === 'assistant' ? role : 'any',
+      limit: Math.min(50, Math.max(1, Number(limit) || 20)),
+      contextChars: Math.min(500, Math.max(40, Number(context_chars) || 200)),
+    });
+    return compact({
+      pattern,
+      flags: safeFlags,
+      scanned,
+      scan_limit_hit,
+      match_count: results.length,
+      results: results.map((r) => ({
+        _id: r._id?.toString ? r._id.toString() : String(r._id),
+        discord_message_id: r.discord_message_id,
+        role: r.role,
+        created_at: r.created_at,
+        author_tag: r.author_tag,
+        excerpt: r.excerpt,
+        match: r.match,
+      })),
+    });
   },
 
   async analyze_dramatic_arc({ metric, fields } = {}) {

@@ -1,6 +1,9 @@
 import { getDb } from './client.js';
 
 const HISTORY_LIMIT = 60;
+export const SEARCH_SCAN_LIMIT = 5000;
+const SEARCH_TEXT_CAP = 20 * 1024;
+const PER_DOC_MATCH_CAP = 3;
 const col = () => getDb().collection('messages');
 
 export async function recordUserMessage({ msg, text, attachments }) {
@@ -82,6 +85,120 @@ function isOrphanToolResultDoc(doc) {
     doc.content.length > 0 &&
     doc.content.every((b) => b && b.type === 'tool_result')
   );
+}
+
+function blockText(block) {
+  if (!block) return '';
+  if (typeof block === 'string') return block;
+  if (block.type === 'text') return String(block.text || '');
+  if (block.type === 'tool_use') {
+    let inputStr = '';
+    try {
+      inputStr = JSON.stringify(block.input || {});
+    } catch {
+      inputStr = '';
+    }
+    return `${block.name || ''} ${inputStr}`.trim();
+  }
+  if (block.type === 'tool_result') {
+    const c = block.content;
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c)) return c.map(blockText).filter(Boolean).join('\n');
+    return '';
+  }
+  return '';
+}
+
+export function extractSearchableText(doc) {
+  if (!doc) return '';
+  const parts = [];
+  const c = doc.content;
+  if (typeof c === 'string') {
+    parts.push(c);
+  } else if (Array.isArray(c)) {
+    const joined = c.map(blockText).filter(Boolean).join('\n');
+    if (joined) parts.push(joined);
+  }
+  if (Array.isArray(doc.attachments)) {
+    for (const a of doc.attachments) {
+      if (a && a.filename) parts.push(String(a.filename));
+    }
+  }
+  if (doc.author?.tag) parts.push(String(doc.author.tag));
+  let combined = parts.join('\n');
+  if (combined.length > SEARCH_TEXT_CAP) {
+    combined = combined.slice(0, SEARCH_TEXT_CAP);
+  }
+  return combined;
+}
+
+function makeExcerpt(text, start, len, contextChars) {
+  const half = Math.floor(contextChars / 2);
+  const from = Math.max(0, start - half);
+  const to = Math.min(text.length, start + len + half);
+  let snippet = text.slice(from, to).replace(/\s+/g, ' ').trim();
+  if (from > 0) snippet = `…${snippet}`;
+  if (to < text.length) snippet = `${snippet}…`;
+  return snippet;
+}
+
+export async function searchMessages({
+  channelId,
+  regex,
+  sinceDays,
+  untilDays,
+  role,
+  limit,
+  contextChars,
+}) {
+  const query = { channel_id: channelId };
+  if (role === 'user' || role === 'assistant') query.role = role;
+
+  const now = Date.now();
+  const created = {};
+  if (sinceDays && Number(sinceDays) > 0) {
+    created.$gte = new Date(now - Number(sinceDays) * 86400000);
+  }
+  if (untilDays && Number(untilDays) > 0) {
+    created.$lte = new Date(now - Number(untilDays) * 86400000);
+  }
+  if (Object.keys(created).length) query.created_at = created;
+
+  const docs = await col()
+    .find(query)
+    .sort({ created_at: -1, _id: -1 })
+    .limit(SEARCH_SCAN_LIMIT)
+    .toArray();
+
+  const flags = regex.flags.includes('g') ? regex.flags : `${regex.flags}g`;
+  const results = [];
+  outer: for (const doc of docs) {
+    const text = extractSearchableText(doc);
+    if (!text) continue;
+    const re = new RegExp(regex.source, flags);
+    let docMatches = 0;
+    let m;
+    while (docMatches < PER_DOC_MATCH_CAP && (m = re.exec(text)) !== null) {
+      results.push({
+        _id: doc._id,
+        discord_message_id: doc.discord_message_id || null,
+        role: doc.role,
+        created_at: doc.created_at,
+        author_tag: doc.author?.tag || null,
+        excerpt: makeExcerpt(text, m.index, m[0].length, contextChars),
+        match: m[0],
+      });
+      docMatches++;
+      if (results.length >= limit) break outer;
+      if (m[0].length === 0) re.lastIndex++;
+    }
+  }
+
+  return {
+    results,
+    scanned: docs.length,
+    scan_limit_hit: docs.length >= SEARCH_SCAN_LIMIT,
+  };
 }
 
 export async function loadHistoryForLlm(channelId) {
