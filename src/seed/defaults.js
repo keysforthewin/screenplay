@@ -1,4 +1,10 @@
-import { getCharacterTemplate, setCharacterTemplate, getPlotTemplate, setPlotTemplate } from '../mongo/prompts.js';
+import {
+  getCharacterTemplate,
+  setCharacterTemplate,
+  getPlotTemplate,
+  setPlotTemplate,
+  updateCharacterTemplateFields,
+} from '../mongo/prompts.js';
 
 const DEFAULT_CHARACTER_FIELDS = [
   { name: 'name', description: "The character's name.", required: true, core: true },
@@ -10,6 +16,8 @@ const DEFAULT_CHARACTER_FIELDS = [
   { name: 'arc', description: 'How the character develops throughout the movie.', required: false, core: false },
   { name: 'events', description: 'Notable things that happen to them during the story.', required: false, core: false },
   { name: 'memes', description: 'Memes, catchphrases, or running jokes associated with them.', required: false, core: false },
+  { name: 'alternate_names', description: 'Other names this person is known by (array of strings). Example: ["Bobby", "The Boss"].', required: false, core: false },
+  { name: 'name_changes', description: 'Prior names with the date each change happened (array of {name, changed_on} objects). Example: [{ name: "Robert Smith", changed_on: "2018-05-12" }].', required: false, core: false },
 ];
 
 const DEFAULT_PLOT_TEMPLATE = {
@@ -20,6 +28,11 @@ const DEFAULT_PLOT_TEMPLATE = {
 export async function seedDefaults() {
   if (!(await getCharacterTemplate())) {
     await setCharacterTemplate({ fields: DEFAULT_CHARACTER_FIELDS });
+  } else {
+    const optionalDefaults = DEFAULT_CHARACTER_FIELDS.filter((f) => !f.core);
+    if (optionalDefaults.length) {
+      await updateCharacterTemplateFields({ add: optionalDefaults });
+    }
   }
   if (!(await getPlotTemplate())) {
     await setPlotTemplate(DEFAULT_PLOT_TEMPLATE);

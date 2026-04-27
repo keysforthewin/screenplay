@@ -526,4 +526,182 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'find_repeated_phrases',
+    description:
+      'Scan all beats for overused multi-word phrases (n-grams) — the kind of writing tics that are hard to see while drafting. Returns a ranked list of repeated phrases with their counts and the beats they appear in. Use when the user asks "what am I overusing?", "scan for repetition", "is my writing repetitive?", or proactively suggest it once there are 10+ beats. Skips phrases composed entirely of stopwords. Reports a low-signal warning when fewer than ~10 beats exist (the result is still computed, just less reliable).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        fields: {
+          type: 'array',
+          items: { type: 'string', enum: ['name', 'desc', 'body'] },
+          description: 'Which beat text fields to scan. Default ["desc", "body"].',
+        },
+        sizes: {
+          type: 'array',
+          items: { type: 'integer', minimum: 2, maximum: 5 },
+          description: 'N-gram sizes to count. Default [2, 3, 4].',
+        },
+        min_count: {
+          type: 'integer',
+          minimum: 2,
+          description: 'Minimum repetition count to report. Default 2.',
+        },
+        top_k: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          description: 'How many top phrases to return. Default 25.',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'check_similarity',
+    description:
+      'Before adding or editing a character or beat, check whether a near-duplicate already exists. Returns the top similar items above a threshold (default 0.6) with which field matched and the similarity score. Two modes: (a) compare an existing item against the rest of the corpus by passing `target_type` + `identifier`; (b) compare a candidate text you are about to commit by passing `target_type` + `text`. Use mode (b) just before calling create_character or create_beat when the user describes someone or something that may overlap with what is already on file. Cosine similarity over stopword-filtered word counts. Note: the create/update handlers also run this check automatically and append a heads-up to their success message — this tool is for explicit before-the-fact checks.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        target_type: {
+          type: 'string',
+          enum: ['character', 'beat'],
+          description: 'Which corpus to compare against.',
+        },
+        identifier: {
+          type: 'string',
+          description: 'Existing character (name or _id) or beat (_id, order, or name) to compare. Mutually exclusive with `text`.',
+        },
+        text: {
+          type: 'string',
+          description: 'Raw candidate text (e.g., a draft desc + body, or a draft background_story). Use for "before I commit" checks. Mutually exclusive with `identifier`.',
+        },
+        threshold: {
+          type: 'number',
+          minimum: 0,
+          maximum: 1,
+          description: 'Minimum cosine score to report. Default 0.6.',
+        },
+        top_k: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 20,
+          description: 'Cap on results returned. Default 5.',
+        },
+      },
+      required: ['target_type'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'find_character_phrases',
+    description:
+      'Concatenate every beat that lists this character and return the top n-grams across that combined text. Reveals what the character actually does in the story versus what their label says — if a "warrior" character\'s top trigrams are about doubt and conversation, the writing has drifted from the concept. Returns top phrases grouped by n-gram size, plus a count of beats featuring the character.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        character: {
+          type: 'string',
+          description: 'Character name (case-insensitive) or _id. Matches against beat.characters[].',
+        },
+        sizes: {
+          type: 'array',
+          items: { type: 'integer', minimum: 1, maximum: 5 },
+          description: 'N-gram sizes to compute. Default [1, 2, 3] (unigrams included for thematic word-cloud value).',
+        },
+        fields: {
+          type: 'array',
+          items: { type: 'string', enum: ['name', 'desc', 'body'] },
+          description: 'Beat fields to concatenate. Default ["desc", "body"].',
+        },
+        top_k: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 50,
+          description: 'How many top phrases per size. Default 15.',
+        },
+      },
+      required: ['character'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'similar_character',
+    description:
+      'Detect resemblance between a character on file and well-known existing fictional characters from books, films, or TV. Builds a search query from the character\'s descriptive traits (background_story, origin_story, arc, events, memes, hollywood_actor) — the character\'s `name` is intentionally excluded so detection is "blind". Runs a Tavily web search, then has Claude analyze the results to identify candidate parallels. Use when the user asks "does this remind you of anyone famous?", "is my character derivative?", "did the homage land?", or proactively when traits seem to point at a known archetype. Returns Markdown with ranked parallels (work, character, confidence, evidence, source URL) or a "no strong parallels" message. Requires TAVILY_API_KEY.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        character: { type: 'string', description: "Character's name or _id." },
+        focus: {
+          type: 'string',
+          description:
+            'Optional bias term appended to the search query (e.g., "legal drama", "Russian literature"). Otherwise the query is built only from traits.',
+        },
+        max_works: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 10,
+          description: 'How many top parallels to surface. Default 3.',
+        },
+      },
+      required: ['character'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'similar_works',
+    description:
+      'Detect resemblance between the screenplay\'s plot (or a single beat) and well-known existing works (books, films, TV). Builds a search query from the synopsis + beat outlines (or one beat\'s desc/body), runs a Tavily web search, then has Claude analyze the results for plot/structural parallels. Use when the user asks "does my plot remind you of anything?", "is this story derivative?", or "what works does this scene echo?". Returns Markdown with ranked parallels (work, parallel, confidence, evidence, source URL) or a "no strong parallels" message. Requires TAVILY_API_KEY.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        scope: {
+          type: 'string',
+          enum: ['plot', 'beat'],
+          description:
+            "What to analyze. 'plot' (default) uses the synopsis + beat-outline summary. 'beat' uses a single beat's name/desc/body.",
+        },
+        beat: {
+          type: 'string',
+          description:
+            'When scope is "beat", the beat _id, order, or name. Omit to use the current beat.',
+        },
+        focus: {
+          type: 'string',
+          description: 'Optional bias term appended to the search query (e.g., "heist films").',
+        },
+        max_works: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 10,
+          description: 'How many top parallels to surface. Default 3.',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'analyze_dramatic_arc',
+    description:
+      'Score each beat\'s sentiment and identify the climax — either the beat that deviates most from the baseline (max_deviation), or the beat with the steepest sentiment drop from the previous beat (steepest_drop). Reports the climax with its normalized position (0.0–1.0 by index in the ordered list); a healthy three-act climax sits around 0.75–0.90, so the response flags whether the detected position falls in that window. Use when the user asks "is my pacing right?", "where is the climax?", or "is the climax in the right place?". Requires at least 3 beats; returns no_signal if all beats have identical sentiment.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        metric: {
+          type: 'string',
+          enum: ['max_deviation', 'steepest_drop'],
+          description: 'How to detect the climax. "max_deviation" picks the beat farthest from the corpus mean (positive or negative). "steepest_drop" picks the beat with the largest negative delta from its predecessor. Default "max_deviation".',
+        },
+        fields: {
+          type: 'array',
+          items: { type: 'string', enum: ['name', 'desc', 'body'] },
+          description: 'Beat fields to score. Default ["desc", "body"].',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
 ];

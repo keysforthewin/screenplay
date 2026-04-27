@@ -1,3 +1,5 @@
+import { ObjectId } from 'mongodb';
+
 function deepClone(v) {
   if (v === null || v === undefined) return v;
   if (typeof v !== 'object') return v;
@@ -85,24 +87,27 @@ function makeCollection() {
       return found ? deepClone(found) : null;
     },
     async insertOne(doc) {
+      if (doc._id === undefined) doc._id = new ObjectId();
       docs.push(deepClone(doc));
       return { insertedId: doc._id };
     },
     async insertMany(arr) {
       const insertedIds = {};
       (arr || []).forEach((doc, i) => {
+        if (doc._id === undefined) doc._id = new ObjectId();
         docs.push(deepClone(doc));
         insertedIds[i] = doc._id;
       });
       return { insertedCount: (arr || []).length, insertedIds };
     },
-    async updateOne(query, update) {
+    async updateOne(query, update, options = {}) {
       const idx = docs.findIndex((d) => matchQuery(d, query));
       if (idx < 0) {
-        if (update.$setOnInsert || update.upsert) {
-          const doc = { ...(update.$setOnInsert || {}), ...(update.$set || {}) };
-          docs.push(deepClone(doc));
-          return { matchedCount: 0, upsertedId: doc._id };
+        if (update.$setOnInsert || update.upsert || options.upsert) {
+          const seed = { ...query, ...(update.$setOnInsert || {}), ...(update.$set || {}) };
+          if (seed._id === undefined) seed._id = new ObjectId();
+          docs.push(deepClone(seed));
+          return { matchedCount: 0, upsertedId: seed._id };
         }
         return { matchedCount: 0 };
       }

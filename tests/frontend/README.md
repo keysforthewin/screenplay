@@ -12,7 +12,8 @@ re-run: open the channel in Chrome, then ask Claude:
 > Run the frontend test suite from `tests/frontend/<catalog>.md`.
 
 …where `<catalog>` is one of `catalog.md` (default formal run), `catalog-stoner.md`
-(slacker-voiced), or `catalog-normie.md` (behavior test of bot-driven dialog).
+(slacker-voiced), `catalog-normie.md` (behavior test of bot-driven dialog), or
+`catalog-writing.md` (creation-only, evaluates story quality via the exported PDF).
 Claude reads the chosen catalog for the case list and `dom-helpers.js` for the
 page-side scripts that read Discord's DOM via `evaluate_script`.
 
@@ -34,6 +35,17 @@ page-side scripts that read Discord's DOM via `evaluate_script`.
   because their prompts already do the routing work. Uses **no** namespace
   prefix (the dialog has to sound real), so normie runs must be sequential
   against the same DB. See its own preamble for the format spec.
+- `catalog-writing.md` — **creation-only** dialog catalog. A writer
+  chain-of-thoughts a story from a blank slate; every turn either creates
+  content or reads it back. No deletions, no template field changes, no
+  negative tests. Phase P0 wipes the DB via `clear-db.js` so each run starts
+  identically clean. The artifact under evaluation is the final PDF — story
+  quality is the verifier of last resort. Skips 6 destructive tools that the
+  other catalogs cover. Sequential only (P0 wipes shared collections).
+- `clear-db.js` — Node helper invoked by `catalog-writing.md` Phase P0. Drops
+  every story-bearing collection (`characters`, `plots`, `messages`,
+  `prompts`, both GridFS buckets) and re-seeds the templates from
+  `src/seed/defaults.js`. Run standalone with `node tests/frontend/clear-db.js`.
 - `dom-helpers.js` — page-side scripts (passed verbatim to
   `mcp__chrome-devtools__evaluate_script`). One reads channel state, one waits
   for a new bot reply, one focuses the message editor.
@@ -54,6 +66,12 @@ runs collide on character names). Parallel runs of normie + `catalog.md` +
 `catalog-stoner.md` are still safe — the namespaces never overlap. Cleanup
 sweeps a fixed set of beat names (`The Discovery`, `The Chase`, `The Choice`,
 plus throwaways) that the normie story uses.
+
+`catalog-writing.md` takes the opposite approach to isolation: instead of
+namespacing, **Phase P0 wipes the entire database** before any Discord turn
+fires. Each run produces an identical fresh state. As a consequence, this
+catalog is **not parallel-safe with any other catalog** — the P0 wipe will
+destroy concurrent runs' data. Run sequentially.
 
 ## Manual cleanup (rarely needed)
 

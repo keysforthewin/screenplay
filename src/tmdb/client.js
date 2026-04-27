@@ -69,6 +69,25 @@ export function profileUrl(p, size = 'w500') {
   return posterUrl(p, size);
 }
 
+export async function findActorPortraitUrl(actorName) {
+  if (!config.tmdb.readAccessToken) return { ok: false, reason: 'tmdb_not_configured' };
+  if (!actorName || !actorName.trim()) return { ok: false, reason: 'empty_name' };
+  let result;
+  try {
+    result = await searchPerson(actorName);
+  } catch (e) {
+    return { ok: false, reason: 'tmdb_error', message: e.message };
+  }
+  const hit = (result?.results || []).find((p) => p && p.profile_path);
+  if (!hit) return { ok: false, reason: 'no_match' };
+  return {
+    ok: true,
+    url: profileUrl(hit.profile_path),
+    tmdb_person_id: hit.id,
+    person_name: hit.name,
+  };
+}
+
 export function isTmdbImageUrl(url) {
   try {
     return new URL(url).host === IMAGE_HOST;
