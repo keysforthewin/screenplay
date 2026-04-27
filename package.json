@@ -21,6 +21,7 @@
     "discord.js": "^14.26.3",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "mathjs": "^15.2.0",
     "mongodb": "^6.21.0",
     "pdfkit": "^0.18.0",
     "sentiment": "^5.0.2"

@@ -16,6 +16,10 @@ import { countNgrams, topNgrams } from '../analysis/ngrams.js';
 import { rankSimilar, bagOfWords } from '../analysis/similarity.js';
 import { detectClimax } from '../analysis/sentiment.js';
 import { analyzeText } from '../llm/analyze.js';
+import { create, all } from 'mathjs';
+import { runJsInVm } from './codeRunner.js';
+
+const mj = create(all, { number: 'BigNumber', precision: 64 });
 
 function compact(obj) {
   return JSON.stringify(obj, null, 2);
@@ -1179,6 +1183,33 @@ export const HANDLERS = {
       },
       series: result.series,
     });
+  },
+
+  async calculator({ expression, precision } = {}) {
+    if (typeof expression !== 'string' || !expression.trim()) {
+      return 'Calculator error: `expression` is required.';
+    }
+    const p = Math.min(64, Math.max(4, Number(precision) || 14));
+    try {
+      const value = mj.evaluate(expression);
+      let formatted;
+      if (mj.isBigNumber(value) && value.isInteger()) {
+        formatted = value.toFixed(0);
+      } else {
+        formatted = mj.format(value, { precision: p });
+      }
+      return compact({ expression, result: formatted });
+    } catch (e) {
+      return `Calculator error: ${e.message}`;
+    }
+  },
+
+  async run_code({ code, timeout_ms } = {}) {
+    if (typeof code !== 'string' || !code.trim()) {
+      return 'run_code error: `code` is required.';
+    }
+    const result = runJsInVm(code, { timeoutMs: timeout_ms });
+    return compact(result);
   },
 };
 
