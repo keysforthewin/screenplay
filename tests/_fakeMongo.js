@@ -27,6 +27,37 @@ function applySet(target, set) {
   }
 }
 
+function isOperatorQuery(v) {
+  if (!v || typeof v !== 'object') return false;
+  if (Array.isArray(v)) return false;
+  if (v instanceof Date) return false;
+  if (v.constructor && v.constructor.name === 'ObjectId') return false;
+  const keys = Object.keys(v);
+  return keys.length > 0 && keys.every((k) => k.startsWith('$'));
+}
+
+function matchOperator(dv, op) {
+  for (const [k, v] of Object.entries(op)) {
+    switch (k) {
+      case '$gte':
+        if (dv === undefined || dv === null || !(dv >= v)) return false;
+        break;
+      case '$gt':
+        if (dv === undefined || dv === null || !(dv > v)) return false;
+        break;
+      case '$lte':
+        if (dv === undefined || dv === null || !(dv <= v)) return false;
+        break;
+      case '$lt':
+        if (dv === undefined || dv === null || !(dv < v)) return false;
+        break;
+      default:
+        return false;
+    }
+  }
+  return true;
+}
+
 function matchQuery(doc, query) {
   for (const [k, v] of Object.entries(query || {})) {
     const dv = k.split('.').reduce((o, key) => (o == null ? undefined : o[key]), doc);
@@ -40,6 +71,10 @@ function matchQuery(doc, query) {
     }
     if (typeof dv !== 'undefined' && dv !== null && typeof dv.equals === 'function' && typeof v !== 'undefined' && v !== null && typeof v.equals === 'function') {
       if (!dv.equals(v)) return false;
+      continue;
+    }
+    if (isOperatorQuery(v)) {
+      if (!matchOperator(dv, v)) return false;
       continue;
     }
     if (dv !== v) return false;
