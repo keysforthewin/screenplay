@@ -749,4 +749,30 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'calculator',
+    description: 'Evaluate a math expression with arbitrary-precision arithmetic — exact answers, no floating-point error. Supports +-*/, parentheses, exponentiation (^ or **), unary minus, sqrt, log/log10/log2, sin/cos/tan and inverses (radians by default; use deg suffix like 90deg for degrees), abs, floor/ceil/round, factorial (!), modulo (mod), constants (pi, e, tau). Use this whenever the user asks for arithmetic, percentages, conversions, big numbers (e.g. 2^200), or anything where 0.1+0.2 must equal 0.3 exactly. Returns JSON {expression, result} where result is a string formatted to the requested precision.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        expression: { type: 'string', description: 'The math expression to evaluate.' },
+        precision: { type: 'integer', description: 'Significant digits in the formatted result. Default 14, range 4-64.' },
+      },
+      required: ['expression'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'run_code',
+    description: 'Execute a self-contained SYNCHRONOUS JavaScript snippet in a sandbox and return its stdout, stderr, return value, and timing. Use for algorithmic problems beyond simple arithmetic — sorting, parsing, multi-step transforms, combinatorics, simulation, anything where you would otherwise compute by hand. The sandbox has language built-ins (Array, Math, JSON, Date, RegExp, Map, Set, Error, etc.) and console.{log,info,warn,error}. It does NOT have process, require, import, Buffer, fetch, setTimeout, setInterval, or any Node API — sync code only. Default timeout 5000ms (max 30000ms). Output capped at 8KB per stream. Print results with console.log; the value of the final expression is also returned.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        code: { type: 'string', description: 'JavaScript source. Use console.log to emit results, or end with an expression whose value will be returned.' },
+        timeout_ms: { type: 'integer', description: 'Wall-clock timeout in ms. Default 5000, min 50, max 30000.' },
+      },
+      required: ['code'],
+      additionalProperties: false,
+    },
+  },
 ];
