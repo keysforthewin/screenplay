@@ -8,6 +8,59 @@ import { readImageBuffer } from '../mongo/images.js';
 import { readCharacterImageBuffer } from '../mongo/files.js';
 import { logger } from '../log.js';
 
+export function placeImage(doc, buf, fit) {
+  const [maxW, maxH] = fit;
+  let drawW = maxW;
+  let drawH = maxH;
+  try {
+    const img = doc.openImage(buf);
+    let imgW = img.width;
+    let imgH = img.height;
+    // PDFKit swaps width/height internally for EXIF orientations 5–8; mirror
+    // that here so our pre-measure matches the actual rendered dimensions.
+    if (img.orientation && img.orientation > 4) [imgW, imgH] = [imgH, imgW];
+    const scale = Math.min(maxW / imgW, maxH / imgH, 1);
+    drawW = imgW * scale;
+    drawH = imgH * scale;
+  } catch {
+    // openImage failed; fall back to worst-case fit dims.
+  }
+
+  const top = doc.page.margins.top;
+  const bottom = doc.page.height - doc.page.margins.bottom;
+  const availablePageHeight = bottom - top;
+
+  if (drawH > availablePageHeight) {
+    spanImageAcrossTwoPages(doc, buf, drawW, drawH);
+    return;
+  }
+
+  if (doc.y + drawH > bottom) doc.addPage();
+  doc.image(buf, { fit, align: 'center' });
+}
+
+function spanImageAcrossTwoPages(doc, buf, drawW, drawH) {
+  const { left, right, top, bottom: bottomMargin } = doc.page.margins;
+  const contentWidth = doc.page.width - left - right;
+  const availablePageHeight = doc.page.height - top - bottomMargin;
+  const x = left + (contentWidth - drawW) / 2;
+
+  if (doc.y > top) doc.addPage();
+
+  doc.save();
+  doc.rect(left, top, contentWidth, availablePageHeight).clip();
+  doc.image(buf, x, top, { width: drawW, height: drawH });
+  doc.restore();
+
+  doc.addPage();
+  doc.save();
+  doc.rect(left, top, contentWidth, availablePageHeight).clip();
+  doc.image(buf, x, top - availablePageHeight, { width: drawW, height: drawH });
+  doc.restore();
+
+  doc.y = top + (drawH - availablePageHeight);
+}
+
 export function renderScreenplayPdf({ title = 'Untitled Screenplay', characters, plot, beatImages = {}, characterImages = {} }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margins: { top: 72, bottom: 72, left: 90, right: 72 } });
@@ -34,7 +87,7 @@ export function renderScreenplayPdf({ title = 'Untitled Screenplay', characters,
       if (charImg) {
         doc.moveDown(0.3);
         try {
-          doc.image(charImg, { fit: [220, 220] });
+          placeImage(doc, charImg, [220, 220]);
         } catch (e) {
           logger.warn(`failed to embed character image: ${e.message}`);
         }
@@ -66,7 +119,7 @@ export function renderScreenplayPdf({ title = 'Untitled Screenplay', characters,
       if (imgBuf) {
         doc.moveDown(0.3);
         try {
-          doc.image(imgBuf, { fit: [400, 280], align: 'center' });
+          placeImage(doc, imgBuf, [400, 280]);
         } catch (e) {
           logger.warn(`failed to embed beat image: ${e.message}`);
         }
