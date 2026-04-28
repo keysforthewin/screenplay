@@ -241,6 +241,68 @@ describe('current beat lifecycle', () => {
   });
 });
 
+describe('per-beat timestamps', () => {
+  it('createBeat stamps created_at and updated_at', async () => {
+    const beat = await Plots.createBeat({ name: 'Open', desc: 'd' });
+    expect(beat.created_at).toBeInstanceOf(Date);
+    expect(beat.updated_at).toBeInstanceOf(Date);
+    expect(beat.created_at.getTime()).toBe(beat.updated_at.getTime());
+  });
+
+  it('updateBeat advances updated_at without changing created_at', async () => {
+    const beat = await Plots.createBeat({ name: 'Open', desc: 'd' });
+    const originalCreated = beat.created_at.getTime();
+    const originalUpdated = beat.updated_at.getTime();
+    // Force a clock tick (Date resolution is 1ms; some platforms may need a nudge).
+    await new Promise((r) => setTimeout(r, 2));
+    const updated = await Plots.updateBeat(beat._id.toString(), { desc: 'd2' });
+    expect(updated.created_at.getTime()).toBe(originalCreated);
+    expect(updated.updated_at.getTime()).toBeGreaterThan(originalUpdated);
+  });
+
+  it('appendBeatBody advances updated_at', async () => {
+    const beat = await Plots.createBeat({ name: 'Open', desc: 'd' });
+    const originalUpdated = beat.updated_at.getTime();
+    await new Promise((r) => setTimeout(r, 2));
+    const updated = await Plots.appendBeatBody(beat._id.toString(), 'more lore');
+    expect(updated.updated_at.getTime()).toBeGreaterThan(originalUpdated);
+  });
+
+  it('linkCharacterToBeat (via updateBeat) advances updated_at', async () => {
+    const beat = await Plots.createBeat({ name: 'Open', desc: 'd' });
+    const originalUpdated = beat.updated_at.getTime();
+    await new Promise((r) => setTimeout(r, 2));
+    await Plots.linkCharacterToBeat(beat._id.toString(), 'Alice');
+    const after = await Plots.getBeat(beat._id.toString());
+    expect(after.updated_at.getTime()).toBeGreaterThan(originalUpdated);
+  });
+});
+
+describe('disambiguation by explicit identifier (scenario D, T4 regression)', () => {
+  it('appendBeatBody with explicit beat id only mutates that beat', async () => {
+    // Two beats, both featuring Nully — like "Nully despawns the base" and
+    // "the wipe where the kid shot Nully". Must not cross-contaminate when
+    // the user adds lore to one of them.
+    const despawn = await Plots.createBeat({
+      name: 'Nully Despawns Base',
+      desc: 'The time Nully despawned the base.',
+      characters: ['Nully'],
+    });
+    const shooting = await Plots.createBeat({
+      name: 'Kid Shoots Nully',
+      desc: 'The wipe where a streamer kid shot Nully.',
+      characters: ['Nully', 'Streamer Kid'],
+    });
+
+    await Plots.appendBeatBody(despawn._id.toString(), 'He forgot to fill the cupboard.');
+
+    const despawnAfter = await Plots.getBeat(despawn._id.toString());
+    const shootingAfter = await Plots.getBeat(shooting._id.toString());
+    expect(despawnAfter.body).toBe('He forgot to fill the cupboard.');
+    expect(shootingAfter.body).toBe('');
+  });
+});
+
 describe('legacy beat backfill', () => {
   it('assigns _id and image fields to beats missing them on next read', async () => {
     const legacyPlot = {
@@ -258,6 +320,8 @@ describe('legacy beat backfill', () => {
     expect(plot.beats[0]._id).toBeInstanceOf(ObjectId);
     expect(plot.beats[0].images).toEqual([]);
     expect(plot.beats[0].main_image_id).toBe(null);
+    expect(plot.beats[0].created_at).toBeInstanceOf(Date);
+    expect(plot.beats[0].updated_at).toBeInstanceOf(Date);
     expect(plot.current_beat_id).toBe(null);
   });
 
