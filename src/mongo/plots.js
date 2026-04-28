@@ -32,6 +32,7 @@ function deriveName(desc) {
 
 async function ensureBeatIds(plot) {
   let changed = false;
+  const fallbackTs = plot.updated_at instanceof Date ? plot.updated_at : new Date();
   const beats = (plot.beats || []).map((b) => {
     const next = { ...b };
     if (!next._id) {
@@ -68,6 +69,14 @@ async function ensureBeatIds(plot) {
     }
     if (next.desc === undefined) {
       next.desc = '';
+      changed = true;
+    }
+    if (!(next.created_at instanceof Date)) {
+      next.created_at = fallbackTs;
+      changed = true;
+    }
+    if (!(next.updated_at instanceof Date)) {
+      next.updated_at = fallbackTs;
       changed = true;
     }
     return next;
@@ -193,6 +202,7 @@ export async function createBeat({ name, desc = '', body = '', characters = [], 
   if (nextOrder === undefined || nextOrder === null) {
     nextOrder = beats.length ? Math.max(...beats.map((b) => b.order || 0)) + 1 : 1;
   }
+  const now = new Date();
   const beat = {
     _id: new ObjectId(),
     order: Number(nextOrder),
@@ -202,6 +212,8 @@ export async function createBeat({ name, desc = '', body = '', characters = [], 
     characters: dedupeNames(characters),
     images: [],
     main_image_id: null,
+    created_at: now,
+    updated_at: now,
   };
   beats.push(beat);
   beats.sort((a, b) => (a.order || 0) - (b.order || 0));
@@ -222,6 +234,7 @@ export async function updateBeat(identifier, patch) {
     if (patch.body !== undefined) next.body = String(patch.body);
     if (patch.order !== undefined && patch.order !== null) next.order = Number(patch.order);
     if (Array.isArray(patch.characters)) next.characters = dedupeNames(patch.characters);
+    next.updated_at = new Date();
     return next;
   });
   beats.sort((a, b) => (a.order || 0) - (b.order || 0));
@@ -239,7 +252,7 @@ export async function appendBeatBody(identifier, content) {
   const separator = existing.trim() ? '\n\n' : '';
   const newBody = `${existing}${separator}${addition}`;
   const beats = (plot.beats || []).map((b) =>
-    b._id && b._id.equals(beat._id) ? { ...b, body: newBody } : b,
+    b._id && b._id.equals(beat._id) ? { ...b, body: newBody, updated_at: new Date() } : b,
   );
   await persistBeats(beats);
   return beats.find((b) => b._id && b._id.equals(beat._id));
@@ -291,6 +304,7 @@ export async function pushBeatImage(beatIdentifier, imageMeta, setAsMain = false
       ...b,
       images,
       main_image_id: promote ? imageMeta._id : b.main_image_id,
+      updated_at: new Date(),
     };
   });
   await persistBeats(beats);
@@ -307,7 +321,7 @@ export async function setBeatMainImage(beatIdentifier, imageId) {
     throw new Error(`Image ${imageId} is not attached to this beat`);
   }
   const beats = (plot.beats || []).map((b) =>
-    b._id && b._id.equals(beat._id) ? { ...b, main_image_id: oid } : b,
+    b._id && b._id.equals(beat._id) ? { ...b, main_image_id: oid, updated_at: new Date() } : b,
   );
   await persistBeats(beats);
   return beats.find((b) => b._id && b._id.equals(beat._id));
@@ -325,7 +339,7 @@ export async function pullBeatImage(beatIdentifier, imageId) {
   const wasMain = beat.main_image_id && beat.main_image_id.equals(oid);
   const newMain = wasMain ? images[0]?._id || null : beat.main_image_id || null;
   const beats = (plot.beats || []).map((b) =>
-    b._id && b._id.equals(beat._id) ? { ...b, images, main_image_id: newMain } : b,
+    b._id && b._id.equals(beat._id) ? { ...b, images, main_image_id: newMain, updated_at: new Date() } : b,
   );
   await persistBeats(beats);
   return { beat: beats.find((b) => b._id && b._id.equals(beat._id)), removed: oid };

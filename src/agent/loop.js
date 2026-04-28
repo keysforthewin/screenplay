@@ -39,6 +39,30 @@ function buildUserContent(userText, attachments) {
   return content;
 }
 
+export async function dispatchToolUses(toolUses, attachmentPaths, dispatchFn = dispatchTool) {
+  const results = [];
+  for (const tu of toolUses) {
+    logger.info(`tool_use: ${tu.name}`);
+    try {
+      const raw = await dispatchFn(tu.name, tu.input);
+      const result = interceptAttachment(raw, attachmentPaths);
+      results.push({ type: 'tool_result', tool_use_id: tu.id, content: result });
+    } catch (e) {
+      // Defense in depth: dispatchTool already catches handler errors, but if anything
+      // here throws (interceptAttachment, future code) we MUST still emit a tool_result
+      // for this tool_use_id, otherwise the next Anthropic request 400s.
+      logger.warn(`tool dispatch failed ${tu.name}: ${e.message}`);
+      results.push({
+        type: 'tool_result',
+        tool_use_id: tu.id,
+        content: `Tool error (${tu.name}): ${e.message}`,
+        is_error: true,
+      });
+    }
+  }
+  return results;
+}
+
 function interceptAttachment(result, attachmentPaths) {
   if (typeof result !== 'string') return result;
   if (result.startsWith('__PDF_PATH__:')) {
@@ -88,13 +112,7 @@ export async function runAgent({ history, userText, attachments = [] }) {
     }
 
     const toolUses = resp.content.filter((b) => b.type === 'tool_use');
-    const results = [];
-    for (const tu of toolUses) {
-      logger.info(`tool_use: ${tu.name}`);
-      const raw = await dispatchTool(tu.name, tu.input);
-      const result = interceptAttachment(raw, attachmentPaths);
-      results.push({ type: 'tool_result', tool_use_id: tu.id, content: result });
-    }
+    const results = await dispatchToolUses(toolUses, attachmentPaths);
     messages.push({ role: 'user', content: results });
   }
 
