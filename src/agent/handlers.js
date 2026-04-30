@@ -740,6 +740,16 @@ export const HANDLERS = {
     return compact(results.map((c) => ({ _id: c._id.toString(), name: c.name })));
   },
 
+  async delete_character({ identifier }) {
+    const existing = await Characters.getCharacter(identifier);
+    if (!existing) return `No character found for "${identifier}".`;
+    const { unlinked_from } = await Plots.unlinkCharacterFromAllBeats(existing.name);
+    const res = await Characters.deleteCharacter(existing._id.toString());
+    await Images.deleteImages(res.image_ids);
+    await Attachments.deleteAttachments(res.attachment_ids);
+    return `Deleted character "${res.name}" — unlinked from ${unlinked_from} beat(s), removed ${res.image_ids.length} image(s) and ${res.attachment_ids.length} attachment(s).`;
+  },
+
   async get_character_template() {
     return compact(await Prompts.getCharacterTemplate());
   },

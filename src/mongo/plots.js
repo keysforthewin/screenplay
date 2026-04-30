@@ -307,6 +307,24 @@ export async function unlinkCharacterFromBeat(identifier, characterName) {
   return updateBeat(beat._id.toString(), { characters });
 }
 
+export async function unlinkCharacterFromAllBeats(characterName) {
+  const plot = await getPlot();
+  const lower = String(characterName).toLowerCase();
+  const now = new Date();
+  let touched = 0;
+  const beats = (plot.beats || []).map((b) => {
+    const filtered = (b.characters || []).filter((c) => String(c).toLowerCase() !== lower);
+    if (filtered.length === (b.characters || []).length) return b;
+    touched += 1;
+    return { ...b, characters: filtered, updated_at: now };
+  });
+  if (touched > 0) {
+    await persistBeats(beats);
+    logger.info(`mongo: unlink "${characterName}" from ${touched} beat(s)`);
+  }
+  return { unlinked_from: touched };
+}
+
 export async function pushBeatImage(beatIdentifier, imageMeta, setAsMain = false) {
   const plot = await getPlot();
   const beat = findBeat(plot, beatIdentifier);

@@ -75,3 +75,16 @@ export async function searchCharacters(query) {
   const all = await col().find({}).toArray();
   return all.filter((c) => JSON.stringify(c).toLowerCase().includes(q));
 }
+
+export async function deleteCharacter(identifier) {
+  const c = await getCharacter(identifier);
+  if (!c) throw new Error(`Character not found: ${identifier}`);
+  await col().deleteOne({ _id: c._id });
+  logger.info(`mongo: character delete id=${c._id} name="${c.name}"`);
+  return {
+    _id: c._id,
+    name: c.name,
+    image_ids: (c.images || []).map((i) => i._id).filter(Boolean),
+    attachment_ids: (c.attachments || []).map((a) => a._id).filter(Boolean),
+  };
+}

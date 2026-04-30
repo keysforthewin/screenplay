@@ -101,6 +101,12 @@ export async function deleteAttachment(attachmentId) {
   }
 }
 
+export async function deleteAttachments(attachmentIds) {
+  for (const id of attachmentIds || []) {
+    if (id) await deleteAttachment(id);
+  }
+}
+
 export async function readAttachmentBuffer(attachmentId) {
   const file = await findAttachmentFile(attachmentId);
   if (!file) return null;

@@ -15,6 +15,15 @@ export const config = {
     apiKey: required('ANTHROPIC_API_KEY'),
     model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-7',
   },
+  cache: {
+    enabled: !process.env.PROMPT_CACHE_DISABLED,
+    toolsTtl: process.env.PROMPT_CACHE_TOOLS_TTL || '1h',
+  },
+  trim: {
+    enabled: !process.env.HISTORY_TRIM_DISABLED,
+    summarizeStale: !process.env.HISTORY_SUMMARIZE_DISABLED,
+    tokenBudget: Number(process.env.HISTORY_TOKEN_BUDGET) || 30000,
+  },
   mongo: {
     uri: process.env.MONGO_URI || 'mongodb://localhost:27017',
     db: process.env.MONGO_DB || 'screenplay',

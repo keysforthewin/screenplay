@@ -162,6 +162,12 @@ function makeCollection() {
       }
       return { matchedCount: 1 };
     },
+    async deleteOne(query) {
+      const idx = docs.findIndex((d) => matchQuery(d, query));
+      if (idx < 0) return { deletedCount: 0 };
+      docs.splice(idx, 1);
+      return { deletedCount: 1 };
+    },
     find(query = {}) {
       return makeCursor(docs.filter((d) => matchQuery(d, query)));
     },

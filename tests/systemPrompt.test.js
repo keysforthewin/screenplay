@@ -1,10 +1,130 @@
 import { describe, it, expect } from 'vitest';
 import { ObjectId } from 'mongodb';
-import { buildSystemPrompt } from '../src/agent/systemPrompt.js';
+import {
+  buildSystemPrompt,
+  joinSystemBlocks,
+  _resetStableTextCacheForTests,
+} from '../src/agent/systemPrompt.js';
+
+function joined(args) {
+  return joinSystemBlocks(buildSystemPrompt(args));
+}
 
 describe('buildSystemPrompt', () => {
+  it('returns an array of two cache-controlled text blocks by default', () => {
+    const blocks = buildSystemPrompt({
+      characters: [{ name: 'Alice' }],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: 'g', beat_guidance: 'b' },
+      plot: { synopsis: '', beats: [] },
+    });
+    expect(Array.isArray(blocks)).toBe(true);
+    expect(blocks).toHaveLength(2);
+    for (const b of blocks) {
+      expect(b.type).toBe('text');
+      expect(typeof b.text).toBe('string');
+      expect(b.cache_control).toEqual({ type: 'ephemeral' });
+    }
+  });
+
+  it('omits cache_control when cache: false', () => {
+    const blocks = buildSystemPrompt({
+      characters: [],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+      plot: { synopsis: '', beats: [] },
+      cache: false,
+    });
+    expect(blocks).toHaveLength(2);
+    for (const b of blocks) expect(b.cache_control).toBeUndefined();
+  });
+
+  it('puts character/beat current state in the volatile block, templates in the stable block', () => {
+    const blocks = buildSystemPrompt({
+      characters: [{ name: 'Zorblax' }],
+      characterTemplate: {
+        fields: [
+          { name: 'name', description: 'name', required: true, core: true },
+          { name: 'favorite_color', description: 'fav color', required: false, core: false },
+        ],
+      },
+      plotTemplate: { synopsis_guidance: 'g', beat_guidance: 'b' },
+      plot: { synopsis: '', beats: [] },
+    });
+    const [stable, volatile] = blocks;
+    expect(stable.text).toContain('favorite_color');
+    expect(stable.text).toContain('Synopsis guidance: g');
+    expect(stable.text).not.toContain('Zorblax');
+    expect(volatile.text).toContain('Zorblax');
+    expect(volatile.text).toContain('# Current state');
+  });
+
+  it('stable block is byte-identical when only volatile inputs change', () => {
+    _resetStableTextCacheForTests();
+    const args1 = {
+      characters: [{ name: 'Alice' }],
+      characterTemplate: { fields: [{ name: 'name', description: 'n', required: true }] },
+      plotTemplate: { synopsis_guidance: 'g', beat_guidance: 'b' },
+      plot: { synopsis: '', beats: [] },
+    };
+    const args2 = {
+      ...args1,
+      characters: [{ name: 'Bob' }, { name: 'Carol' }],
+      plot: {
+        synopsis: 'A test.',
+        beats: [{ order: 1, name: 'Beat One', desc: 'd', body: '' }],
+      },
+    };
+    const [s1] = buildSystemPrompt(args1);
+    const [s2] = buildSystemPrompt(args2);
+    expect(s1.text).toBe(s2.text);
+  });
+
+  it('stable block changes when characterTemplate changes', () => {
+    _resetStableTextCacheForTests();
+    const base = {
+      characters: [],
+      plotTemplate: { synopsis_guidance: 'g', beat_guidance: 'b' },
+      plot: { synopsis: '', beats: [] },
+    };
+    const [s1] = buildSystemPrompt({
+      ...base,
+      characterTemplate: { fields: [{ name: 'a', description: 'x', required: false }] },
+    });
+    const [s2] = buildSystemPrompt({
+      ...base,
+      characterTemplate: { fields: [{ name: 'b', description: 'y', required: true }] },
+    });
+    expect(s1.text).not.toBe(s2.text);
+  });
+
+  it('renders director notes in the volatile block', () => {
+    const [, volatile] = buildSystemPrompt({
+      characters: [],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+      plot: { synopsis: '', beats: [] },
+      directorNotes: { notes: [{ text: 'every scene needs rain' }] },
+    });
+    expect(volatile.text).toContain("Director's Notes");
+    expect(volatile.text).toContain('every scene needs rain');
+  });
+
+  it('skips director notes block entirely when directorNotes is null', () => {
+    const [, volatile] = buildSystemPrompt({
+      characters: [],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+      plot: { synopsis: '', beats: [] },
+      directorNotes: null,
+    });
+    expect(volatile.text).not.toContain("Director's Notes");
+  });
+
+  // Below: original behavioral assertions, now run on the joined text.
+
   it('includes character names and template fields', () => {
-    const out = buildSystemPrompt({
+    const out = joined({
       characters: [{ name: 'Alice' }, { name: 'Bob' }],
       characterTemplate: {
         fields: [
@@ -22,7 +142,7 @@ describe('buildSystemPrompt', () => {
   });
 
   it('handles empty state', () => {
-    const out = buildSystemPrompt({
+    const out = joined({
       characters: [],
       characterTemplate: { fields: [] },
       plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
@@ -35,7 +155,7 @@ describe('buildSystemPrompt', () => {
 
   it('renders the current beat name when set', () => {
     const beatId = new ObjectId();
-    const out = buildSystemPrompt({
+    const out = joined({
       characters: [],
       characterTemplate: { fields: [] },
       plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
@@ -52,7 +172,7 @@ describe('buildSystemPrompt', () => {
   });
 
   it('mentions Nano Banana and the explicit-only generation policy', () => {
-    const out = buildSystemPrompt({
+    const out = joined({
       characters: [],
       characterTemplate: { fields: [] },
       plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
@@ -79,15 +199,14 @@ describe('buildSystemPrompt', () => {
         updated_at: new Date(baseTs + i * 1000),
       });
     }
-    const out = buildSystemPrompt({
+    const out = joined({
       characters: [],
       characterTemplate: { fields: [] },
       plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
       plot: { synopsis: '', beats },
     });
     expect(out).toContain('Recently touched (last 5):');
-    const recentSection = out.split('Recently touched')[1].split('Beats:')[0];
-    // Most recent is Beat 6; oldest in window is Beat 2; Beat 1 should NOT appear in the recent slice.
+    const recentSection = out.split('Recently touched (last ')[1].split('Beats:')[0];
     const idx6 = recentSection.indexOf('Beat 6');
     const idx5 = recentSection.indexOf('Beat 5');
     const idx2 = recentSection.indexOf('Beat 2');
@@ -100,7 +219,7 @@ describe('buildSystemPrompt', () => {
   });
 
   it('omits Recently touched when fewer than 3 beats exist', () => {
-    const out = buildSystemPrompt({
+    const out = joined({
       characters: [],
       characterTemplate: { fields: [] },
       plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
@@ -117,7 +236,7 @@ describe('buildSystemPrompt', () => {
 
   it('omits Recently touched when all beats share one timestamp (low signal)', () => {
     const ts = new Date();
-    const out = buildSystemPrompt({
+    const out = joined({
       characters: [],
       characterTemplate: { fields: [] },
       plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
@@ -134,7 +253,7 @@ describe('buildSystemPrompt', () => {
   });
 
   it('includes the brainstorming and reference-resolution sections', () => {
-    const out = buildSystemPrompt({
+    const out = joined({
       characters: [],
       characterTemplate: { fields: [] },
       plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
