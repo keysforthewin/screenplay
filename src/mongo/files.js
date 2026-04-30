@@ -1,58 +1,36 @@
-import { GridFSBucket } from 'mongodb';
 import { getDb } from './client.js';
 import { getCharacter } from './characters.js';
 import {
-  fetchImageFromUrl,
-  deriveImageFilename,
-  toObjectId,
-} from './imageBytes.js';
-
-const BUCKET_NAME = 'character_images';
-
-let bucket;
-function getBucket() {
-  if (!bucket) bucket = new GridFSBucket(getDb(), { bucketName: BUCKET_NAME });
-  return bucket;
-}
-
-function uploadBuffer({ buffer, filename, contentType, characterId }) {
-  return new Promise((resolve, reject) => {
-    const stream = getBucket().openUploadStream(filename, {
-      contentType,
-      metadata: { character_id: characterId },
-    });
-    stream.on('error', reject);
-    stream.on('finish', () => resolve(stream.id));
-    stream.end(buffer);
-  });
-}
+  uploadImageFromUrl,
+  readImageBuffer,
+  deleteImage,
+} from './images.js';
+import { toObjectId } from './imageBytes.js';
 
 export async function attachImageToCharacter({ character, sourceUrl, filename, caption, setAsMain }) {
   const c = await getCharacter(character);
   if (!c) throw new Error(`Character not found: ${character}`);
 
-  const { buffer, contentType } = await fetchImageFromUrl(sourceUrl);
-  const finalFilename = filename?.trim() || deriveImageFilename(sourceUrl, contentType);
-  const fileId = await uploadBuffer({
-    buffer,
-    filename: finalFilename,
-    contentType,
-    characterId: c._id,
+  const file = await uploadImageFromUrl({
+    sourceUrl,
+    filename,
+    ownerType: 'character',
+    ownerId: c._id,
   });
 
   const meta = {
-    _id: fileId,
-    filename: finalFilename,
-    content_type: contentType,
-    size: buffer.length,
-    uploaded_at: new Date(),
+    _id: file._id,
+    filename: file.filename,
+    content_type: file.content_type,
+    size: file.size,
+    uploaded_at: file.uploaded_at,
     caption: caption?.trim() || null,
   };
 
   const promoteToMain = !!setAsMain || !c.images || c.images.length === 0;
   const update = {
     $push: { images: meta },
-    $set: { updated_at: new Date(), ...(promoteToMain ? { main_image_id: fileId } : {}) },
+    $set: { updated_at: new Date(), ...(promoteToMain ? { main_image_id: file._id } : {}) },
   };
   await getDb().collection('characters').updateOne({ _id: c._id }, update);
   return { ...meta, is_main: promoteToMain };
@@ -80,19 +58,7 @@ export async function setMainCharacterImage({ character, imageId }) {
 }
 
 export async function readCharacterImageBuffer(imageId) {
-  const oid = toObjectId(imageId);
-  const cursor = getBucket().find({ _id: oid });
-  const arr = await cursor.toArray();
-  if (!arr.length) return null;
-  const file = arr[0];
-  const chunks = [];
-  await new Promise((resolve, reject) => {
-    const dl = getBucket().openDownloadStream(file._id);
-    dl.on('data', (c) => chunks.push(c));
-    dl.on('error', reject);
-    dl.on('end', resolve);
-  });
-  return { buffer: Buffer.concat(chunks), file };
+  return readImageBuffer(imageId);
 }
 
 export async function removeCharacterImage({ character, imageId }) {
@@ -104,11 +70,7 @@ export async function removeCharacterImage({ character, imageId }) {
     throw new Error(`Image ${imageId} is not attached to ${c.name}`);
   }
 
-  try {
-    await getBucket().delete(oid);
-  } catch (e) {
-    if (e?.code !== 'ENOENT' && !/FileNotFound/i.test(e?.message || '')) throw e;
-  }
+  await deleteImage(oid);
 
   const remaining = images.filter((img) => !img._id.equals(oid));
   const wasMain = c.main_image_id && c.main_image_id.equals(oid);

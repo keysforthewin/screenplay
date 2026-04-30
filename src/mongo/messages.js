@@ -1,4 +1,5 @@
 import { getDb } from './client.js';
+import { ALLOWED_IMAGE_TYPES } from './imageBytes.js';
 
 const HISTORY_LIMIT = 60;
 export const SEARCH_SCAN_LIMIT = 5000;
@@ -71,8 +72,14 @@ export function docToLlmMessage(doc) {
     return { role: 'assistant', content: doc.content || '(no reply)' };
   }
   const blocks = [];
-  for (const _ of doc.attachments || []) {
-    blocks.push({ type: 'text', text: '[user attached image]' });
+  for (const a of doc.attachments || []) {
+    if (a && a.content_type && ALLOWED_IMAGE_TYPES.has(a.content_type)) {
+      blocks.push({ type: 'text', text: '[user attached image]' });
+    } else {
+      const name = a?.filename || 'unnamed';
+      const type = a?.content_type || 'unknown';
+      blocks.push({ type: 'text', text: `[user attached file: ${name} (${type})]` });
+    }
   }
   blocks.push({ type: 'text', text: doc.content || '' });
   return { role: 'user', content: blocks };
@@ -85,6 +92,59 @@ function isOrphanToolResultDoc(doc) {
     doc.content.length > 0 &&
     doc.content.every((b) => b && b.type === 'tool_result')
   );
+}
+
+// Anthropic requires every tool_use block to be answered by a tool_result block
+// in the IMMEDIATELY following user message. History can drift out of that
+// invariant if a previous response was truncated (stop_reason='max_tokens' with
+// a tool_use still in content) or if recordAgentTurns partially failed. Heal at
+// load time by inserting/augmenting synthetic tool_result blocks for any
+// missing ids — non-destructive, keeps the surrounding context intact.
+export function balanceToolUses(messages) {
+  const out = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) {
+      out.push(msg);
+      continue;
+    }
+    const toolUseIds = msg.content
+      .filter((b) => b && b.type === 'tool_use' && b.id)
+      .map((b) => b.id);
+    if (!toolUseIds.length) {
+      out.push(msg);
+      continue;
+    }
+    out.push(msg);
+
+    const next = messages[i + 1];
+    const nextResults =
+      next?.role === 'user' && Array.isArray(next.content)
+        ? next.content.filter((b) => b && b.type === 'tool_result' && b.tool_use_id)
+        : [];
+    const haveIds = new Set(nextResults.map((b) => b.tool_use_id));
+    const missing = toolUseIds.filter((id) => !haveIds.has(id));
+    if (!missing.length) continue;
+
+    const synthetic = missing.map((id) => ({
+      type: 'tool_result',
+      tool_use_id: id,
+      content: 'Tool result missing (interrupted run).',
+      is_error: true,
+    }));
+
+    if (nextResults.length) {
+      // Next message is already the tool_result message — augment it and skip
+      // the original (otherwise we'd push it twice).
+      out.push({ role: 'user', content: [...next.content, ...synthetic] });
+      i++;
+    } else {
+      // Either no next message, or the next message is unrelated — inject a
+      // standalone synthetic tool_result message right after the assistant.
+      out.push({ role: 'user', content: synthetic });
+    }
+  }
+  return out;
 }
 
 function blockText(block) {
@@ -211,5 +271,5 @@ export async function loadHistoryForLlm(channelId) {
   while (docs.length && isOrphanToolResultDoc(docs[0])) {
     docs.shift();
   }
-  return docs.map(docToLlmMessage);
+  return balanceToolUses(docs.map(docToLlmMessage));
 }

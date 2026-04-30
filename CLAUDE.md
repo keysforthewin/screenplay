@@ -44,9 +44,7 @@ Some tool handlers can't return their payload as JSON — they need to upload a 
 - `plots` — singleton `{ _id: 'main' }` with an **embedded `beats` array** (no separate beats collection). Each beat has its own ObjectId, an `images[]` of metadata, and a `main_image_id`. `getPlot` lazily backfills `_id`, `images`, `main_image_id`, `current_beat_id` on legacy docs (see `ensureBeatIds`) — keep that path working when changing the schema.
 - `messages` — rolling Discord transcript. Indexed on `(channel_id, created_at)`. The `recordAgentTurns` writer assigns `created_at = Date.now() + i` to preserve intra-turn ordering. (Note: the README mentions a `conversations` collection — that's stale, the code uses `messages`.)
 - `prompts` — singleton docs `_id: 'character_template'` and `_id: 'plot_template'`, seeded by `src/seed/defaults.js` on startup. Removing fields marked `core: true` is rejected.
-- **Two GridFS buckets**, easy to confuse:
-  - `images` (`src/mongo/images.js`) — for beat images **and** generated/library images. Filtered by `metadata.owner_type` (`'beat'` or `null` for library) and `metadata.owner_id`. Indexed on `(metadata.owner_type, metadata.owner_id)`. New image work should use this bucket.
-  - `character_images` (`src/mongo/files.js`) — older bucket used only for character portrait images. `metadata.character_id` only. Don't merge these without a migration.
+- **GridFS bucket** `images` (`src/mongo/images.js`) — single bucket for beat images, character portraits, and generated/library images. Filtered by `metadata.owner_type` (`'beat'`, `'character'`, or `null` for library) and `metadata.owner_id`. Indexed on `(metadata.owner_type, metadata.owner_id)`. `src/mongo/files.js` exposes character-image helpers (`attachImageToCharacter`, `readCharacterImageBuffer`, etc.) that delegate to this bucket — they exist to keep the embedded `characters.images[]` array and `main_image_id` in sync. The legacy `character_images` bucket was retired in `scripts/migrate-character-images.js`; if you ever see it in an old dump, run that migration.
 
 ### Optional integrations
 

@@ -47,6 +47,10 @@ async function ensureBeatIds(plot) {
       next.main_image_id = null;
       changed = true;
     }
+    if (!Array.isArray(next.attachments)) {
+      next.attachments = [];
+      changed = true;
+    }
     if (!Array.isArray(next.characters)) {
       next.characters = [];
       changed = true;
@@ -212,6 +216,7 @@ export async function createBeat({ name, desc = '', body = '', characters = [], 
     characters: dedupeNames(characters),
     images: [],
     main_image_id: null,
+    attachments: [],
     created_at: now,
     updated_at: now,
   };
@@ -340,6 +345,35 @@ export async function pullBeatImage(beatIdentifier, imageId) {
   const newMain = wasMain ? images[0]?._id || null : beat.main_image_id || null;
   const beats = (plot.beats || []).map((b) =>
     b._id && b._id.equals(beat._id) ? { ...b, images, main_image_id: newMain, updated_at: new Date() } : b,
+  );
+  await persistBeats(beats);
+  return { beat: beats.find((b) => b._id && b._id.equals(beat._id)), removed: oid };
+}
+
+export async function pushBeatAttachment(beatIdentifier, attachmentMeta) {
+  const plot = await getPlot();
+  const beat = findBeat(plot, beatIdentifier);
+  if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
+  const beats = (plot.beats || []).map((b) => {
+    if (!b._id || !b._id.equals(beat._id)) return b;
+    const attachments = [...(b.attachments || []), attachmentMeta];
+    return { ...b, attachments, updated_at: new Date() };
+  });
+  await persistBeats(beats);
+  return beats.find((b) => b._id && b._id.equals(beat._id));
+}
+
+export async function pullBeatAttachment(beatIdentifier, attachmentId) {
+  const plot = await getPlot();
+  const beat = findBeat(plot, beatIdentifier);
+  if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
+  const oid = attachmentId instanceof ObjectId ? attachmentId : new ObjectId(String(attachmentId));
+  const attachments = (beat.attachments || []).filter((a) => !a._id.equals(oid));
+  if (attachments.length === (beat.attachments || []).length) {
+    throw new Error(`Attachment ${attachmentId} is not attached to this beat`);
+  }
+  const beats = (plot.beats || []).map((b) =>
+    b._id && b._id.equals(beat._id) ? { ...b, attachments, updated_at: new Date() } : b,
   );
   await persistBeats(beats);
   return { beat: beats.find((b) => b._id && b._id.equals(beat._id)), removed: oid };

@@ -319,7 +319,7 @@ export const TOOLS = [
   },
   {
     name: 'show_image',
-    description: 'Display an existing image (any image_id, whether attached to a beat or in the library) by attaching it to the bot\'s reply in Discord. Use when the user asks to "see" or "show" an image.',
+    description: 'Display an existing image (any image_id — whether attached to a beat, attached to a character as a portrait, or sitting in the library) by attaching it to the bot\'s reply in Discord. Use when the user asks to "see" or "show" an image.',
     input_schema: {
       type: 'object',
       properties: { image_id: { type: 'string' } },
@@ -404,6 +404,85 @@ export const TOOLS = [
         image_id: { type: 'string', description: 'GridFS file _id (24-char hex)' },
       },
       required: ['character', 'image_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'add_beat_attachment',
+    description:
+      'Attach a NON-IMAGE file (audio, video, PDF, text, archive — anything up to 100 MB) to a beat. The file is downloaded from `source_url` and stored in MongoDB GridFS (the `attachments` bucket). Use this for files that arrive in the "Attached files:" prelude (NOT the "Attached images:" prelude — those go through `add_beat_image` instead). `source_url` may be either (a) one of the URLs listed in the "Attached files" prelude when the user uploaded a file via the Discord client, or (b) a public HTTP(S) URL the user pasted into chat. If `beat` is omitted, the current beat is used.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
+        source_url: { type: 'string', description: 'HTTP(S) URL to the file' },
+        filename: { type: 'string', description: 'Optional filename to store. Defaults to the URL basename or `attachment.<ext>`.' },
+        caption: { type: 'string', description: 'Optional short note about why this file is attached (e.g., "use for the PAULY IS FULL DEEP line").' },
+      },
+      required: ['source_url'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'list_beat_attachments',
+    description: 'List the non-image files attached to a beat (filenames, sizes, content types, captions). Image attachments are listed separately by `list_beat_images`.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'remove_beat_attachment',
+    description: 'Delete a non-image attachment from a beat. Removes both the GridFS file and the entry on the beat.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
+        attachment_id: { type: 'string', description: 'GridFS file _id (24-char hex)' },
+      },
+      required: ['attachment_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'add_character_attachment',
+    description:
+      'Attach a NON-IMAGE file (audio, video, PDF, text, archive — anything up to 100 MB) to a character. The file is downloaded from `source_url` and stored in MongoDB GridFS. Use this for files that arrive in the "Attached files:" prelude (NOT the "Attached images:" prelude — those go through `add_character_image` instead).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        character: { type: 'string', description: "Character's name or _id" },
+        source_url: { type: 'string', description: 'HTTP(S) URL to the file' },
+        filename: { type: 'string', description: 'Optional filename to store.' },
+        caption: { type: 'string', description: 'Optional short note about why this file is attached.' },
+      },
+      required: ['character', 'source_url'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'list_character_attachments',
+    description: 'List the non-image files attached to a character (filenames, sizes, content types, captions). Image attachments are listed separately by `list_character_images`.',
+    input_schema: {
+      type: 'object',
+      properties: { character: { type: 'string', description: "Character's name or _id" } },
+      required: ['character'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'remove_character_attachment',
+    description: 'Delete a non-image attachment from a character. Removes the GridFS file and the entry from the character.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        character: { type: 'string', description: "Character's name or _id" },
+        attachment_id: { type: 'string', description: 'GridFS file _id (24-char hex)' },
+      },
+      required: ['character', 'attachment_id'],
       additionalProperties: false,
     },
   },

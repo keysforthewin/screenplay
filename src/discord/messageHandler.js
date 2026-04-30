@@ -17,22 +17,21 @@ const mutex = keyedMutex();
 
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
-function extractImageAttachments(msg) {
-  return [...msg.attachments.values()]
-    .filter((a) => ALLOWED_IMAGE_TYPES.has(a.contentType))
-    .map((a) => ({
-      url: a.url,
-      filename: a.name,
-      contentType: a.contentType,
-      size: a.size,
-    }));
+function extractAttachments(msg) {
+  return [...msg.attachments.values()].map((a) => ({
+    url: a.url,
+    filename: a.name,
+    contentType: a.contentType || 'application/octet-stream',
+    size: a.size,
+    kind: ALLOWED_IMAGE_TYPES.has(a.contentType) ? 'image' : 'file',
+  }));
 }
 
 export async function handleMessage(msg) {
   if (msg.author.bot) return;
   if (msg.channelId !== config.discord.movieChannelId) return;
   const text = msg.content?.trim() || '';
-  const attachments = extractImageAttachments(msg);
+  const attachments = extractAttachments(msg);
   if (!text && !attachments.length) return;
 
   await mutex.run(msg.channelId, async () => {
