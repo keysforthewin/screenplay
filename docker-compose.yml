@@ -19,10 +19,12 @@ services:
     env_file: .env
     environment:
       MONGO_URI: mongodb://mongo:27017
+      BACKUP_DIR: /data/backups
     ports:
       - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
     volumes:
       - exports:/data/exports
+      - ./backups:/data/backups
       - /home/mulligan/alexa2.json:/secrets/alexa2.json:ro
 
 volumes:

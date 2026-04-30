@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import { logger } from './log.js';
 import { closeMongo } from './mongo/client.js';
+import { stopBackupScheduler } from './backup/scheduler.js';
 
 const ANNOUNCE_TIMEOUT_MS = 3000;
 
@@ -43,6 +44,12 @@ export function installLifecycleHandlers(client) {
       await announceWithTimeout(client, body);
     } catch (e) {
       logger.warn(`lifecycle announce failed: ${e.message}`);
+    }
+
+    try {
+      await stopBackupScheduler();
+    } catch (e) {
+      logger.warn(`backup scheduler stop failed during shutdown: ${e.message}`);
     }
 
     try {

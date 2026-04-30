@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import path from 'node:path';
 
 function required(name) {
   const v = process.env[name];
@@ -30,6 +31,12 @@ export const config = {
   },
   pdf: {
     exportDir: process.env.PDF_EXPORT_DIR || '/data/exports',
+  },
+  backup: {
+    dir: process.env.BACKUP_DIR || path.join(process.cwd(), 'backups'),
+    intervalMs: Number(process.env.BACKUP_INTERVAL_MS) || 30 * 60 * 1000,
+    retentionMs: Number(process.env.BACKUP_RETENTION_MS) || 48 * 60 * 60 * 1000,
+    startupDelayMs: Number(process.env.BACKUP_STARTUP_DELAY_MS) || 60 * 1000,
   },
   web: {
     port: Number(process.env.WEB_PORT) || 3000,
