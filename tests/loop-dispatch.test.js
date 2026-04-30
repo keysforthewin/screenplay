@@ -18,7 +18,7 @@ describe('dispatchToolUses error isolation', () => {
       { id: 'use_c', name: 'third_ok', input: {} },
     ];
 
-    const results = await dispatchToolUses(toolUses, [], dispatchFn);
+    const results = await dispatchToolUses(toolUses, [], null, dispatchFn);
 
     expect(results).toHaveLength(3);
     const byId = Object.fromEntries(results.map((r) => [r.tool_use_id, r]));
@@ -43,6 +43,7 @@ describe('dispatchToolUses error isolation', () => {
         { id: 'c', name: 'plain', input: {} },
       ],
       attachmentPaths,
+      null,
       dispatchFn,
     );
 

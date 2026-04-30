@@ -38,11 +38,12 @@ export async function generateImage({ prompt, aspectRatio }) {
     contents: finalPrompt,
   });
   const parts = response?.candidates?.[0]?.content?.parts || [];
+  const usageMetadata = response?.usageMetadata;
   for (const part of parts) {
     if (part.inlineData?.data) {
       const buffer = Buffer.from(part.inlineData.data, 'base64');
       const contentType = part.inlineData.mimeType || 'image/png';
-      return { buffer, contentType };
+      return { buffer, contentType, usageMetadata };
     }
   }
   const textParts = parts
