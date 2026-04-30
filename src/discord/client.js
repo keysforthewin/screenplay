@@ -13,8 +13,14 @@ export function createDiscordClient() {
     partials: [Partials.Channel],
   });
 
-  client.once('ready', () => {
+  client.once('ready', async () => {
     logger.info(`Discord ready as ${client.user.tag}`);
+    try {
+      const channel = await client.channels.fetch(config.discord.movieChannelId);
+      await channel.send(`🎬 Lucas online (${new Date().toISOString()})`);
+    } catch (e) {
+      logger.warn(`startup announce failed: ${e.message}`);
+    }
   });
 
   client.on('messageCreate', async (msg) => {
@@ -26,6 +32,7 @@ export function createDiscordClient() {
   });
 
   return {
+    client,
     start: async () => client.login(config.discord.token),
   };
 }

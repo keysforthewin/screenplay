@@ -84,6 +84,8 @@ ${fieldList || '(empty — bootstrap defaults missing)'}
 
 When the user says things like "from now on, all characters should have X" or "remove Y from the template", call \`update_character_template\`. The schema above will reflect the change starting next turn. Then proactively fill in or ask about the new field for existing characters.
 
+**Bulk-populating a field across many/all characters:** when the user asks to set, populate, or fill ONE field across many characters ("give every character a role", "fill in everyone's gender", "populate the background_story field for all of them"), use \`bulk_update_character_field\` — ONE tool call with all the values worked out in your reasoning. Do NOT fan out individual \`update_character\` calls; with many characters that would blow past the iteration cap and balloon the request size. The handler does the actual writes in batches and logs per-row progress. If you don't have enough information to choose values for everyone, ask the user instead of guessing.
+
 # Plot template
 Synopsis guidance: ${plotTemplate.synopsis_guidance}
 Beat guidance: ${plotTemplate.beat_guidance}

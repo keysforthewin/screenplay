@@ -664,6 +664,77 @@ export const HANDLERS = {
     return touchedText ? appendSimilarityHeadsUp('character', fresh, base) : base;
   },
 
+  async bulk_update_character_field({ field_name, updates, batch_size } = {}) {
+    if (!field_name || typeof field_name !== 'string') {
+      return 'Error: field_name is required.';
+    }
+    if (!Array.isArray(updates) || updates.length === 0) {
+      return 'Error: updates must be a non-empty array of {character, value} pairs.';
+    }
+    const CORE_FIELDS = new Set(['name', 'plays_self', 'hollywood_actor', 'own_voice']);
+    const patchKey = CORE_FIELDS.has(field_name) ? field_name : `fields.${field_name}`;
+    const total = updates.length;
+    const size = Math.min(25, Math.max(1, Number.isFinite(batch_size) ? batch_size : 10));
+
+    logger.info(
+      `[bulk_update_character_field] starting: field=${field_name} count=${total} batch_size=${size}`,
+    );
+
+    const successes = [];
+    const failures = [];
+    let processed = 0;
+
+    for (let start = 0; start < total; start += size) {
+      const batch = updates.slice(start, start + size);
+      const settled = await Promise.allSettled(
+        batch.map(async (row) => {
+          if (!row || typeof row.character !== 'string') {
+            throw new Error('each update needs a character string');
+          }
+          if (row.value === undefined) {
+            throw new Error('value is required');
+          }
+          const updated = await Characters.updateCharacter(row.character, {
+            [patchKey]: row.value,
+          });
+          return { input: row.character, name: updated.name, value: row.value };
+        }),
+      );
+
+      for (let j = 0; j < settled.length; j++) {
+        processed += 1;
+        const row = batch[j];
+        const result = settled[j];
+        if (result.status === 'fulfilled') {
+          successes.push(result.value);
+          logger.info(
+            `[bulk_update_character_field] ${processed}/${total} ok: "${result.value.name}" → ${field_name}=${JSON.stringify(result.value.value)}`,
+          );
+        } else {
+          const label = row?.character ?? '(unknown)';
+          const msg = result.reason?.message || String(result.reason);
+          failures.push({ character: label, error: msg });
+          logger.warn(
+            `[bulk_update_character_field] ${processed}/${total} failed: "${label}": ${msg}`,
+          );
+        }
+      }
+    }
+
+    logger.info(
+      `[bulk_update_character_field] done: ${successes.length} ok, ${failures.length} failed`,
+    );
+
+    const lines = [
+      `Updated field "${field_name}" on ${successes.length}/${total} character(s).`,
+    ];
+    if (failures.length) {
+      lines.push(`Failures (${failures.length}):`);
+      for (const f of failures) lines.push(`- "${f.character}": ${f.error}`);
+    }
+    return lines.join('\n');
+  },
+
   async search_characters({ query }) {
     const results = await Characters.searchCharacters(query);
     return compact(results.map((c) => ({ _id: c._id.toString(), name: c.name })));
