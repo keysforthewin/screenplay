@@ -163,4 +163,117 @@ describe('loadHistoryForLlm', () => {
     const out = await loadHistoryForLlm(channelId);
     expect(out).toEqual([]);
   });
+
+  it('synthesizes tool_result blocks for mid-history orphan tool_use blocks', async () => {
+    const channelId = '777';
+    await fakeDb.collection('messages').insertMany([
+      { channel_id: channelId, role: 'user', content: 'hi', attachments: [],
+        created_at: new Date(1000) },
+      // Assistant called two tools, but the recording was interrupted —
+      // no following tool_result doc exists.
+      { channel_id: channelId, role: 'assistant',
+        content: [
+          { type: 'text', text: 'looking…' },
+          { type: 'tool_use', id: 'toolu_a', name: 'noop', input: {} },
+          { type: 'tool_use', id: 'toolu_b', name: 'noop', input: {} },
+        ],
+        attachments: [], created_at: new Date(2000) },
+      // …followed by a fresh user turn (so the tool_uses are stranded).
+      { channel_id: channelId, role: 'user', content: 'still there?',
+        attachments: [], created_at: new Date(3000) },
+    ]);
+
+    const out = await loadHistoryForLlm(channelId);
+    expect(out).toHaveLength(4);
+    expect(out[0].role).toBe('user');
+    expect(out[1].role).toBe('assistant');
+    expect(out[2]).toEqual({
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'toolu_a',
+          content: 'Tool result missing (interrupted run).', is_error: true },
+        { type: 'tool_result', tool_use_id: 'toolu_b',
+          content: 'Tool result missing (interrupted run).', is_error: true },
+      ],
+    });
+    expect(out[3]).toEqual({
+      role: 'user',
+      content: [{ type: 'text', text: 'still there?' }],
+    });
+  });
+
+  it('augments a partial tool_result message with synthetic blocks for missing ids', async () => {
+    const channelId = '888';
+    await fakeDb.collection('messages').insertMany([
+      { channel_id: channelId, role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'toolu_a', name: 'noop', input: {} },
+          { type: 'tool_use', id: 'toolu_b', name: 'noop', input: {} },
+          { type: 'tool_use', id: 'toolu_c', name: 'noop', input: {} },
+        ],
+        attachments: [], created_at: new Date(1000) },
+      { channel_id: channelId, role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_a', content: 'ok' },
+          // toolu_b and toolu_c results never made it to disk
+        ],
+        attachments: [], created_at: new Date(1001) },
+    ]);
+
+    const out = await loadHistoryForLlm(channelId);
+    expect(out).toHaveLength(2);
+    expect(out[0].role).toBe('assistant');
+    expect(out[1].role).toBe('user');
+    const ids = out[1].content.map((b) => b.tool_use_id);
+    expect(ids).toEqual(['toolu_a', 'toolu_b', 'toolu_c']);
+    expect(out[1].content[0]).toEqual({
+      type: 'tool_result', tool_use_id: 'toolu_a', content: 'ok',
+    });
+    expect(out[1].content[1].is_error).toBe(true);
+    expect(out[1].content[2].is_error).toBe(true);
+  });
+
+  it('synthesizes a trailing tool_result when assistant tool_use is the last doc', async () => {
+    const channelId = '999';
+    await fakeDb.collection('messages').insertMany([
+      { channel_id: channelId, role: 'user', content: 'hi',
+        attachments: [], created_at: new Date(1000) },
+      { channel_id: channelId, role: 'assistant',
+        content: [{ type: 'tool_use', id: 'toolu_q', name: 'noop', input: {} }],
+        attachments: [], created_at: new Date(2000) },
+    ]);
+
+    const out = await loadHistoryForLlm(channelId);
+    expect(out).toHaveLength(3);
+    expect(out[2]).toEqual({
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'toolu_q',
+          content: 'Tool result missing (interrupted run).', is_error: true },
+      ],
+    });
+  });
+
+  it('leaves balanced tool_use/tool_result pairs untouched', async () => {
+    const channelId = 'aaa';
+    await fakeDb.collection('messages').insertMany([
+      { channel_id: channelId, role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'toolu_x', name: 'noop', input: {} },
+          { type: 'tool_use', id: 'toolu_y', name: 'noop', input: {} },
+        ],
+        attachments: [], created_at: new Date(1000) },
+      { channel_id: channelId, role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_x', content: 'a' },
+          { type: 'tool_result', tool_use_id: 'toolu_y', content: 'b' },
+        ],
+        attachments: [], created_at: new Date(1001) },
+    ]);
+
+    const out = await loadHistoryForLlm(channelId);
+    expect(out).toHaveLength(2);
+    expect(out[1].content).toHaveLength(2);
+    expect(out[1].content.every((b) => !b.is_error)).toBe(true);
+  });
 });

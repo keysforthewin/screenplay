@@ -3,6 +3,7 @@ import * as Plots from '../mongo/plots.js';
 import * as Prompts from '../mongo/prompts.js';
 import * as Files from '../mongo/files.js';
 import * as Images from '../mongo/images.js';
+import * as Attachments from '../mongo/attachments.js';
 import * as Tmdb from '../tmdb/client.js';
 import * as Tavily from '../tavily/client.js';
 import { generateImage as generateImageBytes } from '../gemini/client.js';
@@ -685,6 +686,97 @@ export const HANDLERS = {
     return `Removed image ${res.removed.toString()} from ${res.character}. Main image is now ${
       res.main_image_id ? res.main_image_id.toString() : 'none'
     }.`;
+  },
+
+  async add_beat_attachment({ beat, source_url, filename, caption }) {
+    const target = await resolveBeat(beat);
+    const file = await Attachments.uploadAttachmentFromUrl({
+      sourceUrl: source_url,
+      filename,
+      ownerType: 'beat',
+      ownerId: target._id,
+    });
+    const meta = {
+      _id: file._id,
+      filename: file.filename,
+      content_type: file.content_type,
+      size: file.size,
+      caption: caption?.trim() || null,
+      uploaded_at: file.uploaded_at,
+    };
+    await Plots.pushBeatAttachment(target._id.toString(), meta);
+    return `Added attachment to beat "${target.name}".\n${compact({
+      _id: meta._id.toString(),
+      filename: meta.filename,
+      content_type: meta.content_type,
+      size: meta.size,
+      caption: meta.caption,
+    })}`;
+  },
+
+  async list_beat_attachments({ beat } = {}) {
+    const target = await resolveBeat(beat);
+    return compact({
+      beat: { _id: target._id.toString(), name: target.name },
+      attachments: (target.attachments || []).map((a) => ({
+        _id: a._id.toString(),
+        filename: a.filename,
+        content_type: a.content_type,
+        size: a.size,
+        caption: a.caption || null,
+        uploaded_at: a.uploaded_at,
+      })),
+    });
+  },
+
+  async remove_beat_attachment({ beat, attachment_id }) {
+    const target = await resolveBeat(beat);
+    const { removed, beat: updated } = await Plots.pullBeatAttachment(
+      target._id.toString(),
+      attachment_id,
+    );
+    await Attachments.deleteAttachment(removed);
+    return `Removed attachment ${removed.toString()} from beat "${updated.name}".`;
+  },
+
+  async add_character_attachment({ character, source_url, filename, caption }) {
+    const meta = await Attachments.attachToCharacter({
+      character,
+      sourceUrl: source_url,
+      filename,
+      caption,
+    });
+    return `Added attachment to ${meta.character}.\n${compact({
+      _id: meta._id.toString(),
+      filename: meta.filename,
+      content_type: meta.content_type,
+      size: meta.size,
+      caption: meta.caption,
+    })}`;
+  },
+
+  async list_character_attachments({ character }) {
+    const { character: name, _id, attachments } =
+      await Attachments.listCharacterAttachments(character);
+    return compact({
+      character: { _id: _id.toString(), name },
+      attachments: attachments.map((a) => ({
+        _id: a._id.toString(),
+        filename: a.filename,
+        content_type: a.content_type,
+        size: a.size,
+        caption: a.caption || null,
+        uploaded_at: a.uploaded_at,
+      })),
+    });
+  },
+
+  async remove_character_attachment({ character, attachment_id }) {
+    const res = await Attachments.removeCharacterAttachment({
+      character,
+      attachmentId: attachment_id,
+    });
+    return `Removed attachment ${res.removed.toString()} from ${res.character}.`;
   },
 
   async tmdb_search_movie({ query, year }) {

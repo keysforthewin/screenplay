@@ -24,15 +24,27 @@ async function buildSystem() {
 
 function buildUserContent(userText, attachments) {
   const content = [];
-  for (const a of attachments) {
+  const images = attachments.filter((a) => a.kind !== 'file');
+  const files = attachments.filter((a) => a.kind === 'file');
+  for (const a of images) {
     content.push({ type: 'image', source: { type: 'url', url: a.url } });
   }
   let text = userText || '';
-  if (attachments.length) {
-    const lines = attachments.map(
+  const sections = [];
+  if (images.length) {
+    const lines = images.map(
       (a) => `- ${a.filename} (${a.contentType}, ${a.size} bytes) at ${a.url}`,
     );
-    const prelude = `Attached images:\n${lines.join('\n')}`;
+    sections.push(`Attached images:\n${lines.join('\n')}`);
+  }
+  if (files.length) {
+    const lines = files.map(
+      (a) => `- ${a.filename} (${a.contentType || 'unknown'}, ${a.size} bytes) at ${a.url}`,
+    );
+    sections.push(`Attached files:\n${lines.join('\n')}`);
+  }
+  if (sections.length) {
+    const prelude = sections.join('\n\n');
     text = text ? `${prelude}\n\n${text}` : `${prelude}\n\n(no message)`;
   }
   content.push({ type: 'text', text });
@@ -103,7 +115,21 @@ export async function runAgent({ history, userText, attachments = [] }) {
     messages.push({ role: 'assistant', content: resp.content });
 
     if (resp.stop_reason !== 'tool_use') {
-      const text = resp.content
+      // stop_reason can be 'max_tokens' (truncated mid-call) or 'pause_turn'
+      // and still include tool_use blocks in content. We won't dispatch them,
+      // so strip them from the recorded turn — otherwise the next history load
+      // sees an orphan tool_use and Anthropic 400s on the very next request.
+      if (resp.content.some((b) => b.type === 'tool_use')) {
+        const cleaned = resp.content.filter((b) => b.type !== 'tool_use');
+        messages[messages.length - 1] = {
+          role: 'assistant',
+          content: cleaned.length
+            ? cleaned
+            : [{ type: 'text', text: '(response truncated before completion)' }],
+        };
+      }
+      const finalContent = messages[messages.length - 1].content;
+      const text = (Array.isArray(finalContent) ? finalContent : [])
         .filter((b) => b.type === 'text')
         .map((b) => b.text)
         .join('\n')

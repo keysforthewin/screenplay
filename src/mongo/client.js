@@ -29,3 +29,11 @@ export function getDb() {
   if (!db) throw new Error('Mongo not connected');
   return db;
 }
+
+export async function closeMongo() {
+  if (client) {
+    await client.close();
+    client = undefined;
+    db = undefined;
+  }
+}
