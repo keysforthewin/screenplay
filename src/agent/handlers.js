@@ -49,6 +49,27 @@ function preview(text, n = 120) {
   return `${t.slice(0, n - 1)}…`;
 }
 
+const DESCRIBE_IMAGE_BASELINE = [
+  'Analyze this image with maximum physical-appearance detail so any humans or characters depicted could be recreated faithfully in future image generations. For each character, capture every one of:',
+  '- Hair color (specific shade — e.g. "ash blonde", "jet black with copper highlights", not just "dark")',
+  '- Hair length (e.g. "shoulder-length", "cropped close to the scalp", "down to mid-back")',
+  '- Hairstyle (e.g. "loose waves with a center part", "high ponytail with curtain bangs", "tight braids gathered into a low bun")',
+  '- Approximate age, height, and build',
+  '- Skin tone and complexion notes',
+  '- Eye color and eye shape',
+  '- Facial features: jaw shape, nose, lips, eyebrows, freckles / moles / scars / other distinguishing marks',
+  '- Clothing: garments, colors, fabrics, fit, era / style, accessories, footwear',
+  '- Posture, expression, mood',
+  '',
+  'Also describe the setting, lighting, framing, and any objects of narrative interest. Be specific and concrete — vague descriptors like "nice hair" or "cool outfit" defeat the purpose. If a trait is not visible, say so explicitly rather than guessing.',
+].join('\n');
+
+function buildDescribeImageGuidance(prompt) {
+  const trimmed = typeof prompt === 'string' ? prompt.trim() : '';
+  if (!trimmed) return DESCRIBE_IMAGE_BASELINE;
+  return `${DESCRIBE_IMAGE_BASELINE}\n\nOperator prompt: ${trimmed}`;
+}
+
 function serializeBeatSummary(b, currentId) {
   return {
     _id: b._id.toString(),
@@ -1161,6 +1182,33 @@ export const HANDLERS = {
   async show_image({ image_id }) {
     const { path: filepath, file } = await Images.streamImageToTmp(image_id);
     return `__IMAGE_PATH__:${filepath}||${file._id.toString()}`;
+  },
+
+  async describe_image({ image_id, prompt }) {
+    const result = await Images.readImageBuffer(image_id);
+    if (!result) return `Image not found: ${image_id}`;
+    const { buffer, file } = result;
+    const mediaType = file.contentType || file.metadata?.contentType;
+    const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
+    if (!ANTHROPIC_OK.has(mediaType)) {
+      return `Cannot analyze image ${image_id}: unsupported type ${mediaType || 'unknown'}.`;
+    }
+    const MAX_RAW = 4 * 1024 * 1024;
+    if (buffer.length > MAX_RAW) {
+      const mb = (buffer.length / 1024 / 1024).toFixed(1);
+      return `Image too large to analyze (${mb} MB). The vision input cap is ~5 MB raw — resize and re-upload, or describe from prior context.`;
+    }
+    return [
+      { type: 'text', text: buildDescribeImageGuidance(prompt) },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: mediaType,
+          data: buffer.toString('base64'),
+        },
+      },
+    ];
   },
 
   async show_attachment({ attachment_id }) {

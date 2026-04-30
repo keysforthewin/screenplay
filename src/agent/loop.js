@@ -154,6 +154,22 @@ function buildUserContent(userText, attachments) {
   return content;
 }
 
+// JSON.stringify on a tool_result content array would dump the entire base64
+// image payload (multi-MB) into logs. Render image blocks as a stub instead.
+function summarizeToolResultForLog(result) {
+  if (typeof result === 'string') return result;
+  if (Array.isArray(result)) {
+    const parts = result.map((b) => {
+      if (!b || typeof b !== 'object') return String(b ?? '');
+      if (b.type === 'text') return String(b.text ?? '');
+      if (b.type === 'image') return '[image bytes elided from log]';
+      return JSON.stringify(b);
+    });
+    return parts.join('\n');
+  }
+  return JSON.stringify(result ?? '');
+}
+
 export async function dispatchToolUses(
   toolUses,
   attachmentPaths,
@@ -170,8 +186,7 @@ export async function dispatchToolUses(
     try {
       const raw = await dispatchFn(tu.name, tu.input, context);
       const result = interceptAttachment(raw, attachmentPaths, attachmentLinks);
-      resultText =
-        typeof result === 'string' ? result : JSON.stringify(result ?? '');
+      resultText = summarizeToolResultForLog(result);
       results.push({ type: 'tool_result', tool_use_id: tu.id, content: result });
     } catch (e) {
       // Defense in depth: dispatchTool already catches handler errors, but if anything
