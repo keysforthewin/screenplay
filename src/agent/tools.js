@@ -95,6 +95,19 @@ export const TOOLS = [
     },
   },
   {
+    name: 'delete_character',
+    description:
+      'Permanently delete a character. Cascades: removes the character from every beat\'s character list, deletes all of their portrait images (GridFS), and deletes all of their non-image attachments (GridFS). Use when the user says "delete", "remove", or "drop" a character. The deletion cannot be undone — confirm with the user first if there is any ambiguity about which character they mean.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        identifier: { type: 'string', description: "Character's name (case-insensitive) or 24-char hex _id." },
+      },
+      required: ['identifier'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'search_characters',
     description: 'Find characters whose fields contain a substring (case-insensitive).',
     input_schema: {

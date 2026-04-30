@@ -5,58 +5,23 @@ function summarizeBeat(b) {
   return `- ${b.order}. ${b.name}${preview ? ` — ${preview}` : ''}${bodyMark}`;
 }
 
-export function buildSystemPrompt({
-  characters,
-  characterTemplate,
-  plotTemplate,
-  plot,
-  directorNotes,
-}) {
-  const charList = characters.length ? characters.map((c) => `- ${c.name}`).join('\n') : '(none yet)';
+let stableTextCache = { key: null, text: null };
+
+function buildStableText({ characterTemplate, plotTemplate }) {
   const fieldList = (characterTemplate.fields || [])
     .map((f) => `- ${f.name}${f.required ? ' [REQUIRED]' : ''}: ${f.description}`)
     .join('\n');
 
-  const directorNotesBlock =
-    directorNotes === null
-      ? ''
-      : (() => {
-          const list = Array.isArray(directorNotes?.notes) ? directorNotes.notes : [];
-          const body = list.length
-            ? list.map((n) => `- ${n.text}`).join('\n')
-            : '(none yet — when the user gives a directive that doesn\'t fit a specific character or beat, call `add_director_note` to capture it here.)';
-          return `\n# Director's Notes\nThe director's standing rules for this screenplay. Apply them when creating characters, beats, or content; the user can override any rule for a specific case but assume them by default.\n${body}\n`;
-        })();
-
-  const beats = [...(plot?.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
-  const beatCount = beats.length;
-  const currentBeat = plot?.current_beat_id
-    ? beats.find((b) => b._id && plot.current_beat_id.equals(b._id)) || null
-    : null;
-  const beatStatusLine = plot?.synopsis
-    ? `Synopsis on file. ${beatCount} beat(s) outlined.`
-    : `No synopsis yet (${beatCount} beat(s)).`;
-  const currentBeatLine = currentBeat
-    ? `Current beat: "${currentBeat.name}" (order ${currentBeat.order}).`
-    : 'Current beat: (none set).';
-  const beatList = beatCount ? beats.map(summarizeBeat).join('\n') : '(no beats yet)';
-
-  // Recently touched: helps the model resolve ambiguous references
-  // ("he", "that one") to recently-discussed beats during brainstorms.
-  // Skip when there's no useful signal (too few beats, or all timestamps equal).
-  let recentBeatsBlock = '';
-  if (beatCount >= 3) {
-    const stamped = beats.filter((b) => b.updated_at instanceof Date);
-    const distinct = new Set(stamped.map((b) => b.updated_at.getTime())).size;
-    if (stamped.length >= 3 && distinct >= 2) {
-      const recent = [...stamped]
-        .sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime())
-        .slice(0, 5);
-      recentBeatsBlock = `\nRecently touched (last ${recent.length}):\n${recent.map(summarizeBeat).join('\n')}\n`;
-    }
+  const key = JSON.stringify({
+    fields: characterTemplate.fields || [],
+    synopsis_guidance: plotTemplate.synopsis_guidance,
+    beat_guidance: plotTemplate.beat_guidance,
+  });
+  if (stableTextCache.key === key && stableTextCache.text !== null) {
+    return stableTextCache.text;
   }
 
-  return `You are the Screenplay Bot, an agentic assistant helping a user develop a movie screenplay through a single Discord channel.
+  const text = `You are the Screenplay Bot, an agentic assistant helping a user develop a movie screenplay through a single Discord channel.
 
 # Your job
 The user sends freeform messages. Interpret intent and either:
@@ -67,17 +32,7 @@ You are a collaborator, not a transcriber. **Create eagerly.** When the user nam
 
 When the user requests something the template doesn't cover (e.g., "add favorite color to all characters"), update the template via the appropriate tool.
 
-The Characters/Beats summary in this prompt is for situational awareness only. When the user asks a specific question ("who do we have?", "which scene had the fence?", "is anyone a dog?", "what's the current beat?"), call the appropriate tool (\`list_characters\`, \`get_character\`, \`search_characters\`, \`list_beats\`, \`search_beats\`, \`get_current_beat\`, \`get_overview\`) — don't answer from this header alone.
-
-# Current state
-Characters on file:
-${charList}
-
-Plot status: ${beatStatusLine}
-${currentBeatLine}
-${recentBeatsBlock}
-Beats:
-${beatList}
+The Characters/Beats summary in the "# Current state" section is for situational awareness only. When the user asks a specific question ("who do we have?", "which scene had the fence?", "is anyone a dog?", "what's the current beat?"), call the appropriate tool (\`list_characters\`, \`get_character\`, \`search_characters\`, \`list_beats\`, \`search_beats\`, \`get_current_beat\`, \`get_overview\`) — don't answer from the state header alone.
 
 # Character template (the schema every character should satisfy)
 ${fieldList || '(empty — bootstrap defaults missing)'}
@@ -89,7 +44,7 @@ When the user says things like "from now on, all characters should have X" or "r
 # Plot template
 Synopsis guidance: ${plotTemplate.synopsis_guidance}
 Beat guidance: ${plotTemplate.beat_guidance}
-${directorNotesBlock}
+
 # Tools
 You have CRUD tools for characters, plot, and beats, plus tools to update the character template. Always call \`get_character\` or \`get_beat\` before answering questions about a specific entity — don't make things up.
 
@@ -159,7 +114,7 @@ Then one text reply summarizing what was created and asking the kid's real name.
 # Reference resolution & focus
 During brainstorming the conversation jumps between beats. To keep edits landing on the right one:
 
-1. **Resolving "he/she/it/that one":** check, in order, (a) the "Recently touched" list in this prompt header; (b) recent assistant \`tool_use\` blocks in your chat history (you can see what you just created and what \`_id\` came back); (c) \`search_beats\` with a keyword from the user's reference.
+1. **Resolving "he/she/it/that one":** check, in order, (a) the "Recently touched" list in the state header; (b) recent assistant \`tool_use\` blocks in your chat history (you can see what you just created and what \`_id\` came back); (c) \`search_beats\` with a keyword from the user's reference.
 
 2. **Pass explicit \`beat\` arguments during brainstorming.** When 2+ beats could plausibly receive the new content, do NOT rely on the \`current_beat_id\` default — pass an explicit \`beat\` arg to \`append_to_beat_body\` / \`link_character_to_beat\`. Default to current only when there's exactly one obvious referent.
 
@@ -209,4 +164,88 @@ Be concise. Discord supports markdown — use **bold** sparingly. Don't dump hug
 # Out of scope (for now)
 You are not yet writing the screenplay prose. The current phase is character + beat development. The user will trigger PDF export when they want a snapshot.
 `;
+
+  stableTextCache = { key, text };
+  return text;
+}
+
+function buildVolatileText({ characters, plot, directorNotes }) {
+  const charList = characters.length ? characters.map((c) => `- ${c.name}`).join('\n') : '(none yet)';
+
+  const beats = [...(plot?.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+  const beatCount = beats.length;
+  const currentBeat = plot?.current_beat_id
+    ? beats.find((b) => b._id && plot.current_beat_id.equals(b._id)) || null
+    : null;
+  const beatStatusLine = plot?.synopsis
+    ? `Synopsis on file. ${beatCount} beat(s) outlined.`
+    : `No synopsis yet (${beatCount} beat(s)).`;
+  const currentBeatLine = currentBeat
+    ? `Current beat: "${currentBeat.name}" (order ${currentBeat.order}).`
+    : 'Current beat: (none set).';
+  const beatList = beatCount ? beats.map(summarizeBeat).join('\n') : '(no beats yet)';
+
+  let recentBeatsBlock = '';
+  if (beatCount >= 3) {
+    const stamped = beats.filter((b) => b.updated_at instanceof Date);
+    const distinct = new Set(stamped.map((b) => b.updated_at.getTime())).size;
+    if (stamped.length >= 3 && distinct >= 2) {
+      const recent = [...stamped]
+        .sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime())
+        .slice(0, 5);
+      recentBeatsBlock = `\nRecently touched (last ${recent.length}):\n${recent.map(summarizeBeat).join('\n')}\n`;
+    }
+  }
+
+  const directorNotesBlock =
+    directorNotes === null
+      ? ''
+      : (() => {
+          const list = Array.isArray(directorNotes?.notes) ? directorNotes.notes : [];
+          const body = list.length
+            ? list.map((n) => `- ${n.text}`).join('\n')
+            : '(none yet — when the user gives a directive that doesn\'t fit a specific character or beat, call `add_director_note` to capture it here.)';
+          return `\n# Director's Notes\nThe director's standing rules for this screenplay. Apply them when creating characters, beats, or content; the user can override any rule for a specific case but assume them by default.\n${body}\n`;
+        })();
+
+  return `# Current state
+Characters on file:
+${charList}
+
+Plot status: ${beatStatusLine}
+${currentBeatLine}
+${recentBeatsBlock}
+Beats:
+${beatList}
+${directorNotesBlock}`;
+}
+
+export function buildSystemPrompt({
+  characters,
+  characterTemplate,
+  plotTemplate,
+  plot,
+  directorNotes,
+  cache = true,
+}) {
+  const stable = buildStableText({ characterTemplate, plotTemplate });
+  const volatile = buildVolatileText({ characters, plot, directorNotes });
+
+  const stableBlock = { type: 'text', text: stable };
+  const volatileBlock = { type: 'text', text: volatile };
+  if (cache) {
+    stableBlock.cache_control = { type: 'ephemeral' };
+    volatileBlock.cache_control = { type: 'ephemeral' };
+  }
+  return [stableBlock, volatileBlock];
+}
+
+export function joinSystemBlocks(blocks) {
+  if (typeof blocks === 'string') return blocks;
+  if (!Array.isArray(blocks)) return '';
+  return blocks.map((b) => (b && typeof b.text === 'string' ? b.text : '')).join('\n');
+}
+
+export function _resetStableTextCacheForTests() {
+  stableTextCache = { key: null, text: null };
 }

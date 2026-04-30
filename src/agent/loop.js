@@ -4,6 +4,7 @@ import { logger } from '../log.js';
 import { TOOLS } from './tools.js';
 import { dispatchTool } from './handlers.js';
 import { buildSystemPrompt } from './systemPrompt.js';
+import { withMessageCacheBreakpoint } from './historyCache.js';
 import { listCharacters } from '../mongo/characters.js';
 import { getCharacterTemplate, getPlotTemplate } from '../mongo/prompts.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
@@ -18,6 +19,43 @@ import {
 const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
 const MAX_TOOL_ITERATIONS = 12;
+
+// Tool-name prefixes (or whole names) that mutate state visible in the volatile
+// system block (characters list, beats list, current beat, director notes).
+// When any tool with one of these prefixes runs in an iteration, the cached
+// system prompt is invalidated so the next iteration rebuilds it from Mongo.
+const MUTATING_PREFIXES = [
+  'create_',
+  'update_',
+  'delete_',
+  'add_',
+  'remove_',
+  'edit_',
+  'set_',
+  'clear_',
+  'link_',
+  'unlink_',
+  'attach_',
+  'append_',
+  'reorder_',
+  'bulk_',
+  'generate_image',
+];
+
+function isMutatingTool(name) {
+  if (!name) return false;
+  return MUTATING_PREFIXES.some((p) => name === p || name.startsWith(p));
+}
+
+// Module-level: clone TOOLS once with cache_control on the last tool. Do NOT
+// mutate the original TOOLS array — tests/tools-schema.test.js inspects it.
+const TOOLS_CACHED = (() => {
+  if (!config.cache.enabled || !TOOLS.length) return TOOLS;
+  const last = TOOLS[TOOLS.length - 1];
+  const ttl = config.cache.toolsTtl;
+  const cache_control = ttl ? { type: 'ephemeral', ttl } : { type: 'ephemeral' };
+  return [...TOOLS.slice(0, -1), { ...last, cache_control }];
+})();
 
 const SECTION_PAD_MESSAGES = [{ role: 'user', content: 'x' }];
 
@@ -67,7 +105,7 @@ export async function measureSectionTokens({
   };
 }
 
-async function buildSystem({ omitDirectorNotes = false } = {}) {
+async function buildSystem({ omitDirectorNotes = false, cache = config.cache.enabled } = {}) {
   const [characters, characterTemplate, plotTemplate, plot, directorNotes] =
     await Promise.all([
       listCharacters(),
@@ -82,6 +120,7 @@ async function buildSystem({ omitDirectorNotes = false } = {}) {
     plotTemplate,
     plot,
     directorNotes: omitDirectorNotes ? null : directorNotes,
+    cache,
   });
 }
 
@@ -275,8 +314,15 @@ export async function runAgent({
   };
 
   try {
+    let cachedSystem = await buildSystem();
+    let systemDirty = false;
+
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-      const system = await buildSystem();
+      if (systemDirty) {
+        cachedSystem = await buildSystem();
+        systemDirty = false;
+      }
+      const system = cachedSystem;
       logger.debug(`agent iteration ${i}, ${messages.length} messages`);
 
       if (i === 0) {
@@ -293,6 +339,10 @@ export async function runAgent({
         });
       }
 
+      const requestMessages = config.cache.enabled
+        ? withMessageCacheBreakpoint(messages)
+        : messages;
+
       logger.info(
         `anthropic → iter ${i + 1}/${MAX_TOOL_ITERATIONS} model=${model} msgs=${messages.length}`,
       );
@@ -301,8 +351,8 @@ export async function runAgent({
         model,
         max_tokens: 4096,
         system,
-        tools: TOOLS,
-        messages,
+        tools: TOOLS_CACHED,
+        messages: requestMessages,
       });
       const anthropicMs = Date.now() - anthropicT0;
       const u = resp.usage || {};
@@ -345,6 +395,10 @@ export async function runAgent({
         toolStats,
       );
       messages.push({ role: 'user', content: results });
+
+      if (toolUses.some((tu) => isMutatingTool(tu.name))) {
+        systemDirty = true;
+      }
     }
 
     logger.warn(`max iterations hit (${MAX_TOOL_ITERATIONS}) — returning fallback`);

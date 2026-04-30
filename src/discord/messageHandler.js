@@ -5,6 +5,7 @@ import { config } from '../config.js';
 import { logger } from '../log.js';
 import { keyedMutex } from '../util/mutex.js';
 import { runAgent } from '../agent/loop.js';
+import { trimHistoryForLlm } from '../agent/historyTrim.js';
 import {
   loadHistoryForLlm,
   recordUserMessage,
@@ -48,8 +49,21 @@ export async function handleMessage(msg) {
       logger.debug('typing started');
       typingTimer = setInterval(() => msg.channel.sendTyping().catch(() => {}), 8000);
 
-      const history = await loadHistoryForLlm(msg.channelId);
-      logger.info(`history loaded ${history.length} msgs`);
+      const rawHistory = await loadHistoryForLlm(msg.channelId);
+      logger.info(`history loaded ${rawHistory.length} msgs`);
+      const { messages: history, stats: trimStats } = config.trim.enabled
+        ? trimHistoryForLlm(rawHistory, {
+            tokenBudget: config.trim.tokenBudget,
+            summarizeStale: config.trim.summarizeStale,
+          })
+        : { messages: rawHistory, stats: { tokensBefore: 0, tokensAfter: 0, summarized: 0, budgetCut: 0 } };
+      if (config.trim.enabled) {
+        logger.info(
+          `history trimmed: in=${rawHistory.length} out=${history.length} ` +
+            `summarized=${trimStats.summarized} budget_cut=${trimStats.budgetCut} ` +
+            `tokens_before≈${trimStats.tokensBefore} after≈${trimStats.tokensAfter}`,
+        );
+      }
       await recordUserMessage({ msg, text, attachments });
 
       const displayName =
