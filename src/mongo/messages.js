@@ -49,6 +49,31 @@ export async function recordAssistantMessage({ channelId, guildId = null, thread
   logger.info('mongo: msg recorded role=assistant');
 }
 
+// describe_image tool returns a content array containing a base64 image block.
+// That image is needed in the live request so the model can see it, but
+// persisting it into the rolling message history would bloat Mongo by megabytes
+// per call. Replace any image block with a stub text block before insert; the
+// agent can re-invoke describe_image if it needs to look again.
+function stripBase64ImagesForPersist(content) {
+  if (!Array.isArray(content)) return content;
+  return content.map((block) => {
+    if (!block || typeof block !== 'object') return block;
+    if (block.type === 'tool_result' && Array.isArray(block.content)) {
+      const inner = block.content.map((b) => {
+        if (b && b.type === 'image') {
+          return {
+            type: 'text',
+            text: '[image bytes elided from history — call describe_image again to re-view]',
+          };
+        }
+        return b;
+      });
+      return { ...block, content: inner };
+    }
+    return block;
+  });
+}
+
 export async function recordAgentTurns({ channelId, guildId = null, threadId = null, turns }) {
   if (!turns || !turns.length) return;
   const now = Date.now();
@@ -59,7 +84,7 @@ export async function recordAgentTurns({ channelId, guildId = null, threadId = n
     discord_message_id: null,
     role,
     author: null,
-    content,
+    content: stripBase64ImagesForPersist(content),
     attachments: [],
     created_at: new Date(now + i),
     recorded_at: new Date(),

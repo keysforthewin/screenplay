@@ -555,6 +555,27 @@ export const TOOLS = [
     },
   },
   {
+    name: 'describe_image',
+    description:
+      "Load a stored image into your own vision context so you can actually look at the pixels and describe what is depicted. Use this whenever you (or the user) need a fresh, detailed description of an image — especially to extract character physical traits (hair color, hair length, hairstyle, build, eye color, clothing, etc.) so the character can be regenerated faithfully later. Unlike show_image (which only ships the file to Discord), this tool returns the image bytes to you so you can see them. Pass an optional `prompt` to focus the analysis on a specific question; the baseline character-appearance analysis still runs.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        image_id: {
+          type: 'string',
+          description: '24-hex GridFS file id of the image to analyze.',
+        },
+        prompt: {
+          type: 'string',
+          description:
+            "Optional focused question or instruction (e.g. 'compare hair color to the previous portrait'). Combined with the baseline character-appearance prompt — does not replace it.",
+        },
+      },
+      required: ['image_id'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'show_attachment',
     description: "Re-deliver a stored non-image attachment (any attachment_id from a beat, character, or director's note) by uploading it to the Discord reply. Use when the user asks to retrieve a file they previously attached (\"send me back that recording\", \"give me the PDF I attached to that beat\"). For images, use show_image instead.",
     input_schema: {

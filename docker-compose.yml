@@ -25,7 +25,7 @@ services:
     volumes:
       - exports:/data/exports
       - ./backups:/data/backups
-      - /home/mulligan/alexa2.json:/secrets/alexa2.json:ro
+      - ${GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH:-/dev/null}:/secrets/alexa2.json:ro
 
 volumes:
   mongo-data:
