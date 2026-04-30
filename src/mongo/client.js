@@ -17,6 +17,8 @@ export async function connectMongo() {
   await db
     .collection('images.files')
     .createIndex({ 'metadata.owner_type': 1, 'metadata.owner_id': 1 });
+  await db.collection('token_usage').createIndex({ discord_user_id: 1, created_at: -1 });
+  await db.collection('token_usage').createIndex({ created_at: -1 });
 
   process.on('SIGINT', async () => {
     if (client) await client.close();

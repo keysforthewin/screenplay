@@ -44,7 +44,17 @@ export async function handleMessage(msg) {
       const history = await loadHistoryForLlm(msg.channelId);
       await recordUserMessage({ msg, text, attachments });
 
-      const result = await runAgent({ history, userText: text, attachments });
+      const displayName =
+        msg.member?.displayName ?? msg.author.globalName ?? msg.author.username;
+      const discordUser = { id: msg.author.id, displayName };
+
+      const result = await runAgent({
+        history,
+        userText: text,
+        attachments,
+        discordUser,
+        channelId: msg.channelId,
+      });
       attachmentPaths = result.attachmentPaths;
       const replyText = result.text || '(no reply)';
 

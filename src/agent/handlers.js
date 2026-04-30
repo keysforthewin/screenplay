@@ -6,7 +6,7 @@ import * as Images from '../mongo/images.js';
 import * as Attachments from '../mongo/attachments.js';
 import * as Tmdb from '../tmdb/client.js';
 import * as Tavily from '../tavily/client.js';
-import { generateImage as generateImageBytes } from '../gemini/client.js';
+import { generateImage as generateImageBytes, NANO_BANANA_MODEL } from '../gemini/client.js';
 import { buildImagePrompt } from '../gemini/promptBuilder.js';
 import * as Messages from '../mongo/messages.js';
 import { config } from '../config.js';
@@ -19,6 +19,11 @@ import { detectClimax } from '../analysis/sentiment.js';
 import { analyzeText } from '../llm/analyze.js';
 import { create, all } from 'mathjs';
 import { runJsInVm } from './codeRunner.js';
+import {
+  recordGeminiImageUsage,
+  aggregateUsage,
+} from '../mongo/tokenUsage.js';
+import { renderTokenUsageChart } from '../charts/tokenUsageChart.js';
 
 const mj = create(all, { number: 'BigNumber', precision: 64 });
 
@@ -562,15 +567,18 @@ export const HANDLERS = {
     return `__IMAGE_PATH__:${filepath}`;
   },
 
-  async generate_image({
-    prompt,
-    include_beat,
-    beat,
-    include_recent_chat,
-    aspect_ratio,
-    attach_to_current_beat,
-    set_as_main,
-  }) {
+  async generate_image(
+    {
+      prompt,
+      include_beat,
+      beat,
+      include_recent_chat,
+      aspect_ratio,
+      attach_to_current_beat,
+      set_as_main,
+    },
+    context = null,
+  ) {
     if (!config.gemini.apiKey && !config.gemini.vertex.project) {
       return 'Error: Gemini is not configured. Set GEMINI_VERTEX_PROJECT (+ GOOGLE_APPLICATION_CREDENTIALS) for Vertex AI, or GEMINI_API_KEY for the Developer API.';
     }
@@ -599,10 +607,23 @@ export const HANDLERS = {
       recentMessages,
     });
 
-    const { buffer, contentType } = await generateImageBytes({
+    const { buffer, contentType, usageMetadata } = await generateImageBytes({
       prompt: finalPrompt,
       aspectRatio: aspect_ratio,
     });
+
+    if (usageMetadata) {
+      try {
+        await recordGeminiImageUsage({
+          discordUser: context?.discordUser || null,
+          channelId: context?.channelId || null,
+          model: NANO_BANANA_MODEL,
+          usageMetadata,
+        });
+      } catch (e) {
+        logger.warn(`gemini token usage persist failed: ${e.message}`);
+      }
+    }
 
     const current = beatDoc || (await Plots.getCurrentBeat());
     const shouldAttach =
@@ -1303,13 +1324,71 @@ export const HANDLERS = {
     const result = runJsInVm(code, { timeoutMs: timeout_ms });
     return compact(result);
   },
+
+  async token_usage_report({ window, user } = {}) {
+    const w = String(window || '').toLowerCase();
+    if (!['day', 'week', 'month', 'total'].includes(w)) {
+      return "Error: window must be one of 'day', 'week', 'month', 'total'.";
+    }
+    const now = Date.now();
+    const sinceFor = {
+      day: new Date(now - 24 * 60 * 60 * 1000),
+      week: new Date(now - 7 * 24 * 60 * 60 * 1000),
+      month: new Date(now - 30 * 24 * 60 * 60 * 1000),
+      total: null,
+    };
+    const since = sinceFor[w];
+
+    const userQuery = typeof user === 'string' && user.trim() ? user.trim() : null;
+    const rows = await aggregateUsage({ since, userQuery });
+
+    if (!rows.length) {
+      if (userQuery) {
+        return `No token usage recorded for '${userQuery}' in this window.`;
+      }
+      return `No token usage recorded in the ${w} window.`;
+    }
+
+    const fmt = (n) => Number(n || 0).toLocaleString('en-US');
+    const lines = [];
+    lines.push(`**Token usage — ${w}** (${userQuery ? `filter: ${userQuery}` : 'all users'})`);
+    lines.push('');
+    if (userQuery && rows.length === 1) {
+      const r = rows[0];
+      lines.push(`| User | Anthropic text | Anthropic image | Gemini image | Total |`);
+      lines.push(`|---|---:|---:|---:|---:|`);
+      lines.push(
+        `| ${r.discord_user_display_name} | ${fmt(r.anthropic_text)} | ` +
+          `${fmt(r.anthropic_image_input)} | ${fmt(r.gemini_image)} | ${fmt(r.total)} |`,
+      );
+    } else {
+      lines.push(`| Rank | User | Anthropic text | Anthropic image | Gemini image | Total |`);
+      lines.push(`|---:|---|---:|---:|---:|---:|`);
+      rows.forEach((r, i) => {
+        lines.push(
+          `| ${i + 1} | ${r.discord_user_display_name} | ${fmt(r.anthropic_text)} | ` +
+            `${fmt(r.anthropic_image_input)} | ${fmt(r.gemini_image)} | ${fmt(r.total)} |`,
+        );
+      });
+    }
+    const textTable = lines.join('\n');
+
+    let chartPath;
+    try {
+      chartPath = await renderTokenUsageChart({ window: w, rows });
+    } catch (e) {
+      logger.warn(`token chart render failed: ${e.message}`);
+      return textTable;
+    }
+    return `__IMAGE_PATH__:${chartPath}|${textTable}`;
+  },
 };
 
-export async function dispatchTool(name, input) {
+export async function dispatchTool(name, input, context = null) {
   const fn = HANDLERS[name];
   if (!fn) return `Unknown tool: ${name}`;
   try {
-    return await fn(input || {});
+    return await fn(input || {}, context);
   } catch (e) {
     return `Tool error (${name}): ${e.message}`;
   }

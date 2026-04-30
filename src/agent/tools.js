@@ -854,4 +854,24 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'token_usage_report',
+    description: 'Show per-Discord-user token consumption for a rolling time window. Tracks three independent classes (each billed at its own rate): Anthropic text (LLM input + output), Anthropic image input (when users upload images), and Gemini image generation (Nano Banana). Returns a Markdown leaderboard table plus a stacked bar chart PNG. Optionally filter to a single user by Discord display name (case-insensitive, exact match preferred, substring fallback).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        window: {
+          type: 'string',
+          enum: ['day', 'week', 'month', 'total'],
+          description: 'Rolling time window: day = last 24h, week = last 7d, month = last 30d, total = all-time.',
+        },
+        user: {
+          type: 'string',
+          description: 'Optional Discord display name to filter on. Omit for the full leaderboard.',
+        },
+      },
+      required: ['window'],
+      additionalProperties: false,
+    },
+  },
 ];
