@@ -4,6 +4,7 @@ import path from 'node:path';
 import { config } from '../config.js';
 import { findAllCharacters } from '../mongo/characters.js';
 import { getPlot } from '../mongo/plots.js';
+import { getDirectorNotes } from '../mongo/directorNotes.js';
 import { readImageBuffer } from '../mongo/images.js';
 import { readCharacterImageBuffer } from '../mongo/files.js';
 import { logger } from '../log.js';
@@ -61,7 +62,14 @@ function spanImageAcrossTwoPages(doc, buf, drawW, drawH) {
   doc.y = top + (drawH - availablePageHeight);
 }
 
-export function renderScreenplayPdf({ title = 'Untitled Screenplay', characters, plot, beatImages = {}, characterImages = {} }) {
+export function renderScreenplayPdf({
+  title = 'Untitled Screenplay',
+  characters,
+  plot,
+  directorNotes = null,
+  beatImages = {},
+  characterImages = {},
+}) {
   const beatCount = (plot?.beats || []).length;
   const embedCount =
     Object.keys(beatImages || {}).length + Object.keys(characterImages || {}).length;
@@ -83,8 +91,26 @@ export function renderScreenplayPdf({ title = 'Untitled Screenplay', characters,
     doc.font('Times-Bold').fontSize(28).text(title, { align: 'center' });
     doc.moveDown(2);
     doc.font('Times-Italic').fontSize(14).text('Working draft', { align: 'center' });
-    doc.addPage();
 
+    const dnList = Array.isArray(directorNotes?.notes) ? directorNotes.notes : [];
+    if (dnList.length) {
+      doc.addPage();
+      doc.font('Times-Bold').fontSize(18).text("Director's Notes");
+      doc.moveDown();
+      doc.font('Times-Italic').fontSize(11).text(
+        'Standing rules for this screenplay — apply to every character and beat unless otherwise noted.',
+      );
+      doc.moveDown();
+      doc.font('Times-Roman').fontSize(11);
+      for (const n of dnList) {
+        doc.font('Times-Roman').text(`• ${n.text}`, {
+          indent: 0,
+          paragraphGap: 4,
+        });
+      }
+    }
+
+    doc.addPage();
     doc.font('Times-Bold').fontSize(18).text('Characters');
     doc.moveDown();
     for (const c of characters) {
@@ -178,11 +204,19 @@ async function loadCharacterImages(characters) {
 export async function exportToPdf({ title } = {}) {
   const characters = await findAllCharacters();
   const plot = await getPlot();
-  const [beatImages, characterImages] = await Promise.all([
+  const [beatImages, characterImages, directorNotes] = await Promise.all([
     loadBeatImages(plot),
     loadCharacterImages(characters),
+    getDirectorNotes(),
   ]);
-  const buf = await renderScreenplayPdf({ title, characters, plot, beatImages, characterImages });
+  const buf = await renderScreenplayPdf({
+    title,
+    characters,
+    plot,
+    directorNotes,
+    beatImages,
+    characterImages,
+  });
   await fs.mkdir(config.pdf.exportDir, { recursive: true });
   const filename = `screenplay-${Date.now()}.pdf`;
   const filepath = path.join(config.pdf.exportDir, filename);

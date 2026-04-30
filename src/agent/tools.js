@@ -92,6 +92,68 @@ export const TOOLS = [
     },
   },
   {
+    name: 'list_director_notes',
+    description: "Return the director's standing rules for this screenplay as an ordered array of {_id, text, created_at}. Director's notes are screenplay-wide directives that apply to every character and beat (e.g. \"unnamed extras are Feral Ewoks\", \"avoid anachronisms unless flagged\"). Call this when the user asks to see the rules in force, or before editing/removing/reordering to learn the current ids and order.",
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'add_director_note',
+    description: "Append a new screenplay-wide rule to the director's notes. Use this when the user states a directive that applies to the screenplay overall but does NOT belong on a specific character or beat — e.g. \"from now on all unnamed extras are Feral Ewoks\", \"keep the tone deadpan\", \"no anachronisms unless I flag them\". Do NOT use this for character-specific facts (use update_character) or beat-specific content (use update_beat / append_to_beat_body). Returns a status string with the new note's _id.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The rule, as a single bullet (one or two short sentences).' },
+        position: {
+          type: 'integer',
+          description: 'Optional 0-based index to insert at. Omit to append to the end.',
+        },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'edit_director_note',
+    description: "Replace the text of an existing director's note, identified by its _id. Use when the user wants to revise a rule (\"change the Ewok rule to Wookiees\") rather than add a new one. Returns a status string. To find the right _id, call list_director_notes first.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        note_id: { type: 'string', description: '24-char hex _id of the note to edit.' },
+        text: { type: 'string', description: 'New text for the note.' },
+      },
+      required: ['note_id', 'text'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'remove_director_note',
+    description: "Delete a director's note by _id. Use when the user retracts a rule (\"forget the anachronisms thing\"). To find the right _id, call list_director_notes first.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        note_id: { type: 'string', description: '24-char hex _id of the note to remove.' },
+      },
+      required: ['note_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'reorder_director_notes',
+    description: "Replace the order of the director's notes with a new permutation. Pass note_ids as an array containing every existing note's _id exactly once, in the desired new order. Use when the user wants to change priority (\"the Ewok rule should be first\"). To find the current ids, call list_director_notes first.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        note_ids: {
+          type: 'array',
+          items: { type: 'string', description: '24-char hex _id of a note.' },
+          description: 'All current note _ids in the desired new order. Must contain every existing note _id exactly once.',
+        },
+      },
+      required: ['note_ids'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'get_plot',
     description: 'Return the current plot document (synopsis, beats, notes, current_beat_id).',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },

@@ -6,6 +6,7 @@ import { dispatchTool } from './handlers.js';
 import { buildSystemPrompt } from './systemPrompt.js';
 import { listCharacters } from '../mongo/characters.js';
 import { getCharacterTemplate, getPlotTemplate } from '../mongo/prompts.js';
+import { getDirectorNotes } from '../mongo/directorNotes.js';
 import { getPlot } from '../mongo/plots.js';
 import { fetchImageFromUrl } from '../mongo/imageBytes.js';
 import { computeAnthropicImageTokens } from './imageTokens.js';
@@ -29,13 +30,24 @@ function stripImageBlocks(message) {
   };
 }
 
-export async function measureSectionTokens({ model, system, tools, messages }) {
+export async function measureSectionTokens({
+  model,
+  system,
+  systemNoDirectorNotes,
+  tools,
+  messages,
+}) {
   if (!Array.isArray(messages) || messages.length === 0) return null;
   const lastUser = stripImageBlocks(messages[messages.length - 1]);
   const historyMsgs = messages.slice(0, -1);
-  const [baseline, sysC, toolsC, userC, histC] = await Promise.all([
+  const [baseline, sysC, sysNoNotesC, toolsC, userC, histC] = await Promise.all([
     client.messages.countTokens({ model, messages: SECTION_PAD_MESSAGES }),
     client.messages.countTokens({ model, system, messages: SECTION_PAD_MESSAGES }),
+    client.messages.countTokens({
+      model,
+      system: systemNoDirectorNotes,
+      messages: SECTION_PAD_MESSAGES,
+    }),
     client.messages.countTokens({ model, tools, messages: SECTION_PAD_MESSAGES }),
     client.messages.countTokens({ model, messages: [lastUser] }),
     historyMsgs.length
@@ -44,22 +56,33 @@ export async function measureSectionTokens({ model, system, tools, messages }) {
   ]);
   const b = Number(baseline?.input_tokens) || 0;
   const sub = (c) => Math.max(0, (Number(c?.input_tokens) || 0) - b);
+  const sysWith = sub(sysC);
+  const sysWithout = sub(sysNoNotesC);
   return {
-    system: sub(sysC),
+    system: sysWithout,
+    director_notes: Math.max(0, sysWith - sysWithout),
     tools: sub(toolsC),
     user_input: sub(userC),
     message_history: historyMsgs.length ? sub(histC) : 0,
   };
 }
 
-async function buildSystem() {
-  const [characters, characterTemplate, plotTemplate, plot] = await Promise.all([
-    listCharacters(),
-    getCharacterTemplate(),
-    getPlotTemplate(),
-    getPlot(),
-  ]);
-  return buildSystemPrompt({ characters, characterTemplate, plotTemplate, plot });
+async function buildSystem({ omitDirectorNotes = false } = {}) {
+  const [characters, characterTemplate, plotTemplate, plot, directorNotes] =
+    await Promise.all([
+      listCharacters(),
+      getCharacterTemplate(),
+      getPlotTemplate(),
+      getPlot(),
+      getDirectorNotes(),
+    ]);
+  return buildSystemPrompt({
+    characters,
+    characterTemplate,
+    plotTemplate,
+    plot,
+    directorNotes: omitDirectorNotes ? null : directorNotes,
+  });
 }
 
 function buildUserContent(userText, attachments) {
@@ -257,9 +280,11 @@ export async function runAgent({
       logger.debug(`agent iteration ${i}, ${messages.length} messages`);
 
       if (i === 0) {
+        const systemNoDirectorNotes = await buildSystem({ omitDirectorNotes: true });
         sectionTokensPromise = measureSectionTokens({
           model,
           system,
+          systemNoDirectorNotes,
           tools: TOOLS,
           messages,
         }).catch((e) => {

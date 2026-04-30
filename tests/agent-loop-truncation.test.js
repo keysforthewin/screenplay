@@ -23,6 +23,9 @@ vi.mock('../src/mongo/prompts.js', () => ({
 vi.mock('../src/mongo/plots.js', () => ({
   getPlot: async () => ({ _id: 'main', beats: [] }),
 }));
+vi.mock('../src/mongo/directorNotes.js', () => ({
+  getDirectorNotes: async () => ({ _id: 'director_notes', notes: [] }),
+}));
 
 const { runAgent } = await import('../src/agent/loop.js');
 

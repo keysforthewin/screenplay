@@ -23,6 +23,7 @@ const COLORS = {
   tool_tokens: '#5b8def',
   tool_invocations: '#9b51e0',
   section_system: '#5b8def',
+  section_director_notes: '#e91e63',
   section_tools: '#f5a623',
   section_message_history: '#7ed321',
   section_user_input: '#bd10e0',
@@ -32,15 +33,23 @@ const COLORS = {
   bg: '#ffffff',
 };
 
-const SECTION_ORDER = ['system', 'tools', 'message_history', 'user_input'];
+const SECTION_ORDER = [
+  'system',
+  'director_notes',
+  'tools',
+  'message_history',
+  'user_input',
+];
 const SECTION_LABELS = {
   system: 'System prompt',
+  director_notes: "Director's notes",
   tools: 'Tool definitions',
   message_history: 'Message history',
   user_input: 'User input',
 };
 const SECTION_COLORS = {
   system: '#5b8def',
+  director_notes: '#e91e63',
   tools: '#f5a623',
   message_history: '#7ed321',
   user_input: '#bd10e0',

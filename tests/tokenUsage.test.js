@@ -277,6 +277,7 @@ describe('aggregateUsage', () => {
     const docs = fakeDb.collection('token_usage')._docs;
     expect(docs[0].meta.section_tokens).toEqual({
       system: 1500,
+      director_notes: 0,
       tools: 4200,
       message_history: 2300,
       user_input: 80,
@@ -310,6 +311,7 @@ describe('aggregateUsage', () => {
     const docs = fakeDb.collection('token_usage')._docs;
     expect(docs[0].meta.section_tokens).toEqual({
       system: 1500,
+      director_notes: 0,
       tools: 0,
       message_history: 0,
       user_input: 90,
@@ -494,6 +496,7 @@ describe('aggregateSectionTokens', () => {
     expect(stats.sample_count).toBe(0);
     expect(stats.totals).toEqual({
       system: 0,
+      director_notes: 0,
       tools: 0,
       message_history: 0,
       user_input: 0,
@@ -501,6 +504,7 @@ describe('aggregateSectionTokens', () => {
     });
     expect(stats.averages).toEqual({
       system: 0,
+      director_notes: 0,
       tools: 0,
       message_history: 0,
       user_input: 0,
@@ -515,6 +519,7 @@ describe('aggregateSectionTokens', () => {
     // totals: system 6000, tools 12000, history 7500, user 350 → grand 25850
     expect(stats.totals).toEqual({
       system: 6000,
+      director_notes: 0,
       tools: 12000,
       message_history: 7500,
       user_input: 350,
@@ -523,6 +528,7 @@ describe('aggregateSectionTokens', () => {
     // averages: round(6000/3)=2000, round(12000/3)=4000, round(7500/3)=2500, round(350/3)=117
     expect(stats.averages).toEqual({
       system: 2000,
+      director_notes: 0,
       tools: 4000,
       message_history: 2500,
       user_input: 117,
