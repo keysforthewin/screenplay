@@ -1,7 +1,20 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Resvg } from '@resvg/resvg-js';
+
+const FONT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fonts');
+const RESVG_OPTIONS = {
+  font: {
+    fontFiles: [
+      path.join(FONT_DIR, 'Inter-Regular.ttf'),
+      path.join(FONT_DIR, 'Inter-SemiBold.ttf'),
+    ],
+    loadSystemFonts: false,
+    defaultFontFamily: 'Inter',
+  },
+};
 
 const COLORS = {
   anthropic_text: '#5b8def',
@@ -282,7 +295,7 @@ function buildSvg({ window, rows }) {
 export async function renderTokenUsageChart({ window, rows }) {
   const safeRows = Array.isArray(rows) ? rows : [];
   const svg = buildSvg({ window, rows: safeRows });
-  const png = new Resvg(svg).render().asPng();
+  const png = new Resvg(svg, RESVG_OPTIONS).render().asPng();
   const filename = `token-usage-${window}-${Date.now()}.png`;
   const filepath = path.join(os.tmpdir(), filename);
   await fs.writeFile(filepath, png);
@@ -464,7 +477,7 @@ export async function renderToolTokensChart({ window, rows }) {
     totalToolCount: all.length,
     emptyMessage: 'No tool calls recorded in this window.',
   });
-  const png = new Resvg(svg).render().asPng();
+  const png = new Resvg(svg, RESVG_OPTIONS).render().asPng();
   const filename = `tool-tokens-${window}-${Date.now()}.png`;
   const filepath = path.join(os.tmpdir(), filename);
   await fs.writeFile(filepath, png);
@@ -575,7 +588,7 @@ export async function renderSectionAllocationChart({ window, sectionStats }) {
     sectionAverages: averages,
     sampleCount,
   });
-  const png = new Resvg(svg).render().asPng();
+  const png = new Resvg(svg, RESVG_OPTIONS).render().asPng();
   const filename = `section-allocation-${window}-${Date.now()}.png`;
   const filepath = path.join(os.tmpdir(), filename);
   await fs.writeFile(filepath, png);
@@ -597,7 +610,7 @@ export async function renderToolInvocationsChart({ window, rows }) {
     totalToolCount: all.length,
     emptyMessage: 'No tool calls recorded in this window.',
   });
-  const png = new Resvg(svg).render().asPng();
+  const png = new Resvg(svg, RESVG_OPTIONS).render().asPng();
   const filename = `tool-invocations-${window}-${Date.now()}.png`;
   const filepath = path.join(os.tmpdir(), filename);
   await fs.writeFile(filepath, png);
