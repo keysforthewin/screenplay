@@ -62,11 +62,22 @@ function spanImageAcrossTwoPages(doc, buf, drawW, drawH) {
 }
 
 export function renderScreenplayPdf({ title = 'Untitled Screenplay', characters, plot, beatImages = {}, characterImages = {} }) {
+  const beatCount = (plot?.beats || []).length;
+  const embedCount =
+    Object.keys(beatImages || {}).length + Object.keys(characterImages || {}).length;
+  logger.info(
+    `pdf render → beats=${beatCount} characters=${characters?.length || 0} embed_imgs=${embedCount}`,
+  );
+  const renderT0 = Date.now();
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margins: { top: 72, bottom: 72, left: 90, right: 72 } });
     const chunks = [];
     doc.on('data', (c) => chunks.push(c));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('end', () => {
+      const buf = Buffer.concat(chunks);
+      logger.info(`pdf render ← bytes=${buf.length} ${Date.now() - renderT0}ms`);
+      resolve(buf);
+    });
     doc.on('error', reject);
 
     doc.font('Times-Bold').fontSize(28).text(title, { align: 'center' });

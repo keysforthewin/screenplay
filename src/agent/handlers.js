@@ -593,6 +593,9 @@ async function runCsvExport({
   const outPath = path.join(os.tmpdir(), finalName);
   await fs.writeFile(outPath, csvText, 'utf8');
 
+  logger.info(
+    `csv export: entity=${entity} rows=${outputRows.length} bytes=${Buffer.byteLength(csvText)}`,
+  );
   return `__CSV_PATH__:${outPath}|Exported ${outputRows.length} ${entity} row(s).`;
 }
 
@@ -902,6 +905,7 @@ export const HANDLERS = {
     if (!prompt && !include_beat && !include_recent_chat) {
       return 'Error: provide at least one of `prompt`, `include_beat: true`, or `include_recent_chat: true`.';
     }
+    const generateT0 = Date.now();
 
     let beatDoc = null;
     if (include_beat || beat) {
@@ -974,6 +978,9 @@ export const HANDLERS = {
 
     const { path: filepath } = await Images.streamImageToTmp(file._id);
     const where = shouldAttach && current ? `attached to beat "${current.name}"` : 'saved to library';
+    logger.info(
+      `generate_image: beat=${current?.name || '-'} bytes=${buffer.length} ${Date.now() - generateT0}ms`,
+    );
     return `__IMAGE_PATH__:${filepath}|Generated image (${file._id.toString()}) ${where}.`;
   },
 
@@ -1742,6 +1749,7 @@ export const HANDLERS = {
 
     const textBody = lines.join('\n');
 
+    const chartT0 = Date.now();
     const paths = [];
     try {
       paths.push(await renderTokenUsageChart({ window: w, rows: userRows }));
@@ -1768,6 +1776,9 @@ export const HANDLERS = {
       }
     }
 
+    if (paths.length) {
+      logger.info(`chart render: ${paths.length} chart(s) ${Date.now() - chartT0}ms`);
+    }
     if (!paths.length) return textBody;
     return `__IMAGE_PATHS__:${paths.join('\t')}|${textBody}`;
   },

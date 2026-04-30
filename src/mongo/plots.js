@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
+import { logger } from '../log.js';
 
 const col = () => getDb().collection('plots');
 
@@ -121,6 +122,8 @@ export async function updatePlot(patch) {
   if (patch.synopsis !== undefined) set.synopsis = patch.synopsis;
   if (patch.notes !== undefined) set.notes = patch.notes;
   await col().updateOne({ _id: 'main' }, { $set: set });
+  const fieldList = Object.keys(set).filter((k) => k !== 'updated_at');
+  logger.info(`mongo: plot update fields=[${fieldList.join(',')}]`);
   return getPlot();
 }
 
@@ -224,6 +227,7 @@ export async function createBeat({ name, desc = '', body = '', characters = [], 
   beats.sort((a, b) => (a.order || 0) - (b.order || 0));
   const extra = plot.current_beat_id ? {} : { current_beat_id: beat._id };
   await persistBeats(beats, extra);
+  logger.info(`mongo: beat create id=${beat._id} order=${beat.order} name="${beat.name}"`);
   return beat;
 }
 
@@ -244,6 +248,8 @@ export async function updateBeat(identifier, patch) {
   });
   beats.sort((a, b) => (a.order || 0) - (b.order || 0));
   await persistBeats(beats);
+  const patchFields = Object.keys(patch || {});
+  logger.info(`mongo: beat update id=${beat._id} fields=[${patchFields.join(',')}]`);
   return beats.find((b) => b._id && b._id.equals(beat._id));
 }
 
@@ -260,6 +266,9 @@ export async function appendBeatBody(identifier, content) {
     b._id && b._id.equals(beat._id) ? { ...b, body: newBody, updated_at: new Date() } : b,
   );
   await persistBeats(beats);
+  logger.info(
+    `mongo: beat append_body id=${beat._id} added_chars=${addition.length}`,
+  );
   return beats.find((b) => b._id && b._id.equals(beat._id));
 }
 
@@ -273,6 +282,7 @@ export async function deleteBeat(identifier) {
       ? { current_beat_id: null }
       : {};
   await persistBeats(beats, extra);
+  logger.info(`mongo: beat delete id=${beat._id} name="${beat.name}"`);
   return {
     _id: beat._id,
     name: beat.name,
@@ -314,7 +324,11 @@ export async function pushBeatImage(beatIdentifier, imageMeta, setAsMain = false
   });
   await persistBeats(beats);
   const updated = beats.find((b) => b._id && b._id.equals(beat._id));
-  return { beat: updated, is_main: !!(updated.main_image_id && updated.main_image_id.equals(imageMeta._id)) };
+  const isMain = !!(updated.main_image_id && updated.main_image_id.equals(imageMeta._id));
+  logger.info(
+    `mongo: beat image push id=${beat._id} image=${imageMeta._id}${isMain ? ' (main)' : ''}`,
+  );
+  return { beat: updated, is_main: isMain };
 }
 
 export async function setBeatMainImage(beatIdentifier, imageId) {
@@ -329,6 +343,7 @@ export async function setBeatMainImage(beatIdentifier, imageId) {
     b._id && b._id.equals(beat._id) ? { ...b, main_image_id: oid, updated_at: new Date() } : b,
   );
   await persistBeats(beats);
+  logger.info(`mongo: beat main_image set id=${beat._id} image=${oid}`);
   return beats.find((b) => b._id && b._id.equals(beat._id));
 }
 
@@ -347,6 +362,7 @@ export async function pullBeatImage(beatIdentifier, imageId) {
     b._id && b._id.equals(beat._id) ? { ...b, images, main_image_id: newMain, updated_at: new Date() } : b,
   );
   await persistBeats(beats);
+  logger.info(`mongo: beat image pull id=${beat._id} image=${oid}`);
   return { beat: beats.find((b) => b._id && b._id.equals(beat._id)), removed: oid };
 }
 
@@ -360,6 +376,9 @@ export async function pushBeatAttachment(beatIdentifier, attachmentMeta) {
     return { ...b, attachments, updated_at: new Date() };
   });
   await persistBeats(beats);
+  logger.info(
+    `mongo: beat attachment push id=${beat._id} attach=${attachmentMeta?._id || '-'}`,
+  );
   return beats.find((b) => b._id && b._id.equals(beat._id));
 }
 
@@ -376,6 +395,7 @@ export async function pullBeatAttachment(beatIdentifier, attachmentId) {
     b._id && b._id.equals(beat._id) ? { ...b, attachments, updated_at: new Date() } : b,
   );
   await persistBeats(beats);
+  logger.info(`mongo: beat attachment pull id=${beat._id} attach=${oid}`);
   return { beat: beats.find((b) => b._id && b._id.equals(beat._id)), removed: oid };
 }
 
@@ -387,6 +407,7 @@ export async function setCurrentBeat(identifier) {
     { _id: 'main' },
     { $set: { current_beat_id: beat._id, updated_at: new Date() } },
   );
+  logger.info(`mongo: current_beat set id=${beat._id} name="${beat.name}"`);
   return beat;
 }
 
@@ -401,4 +422,5 @@ export async function clearCurrentBeat() {
     { _id: 'main' },
     { $set: { current_beat_id: null, updated_at: new Date() } },
   );
+  logger.info('mongo: current_beat cleared');
 }

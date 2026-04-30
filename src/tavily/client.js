@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { fetchImageFromUrl, extensionForType } from '../mongo/imageBytes.js';
+import { logger } from '../log.js';
 
 const API_BASE = 'https://api.tavily.com';
 
@@ -19,16 +20,25 @@ function authHeaders() {
 }
 
 export async function search(body) {
+  const q = typeof body?.query === 'string' ? body.query : '';
+  const qPreview = q.length > 60 ? `${q.slice(0, 59)}…` : q;
+  logger.info(`tavily → q="${qPreview}"`);
+  const t0 = Date.now();
   const res = await fetch(`${API_BASE}/search`, {
     method: 'POST',
     headers: authHeaders(),
     body: JSON.stringify(body),
   });
+  const ms = Date.now() - t0;
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    logger.error(`tavily ← status=${res.status} ${ms}ms`);
     throw new Error(`Tavily ${res.status} ${res.statusText}: ${text.slice(0, 200)}`);
   }
-  return res.json();
+  const data = await res.json();
+  const count = Array.isArray(data?.results) ? data.results.length : 0;
+  logger.info(`tavily ← ${count} results ${ms}ms`);
+  return data;
 }
 
 export async function fetchTavilyImageToTmp(url) {
