@@ -2,6 +2,7 @@ import { connectMongo } from './mongo/client.js';
 import { seedDefaults } from './seed/defaults.js';
 import { createDiscordClient } from './discord/client.js';
 import { startServer } from './server/index.js';
+import { installLifecycleHandlers } from './lifecycle.js';
 import { logger } from './log.js';
 
 async function main() {
@@ -10,6 +11,7 @@ async function main() {
   startServer();
   const bot = createDiscordClient();
   await bot.start();
+  installLifecycleHandlers(bot.client);
   logger.info('screenplay bot online');
 }
 

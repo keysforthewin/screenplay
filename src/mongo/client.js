@@ -20,10 +20,6 @@ export async function connectMongo() {
   await db.collection('token_usage').createIndex({ discord_user_id: 1, created_at: -1 });
   await db.collection('token_usage').createIndex({ created_at: -1 });
 
-  process.on('SIGINT', async () => {
-    if (client) await client.close();
-    process.exit(0);
-  });
   return db;
 }
 

@@ -53,6 +53,48 @@ export const TOOLS = [
     },
   },
   {
+    name: 'bulk_update_character_field',
+    description:
+      'Update ONE field across many characters in a SINGLE tool call. Use this — never fan out individual `update_character` calls — when the user asks to populate, set, or fill a field for "all", "every", or many characters (e.g. "give every character a role"). Decide each value in your reasoning, then submit them all here as one call. The handler writes them in batches and logs progress. `field_name` may be a core field (`name`, `plays_self`, `hollywood_actor`, `own_voice`) or any custom template field — custom fields are stored under `fields.<name>` automatically; do NOT prefix `fields.` yourself. Returns a summary listing successes and failures.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        field_name: {
+          type: 'string',
+          description:
+            'Field to set on each character. Core fields: name, plays_self, hollywood_actor, own_voice. Otherwise the field is stored under fields.<field_name>.',
+        },
+        updates: {
+          type: 'array',
+          minItems: 1,
+          description: 'List of {character, value} pairs. One entry per character to update.',
+          items: {
+            type: 'object',
+            properties: {
+              character: {
+                type: 'string',
+                description: 'Character name (case-insensitive) or 24-char hex _id.',
+              },
+              value: {
+                description: 'New value for the field. Type depends on the field.',
+              },
+            },
+            required: ['character', 'value'],
+            additionalProperties: false,
+          },
+        },
+        batch_size: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 25,
+          description: 'Concurrent writes per batch. Default 10.',
+        },
+      },
+      required: ['field_name', 'updates'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'search_characters',
     description: 'Find characters whose fields contain a substring (case-insensitive).',
     input_schema: {
