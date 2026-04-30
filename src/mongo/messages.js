@@ -1,5 +1,6 @@
 import { getDb } from './client.js';
 import { ALLOWED_IMAGE_TYPES } from './imageBytes.js';
+import { logger } from '../log.js';
 
 const HISTORY_LIMIT = 60;
 export const SEARCH_SCAN_LIMIT = 5000;
@@ -29,6 +30,7 @@ export async function recordUserMessage({ msg, text, attachments }) {
     created_at: msg.createdAt || new Date(),
     recorded_at: new Date(),
   });
+  logger.info(`mongo: msg recorded role=user attach=${attachments.length}`);
 }
 
 export async function recordAssistantMessage({ channelId, guildId = null, threadId = null, text }) {
@@ -44,6 +46,7 @@ export async function recordAssistantMessage({ channelId, guildId = null, thread
     created_at: new Date(),
     recorded_at: new Date(),
   });
+  logger.info('mongo: msg recorded role=assistant');
 }
 
 export async function recordAgentTurns({ channelId, guildId = null, threadId = null, turns }) {
@@ -62,6 +65,7 @@ export async function recordAgentTurns({ channelId, guildId = null, threadId = n
     recorded_at: new Date(),
   }));
   await col().insertMany(docs);
+  logger.info(`mongo: msgs recorded role=agent count=${docs.length}`);
 }
 
 export function docToLlmMessage(doc) {

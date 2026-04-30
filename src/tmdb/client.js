@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { fetchImageFromUrl, extensionForType } from '../mongo/imageBytes.js';
+import { logger } from '../log.js';
 
 const API_BASE = 'https://api.themoviedb.org/3';
 const IMAGE_BASE = 'https://image.tmdb.org/t/p';
@@ -24,11 +25,16 @@ async function tmdbFetch(pathname, params = {}) {
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
   }
+  logger.info(`tmdb → ${pathname}`);
+  const t0 = Date.now();
   const res = await fetch(url, { headers: authHeaders() });
+  const ms = Date.now() - t0;
   if (!res.ok) {
     const body = await res.text().catch(() => '');
+    logger.error(`tmdb ← ${pathname} status=${res.status} ${ms}ms`);
     throw new Error(`TMDB ${res.status} ${res.statusText}: ${body.slice(0, 200)}`);
   }
+  logger.info(`tmdb ← ${pathname} status=${res.status} ${ms}ms`);
   return res.json();
 }
 

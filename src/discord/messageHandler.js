@@ -34,20 +34,29 @@ export async function handleMessage(msg) {
   const attachments = extractAttachments(msg);
   if (!text && !attachments.length) return;
 
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  const preview = oneLine.length > 100 ? `${oneLine.slice(0, 99)}…` : oneLine;
+  logger.info(
+    `discord msg ← ${msg.author.tag} chars=${text.length} attach=${attachments.length}: "${preview}"`,
+  );
+
   await mutex.run(msg.channelId, async () => {
     let typingTimer;
     let attachmentPaths = [];
     try {
       await msg.channel.sendTyping();
+      logger.debug('typing started');
       typingTimer = setInterval(() => msg.channel.sendTyping().catch(() => {}), 8000);
 
       const history = await loadHistoryForLlm(msg.channelId);
+      logger.info(`history loaded ${history.length} msgs`);
       await recordUserMessage({ msg, text, attachments });
 
       const displayName =
         msg.member?.displayName ?? msg.author.globalName ?? msg.author.username;
       const discordUser = { id: msg.author.id, displayName };
 
+      const agentT0 = Date.now();
       const result = await runAgent({
         history,
         userText: text,
@@ -57,6 +66,9 @@ export async function handleMessage(msg) {
       });
       attachmentPaths = result.attachmentPaths;
       const replyText = result.text || '(no reply)';
+      logger.info(
+        `agent done in ${Date.now() - agentT0}ms (${result.agentMessages.length} turns, ${attachmentPaths.length} attach)`,
+      );
 
       try {
         await recordAgentTurns({
@@ -71,6 +83,11 @@ export async function handleMessage(msg) {
 
       clearInterval(typingTimer);
       await sendReply(msg.channel, replyText, attachmentPaths);
+      const pdfs = attachmentPaths.filter((p) => /\.pdf$/i.test(p)).length;
+      const images = attachmentPaths.length - pdfs;
+      logger.info(
+        `reply sent chars=${replyText.length} images=${images} pdfs=${pdfs}`,
+      );
     } catch (e) {
       clearInterval(typingTimer);
       logger.error('agent failure', e);

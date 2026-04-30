@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
+import { logger } from '../log.js';
 
 const col = () => getDb().collection('characters');
 
@@ -41,6 +42,7 @@ export async function createCharacter({ name, plays_self, hollywood_actor, own_v
     updated_at: now,
   };
   const res = await col().insertOne(doc);
+  logger.info(`mongo: character create name=${name}`);
   return { _id: res.insertedId, ...doc };
 }
 
@@ -61,6 +63,10 @@ export async function updateCharacter(identifier, patch) {
     }
   }
   await col().updateOne({ _id: existing._id }, { $set: set });
+  const fieldList = Object.keys(set).filter((k) => k !== 'updated_at');
+  logger.info(
+    `mongo: character update name=${existing.name} fields=[${fieldList.join(',')}]`,
+  );
   return getCharacter(existing._id.toString());
 }
 

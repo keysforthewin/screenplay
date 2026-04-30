@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { config } from '../config.js';
+import { logger } from '../log.js';
 
 const MODEL = 'gemini-2.5-flash-image';
 
@@ -33,16 +34,29 @@ export async function generateImage({ prompt, aspectRatio }) {
   }
   const ai = getClient();
   const finalPrompt = appendAspectRatioHint(prompt, aspectRatio);
-  const response = await ai.models.generateContent({
-    model: MODEL,
-    contents: finalPrompt,
-  });
+  logger.info(
+    `gemini → model=${MODEL} prompt=${finalPrompt.length}c aspect=${aspectRatio || 'default'}`,
+  );
+  const t0 = Date.now();
+  let response;
+  try {
+    response = await ai.models.generateContent({
+      model: MODEL,
+      contents: finalPrompt,
+    });
+  } catch (e) {
+    logger.error(`gemini ← failed ${Date.now() - t0}ms: ${e.message}`);
+    throw e;
+  }
   const parts = response?.candidates?.[0]?.content?.parts || [];
   const usageMetadata = response?.usageMetadata;
   for (const part of parts) {
     if (part.inlineData?.data) {
       const buffer = Buffer.from(part.inlineData.data, 'base64');
       const contentType = part.inlineData.mimeType || 'image/png';
+      logger.info(
+        `gemini ← bytes=${buffer.length} in_tok=${usageMetadata?.promptTokenCount || 0} out_tok=${usageMetadata?.candidatesTokenCount || 0} ${Date.now() - t0}ms`,
+      );
       return { buffer, contentType, usageMetadata };
     }
   }
@@ -51,6 +65,7 @@ export async function generateImage({ prompt, aspectRatio }) {
     .map((p) => p.text)
     .join(' ')
     .trim();
+  logger.error(`gemini ← no image data ${Date.now() - t0}ms`);
   throw new Error(
     `Image generation returned no image data.${textParts ? ` Model response: ${textParts}` : ''}`,
   );

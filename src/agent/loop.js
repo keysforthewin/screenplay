@@ -101,6 +101,7 @@ export async function dispatchToolUses(
   const results = [];
   for (const tu of toolUses) {
     logger.info(`tool_use: ${tu.name}`);
+    const toolT0 = Date.now();
     let resultText = '';
     try {
       const raw = await dispatchFn(tu.name, tu.input, context);
@@ -122,6 +123,7 @@ export async function dispatchToolUses(
         is_error: true,
       });
     }
+    logger.info(`tool_done: ${tu.name} ${Date.now() - toolT0}ms`);
     if (toolStats instanceof Map) {
       const slot = toolStats.get(tu.name) || { count: 0, result_tokens: 0 };
       slot.count += 1;
@@ -266,6 +268,10 @@ export async function runAgent({
         });
       }
 
+      logger.info(
+        `anthropic → iter ${i + 1}/${MAX_TOOL_ITERATIONS} model=${model} msgs=${messages.length}`,
+      );
+      const anthropicT0 = Date.now();
       const resp = await client.messages.create({
         model,
         max_tokens: 4096,
@@ -273,6 +279,11 @@ export async function runAgent({
         tools: TOOLS,
         messages,
       });
+      const anthropicMs = Date.now() - anthropicT0;
+      const u = resp.usage || {};
+      logger.info(
+        `anthropic ← stop=${resp.stop_reason} in=${u.input_tokens || 0} out=${u.output_tokens || 0} cache_r=${u.cache_read_input_tokens || 0} cache_w=${u.cache_creation_input_tokens || 0} ${anthropicMs}ms`,
+      );
 
       accumulateUsage(resp.usage);
       messages.push({ role: 'assistant', content: resp.content });
@@ -311,6 +322,7 @@ export async function runAgent({
       messages.push({ role: 'user', content: results });
     }
 
+    logger.warn(`max iterations hit (${MAX_TOOL_ITERATIONS}) — returning fallback`);
     return {
       text: '(Agent hit max tool iterations.)',
       attachmentPaths,

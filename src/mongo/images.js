@@ -11,6 +11,7 @@ import {
   extensionForType,
   toObjectId,
 } from './imageBytes.js';
+import { logger } from '../log.js';
 
 const BUCKET_NAME = 'images';
 
@@ -54,6 +55,9 @@ export async function uploadGeneratedImage({
     generated_by: generatedBy || null,
   };
   const id = await uploadBuffer({ buffer, filename: finalFilename, contentType: ct, metadata });
+  logger.info(
+    `mongo: gridfs upload owner=${ownerType || 'library'}/${ownerId || '-'} bytes=${buffer.length} source=generated`,
+  );
   return {
     _id: id,
     filename: finalFilename,
@@ -80,6 +84,9 @@ export async function uploadImageFromUrl({
     generated_by: null,
   };
   const id = await uploadBuffer({ buffer, filename: finalFilename, contentType, metadata });
+  logger.info(
+    `mongo: gridfs upload owner=${ownerType || 'library'}/${ownerId || '-'} bytes=${buffer.length} source=url`,
+  );
   return {
     _id: id,
     filename: finalFilename,
@@ -119,12 +126,16 @@ export async function setImageOwner(imageId, { ownerType, ownerId }) {
       },
     },
   );
+  logger.info(
+    `mongo: gridfs owner_set image=${oid} owner=${ownerType || 'library'}/${ownerId || '-'}`,
+  );
 }
 
 export async function deleteImage(imageId) {
   const oid = toObjectId(imageId);
   try {
     await getBucket().delete(oid);
+    logger.info(`mongo: gridfs delete image=${oid}`);
   } catch (e) {
     if (e?.code !== 'ENOENT' && !/FileNotFound/i.test(e?.message || '')) throw e;
   }
