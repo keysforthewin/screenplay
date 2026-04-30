@@ -25,8 +25,15 @@ import { runJsInVm } from './codeRunner.js';
 import {
   recordGeminiImageUsage,
   aggregateUsage,
+  aggregateToolUsage,
+  aggregateSectionTokens,
 } from '../mongo/tokenUsage.js';
-import { renderTokenUsageChart } from '../charts/tokenUsageChart.js';
+import {
+  renderTokenUsageChart,
+  renderToolTokensChart,
+  renderToolInvocationsChart,
+  renderSectionAllocationChart,
+} from '../charts/tokenUsageChart.js';
 
 const mj = create(all, { number: 'BigNumber', precision: 64 });
 
@@ -1662,9 +1669,13 @@ export const HANDLERS = {
     const since = sinceFor[w];
 
     const userQuery = typeof user === 'string' && user.trim() ? user.trim() : null;
-    const rows = await aggregateUsage({ since, userQuery });
+    const [userRows, toolRows, sectionStats] = await Promise.all([
+      aggregateUsage({ since, userQuery }),
+      aggregateToolUsage({ since, userQuery }),
+      aggregateSectionTokens({ since, userQuery }),
+    ]);
 
-    if (!rows.length) {
+    if (!userRows.length) {
       if (userQuery) {
         return `No token usage recorded for '${userQuery}' in this window.`;
       }
@@ -1675,8 +1686,8 @@ export const HANDLERS = {
     const lines = [];
     lines.push(`**Token usage — ${w}** (${userQuery ? `filter: ${userQuery}` : 'all users'})`);
     lines.push('');
-    if (userQuery && rows.length === 1) {
-      const r = rows[0];
+    if (userQuery && userRows.length === 1) {
+      const r = userRows[0];
       lines.push(`| User | Anthropic text | Anthropic image | Gemini image | Total |`);
       lines.push(`|---|---:|---:|---:|---:|`);
       lines.push(
@@ -1686,23 +1697,79 @@ export const HANDLERS = {
     } else {
       lines.push(`| Rank | User | Anthropic text | Anthropic image | Gemini image | Total |`);
       lines.push(`|---:|---|---:|---:|---:|---:|`);
-      rows.forEach((r, i) => {
+      userRows.forEach((r, i) => {
         lines.push(
           `| ${i + 1} | ${r.discord_user_display_name} | ${fmt(r.anthropic_text)} | ` +
             `${fmt(r.anthropic_image_input)} | ${fmt(r.gemini_image)} | ${fmt(r.total)} |`,
         );
       });
     }
-    const textTable = lines.join('\n');
 
-    let chartPath;
-    try {
-      chartPath = await renderTokenUsageChart({ window: w, rows });
-    } catch (e) {
-      logger.warn(`token chart render failed: ${e.message}`);
-      return textTable;
+    if (toolRows.length) {
+      lines.push('');
+      lines.push('**Tool usage** (estimated tokens from tool_result payloads)');
+      lines.push('');
+      lines.push(`| Rank | Tool | Invocations | Est. tokens |`);
+      lines.push(`|---:|---|---:|---:|`);
+      toolRows.slice(0, 20).forEach((r, i) => {
+        lines.push(
+          `| ${i + 1} | ${r.tool_name} | ${fmt(r.invocations)} | ${fmt(r.result_tokens)} |`,
+        );
+      });
+      if (toolRows.length > 20) {
+        lines.push('');
+        lines.push(`_Top 20 of ${toolRows.length} tools shown._`);
+      }
     }
-    return `__IMAGE_PATH__:${chartPath}|${textTable}`;
+
+    if (sectionStats && sectionStats.sample_count > 0) {
+      const avg = sectionStats.averages;
+      const total = avg.total || 0;
+      const pct = (v) => (total > 0 ? `${((v / total) * 100).toFixed(1)}%` : '0.0%');
+      lines.push('');
+      lines.push(
+        `**Prompt budget allocation** (averages over ${sectionStats.sample_count} turn${sectionStats.sample_count === 1 ? '' : 's'})`,
+      );
+      lines.push('');
+      lines.push(`| Section | Avg tokens | % of total |`);
+      lines.push(`|---|---:|---:|`);
+      lines.push(`| System prompt | ${fmt(avg.system)} | ${pct(avg.system)} |`);
+      lines.push(`| Tool definitions | ${fmt(avg.tools)} | ${pct(avg.tools)} |`);
+      lines.push(`| Message history | ${fmt(avg.message_history)} | ${pct(avg.message_history)} |`);
+      lines.push(`| User input | ${fmt(avg.user_input)} | ${pct(avg.user_input)} |`);
+      lines.push(`| **Total** | **${fmt(total)}** | **100.0%** |`);
+    }
+
+    const textBody = lines.join('\n');
+
+    const paths = [];
+    try {
+      paths.push(await renderTokenUsageChart({ window: w, rows: userRows }));
+    } catch (e) {
+      logger.warn(`user chart render failed: ${e.message}`);
+    }
+    if (toolRows.length) {
+      try {
+        paths.push(await renderToolTokensChart({ window: w, rows: toolRows }));
+      } catch (e) {
+        logger.warn(`tool tokens chart render failed: ${e.message}`);
+      }
+      try {
+        paths.push(await renderToolInvocationsChart({ window: w, rows: toolRows }));
+      } catch (e) {
+        logger.warn(`tool invocations chart render failed: ${e.message}`);
+      }
+    }
+    if (sectionStats && sectionStats.sample_count > 0) {
+      try {
+        paths.push(await renderSectionAllocationChart({ window: w, sectionStats }));
+      } catch (e) {
+        logger.warn(`section allocation chart render failed: ${e.message}`);
+      }
+    }
+
+    if (!paths.length) return textBody;
+    return `__IMAGE_PATHS__:${paths.join('\t')}|${textBody}`;
   },
 };
 
