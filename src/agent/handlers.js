@@ -1,3 +1,6 @@
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { promises as fs } from 'node:fs';
 import * as Characters from '../mongo/characters.js';
 import * as Plots from '../mongo/plots.js';
 import * as Prompts from '../mongo/prompts.js';
@@ -277,6 +280,313 @@ function buildAnalysisPrompt({ kind, profile, results, maxWorks }) {
     `<search_results>\n${resultsSection}\n</search_results>\n\n` +
     `Identify up to ${maxWorks} parallels.`;
   return { system, user };
+}
+
+const CHARACTER_COMPUTED_COLUMNS = {
+  image_count: (c) => (c.images || []).length,
+  field_count: (c) => Object.keys(c.fields || {}).length,
+  appears_in_beats: (c, ctx) => {
+    const m = ctx?.appearsInBeats;
+    if (!m) return 0;
+    return m.get(String(c.name || '').toLowerCase()) || 0;
+  },
+};
+
+const BEAT_COMPUTED_COLUMNS = {
+  word_count: (b) => {
+    const t = String(b.body || '').trim();
+    if (!t) return 0;
+    return t.split(/\s+/).filter(Boolean).length;
+  },
+  char_count: (b) => String(b.body || '').length,
+  image_count: (b) => (b.images || []).length,
+  attachment_count: (b) => (b.attachments || []).length,
+  character_count: (b) => (b.characters || []).length,
+};
+
+function getByDotPath(obj, pathStr) {
+  if (obj == null) return undefined;
+  const parts = String(pathStr).split('.');
+  let v = obj;
+  for (const p of parts) {
+    if (v == null) return undefined;
+    v = v[p];
+  }
+  return v;
+}
+
+function makeCsvAccessor(entity, ctx) {
+  const computed =
+    entity === 'characters' ? CHARACTER_COMPUTED_COLUMNS : BEAT_COMPUTED_COLUMNS;
+  return (fieldPath) => {
+    if (Object.prototype.hasOwnProperty.call(computed, fieldPath)) {
+      return (doc) => computed[fieldPath](doc, ctx);
+    }
+    return (doc) => getByDotPath(doc, fieldPath);
+  };
+}
+
+function collectCsvFieldRefs({ columns, filter, group_by, sort }) {
+  const out = new Set();
+  for (const c of columns || []) if (c?.field) out.add(c.field);
+  for (const f of filter || []) if (f?.field) out.add(f.field);
+  for (const f of group_by || []) if (f) out.add(f);
+  for (const s of sort || []) if (s?.field) out.add(s.field);
+  return out;
+}
+
+function isObjectIdLike(v) {
+  return v && typeof v === 'object' && typeof v.toHexString === 'function';
+}
+
+function csvCmpEq(a, b) {
+  if (a === b) return true;
+  if (a == null || b == null) return a == null && b == null;
+  if (a instanceof Date && typeof b === 'string') return a.toISOString() === b;
+  if (b instanceof Date && typeof a === 'string') return b.toISOString() === a;
+  if (isObjectIdLike(a)) return a.toString() === String(b);
+  if (isObjectIdLike(b)) return b.toString() === String(a);
+  return false;
+}
+
+function csvCmpOrder(a, b) {
+  if (a == null || b == null) return null;
+  let ax = a;
+  let bx = b;
+  if (ax instanceof Date) ax = ax.getTime();
+  if (bx instanceof Date) bx = bx.getTime();
+  if (typeof ax === 'string' && typeof bx === 'string') {
+    return ax < bx ? -1 : ax > bx ? 1 : 0;
+  }
+  const an = Number(ax);
+  const bn = Number(bx);
+  if (Number.isFinite(an) && Number.isFinite(bn)) {
+    return an < bn ? -1 : an > bn ? 1 : 0;
+  }
+  return null;
+}
+
+function csvOpContains(fieldVal, value) {
+  if (fieldVal == null) return false;
+  const needle = String(value ?? '').toLowerCase();
+  if (!needle) return false;
+  if (Array.isArray(fieldVal)) {
+    return fieldVal.some((el) => String(el ?? '').toLowerCase().includes(needle));
+  }
+  return String(fieldVal).toLowerCase().includes(needle);
+}
+
+function csvOpExists(fieldVal, value) {
+  const present = fieldVal !== undefined && fieldVal !== null;
+  return value === false ? !present : present;
+}
+
+function evalCsvFilter(fieldVal, op, value) {
+  switch (op) {
+    case 'eq':
+      return csvCmpEq(fieldVal, value);
+    case 'ne':
+      return !csvCmpEq(fieldVal, value);
+    case 'gt':
+      return csvCmpOrder(fieldVal, value) === 1;
+    case 'gte': {
+      const c = csvCmpOrder(fieldVal, value);
+      return c === 1 || c === 0;
+    }
+    case 'lt':
+      return csvCmpOrder(fieldVal, value) === -1;
+    case 'lte': {
+      const c = csvCmpOrder(fieldVal, value);
+      return c === -1 || c === 0;
+    }
+    case 'contains':
+      return csvOpContains(fieldVal, value);
+    case 'exists':
+      return csvOpExists(fieldVal, value);
+    default:
+      return false;
+  }
+}
+
+function computeCsvAggregate(op, values) {
+  if (op === 'count') {
+    return values.filter((v) => v !== undefined && v !== null).length;
+  }
+  const nums = values
+    .map((v) => (v === null || v === undefined ? NaN : Number(v)))
+    .filter((n) => Number.isFinite(n));
+  if (op === 'sum') return nums.reduce((a, b) => a + b, 0);
+  if (op === 'min') return nums.length ? Math.min(...nums) : null;
+  if (op === 'max') return nums.length ? Math.max(...nums) : null;
+  if (op === 'avg') return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : null;
+  return null;
+}
+
+function csvCell(v) {
+  if (v === undefined || v === null) return '';
+  let s;
+  if (v instanceof Date) s = v.toISOString();
+  else if (isObjectIdLike(v)) s = v.toString();
+  else if (typeof v === 'object') s = JSON.stringify(v);
+  else s = String(v);
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function csvLine(arr) {
+  return arr.map(csvCell).join(',');
+}
+
+function sanitizeCsvFilename(name) {
+  if (!name || typeof name !== 'string') return null;
+  const base = path.basename(String(name).trim());
+  const cleaned = base.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^[._]+/, '');
+  if (!cleaned) return null;
+  return cleaned.toLowerCase().endsWith('.csv') ? cleaned : `${cleaned}.csv`;
+}
+
+function csvGroupKey(values) {
+  return JSON.stringify(values, (_k, v) => {
+    if (isObjectIdLike(v)) return v.toString();
+    if (v instanceof Date) return v.toISOString();
+    return v;
+  });
+}
+
+async function runCsvExport({
+  entity,
+  docs,
+  columns,
+  filter,
+  group_by,
+  sort,
+  limit,
+  filename,
+}) {
+  if (!Array.isArray(columns) || columns.length === 0) {
+    return 'Tool error (export_csv): at least one column is required.';
+  }
+
+  const groupBy = Array.isArray(group_by) ? group_by.filter(Boolean) : [];
+  const hasAggregate = columns.some((c) => c.aggregate && c.aggregate !== 'none');
+
+  if (groupBy.length > 0 || hasAggregate) {
+    for (const c of columns) {
+      const inGroup = groupBy.includes(c.field);
+      const aggregated = c.aggregate && c.aggregate !== 'none';
+      if (!inGroup && !aggregated) {
+        return `Tool error (export_csv): column "${c.field}" must be in group_by or have a non-none aggregate when group_by/aggregates are used.`;
+      }
+    }
+  }
+
+  const ctx = {};
+  if (entity === 'characters') {
+    const refs = collectCsvFieldRefs({ columns, filter, group_by: groupBy, sort });
+    if (refs.has('appears_in_beats')) {
+      const beats = await Plots.listBeats();
+      const m = new Map();
+      for (const b of beats) {
+        for (const n of b.characters || []) {
+          const key = String(n || '').toLowerCase();
+          if (!key) continue;
+          m.set(key, (m.get(key) || 0) + 1);
+        }
+      }
+      ctx.appearsInBeats = m;
+    }
+  }
+
+  const resolveAccessor = makeCsvAccessor(entity, ctx);
+
+  let rows = docs.slice();
+  for (const f of filter || []) {
+    if (!f || !f.field || !f.op) continue;
+    const acc = resolveAccessor(f.field);
+    rows = rows.filter((d) => evalCsvFilter(acc(d), f.op, f.value));
+  }
+
+  let outputRows;
+
+  if (groupBy.length > 0) {
+    const groupAccessors = groupBy.map(resolveAccessor);
+    const groups = new Map();
+    for (const row of rows) {
+      const groupValues = groupAccessors.map((acc) => acc(row));
+      const key = csvGroupKey(groupValues);
+      let bucket = groups.get(key);
+      if (!bucket) {
+        bucket = { groupValues, rows: [] };
+        groups.set(key, bucket);
+      }
+      bucket.rows.push(row);
+    }
+    outputRows = [];
+    for (const { groupValues, rows: groupRows } of groups.values()) {
+      const out = columns.map((c) => {
+        const gIdx = groupBy.indexOf(c.field);
+        if (gIdx >= 0) return groupValues[gIdx];
+        const acc = resolveAccessor(c.field);
+        return computeCsvAggregate(c.aggregate, groupRows.map(acc));
+      });
+      outputRows.push(out);
+    }
+  } else if (hasAggregate) {
+    const out = columns.map((c) => {
+      const acc = resolveAccessor(c.field);
+      return computeCsvAggregate(c.aggregate, rows.map(acc));
+    });
+    outputRows = [out];
+  } else {
+    const accs = columns.map((c) => resolveAccessor(c.field));
+    outputRows = rows.map((r) => accs.map((acc) => acc(r)));
+  }
+
+  if (Array.isArray(sort) && sort.length > 0) {
+    const sortIndices = sort
+      .map((s) => ({
+        idx: columns.findIndex((c) => c.field === s.field),
+        dir: s.direction === 'desc' ? -1 : 1,
+      }))
+      .filter((s) => s.idx >= 0);
+    if (sortIndices.length > 0) {
+      outputRows.sort((a, b) => {
+        for (const { idx, dir } of sortIndices) {
+          const av = a[idx];
+          const bv = b[idx];
+          const aNull = av === null || av === undefined;
+          const bNull = bv === null || bv === undefined;
+          if (aNull && bNull) continue;
+          if (aNull) return -1 * dir;
+          if (bNull) return 1 * dir;
+          if (av < bv) return -1 * dir;
+          if (av > bv) return 1 * dir;
+        }
+        return 0;
+      });
+    }
+  }
+
+  if (Number.isFinite(limit) && limit > 0) {
+    outputRows = outputRows.slice(0, Math.floor(limit));
+  }
+
+  const headers = columns.map((c) => {
+    if (c.header) return String(c.header);
+    if (c.aggregate && c.aggregate !== 'none') return `${c.aggregate}(${c.field})`;
+    return c.field;
+  });
+
+  const csvText = [csvLine(headers), ...outputRows.map(csvLine)].join('\n') + '\n';
+
+  const today = new Date().toISOString().slice(0, 10);
+  const finalName = sanitizeCsvFilename(filename) || `${entity}-${today}.csv`;
+  const outPath = path.join(os.tmpdir(), finalName);
+  await fs.writeFile(outPath, csvText, 'utf8');
+
+  return `__CSV_PATH__:${outPath}|Exported ${outputRows.length} ${entity} row(s).`;
 }
 
 async function runSimilaritySearch({ query, maxResults = 8, rawContentTopN = 3 }) {
@@ -663,6 +973,18 @@ export const HANDLERS = {
   async export_pdf({ title }) {
     const path = await exportToPdf({ title });
     return `__PDF_PATH__:${path}`;
+  },
+
+  async export_csv({ entity, columns, filter, group_by, sort, limit, filename } = {}) {
+    if (entity === 'characters') {
+      const docs = await Characters.findAllCharacters();
+      return runCsvExport({ entity, docs, columns, filter, group_by, sort, limit, filename });
+    }
+    if (entity === 'beats') {
+      const docs = await Plots.listBeats();
+      return runCsvExport({ entity, docs, columns, filter, group_by, sort, limit, filename });
+    }
+    return `Tool error (export_csv): unknown entity '${entity}'. Must be 'characters' or 'beats'.`;
   },
 
   async add_character_image({ character, source_url, filename, caption, set_as_main }) {
