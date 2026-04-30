@@ -29,6 +29,9 @@ vi.mock('../src/mongo/prompts.js', () => ({
 vi.mock('../src/mongo/plots.js', () => ({
   getPlot: async () => ({ _id: 'main', beats: [] }),
 }));
+vi.mock('../src/mongo/directorNotes.js', () => ({
+  getDirectorNotes: async () => ({ _id: 'director_notes', notes: [] }),
+}));
 
 // Image fetcher: hand-roll a fake PNG so image-size can read 300x300.
 function makePngBuffer(width, height) {
@@ -207,12 +210,15 @@ describe('runAgent records Anthropic token usage', () => {
 describe('runAgent records section_tokens budget snapshot', () => {
   it('measures sections only at iteration 1 and persists meta.section_tokens', async () => {
     // Sequence countTokens responses in the order calls are issued in
-    // measureSectionTokens(): baseline, system, tools, user_input, history.
-    // baseline=5, system=105 → sys=100, tools=205 → tools=200,
-    // user=15 → user_input=10, history=305 → history=300.
+    // measureSectionTokens(): baseline, system, system-no-director-notes,
+    // tools, user_input, history.
+    // baseline=5, system=105 → sysWith=100, system-no-DN=85 → sysWithout=80
+    // → director_notes = sysWith - sysWithout = 20.
+    // tools=205 → 200, user=15 → 10, history=305 → 300.
     countTokensMock
       .mockResolvedValueOnce({ input_tokens: 5 }) // baseline
-      .mockResolvedValueOnce({ input_tokens: 105 }) // system
+      .mockResolvedValueOnce({ input_tokens: 105 }) // system (with director notes)
+      .mockResolvedValueOnce({ input_tokens: 85 }) // system (without director notes)
       .mockResolvedValueOnce({ input_tokens: 205 }) // tools
       .mockResolvedValueOnce({ input_tokens: 15 }) // user_input
       .mockResolvedValueOnce({ input_tokens: 305 }); // history
@@ -240,13 +246,14 @@ describe('runAgent records section_tokens budget snapshot', () => {
       channelId: 'c1',
     });
 
-    expect(countTokensMock).toHaveBeenCalledTimes(5);
+    expect(countTokensMock).toHaveBeenCalledTimes(6);
     const doc = fakeDb
       .collection('token_usage')
       ._docs.find((d) => d.kind === 'anthropic_text');
     expect(doc).toBeDefined();
     expect(doc.meta.section_tokens).toEqual({
-      system: 100,
+      system: 80,
+      director_notes: 20,
       tools: 200,
       user_input: 10,
       message_history: 300,
@@ -256,7 +263,8 @@ describe('runAgent records section_tokens budget snapshot', () => {
   it('skips the history call and reports 0 history when there is no prior history', async () => {
     countTokensMock
       .mockResolvedValueOnce({ input_tokens: 5 }) // baseline
-      .mockResolvedValueOnce({ input_tokens: 50 }) // system
+      .mockResolvedValueOnce({ input_tokens: 50 }) // system (with DN)
+      .mockResolvedValueOnce({ input_tokens: 50 }) // system (without DN — no notes mocked, so identical)
       .mockResolvedValueOnce({ input_tokens: 80 }) // tools
       .mockResolvedValueOnce({ input_tokens: 12 }); // user_input
       // No history call: messages array has only the latest user msg
@@ -275,12 +283,13 @@ describe('runAgent records section_tokens budget snapshot', () => {
       channelId: 'c1',
     });
 
-    expect(countTokensMock).toHaveBeenCalledTimes(4);
+    expect(countTokensMock).toHaveBeenCalledTimes(5);
     const doc = fakeDb
       .collection('token_usage')
       ._docs.find((d) => d.kind === 'anthropic_text');
     expect(doc.meta.section_tokens).toEqual({
       system: 45,
+      director_notes: 0,
       tools: 75,
       user_input: 7,
       message_history: 0,

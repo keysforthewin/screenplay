@@ -19,7 +19,7 @@ function envelope({ kind, discordUser, channelId, model, tokens, meta }) {
   };
 }
 
-const SECTION_KEYS = ['system', 'tools', 'message_history', 'user_input'];
+const SECTION_KEYS = ['system', 'director_notes', 'tools', 'message_history', 'user_input'];
 
 function normalizeSectionTokens(sectionTokens) {
   if (!sectionTokens || typeof sectionTokens !== 'object') return null;
@@ -202,7 +202,13 @@ export async function aggregateSectionTokens({ since = null, userQuery = null } 
   const q =
     typeof userQuery === 'string' && userQuery.trim() ? userQuery.trim().toLowerCase() : null;
 
-  const totals = { system: 0, tools: 0, message_history: 0, user_input: 0 };
+  const totals = {
+    system: 0,
+    director_notes: 0,
+    tools: 0,
+    message_history: 0,
+    user_input: 0,
+  };
   let sampleCount = 0;
   for (const doc of docs) {
     const sec = doc?.meta?.section_tokens;
@@ -212,6 +218,7 @@ export async function aggregateSectionTokens({ since = null, userQuery = null } 
       if (!name.includes(q)) continue;
     }
     totals.system += Number(sec.system) || 0;
+    totals.director_notes += Number(sec.director_notes) || 0;
     totals.tools += Number(sec.tools) || 0;
     totals.message_history += Number(sec.message_history) || 0;
     totals.user_input += Number(sec.user_input) || 0;
@@ -219,10 +226,22 @@ export async function aggregateSectionTokens({ since = null, userQuery = null } 
   }
 
   const total =
-    totals.system + totals.tools + totals.message_history + totals.user_input;
-  const averages = { system: 0, tools: 0, message_history: 0, user_input: 0, total: 0 };
+    totals.system +
+    totals.director_notes +
+    totals.tools +
+    totals.message_history +
+    totals.user_input;
+  const averages = {
+    system: 0,
+    director_notes: 0,
+    tools: 0,
+    message_history: 0,
+    user_input: 0,
+    total: 0,
+  };
   if (sampleCount > 0) {
     averages.system = Math.round(totals.system / sampleCount);
+    averages.director_notes = Math.round(totals.director_notes / sampleCount);
     averages.tools = Math.round(totals.tools / sampleCount);
     averages.message_history = Math.round(totals.message_history / sampleCount);
     averages.user_input = Math.round(totals.user_input / sampleCount);

@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import * as Characters from '../mongo/characters.js';
 import * as Plots from '../mongo/plots.js';
 import * as Prompts from '../mongo/prompts.js';
+import * as DirectorNotes from '../mongo/directorNotes.js';
 import * as Files from '../mongo/files.js';
 import * as Images from '../mongo/images.js';
 import * as Attachments from '../mongo/attachments.js';
@@ -675,6 +676,37 @@ export const HANDLERS = {
   async update_character_template({ add = [], remove = [] }) {
     const tpl = await Prompts.updateCharacterTemplateFields({ add, remove });
     return `Template updated. New fields:\n${compact(tpl.fields)}`;
+  },
+
+  async list_director_notes() {
+    const doc = await DirectorNotes.getDirectorNotes();
+    return compact(
+      (doc.notes || []).map((n) => ({
+        _id: n._id?.toString(),
+        text: n.text,
+        created_at: n.created_at,
+      })),
+    );
+  },
+
+  async add_director_note({ text, position } = {}) {
+    const note = await DirectorNotes.addDirectorNote({ text, position });
+    return `Added director's note ${note._id}: ${preview(note.text)}`;
+  },
+
+  async edit_director_note({ note_id, text } = {}) {
+    const note = await DirectorNotes.editDirectorNote({ noteId: note_id, text });
+    return `Updated director's note ${note._id}: ${preview(note.text)}`;
+  },
+
+  async remove_director_note({ note_id } = {}) {
+    await DirectorNotes.removeDirectorNote({ noteId: note_id });
+    return `Removed director's note ${note_id}.`;
+  },
+
+  async reorder_director_notes({ note_ids } = {}) {
+    const reordered = await DirectorNotes.reorderDirectorNotes({ noteIds: note_ids });
+    return `Reordered ${reordered.length} director's note(s).`;
   },
 
   async get_plot() {
@@ -1741,6 +1773,7 @@ export const HANDLERS = {
       lines.push(`| Section | Avg tokens | % of total |`);
       lines.push(`|---|---:|---:|`);
       lines.push(`| System prompt | ${fmt(avg.system)} | ${pct(avg.system)} |`);
+      lines.push(`| Director's notes | ${fmt(avg.director_notes)} | ${pct(avg.director_notes)} |`);
       lines.push(`| Tool definitions | ${fmt(avg.tools)} | ${pct(avg.tools)} |`);
       lines.push(`| Message history | ${fmt(avg.message_history)} | ${pct(avg.message_history)} |`);
       lines.push(`| User input | ${fmt(avg.user_input)} | ${pct(avg.user_input)} |`);

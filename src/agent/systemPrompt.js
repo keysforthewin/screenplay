@@ -5,11 +5,28 @@ function summarizeBeat(b) {
   return `- ${b.order}. ${b.name}${preview ? ` — ${preview}` : ''}${bodyMark}`;
 }
 
-export function buildSystemPrompt({ characters, characterTemplate, plotTemplate, plot }) {
+export function buildSystemPrompt({
+  characters,
+  characterTemplate,
+  plotTemplate,
+  plot,
+  directorNotes,
+}) {
   const charList = characters.length ? characters.map((c) => `- ${c.name}`).join('\n') : '(none yet)';
   const fieldList = (characterTemplate.fields || [])
     .map((f) => `- ${f.name}${f.required ? ' [REQUIRED]' : ''}: ${f.description}`)
     .join('\n');
+
+  const directorNotesBlock =
+    directorNotes === null
+      ? ''
+      : (() => {
+          const list = Array.isArray(directorNotes?.notes) ? directorNotes.notes : [];
+          const body = list.length
+            ? list.map((n) => `- ${n.text}`).join('\n')
+            : '(none yet — when the user gives a directive that doesn\'t fit a specific character or beat, call `add_director_note` to capture it here.)';
+          return `\n# Director's Notes\nThe director's standing rules for this screenplay. Apply them when creating characters, beats, or content; the user can override any rule for a specific case but assume them by default.\n${body}\n`;
+        })();
 
   const beats = [...(plot?.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
   const beatCount = beats.length;
@@ -70,7 +87,7 @@ When the user says things like "from now on, all characters should have X" or "r
 # Plot template
 Synopsis guidance: ${plotTemplate.synopsis_guidance}
 Beat guidance: ${plotTemplate.beat_guidance}
-
+${directorNotesBlock}
 # Tools
 You have CRUD tools for characters, plot, and beats, plus tools to update the character template. Always call \`get_character\` or \`get_beat\` before answering questions about a specific entity — don't make things up.
 
