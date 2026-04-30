@@ -6,3 +6,4 @@ dist/
 data/
 mongo-data/
 exports/
+backups/

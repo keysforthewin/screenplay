@@ -102,6 +102,7 @@ rsync -avz --delete --human-readable \
   --exclude='*.log' \
   --exclude='mongo-data/' \
   --exclude='exports/' \
+  --exclude='backups/' \
   --exclude='coverage/' \
   --exclude='tmp/' \
   --exclude='.DS_Store' \
