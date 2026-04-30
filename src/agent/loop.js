@@ -18,6 +18,40 @@ const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
 const MAX_TOOL_ITERATIONS = 12;
 
+const SECTION_PAD_MESSAGES = [{ role: 'user', content: 'x' }];
+
+function stripImageBlocks(message) {
+  if (!message || !Array.isArray(message.content)) return message;
+  const filtered = message.content.filter((b) => b && b.type !== 'image');
+  return {
+    ...message,
+    content: filtered.length ? filtered : [{ type: 'text', text: '' }],
+  };
+}
+
+export async function measureSectionTokens({ model, system, tools, messages }) {
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  const lastUser = stripImageBlocks(messages[messages.length - 1]);
+  const historyMsgs = messages.slice(0, -1);
+  const [baseline, sysC, toolsC, userC, histC] = await Promise.all([
+    client.messages.countTokens({ model, messages: SECTION_PAD_MESSAGES }),
+    client.messages.countTokens({ model, system, messages: SECTION_PAD_MESSAGES }),
+    client.messages.countTokens({ model, tools, messages: SECTION_PAD_MESSAGES }),
+    client.messages.countTokens({ model, messages: [lastUser] }),
+    historyMsgs.length
+      ? client.messages.countTokens({ model, messages: historyMsgs })
+      : Promise.resolve({ input_tokens: 0 }),
+  ]);
+  const b = Number(baseline?.input_tokens) || 0;
+  const sub = (c) => Math.max(0, (Number(c?.input_tokens) || 0) - b);
+  return {
+    system: sub(sysC),
+    tools: sub(toolsC),
+    user_input: sub(userC),
+    message_history: historyMsgs.length ? sub(histC) : 0,
+  };
+}
+
 async function buildSystem() {
   const [characters, characterTemplate, plotTemplate, plot] = await Promise.all([
     listCharacters(),
@@ -62,25 +96,37 @@ export async function dispatchToolUses(
   attachmentPaths,
   context = null,
   dispatchFn = dispatchTool,
+  toolStats = null,
 ) {
   const results = [];
   for (const tu of toolUses) {
     logger.info(`tool_use: ${tu.name}`);
+    let resultText = '';
     try {
       const raw = await dispatchFn(tu.name, tu.input, context);
       const result = interceptAttachment(raw, attachmentPaths);
+      resultText =
+        typeof result === 'string' ? result : JSON.stringify(result ?? '');
       results.push({ type: 'tool_result', tool_use_id: tu.id, content: result });
     } catch (e) {
       // Defense in depth: dispatchTool already catches handler errors, but if anything
       // here throws (interceptAttachment, future code) we MUST still emit a tool_result
       // for this tool_use_id, otherwise the next Anthropic request 400s.
       logger.warn(`tool dispatch failed ${tu.name}: ${e.message}`);
+      const errMsg = `Tool error (${tu.name}): ${e.message}`;
+      resultText = errMsg;
       results.push({
         type: 'tool_result',
         tool_use_id: tu.id,
-        content: `Tool error (${tu.name}): ${e.message}`,
+        content: errMsg,
         is_error: true,
       });
+    }
+    if (toolStats instanceof Map) {
+      const slot = toolStats.get(tu.name) || { count: 0, result_tokens: 0 };
+      slot.count += 1;
+      slot.result_tokens += Math.ceil(resultText.length / 4);
+      toolStats.set(tu.name, slot);
     }
   }
   return results;
@@ -99,6 +145,16 @@ function interceptAttachment(result, attachmentPaths) {
     const note = sep >= 0 ? rest.slice(sep + 1) : '';
     attachmentPaths.push(filepath);
     return note || 'Image queued for upload.';
+  }
+  if (result.startsWith('__IMAGE_PATHS__:')) {
+    const rest = result.slice('__IMAGE_PATHS__:'.length);
+    const sep = rest.indexOf('|');
+    const pathsPart = sep >= 0 ? rest.slice(0, sep) : rest;
+    const note = sep >= 0 ? rest.slice(sep + 1) : '';
+    for (const p of pathsPart.split('\t')) {
+      if (p) attachmentPaths.push(p);
+    }
+    return note || 'Images queued for upload.';
   }
   if (result.startsWith('__CSV_PATH__:')) {
     const rest = result.slice('__CSV_PATH__:'.length);
@@ -150,6 +206,8 @@ export async function runAgent({
     cache_read_input_tokens: 0,
     iteration_count: 0,
   };
+  const toolStats = new Map();
+  let sectionTokensPromise = null;
 
   const imageTokenInfo = await computeImageInputTokensForAttachments(attachments);
 
@@ -169,11 +227,14 @@ export async function runAgent({
         0,
         anthropicTotals.input_tokens - imageTokenInfo.total,
       );
+      const sectionTokens = sectionTokensPromise ? await sectionTokensPromise : null;
       await recordAnthropicTextUsage({
         discordUser,
         channelId,
         model,
         totals: { ...anthropicTotals, input_tokens: adjustedInput },
+        toolStats,
+        sectionTokens,
       });
       if (imageTokenInfo.total > 0) {
         await recordAnthropicImageInputUsage({
@@ -192,6 +253,18 @@ export async function runAgent({
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
       const system = await buildSystem();
       logger.debug(`agent iteration ${i}, ${messages.length} messages`);
+
+      if (i === 0) {
+        sectionTokensPromise = measureSectionTokens({
+          model,
+          system,
+          tools: TOOLS,
+          messages,
+        }).catch((e) => {
+          logger.warn(`section tokens measurement failed: ${e.message}`);
+          return null;
+        });
+      }
 
       const resp = await client.messages.create({
         model,
@@ -228,7 +301,13 @@ export async function runAgent({
       }
 
       const toolUses = resp.content.filter((b) => b.type === 'tool_use');
-      const results = await dispatchToolUses(toolUses, attachmentPaths, context);
+      const results = await dispatchToolUses(
+        toolUses,
+        attachmentPaths,
+        context,
+        dispatchTool,
+        toolStats,
+      );
       messages.push({ role: 'user', content: results });
     }
 

@@ -945,7 +945,7 @@ export const TOOLS = [
   },
   {
     name: 'token_usage_report',
-    description: 'Show per-Discord-user token consumption for a rolling time window. Tracks three independent classes (each billed at its own rate): Anthropic text (LLM input + output), Anthropic image input (when users upload images), and Gemini image generation (Nano Banana). Returns a Markdown leaderboard table plus a stacked bar chart PNG. Optionally filter to a single user by Discord display name (case-insensitive, exact match preferred, substring fallback).',
+    description: 'Show token consumption for a rolling time window. Returns three chart PNGs and a combined Markdown summary: (1) per-Discord-user stacked bar chart across three billed classes — Anthropic text, Anthropic image input, Gemini image gen; (2) per-tool token chart showing estimated tokens consumed by each tool\'s tool_result payloads (top 20 tools); (3) per-tool invocation count chart (top 20 tools). Use this to diagnose which tools are bloating context. Optionally filter by Discord display name (case-insensitive substring).',
     input_schema: {
       type: 'object',
       properties: {
