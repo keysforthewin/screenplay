@@ -79,6 +79,13 @@ export async function listAttachmentsForBeat(beatId) {
     .toArray();
 }
 
+export async function listAttachmentsForDirectorNote(noteId) {
+  return filesCol()
+    .find({ 'metadata.owner_type': 'director_note', 'metadata.owner_id': toObjectId(noteId) })
+    .sort({ uploadDate: 1 })
+    .toArray();
+}
+
 export async function setAttachmentOwner(attachmentId, { ownerType, ownerId }) {
   const oid = toObjectId(attachmentId);
   await filesCol().updateOne(
@@ -105,6 +112,10 @@ export async function deleteAttachments(attachmentIds) {
   for (const id of attachmentIds || []) {
     if (id) await deleteAttachment(id);
   }
+}
+
+export function openAttachmentDownloadStream(attachmentId) {
+  return getBucket().openDownloadStream(toObjectId(attachmentId));
 }
 
 export async function readAttachmentBuffer(attachmentId) {

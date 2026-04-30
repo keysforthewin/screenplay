@@ -131,6 +131,16 @@ async function resolveBeat(identifier, { allowCurrent = true } = {}) {
   return b;
 }
 
+async function resolveDirectorNote(noteId) {
+  if (!noteId || typeof noteId !== 'string') {
+    throw new Error('A note_id is required.');
+  }
+  const doc = await DirectorNotes.getDirectorNotes();
+  const note = DirectorNotes.getDirectorNote(doc.notes || [], noteId);
+  if (!note) throw new Error(`Director's note not found: ${noteId}`);
+  return note;
+}
+
 const CHARACTER_TEXT_FIELDS = ['background_story', 'origin_story', 'arc', 'events', 'memes'];
 const BEAT_TEXT_FIELDS = ['name', 'desc', 'body'];
 
@@ -790,6 +800,159 @@ export const HANDLERS = {
     return `Reordered ${reordered.length} director's note(s).`;
   },
 
+  async add_director_note_image({ note_id, source_url, filename, caption, set_as_main } = {}) {
+    const target = await resolveDirectorNote(note_id);
+    const file = await Images.uploadImageFromUrl({
+      sourceUrl: source_url,
+      filename,
+      ownerType: 'director_note',
+      ownerId: target._id,
+    });
+    const meta = {
+      _id: file._id,
+      filename: file.filename,
+      content_type: file.content_type,
+      size: file.size,
+      source: 'upload',
+      prompt: null,
+      generated_by: null,
+      caption: caption?.trim() || null,
+      uploaded_at: file.uploaded_at,
+    };
+    const { is_main } = await DirectorNotes.pushDirectorNoteImage(
+      target._id.toString(),
+      meta,
+      set_as_main,
+    );
+    return `Added image to director's note ${target._id}.\n${compact({
+      _id: meta._id.toString(),
+      filename: meta.filename,
+      content_type: meta.content_type,
+      size: meta.size,
+      is_main,
+    })}`;
+  },
+
+  async list_director_note_images({ note_id } = {}) {
+    const target = await resolveDirectorNote(note_id);
+    return compact({
+      note_id: target._id.toString(),
+      main_image_id: target.main_image_id ? target.main_image_id.toString() : null,
+      images: (target.images || []).map((i) => ({
+        _id: i._id.toString(),
+        filename: i.filename,
+        content_type: i.content_type,
+        size: i.size,
+        source: i.source || 'upload',
+        prompt: i.prompt || null,
+        caption: i.caption || null,
+        uploaded_at: i.uploaded_at,
+      })),
+    });
+  },
+
+  async set_main_director_note_image({ note_id, image_id } = {}) {
+    const updated = await DirectorNotes.setDirectorNoteMainImage(note_id, image_id);
+    return `Main image for director's note ${updated._id} set to ${updated.main_image_id.toString()}.`;
+  },
+
+  async remove_director_note_image({ note_id, image_id } = {}) {
+    const { removed, note: updated } = await DirectorNotes.pullDirectorNoteImage(
+      note_id,
+      image_id,
+    );
+    await Images.deleteImage(removed);
+    return `Removed image ${removed.toString()} from director's note ${updated._id}. Main image is now ${
+      updated.main_image_id ? updated.main_image_id.toString() : 'none'
+    }.`;
+  },
+
+  async attach_library_image_to_director_note({ image_id, note_id, set_as_main } = {}) {
+    const target = await resolveDirectorNote(note_id);
+    const file = await Images.findImageFile(image_id);
+    if (!file) throw new Error(`Image not found: ${image_id}`);
+    if (
+      file.metadata?.owner_type === 'director_note' &&
+      file.metadata?.owner_id &&
+      file.metadata.owner_id.equals(target._id)
+    ) {
+      return `Image ${image_id} is already attached to this note.`;
+    }
+    if (file.metadata?.owner_type && file.metadata.owner_type !== null) {
+      throw new Error(
+        `Image ${image_id} is currently attached to a ${file.metadata.owner_type}. Detach it first.`,
+      );
+    }
+    await Images.setImageOwner(image_id, { ownerType: 'director_note', ownerId: target._id });
+    const meta = {
+      _id: file._id,
+      filename: file.filename,
+      content_type: file.contentType,
+      size: file.length,
+      source: file.metadata?.source || 'upload',
+      prompt: file.metadata?.prompt || null,
+      generated_by: file.metadata?.generated_by || null,
+      caption: null,
+      uploaded_at: file.uploadDate,
+    };
+    const { is_main } = await DirectorNotes.pushDirectorNoteImage(
+      target._id.toString(),
+      meta,
+      set_as_main,
+    );
+    return `Attached image to director's note ${target._id}${is_main ? ' (now main image)' : ''}.`;
+  },
+
+  async add_director_note_attachment({ note_id, source_url, filename, caption } = {}) {
+    const target = await resolveDirectorNote(note_id);
+    const file = await Attachments.uploadAttachmentFromUrl({
+      sourceUrl: source_url,
+      filename,
+      ownerType: 'director_note',
+      ownerId: target._id,
+    });
+    const meta = {
+      _id: file._id,
+      filename: file.filename,
+      content_type: file.content_type,
+      size: file.size,
+      caption: caption?.trim() || null,
+      uploaded_at: file.uploaded_at,
+    };
+    await DirectorNotes.pushDirectorNoteAttachment(target._id.toString(), meta);
+    return `Added attachment to director's note ${target._id}.\n${compact({
+      _id: meta._id.toString(),
+      filename: meta.filename,
+      content_type: meta.content_type,
+      size: meta.size,
+      caption: meta.caption,
+    })}`;
+  },
+
+  async list_director_note_attachments({ note_id } = {}) {
+    const target = await resolveDirectorNote(note_id);
+    return compact({
+      note_id: target._id.toString(),
+      attachments: (target.attachments || []).map((a) => ({
+        _id: a._id.toString(),
+        filename: a.filename,
+        content_type: a.content_type,
+        size: a.size,
+        caption: a.caption || null,
+        uploaded_at: a.uploaded_at,
+      })),
+    });
+  },
+
+  async remove_director_note_attachment({ note_id, attachment_id } = {}) {
+    const { removed, note: updated } = await DirectorNotes.pullDirectorNoteAttachment(
+      note_id,
+      attachment_id,
+    );
+    await Attachments.deleteAttachment(removed);
+    return `Removed attachment ${removed.toString()} from director's note ${updated._id}.`;
+  },
+
   async get_plot() {
     const plot = await Plots.getPlot();
     return compact({
@@ -996,8 +1159,14 @@ export const HANDLERS = {
   },
 
   async show_image({ image_id }) {
-    const { path: filepath } = await Images.streamImageToTmp(image_id);
-    return `__IMAGE_PATH__:${filepath}`;
+    const { path: filepath, file } = await Images.streamImageToTmp(image_id);
+    return `__IMAGE_PATH__:${filepath}||${file._id.toString()}`;
+  },
+
+  async show_attachment({ attachment_id }) {
+    const { path: filepath, file } = await Attachments.streamAttachmentToTmp(attachment_id);
+    const note = `Showing attachment ${file.filename}.`;
+    return `__ATTACHMENT_PATH__:${filepath}|${note}|${file._id.toString()}`;
   },
 
   async generate_image(
@@ -1094,7 +1263,7 @@ export const HANDLERS = {
     logger.info(
       `generate_image: beat=${current?.name || '-'} bytes=${buffer.length} ${Date.now() - generateT0}ms`,
     );
-    return `__IMAGE_PATH__:${filepath}|Generated image (${file._id.toString()}) ${where}.`;
+    return `__IMAGE_PATH__:${filepath}|Generated image (${file._id.toString()}) ${where}.|${file._id.toString()}`;
   },
 
   async export_pdf({ title }) {
