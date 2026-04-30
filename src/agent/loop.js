@@ -10,6 +10,7 @@ import { getCharacterTemplate, getPlotTemplate } from '../mongo/prompts.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import { getPlot } from '../mongo/plots.js';
 import { fetchImageFromUrl } from '../mongo/imageBytes.js';
+import { imageLink, attachmentLink } from '../server/index.js';
 import { computeAnthropicImageTokens } from './imageTokens.js';
 import {
   recordAnthropicTextUsage,
@@ -159,6 +160,7 @@ export async function dispatchToolUses(
   context = null,
   dispatchFn = dispatchTool,
   toolStats = null,
+  attachmentLinks = null,
 ) {
   const results = [];
   for (const tu of toolUses) {
@@ -167,7 +169,7 @@ export async function dispatchToolUses(
     let resultText = '';
     try {
       const raw = await dispatchFn(tu.name, tu.input, context);
-      const result = interceptAttachment(raw, attachmentPaths);
+      const result = interceptAttachment(raw, attachmentPaths, attachmentLinks);
       resultText =
         typeof result === 'string' ? result : JSON.stringify(result ?? '');
       results.push({ type: 'tool_result', tool_use_id: tu.id, content: result });
@@ -196,35 +198,92 @@ export async function dispatchToolUses(
   return results;
 }
 
-function interceptAttachment(result, attachmentPaths) {
+const HEX24_RE = /^[a-f0-9]{24}$/i;
+
+// Parses a sentinel payload of the form:
+//   <path>
+//   <path>|<note>
+//   <path>|<note>|<id>           (id = 24-hex GridFS file id)
+// Note may itself contain '|' characters, so we look at the LAST segment and
+// only treat it as an id if it matches HEX24_RE; otherwise the whole rest is
+// note text.
+function parsePayload(rest) {
+  const firstSep = rest.indexOf('|');
+  if (firstSep < 0) return { path: rest, note: '', id: null };
+  const path = rest.slice(0, firstSep);
+  const tail = rest.slice(firstSep + 1);
+  const lastSep = tail.lastIndexOf('|');
+  if (lastSep < 0) return { path, note: tail, id: null };
+  const candidate = tail.slice(lastSep + 1);
+  if (HEX24_RE.test(candidate)) {
+    return { path, note: tail.slice(0, lastSep), id: candidate };
+  }
+  return { path, note: tail, id: null };
+}
+
+function pushLink(attachmentLinks, link) {
+  if (link && Array.isArray(attachmentLinks)) attachmentLinks.push(link);
+}
+
+function interceptAttachment(result, attachmentPaths, attachmentLinks = null) {
   if (typeof result !== 'string') return result;
   if (result.startsWith('__PDF_PATH__:')) {
     attachmentPaths.push(result.slice('__PDF_PATH__:'.length));
     return 'PDF generated and queued for upload.';
   }
   if (result.startsWith('__IMAGE_PATH__:')) {
-    const rest = result.slice('__IMAGE_PATH__:'.length);
-    const sep = rest.indexOf('|');
-    const filepath = sep >= 0 ? rest.slice(0, sep) : rest;
-    const note = sep >= 0 ? rest.slice(sep + 1) : '';
+    const { path: filepath, note, id } = parsePayload(
+      result.slice('__IMAGE_PATH__:'.length),
+    );
     attachmentPaths.push(filepath);
+    pushLink(attachmentLinks, imageLink(id));
     return note || 'Image queued for upload.';
   }
   if (result.startsWith('__IMAGE_PATHS__:')) {
+    // Format: <paths_tab_separated>|<note>|<ids_tab_separated>
+    // (Old form without ids still works — last segment must be hex24 to count.)
     const rest = result.slice('__IMAGE_PATHS__:'.length);
-    const sep = rest.indexOf('|');
-    const pathsPart = sep >= 0 ? rest.slice(0, sep) : rest;
-    const note = sep >= 0 ? rest.slice(sep + 1) : '';
-    for (const p of pathsPart.split('\t')) {
-      if (p) attachmentPaths.push(p);
+    const firstSep = rest.indexOf('|');
+    let pathsPart = rest;
+    let note = '';
+    let idsPart = '';
+    if (firstSep >= 0) {
+      pathsPart = rest.slice(0, firstSep);
+      const tail = rest.slice(firstSep + 1);
+      const lastSep = tail.lastIndexOf('|');
+      if (lastSep >= 0) {
+        const candidate = tail.slice(lastSep + 1);
+        const ids = candidate.split('\t');
+        if (ids.length && ids.every((x) => HEX24_RE.test(x))) {
+          idsPart = candidate;
+          note = tail.slice(0, lastSep);
+        } else {
+          note = tail;
+        }
+      } else {
+        note = tail;
+      }
+    }
+    const paths = pathsPart.split('\t').filter(Boolean);
+    for (const p of paths) attachmentPaths.push(p);
+    if (idsPart) {
+      const ids = idsPart.split('\t');
+      for (const id of ids) pushLink(attachmentLinks, imageLink(id));
     }
     return note || 'Images queued for upload.';
   }
+  if (result.startsWith('__ATTACHMENT_PATH__:')) {
+    const { path: filepath, note, id } = parsePayload(
+      result.slice('__ATTACHMENT_PATH__:'.length),
+    );
+    attachmentPaths.push(filepath);
+    pushLink(attachmentLinks, attachmentLink(id));
+    return note || 'File queued for upload.';
+  }
   if (result.startsWith('__CSV_PATH__:')) {
-    const rest = result.slice('__CSV_PATH__:'.length);
-    const sep = rest.indexOf('|');
-    const filepath = sep >= 0 ? rest.slice(0, sep) : rest;
-    const note = sep >= 0 ? rest.slice(sep + 1) : '';
+    const { path: filepath, note } = parsePayload(
+      result.slice('__CSV_PATH__:'.length),
+    );
     attachmentPaths.push(filepath);
     return note || 'CSV generated and queued for upload.';
   }
@@ -260,6 +319,7 @@ export async function runAgent({
   ];
   const agentStart = messages.length;
   const attachmentPaths = [];
+  const attachmentLinks = [];
   const context = { discordUser, channelId };
   const model = config.anthropic.model;
 
@@ -383,7 +443,7 @@ export async function runAgent({
           .map((b) => b.text)
           .join('\n')
           .trim();
-        return { text, attachmentPaths, agentMessages: messages.slice(agentStart) };
+        return { text, attachmentPaths, attachmentLinks, agentMessages: messages.slice(agentStart) };
       }
 
       const toolUses = resp.content.filter((b) => b.type === 'tool_use');
@@ -393,6 +453,7 @@ export async function runAgent({
         context,
         dispatchTool,
         toolStats,
+        attachmentLinks,
       );
       messages.push({ role: 'user', content: results });
 
@@ -405,6 +466,7 @@ export async function runAgent({
     return {
       text: '(Agent hit max tool iterations.)',
       attachmentPaths,
+      attachmentLinks,
       agentMessages: messages.slice(agentStart),
     };
   } finally {

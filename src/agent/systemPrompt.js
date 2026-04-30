@@ -203,9 +203,17 @@ function buildVolatileText({ characters, plot, directorNotes }) {
       : (() => {
           const list = Array.isArray(directorNotes?.notes) ? directorNotes.notes : [];
           const body = list.length
-            ? list.map((n) => `- ${n.text}`).join('\n')
+            ? list.map((n) => {
+                const imgCount = Array.isArray(n.images) ? n.images.length : 0;
+                const fileCount = Array.isArray(n.attachments) ? n.attachments.length : 0;
+                const parts = [];
+                if (imgCount) parts.push(`${imgCount} image${imgCount === 1 ? '' : 's'}`);
+                if (fileCount) parts.push(`${fileCount} file${fileCount === 1 ? '' : 's'}`);
+                const suffix = parts.length ? ` (${parts.join(', ')})` : '';
+                return `- ${n.text}${suffix}`;
+              }).join('\n')
             : '(none yet — when the user gives a directive that doesn\'t fit a specific character or beat, call `add_director_note` to capture it here.)';
-          return `\n# Director's Notes\nThe director's standing rules for this screenplay. Apply them when creating characters, beats, or content; the user can override any rule for a specific case but assume them by default.\n${body}\n`;
+          return `\n# Director's Notes\nThe director's standing rules for this screenplay. Apply them when creating characters, beats, or content; the user can override any rule for a specific case but assume them by default. Notes can also carry images and files via add_director_note_image / add_director_note_attachment — list_director_note_images / list_director_note_attachments enumerate them when needed.\n${body}\n`;
         })();
 
   return `# Current state

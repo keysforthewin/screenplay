@@ -17,14 +17,21 @@ export function chunk(text) {
   return out;
 }
 
-function buildPdfLinkMessage(files) {
-  const links = (files || []).map(pdfLink).filter(Boolean);
-  if (!links.length) return null;
-  if (links.length === 1) return `PDF download fallback: ${links[0]}`;
-  return `PDF download fallbacks:\n${links.map((l) => `- ${l}`).join('\n')}`;
+function buildLinkFooter(files, extraLinks) {
+  const all = [];
+  for (const f of files || []) {
+    const link = pdfLink(f);
+    if (link) all.push(link);
+  }
+  for (const link of extraLinks || []) {
+    if (link) all.push(link);
+  }
+  if (!all.length) return null;
+  if (all.length === 1) return `File link: ${all[0]}`;
+  return `File links:\n${all.map((l) => `- ${l}`).join('\n')}`;
 }
 
-export async function sendReply(channel, text, files = []) {
+export async function sendReply(channel, text, files = [], links = []) {
   const parts = chunk(text);
   for (let i = 0; i < parts.length; i++) {
     const isLast = i === parts.length - 1;
@@ -34,7 +41,7 @@ export async function sendReply(channel, text, files = []) {
   if (!parts.length && files.length) {
     await channel.send({ files: files.map((f) => new AttachmentBuilder(f)) });
   }
-  const linkMsg = buildPdfLinkMessage(files);
+  const linkMsg = buildLinkFooter(files, links);
   if (linkMsg) {
     await channel.send({ content: linkMsg });
   }

@@ -209,6 +209,116 @@ export const TOOLS = [
     },
   },
   {
+    name: 'add_director_note_image',
+    description:
+      "Attach an image (PNG, JPG, or WEBP, up to 25 MB) to a director's note. The image is downloaded from `source_url` and stored in MongoDB GridFS (the `images` bucket). `source_url` may be either (a) one of the URLs listed in the \"Attached images\" prelude when the user uploaded an image via the Discord client, or (b) a public HTTP(S) URL the user pasted into chat. The first image attached to a note auto-becomes its main; pass `set_as_main: true` to override an existing main. Use when the user wants visual reference attached to a screenplay-wide rule (e.g., a colour palette swatch on a \"keep the palette muted\" note). Find the right note_id with list_director_notes.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        note_id: { type: 'string', description: '24-char hex _id of the note.' },
+        source_url: { type: 'string', description: 'HTTP(S) URL to the image' },
+        filename: { type: 'string' },
+        caption: { type: 'string' },
+        set_as_main: { type: 'boolean' },
+      },
+      required: ['note_id', 'source_url'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'list_director_note_images',
+    description: "List the images attached to a director's note (filenames, sizes, content types, captions, source, and which one is currently the main image).",
+    input_schema: {
+      type: 'object',
+      properties: {
+        note_id: { type: 'string', description: '24-char hex _id of the note.' },
+      },
+      required: ['note_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'set_main_director_note_image',
+    description: "Promote an existing image to be the note's main image. The image_id must already be attached to the note (use list_director_note_images to find it).",
+    input_schema: {
+      type: 'object',
+      properties: {
+        note_id: { type: 'string', description: '24-char hex _id of the note.' },
+        image_id: { type: 'string', description: 'GridFS file _id (24-char hex)' },
+      },
+      required: ['note_id', 'image_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'remove_director_note_image',
+    description: "Delete an image from a director's note. Removes both the GridFS file and the entry on the note. If the deleted image was the main image, the next image (if any) is promoted automatically.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        note_id: { type: 'string', description: '24-char hex _id of the note.' },
+        image_id: { type: 'string', description: 'GridFS file _id (24-char hex)' },
+      },
+      required: ['note_id', 'image_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'attach_library_image_to_director_note',
+    description: "Attach a library image (one with no current owner) to a director's note. The image is moved out of the library — list_library_images will no longer show it. If `set_as_main` is true, the image becomes the note's main image.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        image_id: { type: 'string' },
+        note_id: { type: 'string', description: '24-char hex _id of the note.' },
+        set_as_main: { type: 'boolean' },
+      },
+      required: ['image_id', 'note_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'add_director_note_attachment',
+    description:
+      "Attach a NON-IMAGE file (audio, video, PDF, text, archive — anything up to 100 MB) to a director's note. The file is downloaded from `source_url` and stored in MongoDB GridFS (the `attachments` bucket). Use this for files in the \"Attached files:\" prelude (NOT the \"Attached images:\" prelude — those go through `add_director_note_image` instead). Useful for reference docs or audio that backs a screenplay-wide directive (e.g., a tone-of-voice sample on a \"keep the dialect Appalachian\" note).",
+    input_schema: {
+      type: 'object',
+      properties: {
+        note_id: { type: 'string', description: '24-char hex _id of the note.' },
+        source_url: { type: 'string', description: 'HTTP(S) URL to the file' },
+        filename: { type: 'string' },
+        caption: { type: 'string', description: 'Optional short note about why this file is attached.' },
+      },
+      required: ['note_id', 'source_url'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'list_director_note_attachments',
+    description: "List the non-image files attached to a director's note (filenames, sizes, content types, captions). Image attachments are listed separately by list_director_note_images.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        note_id: { type: 'string', description: '24-char hex _id of the note.' },
+      },
+      required: ['note_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'remove_director_note_attachment',
+    description: "Delete a non-image attachment from a director's note. Removes the GridFS file and the entry on the note.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        note_id: { type: 'string', description: '24-char hex _id of the note.' },
+        attachment_id: { type: 'string', description: 'GridFS file _id (24-char hex)' },
+      },
+      required: ['note_id', 'attachment_id'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'get_plot',
     description: 'Return the current plot document (synopsis, beats, notes, current_beat_id).',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
@@ -441,6 +551,16 @@ export const TOOLS = [
       type: 'object',
       properties: { image_id: { type: 'string' } },
       required: ['image_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'show_attachment',
+    description: "Re-deliver a stored non-image attachment (any attachment_id from a beat, character, or director's note) by uploading it to the Discord reply. Use when the user asks to retrieve a file they previously attached (\"send me back that recording\", \"give me the PDF I attached to that beat\"). For images, use show_image instead.",
+    input_schema: {
+      type: 'object',
+      properties: { attachment_id: { type: 'string', description: 'GridFS file _id (24-char hex)' } },
+      required: ['attachment_id'],
       additionalProperties: false,
     },
   },

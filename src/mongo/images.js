@@ -115,6 +115,13 @@ export async function listImagesForBeat(beatId) {
     .toArray();
 }
 
+export async function listImagesForDirectorNote(noteId) {
+  return filesCol()
+    .find({ 'metadata.owner_type': 'director_note', 'metadata.owner_id': toObjectId(noteId) })
+    .sort({ uploadDate: 1 })
+    .toArray();
+}
+
 export async function setImageOwner(imageId, { ownerType, ownerId }) {
   const oid = toObjectId(imageId);
   await filesCol().updateOne(
@@ -145,6 +152,10 @@ export async function deleteImages(imageIds) {
   for (const id of imageIds || []) {
     if (id) await deleteImage(id);
   }
+}
+
+export function openImageDownloadStream(imageId) {
+  return getBucket().openDownloadStream(toObjectId(imageId));
 }
 
 export async function readImageBuffer(imageId) {

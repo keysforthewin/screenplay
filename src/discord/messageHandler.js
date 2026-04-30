@@ -79,9 +79,10 @@ export async function handleMessage(msg) {
         channelId: msg.channelId,
       });
       attachmentPaths = result.attachmentPaths;
+      const attachmentLinks = result.attachmentLinks || [];
       const replyText = result.text || '(no reply)';
       logger.info(
-        `agent done in ${Date.now() - agentT0}ms (${result.agentMessages.length} turns, ${attachmentPaths.length} attach)`,
+        `agent done in ${Date.now() - agentT0}ms (${result.agentMessages.length} turns, ${attachmentPaths.length} attach, ${attachmentLinks.length} link)`,
       );
 
       try {
@@ -96,7 +97,7 @@ export async function handleMessage(msg) {
       }
 
       clearInterval(typingTimer);
-      await sendReply(msg.channel, replyText, attachmentPaths);
+      await sendReply(msg.channel, replyText, attachmentPaths, attachmentLinks);
       const pdfs = attachmentPaths.filter((p) => /\.pdf$/i.test(p)).length;
       const images = attachmentPaths.length - pdfs;
       logger.info(

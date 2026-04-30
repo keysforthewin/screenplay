@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-Single-purpose Discord bot: every non-bot message in `MOVIE_CHANNEL_ID` triggers an agentic loop that mutates screenplay state in MongoDB. There is no HTTP server and no slash commands — the entire UI is one Discord channel.
+Single-purpose Discord bot: every non-bot message in `MOVIE_CHANNEL_ID` triggers an agentic loop that mutates screenplay state in MongoDB. The Discord channel is the entire UI. A small Express server (`src/server/index.js`) runs alongside the bot to expose download URLs for generated/attached files: `GET /health`, `GET /pdf/:filename`, `GET /image/:fileId`, `GET /attachment/:fileId`. It listens on `WEB_PORT` (default 3000); URLs use `WEB_PUBLIC_BASE_URL` when set.
 
 ### Request lifecycle (`src/discord/messageHandler.js` → `src/agent/loop.js`)
 
@@ -29,10 +29,13 @@ Single-purpose Discord bot: every non-bot message in `MOVIE_CHANNEL_ID` triggers
 
 Some tool handlers can't return their payload as JSON — they need to upload a file to Discord. The convention (`src/agent/loop.js` → `interceptAttachment`):
 
-- Handler returns `__PDF_PATH__:<absolute path>` → loop pushes path onto `attachmentPaths`, replaces the tool result with `"PDF generated and queued for upload."`.
-- Handler returns `__IMAGE_PATH__:<absolute path>|<note>` → same, with the optional note becoming the tool result.
+- `__PDF_PATH__:<absolute path>` → loop pushes path onto `attachmentPaths`, replaces the tool result with `"PDF generated and queued for upload."`.
+- `__IMAGE_PATH__:<absolute path>|<note>|<gridfsId?>` → same, with the optional note becoming the tool result. The optional 3rd segment, if it parses as a 24-hex GridFS file id, is converted into a clickable `imageLink(...)` URL and pushed onto `attachmentLinks`.
+- `__IMAGE_PATHS__:<paths_tab_separated>|<note>|<ids_tab_separated?>` → batch form for several images at once.
+- `__ATTACHMENT_PATH__:<absolute path>|<note>|<gridfsId?>` → non-image attachments (any content type). The optional id surfaces a `/attachment/<id>` URL via the Express server.
+- `__CSV_PATH__:<absolute path>|<note>` → no link (the file lives only on disk).
 
-`sendReply` then attaches every collected file to the final Discord reply, and `cleanupTmpAttachments` deletes anything inside `os.tmpdir()` afterwards. **Never use these sentinels for non-tmp paths** — the cleanup pass refuses to touch files outside `os.tmpdir()`, but the assumption that `attachmentPaths` are temporary is baked in.
+`sendReply` attaches every collected file to the final Discord reply, then sends one extra footer message listing all download links — PDF links derived from the filename, plus any `imageLink`/`attachmentLink` URLs collected from the sentinels. `cleanupTmpAttachments` deletes anything inside `os.tmpdir()` afterwards. **Never use these sentinels for non-tmp paths** — the cleanup pass refuses to touch files outside `os.tmpdir()`, but the assumption that `attachmentPaths` are temporary is baked in. (PDFs are the exception: they live in `config.pdf.exportDir` and are served by filename, not via the sentinel-id path.)
 
 ### Tool / handler parity
 
@@ -43,8 +46,8 @@ Some tool handlers can't return their payload as JSON — they need to upload a 
 - `characters` — one doc per character. Custom template fields live under `fields.{...}`; core fields (`name`, `plays_self`, `hollywood_actor`, `own_voice`) are top-level. `name_lower` has a unique index. `getCharacter` accepts either a 24-char hex `_id` or a case-insensitive name.
 - `plots` — singleton `{ _id: 'main' }` with an **embedded `beats` array** (no separate beats collection). Each beat has its own ObjectId, an `images[]` of metadata, and a `main_image_id`. `getPlot` lazily backfills `_id`, `images`, `main_image_id`, `current_beat_id` on legacy docs (see `ensureBeatIds`) — keep that path working when changing the schema.
 - `messages` — rolling Discord transcript. Indexed on `(channel_id, created_at)`. The `recordAgentTurns` writer assigns `created_at = Date.now() + i` to preserve intra-turn ordering. (Note: the README mentions a `conversations` collection — that's stale, the code uses `messages`.)
-- `prompts` — singleton docs `_id: 'character_template'` and `_id: 'plot_template'`, seeded by `src/seed/defaults.js` on startup. Removing fields marked `core: true` is rejected.
-- **GridFS bucket** `images` (`src/mongo/images.js`) — single bucket for beat images, character portraits, and generated/library images. Filtered by `metadata.owner_type` (`'beat'`, `'character'`, or `null` for library) and `metadata.owner_id`. Indexed on `(metadata.owner_type, metadata.owner_id)`. `src/mongo/files.js` exposes character-image helpers (`attachImageToCharacter`, `readCharacterImageBuffer`, etc.) that delegate to this bucket — they exist to keep the embedded `characters.images[]` array and `main_image_id` in sync. The legacy `character_images` bucket was retired in `scripts/migrate-character-images.js`; if you ever see it in an old dump, run that migration.
+- `prompts` — singleton docs `_id: 'character_template'`, `_id: 'plot_template'`, and `_id: 'director_notes'`. The first two are seeded by `src/seed/defaults.js` on startup; removing fields marked `core: true` is rejected. The `director_notes` doc holds an embedded `notes[]` array; each note can carry its own `images[]`/`main_image_id`/`attachments[]` (mirrors the beat schema). `getDirectorNotes` lazily backfills the missing arrays on legacy notes.
+- **GridFS bucket** `images` (`src/mongo/images.js`) — single bucket for beat images, character portraits, director-note images, and generated/library images. Filtered by `metadata.owner_type` (`'beat'`, `'character'`, `'director_note'`, or `null` for library) and `metadata.owner_id`. Indexed on `(metadata.owner_type, metadata.owner_id)`. `src/mongo/files.js` exposes character-image helpers (`attachImageToCharacter`, `readCharacterImageBuffer`, etc.) that delegate to this bucket — they exist to keep the embedded `characters.images[]` array and `main_image_id` in sync. The legacy `character_images` bucket was retired in `scripts/migrate-character-images.js`; if you ever see it in an old dump, run that migration. The `attachments` bucket follows the same metadata convention for non-image files (`'beat'`, `'character'`, `'director_note'`).
 
 ### Optional integrations
 
