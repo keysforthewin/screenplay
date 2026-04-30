@@ -100,6 +100,14 @@ function interceptAttachment(result, attachmentPaths) {
     attachmentPaths.push(filepath);
     return note || 'Image queued for upload.';
   }
+  if (result.startsWith('__CSV_PATH__:')) {
+    const rest = result.slice('__CSV_PATH__:'.length);
+    const sep = rest.indexOf('|');
+    const filepath = sep >= 0 ? rest.slice(0, sep) : rest;
+    const note = sep >= 0 ? rest.slice(sep + 1) : '';
+    attachmentPaths.push(filepath);
+    return note || 'CSV generated and queued for upload.';
+  }
   return result;
 }
 

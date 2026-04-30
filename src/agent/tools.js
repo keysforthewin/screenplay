@@ -355,6 +355,95 @@ export const TOOLS = [
     },
   },
   {
+    name: 'export_csv',
+    description:
+      'Build a spreadsheet-style CSV report of characters or beats. Pick columns by dot-path field name (e.g. "name", "fields.background_story") or by computed pseudo-field. Computed fields for characters: image_count, field_count, appears_in_beats. Computed fields for beats: word_count, char_count, image_count, attachment_count, character_count. Filter rows with structured operators (eq, ne, gt, gte, lt, lte, contains, exists), ANDed together. Optionally group_by + per-column aggregate (sum, avg, min, max, count): when group_by is set, every column must either be in group_by or have a non-none aggregate; when aggregates are present without group_by, the result is a single summary row over all matched rows. Sort and limit are applied last. The CSV is delivered as a Discord file attachment.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        entity: {
+          type: 'string',
+          enum: ['characters', 'beats'],
+          description: 'Which corpus to export.',
+        },
+        columns: {
+          type: 'array',
+          minItems: 1,
+          description: 'Columns in output order.',
+          items: {
+            type: 'object',
+            properties: {
+              field: {
+                type: 'string',
+                description:
+                  'Dot-path into the document (e.g. "name", "plays_self", "fields.background_story") OR a computed pseudo-field name.',
+              },
+              header: {
+                type: 'string',
+                description:
+                  'Optional CSV column header. Defaults to the field path, or "agg(field)" when aggregated.',
+              },
+              aggregate: {
+                type: 'string',
+                enum: ['none', 'sum', 'avg', 'min', 'max', 'count'],
+                description:
+                  "Default 'none'. 'count' counts non-null values; sum/avg/min/max coerce values via Number() and skip NaN.",
+              },
+            },
+            required: ['field'],
+            additionalProperties: false,
+          },
+        },
+        filter: {
+          type: 'array',
+          description: 'Conditions ANDed together. Omit for no filtering.',
+          items: {
+            type: 'object',
+            properties: {
+              field: { type: 'string' },
+              op: {
+                type: 'string',
+                enum: ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'contains', 'exists'],
+              },
+              value: {
+                description:
+                  "For 'exists' a boolean; for 'contains' a string (case-insensitive substring; works on string fields and on array fields by element); for comparisons match the field's type.",
+              },
+            },
+            required: ['field', 'op'],
+            additionalProperties: false,
+          },
+        },
+        group_by: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Field paths to group by. When set, every column must be in group_by or have a non-none aggregate.',
+        },
+        sort: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              field: { type: 'string', description: 'Column field path.' },
+              direction: { type: 'string', enum: ['asc', 'desc'] },
+            },
+            required: ['field'],
+            additionalProperties: false,
+          },
+        },
+        limit: { type: 'integer', minimum: 1, maximum: 5000 },
+        filename: {
+          type: 'string',
+          description:
+            'Optional output filename. Defaults to "${entity}-${YYYY-MM-DD}.csv". Sanitized to alphanumerics, dashes, underscores, dots.',
+        },
+      },
+      required: ['entity', 'columns'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'add_character_image',
     description:
       'Attach an image (PNG, JPG, or WEBP, up to 25 MB) to a character. The image is downloaded from `source_url` and stored in MongoDB GridFS. `source_url` may be either (a) one of the URLs listed in the "Attached images" prelude when the user uploaded an image via the Discord client, or (b) a public HTTP(S) URL the user pasted into chat. The first image attached to a character automatically becomes its main image; pass `set_as_main: true` to override an existing main image.',
