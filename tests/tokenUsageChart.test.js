@@ -32,6 +32,19 @@ describe('token usage chart rendering', () => {
     expect(await pngSize(p)).toBeGreaterThan(MIN_BYTES_WITH_TEXT);
   });
 
+  it('renders user usage chart with non-Latin / small-caps display names', async () => {
+    const p = await renderTokenUsageChart({
+      window: 'week',
+      rows: [
+        // Latin Extended-D small caps (Inter doesn't include these — needs Noto Sans fallback).
+        { discord_user_display_name: 'ꜰʟᴀᴠʀʀ', total: 12000, anthropic_text: 9000, anthropic_image_input: 2000, gemini_image: 1000 },
+        // Cyrillic — also outside Inter's set in some weights.
+        { discord_user_display_name: 'Алексей', total: 8000, anthropic_text: 7500, anthropic_image_input: 500, gemini_image: 0 },
+      ],
+    });
+    expect(await pngSize(p)).toBeGreaterThan(MIN_BYTES_WITH_TEXT);
+  });
+
   it('renders tool tokens chart with text labels', async () => {
     const p = await renderToolTokensChart({
       window: 'week',
