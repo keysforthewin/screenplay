@@ -5,9 +5,12 @@ screenplay is a Discord bot that turns a chat channel into a screenplay-writing 
 ## Features
 
 - **Mutable character template.** Say "every character should have a favourite colour" and that field is added to every existing and future character.
+- **Bulk character updates.** When the schema changes — or when a value is missing for half the cast — ask the bot to fill it in once across everyone (*"give every character a default pronoun based on what we know"*) instead of going one by one.
 - **Plot organised into ordered beats.** Each beat has a short name, a one-line summary, and a long-form body that grows over time. A "current beat" pointer means you don't have to re-name the beat on every follow-up.
+- **Director notes.** Screenplay-wide rules and reminders the bot keeps in mind when writing or revising — tone, formatting conventions, content avoidances. They sit alongside characters and beats as a third top-level entity.
 - **Auto-portraits.** Give a character a real-world actor and the bot quietly attaches a headshot the next time you touch the character.
-- **PDF export** of the whole screenplay, posted to Discord and reachable via a download link.
+- **Reference images and file attachments.** Beats, characters, and director notes can each carry images (PNG/JPEG/WEBP, ≤25 MB) and non-image files — audio, video, PDF, scripts (≤100 MB). The bot pulls them back up by name when relevant.
+- **PDF and CSV export.** Export the whole screenplay as a PDF, or slice characters and beats into spreadsheet reports — filter, group, aggregate, then open in Sheets or Excel.
 - **Real-movie / real-actor grounding** via TheMovieDB — search films, look up casts, pull posters and headshots.
 - **Live web search** via Tavily — ground real-world references, current events, or check whether your character or plot resembles existing fiction.
 - **Writing analysis** — scan for overused phrases, detect near-duplicates, examine what a single character actually does in the script, and check whether the climax sits where it should.
@@ -100,6 +103,12 @@ Add or remove fields from the universal character schema.
 **API key:** none.
 **Ask for it like:** *"Every character should have a favourite colour."* · *"Drop the 'astrological sign' field."*
 **Tips:** Core fields (name, plays-self, hollywood actor, own voice) cannot be removed. Adding a field doesn't backfill existing characters — the bot will start asking for that field as you touch each character.
+
+#### `bulk_update_character_field`
+Set or replace one field across many characters in a single pass — the right tool for backfilling a newly added template field, or normalising a value that's drifted across the cast. The bot decides each value (or pulls them from your message) and writes them in batches.
+**API key:** none.
+**Ask for it like:** *"Give every character a default pronoun based on what we know."* · *"Set 'archetype' to 'unknown' for everyone who doesn't have one yet."* · *"Mark plays_self false for the historical figures."*
+**Tips:** Pairs naturally with `update_character_template`: add the field, then ask the bot to fill it in across everyone in one shot.
 
 ### Plot
 
@@ -260,13 +269,25 @@ Remove an image from a character. If the deleted image was the main one, the nex
 
 > **Auto-portraits.** When a character has a real-world actor on file (`hollywood_actor`) and no main image yet, the bot quietly fetches a headshot from TheMovieDB the next time you touch the character — no need to ask. Requires `TMDB_READ_ACCESS_TOKEN`.
 
-### PDF export
+### Reports & export
 
 #### `export_pdf`
 Generate a PDF of the current characters and plot. The bot uploads it to the channel and also posts a download link.
 **API key:** none.
 **Ask for it like:** *"Export this as a PDF."* · *"Give me a PDF with the title 'Working Draft'."*
 **Tips:** The download link is useful when the Discord attachment is too large to display inline, or when you want a stable URL to share.
+
+#### `export_csv`
+Build a spreadsheet report of characters or beats. Pick the columns (any field on the entity, plus computed pseudo-fields like `image_count`, `appears_in_beats`, `word_count`), filter rows with operators (`eq`, `contains`, `gt`, `exists`, …), optionally `group_by` a field with aggregates (`sum`, `avg`, `min`, `max`, `count`), and sort. The CSV is delivered as a Discord file attachment.
+**API key:** none.
+**Ask for it like:** *"Export the characters as a CSV grouped by hollywood actor."* · *"Give me a CSV of beats sorted by word count, biggest first."* · *"How many beats does each character appear in? CSV please."*
+**Tips:** Use it when you want to slice the data outside Discord — open in Sheets or Excel, sort, pivot. Column field names match whatever the current character template or beat schema exposes.
+
+#### `token_usage_report`
+Show Anthropic and Gemini token consumption for a rolling time window. Returns three charts (per-user stacked bars across billed classes, per-tool token cost, per-tool invocation count) plus a Markdown summary.
+**API key:** none.
+**Ask for it like:** *"How many tokens have we burned this week?"* · *"Who's been hitting the bot the hardest?"* · *"Which tools cost us the most context?"*
+**Tips:** Pick a window — *day* (last 24 h), *week*, *month*, or *total* (all-time). Add a name to focus on one user (*"just my usage this month"*). Useful when you suspect a runaway loop or want to budget against your Anthropic bill.
 
 ### TheMovieDB (TMDB)
 

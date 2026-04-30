@@ -10,6 +10,8 @@ const RESVG_OPTIONS = {
     fontFiles: [
       path.join(FONT_DIR, 'Inter-Regular.ttf'),
       path.join(FONT_DIR, 'Inter-SemiBold.ttf'),
+      path.join(FONT_DIR, 'NotoSans-Regular.ttf'),
+      path.join(FONT_DIR, 'NotoSans-SemiBold.ttf'),
     ],
     loadSystemFonts: false,
     defaultFontFamily: 'Inter',
@@ -187,7 +189,7 @@ function buildSvg({ window, rows }) {
   parts.push(`<rect width="${width}" height="${height}" fill="${COLORS.bg}"/>`);
 
   parts.push(
-    `<text x="${width / 2}" y="30" font-family="Inter, Helvetica, Arial, sans-serif" ` +
+    `<text x="${width / 2}" y="30" font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" ` +
       `font-size="20" font-weight="600" fill="${COLORS.text}" text-anchor="middle">` +
       `Token usage by user — ${escapeXml(WINDOW_LABELS[window] || window)}` +
       `</text>`,
@@ -200,7 +202,7 @@ function buildSvg({ window, rows }) {
       `<rect x="${legendX}" y="${legendY - 10}" width="14" height="14" fill="${COLORS[k]}"/>`,
     );
     parts.push(
-      `<text x="${legendX + 20}" y="${legendY + 1}" font-family="Inter, Helvetica, Arial, sans-serif" ` +
+      `<text x="${legendX + 20}" y="${legendY + 1}" font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" ` +
         `font-size="12" fill="${COLORS.text}">${escapeXml(SEGMENT_LABELS[k])}</text>`,
     );
     legendX += 22 + SEGMENT_LABELS[k].length * 7 + 16;
@@ -213,7 +215,7 @@ function buildSvg({ window, rows }) {
         `stroke="${COLORS.grid}" stroke-width="1"/>`,
     );
     parts.push(
-      `<text x="${margin.left - 8}" y="${y + 4}" font-family="Inter, Helvetica, Arial, sans-serif" ` +
+      `<text x="${margin.left - 8}" y="${y + 4}" font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" ` +
         `font-size="11" fill="${COLORS.text}" text-anchor="end">${escapeXml(formatTokens(t))}</text>`,
     );
   }
@@ -230,7 +232,7 @@ function buildSvg({ window, rows }) {
   if (!rows.length) {
     parts.push(
       `<text x="${margin.left + plotW / 2}" y="${margin.top + plotH / 2}" ` +
-        `font-family="Inter, Helvetica, Arial, sans-serif" font-size="14" fill="${COLORS.text}" ` +
+        `font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" fill="${COLORS.text}" ` +
         `text-anchor="middle">No usage recorded in this window.</text>`,
     );
   }
@@ -252,7 +254,7 @@ function buildSvg({ window, rows }) {
       if (segH >= 16) {
         const labelY = yCursor + segH / 2 + 4;
         parts.push(
-          `<text x="${slotCenter}" y="${labelY}" font-family="Inter, Helvetica, Arial, sans-serif" ` +
+          `<text x="${slotCenter}" y="${labelY}" font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" ` +
             `font-size="10" font-weight="600" fill="#ffffff" text-anchor="middle">` +
             `${escapeXml(formatTokens(v))}</text>`,
         );
@@ -261,7 +263,7 @@ function buildSvg({ window, rows }) {
 
     const totalY = yToPx(row.total);
     parts.push(
-      `<text x="${slotCenter}" y="${totalY - 6}" font-family="Inter, Helvetica, Arial, sans-serif" ` +
+      `<text x="${slotCenter}" y="${totalY - 6}" font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" ` +
         `font-size="11" font-weight="600" fill="${COLORS.text}" text-anchor="middle">${escapeXml(formatTokens(row.total))}</text>`,
     );
 
@@ -274,7 +276,7 @@ function buildSvg({ window, rows }) {
     if (label) {
       const anchorY = axisY + LABEL_TOP_GAP;
       const baselineY = anchorY + LABEL_ASCENT;
-      const fontFamily = 'Inter, Helvetica, Arial, sans-serif';
+      const fontFamily = "Inter, 'Noto Sans', Helvetica, Arial, sans-serif";
       if (layout.angle === 0) {
         parts.push(
           `<text x="${slotCenter}" y="${baselineY}" font-family="${fontFamily}" ` +
@@ -291,7 +293,7 @@ function buildSvg({ window, rows }) {
   });
 
   parts.push(
-    `<text x="${margin.left}" y="${height - 12}" font-family="Inter, Helvetica, Arial, sans-serif" ` +
+    `<text x="${margin.left}" y="${height - 12}" font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" ` +
       `font-size="11" fill="${COLORS.text}">Y axis: tokens · stacked: ` +
       SEGMENT_ORDER.map((k) => SEGMENT_LABELS[k]).join(' + ') +
       `</text>`,
@@ -367,7 +369,7 @@ function buildSingleSeriesSvg({
   parts.push(`<rect width="${width}" height="${height}" fill="${COLORS.bg}"/>`);
 
   parts.push(
-    `<text x="${width / 2}" y="30" font-family="Inter, Helvetica, Arial, sans-serif" ` +
+    `<text x="${width / 2}" y="30" font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" ` +
       `font-size="20" font-weight="600" fill="${COLORS.text}" text-anchor="middle">` +
       `${escapeXml(title)}` +
       `</text>`,
@@ -379,7 +381,7 @@ function buildSingleSeriesSvg({
     `<rect x="${legendX}" y="${legendY - 10}" width="14" height="14" fill="${legendColor}"/>`,
   );
   parts.push(
-    `<text x="${legendX + 20}" y="${legendY + 1}" font-family="Inter, Helvetica, Arial, sans-serif" ` +
+    `<text x="${legendX + 20}" y="${legendY + 1}" font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" ` +
       `font-size="12" fill="${COLORS.text}">${escapeXml(legendLabel)}</text>`,
   );
 
@@ -390,7 +392,7 @@ function buildSingleSeriesSvg({
         `stroke="${COLORS.grid}" stroke-width="1"/>`,
     );
     parts.push(
-      `<text x="${margin.left - 8}" y="${y + 4}" font-family="Inter, Helvetica, Arial, sans-serif" ` +
+      `<text x="${margin.left - 8}" y="${y + 4}" font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" ` +
         `font-size="11" fill="${COLORS.text}" text-anchor="end">${escapeXml(valueFormatter(t))}</text>`,
     );
   }
@@ -409,7 +411,7 @@ function buildSingleSeriesSvg({
   if (!rows.length) {
     parts.push(
       `<text x="${margin.left + plotW / 2}" y="${margin.top + plotH / 2}" ` +
-        `font-family="Inter, Helvetica, Arial, sans-serif" font-size="14" fill="${COLORS.text}" ` +
+        `font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" fill="${COLORS.text}" ` +
         `text-anchor="middle">${escapeXml(emptyMessage)}</text>`,
     );
   }
@@ -426,7 +428,7 @@ function buildSingleSeriesSvg({
         `<rect x="${barX}" y="${yTop}" width="${barWidth}" height="${segH}" fill="${legendColor}"/>`,
       );
       parts.push(
-        `<text x="${slotCenter}" y="${yTop - 6}" font-family="Inter, Helvetica, Arial, sans-serif" ` +
+        `<text x="${slotCenter}" y="${yTop - 6}" font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" ` +
           `font-size="11" font-weight="600" fill="${COLORS.text}" text-anchor="middle">` +
           `${escapeXml(valueFormatter(v))}</text>`,
       );
@@ -441,7 +443,7 @@ function buildSingleSeriesSvg({
     if (label) {
       const anchorY = axisY + LABEL_TOP_GAP;
       const baselineY = anchorY + LABEL_ASCENT;
-      const fontFamily = 'Inter, Helvetica, Arial, sans-serif';
+      const fontFamily = "Inter, 'Noto Sans', Helvetica, Arial, sans-serif";
       if (layout.angle === 0) {
         parts.push(
           `<text x="${slotCenter}" y="${baselineY}" font-family="${fontFamily}" ` +
@@ -463,7 +465,7 @@ function buildSingleSeriesSvg({
       ? `Top ${showingCount} of ${totalToolCount} tools — X axis: tool names`
       : `X axis: tool names`;
   parts.push(
-    `<text x="${margin.left}" y="${height - 12}" font-family="Inter, Helvetica, Arial, sans-serif" ` +
+    `<text x="${margin.left}" y="${height - 12}" font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" ` +
       `font-size="11" fill="${COLORS.text}">${escapeXml(footer)}</text>`,
   );
 
@@ -514,7 +516,7 @@ function buildSectionAllocationSvg({ window, sectionAverages, sampleCount }) {
   parts.push(`<rect width="${width}" height="${height}" fill="${COLORS.bg}"/>`);
 
   parts.push(
-    `<text x="${width / 2}" y="32" font-family="Inter, Helvetica, Arial, sans-serif" ` +
+    `<text x="${width / 2}" y="32" font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" ` +
       `font-size="20" font-weight="600" fill="${COLORS.text}" text-anchor="middle">` +
       `Prompt budget allocation — ${escapeXml(WINDOW_LABELS[window] || window)}` +
       `</text>`,
@@ -524,7 +526,7 @@ function buildSectionAllocationSvg({ window, sectionAverages, sampleCount }) {
       ? `Average per turn over ${sampleCount} turn${sampleCount === 1 ? '' : 's'}`
       : 'No section measurements recorded in this window.';
   parts.push(
-    `<text x="${width / 2}" y="56" font-family="Inter, Helvetica, Arial, sans-serif" ` +
+    `<text x="${width / 2}" y="56" font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" ` +
       `font-size="13" fill="${COLORS.text}" text-anchor="middle">${escapeXml(subtitle)}</text>`,
   );
 
@@ -545,12 +547,12 @@ function buildSectionAllocationSvg({ window, sectionAverages, sampleCount }) {
       const pct = ((v / total) * 100).toFixed(0);
       parts.push(
         `<text x="${xCursor + segW / 2}" y="${barTop + barHeight / 2 - 2}" ` +
-          `font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" ` +
+          `font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" ` +
           `fill="#ffffff" text-anchor="middle">${escapeXml(formatTokens(v))}</text>`,
       );
       parts.push(
         `<text x="${xCursor + segW / 2}" y="${barTop + barHeight / 2 + 14}" ` +
-          `font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" ` +
+          `font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11" ` +
           `fill="#ffffff" text-anchor="middle">${pct}%</text>`,
       );
     }
@@ -570,17 +572,17 @@ function buildSectionAllocationSvg({ window, sectionAverages, sampleCount }) {
       `<rect x="${margin.left}" y="${rowY - 10}" width="14" height="14" fill="${SECTION_COLORS[k]}"/>`,
     );
     parts.push(
-      `<text x="${margin.left + 22}" y="${rowY + 1}" font-family="Inter, Helvetica, Arial, sans-serif" ` +
+      `<text x="${margin.left + 22}" y="${rowY + 1}" font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" ` +
         `font-size="12" fill="${COLORS.text}">${escapeXml(SECTION_LABELS[k])}</text>`,
     );
     parts.push(
       `<text x="${margin.left + plotW - 80}" y="${rowY + 1}" ` +
-        `font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="${COLORS.text}" ` +
+        `font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="${COLORS.text}" ` +
         `text-anchor="end">${escapeXml(formatTokens(v))} avg</text>`,
     );
     parts.push(
       `<text x="${margin.left + plotW}" y="${rowY + 1}" ` +
-        `font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="${COLORS.text}" ` +
+        `font-family="Inter, 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="${COLORS.text}" ` +
         `text-anchor="end">${pct}%</text>`,
     );
   });
