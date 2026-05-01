@@ -63,6 +63,29 @@ function buildLinkFooter(files, extraLinks) {
   return `File links:\n${all.map((l) => `- ${l}`).join('\n')}`;
 }
 
+function formatMb(bytes) {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function buildOversizedNotice(oversized) {
+  if (!oversized || !oversized.length) return null;
+  if (oversized.length === 1) {
+    const o = oversized[0];
+    const link = pdfLink(o.path);
+    if (link) {
+      return `Note: the file is too large to attach to Discord (${formatMb(o.size)}). Download it here: ${link}`;
+    }
+    return `Note: a file (${formatMb(o.size)}) was too large to attach and no fallback download link is available.`;
+  }
+  const lines = oversized.map((o) => {
+    const link = pdfLink(o.path);
+    return link
+      ? `- ${link} (${formatMb(o.size)})`
+      : `- (${formatMb(o.size)} — no fallback link available)`;
+  });
+  return `Note: some files were too large to attach to Discord. Download them here:\n${lines.join('\n')}`;
+}
+
 export async function sendReply(channel, text, files = [], links = []) {
   const { attachable, oversized } = partitionAttachableFiles(files);
   for (const o of oversized) {
@@ -70,7 +93,9 @@ export async function sendReply(channel, text, files = [], links = []) {
       `attach: skipping ${o.path} (${o.size} bytes > Discord limit) — link-only fallback`,
     );
   }
-  const parts = chunk(text);
+  const notice = buildOversizedNotice(oversized);
+  const finalText = notice ? (text ? `${text}\n\n${notice}` : notice) : text;
+  const parts = chunk(finalText);
   for (let i = 0; i < parts.length; i++) {
     const isLast = i === parts.length - 1;
     const attachments = isLast ? attachable.map((f) => new AttachmentBuilder(f)) : [];
