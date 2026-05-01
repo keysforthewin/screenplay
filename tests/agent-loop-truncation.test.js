@@ -45,13 +45,22 @@ describe('runAgent stop_reason guard', () => {
 
     const result = await runAgent({ history: [], userText: 'hi' });
 
-    expect(result.text).toBe('Looking up beats…');
+    // User-facing text is an explicit retry hint when tool_use got cut off,
+    // so the user knows the action didn't actually run.
+    expect(result.text).toMatch(/Truncated mid-tool-call/);
     expect(result.agentMessages).toHaveLength(1);
     const recorded = result.agentMessages[0];
     expect(recorded.role).toBe('assistant');
     const blockTypes = recorded.content.map((b) => b.type);
     expect(blockTypes).not.toContain('tool_use');
     expect(blockTypes).toContain('text');
+    // Recorded transcript still preserves the surviving preamble text so
+    // history doesn't lie about what the assistant said.
+    const recordedText = recorded.content
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n');
+    expect(recordedText).toContain('Looking up beats…');
   });
 
   it('falls back to a placeholder when content is only a truncated tool_use', async () => {
@@ -69,7 +78,20 @@ describe('runAgent stop_reason guard', () => {
     expect(recorded.content).toEqual([
       { type: 'text', text: '(response truncated before completion)' },
     ]);
-    expect(result.text).toBe('(response truncated before completion)');
+    // User-facing text is the retry hint, not the internal placeholder.
+    expect(result.text).toMatch(/Truncated mid-tool-call/);
+  });
+
+  it('appends a truncation suffix to text-only max_tokens responses', async () => {
+    messagesCreate.mockResolvedValue({
+      stop_reason: 'max_tokens',
+      content: [{ type: 'text', text: 'Once upon a time, in a' }],
+    });
+
+    const result = await runAgent({ history: [], userText: 'tell me a story' });
+
+    expect(result.text).toMatch(/Once upon a time, in a/);
+    expect(result.text).toMatch(/Response truncated/);
   });
 
   it('preserves tool_use blocks when stop_reason IS tool_use (normal dispatch)', async () => {
