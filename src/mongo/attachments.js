@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { getDb } from './client.js';
 import { getCharacter } from './characters.js';
+import { pushBeatAttachment, getBeat } from './plots.js';
+import { pushDirectorNoteAttachment, getDirectorNotes } from './directorNotes.js';
 import {
   fetchAttachmentFromUrl,
   deriveAttachmentFilename,
@@ -63,6 +65,13 @@ export async function uploadAttachmentFromUrl({
 
 export async function findAttachmentFile(attachmentId) {
   return filesCol().findOne({ _id: toObjectId(attachmentId) });
+}
+
+export async function listLibraryAttachments() {
+  return filesCol()
+    .find({ 'metadata.owner_type': null })
+    .sort({ uploadDate: -1 })
+    .toArray();
 }
 
 export async function listAttachmentsForCharacter(characterId) {
@@ -160,6 +169,15 @@ export function attachmentFileToMeta(file) {
   };
 }
 
+async function pushCharacterAttachment(characterId, attachmentMeta) {
+  await getDb()
+    .collection('characters')
+    .updateOne(
+      { _id: characterId },
+      { $push: { attachments: attachmentMeta }, $set: { updated_at: new Date() } },
+    );
+}
+
 export async function attachToCharacter({ character, sourceUrl, filename, caption }) {
   const c = await getCharacter(character);
   if (!c) throw new Error(`Character not found: ${character}`);
@@ -177,13 +195,104 @@ export async function attachToCharacter({ character, sourceUrl, filename, captio
     caption: caption?.trim() || null,
     uploaded_at: file.uploaded_at,
   };
-  await getDb()
-    .collection('characters')
-    .updateOne(
-      { _id: c._id },
-      { $push: { attachments: meta }, $set: { updated_at: new Date() } },
-    );
+  await pushCharacterAttachment(c._id, meta);
   return { character: c.name, ...meta };
+}
+
+function ownerConflictError(file, attachmentId, targetOwnerType, targetOwnerSameAs) {
+  const t = file.metadata?.owner_type;
+  if (!t) return null;
+  if (t === targetOwnerType && file.metadata?.owner_id && targetOwnerSameAs(file.metadata.owner_id)) {
+    return 'already_attached';
+  }
+  return new Error(
+    `Attachment ${attachmentId} is currently attached to a ${t}. Detach it first.`,
+  );
+}
+
+function buildAttachmentMeta(file, caption) {
+  return {
+    _id: file._id,
+    filename: file.filename,
+    content_type: file.contentType || file.metadata?.content_type || 'application/octet-stream',
+    size: file.length,
+    caption: caption?.trim() || null,
+    uploaded_at: file.uploadDate,
+  };
+}
+
+export async function attachExistingAttachmentToCharacter({ character, attachmentId, caption }) {
+  const c = await getCharacter(character);
+  if (!c) throw new Error(`Character not found: ${character}`);
+  const file = await findAttachmentFile(attachmentId);
+  if (!file) throw new Error(`Attachment not found: ${attachmentId}`);
+
+  const conflict = ownerConflictError(file, attachmentId, 'character', (id) => id.equals(c._id));
+  if (conflict === 'already_attached') {
+    return {
+      already_attached: true,
+      character: c.name,
+      _id: file._id,
+      filename: file.filename,
+    };
+  }
+  if (conflict instanceof Error) throw conflict;
+
+  await setAttachmentOwner(attachmentId, { ownerType: 'character', ownerId: c._id });
+  const meta = buildAttachmentMeta(file, caption);
+  await pushCharacterAttachment(c._id, meta);
+  return { character: c.name, ...meta };
+}
+
+export async function attachExistingAttachmentToBeat({ beat, attachmentId, caption }) {
+  const file = await findAttachmentFile(attachmentId);
+  if (!file) throw new Error(`Attachment not found: ${attachmentId}`);
+
+  const beatDoc = await getBeat(beat);
+  if (!beatDoc) throw new Error(`Beat not found: ${beat}`);
+
+  const conflict = ownerConflictError(file, attachmentId, 'beat', (id) => id.equals(beatDoc._id));
+  if (conflict === 'already_attached') {
+    return {
+      already_attached: true,
+      beat: { _id: beatDoc._id, name: beatDoc.name },
+      _id: file._id,
+      filename: file.filename,
+    };
+  }
+  if (conflict instanceof Error) throw conflict;
+
+  await setAttachmentOwner(attachmentId, { ownerType: 'beat', ownerId: beatDoc._id });
+  const meta = buildAttachmentMeta(file, caption);
+  await pushBeatAttachment(beatDoc._id.toString(), meta);
+  return { beat: { _id: beatDoc._id, name: beatDoc.name }, ...meta };
+}
+
+export async function attachExistingAttachmentToDirectorNote({ noteId, attachmentId, caption }) {
+  const file = await findAttachmentFile(attachmentId);
+  if (!file) throw new Error(`Attachment not found: ${attachmentId}`);
+
+  const { notes = [] } = (await getDirectorNotes()) || {};
+  const target = notes.find((n) => n._id?.toString() === String(noteId));
+  if (!target) throw new Error(`Director note not found: ${noteId}`);
+
+  const conflict = ownerConflictError(file, attachmentId, 'director_note', (id) =>
+    id.equals(target._id),
+  );
+  if (conflict === 'already_attached') {
+    return {
+      already_attached: true,
+      note_id: target._id,
+      _id: file._id,
+      filename: file.filename,
+    };
+  }
+  if (conflict instanceof Error) throw conflict;
+
+  await setAttachmentOwner(attachmentId, { ownerType: 'director_note', ownerId: target._id });
+  const meta = buildAttachmentMeta(file, caption);
+  await pushDirectorNoteAttachment(target._id.toString(), meta);
+  return { note_id: target._id, ...meta };
 }
 
 export async function listCharacterAttachments(character) {

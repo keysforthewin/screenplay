@@ -88,3 +88,21 @@ export async function deleteCharacter(identifier) {
     attachment_ids: (c.attachments || []).map((a) => a._id).filter(Boolean),
   };
 }
+
+export async function pushCharacterImage(identifier, imageMeta, setAsMain = false) {
+  const c = await getCharacter(identifier);
+  if (!c) throw new Error(`Character not found: ${identifier}`);
+  const promote = !!setAsMain || !c.images || c.images.length === 0;
+  const update = {
+    $push: { images: imageMeta },
+    $set: {
+      updated_at: new Date(),
+      ...(promote ? { main_image_id: imageMeta._id } : {}),
+    },
+  };
+  await col().updateOne({ _id: c._id }, update);
+  logger.info(
+    `mongo: character image push id=${c._id} image=${imageMeta._id}${promote ? ' (main)' : ''}`,
+  );
+  return { character: c.name, _id: c._id, is_main: promote };
+}
