@@ -9,6 +9,9 @@ import { readImageBuffer, listLibraryImages } from '../mongo/images.js';
 import { listLibraryAttachments } from '../mongo/attachments.js';
 import { attachmentLink } from '../server/index.js';
 import { logger } from '../log.js';
+import { registerNotoFonts, NOTO_FONTS, renderMarkdown } from './markdown.js';
+
+const FONT = NOTO_FONTS;
 
 function formatBytes(n) {
   if (typeof n !== 'number' || !Number.isFinite(n)) return '?';
@@ -78,7 +81,7 @@ function renderImageBundle(doc, items, fit) {
       placeImage(doc, item.buffer, fit);
       const caption = item.meta?.caption;
       if (caption) {
-        doc.font('Times-Italic').fontSize(9).fillColor('#666')
+        doc.font(FONT.italic).fontSize(9).fillColor('#666')
           .text(caption, { align: 'center' });
         doc.fillColor('#000');
       }
@@ -92,7 +95,7 @@ function renderAttachmentList(doc, attachments, { source = 'inline', heading = '
   if (!attachments?.length) return;
   if (heading) {
     doc.moveDown(0.3);
-    doc.font('Times-Bold').fontSize(11).text(heading);
+    doc.font(FONT.bold).fontSize(11).text(heading);
   }
   for (const a of attachments) {
     const id   = a?._id;
@@ -105,7 +108,7 @@ function renderAttachmentList(doc, attachments, { source = 'inline', heading = '
     const url  = id ? attachmentLink(id) : null;
     let line = `• ${name}  (${ct}, ${formatBytes(size)})`;
     if (cap) line += ` — ${cap}`;
-    doc.font('Times-Roman').fontSize(10);
+    doc.font(FONT.regular).fontSize(10);
     if (url) {
       doc.text(line, { continued: true });
       doc.fillColor('#0645AD').text(`  ${url}`, { link: url, underline: true });
@@ -138,6 +141,7 @@ export function renderScreenplayPdf({
   const renderT0 = Date.now();
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margins: { top: 72, bottom: 72, left: 90, right: 72 } });
+    registerNotoFonts(doc);
     const chunks = [];
     doc.on('data', (c) => chunks.push(c));
     doc.on('end', () => {
@@ -147,24 +151,27 @@ export function renderScreenplayPdf({
     });
     doc.on('error', reject);
 
-    doc.font('Times-Bold').fontSize(28).text(title, { align: 'center' });
+    doc.font(FONT.bold).fontSize(28).text(title, { align: 'center' });
     doc.moveDown(2);
-    doc.font('Times-Italic').fontSize(14).text('Working draft', { align: 'center' });
+    doc.font(FONT.italic).fontSize(14).text('Working draft', { align: 'center' });
 
     const dnList = Array.isArray(directorNotes?.notes) ? directorNotes.notes : [];
     if (dnList.length) {
       doc.addPage();
-      doc.font('Times-Bold').fontSize(18).text("Director's Notes");
+      doc.font(FONT.bold).fontSize(18).text("Director's Notes");
       doc.moveDown();
-      doc.font('Times-Italic').fontSize(11).text(
+      doc.font(FONT.italic).fontSize(11).text(
         'Standing rules for this screenplay — apply to every character and beat unless otherwise noted.',
       );
       doc.moveDown();
-      doc.font('Times-Roman').fontSize(11);
       for (const n of dnList) {
-        doc.font('Times-Roman').text(`• ${n.text}`, {
-          indent: 0,
+        doc.font(FONT.regular).fontSize(11).fillColor('#000');
+        doc.text('• ', { indent: 0, continued: true });
+        renderMarkdown(doc, n.text || '', {
+          size: 11,
           paragraphGap: 4,
+          indent: 14,
+          continueFirstParagraph: true,
         });
         const noteId = n._id ? n._id.toString() : null;
         const items = noteId ? (directorNoteImages[noteId] || []) : [];
@@ -174,11 +181,11 @@ export function renderScreenplayPdf({
     }
 
     doc.addPage();
-    doc.font('Times-Bold').fontSize(18).text('Characters');
+    doc.font(FONT.bold).fontSize(18).text('Characters');
     doc.moveDown();
     for (const c of characters) {
-      doc.font('Times-Bold').fontSize(14).text(c.name);
-      doc.font('Times-Roman').fontSize(11);
+      doc.font(FONT.bold).fontSize(14).text(c.name);
+      doc.font(FONT.regular).fontSize(11);
       const role = c.plays_self ? 'Plays themselves' : `Played by ${c.hollywood_actor || '(unspecified)'}`;
       const voice = c.own_voice ? 'own voice' : 'dubbed by actor';
       doc.text(`${role} — ${voice}`);
@@ -187,27 +194,34 @@ export function renderScreenplayPdf({
       renderImageBundle(doc, charItems, [220, 220]);
       doc.moveDown(0.5);
       for (const [k, v] of Object.entries(c.fields || {})) {
-        doc.font('Times-Bold').text(`${k.replace(/_/g, ' ')}: `, { continued: true });
-        doc.font('Times-Roman').text(Array.isArray(v) ? v.join(', ') : String(v));
+        doc.font(FONT.bold).fontSize(11);
+        doc.text(`${k.replace(/_/g, ' ')}: `, { continued: true });
+        const valueStr = Array.isArray(v) ? v.join(', ') : String(v);
+        renderMarkdown(doc, valueStr, {
+          size: 11,
+          paragraphGap: 2,
+          continueFirstParagraph: true,
+        });
       }
       renderAttachmentList(doc, c.attachments, { source: 'inline' });
       doc.moveDown();
     }
 
     doc.addPage();
-    doc.font('Times-Bold').fontSize(18).text('Plot');
+    doc.font(FONT.bold).fontSize(18).text('Plot');
     doc.moveDown();
-    doc.font('Times-Bold').fontSize(13).text('Synopsis');
-    doc.font('Times-Roman').fontSize(11).text(plot.synopsis || '(none)');
+    doc.font(FONT.bold).fontSize(13).text('Synopsis');
+    renderMarkdown(doc, plot.synopsis || '(none)', { size: 11, paragraphGap: 4 });
     doc.moveDown();
-    doc.font('Times-Bold').fontSize(13).text('Beats');
-    doc.font('Times-Roman').fontSize(11);
+    doc.font(FONT.bold).fontSize(13).text('Beats');
     const beats = [...(plot.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
     for (const b of beats) {
-      doc.font('Times-Bold').text(`${b.order}. ${b.name || ''}`);
-      if (b.desc) doc.font('Times-Italic').fontSize(11).text(b.desc);
-      if (b.body) doc.font('Times-Roman').fontSize(11).text(b.body);
-      if (b.characters?.length) doc.font('Times-Italic').text(`Characters: ${b.characters.join(', ')}`);
+      doc.font(FONT.bold).fontSize(11).text(`${b.order}. ${b.name || ''}`);
+      if (b.desc) renderMarkdown(doc, b.desc, { size: 11, paragraphGap: 2, baseStyle: 'italic' });
+      if (b.body) renderMarkdown(doc, b.body, { size: 11, paragraphGap: 4 });
+      if (b.characters?.length) {
+        doc.font(FONT.italic).fontSize(11).text(`Characters: ${b.characters.join(', ')}`);
+      }
       const beatId = b._id ? b._id.toString() : null;
       const beatItems = beatId ? (beatImages[beatId] || []) : [];
       renderImageBundle(doc, beatItems, [400, 280]);
@@ -216,23 +230,23 @@ export function renderScreenplayPdf({
     }
     if (plot.notes) {
       doc.moveDown();
-      doc.font('Times-Bold').fontSize(13).text('Notes');
-      doc.font('Times-Roman').fontSize(11).text(plot.notes);
+      doc.font(FONT.bold).fontSize(13).text('Notes');
+      renderMarkdown(doc, plot.notes, { size: 11, paragraphGap: 4 });
     }
 
     const hasLibrary =
       library && ((library.images?.length || 0) + (library.attachments?.length || 0) > 0);
     if (hasLibrary) {
       doc.addPage();
-      doc.font('Times-Bold').fontSize(18).text('Library');
+      doc.font(FONT.bold).fontSize(18).text('Library');
       doc.moveDown(0.5);
-      doc.font('Times-Italic').fontSize(11).text(
+      doc.font(FONT.italic).fontSize(11).text(
         'Images and files not associated with any character or beat.',
       );
       doc.moveDown();
 
       if (library.images?.length) {
-        doc.font('Times-Bold').fontSize(13).text('Images');
+        doc.font(FONT.bold).fontSize(13).text('Images');
         for (const item of library.images) {
           if (!item?.buffer) continue;
           doc.moveDown(0.3);
@@ -240,7 +254,7 @@ export function renderScreenplayPdf({
             placeImage(doc, item.buffer, [400, 300]);
             const cap = item.file?.filename || item.file?.metadata?.prompt;
             if (cap) {
-              doc.font('Times-Italic').fontSize(9).fillColor('#666')
+              doc.font(FONT.italic).fontSize(9).fillColor('#666')
                 .text(cap, { align: 'center' }).fillColor('#000');
             }
           } catch (e) {
@@ -251,7 +265,7 @@ export function renderScreenplayPdf({
 
       if (library.attachments?.length) {
         doc.moveDown();
-        doc.font('Times-Bold').fontSize(13).text('Files');
+        doc.font(FONT.bold).fontSize(13).text('Files');
         renderAttachmentList(doc, library.attachments, { source: 'gridfs', heading: null });
       }
     }

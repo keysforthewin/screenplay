@@ -159,4 +159,62 @@ describe('renderScreenplayPdf', () => {
     });
     expect(Math.abs(empty.length - without.length)).toBeLessThan(50);
   });
+
+  it('renders markdown in plot synopsis without crashing', async () => {
+    // Lists, bold, italic, headings, and an HR in the synopsis text.
+    const buf = await renderScreenplayPdf({
+      title: 'Test',
+      characters: [{ name: 'Alice', plays_self: true, hollywood_actor: null, own_voice: true, fields: {} }],
+      plot: {
+        synopsis: '## Act One\n\n**Alice** discovers a *strange* door.\n\n- It glows.\n- It hums.\n\n---\n\nThen the story begins.',
+        beats: [],
+        notes: '',
+      },
+    });
+    expect(buf.length).toBeGreaterThan(500);
+    expect(buf.slice(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('renders markdown bullets in director notes without crashing', async () => {
+    const buf = await renderScreenplayPdf({
+      title: 'Test',
+      characters: [{ name: 'Alice', plays_self: true, hollywood_actor: null, own_voice: true, fields: {} }],
+      plot: { synopsis: 's', beats: [], notes: '' },
+      directorNotes: {
+        notes: [
+          { text: '**IMPORTANT:** No anachronisms.\n\n- Unless flagged.\n- And then only for emphasis.' },
+          { text: 'Use _sparing_ flashbacks.' },
+        ],
+      },
+    });
+    expect(buf.length).toBeGreaterThan(500);
+    expect(buf.slice(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('embeds Noto fonts (UTF-8 capable) into the PDF', async () => {
+    // PDFKit writes the registered font's PostScript name into the font
+    // dictionary. Searching for "NotoSans" in the raw byte stream confirms
+    // we're embedding a Noto face rather than a base-14 standard font.
+    const buf = await renderScreenplayPdf({
+      title: 'Test',
+      characters: [{ name: 'Alice', plays_self: true, hollywood_actor: null, own_voice: true, fields: {} }],
+      plot: { synopsis: 'Plain.', beats: [], notes: '' },
+    });
+    const ascii = buf.toString('latin1');
+    expect(ascii).toMatch(/NotoSans/);
+  });
+
+  it('renders non-ASCII characters in free-text fields', async () => {
+    // Emojis, accented Latin, Greek, and CJK should not throw with Noto.
+    const buf = await renderScreenplayPdf({
+      title: 'Tëst — α β 测试',
+      characters: [{
+        name: 'Aliçe', plays_self: true, hollywood_actor: null, own_voice: true,
+        fields: { background: 'Naïve heroine — café régulier ☕' },
+      }],
+      plot: { synopsis: 'Σύνοψη — 简介', beats: [], notes: '' },
+    });
+    expect(buf.length).toBeGreaterThan(500);
+    expect(buf.slice(0, 4).toString()).toBe('%PDF');
+  });
 });
