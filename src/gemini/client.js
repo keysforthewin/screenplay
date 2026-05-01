@@ -28,21 +28,35 @@ function appendAspectRatioHint(prompt, aspectRatio) {
   return `${prompt}\n\nFraming: render with a ${aspectRatio} aspect ratio.`;
 }
 
-export async function generateImage({ prompt, aspectRatio }) {
+export async function generateImage({ prompt, aspectRatio, inputImage }) {
   if (!prompt || !prompt.trim()) {
     throw new Error('Empty prompt; nothing to generate.');
   }
   const ai = getClient();
   const finalPrompt = appendAspectRatioHint(prompt, aspectRatio);
+  const editing = !!inputImage;
   logger.info(
-    `gemini → model=${MODEL} prompt=${finalPrompt.length}c aspect=${aspectRatio || 'default'}`,
+    `gemini → model=${MODEL} prompt=${finalPrompt.length}c aspect=${aspectRatio || 'default'}${
+      editing ? ` editing input=${inputImage.buffer.length}B/${inputImage.contentType}` : ''
+    }`,
   );
+  const contents = editing
+    ? [
+        { text: finalPrompt },
+        {
+          inlineData: {
+            mimeType: inputImage.contentType,
+            data: inputImage.buffer.toString('base64'),
+          },
+        },
+      ]
+    : finalPrompt;
   const t0 = Date.now();
   let response;
   try {
     response = await ai.models.generateContent({
       model: MODEL,
-      contents: finalPrompt,
+      contents,
     });
   } catch (e) {
     logger.error(`gemini ← failed ${Date.now() - t0}ms: ${e.message}`);

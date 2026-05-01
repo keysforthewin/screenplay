@@ -668,6 +668,25 @@ export const TOOLS = [
     },
   },
   {
+    name: 'edit_image',
+    description:
+      'Edit an existing image with NanoBanana (gemini-2.5-flash-image). Pass the source `image_id` and a `prompt` describing the change ("give him blonde hair", "make it nighttime", "remove the hat"). Result is saved as a new GridFS image owned by whatever the source belonged to (character / beat / director_note / library); when the source was that owner\'s main image, the result is automatically promoted to the new main image. Use this whenever the user asks to modify, change, tweak, or update an existing image rather than create a fresh one.\n\nYou MUST decide whether to delete the source image after editing: pass `replace_source: true` when the user wants the old version gone (e.g. "change his hair to blonde", "update the main image so..."), or `replace_source: false` when they\'re iterating, comparing, or want a variant ("try a version where...", "give me an alternate with..."). When in doubt, prefer `false` so nothing is destroyed. Optional `attach_to_character` / `attach_to_beat` / `set_as_main` overrides have the same meaning as in `generate_image` and let you redirect the result away from the source\'s owner.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        source_image_id: { type: 'string', description: '24-char hex GridFS file id of the image to edit. Get this from list_character_images, the beat\'s images[], or director-note image listings.' },
+        prompt: { type: 'string', description: 'Concise instruction describing the change to make (e.g., "give him blonde hair instead of black"). Will be sent to NanoBanana alongside the source image.' },
+        replace_source: { type: 'boolean', description: 'REQUIRED. true = delete the source image after a successful edit (truly "in place"); false = keep the source alongside the new image so the user can compare or revert.' },
+        aspect_ratio: { type: 'string', enum: ['1:1', '16:9', '9:16', '4:3', '3:4'], description: 'Optional reframing. Omit to preserve the source image\'s framing.' },
+        attach_to_character: { type: 'string', description: 'Override: attach the edited result to this character instead of the source\'s owner. Mutually exclusive with attach_to_beat.' },
+        attach_to_beat: { type: 'string', description: 'Override: attach the edited result to this beat instead of the source\'s owner. Mutually exclusive with attach_to_character.' },
+        set_as_main: { type: 'boolean', description: "Whether the edited image becomes its owner's main_image_id. Defaults to true when the source was its owner's main image; defaults to false otherwise. Pass an explicit value to override." },
+      },
+      required: ['source_image_id', 'prompt', 'replace_source'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'export_pdf',
     description: 'Generate a PDF of the current characters + plot. The bot will upload the file to the channel automatically. Only call when the user asks to export.',
     input_schema: {
