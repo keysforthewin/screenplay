@@ -153,6 +153,59 @@ describe('sendReply', () => {
 
     warn.mockRestore();
   });
+
+  it('falls back to a link-only retry when Discord rejects with 40005 despite pre-flight passing', async () => {
+    const small = await writeFixture('screenplay-1700000000003.pdf', 100);
+    const tooLargeError = Object.assign(new Error('Request entity too large'), {
+      code: 40005,
+    });
+    const channel = {
+      send: vi
+        .fn()
+        // First call: chunk + attachment → Discord rejects.
+        .mockRejectedValueOnce(tooLargeError)
+        // Retry without files succeeds.
+        .mockResolvedValueOnce({})
+        // Footer link message.
+        .mockResolvedValueOnce({}),
+    };
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    await sendReply(channel, 'here is your screenplay', [small], []);
+
+    expect(channel.send).toHaveBeenCalledTimes(3);
+
+    const initial = channel.send.mock.calls[0][0];
+    expect(initial.files).toHaveLength(1);
+
+    const retry = channel.send.mock.calls[1][0];
+    expect(retry.content).toContain('here is your screenplay');
+    expect(retry.content).toContain(
+      'https://example.com/pdf/screenplay-1700000000003.pdf',
+    );
+    expect(retry.content).toMatch(/too large to attach/i);
+    expect(retry.files).toEqual([]);
+
+    const footer = channel.send.mock.calls[2][0];
+    expect(footer.content).toContain(
+      'https://example.com/pdf/screenplay-1700000000003.pdf',
+    );
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/Discord rejected.*40005/i),
+    );
+    warn.mockRestore();
+  });
+
+  it('rethrows non-40005 errors instead of silently swallowing them', async () => {
+    const small = await writeFixture('screenplay-1700000000004.pdf', 100);
+    const otherError = Object.assign(new Error('boom'), { code: 50001 });
+    const channel = { send: vi.fn().mockRejectedValueOnce(otherError) };
+
+    await expect(
+      sendReply(channel, 'hi', [small], []),
+    ).rejects.toThrow('boom');
+  });
 });
 
 describe('buildOversizedNotice', () => {
