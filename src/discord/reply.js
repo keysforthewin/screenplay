@@ -86,6 +86,41 @@ export function buildOversizedNotice(oversized) {
   return `Note: some files were too large to attach to Discord. Download them here:\n${lines.join('\n')}`;
 }
 
+function statSize(p) {
+  try {
+    return statSync(p).size;
+  } catch {
+    return 0;
+  }
+}
+
+function isTooLargeError(e) {
+  // Discord's "Request entity too large" error code.
+  return e?.code === 40005 || e?.status === 413 || e?.httpStatus === 413;
+}
+
+async function sendWithFallback(channel, content, attachPaths) {
+  const attachments = attachPaths.map((f) => new AttachmentBuilder(f));
+  try {
+    await channel.send({ content: content || '​', files: attachments });
+    return { rejected: [] };
+  } catch (e) {
+    if (!isTooLargeError(e) || attachPaths.length === 0) throw e;
+    logger.warn(
+      `Discord rejected ${attachPaths.length} attachment(s) with 40005 — retrying with link-only fallback`,
+    );
+    const rejectedInfos = attachPaths.map((p) => ({ path: p, size: statSize(p) }));
+    const rejectionNotice = buildOversizedNotice(rejectedInfos);
+    const fallbackContent = rejectionNotice
+      ? content
+        ? `${content}\n\n${rejectionNotice}`
+        : rejectionNotice
+      : content;
+    await channel.send({ content: fallbackContent || '​', files: [] });
+    return { rejected: attachPaths };
+  }
+}
+
 export async function sendReply(channel, text, files = [], links = []) {
   const { attachable, oversized } = partitionAttachableFiles(files);
   for (const o of oversized) {
@@ -98,11 +133,11 @@ export async function sendReply(channel, text, files = [], links = []) {
   const parts = chunk(finalText);
   for (let i = 0; i < parts.length; i++) {
     const isLast = i === parts.length - 1;
-    const attachments = isLast ? attachable.map((f) => new AttachmentBuilder(f)) : [];
-    await channel.send({ content: parts[i] || '​', files: attachments });
+    const attachThisChunk = isLast ? attachable : [];
+    await sendWithFallback(channel, parts[i], attachThisChunk);
   }
   if (!parts.length && attachable.length) {
-    await channel.send({ files: attachable.map((f) => new AttachmentBuilder(f)) });
+    await sendWithFallback(channel, '', attachable);
   }
   const linkMsg = buildLinkFooter(files, links);
   if (linkMsg) {
