@@ -1446,6 +1446,225 @@ export const HANDLERS = {
     return `__IMAGE_PATH__:${filepath}|Generated image (${file._id.toString()}) ${where}.|${file._id.toString()}`;
   },
 
+  async edit_image(
+    {
+      source_image_id,
+      prompt,
+      replace_source,
+      aspect_ratio,
+      attach_to_character,
+      attach_to_beat,
+      set_as_main,
+    },
+    context = null,
+  ) {
+    if (!config.gemini.apiKey && !config.gemini.vertex.project) {
+      return 'Error: Gemini is not configured. Set GEMINI_VERTEX_PROJECT (+ GOOGLE_APPLICATION_CREDENTIALS) for Vertex AI, or GEMINI_API_KEY for the Developer API.';
+    }
+    if (!source_image_id) return 'Error: source_image_id is required.';
+    if (!prompt || !String(prompt).trim()) {
+      return 'Error: prompt is required (describe the change to make).';
+    }
+    if (typeof replace_source !== 'boolean') {
+      return 'Error: replace_source is required (true = delete source after editing, false = keep both).';
+    }
+    if (attach_to_character && attach_to_beat) {
+      return 'Error: specify at most one of attach_to_character or attach_to_beat.';
+    }
+
+    const editT0 = Date.now();
+
+    const fetched = await Images.readImageBuffer(source_image_id);
+    if (!fetched) return `Error: source image not found: ${source_image_id}`;
+    const { buffer: srcBuffer, file: srcFile } = fetched;
+    const srcContentType = srcFile.contentType || srcFile.metadata?.contentType;
+    const SUPPORTED = new Set(['image/png', 'image/jpeg', 'image/webp']);
+    if (!SUPPORTED.has(srcContentType)) {
+      return `Error: cannot edit image ${source_image_id}: unsupported source type ${srcContentType || 'unknown'}.`;
+    }
+    const MAX_SRC = 7 * 1024 * 1024;
+    if (srcBuffer.length > MAX_SRC) {
+      const mb = (srcBuffer.length / 1024 / 1024).toFixed(1);
+      return `Error: source image too large for editing (${mb} MB). NanoBanana input cap is ~7 MB — choose a smaller image, or describe the edit and use generate_image.`;
+    }
+
+    const srcOwnerType = srcFile.metadata?.owner_type || null;
+    const srcOwnerId = srcFile.metadata?.owner_id || null;
+
+    let sourceWasMain = false;
+    let srcOwnerCharacter = null;
+    let srcOwnerBeat = null;
+    let srcOwnerNoteId = null;
+    if (srcOwnerType === 'character' && srcOwnerId) {
+      srcOwnerCharacter = await Characters.getCharacter(srcOwnerId.toString());
+      sourceWasMain = !!(
+        srcOwnerCharacter?.main_image_id && srcOwnerCharacter.main_image_id.equals(srcFile._id)
+      );
+    } else if (srcOwnerType === 'beat' && srcOwnerId) {
+      const plot = await Plots.getPlot();
+      srcOwnerBeat = (plot.beats || []).find((b) => b._id && b._id.equals(srcOwnerId)) || null;
+      sourceWasMain = !!(
+        srcOwnerBeat?.main_image_id && srcOwnerBeat.main_image_id.equals(srcFile._id)
+      );
+    } else if (srcOwnerType === 'director_note' && srcOwnerId) {
+      const dn = await DirectorNotes.getDirectorNotes();
+      const note = (dn.notes || []).find((n) => n._id && n._id.equals(srcOwnerId));
+      if (note) {
+        srcOwnerNoteId = note._id;
+        sourceWasMain = !!(note.main_image_id && note.main_image_id.equals(srcFile._id));
+      }
+    }
+
+    let targetCharacter = null;
+    let targetBeat = null;
+    let targetNoteId = null;
+    if (attach_to_character) {
+      targetCharacter = await Characters.getCharacter(attach_to_character);
+      if (!targetCharacter) throw new Error(`Character not found: ${attach_to_character}`);
+    } else if (attach_to_beat) {
+      targetBeat = await resolveBeat(attach_to_beat);
+    } else if (srcOwnerType === 'character' && srcOwnerCharacter) {
+      targetCharacter = srcOwnerCharacter;
+    } else if (srcOwnerType === 'beat' && srcOwnerBeat) {
+      targetBeat = srcOwnerBeat;
+    } else if (srcOwnerType === 'director_note' && srcOwnerNoteId) {
+      targetNoteId = srcOwnerNoteId;
+    }
+
+    const targetOwnerId = targetCharacter
+      ? targetCharacter._id
+      : targetBeat
+        ? targetBeat._id
+        : targetNoteId || null;
+    const targetOwnerType = targetCharacter
+      ? 'character'
+      : targetBeat
+        ? 'beat'
+        : targetNoteId
+          ? 'director_note'
+          : null;
+    const targetIsSameOwner =
+      targetOwnerType !== null &&
+      targetOwnerType === srcOwnerType &&
+      targetOwnerId &&
+      srcOwnerId &&
+      targetOwnerId.equals(srcOwnerId);
+
+    const effectiveSetAsMain =
+      typeof set_as_main === 'boolean' ? set_as_main : sourceWasMain && targetIsSameOwner;
+
+    const editPrompt = String(prompt).trim();
+
+    const { buffer, contentType, usageMetadata } = await generateImageBytes({
+      prompt: editPrompt,
+      aspectRatio: aspect_ratio,
+      inputImage: { buffer: srcBuffer, contentType: srcContentType },
+    });
+
+    if (usageMetadata) {
+      try {
+        await recordGeminiImageUsage({
+          discordUser: context?.discordUser || null,
+          channelId: context?.channelId || null,
+          model: NANO_BANANA_MODEL,
+          usageMetadata,
+        });
+      } catch (e) {
+        logger.warn(`gemini token usage persist failed: ${e.message}`);
+      }
+    }
+
+    const file = await Images.uploadGeneratedImage({
+      buffer,
+      contentType,
+      prompt: editPrompt,
+      generatedBy: NANO_BANANA_MODEL,
+      ownerType: targetOwnerType,
+      ownerId: targetOwnerId,
+    });
+
+    let where = 'saved to library';
+    if (targetCharacter) {
+      const charMeta = {
+        _id: file._id,
+        filename: file.filename,
+        content_type: file.content_type,
+        size: file.size,
+        uploaded_at: file.uploaded_at,
+        caption: null,
+      };
+      await Characters.pushCharacterImage(
+        targetCharacter._id.toString(),
+        charMeta,
+        effectiveSetAsMain,
+      );
+      where = `attached to character "${targetCharacter.name}"`;
+    } else if (targetBeat) {
+      const beatMeta = {
+        _id: file._id,
+        filename: file.filename,
+        content_type: file.content_type,
+        size: file.size,
+        source: 'generated',
+        prompt: editPrompt,
+        generated_by: NANO_BANANA_MODEL,
+        caption: null,
+        uploaded_at: file.uploaded_at,
+      };
+      await Plots.pushBeatImage(targetBeat._id.toString(), beatMeta, effectiveSetAsMain);
+      where = `attached to beat "${targetBeat.name}"`;
+    } else if (targetNoteId) {
+      const noteMeta = {
+        _id: file._id,
+        filename: file.filename,
+        content_type: file.content_type,
+        size: file.size,
+        source: 'generated',
+        prompt: editPrompt,
+        generated_by: NANO_BANANA_MODEL,
+        caption: null,
+        uploaded_at: file.uploaded_at,
+      };
+      await DirectorNotes.pushDirectorNoteImage(
+        targetNoteId.toString(),
+        noteMeta,
+        effectiveSetAsMain,
+      );
+      where = `attached to director's note ${targetNoteId}`;
+    }
+
+    if (replace_source) {
+      try {
+        if (srcOwnerType === 'character' && srcOwnerCharacter) {
+          await Files.removeCharacterImage({
+            character: srcOwnerCharacter._id.toString(),
+            imageId: srcFile._id.toString(),
+          });
+        } else if (srcOwnerType === 'beat' && srcOwnerBeat) {
+          await Plots.pullBeatImage(srcOwnerBeat._id.toString(), srcFile._id.toString());
+          await Images.deleteImage(srcFile._id);
+        } else if (srcOwnerType === 'director_note' && srcOwnerNoteId) {
+          await DirectorNotes.pullDirectorNoteImage(
+            srcOwnerNoteId.toString(),
+            srcFile._id.toString(),
+          );
+          await Images.deleteImage(srcFile._id);
+        } else {
+          await Images.deleteImage(srcFile._id);
+        }
+      } catch (e) {
+        logger.warn(`edit_image: source deletion failed (${srcFile._id}): ${e.message}`);
+      }
+    }
+
+    const { path: filepath } = await Images.streamImageToTmp(file._id);
+    logger.info(
+      `edit_image: dest=${targetOwnerType || 'library'} replaced=${!!replace_source} bytes=${buffer.length} ${Date.now() - editT0}ms`,
+    );
+    const replacedNote = replace_source ? ', original deleted' : '';
+    return `__IMAGE_PATH__:${filepath}|Edited image (${file._id.toString()}) ${where}${replacedNote}.|${file._id.toString()}`;
+  },
+
   async export_pdf({ title }) {
     const path = await exportToPdf({ title });
     return `__PDF_PATH__:${path}`;
