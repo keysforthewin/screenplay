@@ -13,6 +13,7 @@ import {
   recordAgentTurns,
 } from '../mongo/messages.js';
 import { sendReply } from './reply.js';
+import { shouldIgnoreMessage } from './messageFilter.js';
 
 const mutex = keyedMutex();
 
@@ -31,6 +32,10 @@ function extractAttachments(msg) {
 export async function handleMessage(msg) {
   if (msg.author.bot) return;
   if (msg.channelId !== config.discord.movieChannelId) return;
+  if (await shouldIgnoreMessage(msg, msg.client.user.id)) {
+    logger.debug(`ignoring human-to-human message from ${msg.author.tag}`);
+    return;
+  }
   const text = msg.content?.trim() || '';
   const attachments = extractAttachments(msg);
   if (!text && !attachments.length) return;

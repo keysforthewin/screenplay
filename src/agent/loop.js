@@ -424,7 +424,7 @@ export async function runAgent({
       const anthropicT0 = Date.now();
       const resp = await client.messages.create({
         model,
-        max_tokens: 4096,
+        max_tokens: config.anthropic.maxTokens,
         system,
         tools: TOOLS_CACHED,
         messages: requestMessages,
@@ -443,7 +443,9 @@ export async function runAgent({
         // and still include tool_use blocks in content. We won't dispatch them,
         // so strip them from the recorded turn — otherwise the next history load
         // sees an orphan tool_use and Anthropic 400s on the very next request.
-        if (resp.content.some((b) => b.type === 'tool_use')) {
+        const hadToolUse = resp.content.some((b) => b.type === 'tool_use');
+        const truncated = resp.stop_reason === 'max_tokens';
+        if (hadToolUse) {
           const cleaned = resp.content.filter((b) => b.type !== 'tool_use');
           messages[messages.length - 1] = {
             role: 'assistant',
@@ -453,11 +455,16 @@ export async function runAgent({
           };
         }
         const finalContent = messages[messages.length - 1].content;
-        const text = (Array.isArray(finalContent) ? finalContent : [])
+        let text = (Array.isArray(finalContent) ? finalContent : [])
           .filter((b) => b.type === 'text')
           .map((b) => b.text)
           .join('\n')
           .trim();
+        if (truncated && hadToolUse) {
+          text = '(Truncated mid-tool-call. Try again — say "do it" or repeat the request.)';
+        } else if (truncated) {
+          text = `${text}\n\n(Response truncated — output token limit reached. Ask me to continue.)`.trim();
+        }
         return { text, attachmentPaths, attachmentLinks, agentMessages: messages.slice(agentStart) };
       }
 

@@ -15,6 +15,7 @@ export const config = {
   anthropic: {
     apiKey: required('ANTHROPIC_API_KEY'),
     model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-7',
+    maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS) || 16000,
   },
   cache: {
     enabled: !process.env.PROMPT_CACHE_DISABLED,
