@@ -545,6 +545,68 @@ export const TOOLS = [
     },
   },
   {
+    name: 'add_library_attachment',
+    description:
+      "Upload a non-image file (audio, video, PDF, text, archive — anything up to 100 MB) to the library with no owner. The file is downloaded from `source_url` and stored in MongoDB GridFS — `list_library_attachments` will show it, and you can later attach it to one or more entities with `attach_library_attachment_to_{beat,character,director_note}`. Use this when the user wants to upload a file once and then attach it to multiple beats/characters/notes, or wants to stash a file before deciding where it goes. For images, do NOT use this tool — use the entity-specific add_*_image tools or generate_image (which writes to the library by default when no current beat is set).",
+    input_schema: {
+      type: 'object',
+      properties: {
+        source_url: { type: 'string', description: 'HTTP(S) URL to the file' },
+        filename: { type: 'string', description: 'Optional filename to store. Defaults to the URL basename.' },
+        caption: { type: 'string', description: 'Optional short note about the file (kept on the GridFS metadata, not on any entity).' },
+      },
+      required: ['source_url'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'list_library_attachments',
+    description: 'List unassigned (library) non-image attachments — files uploaded with `add_library_attachment` that are not yet attached to any beat, character, or director note. Useful when the user says "attach that PDF to the Diner Showdown beat" and you need to find the attachment_id.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'attach_library_attachment_to_beat',
+    description: 'Attach a library attachment (one with no current owner) to a beat. The attachment is moved out of the library — `list_library_attachments` will no longer show it. If `beat` is omitted, the current beat is used.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        attachment_id: { type: 'string', description: 'GridFS file _id (24-char hex) of the library attachment' },
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
+        caption: { type: 'string', description: 'Optional caption to store on the beat-side entry.' },
+      },
+      required: ['attachment_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'attach_library_attachment_to_character',
+    description: "Attach a library attachment (one with no current owner) to a character. The attachment is moved out of the library — `list_library_attachments` will no longer show it.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        attachment_id: { type: 'string', description: 'GridFS file _id (24-char hex) of the library attachment' },
+        character: { type: 'string', description: "Character's name or _id" },
+        caption: { type: 'string' },
+      },
+      required: ['attachment_id', 'character'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'attach_library_attachment_to_director_note',
+    description: "Attach a library attachment (one with no current owner) to a director's note. The attachment is moved out of the library — `list_library_attachments` will no longer show it.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        attachment_id: { type: 'string', description: 'GridFS file _id (24-char hex) of the library attachment' },
+        note_id: { type: 'string', description: '24-char hex _id of the note.' },
+        caption: { type: 'string' },
+      },
+      required: ['attachment_id', 'note_id'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'show_image',
     description: 'Display an existing image (any image_id — whether attached to a beat, attached to a character as a portrait, or sitting in the library) by attaching it to the bot\'s reply in Discord. Use when the user asks to "see" or "show" an image.',
     input_schema: {
@@ -588,17 +650,19 @@ export const TOOLS = [
   {
     name: 'generate_image',
     description:
-      'Generate an image with Google\'s "Nano Banana" (gemini-2.5-flash-image). The bot will display the generated image in its reply. ONLY call this when the user has explicitly asked for an image (e.g., "draw this", "generate an image of...", "show me what this looks like"). Compose the prompt from one or more of: an explicit `prompt` string, the current/named beat (set `include_beat: true`), or recent conversation context (set `include_recent_chat: true`). At least one of these inputs must be provided. If `attach_to_current_beat` is true (default when a current beat is set), the image is saved to that beat; otherwise it goes into the library and can be attached later via attach_library_image_to_beat. Returns the image_id and displays the image. Requires GEMINI_API_KEY to be configured.',
+      'Generate an image with Google\'s "Nano Banana" (gemini-2.5-flash-image). The bot will display the generated image in its reply. ONLY call this when the user has explicitly asked for an image (e.g., "draw this", "generate an image of...", "show me what this looks like"). Compose the prompt from one or more of: an explicit `prompt` string, the current/named beat (set `include_beat: true`), or recent conversation context (set `include_recent_chat: true`). At least one of these inputs must be provided.\n\nDestination precedence (the image is owned by exactly one entity, or none): (1) `attach_to_character` wins; (2) else `attach_to_beat` (any beat, not just current); (3) else `attach_to_current_beat` (default true when a current beat is set); (4) else the library — where it can be attached later via `attach_library_image_to_{character,beat,director_note}`. `attach_to_character` and `attach_to_beat` are mutually exclusive. `set_as_main` applies to whichever target is chosen. Returns the image_id and displays the image. Requires GEMINI_API_KEY to be configured.',
     input_schema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'Free-form prompt fragment to include verbatim.' },
         include_beat: { type: 'boolean', description: 'When true, weave the beat\'s name/desc/body/characters into the prompt.' },
-        beat: { type: 'string', description: 'Identifier for the beat to draw from when include_beat is true. Defaults to the current beat.' },
+        beat: { type: 'string', description: 'Identifier for the beat to draw from when include_beat is true. Defaults to the current beat. Use `attach_to_beat` to also bind the generated image to a beat.' },
         include_recent_chat: { type: 'boolean', description: 'When true, include a short summary of recent conversation in the prompt.' },
         aspect_ratio: { type: 'string', enum: ['1:1', '16:9', '9:16', '4:3', '3:4'], description: 'Optional aspect ratio. Defaults to 16:9.' },
-        attach_to_current_beat: { type: 'boolean', description: 'Default true when a current beat is set; false otherwise. When false, the image lands in the library.' },
-        set_as_main: { type: 'boolean' },
+        attach_to_current_beat: { type: 'boolean', description: 'Default true when a current beat is set; false otherwise. When false, the image lands in the library (unless `attach_to_character` / `attach_to_beat` is set). Ignored when either of those is set.' },
+        attach_to_character: { type: 'string', description: "Character name or 24-char hex _id. When set, the generated image is owned by this character (pushed onto its images[]). Mutually exclusive with attach_to_beat." },
+        attach_to_beat: { type: 'string', description: "Beat _id, order, or name to bind the generated image to. Overrides attach_to_current_beat. Mutually exclusive with attach_to_character." },
+        set_as_main: { type: 'boolean', description: "If true, the generated image becomes the chosen entity's main image (or, with no target, this flag has no effect)." },
       },
       additionalProperties: false,
     },
@@ -751,6 +815,22 @@ export const TOOLS = [
         image_id: { type: 'string', description: 'GridFS file _id (24-char hex)' },
       },
       required: ['character', 'image_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'attach_library_image_to_character',
+    description:
+      "Attach a library image (one with no current owner) to a character. The image is moved out of the library — list_library_images will no longer show it. If `set_as_main` is true (or this is the character's first image), the image becomes the character's main image. Use this when the user wants a previously generated or library image used as a portrait.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        image_id: { type: 'string', description: 'GridFS file _id (24-char hex) of the library image' },
+        character: { type: 'string', description: "Character's name or _id" },
+        set_as_main: { type: 'boolean' },
+        caption: { type: 'string', description: 'Optional short caption' },
+      },
+      required: ['image_id', 'character'],
       additionalProperties: false,
     },
   },

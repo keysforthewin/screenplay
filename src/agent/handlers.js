@@ -1179,6 +1179,85 @@ export const HANDLERS = {
     return `Attached image to beat "${target.name}"${is_main ? ' (now main image)' : ''}.`;
   },
 
+  async attach_library_image_to_character({ image_id, character, set_as_main, caption } = {}) {
+    const res = await Files.attachExistingImageToCharacter({
+      character,
+      imageId: image_id,
+      caption,
+      setAsMain: set_as_main,
+    });
+    if (res.already_attached) {
+      return `Image ${image_id} is already attached to character "${res.character}".`;
+    }
+    return `Attached image to character "${res.character || character}"${
+      res.is_main ? ' (now main image)' : ''
+    }.`;
+  },
+
+  async add_library_attachment({ source_url, filename, caption } = {}) {
+    const file = await Attachments.uploadAttachmentFromUrl({
+      sourceUrl: source_url,
+      filename,
+      ownerType: null,
+      ownerId: null,
+    });
+    return `Added attachment to library.\n${compact({
+      _id: file._id.toString(),
+      filename: file.filename,
+      content_type: file.content_type,
+      size: file.size,
+      caption: caption?.trim() || null,
+    })}`;
+  },
+
+  async list_library_attachments() {
+    const files = await Attachments.listLibraryAttachments();
+    return compact(
+      files.map((f) => {
+        const m = Attachments.attachmentFileToMeta(f);
+        return { ...m, _id: m._id.toString() };
+      }),
+    );
+  },
+
+  async attach_library_attachment_to_beat({ attachment_id, beat, caption } = {}) {
+    const target = await resolveBeat(beat);
+    const res = await Attachments.attachExistingAttachmentToBeat({
+      beat: target._id.toString(),
+      attachmentId: attachment_id,
+      caption,
+    });
+    if (res.already_attached) {
+      return `Attachment ${attachment_id} is already attached to beat "${target.name}".`;
+    }
+    return `Attached attachment to beat "${target.name}".`;
+  },
+
+  async attach_library_attachment_to_character({ attachment_id, character, caption } = {}) {
+    const res = await Attachments.attachExistingAttachmentToCharacter({
+      character,
+      attachmentId: attachment_id,
+      caption,
+    });
+    if (res.already_attached) {
+      return `Attachment ${attachment_id} is already attached to character "${res.character}".`;
+    }
+    return `Attached attachment to character "${res.character}".`;
+  },
+
+  async attach_library_attachment_to_director_note({ attachment_id, note_id, caption } = {}) {
+    const target = await resolveDirectorNote(note_id);
+    const res = await Attachments.attachExistingAttachmentToDirectorNote({
+      noteId: target._id.toString(),
+      attachmentId: attachment_id,
+      caption,
+    });
+    if (res.already_attached) {
+      return `Attachment ${attachment_id} is already attached to director's note ${target._id}.`;
+    }
+    return `Attached attachment to director's note ${target._id}.`;
+  },
+
   async show_image({ image_id }) {
     const { path: filepath, file } = await Images.streamImageToTmp(image_id);
     return `__IMAGE_PATH__:${filepath}||${file._id.toString()}`;
@@ -1225,6 +1304,8 @@ export const HANDLERS = {
       include_recent_chat,
       aspect_ratio,
       attach_to_current_beat,
+      attach_to_character,
+      attach_to_beat,
       set_as_main,
     },
     context = null,
@@ -1235,6 +1316,10 @@ export const HANDLERS = {
     if (!prompt && !include_beat && !include_recent_chat) {
       return 'Error: provide at least one of `prompt`, `include_beat: true`, or `include_recent_chat: true`.';
     }
+    if (attach_to_character && attach_to_beat) {
+      return 'Error: specify at most one of attach_to_character or attach_to_beat.';
+    }
+
     const generateT0 = Date.now();
 
     let beatDoc = null;
@@ -1244,6 +1329,19 @@ export const HANDLERS = {
       } catch (e) {
         if (include_beat) throw e;
       }
+    }
+
+    let targetCharacter = null;
+    if (attach_to_character) {
+      targetCharacter = await Characters.getCharacter(attach_to_character);
+      if (!targetCharacter) {
+        throw new Error(`Character not found: ${attach_to_character}`);
+      }
+    }
+
+    let explicitTargetBeat = null;
+    if (attach_to_beat) {
+      explicitTargetBeat = await resolveBeat(attach_to_beat);
     }
 
     let recentMessages = [];
@@ -1276,11 +1374,29 @@ export const HANDLERS = {
       }
     }
 
-    const current = beatDoc || (await Plots.getCurrentBeat());
-    const shouldAttach =
-      attach_to_current_beat === undefined ? !!current : !!attach_to_current_beat;
-    const ownerType = shouldAttach && current ? 'beat' : null;
-    const ownerId = shouldAttach && current ? current._id : null;
+    let ownerType = null;
+    let ownerId = null;
+    let targetBeatDoc = null;
+    let useCharacter = false;
+
+    if (targetCharacter) {
+      ownerType = 'character';
+      ownerId = targetCharacter._id;
+      useCharacter = true;
+    } else if (explicitTargetBeat) {
+      ownerType = 'beat';
+      ownerId = explicitTargetBeat._id;
+      targetBeatDoc = explicitTargetBeat;
+    } else {
+      const current = beatDoc || (await Plots.getCurrentBeat());
+      const shouldAttachCurrent =
+        attach_to_current_beat === undefined ? !!current : !!attach_to_current_beat;
+      if (shouldAttachCurrent && current) {
+        ownerType = 'beat';
+        ownerId = current._id;
+        targetBeatDoc = current;
+      }
+    }
 
     const file = await Images.uploadGeneratedImage({
       buffer,
@@ -1291,8 +1407,24 @@ export const HANDLERS = {
       ownerId,
     });
 
-    if (shouldAttach && current) {
-      const meta = {
+    let where = 'saved to library';
+    if (useCharacter) {
+      const charMeta = {
+        _id: file._id,
+        filename: file.filename,
+        content_type: file.content_type,
+        size: file.size,
+        uploaded_at: file.uploaded_at,
+        caption: null,
+      };
+      await Characters.pushCharacterImage(
+        targetCharacter._id.toString(),
+        charMeta,
+        set_as_main,
+      );
+      where = `attached to character "${targetCharacter.name}"`;
+    } else if (targetBeatDoc) {
+      const beatMeta = {
         _id: file._id,
         filename: file.filename,
         content_type: file.content_type,
@@ -1303,13 +1435,13 @@ export const HANDLERS = {
         caption: null,
         uploaded_at: file.uploaded_at,
       };
-      await Plots.pushBeatImage(current._id.toString(), meta, set_as_main);
+      await Plots.pushBeatImage(targetBeatDoc._id.toString(), beatMeta, set_as_main);
+      where = `attached to beat "${targetBeatDoc.name}"`;
     }
 
     const { path: filepath } = await Images.streamImageToTmp(file._id);
-    const where = shouldAttach && current ? `attached to beat "${current.name}"` : 'saved to library';
     logger.info(
-      `generate_image: beat=${current?.name || '-'} bytes=${buffer.length} ${Date.now() - generateT0}ms`,
+      `generate_image: dest=${ownerType || 'library'} bytes=${buffer.length} ${Date.now() - generateT0}ms`,
     );
     return `__IMAGE_PATH__:${filepath}|Generated image (${file._id.toString()}) ${where}.|${file._id.toString()}`;
   },
