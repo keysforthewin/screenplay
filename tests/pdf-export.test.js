@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderScreenplayPdf } from '../src/pdf/export.js';
+import { renderScreenplayPdf, formatFieldValue } from '../src/pdf/export.js';
 
 // Minimal valid 1x1 RGB PNG (red pixel) — accepted by PDFKit's openImage/image.
 const TINY_PNG = Buffer.from(
@@ -216,5 +216,96 @@ describe('renderScreenplayPdf', () => {
     });
     expect(buf.length).toBeGreaterThan(500);
     expect(buf.slice(0, 4).toString()).toBe('%PDF');
+  });
+});
+
+describe('character field rendering', () => {
+  it('does not overlap labels when a field value is empty', async () => {
+    const buf = await renderScreenplayPdf({
+      title: 'Test',
+      characters: [{
+        name: 'Alice', plays_self: true, hollywood_actor: null, own_voice: true,
+        fields: {
+          origin_story: null,
+          alternate_names: [],
+          background_story: 'Once upon a time.',
+          name_changes: [{ name: 'Old Alice', changed_on: '2010-01-01' }],
+        },
+      }],
+      plot: { synopsis: 's', beats: [], notes: '' },
+    });
+    expect(buf.length).toBeGreaterThan(500);
+    expect(buf.slice(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('renders each non-empty field on its own line (size grows with each field)', async () => {
+    const baseArgs = {
+      title: 'Test',
+      plot: { synopsis: 's', beats: [], notes: '' },
+    };
+    const oneField = await renderScreenplayPdf({
+      ...baseArgs,
+      characters: [{
+        name: 'Alice', plays_self: true, hollywood_actor: null, own_voice: true,
+        fields: { background_story: 'Once upon a time.' },
+      }],
+    });
+    const threeFields = await renderScreenplayPdf({
+      ...baseArgs,
+      characters: [{
+        name: 'Alice', plays_self: true, hollywood_actor: null, own_voice: true,
+        fields: {
+          background_story: 'Once upon a time.',
+          origin_story: 'She was born.',
+          arc: 'She grew.',
+        },
+      }],
+    });
+    expect(threeFields.length).toBeGreaterThan(oneField.length + 100);
+  });
+});
+
+describe('formatFieldValue', () => {
+  it('returns plain strings unchanged', () => {
+    expect(formatFieldValue('hello')).toBe('hello');
+  });
+
+  it('joins string arrays with commas', () => {
+    expect(formatFieldValue(['Bobby', 'The Boss'])).toBe('Bobby, The Boss');
+  });
+
+  it('formats arrays of objects without producing [object Object]', () => {
+    const v = [
+      { name: 'Robert Smith', changed_on: '2018-05-12' },
+      { name: 'Bob Jones', changed_on: '2020-01-01' },
+    ];
+    const out = formatFieldValue(v);
+    expect(out).not.toContain('[object Object]');
+    expect(out).toContain('Robert Smith');
+    expect(out).toContain('2018-05-12');
+    expect(out).toContain('Bob Jones');
+    expect(out).toContain('2020-01-01');
+  });
+
+  it('formats a bare object without [object Object]', () => {
+    const out = formatFieldValue({ name: 'Robert Smith', changed_on: '2018-05-12' });
+    expect(out).not.toContain('[object Object]');
+    expect(out).toContain('Robert Smith');
+    expect(out).toContain('2018-05-12');
+  });
+
+  it('skips null/empty values inside object entries', () => {
+    const out = formatFieldValue({ name: 'Solo', changed_on: null, note: '' });
+    expect(out).toBe('name: Solo');
+  });
+
+  it('returns empty string for null/undefined', () => {
+    expect(formatFieldValue(null)).toBe('');
+    expect(formatFieldValue(undefined)).toBe('');
+  });
+
+  it('coerces numbers and booleans to strings', () => {
+    expect(formatFieldValue(42)).toBe('42');
+    expect(formatFieldValue(true)).toBe('true');
   });
 });
