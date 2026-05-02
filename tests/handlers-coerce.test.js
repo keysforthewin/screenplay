@@ -176,6 +176,154 @@ describe('update_beat stringified-patch recovery', () => {
     const fresh = await Plots.getBeat('Opening');
     expect(fresh.body).toBe(body);
   });
+
+  it('recovers a body that contains unescaped DIALOGUE quotes (the most common screenplay failure)', async () => {
+    // Screenplay prose is full of dialogue. When the model writes a long body and
+    // forgets to escape internal double-quotes, the in-string state tracking gets
+    // thrown off and strict JSON.parse fails. The single-field-shape regex
+    // extractor is the final fallback.
+    await Plots.createBeat({ name: 'Opening', desc: 'opening scene', body: 'old' });
+    const body = 'Keys looks up. "Wait, what?" he says.\n\nHis manager replies, "You heard me." Silence.';
+    const malformed = `{"body":"${body}"}`; // unescaped " inside the value
+    expect(() => JSON.parse(malformed)).toThrow();
+    const out = await HANDLERS.update_beat({
+      identifier: 'Opening',
+      patch: malformed,
+    });
+    expect(out).toMatch(/Updated beat "Opening"/);
+    const fresh = await Plots.getBeat('Opening');
+    expect(fresh.body).toBe(body);
+  });
+
+  it('the extractor preserves valid JSON escape sequences inside the recovered value', async () => {
+    // If the model partially escaped (some \n correctly, but unescaped quotes
+    // forced us into the regex fallback), the standard escapes still get decoded.
+    await Plots.createBeat({ name: 'Opening', desc: 'opening scene', body: 'old' });
+    const malformed = '{"body":"Line one\\nLine "two"\\nLine three"}';
+    expect(() => JSON.parse(malformed)).toThrow();
+    const out = await HANDLERS.update_beat({
+      identifier: 'Opening',
+      patch: malformed,
+    });
+    expect(out).toMatch(/Updated beat "Opening"/);
+    const fresh = await Plots.getBeat('Opening');
+    expect(fresh.body).toBe('Line one\nLine "two"\nLine three');
+  });
+
+  it('the regex extractor does NOT swallow multi-field shapes (keeps existing parse behavior)', async () => {
+    // {"name":"...","body":"..."} with internal quotes is harder than single-field;
+    // for now we let it fall through to the canonical error rather than guess wrong.
+    await Plots.createBeat({ name: 'Opening', desc: 'opening scene', body: 'old' });
+    const malformed = '{"name":"X","body":"He said "hi"."}'; // unescaped + multi-field
+    await expect(
+      HANDLERS.update_beat({ identifier: 'Opening', patch: malformed }),
+    ).rejects.toThrow(/must be an object/);
+  });
+});
+
+describe('set_beat_body handler', () => {
+  it('replaces the body and reports a length delta', async () => {
+    await Plots.createBeat({ name: 'Opening', desc: 'd', body: 'first' });
+    const out = await HANDLERS.set_beat_body({ beat: 'Opening', body: 'second draft body' });
+    expect(out).toMatch(/Replaced body of beat "Opening"/);
+    expect(out).toMatch(/Was 5 chars; now 17 chars/);
+    const fresh = await Plots.getBeat('Opening');
+    expect(fresh.body).toBe('second draft body');
+  });
+
+  it('accepts an empty body to clear the field', async () => {
+    await Plots.createBeat({ name: 'Opening', desc: 'd', body: 'old body' });
+    const out = await HANDLERS.set_beat_body({ beat: 'Opening', body: '' });
+    expect(out).toMatch(/Replaced body of beat "Opening"/);
+    const fresh = await Plots.getBeat('Opening');
+    expect(fresh.body).toBe('');
+  });
+
+  it('returns a tool error when beat is missing', async () => {
+    const out = await HANDLERS.set_beat_body({ body: 'x' });
+    expect(out).toMatch(/Tool error \(set_beat_body\): `beat` is required/);
+  });
+
+  it('returns a tool error when body is not a string', async () => {
+    await Plots.createBeat({ name: 'Opening', desc: 'd' });
+    const out = await HANDLERS.set_beat_body({ beat: 'Opening', body: 42 });
+    expect(out).toMatch(/Tool error \(set_beat_body\): `body` must be a string/);
+  });
+
+  it('defensively recovers when the entire input arrives as a stringified JSON', async () => {
+    // Same model failure mode handled by update_beat — cheap insurance.
+    await Plots.createBeat({ name: 'Opening', desc: 'd', body: 'x' });
+    const out = await HANDLERS.set_beat_body('{"beat":"Opening","body":"recovered"}');
+    expect(out).toMatch(/Replaced body of beat "Opening"/);
+    const fresh = await Plots.getBeat('Opening');
+    expect(fresh.body).toBe('recovered');
+  });
+});
+
+describe('edit_beat_body handler', () => {
+  it('applies a single edit and reports the body length transition', async () => {
+    await Plots.createBeat({
+      name: 'Opening', desc: 'd',
+      body: 'Keys says "hello" to Bob.',
+    });
+    const out = await HANDLERS.edit_beat_body({
+      beat: 'Opening',
+      edits: [{ find: '"hello"', replace: '"good morning"' }],
+    });
+    expect(out).toMatch(/Applied 1 edit\(s\) to beat "Opening"/);
+    expect(out).toMatch(/Body: 25 → 32 chars/);
+    const fresh = await Plots.getBeat('Opening');
+    expect(fresh.body).toBe('Keys says "good morning" to Bob.');
+  });
+
+  it('applies multiple edits in order and reports per-edit deltas', async () => {
+    await Plots.createBeat({ name: 'Opening', desc: 'd', body: 'one two three' });
+    const out = await HANDLERS.edit_beat_body({
+      beat: 'Opening',
+      edits: [
+        { find: 'one', replace: 'ONE' },
+        { find: 'three', replace: 'THREE' },
+      ],
+    });
+    expect(out).toMatch(/Applied 2 edit\(s\)/);
+    expect(out).toMatch(/1\. -3\/\+3 \(Δ\+0\)/);
+    expect(out).toMatch(/2\. -5\/\+5 \(Δ\+0\)/);
+  });
+
+  it('surfaces the find snippet when no match is present', async () => {
+    await Plots.createBeat({ name: 'Opening', desc: 'd', body: 'hello world' });
+    // Handlers throw → dispatchTool wraps into "Tool error (...)" but here we
+    // call the handler directly so the throw propagates.
+    await expect(
+      HANDLERS.edit_beat_body({
+        beat: 'Opening',
+        edits: [{ find: 'banana split sundae', replace: 'apple' }],
+      }),
+    ).rejects.toThrow(/not found in current body.*banana split sundae/);
+  });
+
+  it('surfaces the match count when the find string is non-unique', async () => {
+    await Plots.createBeat({ name: 'Opening', desc: 'd', body: 'one one one' });
+    await expect(
+      HANDLERS.edit_beat_body({
+        beat: 'Opening',
+        edits: [{ find: 'one', replace: 'two' }],
+      }),
+    ).rejects.toThrow(/matched 3 places/);
+  });
+
+  it('returns a tool error when beat is missing', async () => {
+    const out = await HANDLERS.edit_beat_body({ edits: [{ find: 'x', replace: 'y' }] });
+    expect(out).toMatch(/Tool error \(edit_beat_body\): `beat` is required/);
+  });
+
+  it('returns a tool error when edits is missing or empty', async () => {
+    await Plots.createBeat({ name: 'Opening', desc: 'd' });
+    const a = await HANDLERS.edit_beat_body({ beat: 'Opening' });
+    expect(a).toMatch(/non-empty array/);
+    const b = await HANDLERS.edit_beat_body({ beat: 'Opening', edits: [] });
+    expect(b).toMatch(/non-empty array/);
+  });
 });
 
 describe('update_plot wrapped-shape recovery', () => {
