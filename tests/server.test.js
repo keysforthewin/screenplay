@@ -72,16 +72,32 @@ afterAll(async () => {
 });
 
 describe('isValidPdfFilename', () => {
-  it('accepts the screenplay timestamp pattern', () => {
+  it('accepts legacy screenplay-timestamp filenames', () => {
     expect(isValidPdfFilename('screenplay-1700000000000.pdf')).toBe(true);
     expect(isValidPdfFilename('screenplay-1.pdf')).toBe(true);
   });
 
-  it('rejects path traversal and other patterns', () => {
+  it('accepts descriptive slug filenames', () => {
+    expect(isValidPdfFilename('raes-character-sheet-1700000000000.pdf')).toBe(true);
+    expect(isValidPdfFilename('beats-1-10-1700000000000.pdf')).toBe(true);
+    expect(isValidPdfFilename('full-script-1700000000000.pdf')).toBe(true);
+    expect(isValidPdfFilename('act-one-climax-beats-1700000000000.pdf')).toBe(true);
+    expect(isValidPdfFilename('a.pdf')).toBe(true);
+  });
+
+  it('accepts a previously-failing simple non-screenplay name (descriptive form)', () => {
+    expect(isValidPdfFilename('foo.pdf')).toBe(true);
+    expect(isValidPdfFilename('foo-1.pdf')).toBe(true);
+  });
+
+  it('rejects path traversal and other unsafe patterns', () => {
     expect(isValidPdfFilename('../etc/passwd')).toBe(false);
-    expect(isValidPdfFilename('screenplay-abc.pdf')).toBe(false);
+    expect(isValidPdfFilename('foo/bar-1.pdf')).toBe(false);
     expect(isValidPdfFilename('screenplay-1.txt')).toBe(false);
-    expect(isValidPdfFilename('foo.pdf')).toBe(false);
+    expect(isValidPdfFilename('screenplay-1.PDF')).toBe(false);
+    expect(isValidPdfFilename('Screenplay-1.pdf')).toBe(false);
+    expect(isValidPdfFilename('-leading-dash-1.pdf')).toBe(false);
+    expect(isValidPdfFilename('foo bar.pdf')).toBe(false);
     expect(isValidPdfFilename('')).toBe(false);
     expect(isValidPdfFilename(null)).toBe(false);
   });
@@ -145,7 +161,7 @@ describe('GET /pdf/:filename', () => {
   });
 
   it('returns 400 for wrong-pattern filenames', async () => {
-    const res = await fetch(`${baseUrl}/pdf/foo.pdf`);
+    const res = await fetch(`${baseUrl}/pdf/${encodeURIComponent('Foo.pdf')}`);
     expect(res.status).toBe(400);
   });
 

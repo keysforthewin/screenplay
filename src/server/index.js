@@ -12,7 +12,7 @@ import {
   openAttachmentDownloadStream,
 } from '../mongo/attachments.js';
 
-const PDF_FILENAME_RE = /^screenplay-\d+\.pdf$/;
+const PDF_FILENAME_RE = /^[a-z0-9][a-z0-9-]{0,150}\.pdf$/;
 const HEX24_RE = /^[a-f0-9]{24}$/i;
 
 export function isValidPdfFilename(name) {

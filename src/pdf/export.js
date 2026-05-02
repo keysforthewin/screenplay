@@ -8,8 +8,90 @@ import { getDirectorNotes } from '../mongo/directorNotes.js';
 import { readImageBuffer, listLibraryImages } from '../mongo/images.js';
 import { listLibraryAttachments } from '../mongo/attachments.js';
 import { attachmentLink } from '../server/index.js';
+import { analyzeText } from '../llm/analyze.js';
 import { logger } from '../log.js';
 import { registerNotoFonts, NOTO_FONTS, renderMarkdown } from './markdown.js';
+
+const FALLBACK_SLUG_BY_MODE = {
+  dossier: 'dossier',
+  character: 'character-sheet',
+  characters: 'character-sheets',
+  beats: 'beats',
+  full: 'full-script',
+};
+
+export function slugifyFilename(s, { maxLen = 60 } = {}) {
+  return String(s ?? '')
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, maxLen)
+    .replace(/-+$/, '');
+}
+
+function fallbackSlugForMode(mode) {
+  return FALLBACK_SLUG_BY_MODE[mode] || 'export';
+}
+
+function renderUserPromptForMeta(meta) {
+  const now = new Date();
+  const lines = [
+    `Today is ${now.toUTCString()}.`,
+    `Export mode: ${meta.mode}.`,
+    `Working title: ${meta.title ? `"${meta.title}"` : '(none)'}.`,
+  ];
+  if (meta.mode === 'dossier' && meta.characterName) {
+    lines.push(`Dossier subject: ${meta.characterName}.`);
+    if (typeof meta.beatCount === 'number') {
+      lines.push(`Includes ${meta.beatCount} beats featuring this character.`);
+    }
+  } else if (meta.mode === 'character' && meta.characterName) {
+    lines.push(`Character: ${meta.characterName}.`);
+  } else if (meta.mode === 'characters' && Array.isArray(meta.characterNames)) {
+    lines.push(
+      `Characters (${meta.characterNames.length}): ${meta.characterNames.join(', ')}.`,
+    );
+  } else if (meta.mode === 'beats') {
+    lines.push(`Beats query: "${meta.beatsQuery || ''}".`);
+    if (typeof meta.beatCount === 'number') {
+      lines.push(`Matched ${meta.beatCount} beats.`);
+    }
+  } else if (meta.mode === 'full') {
+    if (typeof meta.characterCount === 'number' && typeof meta.beatCount === 'number') {
+      lines.push(
+        `Full export contains ${meta.characterCount} characters and ${meta.beatCount} beats.`,
+      );
+    }
+  }
+  return lines.join('\n');
+}
+
+export async function inferExportTitle(meta) {
+  const fallback = fallbackSlugForMode(meta.mode);
+  try {
+    const system =
+      "You name PDF export files for a screenwriting bot. Given a description of " +
+      "what's in the export, return one short, descriptive title between 3 and 50 " +
+      "characters. Use plain English. Title case is fine. No quotes, no file " +
+      "extensions, no dates, no trailing punctuation. Examples: \"Rae's Character " +
+      "Sheet\", \"Beats 1-10\", \"Full Script\", \"Act One Climax Beats\", \"Hero " +
+      "Trio Sheets\". Respond with only the title — no preamble, no explanation.";
+    const user = renderUserPromptForMeta(meta);
+    const text = await analyzeText({
+      system,
+      user,
+      model: 'claude-haiku-4-5',
+      maxTokens: 60,
+    });
+    const slug = slugifyFilename(text, { maxLen: 60 });
+    return slug || fallback;
+  } catch (e) {
+    logger.warn(`PDF filename inference failed, using fallback: ${e.message}`);
+    return fallback;
+  }
+}
 
 const FONT = NOTO_FONTS;
 
@@ -375,6 +457,10 @@ async function buildExportData({ characters: charNames, beats_query, dossier_cha
     const missing = charNames.filter((_, i) => !resolved[i]);
     if (missing.length) return { error: `No such character(s): ${missing.join(', ')}.` };
     const characterImages = await loadCharacterImages(resolved);
+    const names = resolved.map((c) => c.name);
+    const meta = resolved.length === 1
+      ? { mode: 'character', characterName: names[0] }
+      : { mode: 'characters', characterNames: names };
     return {
       characters: resolved,
       plot: { synopsis: '', beats: [], notes: '' },
@@ -383,6 +469,7 @@ async function buildExportData({ characters: charNames, beats_query, dossier_cha
       characterImages,
       directorNoteImages: {},
       library: null,
+      meta,
     };
   }
 
@@ -401,6 +488,7 @@ async function buildExportData({ characters: charNames, beats_query, dossier_cha
       characterImages: {},
       directorNoteImages: {},
       library: null,
+      meta: { mode: 'beats', beatsQuery: beats_query, beatCount: beats.length },
     };
   }
 
@@ -424,6 +512,7 @@ async function buildExportData({ characters: charNames, beats_query, dossier_cha
       characterImages,
       directorNoteImages: {},
       library: null,
+      meta: { mode: 'dossier', characterName: character.name, beatCount: beats.length },
     };
   }
 
@@ -436,15 +525,32 @@ async function buildExportData({ characters: charNames, beats_query, dossier_cha
     loadDirectorNoteImages(directorNotes),
     loadLibrary(),
   ]);
-  return { characters, plot, directorNotes, beatImages, characterImages, directorNoteImages, library };
+  return {
+    characters,
+    plot,
+    directorNotes,
+    beatImages,
+    characterImages,
+    directorNoteImages,
+    library,
+    meta: {
+      mode: 'full',
+      characterCount: characters.length,
+      beatCount: (plot.beats || []).length,
+    },
+  };
 }
 
 export async function exportToPdf({ title, characters, beats_query, dossier_character } = {}) {
-  const data = await buildExportData({ characters, beats_query, dossier_character });
-  if (data.error) return { error: data.error };
-  const buf = await renderScreenplayPdf({ title, ...data });
+  const result = await buildExportData({ characters, beats_query, dossier_character });
+  if (result.error) return { error: result.error };
+  const { meta, ...data } = result;
+  const [buf, slug] = await Promise.all([
+    renderScreenplayPdf({ title, ...data }),
+    inferExportTitle({ ...meta, title }),
+  ]);
   await fs.mkdir(config.pdf.exportDir, { recursive: true });
-  const filename = `screenplay-${Date.now()}.pdf`;
+  const filename = `${slug}-${Date.now()}.pdf`;
   const filepath = path.join(config.pdf.exportDir, filename);
   await fs.writeFile(filepath, buf);
   return { path: filepath };

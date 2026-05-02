@@ -10,6 +10,10 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+vi.mock('../src/llm/analyze.js', () => ({
+  analyzeText: vi.fn(async () => 'Test Title'),
+}));
+
 const { exportToPdf } = await import('../src/pdf/export.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
