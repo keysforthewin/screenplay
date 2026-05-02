@@ -50,31 +50,67 @@ function preview(text, n = 120) {
   return `${t.slice(0, n - 1)}…`;
 }
 
-function coerceStringifiedJson(value) {
+function tryJsonParse(s) {
+  try {
+    return { ok: true, value: JSON.parse(s) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function coerceStringifiedJson(value, depth = 0) {
   if (typeof value !== 'string') return null;
+  if (depth > 2) return null;
   let s = value.trim();
+  // Strip code fences (```json ... ```, ```js ... ```, etc.)
   if (s.startsWith('```')) {
-    s = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+    s = s.replace(/^```(?:json|js|javascript|ts|typescript)?\s*/i, '').replace(/```\s*$/, '').trim();
+  }
+  // Over-stringified: model wrapped JSON inside another JSON-string layer ("\"{...}\"")
+  if (s.startsWith('"') && s.endsWith('"')) {
+    const peeled = tryJsonParse(s);
+    if (peeled.ok && typeof peeled.value === 'string') {
+      return coerceStringifiedJson(peeled.value, depth + 1);
+    }
+  }
+  // Strip leading prose by jumping to the first '{' or '['
+  if (!s.startsWith('{') && !s.startsWith('[')) {
+    const idx = s.search(/[{[]/);
+    if (idx > 0) s = s.slice(idx);
+  }
+  // Strip trailing prose by trimming to the last '}' or ']'
+  if (s.startsWith('{') || s.startsWith('[')) {
+    const lastClose = Math.max(s.lastIndexOf('}'), s.lastIndexOf(']'));
+    if (lastClose >= 0 && lastClose < s.length - 1) {
+      s = s.slice(0, lastClose + 1);
+    }
   }
   if (!s.startsWith('{') && !s.startsWith('[')) return null;
-  try {
-    const parsed = JSON.parse(s);
-    if (
-      Array.isArray(parsed) &&
-      parsed.length === 1 &&
-      parsed[0] &&
-      typeof parsed[0] === 'object' &&
-      !Array.isArray(parsed[0])
-    ) {
-      return parsed[0];
-    }
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed;
-    }
-    return null;
-  } catch {
-    return null;
+
+  // Try direct parse, then smart-quote-cleaned parse
+  let parsed = tryJsonParse(s);
+  if (!parsed.ok) {
+    const cleaned = s
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’]/g, "'");
+    parsed = tryJsonParse(cleaned);
   }
+  if (!parsed.ok) return null;
+
+  const v = parsed.value;
+  if (
+    Array.isArray(v) &&
+    v.length === 1 &&
+    v[0] &&
+    typeof v[0] === 'object' &&
+    !Array.isArray(v[0])
+  ) {
+    return v[0];
+  }
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    return v;
+  }
+  return null;
 }
 
 const DESCRIBE_IMAGE_BASELINE = [
@@ -1130,6 +1166,10 @@ export const HANDLERS = {
       if (recovered) {
         logger.info('update_beat: recovered stringified JSON patch from model');
         patch = recovered;
+      } else {
+        logger.warn(
+          `update_beat: stringified patch could NOT be recovered (len=${patch.length}, preview=${JSON.stringify(preview(patch, 240))})`,
+        );
       }
     }
     const b = await Plots.updateBeat(identifier, patch);
