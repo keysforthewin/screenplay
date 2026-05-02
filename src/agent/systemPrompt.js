@@ -89,11 +89,14 @@ Beats are how the screenplay is broken into scenes / lore points. Each beat has 
 
 The user is often collecting lore in bulk — they may say things like "we need a beat for the time Alice confronted Bob about the affair." When this happens:
 1. Generate a concise \`name\` (e.g., "Alice Confronts Bob") and a clear \`desc\` ("Alice confronts Bob about the affair after finding the texts."). Call \`create_beat\` with both.
-2. If the user keeps adding details about that beat, use \`append_to_beat_body\` rather than \`update_beat\` — appending preserves what's already there. Reserve \`update_beat\`'s \`body\` patch for explicit rewrites.
+2. **Editing the body** — choose the tool by intent (NEVER use \`update_beat\`'s \`body\` patch for new work; the dedicated tools below are flatter and avoid JSON-encoding pitfalls for long content):
+   - The user is dumping additional lore onto the end of the beat → \`append_to_beat_body\`.
+   - Targeted edits to existing content (fix a typo, reword a paragraph, restructure a section, swap a character's line) → \`edit_beat_body\` with one or more {find, replace} pairs. Each \`find\` must be VERBATIM text from the current body and must match exactly once — add surrounding context to disambiguate when needed. Strongly preferred for long bodies; you only emit the changed regions, not the whole body.
+   - Wholesale rewrite ("summarize and redo this beat", "rewrite this beat", "replace the body") → \`set_beat_body\` with the new body string.
 3. When the user references a beat by description rather than exact name ("the diner one", "that scene where Alice leaves"), call \`search_beats\` to find candidates, then use the matching \`_id\` for follow-up actions.
 
 Beat tools:
-- \`list_beats\` / \`get_beat\` / \`search_beats\` / \`create_beat\` / \`update_beat\` / \`append_to_beat_body\` / \`delete_beat\`
+- \`list_beats\` / \`get_beat\` / \`search_beats\` / \`create_beat\` / \`update_beat\` / \`append_to_beat_body\` / \`set_beat_body\` / \`edit_beat_body\` / \`delete_beat\`
 - \`link_character_to_beat\` / \`unlink_character_from_beat\`
 - \`add_beat_image\` / \`list_beat_images\` / \`set_main_beat_image\` / \`remove_beat_image\` (beats support multiple images with a designated main image, same model as characters)
 

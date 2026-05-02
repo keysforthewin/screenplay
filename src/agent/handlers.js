@@ -93,6 +93,52 @@ function repairUnescapedControlsInJsonStrings(s) {
   return out;
 }
 
+function unescapeJsonString(raw) {
+  // Standard JSON string unescape, used to decode a value extracted via heuristic.
+  // Unknown escape sequences keep their leading backslash (lenient — we'd rather
+  // preserve the model's literal output than throw).
+  let out = '';
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] !== '\\') { out += raw[i]; continue; }
+    const next = raw[i + 1];
+    if (next === undefined) { out += '\\'; continue; }
+    if (next === 'n') { out += '\n'; i++; continue; }
+    if (next === 'r') { out += '\r'; i++; continue; }
+    if (next === 't') { out += '\t'; i++; continue; }
+    if (next === '"') { out += '"'; i++; continue; }
+    if (next === '\\') { out += '\\'; i++; continue; }
+    if (next === '/') { out += '/'; i++; continue; }
+    if (next === 'b') { out += '\b'; i++; continue; }
+    if (next === 'f') { out += '\f'; i++; continue; }
+    if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(raw.slice(i + 2, i + 6))) {
+      out += String.fromCharCode(parseInt(raw.slice(i + 2, i + 6), 16));
+      i += 5;
+      continue;
+    }
+    out += raw[i]; // unknown escape; keep backslash literal
+  }
+  return out;
+}
+
+function tryExtractSingleStringFieldShape(s) {
+  // Final fallback for `{"<key>": "<long content>"}` patches that strict JSON.parse
+  // rejects (typically: unescaped internal quotes from dialogue, plus unescaped
+  // newlines). Anchors on the outer braces and the LAST `"}` — same disambiguation
+  // a strict JSON parser would use — and treats everything in between as the literal
+  // value, then unescapes standard JSON sequences.
+  // Only fires for single-field shapes; multi-field bodies are rejected (the
+  // captured value is then ambiguous between "really one giant string" and "we
+  // just ate across a field boundary"; we'd rather error than guess).
+  const trimmed = s.trim();
+  const m = trimmed.match(/^\{\s*"([a-zA-Z_][a-zA-Z0-9_]*)"\s*:\s*"([\s\S]*)"\s*\}$/);
+  if (!m) return null;
+  const [, key, rawValue] = m;
+  // Heuristic: if the captured value contains a `","<identifier>":` pattern, it
+  // almost certainly straddles a sibling field. Bail.
+  if (/","[a-zA-Z_][a-zA-Z0-9_]*"\s*:/.test(rawValue)) return null;
+  return { [key]: unescapeJsonString(rawValue) };
+}
+
 function coerceStringifiedJson(value, depth = 0) {
   if (typeof value !== 'string') return null;
   if (depth > 2) return null;
@@ -122,12 +168,14 @@ function coerceStringifiedJson(value, depth = 0) {
   }
   if (!s.startsWith('{') && !s.startsWith('[')) return null;
 
-  // Try, in order: direct → smart-quote-cleaned → control-char-repaired (the last
-  // catches the common "model wrote a multi-paragraph body without escaping the
-  // newlines" case).
+  // Try, in order: direct → smart-quote-cleaned → control-char-repaired → regex
+  // single-field extract. The last fallback catches inputs where in-string state
+  // tracking can't be relied on (e.g. unescaped dialogue quotes inside a body
+  // value), which strict JSON.parse can't disambiguate.
   let parsed = tryJsonParse(s);
+  let cleaned = s;
   if (!parsed.ok) {
-    const cleaned = s
+    cleaned = s
       .replace(/[“”]/g, '"')
       .replace(/[‘’]/g, "'");
     parsed = tryJsonParse(cleaned);
@@ -136,7 +184,11 @@ function coerceStringifiedJson(value, depth = 0) {
       if (repaired !== cleaned) parsed = tryJsonParse(repaired);
     }
   }
-  if (!parsed.ok) return null;
+  if (!parsed.ok) {
+    const extracted = tryExtractSingleStringFieldShape(cleaned);
+    if (extracted) return extracted;
+    return null;
+  }
 
   const v = parsed.value;
   if (
@@ -1252,6 +1304,57 @@ export const HANDLERS = {
     const target = await resolveBeat(beat);
     const updated = await Plots.appendBeatBody(target._id.toString(), content);
     return `Appended ${String(content || '').length} chars to beat "${updated.name}". Body is now ${updated.body.length} chars.`;
+  },
+
+  async set_beat_body(input = {}) {
+    // Defensively recover if the model handed us the whole input as a stringified
+    // JSON blob (the same failure mode the update_beat handler defends against).
+    if (typeof input === 'string') {
+      const recovered = coerceStringifiedJson(input);
+      if (recovered) {
+        logger.info('set_beat_body: recovered stringified JSON input from model');
+        input = recovered;
+      }
+    }
+    const { beat, body } = input || {};
+    if (typeof beat !== 'string' || !beat.trim()) {
+      return 'Tool error (set_beat_body): `beat` is required (id, order, or name).';
+    }
+    if (typeof body !== 'string') {
+      return `Tool error (set_beat_body): \`body\` must be a string, got ${typeof body}.`;
+    }
+    const target = await resolveBeat(beat);
+    const before = String(target.body || '').length;
+    const updated = await Plots.setBeatBody(target._id.toString(), body);
+    const delta = updated.body.length - before;
+    const sign = delta >= 0 ? '+' : '';
+    return `Replaced body of beat "${updated.name}". Was ${before} chars; now ${updated.body.length} chars (${sign}${delta}).`;
+  },
+
+  async edit_beat_body(input = {}) {
+    if (typeof input === 'string') {
+      const recovered = coerceStringifiedJson(input);
+      if (recovered) {
+        logger.info('edit_beat_body: recovered stringified JSON input from model');
+        input = recovered;
+      }
+    }
+    const { beat, edits } = input || {};
+    if (typeof beat !== 'string' || !beat.trim()) {
+      return 'Tool error (edit_beat_body): `beat` is required (id, order, or name).';
+    }
+    if (!Array.isArray(edits) || edits.length === 0) {
+      return 'Tool error (edit_beat_body): `edits` must be a non-empty array of {find, replace} pairs.';
+    }
+    const target = await resolveBeat(beat);
+    const result = await Plots.editBeatBody(target._id.toString(), edits);
+    const perEdit = result.edits
+      .map((e, i) => {
+        const sign = e.delta >= 0 ? '+' : '';
+        return `  ${i + 1}. -${e.find_chars}/+${e.replace_chars} (Δ${sign}${e.delta})`;
+      })
+      .join('\n');
+    return `Applied ${result.edits.length} edit(s) to beat "${result.beat.name}". Body: ${result.beforeLen} → ${result.afterLen} chars.\n${perEdit}`;
   },
 
   async search_beats({ query }) {

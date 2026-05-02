@@ -488,7 +488,7 @@ export const TOOLS = [
   {
     name: 'update_beat',
     keywords: ['update', 'edit', 'change', 'modify', 'patch', 'beat', 'scene', 'moment', 'fix'],
-    description: 'Patch fields on an existing beat. Only provide fields to change. NOTE: `body` here REPLACES the existing body — to add to body without overwriting, use append_to_beat_body instead. To replace characters, pass the full new array.',
+    description: 'Patch non-body fields on an existing beat (name, desc, order, characters). For body changes, prefer the dedicated body tools — set_beat_body for a full rewrite, edit_beat_body for partial find/replace edits, append_to_beat_body to add to the end. Body via this tool still works but is the legacy path; the dedicated tools are flatter and avoid JSON-encoding pitfalls for long content.',
     input_schema: {
       type: 'object',
       properties: {
@@ -522,6 +522,47 @@ export const TOOLS = [
         content: { type: 'string', description: 'Text to append to the beat body.' },
       },
       required: ['content'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'set_beat_body',
+    keywords: ['set', 'replace', 'rewrite', 'body', 'beat', 'overwrite', 'redo', 'summarize', 'reset', 'scene'],
+    description: 'Replace a beat\'s entire body with new text. Use for wholesale rewrites — e.g. when the user says "summarize and redo this beat" or "replace this beat\'s body". For incremental additions use append_to_beat_body; for targeted edits to a long body use edit_beat_body. Flat shape (no nested patch object) — preferred over update_beat for body changes.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name.' },
+        body: { type: 'string', description: 'The new body text. Replaces the existing body entirely. Empty string clears the body.' },
+      },
+      required: ['beat', 'body'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'edit_beat_body',
+    keywords: ['edit', 'modify', 'change', 'fix', 'tweak', 'patch', 'replace', 'find', 'body', 'beat', 'partial', 'diff', 'snippet', 'reword'],
+    description: 'Apply targeted find/replace edits to a beat body. Each edit\'s `find` string must match the current body VERBATIM and UNIQUELY (add surrounding context if a snippet appears more than once). Edits are applied sequentially in order, each operating on the result of the previous. Pass an empty `replace` to delete the matched snippet. Use this for partial edits to long bodies — much cheaper on output tokens than re-emitting the whole body via set_beat_body.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name.' },
+        edits: {
+          type: 'array',
+          minItems: 1,
+          description: 'Sequential find/replace edits.',
+          items: {
+            type: 'object',
+            properties: {
+              find: { type: 'string', description: 'Verbatim snippet from the current body. Must match exactly once.' },
+              replace: { type: 'string', description: 'Replacement text. Empty string deletes the matched snippet.' },
+            },
+            required: ['find', 'replace'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['beat', 'edits'],
       additionalProperties: false,
     },
   },

@@ -122,6 +122,124 @@ describe('plots beat CRUD', () => {
     await expect(Plots.appendBeatBody(a._id.toString(), '   ')).rejects.toThrow(/content/);
   });
 
+  it('setBeatBody replaces the body and preserves other fields', async () => {
+    const a = await Plots.createBeat({
+      name: 'B', desc: 'd', body: 'old body', characters: ['Alice'],
+    });
+    const updated = await Plots.setBeatBody(a._id.toString(), 'brand new body\n\nwith a second paragraph');
+    expect(updated.body).toBe('brand new body\n\nwith a second paragraph');
+    expect(updated.name).toBe('B');
+    expect(updated.desc).toBe('d');
+    expect(updated.characters).toEqual(['Alice']);
+  });
+
+  it('setBeatBody accepts an empty string (clears the body)', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'something' });
+    const updated = await Plots.setBeatBody(a._id.toString(), '');
+    expect(updated.body).toBe('');
+  });
+
+  it('setBeatBody rejects non-string body', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd' });
+    await expect(Plots.setBeatBody(a._id.toString(), 123)).rejects.toThrow(/`body` must be a string/);
+    await expect(Plots.setBeatBody(a._id.toString(), null)).rejects.toThrow(/`body` must be a string/);
+    await expect(Plots.setBeatBody(a._id.toString(), { body: 'oops' })).rejects.toThrow(/`body` must be a string/);
+  });
+
+  it('setBeatBody throws when the beat is not found', async () => {
+    await expect(Plots.setBeatBody('nonexistent-beat', 'x')).rejects.toThrow(/Beat not found/);
+  });
+
+  it('editBeatBody applies a single find/replace', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'Keys says "hello" to Bob.' });
+    const result = await Plots.editBeatBody(a._id.toString(), [
+      { find: '"hello"', replace: '"good morning"' },
+    ]);
+    expect(result.beat.body).toBe('Keys says "good morning" to Bob.');
+    expect(result.beforeLen).toBe(25);
+    expect(result.afterLen).toBe(32);
+    expect(result.edits).toHaveLength(1);
+    expect(result.edits[0]).toEqual({ find_chars: 7, replace_chars: 14, delta: 7 });
+  });
+
+  it('editBeatBody applies multiple edits sequentially (each operates on the result of the previous)', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'one two three' });
+    const result = await Plots.editBeatBody(a._id.toString(), [
+      { find: 'one', replace: 'ONE' },
+      { find: 'three', replace: 'THREE' },
+    ]);
+    expect(result.beat.body).toBe('ONE two THREE');
+    expect(result.edits).toHaveLength(2);
+  });
+
+  it('editBeatBody supports cascading edits where edit N depends on edit N-1', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'alpha bravo charlie' });
+    const result = await Plots.editBeatBody(a._id.toString(), [
+      { find: 'bravo', replace: 'beta' },
+      { find: 'beta', replace: 'BETA' },
+    ]);
+    expect(result.beat.body).toBe('alpha BETA charlie');
+  });
+
+  it('editBeatBody supports deletion via empty replace', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'keep this. DELETE ME. keep this too.' });
+    const result = await Plots.editBeatBody(a._id.toString(), [
+      { find: ' DELETE ME.', replace: '' },
+    ]);
+    expect(result.beat.body).toBe('keep this. keep this too.');
+    expect(result.edits[0].delta).toBe(-11);
+  });
+
+  it('editBeatBody throws when find text is not present in the body', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'hello world' });
+    await expect(
+      Plots.editBeatBody(a._id.toString(), [{ find: 'banana', replace: 'apple' }]),
+    ).rejects.toThrow(/not found in current body.*banana/);
+  });
+
+  it('editBeatBody throws when find text matches more than once (forces uniqueness)', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'one one one' });
+    await expect(
+      Plots.editBeatBody(a._id.toString(), [{ find: 'one', replace: 'two' }]),
+    ).rejects.toThrow(/matched 3 places.*must be unique/);
+  });
+
+  it('editBeatBody rejects an empty find string with a guidance to use append instead', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'something' });
+    await expect(
+      Plots.editBeatBody(a._id.toString(), [{ find: '', replace: 'x' }]),
+    ).rejects.toThrow(/empty `find`.*append_to_beat_body/);
+  });
+
+  it('editBeatBody rejects non-array edits', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd' });
+    await expect(Plots.editBeatBody(a._id.toString(), null)).rejects.toThrow(/non-empty array/);
+    await expect(Plots.editBeatBody(a._id.toString(), [])).rejects.toThrow(/non-empty array/);
+    await expect(Plots.editBeatBody(a._id.toString(), 'find/replace')).rejects.toThrow(/non-empty array/);
+  });
+
+  it('editBeatBody rejects an edit missing find/replace strings', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'x' });
+    await expect(
+      Plots.editBeatBody(a._id.toString(), [{ find: 'x' }]),
+    ).rejects.toThrow(/string `find` and `replace`/);
+    await expect(
+      Plots.editBeatBody(a._id.toString(), [{ find: 1, replace: 'y' }]),
+    ).rejects.toThrow(/string `find` and `replace`/);
+  });
+
+  it('editBeatBody is atomic: a failing edit late in the list does NOT persist earlier edits', async () => {
+    const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'alpha bravo' });
+    await expect(
+      Plots.editBeatBody(a._id.toString(), [
+        { find: 'alpha', replace: 'ALPHA' },
+        { find: 'nonexistent', replace: 'X' },
+      ]),
+    ).rejects.toThrow(/not found/);
+    const fresh = await Plots.getBeat(a._id.toString());
+    expect(fresh.body).toBe('alpha bravo'); // unchanged
+  });
+
   it('searchBeats finds matches across name, desc, and body, ranked by field', async () => {
     const a = await Plots.createBeat({ name: 'Diner Scene', desc: 'morning at the diner' });
     const b = await Plots.createBeat({ name: 'Roadhouse', desc: 'they reach the diner outskirts' });
