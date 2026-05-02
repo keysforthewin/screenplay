@@ -131,15 +131,21 @@ export async function sendReply(channel, text, files = [], links = []) {
   const notice = buildOversizedNotice(oversized);
   const finalText = notice ? (text ? `${text}\n\n${notice}` : notice) : text;
   const parts = chunk(finalText);
+  // Files whose link was already surfaced via a fallback notice (pre-flight
+  // oversize or 40005 retry) — exclude from the trailing link footer.
+  const fallbackLinkedPaths = new Set(oversized.map((o) => o.path));
   for (let i = 0; i < parts.length; i++) {
     const isLast = i === parts.length - 1;
     const attachThisChunk = isLast ? attachable : [];
-    await sendWithFallback(channel, parts[i], attachThisChunk);
+    const { rejected } = await sendWithFallback(channel, parts[i], attachThisChunk);
+    for (const p of rejected) fallbackLinkedPaths.add(p);
   }
   if (!parts.length && attachable.length) {
-    await sendWithFallback(channel, '', attachable);
+    const { rejected } = await sendWithFallback(channel, '', attachable);
+    for (const p of rejected) fallbackLinkedPaths.add(p);
   }
-  const linkMsg = buildLinkFooter(files, links);
+  const footerFiles = files.filter((f) => !fallbackLinkedPaths.has(f));
+  const linkMsg = buildLinkFooter(footerFiles, links);
   if (linkMsg) {
     await channel.send({ content: linkMsg });
   }

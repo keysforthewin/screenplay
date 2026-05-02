@@ -92,7 +92,7 @@ describe('sendReply', () => {
     else process.env.DISCORD_ATTACHMENT_LIMIT_BYTES = prevLimit;
   });
 
-  it('drops oversized PDFs from attachments and inlines the URL into the reply text', async () => {
+  it('drops oversized PDFs from attachments and inlines the URL without a duplicate footer', async () => {
     const big = await writeFixture('screenplay-1700000000000.pdf', 2000);
     process.env.DISCORD_ATTACHMENT_LIMIT_BYTES = '1000';
     const channel = { send: vi.fn().mockResolvedValue({}) };
@@ -100,7 +100,9 @@ describe('sendReply', () => {
 
     await sendReply(channel, 'here is your screenplay', [big], []);
 
-    expect(channel.send).toHaveBeenCalledTimes(2);
+    // One send: the inline-link notice. No trailing footer because the link
+    // was already surfaced in the fallback notice.
+    expect(channel.send).toHaveBeenCalledTimes(1);
     const firstCall = channel.send.mock.calls[0][0];
     expect(firstCall.content).toContain('here is your screenplay');
     expect(firstCall.content).toContain(
@@ -108,11 +110,6 @@ describe('sendReply', () => {
     );
     expect(firstCall.content).toMatch(/too large to attach/i);
     expect(firstCall.files).toEqual([]);
-
-    const footerCall = channel.send.mock.calls[1][0];
-    expect(footerCall.content).toContain(
-      'https://example.com/pdf/screenplay-1700000000000.pdf',
-    );
 
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
@@ -143,7 +140,8 @@ describe('sendReply', () => {
 
     await sendReply(channel, '', [big], []);
 
-    expect(channel.send).toHaveBeenCalledTimes(2);
+    // Only the inline notice is sent; no duplicate footer for the same link.
+    expect(channel.send).toHaveBeenCalledTimes(1);
     const first = channel.send.mock.calls[0][0];
     expect(first.content).toContain(
       'https://example.com/pdf/screenplay-1700000000002.pdf',
@@ -165,15 +163,15 @@ describe('sendReply', () => {
         // First call: chunk + attachment → Discord rejects.
         .mockRejectedValueOnce(tooLargeError)
         // Retry without files succeeds.
-        .mockResolvedValueOnce({})
-        // Footer link message.
         .mockResolvedValueOnce({}),
     };
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
 
     await sendReply(channel, 'here is your screenplay', [small], []);
 
-    expect(channel.send).toHaveBeenCalledTimes(3);
+    // Two sends: the rejected attachment attempt, then the link-only retry.
+    // No trailing footer because the rejection notice already surfaced the link.
+    expect(channel.send).toHaveBeenCalledTimes(2);
 
     const initial = channel.send.mock.calls[0][0];
     expect(initial.files).toHaveLength(1);
@@ -186,14 +184,40 @@ describe('sendReply', () => {
     expect(retry.content).toMatch(/too large to attach/i);
     expect(retry.files).toEqual([]);
 
-    const footer = channel.send.mock.calls[2][0];
-    expect(footer.content).toContain(
-      'https://example.com/pdf/screenplay-1700000000003.pdf',
-    );
-
     expect(warn).toHaveBeenCalledWith(
       expect.stringMatching(/Discord rejected.*40005/i),
     );
+    warn.mockRestore();
+  });
+
+  it('omits oversized files from the footer but still lists normally-attached ones', async () => {
+    const big = await writeFixture('screenplay-big-1700000000010.pdf', 2000);
+    const small = await writeFixture('screenplay-small-1700000000010.pdf', 100);
+    process.env.DISCORD_ATTACHMENT_LIMIT_BYTES = '1000';
+    const channel = { send: vi.fn().mockResolvedValue({}) };
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    await sendReply(channel, 'mixed bag', [big, small], []);
+
+    // 2 sends: the chunk (with the small file attached and oversized notice
+    // inline), then a footer that ONLY contains the small file's link.
+    expect(channel.send).toHaveBeenCalledTimes(2);
+
+    const first = channel.send.mock.calls[0][0];
+    expect(first.content).toContain('mixed bag');
+    expect(first.content).toContain(
+      'https://example.com/pdf/screenplay-big-1700000000010.pdf',
+    );
+    expect(first.files).toHaveLength(1);
+
+    const footer = channel.send.mock.calls[1][0];
+    expect(footer.content).toContain(
+      'https://example.com/pdf/screenplay-small-1700000000010.pdf',
+    );
+    expect(footer.content).not.toContain(
+      'https://example.com/pdf/screenplay-big-1700000000010.pdf',
+    );
+
     warn.mockRestore();
   });
 
