@@ -81,7 +81,12 @@ function entry(kind, label, pageNumber, depth = 0, idx = 0) {
 
 function makeFakeDoc(initialPage = 1) {
   const fake = {
-    page: { number: initialPage, dictionary: { fakePage: initialPage } },
+    _pageBufferStart: initialPage - 1,
+    _pageBufferCount: 1,
+    page: { dictionary: { fakePage: initialPage } },
+    bufferedPageRange() {
+      return { start: this._pageBufferStart, count: this._pageBufferCount };
+    },
     outline: {
       items: [],
       addItem(title) {
@@ -99,7 +104,11 @@ function makeFakeDoc(initialPage = 1) {
         return child;
       },
     },
-    setPage(n) { this.page.number = n; this.page.dictionary = { fakePage: n }; },
+    setPage(n) {
+      this._pageBufferStart = n - 1;
+      this._pageBufferCount = 1;
+      this.page.dictionary = { fakePage: n };
+    },
   };
   return fake;
 }
@@ -227,6 +236,33 @@ describe('buildAnchorContext', () => {
       const ctx = buildAnchorContext('capture', doc);
       ctx.subAnchor('character', 'Aliçe O\'Brien');
       expect(ctx.entries[0].destinationName).toMatch(/^toc-character-[a-z0-9-]+$/);
+    });
+
+    it('captures real integer page numbers when used with a real PDFDocument (regression)', () => {
+      const doc = new PDFDocument({
+        margins: { top: 72, bottom: 72, left: 90, right: 72 },
+        bufferPages: false,
+        autoFirstPage: true,
+      });
+      registerNotoFonts(doc);
+      doc.on('data', () => {});
+      doc.on('error', () => {});
+
+      const ctx = buildAnchorContext('capture', doc);
+      ctx.anchor('section_a', 'Section A');
+      doc.addPage();
+      doc.text('p2');
+      ctx.anchor('section_b', 'Section B');
+      doc.addPage();
+      doc.text('p3');
+      ctx.subAnchor('item', 'Item C');
+      try { doc.end(); } catch { /* ignore */ }
+
+      expect(ctx.entries).toHaveLength(3);
+      expect(ctx.entries.map((e) => e.pageNumber)).toEqual([1, 2, 3]);
+      for (const e of ctx.entries) {
+        expect(Number.isInteger(e.pageNumber)).toBe(true);
+      }
     });
   });
 
@@ -373,6 +409,15 @@ describe('renderScreenplayPdf TOC integration', () => {
     expect(ascii).toMatch(/toc-plot-/);
     expect(ascii).toMatch(/toc-beat-/);
     expect(ascii).toMatch(/toc-library-/);
+  });
+
+  it('renders integer page numbers (not NaN) on the TOC page', async () => {
+    const buf = await renderScreenplayPdf(multiSectionArgs());
+    const ascii = buf.toString('latin1');
+    // None of the multiSectionArgs labels contain "NaN", so any (NaN) text-show
+    // in the content stream can only come from a broken page number.
+    expect(ascii).not.toMatch(/\(NaN\)\s*Tj/);
+    expect(ascii).not.toMatch(/\[\(NaN\)/);
   });
 
   it('grows the page count by tocPageCount when TOC is enabled', async () => {

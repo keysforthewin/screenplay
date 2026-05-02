@@ -12,6 +12,16 @@ function slugify(s) {
     .replace(/^-+|-+$/g, '');
 }
 
+function currentPageNumber(doc) {
+  // pdfkit's PDFPage has no `.number`; the 1-indexed current page is
+  // `_pageBufferStart + _pageBuffer.length`, surfaced by bufferedPageRange().
+  const range = doc.bufferedPageRange?.();
+  if (range && Number.isFinite(range.start) && Number.isFinite(range.count)) {
+    return range.start + range.count;
+  }
+  return 1;
+}
+
 export function buildAnchorContext(mode, doc, collector = []) {
   let counter = 0;
   let lastTopLevelOutline = null;
@@ -31,7 +41,7 @@ export function buildAnchorContext(mode, doc, collector = []) {
         kind,
         label: cleanLabel,
         destinationName,
-        pageNumber: doc.page.number,
+        pageNumber: currentPageNumber(doc),
         depth,
       });
     } else if (mode === 'final') {
