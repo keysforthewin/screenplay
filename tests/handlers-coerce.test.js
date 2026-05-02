@@ -13,6 +13,7 @@ vi.mock('../src/log.js', () => ({
 }));
 
 const Characters = await import('../src/mongo/characters.js');
+const Plots = await import('../src/mongo/plots.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 
 beforeEach(() => {
@@ -77,6 +78,41 @@ describe('update_character stringified-patch recovery', () => {
     const fresh = await Characters.getCharacter('Alice');
     expect('memes' in fresh.fields).toBe(false);
     expect(fresh.fields.role).toBe('lead');
+  });
+});
+
+describe('update_beat stringified-patch recovery', () => {
+  it('recovers a plain stringified JSON object patch', async () => {
+    await Plots.createBeat({ name: 'Opening', desc: 'opening scene', body: 'old body' });
+    const out = await HANDLERS.update_beat({
+      identifier: 'Opening',
+      patch: '{"body":"new body"}',
+    });
+    expect(out).toMatch(/Updated beat "Opening"/);
+    const fresh = await Plots.getBeat('Opening');
+    expect(fresh.body).toBe('new body');
+  });
+
+  it('recovers a code-fenced JSON patch (```json ... ```)', async () => {
+    await Plots.createBeat({ name: 'Opening', desc: 'opening scene', body: 'old body' });
+    const fenced = '```json\n{"body":"fenced body"}\n```';
+    const out = await HANDLERS.update_beat({
+      identifier: 'Opening',
+      patch: fenced,
+    });
+    expect(out).toMatch(/Updated beat "Opening"/);
+    const fresh = await Plots.getBeat('Opening');
+    expect(fresh.body).toBe('fenced body');
+  });
+
+  it('falls through to canonical error on truly malformed string', async () => {
+    await Plots.createBeat({ name: 'Opening', desc: 'opening scene' });
+    await expect(
+      HANDLERS.update_beat({
+        identifier: 'Opening',
+        patch: '{not json',
+      }),
+    ).rejects.toThrow(/must be an object/);
   });
 });
 

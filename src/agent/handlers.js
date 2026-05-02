@@ -1125,6 +1125,13 @@ export const HANDLERS = {
   },
 
   async update_beat({ identifier, patch }) {
+    if (typeof patch === 'string') {
+      const recovered = coerceStringifiedJson(patch);
+      if (recovered) {
+        logger.info('update_beat: recovered stringified JSON patch from model');
+        patch = recovered;
+      }
+    }
     const b = await Plots.updateBeat(identifier, patch);
     const base = `Updated beat "${b.name}".\n${compact(serializeBeat(b))}`;
     const touchedText =

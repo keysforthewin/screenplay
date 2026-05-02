@@ -494,6 +494,8 @@ export const TOOLS = [
         identifier: { type: 'string', description: 'Beat _id, order, or name.' },
         patch: {
           type: 'object',
+          description:
+            'Object containing the fields to change. NEVER pass a raw string or array here — always wrap your value(s) in an object.',
           properties: {
             name: { type: 'string' },
             desc: { type: 'string' },
