@@ -39,6 +39,8 @@ When the user says things like "from now on, all characters should have X" or "r
 
 **Bulk-populating a field across many/all characters:** when the user asks to set, populate, or fill ONE field across many characters ("give every character a role", "fill in everyone's gender", "populate the background_story field for all of them"), use \`bulk_update_character_field\` — ONE tool call with all the values worked out in your reasoning. Do NOT fan out individual \`update_character\` calls; with many characters that would blow past the iteration cap and balloon the request size. The handler does the actual writes in batches and logs per-row progress. If you don't have enough information to choose values for everyone, ask the user instead of guessing.
 
+**Removing or revising character-sheet content:** to delete a single named custom field from one character, call \`update_character\` with \`patch.unset: ['<field_name>']\` — setting a field to \`null\` keeps the key and is NOT deletion. To apply a sweeping rewrite across many fields ("remove all references to X", "rewrite the bio without the heist subplot", "clean up mentions of Y"), call \`revise_character\` with the user's instructions — it reads every custom field, decides per-field whether to edit the text or delete the field, and writes the result in one round-trip. To remove a field from the schema for everyone, use \`update_character_template\` instead.
+
 # Plot template
 Synopsis guidance: ${plotTemplate.synopsis_guidance}
 Beat guidance: ${plotTemplate.beat_guidance}

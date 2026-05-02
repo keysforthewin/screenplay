@@ -72,9 +72,9 @@ export const TOOLS = [
   },
   {
     name: 'update_character',
-    keywords: ['update', 'edit', 'change', 'modify', 'patch', 'set', 'character', 'person', 'role', 'fix'],
+    keywords: ['update', 'edit', 'change', 'modify', 'patch', 'set', 'character', 'person', 'role', 'fix', 'remove', 'delete', 'unset'],
     description:
-      'Patch fields on an existing character. Pass `patch` as a JSON object, NOT a JSON string. Only include fields you want to change. Top-level keys: `name`, `plays_self`, `hollywood_actor`, `own_voice`, and `fields` (object holding any custom template fields). Examples: {"identifier":"Alice","patch":{"name":"Alicia"}} — {"identifier":"Alice","patch":{"fields":{"role":"protagonist"}}} — {"identifier":"Alice","patch":{"fields":{"alternate_names":["Ali","Allie"]}}}.',
+      'Patch fields on an existing character. Pass `patch` as a JSON object, NOT a JSON string. Only include fields you want to change. Top-level keys: `name`, `plays_self`, `hollywood_actor`, `own_voice`, `fields` (object holding any custom template fields), and `unset` (array of custom field names to delete from this character). Examples: {"identifier":"Alice","patch":{"name":"Alicia"}} — {"identifier":"Alice","patch":{"fields":{"role":"protagonist"}}} — {"identifier":"Alice","patch":{"fields":{"alternate_names":["Ali","Allie"]}}} — {"identifier":"Alice","patch":{"unset":["pre_beat_5"]}}. For sweeping multi-field rewrites ("remove all references to X"), use `revise_character` instead.',
     input_schema: {
       type: 'object',
       properties: {
@@ -94,8 +94,14 @@ export const TOOLS = [
             fields: {
               type: 'object',
               description:
-                'Custom template fields. Keys are template field names; values may be strings, numbers, booleans, arrays, objects, or null depending on the field. To modify a list-shaped field, fetch the character first with get_character and send the full new list — values are REPLACED, not merged.',
+                'Custom template fields. Keys are template field names; values may be strings, numbers, booleans, arrays, objects, or null depending on the field. To modify a list-shaped field, fetch the character first with get_character and send the full new list — values are REPLACED, not merged. Setting a value to null KEEPS the key (with value null); to actually delete a field use `unset` instead.',
               additionalProperties: true,
+            },
+            unset: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Custom field names (without the "fields." prefix) to delete from this character. Use this rather than setting fields to null when you want the key gone entirely.',
             },
           },
           additionalProperties: true,
@@ -145,6 +151,28 @@ export const TOOLS = [
         },
       },
       required: ['field_name', 'updates'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'revise_character',
+    keywords: ['revise', 'rewrite', 'sweep', 'remove', 'reference', 'mention', 'cleanup', 'edit', 'across', 'every', 'all', 'character'],
+    description:
+      'Apply natural-language revision instructions across every custom field of ONE character in a single tool call. The handler reads each `fields.X` value, asks an internal LLM to decide per-field whether to edit (provide new text), delete the field, or keep it unchanged, then writes the resulting patch in one round-trip. Use for sweeping requests that span multiple fields ("remove all references to X", "clean up mentions of the heist subplot", "rewrite the bio without the romance angle"). For a single specific edit (rename, set one field, change one value), use `update_character` instead. For deletion of one named field, also use `update_character` with `patch.unset`.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        identifier: {
+          type: 'string',
+          description: "Character's name (case-insensitive) or 24-char hex _id.",
+        },
+        instructions: {
+          type: 'string',
+          description:
+            'Free-form revision instructions written for the internal LLM, e.g. "Remove all references to Pre-beat-5 (South Pole Heist). If a field is entirely about that, delete it; otherwise edit out the relevant lines."',
+        },
+      },
+      required: ['identifier', 'instructions'],
       additionalProperties: false,
     },
   },

@@ -61,16 +61,18 @@ export async function updateCharacter(identifier, patch) {
       k.startsWith('fields.') ||
       k === 'plays_self' ||
       k === 'hollywood_actor' ||
-      k === 'own_voice',
+      k === 'own_voice' ||
+      k === 'unset',
   );
   if (!hasRecognized) {
     throw new Error(
-      `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, plays_self, hollywood_actor, or own_voice. Got keys: [${Object.keys(patch).join(', ')}].`,
+      `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, plays_self, hollywood_actor, own_voice, or unset. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
   const existing = await getCharacter(identifier);
   if (!existing) throw new Error(`Character not found: ${identifier}`);
   const set = { updated_at: new Date() };
+  const unset = {};
   for (const [k, v] of Object.entries(patch)) {
     if (k === 'name') {
       set.name = v;
@@ -81,15 +83,38 @@ export async function updateCharacter(identifier, patch) {
       set[k] = v;
     } else if (['plays_self', 'hollywood_actor', 'own_voice'].includes(k)) {
       set[k] = v;
+    } else if (k === 'unset') {
+      if (!Array.isArray(v)) {
+        throw new Error(
+          `update_character: \`unset\` must be an array of custom field name strings.`,
+        );
+      }
+      for (const fieldName of v) {
+        if (typeof fieldName !== 'string' || !fieldName.trim()) {
+          throw new Error(
+            `update_character: \`unset\` entries must be non-empty strings; got ${JSON.stringify(fieldName)}.`,
+          );
+        }
+        unset[`fields.${fieldName}`] = '';
+      }
     }
   }
-  const result = await col().updateOne({ _id: existing._id }, { $set: set });
+  const setFieldNames = Object.keys(set).filter((k) => k !== 'updated_at');
+  const unsetFieldNames = Object.keys(unset);
+  if (setFieldNames.length === 0 && unsetFieldNames.length === 0) {
+    throw new Error(
+      `update_character: \`patch\` produced no field changes.`,
+    );
+  }
+  const update = { $set: set };
+  if (unsetFieldNames.length > 0) update.$unset = unset;
+  const result = await col().updateOne({ _id: existing._id }, update);
   if (!result || result.matchedCount === 0) {
     const msg = `updateCharacter: doc id=${existing._id} not found — write did not apply.`;
     logger.error(msg);
     throw new Error(msg);
   }
-  const fieldList = Object.keys(set).filter((k) => k !== 'updated_at');
+  const fieldList = [...setFieldNames, ...unsetFieldNames.map((k) => `-${k}`)];
   logger.info(
     `mongo: character update name=${existing.name} fields=[${fieldList.join(',')}]`,
   );

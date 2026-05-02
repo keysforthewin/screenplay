@@ -71,3 +71,66 @@ describe('updateCharacter input validation', () => {
     }
   });
 });
+
+describe('updateCharacter unset support', () => {
+  it('removes a custom field via unset (key gone, not null)', async () => {
+    const c = await Characters.createCharacter({
+      name: 'Rae',
+      fields: { memes: 'doge', role: 'lead' },
+    });
+    const updated = await Characters.updateCharacter(c._id.toString(), {
+      unset: ['memes'],
+    });
+    expect(updated.fields).toBeDefined();
+    expect('memes' in updated.fields).toBe(false);
+    expect(updated.fields.role).toBe('lead');
+  });
+
+  it('combines $set and $unset in one call (edit one field, delete another)', async () => {
+    const c = await Characters.createCharacter({
+      name: 'Rae',
+      fields: { memes: 'doge', role: 'lead' },
+    });
+    const updated = await Characters.updateCharacter(c._id.toString(), {
+      fields: { role: 'antagonist' },
+      unset: ['memes'],
+    });
+    expect(updated.fields.role).toBe('antagonist');
+    expect('memes' in updated.fields).toBe(false);
+  });
+
+  it('rejects unset when not an array', async () => {
+    const c = await Characters.createCharacter({ name: 'Rae' });
+    await expect(
+      Characters.updateCharacter(c._id.toString(), { unset: 'memes' }),
+    ).rejects.toThrow(/`unset` must be an array/);
+  });
+
+  it('rejects unset entries that are not non-empty strings', async () => {
+    const c = await Characters.createCharacter({ name: 'Rae' });
+    await expect(
+      Characters.updateCharacter(c._id.toString(), { unset: ['ok', ''] }),
+    ).rejects.toThrow(/`unset` entries must be non-empty strings/);
+    await expect(
+      Characters.updateCharacter(c._id.toString(), { unset: [123] }),
+    ).rejects.toThrow(/`unset` entries must be non-empty strings/);
+  });
+
+  it('rejects when unset is empty and no other recognized changes', async () => {
+    const c = await Characters.createCharacter({ name: 'Rae' });
+    await expect(
+      Characters.updateCharacter(c._id.toString(), { unset: [] }),
+    ).rejects.toThrow(/produced no field changes/);
+  });
+
+  it('unset of a missing field is a no-op (does not throw)', async () => {
+    const c = await Characters.createCharacter({
+      name: 'Rae',
+      fields: { role: 'lead' },
+    });
+    const updated = await Characters.updateCharacter(c._id.toString(), {
+      unset: ['never_existed'],
+    });
+    expect(updated.fields.role).toBe('lead');
+  });
+});
