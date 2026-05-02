@@ -345,3 +345,58 @@ describe('legacy beat backfill', () => {
     expect(plot.beats[0].description).toBeUndefined();
   });
 });
+
+describe('updateBeat input validation', () => {
+  it('throws when patch is a string (the model-passed-body-as-patch bug)', async () => {
+    const beat = await Plots.createBeat({ name: 'Open', desc: 'Opening' });
+    await expect(
+      Plots.updateBeat(beat._id.toString(), 'a 10000 char body that should have been wrapped'),
+    ).rejects.toThrow(/must be an object/);
+  });
+
+  it('throws when patch is an array', async () => {
+    const beat = await Plots.createBeat({ name: 'Open', desc: 'Opening' });
+    await expect(Plots.updateBeat(beat._id.toString(), ['name', 'New'])).rejects.toThrow(
+      /must be an object.*array/,
+    );
+  });
+
+  it('throws when patch is null', async () => {
+    const beat = await Plots.createBeat({ name: 'Open', desc: 'Opening' });
+    await expect(Plots.updateBeat(beat._id.toString(), null)).rejects.toThrow(/must be an object/);
+  });
+
+  it('throws when patch has no recognized fields', async () => {
+    const beat = await Plots.createBeat({ name: 'Open', desc: 'Opening' });
+    await expect(Plots.updateBeat(beat._id.toString(), { foo: 'bar' })).rejects.toThrow(
+      /no recognized fields/,
+    );
+  });
+
+  it('valid patch.body still updates end-to-end', async () => {
+    const beat = await Plots.createBeat({ name: 'Open', desc: 'Opening' });
+    const newBody = 'A long body content that should actually persist.';
+    const updated = await Plots.updateBeat(beat._id.toString(), { body: newBody });
+    expect(updated.body).toBe(newBody);
+    const reread = await Plots.getBeat(beat._id.toString());
+    expect(reread.body).toBe(newBody);
+  });
+
+  it('persistBeats throws when the plot doc is missing', async () => {
+    // Arrange: simulate a torn-down plot by spying on updateOne to return matchedCount=0,
+    // since the fake mongo always re-seeds via getPlot before reaching persistBeats.
+    const beat = await Plots.createBeat({ name: 'Open', desc: 'Opening' });
+    const col = fakeDb.collection('plots');
+    const original = col.updateOne.bind(col);
+    const spy = vi.spyOn(col, 'updateOne').mockResolvedValue({ matchedCount: 0 });
+    try {
+      await expect(
+        Plots.updateBeat(beat._id.toString(), { body: 'new body' }),
+      ).rejects.toThrow(/persistBeats: plot doc.*not found/);
+    } finally {
+      spy.mockRestore();
+      // Ensure the mock cleanup left the collection method intact.
+      col.updateOne = original;
+    }
+  });
+});
