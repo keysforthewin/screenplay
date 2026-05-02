@@ -23,6 +23,7 @@ import { detectClimax } from '../analysis/sentiment.js';
 import { analyzeText } from '../llm/analyze.js';
 import { create, all } from 'mathjs';
 import { runJsInVm } from './codeRunner.js';
+import { decodeEscapes } from './decodeEscapes.js';
 import {
   recordGeminiImageUsage,
   aggregateUsage,
@@ -2470,7 +2471,7 @@ export async function dispatchTool(name, input, context = null) {
   const fn = HANDLERS[name];
   if (!fn) return `Unknown tool: ${name}`;
   try {
-    return await fn(input || {}, context);
+    return await fn(decodeEscapes(input) || {}, context);
   } catch (e) {
     return `Tool error (${name}): ${e.message}`;
   }
