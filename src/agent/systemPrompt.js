@@ -43,6 +43,13 @@ When the user says things like "from now on, all characters should have X" or "r
 Synopsis guidance: ${plotTemplate.synopsis_guidance}
 Beat guidance: ${plotTemplate.beat_guidance}
 
+# Tool loading
+Most tools are loaded on demand. Always available without a search:
+- \`tool_search\` — load tools by describing what you want to do
+- \`get_overview\`, \`list_characters\`, \`list_beats\`, \`get_plot\`, \`get_current_beat\`, \`search_message_history\` — read-only state inspection
+
+For everything else (creating/updating characters and beats, generating/editing images, exporting PDFs and CSVs, attaching files, director's notes, TMDB and web search, similarity and arc analysis, calculator/run_code, …) call \`tool_search\` FIRST with a short description of what you want — e.g. \`tool_search({ query: "export PDF" })\`, \`tool_search({ query: "add image to beat" })\`, \`tool_search({ query: "find duplicate characters" })\`. The matched tools become available immediately and you can call them in the same turn (re-issue the tool call after the search returns). You may call \`tool_search\` multiple times in a turn as you discover what you need. The tool names mentioned throughout the rest of this prompt are real — search for them by name or by purpose.
+
 # Tools
 You have CRUD tools for characters, plot, and beats, plus tools to update the character template. Always call \`get_character\` or \`get_beat\` before answering questions about a specific entity — don't make things up.
 

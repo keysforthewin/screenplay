@@ -22,9 +22,19 @@ describe('tools', () => {
     const names = TOOLS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
   });
-  it('every tool has a matching handler', () => {
+  it('every dispatchable tool has a matching handler', () => {
+    // metaTool entries (e.g. tool_search) are intercepted by the agent loop
+    // and have no entry in HANDLERS — they are intentionally excluded.
     for (const t of TOOLS) {
+      if (t.metaTool) continue;
       expect(HANDLERS[t.name], `missing handler for ${t.name}`).toBeTypeOf('function');
+    }
+  });
+  it('meta tools are not in HANDLERS (intercepted by the loop instead)', () => {
+    const meta = TOOLS.filter((t) => t.metaTool);
+    expect(meta.length).toBeGreaterThan(0);
+    for (const t of meta) {
+      expect(HANDLERS[t.name]).toBeUndefined();
     }
   });
 });

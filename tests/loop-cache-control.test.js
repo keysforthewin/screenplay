@@ -48,7 +48,7 @@ vi.mock('../src/mongo/imageBytes.js', () => ({
 }));
 
 const { runAgent } = await import('../src/agent/loop.js');
-const { TOOLS } = await import('../src/agent/tools.js');
+const { TOOLS, CORE_TOOL_NAMES } = await import('../src/agent/tools.js');
 
 beforeEach(() => {
   fakeDb.reset();
@@ -94,13 +94,16 @@ describe('runAgent prompt-cache wiring', () => {
     expect(messagesCreate).toHaveBeenCalledTimes(1);
     const args = messagesCreate.mock.calls[0][0];
 
-    // tools: array, last tool has cache_control with 1h ttl
+    // tools: lazy-loaded — first iteration sends only the core set.
+    // Last entry still carries cache_control with 1h ttl.
     expect(Array.isArray(args.tools)).toBe(true);
-    expect(args.tools).toHaveLength(TOOLS.length);
+    expect(args.tools).toHaveLength(CORE_TOOL_NAMES.size);
+    const sentNames = args.tools.map((t) => t.name).sort();
+    expect(sentNames).toEqual([...CORE_TOOL_NAMES].sort());
     const lastTool = args.tools[args.tools.length - 1];
     expect(lastTool.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
     // exported TOOLS array MUST remain pristine
-    expect(TOOLS[TOOLS.length - 1].cache_control).toBeUndefined();
+    for (const t of TOOLS) expect(t.cache_control).toBeUndefined();
 
     // system: array of 2 text blocks, each with cache_control: ephemeral
     expect(Array.isArray(args.system)).toBe(true);

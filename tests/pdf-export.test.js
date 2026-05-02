@@ -265,6 +265,56 @@ describe('character field rendering', () => {
   });
 });
 
+describe('renderScreenplayPdf section skip guards', () => {
+  const baseChars = [{
+    name: 'Alice', plays_self: true, hollywood_actor: null, own_voice: true,
+    fields: { background_story: 'Once upon a time in a land far, far away.' },
+  }];
+  const basePlot = { synopsis: 'A grand tale of intrigue and pastry.', beats: [], notes: '' };
+
+  it('skips the Characters section when characters array is empty', async () => {
+    const withChars = await renderScreenplayPdf({ title: 'T', characters: baseChars, plot: basePlot });
+    const noChars = await renderScreenplayPdf({ title: 'T', characters: [], plot: basePlot });
+    expect(withChars.length - noChars.length).toBeGreaterThan(200);
+  });
+
+  it('skips the Characters section when characters is undefined', async () => {
+    const withChars = await renderScreenplayPdf({ title: 'T', characters: baseChars, plot: basePlot });
+    const undef = await renderScreenplayPdf({ title: 'T', plot: basePlot });
+    expect(withChars.length - undef.length).toBeGreaterThan(200);
+  });
+
+  it('skips the Plot section when synopsis, beats, and notes are all empty', async () => {
+    const withPlot = await renderScreenplayPdf({
+      title: 'T',
+      characters: baseChars,
+      plot: { synopsis: 'Has a synopsis.', beats: [], notes: '' },
+    });
+    const noPlot = await renderScreenplayPdf({
+      title: 'T',
+      characters: baseChars,
+      plot: { synopsis: '', beats: [], notes: '' },
+    });
+    expect(withPlot.length - noPlot.length).toBeGreaterThan(150);
+  });
+
+  it('beats-only render: no Characters section, only beats appear in Plot', async () => {
+    const beat = { _id: 'aaaaaaaaaaaaaaaaaaaaaaaa', order: 1, name: 'Heist', desc: 'They steal it.', body: 'A long body.' };
+    const both = await renderScreenplayPdf({
+      title: 'T',
+      characters: baseChars,
+      plot: { synopsis: 'Has synopsis.', beats: [beat], notes: '' },
+    });
+    const beatsOnly = await renderScreenplayPdf({
+      title: 'T',
+      characters: [],
+      plot: { synopsis: '', beats: [beat], notes: '' },
+    });
+    expect(both.length - beatsOnly.length).toBeGreaterThan(200);
+    expect(beatsOnly.slice(0, 4).toString()).toBe('%PDF');
+  });
+});
+
 describe('formatFieldValue', () => {
   it('returns plain strings unchanged', () => {
     expect(formatFieldValue('hello')).toBe('hello');

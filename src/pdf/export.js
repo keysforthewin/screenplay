@@ -2,8 +2,8 @@ import PDFDocument from 'pdfkit';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { config } from '../config.js';
-import { findAllCharacters } from '../mongo/characters.js';
-import { getPlot } from '../mongo/plots.js';
+import { findAllCharacters, getCharacter } from '../mongo/characters.js';
+import { getPlot, searchBeats } from '../mongo/plots.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import { readImageBuffer, listLibraryImages } from '../mongo/images.js';
 import { listLibraryAttachments } from '../mongo/attachments.js';
@@ -199,59 +199,70 @@ export function renderScreenplayPdf({
       }
     }
 
-    doc.addPage();
-    doc.font(FONT.bold).fontSize(18).text('Characters');
-    doc.moveDown();
-    for (const c of characters) {
-      doc.font(FONT.bold).fontSize(14).text(c.name);
-      doc.font(FONT.regular).fontSize(11);
-      const role = c.plays_self ? 'Plays themselves' : `Played by ${c.hollywood_actor || '(unspecified)'}`;
-      const voice = c.own_voice ? 'own voice' : 'dubbed by actor';
-      doc.text(`${role} — ${voice}`);
-      const charId = c._id ? c._id.toString() : null;
-      const charItems = charId ? (characterImages[charId] || []) : [];
-      renderImageBundle(doc, charItems, [220, 220]);
-      doc.moveDown(0.5);
-      for (const [k, v] of Object.entries(c.fields || {})) {
-        const valueStr = formatFieldValue(v);
-        if (!valueStr) continue;
-        doc.font(FONT.bold).fontSize(11).fillColor('#000');
-        doc.text(`${k.replace(/_/g, ' ')}:`);
-        renderMarkdown(doc, valueStr, {
-          size: 11,
-          paragraphGap: 4,
-          indent: 12,
-        });
-      }
-      renderAttachmentList(doc, c.attachments, { source: 'inline' });
+    if ((characters || []).length) {
+      doc.addPage();
+      doc.font(FONT.bold).fontSize(18).text('Characters');
       doc.moveDown();
+      for (const c of characters) {
+        doc.font(FONT.bold).fontSize(14).text(c.name);
+        doc.font(FONT.regular).fontSize(11);
+        const role = c.plays_self ? 'Plays themselves' : `Played by ${c.hollywood_actor || '(unspecified)'}`;
+        const voice = c.own_voice ? 'own voice' : 'dubbed by actor';
+        doc.text(`${role} — ${voice}`);
+        const charId = c._id ? c._id.toString() : null;
+        const charItems = charId ? (characterImages[charId] || []) : [];
+        renderImageBundle(doc, charItems, [220, 220]);
+        doc.moveDown(0.5);
+        for (const [k, v] of Object.entries(c.fields || {})) {
+          const valueStr = formatFieldValue(v);
+          if (!valueStr) continue;
+          doc.font(FONT.bold).fontSize(11).fillColor('#000');
+          doc.text(`${k.replace(/_/g, ' ')}:`);
+          renderMarkdown(doc, valueStr, {
+            size: 11,
+            paragraphGap: 4,
+            indent: 12,
+          });
+        }
+        renderAttachmentList(doc, c.attachments, { source: 'inline' });
+        doc.moveDown();
+      }
     }
 
-    doc.addPage();
-    doc.font(FONT.bold).fontSize(18).text('Plot');
-    doc.moveDown();
-    doc.font(FONT.bold).fontSize(13).text('Synopsis');
-    renderMarkdown(doc, plot.synopsis || '(none)', { size: 11, paragraphGap: 4 });
-    doc.moveDown();
-    doc.font(FONT.bold).fontSize(13).text('Beats');
-    const beats = [...(plot.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
-    for (const b of beats) {
-      doc.font(FONT.bold).fontSize(11).text(`${b.order}. ${b.name || ''}`);
-      if (b.desc) renderMarkdown(doc, b.desc, { size: 11, paragraphGap: 2, baseStyle: 'italic' });
-      if (b.body) renderMarkdown(doc, b.body, { size: 11, paragraphGap: 4 });
-      if (b.characters?.length) {
-        doc.font(FONT.italic).fontSize(11).text(`Characters: ${b.characters.join(', ')}`);
-      }
-      const beatId = b._id ? b._id.toString() : null;
-      const beatItems = beatId ? (beatImages[beatId] || []) : [];
-      renderImageBundle(doc, beatItems, [400, 280]);
-      renderAttachmentList(doc, b.attachments, { source: 'inline' });
-      doc.moveDown(0.5);
-    }
-    if (plot.notes) {
+    const synopsisText = (plot?.synopsis || '').trim();
+    const notesText = (plot?.notes || '').trim();
+    const beatList = plot?.beats || [];
+    if (synopsisText || notesText || beatList.length) {
+      doc.addPage();
+      doc.font(FONT.bold).fontSize(18).text('Plot');
       doc.moveDown();
-      doc.font(FONT.bold).fontSize(13).text('Notes');
-      renderMarkdown(doc, plot.notes, { size: 11, paragraphGap: 4 });
+      if (synopsisText) {
+        doc.font(FONT.bold).fontSize(13).text('Synopsis');
+        renderMarkdown(doc, plot.synopsis, { size: 11, paragraphGap: 4 });
+        doc.moveDown();
+      }
+      if (beatList.length) {
+        doc.font(FONT.bold).fontSize(13).text('Beats');
+        const beats = [...beatList].sort((a, b) => (a.order || 0) - (b.order || 0));
+        for (const b of beats) {
+          doc.font(FONT.bold).fontSize(11).text(`${b.order}. ${b.name || ''}`);
+          if (b.desc) renderMarkdown(doc, b.desc, { size: 11, paragraphGap: 2, baseStyle: 'italic' });
+          if (b.body) renderMarkdown(doc, b.body, { size: 11, paragraphGap: 4 });
+          if (b.characters?.length) {
+            doc.font(FONT.italic).fontSize(11).text(`Characters: ${b.characters.join(', ')}`);
+          }
+          const beatId = b._id ? b._id.toString() : null;
+          const beatItems = beatId ? (beatImages[beatId] || []) : [];
+          renderImageBundle(doc, beatItems, [400, 280]);
+          renderAttachmentList(doc, b.attachments, { source: 'inline' });
+          doc.moveDown(0.5);
+        }
+      }
+      if (notesText) {
+        doc.moveDown();
+        doc.font(FONT.bold).fontSize(13).text('Notes');
+        renderMarkdown(doc, plot.notes, { size: 11, paragraphGap: 4 });
+      }
     }
 
     const hasLibrary =
@@ -358,7 +369,64 @@ async function loadLibrary() {
   return { images, attachments: attachments || [] };
 }
 
-export async function exportToPdf({ title } = {}) {
+async function buildExportData({ characters: charNames, beats_query, dossier_character }) {
+  if (Array.isArray(charNames) && charNames.length) {
+    const resolved = await Promise.all(charNames.map((n) => getCharacter(n)));
+    const missing = charNames.filter((_, i) => !resolved[i]);
+    if (missing.length) return { error: `No such character(s): ${missing.join(', ')}.` };
+    const characterImages = await loadCharacterImages(resolved);
+    return {
+      characters: resolved,
+      plot: { synopsis: '', beats: [], notes: '' },
+      directorNotes: null,
+      beatImages: {},
+      characterImages,
+      directorNoteImages: {},
+      library: null,
+    };
+  }
+
+  if (beats_query) {
+    const matches = await searchBeats(beats_query);
+    if (!matches.length) return { error: `No beats matched query: "${beats_query}".` };
+    const beats = matches
+      .map((m) => m.beat)
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+    const beatImages = await loadBeatImages({ beats });
+    return {
+      characters: [],
+      plot: { synopsis: '', beats, notes: '' },
+      directorNotes: null,
+      beatImages,
+      characterImages: {},
+      directorNoteImages: {},
+      library: null,
+    };
+  }
+
+  if (dossier_character) {
+    const character = await getCharacter(dossier_character);
+    if (!character) return { error: `Character not found: ${dossier_character}.` };
+    const plot = await getPlot();
+    const target = String(character.name || '').toLowerCase();
+    const beats = (plot.beats || [])
+      .filter((b) => (b.characters || []).some((n) => String(n).toLowerCase() === target))
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+    const [characterImages, beatImages] = await Promise.all([
+      loadCharacterImages([character]),
+      loadBeatImages({ beats }),
+    ]);
+    return {
+      characters: [character],
+      plot: { synopsis: '', beats, notes: '' },
+      directorNotes: null,
+      beatImages,
+      characterImages,
+      directorNoteImages: {},
+      library: null,
+    };
+  }
+
   const characters = await findAllCharacters();
   const plot = await getPlot();
   const directorNotes = await getDirectorNotes();
@@ -368,19 +436,16 @@ export async function exportToPdf({ title } = {}) {
     loadDirectorNoteImages(directorNotes),
     loadLibrary(),
   ]);
-  const buf = await renderScreenplayPdf({
-    title,
-    characters,
-    plot,
-    directorNotes,
-    beatImages,
-    characterImages,
-    directorNoteImages,
-    library,
-  });
+  return { characters, plot, directorNotes, beatImages, characterImages, directorNoteImages, library };
+}
+
+export async function exportToPdf({ title, characters, beats_query, dossier_character } = {}) {
+  const data = await buildExportData({ characters, beats_query, dossier_character });
+  if (data.error) return { error: data.error };
+  const buf = await renderScreenplayPdf({ title, ...data });
   await fs.mkdir(config.pdf.exportDir, { recursive: true });
   const filename = `screenplay-${Date.now()}.pdf`;
   const filepath = path.join(config.pdf.exportDir, filename);
   await fs.writeFile(filepath, buf);
-  return filepath;
+  return { path: filepath };
 }

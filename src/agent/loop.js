@@ -1,7 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
 import { logger } from '../log.js';
-import { TOOLS } from './tools.js';
+import { TOOLS, CORE_TOOL_NAMES, toolDefsForApi } from './tools.js';
+import { searchTools } from './toolSearch.js';
 import { dispatchTool } from './handlers.js';
 import { buildSystemPrompt } from './systemPrompt.js';
 import { withMessageCacheBreakpoint } from './historyCache.js';
@@ -48,15 +49,30 @@ function isMutatingTool(name) {
   return MUTATING_PREFIXES.some((p) => name === p || name.startsWith(p));
 }
 
-// Module-level: clone TOOLS once with cache_control on the last tool. Do NOT
-// mutate the original TOOLS array — tests/tools-schema.test.js inspects it.
-const TOOLS_CACHED = (() => {
-  if (!config.cache.enabled || !TOOLS.length) return TOOLS;
-  const last = TOOLS[TOOLS.length - 1];
+// Wrap an array of API-shaped tool definitions with a cache_control breakpoint
+// on the last entry, when caching is enabled. The input array is not mutated.
+function withToolsCache(tools) {
+  if (!config.cache.enabled || !tools.length) return tools;
+  const last = tools[tools.length - 1];
   const ttl = config.cache.toolsTtl;
   const cache_control = ttl ? { type: 'ephemeral', ttl } : { type: 'ephemeral' };
-  return [...TOOLS.slice(0, -1), { ...last, cache_control }];
-})();
+  return [...tools.slice(0, -1), { ...last, cache_control }];
+}
+
+function buildToolSearchResultText(query, matches, alreadyLoaded) {
+  if (!matches.length) {
+    return `No tools matched "${query}". Try a different phrasing or a category name (characters, beats, director_notes, images, attachments, plot, export, tmdb, web_search, analysis).`;
+  }
+  const fresh = matches.filter((n) => !alreadyLoaded.has(n));
+  const parts = [
+    `Loaded ${matches.length} tool${matches.length === 1 ? '' : 's'}: ${matches.join(', ')}.`,
+  ];
+  if (fresh.length < matches.length) {
+    parts.push(`(${matches.length - fresh.length} were already available.)`);
+  }
+  parts.push('They are now in your tools list — call them directly.');
+  return parts.join(' ');
+}
 
 const SECTION_PAD_MESSAGES = [{ role: 'user', content: 'x' }];
 
@@ -348,6 +364,12 @@ export async function runAgent({
   const toolStats = new Map();
   let sectionTokensPromise = null;
 
+  // Tools loaded for this turn. Starts with the core set (always-available
+  // read-only inspection tools + tool_search). The model expands it mid-turn
+  // by calling tool_search, which is intercepted in the iteration loop and
+  // mutates this set directly.
+  const loadedToolNames = new Set(CORE_TOOL_NAMES);
+
   const imageTokenInfo = await computeImageInputTokensForAttachments(attachments);
 
   const accumulateUsage = (usage) => {
@@ -400,13 +422,15 @@ export async function runAgent({
       const system = cachedSystem;
       logger.debug(`agent iteration ${i}, ${messages.length} messages`);
 
+      const currentTools = withToolsCache(toolDefsForApi(loadedToolNames));
+
       if (i === 0) {
         const systemNoDirectorNotes = await buildSystem({ omitDirectorNotes: true });
         sectionTokensPromise = measureSectionTokens({
           model,
           system,
           systemNoDirectorNotes,
-          tools: TOOLS,
+          tools: currentTools,
           messages,
         }).catch((e) => {
           logger.warn(`section tokens measurement failed: ${e.message}`);
@@ -419,14 +443,14 @@ export async function runAgent({
         : messages;
 
       logger.info(
-        `anthropic → iter ${i + 1}/${MAX_TOOL_ITERATIONS} model=${model} msgs=${messages.length}`,
+        `anthropic → iter ${i + 1}/${MAX_TOOL_ITERATIONS} model=${model} msgs=${messages.length} tools=${currentTools.length}`,
       );
       const anthropicT0 = Date.now();
       const resp = await client.messages.create({
         model,
         max_tokens: config.anthropic.maxTokens,
         system,
-        tools: TOOLS_CACHED,
+        tools: currentTools,
         messages: requestMessages,
       });
       const anthropicMs = Date.now() - anthropicT0;
@@ -469,14 +493,51 @@ export async function runAgent({
       }
 
       const toolUses = resp.content.filter((b) => b.type === 'tool_use');
-      const results = await dispatchToolUses(
-        toolUses,
-        attachmentPaths,
-        context,
-        dispatchTool,
-        toolStats,
-        attachmentLinks,
-      );
+
+      // Split out tool_search (handled inline so it can mutate loadedToolNames).
+      // Everything else goes through the normal handler dispatch.
+      const metaResults = [];
+      const realToolUses = [];
+      for (const tu of toolUses) {
+        if (tu.name === 'tool_search') {
+          const query = tu.input?.query ?? '';
+          const limit = tu.input?.limit;
+          const alreadyLoaded = new Set(loadedToolNames);
+          const matches = searchTools(query, {
+            limit: typeof limit === 'number' ? limit : 8,
+            exclude: new Set(['tool_search']),
+          });
+          for (const n of matches) loadedToolNames.add(n);
+          const content = buildToolSearchResultText(query, matches, alreadyLoaded);
+          logger.info(`tool_search "${query}" → ${matches.length} match(es): ${matches.join(', ') || '-'}`);
+          metaResults.push({ type: 'tool_result', tool_use_id: tu.id, content });
+          if (toolStats instanceof Map) {
+            const slot = toolStats.get('tool_search') || { count: 0, result_tokens: 0 };
+            slot.count += 1;
+            slot.result_tokens += Math.ceil(content.length / 4);
+            toolStats.set('tool_search', slot);
+          }
+        } else {
+          realToolUses.push(tu);
+        }
+      }
+
+      const realResults = realToolUses.length
+        ? await dispatchToolUses(
+            realToolUses,
+            attachmentPaths,
+            context,
+            dispatchTool,
+            toolStats,
+            attachmentLinks,
+          )
+        : [];
+
+      // Reassemble in the original tool_use order so tool_result blocks line up.
+      const resultById = new Map();
+      for (const r of metaResults) resultById.set(r.tool_use_id, r);
+      for (const r of realResults) resultById.set(r.tool_use_id, r);
+      const results = toolUses.map((tu) => resultById.get(tu.id));
       messages.push({ role: 'user', content: results });
 
       if (toolUses.some((tu) => isMutatingTool(tu.name))) {
