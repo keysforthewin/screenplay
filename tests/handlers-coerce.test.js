@@ -159,6 +159,72 @@ describe('update_beat stringified-patch recovery', () => {
     const fresh = await Plots.getBeat('Opening');
     expect(fresh.body).toBe('over-stringified body');
   });
+
+  it('recovers a multi-paragraph body with literal (unescaped) newlines inside the JSON string value', async () => {
+    // This mirrors a real production failure: the model emits a long body
+    // field as JSON-looking text but forgets to escape the newlines, so a
+    // strict JSON.parse rejects it.
+    await Plots.createBeat({ name: 'Opening', desc: 'opening scene', body: 'old' });
+    const body = '**OTTAWA. AUGUST 1ST, 2028. SUNDAY — STILL.**\n\nThe cold open transitions directly into this. Adult Keys is at work.\nSo is everyone else.\tIt\'s a Sunday.';
+    const malformed = `{"body": "${body}"}`; // raw newlines/tabs land directly inside the value
+    expect(() => JSON.parse(malformed)).toThrow();
+    const out = await HANDLERS.update_beat({
+      identifier: 'Opening',
+      patch: malformed,
+    });
+    expect(out).toMatch(/Updated beat "Opening"/);
+    const fresh = await Plots.getBeat('Opening');
+    expect(fresh.body).toBe(body);
+  });
+});
+
+describe('update_plot wrapped-shape recovery', () => {
+  it('accepts the canonical flat shape (regression)', async () => {
+    const out = await HANDLERS.update_plot({ title: 'Direct Title' });
+    expect(out).toMatch(/Plot updated/);
+    const plot = await Plots.getPlot();
+    expect(plot.title).toBe('Direct Title');
+  });
+
+  it('unwraps { patch: { title: "..." } } (the production bug)', async () => {
+    const out = await HANDLERS.update_plot({ patch: { title: 'Wrapped Title' } });
+    expect(out).toMatch(/Plot updated/);
+    const plot = await Plots.getPlot();
+    expect(plot.title).toBe('Wrapped Title');
+  });
+
+  it('unwraps { patch: { synopsis: "..." } } too (covers all recognized fields)', async () => {
+    const out = await HANDLERS.update_plot({
+      patch: { synopsis: 'wrapped synopsis', notes: 'wrapped notes' },
+    });
+    expect(out).toMatch(/Plot updated/);
+    const plot = await Plots.getPlot();
+    expect(plot.synopsis).toBe('wrapped synopsis');
+    expect(plot.notes).toBe('wrapped notes');
+  });
+
+  it('unwraps { patch: "<stringified JSON>" }', async () => {
+    const out = await HANDLERS.update_plot({ patch: '{"title":"Stringified Title"}' });
+    expect(out).toMatch(/Plot updated/);
+    const plot = await Plots.getPlot();
+    expect(plot.title).toBe('Stringified Title');
+  });
+
+  it('recovers a fully stringified patch passed as a single string', async () => {
+    const out = await HANDLERS.update_plot('{"title":"Whole Thing Stringified"}');
+    expect(out).toMatch(/Plot updated/);
+    const plot = await Plots.getPlot();
+    expect(plot.title).toBe('Whole Thing Stringified');
+  });
+
+  it('does NOT unwrap when there are mixed top-level keys (treats as canonical input)', async () => {
+    // {patch: ..., title: ...} — only single-key {patch:...} is treated as wrapper.
+    // Falls through to Plots.updatePlot, which ignores `patch` and applies `title`.
+    const out = await HANDLERS.update_plot({ title: 'Mixed', patch: 'should be ignored' });
+    expect(out).toMatch(/Plot updated/);
+    const plot = await Plots.getPlot();
+    expect(plot.title).toBe('Mixed');
+  });
 });
 
 describe('bulk_update_character_field stringified-value recovery', () => {

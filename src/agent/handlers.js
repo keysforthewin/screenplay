@@ -58,6 +58,41 @@ function tryJsonParse(s) {
   }
 }
 
+function repairUnescapedControlsInJsonStrings(s) {
+  // Walk through, track in-string state, escape literal control chars (LF/CR/TAB)
+  // that landed inside a string value. Common LLM failure mode for long multi-line
+  // string fields: the model forgets to escape newlines inside the value.
+  // Outside strings, control chars are already valid JSON whitespace, so we leave them.
+  let out = '';
+  let inString = false;
+  let escape = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (escape) {
+      out += c;
+      escape = false;
+      continue;
+    }
+    if (c === '\\') {
+      out += c;
+      escape = true;
+      continue;
+    }
+    if (c === '"') {
+      out += c;
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      if (c === '\n') { out += '\\n'; continue; }
+      if (c === '\r') { out += '\\r'; continue; }
+      if (c === '\t') { out += '\\t'; continue; }
+    }
+    out += c;
+  }
+  return out;
+}
+
 function coerceStringifiedJson(value, depth = 0) {
   if (typeof value !== 'string') return null;
   if (depth > 2) return null;
@@ -87,13 +122,19 @@ function coerceStringifiedJson(value, depth = 0) {
   }
   if (!s.startsWith('{') && !s.startsWith('[')) return null;
 
-  // Try direct parse, then smart-quote-cleaned parse
+  // Try, in order: direct → smart-quote-cleaned → control-char-repaired (the last
+  // catches the common "model wrote a multi-paragraph body without escaping the
+  // newlines" case).
   let parsed = tryJsonParse(s);
   if (!parsed.ok) {
     const cleaned = s
       .replace(/[“”]/g, '"')
       .replace(/[‘’]/g, "'");
     parsed = tryJsonParse(cleaned);
+    if (!parsed.ok) {
+      const repaired = repairUnescapedControlsInJsonStrings(cleaned);
+      if (repaired !== cleaned) parsed = tryJsonParse(repaired);
+    }
   }
   if (!parsed.ok) return null;
 
@@ -1135,6 +1176,33 @@ export const HANDLERS = {
   },
 
   async update_plot(patch) {
+    // Model sometimes overgeneralizes from update_character / update_beat (which
+    // take {identifier, patch}) and wraps the args in a `patch` field, or even
+    // sends the whole thing as a stringified JSON. Defensively recover both shapes.
+    if (typeof patch === 'string') {
+      const recovered = coerceStringifiedJson(patch);
+      if (recovered) {
+        logger.info('update_plot: recovered stringified JSON patch from model');
+        patch = recovered;
+      }
+    }
+    if (
+      patch && typeof patch === 'object' && !Array.isArray(patch)
+      && Object.keys(patch).length === 1
+      && Object.prototype.hasOwnProperty.call(patch, 'patch')
+    ) {
+      const inner = patch.patch;
+      if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+        logger.info('update_plot: unwrapped { patch: ... } shape from model');
+        patch = inner;
+      } else if (typeof inner === 'string') {
+        const recovered = coerceStringifiedJson(inner);
+        if (recovered) {
+          logger.info('update_plot: unwrapped { patch: "<stringified>" } shape from model');
+          patch = recovered;
+        }
+      }
+    }
     const p = await Plots.updatePlot(patch);
     return `Plot updated.\n${compact({ title: p.title || '', synopsis: p.synopsis, notes: p.notes })}`;
   },
