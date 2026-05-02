@@ -55,13 +55,26 @@ describe('update_character handler — stringified-JSON patch recovery', () => {
     expect(fresh.name).toBe('Aidan');
   });
 
-  it('still rejects a stringified JSON array (recovery only accepts plain objects)', async () => {
+  it('recovers a stringified single-object array (unwraps then applies)', async () => {
+    await seed('Aiden');
+
+    await HANDLERS.update_character({
+      identifier: 'Aiden',
+      patch: '[{"name":"Aidan"}]',
+    });
+
+    const fresh = await Characters.getCharacter('Aidan');
+    expect(fresh).toBeTruthy();
+    expect(fresh.name).toBe('Aidan');
+  });
+
+  it('still rejects a multi-element stringified JSON array', async () => {
     await seed('Aiden');
 
     await expect(
       HANDLERS.update_character({
         identifier: 'Aiden',
-        patch: '[{"name":"Aidan"}]',
+        patch: '[{"name":"Aidan"},{"name":"Other"}]',
       }),
     ).rejects.toThrow(/must be an object/);
   });

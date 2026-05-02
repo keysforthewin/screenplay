@@ -50,6 +50,33 @@ function preview(text, n = 120) {
   return `${t.slice(0, n - 1)}…`;
 }
 
+function coerceStringifiedJson(value) {
+  if (typeof value !== 'string') return null;
+  let s = value.trim();
+  if (s.startsWith('```')) {
+    s = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  }
+  if (!s.startsWith('{') && !s.startsWith('[')) return null;
+  try {
+    const parsed = JSON.parse(s);
+    if (
+      Array.isArray(parsed) &&
+      parsed.length === 1 &&
+      parsed[0] &&
+      typeof parsed[0] === 'object' &&
+      !Array.isArray(parsed[0])
+    ) {
+      return parsed[0];
+    }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 const DESCRIBE_IMAGE_BASELINE = [
   'Analyze this image with maximum physical-appearance detail so any humans or characters depicted could be recreated faithfully in future image generations. For each character, capture every one of:',
   '- Hair color (specific shade — e.g. "ash blonde", "jet black with copper highlights", not just "dark")',
@@ -688,17 +715,10 @@ export const HANDLERS = {
 
   async update_character({ identifier, patch }) {
     if (typeof patch === 'string') {
-      const trimmed = patch.trim();
-      if (trimmed.startsWith('{')) {
-        try {
-          const parsed = JSON.parse(trimmed);
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            logger.info('update_character: recovered stringified JSON patch from model');
-            patch = parsed;
-          }
-        } catch {
-          // fall through — Characters.updateCharacter will throw the canonical error
-        }
+      const recovered = coerceStringifiedJson(patch);
+      if (recovered) {
+        logger.info('update_character: recovered stringified JSON patch from model');
+        patch = recovered;
       }
     }
     const c = await Characters.updateCharacter(identifier, patch);
@@ -740,10 +760,20 @@ export const HANDLERS = {
           if (row.value === undefined) {
             throw new Error('value is required');
           }
+          let value = row.value;
+          if (typeof value === 'string' && !CORE_FIELDS.has(field_name)) {
+            const recovered = coerceStringifiedJson(value);
+            if (recovered) {
+              logger.info(
+                `[bulk_update_character_field] recovered stringified JSON value for "${row.character}"`,
+              );
+              value = recovered;
+            }
+          }
           const updated = await Characters.updateCharacter(row.character, {
-            [patchKey]: row.value,
+            [patchKey]: value,
           });
-          return { input: row.character, name: updated.name, value: row.value };
+          return { input: row.character, name: updated.name, value };
         }),
       );
 
@@ -778,6 +808,74 @@ export const HANDLERS = {
       lines.push(`Failures (${failures.length}):`);
       for (const f of failures) lines.push(`- "${f.character}": ${f.error}`);
     }
+    return lines.join('\n');
+  },
+
+  async revise_character({ identifier, instructions } = {}) {
+    if (!identifier || typeof identifier !== 'string') {
+      return 'Error: identifier is required.';
+    }
+    if (!instructions || typeof instructions !== 'string' || !instructions.trim()) {
+      return 'Error: instructions is required.';
+    }
+    const character = await Characters.getCharacter(identifier);
+    if (!character) return `Character not found: ${identifier}`;
+
+    const fields = character.fields || {};
+    const fieldNames = Object.keys(fields);
+    if (fieldNames.length === 0) {
+      return `${character.name} has no custom fields to revise.`;
+    }
+
+    const system =
+      'You revise character-sheet fields per the user\'s revision instructions. For each field, decide one of: "edit" (provide new text), "delete" (the field should be removed entirely), or "keep" (no change). Return JSON only, no prose, in the form {"actions":[{"field":"<name>","action":"edit|delete|keep","new_value":"..."}]}. Include "new_value" only when action is "edit". Preserve the original value type (string in, string out). Do not invent field names that were not provided.';
+
+    const fieldDump = fieldNames
+      .map((n) => `- ${n}: ${JSON.stringify(fields[n])}`)
+      .join('\n');
+    const userMsg = `Instructions: ${instructions}\n\nFields:\n${fieldDump}\n\nReturn JSON only.`;
+
+    let raw;
+    try {
+      raw = await analyzeText({ system, user: userMsg, maxTokens: 4096 });
+    } catch (e) {
+      return `revise_character: LLM call failed: ${e.message}`;
+    }
+
+    const parsed = coerceStringifiedJson(raw);
+    const actions = parsed && Array.isArray(parsed.actions) ? parsed.actions : null;
+    if (!actions) {
+      return `revise_character: could not parse LLM response. Raw start: ${String(raw).slice(0, 200)}`;
+    }
+
+    const patch = { fields: {}, unset: [] };
+    const edited = [];
+    const deleted = [];
+    const kept = [];
+    for (const a of actions) {
+      if (!a || typeof a.field !== 'string' || !fieldNames.includes(a.field)) continue;
+      if (a.action === 'edit' && a.new_value !== undefined) {
+        patch.fields[a.field] = a.new_value;
+        edited.push(a.field);
+      } else if (a.action === 'delete') {
+        patch.unset.push(a.field);
+        deleted.push(a.field);
+      } else if (a.action === 'keep') {
+        kept.push(a.field);
+      }
+    }
+
+    if (Object.keys(patch.fields).length === 0) delete patch.fields;
+    if (patch.unset.length === 0) delete patch.unset;
+    if (Object.keys(patch).length === 0) {
+      return `Revised ${character.name}: no changes (all ${fieldNames.length} field(s) kept).`;
+    }
+    const fresh = await Characters.updateCharacter(character._id.toString(), patch);
+
+    const lines = [`Revised ${fresh.name}:`];
+    if (edited.length) lines.push(`- edited: ${edited.join(', ')}`);
+    if (deleted.length) lines.push(`- removed: ${deleted.join(', ')}`);
+    if (kept.length) lines.push(`- unchanged: ${kept.length} field(s)`);
     return lines.join('\n');
   },
 

@@ -160,6 +160,24 @@ function makeCollection() {
           target[k] = target[k].filter((item) => !matchQuery(item, cond));
         }
       }
+      if (update.$unset) {
+        for (const path of Object.keys(update.$unset)) {
+          if (!path.includes('.')) {
+            delete target[path];
+            continue;
+          }
+          const parts = path.split('.');
+          let node = target;
+          for (let i = 0; i < parts.length - 1; i++) {
+            if (typeof node[parts[i]] !== 'object' || node[parts[i]] === null) {
+              node = null;
+              break;
+            }
+            node = node[parts[i]];
+          }
+          if (node) delete node[parts[parts.length - 1]];
+        }
+      }
       return { matchedCount: 1 };
     },
     async deleteOne(query) {
