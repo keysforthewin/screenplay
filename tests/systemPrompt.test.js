@@ -252,6 +252,18 @@ describe('buildSystemPrompt', () => {
     expect(out).not.toContain('Recently touched (last');
   });
 
+  it('instructs the agent to suppress optional follow-up questions and emit a bullet-list mutation summary', () => {
+    const out = joined({
+      characters: [],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+      plot: { synopsis: '', beats: [] },
+    });
+    expect(out).toMatch(/one bullet per change/i);
+    expect(out).toMatch(/Questions are reserved for these cases/i);
+    expect(out).toMatch(/Don't follow up about optional fields/i);
+  });
+
   it('includes the brainstorming and reference-resolution sections', () => {
     const out = joined({
       characters: [],

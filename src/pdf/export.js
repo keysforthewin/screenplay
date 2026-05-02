@@ -73,6 +73,25 @@ function spanImageAcrossTwoPages(doc, buf, drawW, drawH) {
   doc.y = top + (drawH - availablePageHeight);
 }
 
+function formatFieldEntry(v) {
+  if (v == null) return '';
+  if (typeof v !== 'object') return String(v);
+  const entries = Object.entries(v).filter(([, val]) => val != null && val !== '');
+  if (!entries.length) return '';
+  return entries
+    .map(([k, val]) => `${k.replace(/_/g, ' ')}: ${val}`)
+    .join(' — ');
+}
+
+export function formatFieldValue(v) {
+  if (v == null) return '';
+  if (Array.isArray(v)) {
+    const sep = v.some((x) => x && typeof x === 'object') ? '; ' : ', ';
+    return v.map(formatFieldEntry).filter(Boolean).join(sep);
+  }
+  return formatFieldEntry(v);
+}
+
 function renderImageBundle(doc, items, fit) {
   for (const item of items || []) {
     if (!item?.buffer) continue;
@@ -194,13 +213,14 @@ export function renderScreenplayPdf({
       renderImageBundle(doc, charItems, [220, 220]);
       doc.moveDown(0.5);
       for (const [k, v] of Object.entries(c.fields || {})) {
-        doc.font(FONT.bold).fontSize(11);
-        doc.text(`${k.replace(/_/g, ' ')}: `, { continued: true });
-        const valueStr = Array.isArray(v) ? v.join(', ') : String(v);
+        const valueStr = formatFieldValue(v);
+        if (!valueStr) continue;
+        doc.font(FONT.bold).fontSize(11).fillColor('#000');
+        doc.text(`${k.replace(/_/g, ' ')}:`);
         renderMarkdown(doc, valueStr, {
           size: 11,
-          paragraphGap: 2,
-          continueFirstParagraph: true,
+          paragraphGap: 4,
+          indent: 12,
         });
       }
       renderAttachmentList(doc, c.attachments, { source: 'inline' });
