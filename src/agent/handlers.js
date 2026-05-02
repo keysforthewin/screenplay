@@ -1126,6 +1126,7 @@ export const HANDLERS = {
   async get_plot() {
     const plot = await Plots.getPlot();
     return compact({
+      title: plot.title || '',
       synopsis: plot.synopsis,
       notes: plot.notes,
       current_beat_id: plot.current_beat_id ? plot.current_beat_id.toString() : null,
@@ -1135,7 +1136,7 @@ export const HANDLERS = {
 
   async update_plot(patch) {
     const p = await Plots.updatePlot(patch);
-    return `Plot updated.\n${compact({ synopsis: p.synopsis, notes: p.notes })}`;
+    return `Plot updated.\n${compact({ title: p.title || '', synopsis: p.synopsis, notes: p.notes })}`;
   },
 
   async list_beats() {

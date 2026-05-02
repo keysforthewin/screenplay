@@ -425,11 +425,12 @@ export const TOOLS = [
   },
   {
     name: 'update_plot',
-    keywords: ['plot', 'synopsis', 'story', 'update', 'edit', 'change', 'modify', 'notes'],
-    description: 'Modify the plot synopsis or notes. To work with beats, use the dedicated beat tools (list_beats, get_beat, create_beat, update_beat, delete_beat) — this tool does not edit beats.',
+    keywords: ['plot', 'synopsis', 'story', 'update', 'edit', 'change', 'modify', 'notes', 'title', 'name', 'rename'],
+    description: 'Modify the screenplay title, plot synopsis, or notes. The title shows on the PDF cover page and biases the auto-generated PDF filename. Pass an empty string to clear the title. To work with beats, use the dedicated beat tools (list_beats, get_beat, create_beat, update_beat, delete_beat) — this tool does not edit beats.',
     input_schema: {
       type: 'object',
       properties: {
+        title: { type: 'string', description: 'Screenplay title shown on the PDF cover page. Pass "" to clear.' },
         synopsis: { type: 'string' },
         notes: { type: 'string' },
       },

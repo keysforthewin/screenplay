@@ -100,6 +100,7 @@ export async function getPlot() {
   if (!existing) {
     existing = {
       _id: 'main',
+      title: '',
       synopsis: '',
       beats: [],
       notes: '',
@@ -113,6 +114,10 @@ export async function getPlot() {
     existing.current_beat_id = null;
     await col().updateOne({ _id: 'main' }, { $set: { current_beat_id: null } });
   }
+  if (existing.title === undefined) {
+    existing.title = '';
+    await col().updateOne({ _id: 'main' }, { $set: { title: '' } });
+  }
   return ensureBeatIds(existing);
 }
 
@@ -124,7 +129,7 @@ export async function updatePlot(patch) {
       }.`,
     );
   }
-  const recognized = ['synopsis', 'notes'];
+  const recognized = ['title', 'synopsis', 'notes'];
   if (!recognized.some((k) => patch[k] !== undefined)) {
     throw new Error(
       `update_plot: \`patch\` has no recognized fields. Expected one of: ${recognized.join(', ')}. Got keys: [${Object.keys(patch).join(', ')}].`,
@@ -132,6 +137,12 @@ export async function updatePlot(patch) {
   }
   await getPlot();
   const set = { updated_at: new Date() };
+  if (patch.title !== undefined) {
+    if (typeof patch.title !== 'string') {
+      throw new Error(`update_plot: \`title\` must be a string, got ${typeof patch.title}.`);
+    }
+    set.title = patch.title.trim();
+  }
   if (patch.synopsis !== undefined) set.synopsis = patch.synopsis;
   if (patch.notes !== undefined) set.notes = patch.notes;
   const result = await col().updateOne({ _id: 'main' }, { $set: set });

@@ -193,6 +193,9 @@ No preamble ("Done!", "Sure thing!"), no recap of what the user said, no suggest
 
 Do not widen these exceptions. No proactive enrichment questions, no "would you also like…", no asking about optional fields.
 
+# Screenplay title
+The screenplay has a single persisted \`title\` field on the plot doc. It appears on the PDF cover page and biases the auto-generated PDF filename. When the user names the screenplay ("call it 'The Long Drive'", "title: Caper", "rename the screenplay to X"), call \`update_plot({ title: "..." })\`. \`get_plot\` and \`get_overview\` both surface the current title. Untitled is fine — don't pester the user to pick one.
+
 # Out of scope (for now)
 You are not yet writing the screenplay prose. The current phase is character + beat development. The user will trigger PDF export when they want a snapshot.
 `;
@@ -209,6 +212,9 @@ function buildVolatileText({ characters, plot, directorNotes }) {
   const currentBeat = plot?.current_beat_id
     ? beats.find((b) => b._id && plot.current_beat_id.equals(b._id)) || null
     : null;
+  const titleLine = plot?.title
+    ? `Title: "${plot.title}".`
+    : 'Title: (untitled).';
   const beatStatusLine = plot?.synopsis
     ? `Synopsis on file. ${beatCount} beat(s) outlined.`
     : `No synopsis yet (${beatCount} beat(s)).`;
@@ -249,6 +255,7 @@ function buildVolatileText({ characters, plot, directorNotes }) {
         })();
 
   return `# Current state
+${titleLine}
 Characters on file:
 ${charList}
 
