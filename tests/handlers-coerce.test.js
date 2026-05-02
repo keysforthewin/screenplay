@@ -110,9 +110,54 @@ describe('update_beat stringified-patch recovery', () => {
     await expect(
       HANDLERS.update_beat({
         identifier: 'Opening',
-        patch: '{not json',
+        patch: 'this is not json at all',
       }),
     ).rejects.toThrow(/must be an object/);
+  });
+
+  it('recovers a patch wrapped in leading prose ("Patch: {...}")', async () => {
+    await Plots.createBeat({ name: 'Opening', desc: 'opening scene', body: 'old' });
+    const out = await HANDLERS.update_beat({
+      identifier: 'Opening',
+      patch: 'Here is the patch: {"body":"prose-wrapped body"}',
+    });
+    expect(out).toMatch(/Updated beat "Opening"/);
+    const fresh = await Plots.getBeat('Opening');
+    expect(fresh.body).toBe('prose-wrapped body');
+  });
+
+  it('recovers a patch followed by trailing prose', async () => {
+    await Plots.createBeat({ name: 'Opening', desc: 'opening scene', body: 'old' });
+    const out = await HANDLERS.update_beat({
+      identifier: 'Opening',
+      patch: '{"body":"trailing-prose body"} — done',
+    });
+    expect(out).toMatch(/Updated beat "Opening"/);
+    const fresh = await Plots.getBeat('Opening');
+    expect(fresh.body).toBe('trailing-prose body');
+  });
+
+  it('recovers a smart-quoted patch (curly “ ”)', async () => {
+    await Plots.createBeat({ name: 'Opening', desc: 'opening scene', body: 'old' });
+    const out = await HANDLERS.update_beat({
+      identifier: 'Opening',
+      patch: '{“body”:“smart-quoted body”}',
+    });
+    expect(out).toMatch(/Updated beat "Opening"/);
+    const fresh = await Plots.getBeat('Opening');
+    expect(fresh.body).toBe('smart-quoted body');
+  });
+
+  it('recovers an over-stringified patch ("\\"{...}\\"")', async () => {
+    await Plots.createBeat({ name: 'Opening', desc: 'opening scene', body: 'old' });
+    const overStringified = JSON.stringify(JSON.stringify({ body: 'over-stringified body' }));
+    const out = await HANDLERS.update_beat({
+      identifier: 'Opening',
+      patch: overStringified,
+    });
+    expect(out).toMatch(/Updated beat "Opening"/);
+    const fresh = await Plots.getBeat('Opening');
+    expect(fresh.body).toBe('over-stringified body');
   });
 });
 
