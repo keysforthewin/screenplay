@@ -687,6 +687,20 @@ export const HANDLERS = {
   },
 
   async update_character({ identifier, patch }) {
+    if (typeof patch === 'string') {
+      const trimmed = patch.trim();
+      if (trimmed.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            logger.info('update_character: recovered stringified JSON patch from model');
+            patch = parsed;
+          }
+        } catch {
+          // fall through — Characters.updateCharacter will throw the canonical error
+        }
+      }
+    }
     const c = await Characters.updateCharacter(identifier, patch);
     const note = await maybeAutoFetchActorPortrait(c._id.toString());
     const fresh = note ? await Characters.getCharacter(c._id.toString()) : c;

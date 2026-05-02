@@ -73,12 +73,33 @@ export const TOOLS = [
   {
     name: 'update_character',
     keywords: ['update', 'edit', 'change', 'modify', 'patch', 'set', 'character', 'person', 'role', 'fix'],
-    description: 'Patch fields on an existing character. Only provide fields to change. Custom template fields go inside the `fields` object (e.g., {"fields": {"favorite_color": "blue"}}).',
+    description:
+      'Patch fields on an existing character. Pass `patch` as a JSON object, NOT a JSON string. Only include fields you want to change. Top-level keys: `name`, `plays_self`, `hollywood_actor`, `own_voice`, and `fields` (object holding any custom template fields). Examples: {"identifier":"Alice","patch":{"name":"Alicia"}} — {"identifier":"Alice","patch":{"fields":{"role":"protagonist"}}} — {"identifier":"Alice","patch":{"fields":{"alternate_names":["Ali","Allie"]}}}.',
     input_schema: {
       type: 'object',
       properties: {
-        identifier: { type: 'string' },
-        patch: { type: 'object', additionalProperties: true },
+        identifier: {
+          type: 'string',
+          description: "Character's name (case-insensitive) or 24-char hex _id.",
+        },
+        patch: {
+          type: 'object',
+          description:
+            'Object containing the fields to change. NEVER pass a raw string or array here — always wrap your value(s) in an object.',
+          properties: {
+            name: { type: 'string', description: 'New character name.' },
+            plays_self: { type: 'boolean' },
+            hollywood_actor: { type: 'string' },
+            own_voice: { type: 'boolean' },
+            fields: {
+              type: 'object',
+              description:
+                'Custom template fields. Keys are template field names; values may be strings, numbers, booleans, arrays, objects, or null depending on the field. To modify a list-shaped field, fetch the character first with get_character and send the full new list — values are REPLACED, not merged.',
+              additionalProperties: true,
+            },
+          },
+          additionalProperties: true,
+        },
       },
       required: ['identifier', 'patch'],
       additionalProperties: false,

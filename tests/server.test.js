@@ -82,6 +82,7 @@ describe('isValidPdfFilename', () => {
     expect(isValidPdfFilename('beats-1-10-1700000000000.pdf')).toBe(true);
     expect(isValidPdfFilename('full-script-1700000000000.pdf')).toBe(true);
     expect(isValidPdfFilename('act-one-climax-beats-1700000000000.pdf')).toBe(true);
+    expect(isValidPdfFilename('full-script-jan-15th-1230pm-est.pdf')).toBe(true);
     expect(isValidPdfFilename('a.pdf')).toBe(true);
   });
 

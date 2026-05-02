@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { renderScreenplayPdf, formatFieldValue } from '../src/pdf/export.js';
+import { renderScreenplayPdf as renderImpl, formatFieldValue } from '../src/pdf/export.js';
+
+// Default TOC off in this file so byte-size deltas measure the section
+// behavior under test, not three-pass TOC overhead. TOC behavior is covered
+// by tests/pdf-toc.test.js.
+const renderScreenplayPdf = (args) => renderImpl({ toc: false, ...args });
 
 // Minimal valid 1x1 RGB PNG (red pixel) — accepted by PDFKit's openImage/image.
 const TINY_PNG = Buffer.from(

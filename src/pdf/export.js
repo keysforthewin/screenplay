@@ -11,6 +11,11 @@ import { attachmentLink } from '../server/index.js';
 import { analyzeText } from '../llm/analyze.js';
 import { logger } from '../log.js';
 import { registerNotoFonts, NOTO_FONTS, renderMarkdown } from './markdown.js';
+import {
+  buildAnchorContext,
+  renderToc,
+  measureTocPageCount,
+} from './toc.js';
 
 const FALLBACK_SLUG_BY_MODE = {
   dossier: 'dossier',
@@ -29,6 +34,32 @@ export function slugifyFilename(s, { maxLen = 60 } = {}) {
     .replace(/^-+|-+$/g, '')
     .slice(0, maxLen)
     .replace(/-+$/, '');
+}
+
+const ORDINAL_SUFFIX = ['th', 'st', 'nd', 'rd'];
+
+function dayOrdinal(n) {
+  const v = n % 100;
+  return ORDINAL_SUFFIX[(v - 20) % 10] || ORDINAL_SUFFIX[v] || ORDINAL_SUFFIX[0];
+}
+
+export function formatExportTimestamp(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).formatToParts(date);
+  const get = (type) => parts.find((p) => p.type === type)?.value ?? '';
+  const month = get('month').toLowerCase();
+  const dayNum = parseInt(get('day'), 10);
+  const day = `${dayNum}${dayOrdinal(dayNum)}`;
+  const hour = get('hour');
+  const minute = get('minute');
+  const period = get('dayPeriod').toLowerCase();
+  return `${month}-${day}-${hour}${minute}${period}-est`;
 }
 
 function fallbackSlugForMode(mode) {
@@ -220,16 +251,212 @@ function renderAttachmentList(doc, attachments, { source = 'inline', heading = '
   }
 }
 
-export function renderScreenplayPdf({
-  title = 'Untitled Screenplay',
-  characters,
-  plot,
-  directorNotes = null,
-  beatImages = {},
-  characterImages = {},
-  directorNoteImages = {},
-  library = null,
-}) {
+function renderTitlePage(doc, { title }) {
+  doc.font(FONT.bold).fontSize(28).text(title, { align: 'center' });
+  doc.moveDown(2);
+  doc.font(FONT.italic).fontSize(14).text('Working draft', { align: 'center' });
+}
+
+function renderDirectorNotesSection(doc, { directorNotes, directorNoteImages }, ctx) {
+  const dnList = Array.isArray(directorNotes?.notes) ? directorNotes.notes : [];
+  if (!dnList.length) return;
+  doc.addPage();
+  const dest = ctx.anchor('director_notes', "Director's Notes");
+  doc.font(FONT.bold).fontSize(18).text("Director's Notes", { destination: dest });
+  doc.moveDown();
+  doc.font(FONT.italic).fontSize(11).text(
+    'Standing rules for this screenplay — apply to every character and beat unless otherwise noted.',
+  );
+  doc.moveDown();
+  for (const n of dnList) {
+    doc.font(FONT.regular).fontSize(11).fillColor('#000');
+    doc.text('• ', { indent: 0, continued: true });
+    renderMarkdown(doc, n.text || '', {
+      size: 11,
+      paragraphGap: 4,
+      indent: 14,
+      continueFirstParagraph: true,
+    });
+    const noteId = n._id ? n._id.toString() : null;
+    const items = noteId ? (directorNoteImages[noteId] || []) : [];
+    renderImageBundle(doc, items, [320, 240]);
+    renderAttachmentList(doc, n.attachments, { source: 'inline' });
+  }
+}
+
+function renderCharactersSection(doc, { characters, characterImages }, ctx) {
+  if (!(characters || []).length) return;
+  doc.addPage();
+  const sectionDest = ctx.anchor('characters', 'Characters');
+  doc.font(FONT.bold).fontSize(18).text('Characters', { destination: sectionDest });
+  doc.moveDown();
+  for (const c of characters) {
+    ensureSpaceFor(doc, 18);
+    const charDest = ctx.subAnchor('character', c.name);
+    doc.font(FONT.bold).fontSize(14).text(c.name, { destination: charDest });
+    doc.font(FONT.regular).fontSize(11);
+    const role = c.plays_self ? 'Plays themselves' : `Played by ${c.hollywood_actor || '(unspecified)'}`;
+    const voice = c.own_voice ? 'own voice' : 'dubbed by actor';
+    doc.text(`${role} — ${voice}`);
+    const charId = c._id ? c._id.toString() : null;
+    const charItems = charId ? (characterImages[charId] || []) : [];
+    renderImageBundle(doc, charItems, [220, 220]);
+    doc.moveDown(0.5);
+    for (const [k, v] of Object.entries(c.fields || {})) {
+      const valueStr = formatFieldValue(v);
+      if (!valueStr) continue;
+      doc.font(FONT.bold).fontSize(11).fillColor('#000');
+      doc.text(`${k.replace(/_/g, ' ')}:`);
+      renderMarkdown(doc, valueStr, {
+        size: 11,
+        paragraphGap: 4,
+        indent: 12,
+      });
+    }
+    renderAttachmentList(doc, c.attachments, { source: 'inline' });
+    doc.moveDown();
+  }
+}
+
+function renderPlotSection(doc, { plot, beatImages }, ctx) {
+  const synopsisText = (plot?.synopsis || '').trim();
+  const notesText = (plot?.notes || '').trim();
+  const beatList = plot?.beats || [];
+  if (!synopsisText && !notesText && !beatList.length) return;
+  doc.addPage();
+  const sectionDest = ctx.anchor('plot', 'Plot');
+  doc.font(FONT.bold).fontSize(18).text('Plot', { destination: sectionDest });
+  doc.moveDown();
+  if (synopsisText) {
+    doc.font(FONT.bold).fontSize(13).text('Synopsis');
+    renderMarkdown(doc, plot.synopsis, { size: 11, paragraphGap: 4 });
+    doc.moveDown();
+  }
+  if (beatList.length) {
+    doc.font(FONT.bold).fontSize(13).text('Beats');
+    const beats = [...beatList].sort((a, b) => (a.order || 0) - (b.order || 0));
+    for (const b of beats) {
+      ensureSpaceFor(doc, 14);
+      const beatLabel = `${b.order}. ${b.name || ''}`;
+      const beatDest = ctx.subAnchor('beat', beatLabel);
+      doc.font(FONT.bold).fontSize(11).text(beatLabel, { destination: beatDest });
+      if (b.desc) renderMarkdown(doc, b.desc, { size: 11, paragraphGap: 2, baseStyle: 'italic' });
+      if (b.body) renderMarkdown(doc, b.body, { size: 11, paragraphGap: 4 });
+      if (b.characters?.length) {
+        doc.font(FONT.italic).fontSize(11).text(`Characters: ${b.characters.join(', ')}`);
+      }
+      const beatId = b._id ? b._id.toString() : null;
+      const beatItems = beatId ? (beatImages[beatId] || []) : [];
+      renderImageBundle(doc, beatItems, [400, 280]);
+      renderAttachmentList(doc, b.attachments, { source: 'inline' });
+      doc.moveDown(0.5);
+    }
+  }
+  if (notesText) {
+    doc.moveDown();
+    doc.font(FONT.bold).fontSize(13).text('Notes');
+    renderMarkdown(doc, plot.notes, { size: 11, paragraphGap: 4 });
+  }
+}
+
+function renderLibrarySection(doc, { library }, ctx) {
+  const hasLibrary =
+    library && ((library.images?.length || 0) + (library.attachments?.length || 0) > 0);
+  if (!hasLibrary) return;
+  doc.addPage();
+  const dest = ctx.anchor('library', 'Library');
+  doc.font(FONT.bold).fontSize(18).text('Library', { destination: dest });
+  doc.moveDown(0.5);
+  doc.font(FONT.italic).fontSize(11).text(
+    'Images and files not associated with any character or beat.',
+  );
+  doc.moveDown();
+
+  if (library.images?.length) {
+    doc.font(FONT.bold).fontSize(13).text('Images');
+    for (const item of library.images) {
+      if (!item?.buffer) continue;
+      doc.moveDown(0.3);
+      try {
+        placeImage(doc, item.buffer, [400, 300]);
+        const cap = item.file?.filename || item.file?.metadata?.prompt;
+        if (cap) {
+          doc.font(FONT.italic).fontSize(9).fillColor('#666')
+            .text(cap, { align: 'center' }).fillColor('#000');
+        }
+      } catch (e) {
+        logger.warn(`failed to embed library image: ${e.message}`);
+      }
+    }
+  }
+
+  if (library.attachments?.length) {
+    doc.moveDown();
+    doc.font(FONT.bold).fontSize(13).text('Files');
+    renderAttachmentList(doc, library.attachments, { source: 'gridfs', heading: null });
+  }
+}
+
+function ensureSpaceFor(doc, height) {
+  const bottom = doc.page.height - doc.page.margins.bottom;
+  if (doc.y + height > bottom) doc.addPage();
+}
+
+const NOOP_CTX = {
+  anchor: () => undefined,
+  subAnchor: () => undefined,
+  entries: [],
+};
+
+function runRenderPass(args, ctxFactory, { tocEntries = null, tocPageOffset = 0, drain = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ margins: { top: 72, bottom: 72, left: 90, right: 72 } });
+    registerNotoFonts(doc);
+    const chunks = [];
+    if (drain) {
+      doc.on('data', () => {});
+    } else {
+      doc.on('data', (c) => chunks.push(c));
+    }
+    doc.on('end', () => resolve(drain ? null : Buffer.concat(chunks)));
+    doc.on('error', reject);
+    const ctx = ctxFactory(doc);
+
+    renderTitlePage(doc, args);
+    if (tocEntries && tocEntries.length) {
+      renderToc(doc, tocEntries, tocPageOffset);
+    }
+    renderDirectorNotesSection(doc, args, ctx);
+    renderCharactersSection(doc, args, ctx);
+    renderPlotSection(doc, args, ctx);
+    renderLibrarySection(doc, args, ctx);
+
+    doc.end();
+  });
+}
+
+export async function renderScreenplayPdf(args) {
+  const {
+    title = 'Untitled Screenplay',
+    characters,
+    plot,
+    directorNotes = null,
+    beatImages = {},
+    characterImages = {},
+    directorNoteImages = {},
+    library = null,
+    toc = true,
+  } = args;
+  const fullArgs = {
+    title,
+    characters,
+    plot,
+    directorNotes,
+    beatImages,
+    characterImages,
+    directorNoteImages,
+    library,
+  };
   const beatCount = (plot?.beats || []).length;
   const countItems = (map) =>
     Object.values(map || {}).reduce((acc, arr) => acc + (Array.isArray(arr) ? arr.length : 0), 0);
@@ -237,154 +464,38 @@ export function renderScreenplayPdf({
     countItems(beatImages) + countItems(characterImages) + countItems(directorNoteImages)
     + (library?.images?.length || 0);
   logger.info(
-    `pdf render → beats=${beatCount} characters=${characters?.length || 0} embed_imgs=${embedCount}`,
+    `pdf render → beats=${beatCount} characters=${characters?.length || 0} embed_imgs=${embedCount} toc=${toc}`,
   );
   const renderT0 = Date.now();
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margins: { top: 72, bottom: 72, left: 90, right: 72 } });
-    registerNotoFonts(doc);
-    const chunks = [];
-    doc.on('data', (c) => chunks.push(c));
-    doc.on('end', () => {
-      const buf = Buffer.concat(chunks);
-      logger.info(`pdf render ← bytes=${buf.length} ${Date.now() - renderT0}ms`);
-      resolve(buf);
-    });
-    doc.on('error', reject);
 
-    doc.font(FONT.bold).fontSize(28).text(title, { align: 'center' });
-    doc.moveDown(2);
-    doc.font(FONT.italic).fontSize(14).text('Working draft', { align: 'center' });
+  if (!toc) {
+    const buf = await runRenderPass(fullArgs, () => NOOP_CTX);
+    logger.info(`pdf render ← bytes=${buf.length} ${Date.now() - renderT0}ms (no toc)`);
+    return buf;
+  }
 
-    const dnList = Array.isArray(directorNotes?.notes) ? directorNotes.notes : [];
-    if (dnList.length) {
-      doc.addPage();
-      doc.font(FONT.bold).fontSize(18).text("Director's Notes");
-      doc.moveDown();
-      doc.font(FONT.italic).fontSize(11).text(
-        'Standing rules for this screenplay — apply to every character and beat unless otherwise noted.',
-      );
-      doc.moveDown();
-      for (const n of dnList) {
-        doc.font(FONT.regular).fontSize(11).fillColor('#000');
-        doc.text('• ', { indent: 0, continued: true });
-        renderMarkdown(doc, n.text || '', {
-          size: 11,
-          paragraphGap: 4,
-          indent: 14,
-          continueFirstParagraph: true,
-        });
-        const noteId = n._id ? n._id.toString() : null;
-        const items = noteId ? (directorNoteImages[noteId] || []) : [];
-        renderImageBundle(doc, items, [320, 240]);
-        renderAttachmentList(doc, n.attachments, { source: 'inline' });
-      }
-    }
+  const collector = [];
+  await runRenderPass(
+    fullArgs,
+    (doc) => buildAnchorContext('capture', doc, collector),
+    { drain: true },
+  );
 
-    if ((characters || []).length) {
-      doc.addPage();
-      doc.font(FONT.bold).fontSize(18).text('Characters');
-      doc.moveDown();
-      for (const c of characters) {
-        doc.font(FONT.bold).fontSize(14).text(c.name);
-        doc.font(FONT.regular).fontSize(11);
-        const role = c.plays_self ? 'Plays themselves' : `Played by ${c.hollywood_actor || '(unspecified)'}`;
-        const voice = c.own_voice ? 'own voice' : 'dubbed by actor';
-        doc.text(`${role} — ${voice}`);
-        const charId = c._id ? c._id.toString() : null;
-        const charItems = charId ? (characterImages[charId] || []) : [];
-        renderImageBundle(doc, charItems, [220, 220]);
-        doc.moveDown(0.5);
-        for (const [k, v] of Object.entries(c.fields || {})) {
-          const valueStr = formatFieldValue(v);
-          if (!valueStr) continue;
-          doc.font(FONT.bold).fontSize(11).fillColor('#000');
-          doc.text(`${k.replace(/_/g, ' ')}:`);
-          renderMarkdown(doc, valueStr, {
-            size: 11,
-            paragraphGap: 4,
-            indent: 12,
-          });
-        }
-        renderAttachmentList(doc, c.attachments, { source: 'inline' });
-        doc.moveDown();
-      }
-    }
+  if (collector.length < 2) {
+    const buf = await runRenderPass(fullArgs, () => NOOP_CTX);
+    logger.info(`pdf render ← bytes=${buf.length} ${Date.now() - renderT0}ms (toc skipped: ${collector.length} entries)`);
+    return buf;
+  }
 
-    const synopsisText = (plot?.synopsis || '').trim();
-    const notesText = (plot?.notes || '').trim();
-    const beatList = plot?.beats || [];
-    if (synopsisText || notesText || beatList.length) {
-      doc.addPage();
-      doc.font(FONT.bold).fontSize(18).text('Plot');
-      doc.moveDown();
-      if (synopsisText) {
-        doc.font(FONT.bold).fontSize(13).text('Synopsis');
-        renderMarkdown(doc, plot.synopsis, { size: 11, paragraphGap: 4 });
-        doc.moveDown();
-      }
-      if (beatList.length) {
-        doc.font(FONT.bold).fontSize(13).text('Beats');
-        const beats = [...beatList].sort((a, b) => (a.order || 0) - (b.order || 0));
-        for (const b of beats) {
-          doc.font(FONT.bold).fontSize(11).text(`${b.order}. ${b.name || ''}`);
-          if (b.desc) renderMarkdown(doc, b.desc, { size: 11, paragraphGap: 2, baseStyle: 'italic' });
-          if (b.body) renderMarkdown(doc, b.body, { size: 11, paragraphGap: 4 });
-          if (b.characters?.length) {
-            doc.font(FONT.italic).fontSize(11).text(`Characters: ${b.characters.join(', ')}`);
-          }
-          const beatId = b._id ? b._id.toString() : null;
-          const beatItems = beatId ? (beatImages[beatId] || []) : [];
-          renderImageBundle(doc, beatItems, [400, 280]);
-          renderAttachmentList(doc, b.attachments, { source: 'inline' });
-          doc.moveDown(0.5);
-        }
-      }
-      if (notesText) {
-        doc.moveDown();
-        doc.font(FONT.bold).fontSize(13).text('Notes');
-        renderMarkdown(doc, plot.notes, { size: 11, paragraphGap: 4 });
-      }
-    }
+  const tocPageCount = measureTocPageCount(collector);
 
-    const hasLibrary =
-      library && ((library.images?.length || 0) + (library.attachments?.length || 0) > 0);
-    if (hasLibrary) {
-      doc.addPage();
-      doc.font(FONT.bold).fontSize(18).text('Library');
-      doc.moveDown(0.5);
-      doc.font(FONT.italic).fontSize(11).text(
-        'Images and files not associated with any character or beat.',
-      );
-      doc.moveDown();
-
-      if (library.images?.length) {
-        doc.font(FONT.bold).fontSize(13).text('Images');
-        for (const item of library.images) {
-          if (!item?.buffer) continue;
-          doc.moveDown(0.3);
-          try {
-            placeImage(doc, item.buffer, [400, 300]);
-            const cap = item.file?.filename || item.file?.metadata?.prompt;
-            if (cap) {
-              doc.font(FONT.italic).fontSize(9).fillColor('#666')
-                .text(cap, { align: 'center' }).fillColor('#000');
-            }
-          } catch (e) {
-            logger.warn(`failed to embed library image: ${e.message}`);
-          }
-        }
-      }
-
-      if (library.attachments?.length) {
-        doc.moveDown();
-        doc.font(FONT.bold).fontSize(13).text('Files');
-        renderAttachmentList(doc, library.attachments, { source: 'gridfs', heading: null });
-      }
-    }
-
-    doc.end();
-  });
+  const buf = await runRenderPass(
+    fullArgs,
+    (doc) => buildAnchorContext('final', doc),
+    { tocEntries: collector, tocPageOffset: tocPageCount },
+  );
+  logger.info(`pdf render ← bytes=${buf.length} ${Date.now() - renderT0}ms (toc=${tocPageCount}p, ${collector.length} entries)`);
+  return buf;
 }
 
 async function loadOwnerImages(ownerImages, mainImageId) {
@@ -550,7 +661,7 @@ export async function exportToPdf({ title, characters, beats_query, dossier_char
     inferExportTitle({ ...meta, title }),
   ]);
   await fs.mkdir(config.pdf.exportDir, { recursive: true });
-  const filename = `${slug}-${Date.now()}.pdf`;
+  const filename = `${slug}-${formatExportTimestamp()}.pdf`;
   const filepath = path.join(config.pdf.exportDir, filename);
   await fs.writeFile(filepath, buf);
   return { path: filepath };
