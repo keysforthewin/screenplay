@@ -2482,6 +2482,7 @@ export async function dispatchTool(name, input, context = null) {
   try {
     return await fn(decodeEscapes(input) || {}, context);
   } catch (e) {
+    logger.error(`tool error: ${name}: ${e.message}\n${e.stack || ''}`);
     return `Tool error (${name}): ${e.message}`;
   }
 }

@@ -47,6 +47,27 @@ export async function createCharacter({ name, plays_self, hollywood_actor, own_v
 }
 
 export async function updateCharacter(identifier, patch) {
+  if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
+    throw new Error(
+      `update_character: \`patch\` must be an object like {name: "..."} or {fields: {...}}, got ${
+        Array.isArray(patch) ? 'array' : typeof patch
+      }.`,
+    );
+  }
+  const hasRecognized = Object.keys(patch).some(
+    (k) =>
+      k === 'name' ||
+      k === 'fields' ||
+      k.startsWith('fields.') ||
+      k === 'plays_self' ||
+      k === 'hollywood_actor' ||
+      k === 'own_voice',
+  );
+  if (!hasRecognized) {
+    throw new Error(
+      `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, plays_self, hollywood_actor, or own_voice. Got keys: [${Object.keys(patch).join(', ')}].`,
+    );
+  }
   const existing = await getCharacter(identifier);
   if (!existing) throw new Error(`Character not found: ${identifier}`);
   const set = { updated_at: new Date() };
@@ -62,7 +83,12 @@ export async function updateCharacter(identifier, patch) {
       set[k] = v;
     }
   }
-  await col().updateOne({ _id: existing._id }, { $set: set });
+  const result = await col().updateOne({ _id: existing._id }, { $set: set });
+  if (!result || result.matchedCount === 0) {
+    const msg = `updateCharacter: doc id=${existing._id} not found — write did not apply.`;
+    logger.error(msg);
+    throw new Error(msg);
+  }
   const fieldList = Object.keys(set).filter((k) => k !== 'updated_at');
   logger.info(
     `mongo: character update name=${existing.name} fields=[${fieldList.join(',')}]`,

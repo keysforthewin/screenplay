@@ -208,7 +208,7 @@ export async function dispatchToolUses(
       // Defense in depth: dispatchTool already catches handler errors, but if anything
       // here throws (interceptAttachment, future code) we MUST still emit a tool_result
       // for this tool_use_id, otherwise the next Anthropic request 400s.
-      logger.warn(`tool dispatch failed ${tu.name}: ${e.message}`);
+      logger.error(`tool dispatch failed ${tu.name}: ${e.message}\n${e.stack || ''}`);
       const errMsg = `Tool error (${tu.name}): ${e.message}`;
       resultText = errMsg;
       results.push({

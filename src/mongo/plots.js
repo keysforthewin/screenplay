@@ -117,11 +117,29 @@ export async function getPlot() {
 }
 
 export async function updatePlot(patch) {
+  if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
+    throw new Error(
+      `update_plot: \`patch\` must be an object like {synopsis: "..."}, got ${
+        Array.isArray(patch) ? 'array' : typeof patch
+      }.`,
+    );
+  }
+  const recognized = ['synopsis', 'notes'];
+  if (!recognized.some((k) => patch[k] !== undefined)) {
+    throw new Error(
+      `update_plot: \`patch\` has no recognized fields. Expected one of: ${recognized.join(', ')}. Got keys: [${Object.keys(patch).join(', ')}].`,
+    );
+  }
   await getPlot();
   const set = { updated_at: new Date() };
   if (patch.synopsis !== undefined) set.synopsis = patch.synopsis;
   if (patch.notes !== undefined) set.notes = patch.notes;
-  await col().updateOne({ _id: 'main' }, { $set: set });
+  const result = await col().updateOne({ _id: 'main' }, { $set: set });
+  if (!result || result.matchedCount === 0) {
+    const msg = 'updatePlot: plot doc {_id: "main"} not found — write did not apply.';
+    logger.error(msg);
+    throw new Error(msg);
+  }
   const fieldList = Object.keys(set).filter((k) => k !== 'updated_at');
   logger.info(`mongo: plot update fields=[${fieldList.join(',')}]`);
   return getPlot();
@@ -190,10 +208,15 @@ export async function searchBeats(query) {
 }
 
 async function persistBeats(beats, extraSet = {}) {
-  await col().updateOne(
+  const result = await col().updateOne(
     { _id: 'main' },
     { $set: { beats, updated_at: new Date(), ...extraSet } },
   );
+  if (!result || result.matchedCount === 0) {
+    const msg = 'persistBeats: plot doc {_id: "main"} not found — write did not apply.';
+    logger.error(msg);
+    throw new Error(msg);
+  }
 }
 
 export async function createBeat({ name, desc = '', body = '', characters = [], order } = {}) {
@@ -232,6 +255,19 @@ export async function createBeat({ name, desc = '', body = '', characters = [], 
 }
 
 export async function updateBeat(identifier, patch) {
+  if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
+    throw new Error(
+      `update_beat: \`patch\` must be an object like {body: "..."}, got ${
+        Array.isArray(patch) ? 'array' : typeof patch
+      }. Wrap your fields in {patch: {body: "..."}} (or name/desc/order/characters).`,
+    );
+  }
+  const recognized = ['name', 'desc', 'body', 'order', 'characters'];
+  if (!recognized.some((k) => patch[k] !== undefined)) {
+    throw new Error(
+      `update_beat: \`patch\` has no recognized fields. Expected one of: ${recognized.join(', ')}. Got keys: [${Object.keys(patch).join(', ')}].`,
+    );
+  }
   const plot = await getPlot();
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
