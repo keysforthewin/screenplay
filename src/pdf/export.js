@@ -656,9 +656,16 @@ export async function exportToPdf({ title, characters, beats_query, dossier_char
   const result = await buildExportData({ characters, beats_query, dossier_character });
   if (result.error) return { error: result.error };
   const { meta, ...data } = result;
+  let effectiveTitle = typeof title === 'string' ? title.trim() : '';
+  if (!effectiveTitle) {
+    const persistedTitle = (result.plot?.title || (await getPlot()).title || '').trim();
+    if (persistedTitle) effectiveTitle = persistedTitle;
+  }
+  const renderArgs = effectiveTitle ? { title: effectiveTitle, ...data } : { ...data };
+  const inferArgs = effectiveTitle ? { ...meta, title: effectiveTitle } : { ...meta };
   const [buf, slug] = await Promise.all([
-    renderScreenplayPdf({ title, ...data }),
-    inferExportTitle({ ...meta, title }),
+    renderScreenplayPdf(renderArgs),
+    inferExportTitle(inferArgs),
   ]);
   await fs.mkdir(config.pdf.exportDir, { recursive: true });
   const filename = `${slug}-${formatExportTimestamp()}.pdf`;

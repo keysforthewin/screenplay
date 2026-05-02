@@ -90,6 +90,7 @@ export async function buildOverview() {
 
   return {
     plot: {
+      title: plot.title || '',
       synopsis: plot.synopsis || '',
       synopsis_filled: !!(plot.synopsis || '').trim(),
       notes_preview: preview(plot.notes, 200),
