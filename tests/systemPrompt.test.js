@@ -264,6 +264,20 @@ describe('buildSystemPrompt', () => {
     expect(out).toMatch(/Don't follow up about optional fields/i);
   });
 
+  it('describes the lazy tool-loading model with tool_search', () => {
+    const out = joined({
+      characters: [],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+      plot: { synopsis: '', beats: [] },
+    });
+    expect(out).toContain('# Tool loading');
+    expect(out).toMatch(/loaded on demand/i);
+    expect(out).toContain('tool_search');
+    expect(out).toContain('get_overview');
+    expect(out).toContain('search_message_history');
+  });
+
   it('includes the brainstorming and reference-resolution sections', () => {
     const out = joined({
       characters: [],

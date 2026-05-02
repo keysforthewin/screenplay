@@ -39,7 +39,22 @@ Some tool handlers can't return their payload as JSON — they need to upload a 
 
 ### Tool / handler parity
 
-`src/agent/tools.js` is the JSON schema list sent to Anthropic; `src/agent/handlers.js` exports `HANDLERS` keyed by tool name. `tests/tools-schema.test.js` enforces a 1:1 mapping — adding a tool requires adding both halves or the test fails. `dispatchTool` wraps every handler so a thrown error becomes `"Tool error (name): message"` text returned to the model rather than crashing the loop.
+`src/agent/tools.js` is the JSON schema list sent to Anthropic; `src/agent/handlers.js` exports `HANDLERS` keyed by tool name. `tests/tools-schema.test.js` enforces a 1:1 mapping for **dispatchable** tools (every entry in TOOLS without `metaTool: true` must have a matching handler) — adding a regular tool requires adding both halves or the test fails. `dispatchTool` wraps every handler so a thrown error becomes `"Tool error (name): message"` text returned to the model rather than crashing the loop.
+
+Each tool entry in TOOLS may carry two **internal-only** fields, stripped from the API payload by `toolDefsForApi` before send:
+- `keywords: string[]` — synonyms used by the BM25-lite scorer in `src/agent/toolSearch.js`. Kept separate from `description` so the model isn't bombarded with synonym lists, but the search-by-user-language recall still works.
+- `metaTool: true` — marker for loop-level meta tools (currently only `tool_search`) that the loop intercepts inline rather than dispatching through `HANDLERS`.
+
+### Lazy tool loading via `tool_search`
+
+The full tool registry is ~80+ tools. To keep the per-request input small and keep the model focused, the loop only sends a small **core set** in the `tools` parameter on each iteration; everything else is loaded on demand.
+
+- `src/agent/tools.js` exports `CORE_TOOL_NAMES` (a Set) — `tool_search`, `get_overview`, `list_characters`, `list_beats`, `get_plot`, `get_current_beat`, `search_message_history`. These are always present.
+- The model expands the loaded set by calling `tool_search({ query, limit? })`. The loop intercepts that call (it is `metaTool: true`, has no entry in `HANDLERS`), runs `searchTools(query)` from `src/agent/toolSearch.js`, and adds the matched names to a per-turn `loadedToolNames` Set. The next iteration's `tools` parameter is rebuilt from that set.
+- `loadedToolNames` is per-turn (re-initialized on each `runAgent` call). Across-turn re-search is fine — historical `tool_use` blocks in the message array don't need to be in the current `tools` parameter; the API only validates current-turn tool calls.
+- The system prompt's `# Tool loading` section instructs the model on this protocol; the prompt also still mentions specific tool names throughout (the model uses those names as search seeds).
+- `src/agent/toolSearch.js` is BM25-lite over name (×3) + keywords (×2) + description (×1), with prefix matching so plurals/tenses still hit. `searchTools(query, { limit, minScore, exclude })` returns matched tool names. Adjust scoring there, not in the loop.
+- `withToolsCache` in `src/agent/loop.js` puts the standard ephemeral `cache_control` breakpoint on the **last** entry of whatever tools array is currently loaded. When a `tool_search` adds new tools mid-turn the breakpoint moves, so cross-iteration tools-section caching is best-effort — the system prompt has its own independent `cache_control` markers that aren't affected.
 
 ### MongoDB layout (`src/mongo/`)
 

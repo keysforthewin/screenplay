@@ -1666,9 +1666,18 @@ export const HANDLERS = {
     return `__IMAGE_PATH__:${filepath}|Edited image (${file._id.toString()}) ${where}${replacedNote}.|${file._id.toString()}`;
   },
 
-  async export_pdf({ title }) {
-    const path = await exportToPdf({ title });
-    return `__PDF_PATH__:${path}`;
+  async export_pdf({ title, characters, beats_query, dossier_character } = {}) {
+    const provided = [
+      ['characters', Array.isArray(characters) && characters.length > 0],
+      ['beats_query', !!beats_query],
+      ['dossier_character', !!dossier_character],
+    ].filter(([, v]) => v).map(([k]) => k);
+    if (provided.length > 1) {
+      return `Tool error (export_pdf): pass at most one of characters, beats_query, dossier_character (got: ${provided.join(', ')}).`;
+    }
+    const result = await exportToPdf({ title, characters, beats_query, dossier_character });
+    if (result?.error) return `Tool error (export_pdf): ${result.error}`;
+    return `__PDF_PATH__:${result.path}`;
   },
 
   async export_csv({ entity, columns, filter, group_by, sort, limit, filename } = {}) {
