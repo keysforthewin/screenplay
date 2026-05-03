@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { apiGet } from '../api.js';
 import { useConnectedUsers } from '../editor/PresenceContext.jsx';
 import { SavedIndicator } from './SavedIndicator.jsx';
 
@@ -26,15 +28,29 @@ function Dot({ user }) {
 
 export function Header({ session, onLogout }) {
   const users = useConnectedUsers();
+  const [title, setTitle] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const info = await apiGet('/info');
+        if (!cancelled) setTitle(info?.screenplay_title || '');
+      } catch {
+        // Header just falls back to "Screenplay" if /info fails.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
   const seen = new Map();
   for (const u of users) {
     const key = u?.name || Math.random();
     if (!seen.has(key)) seen.set(key, u);
   }
   const list = Array.from(seen.values());
+  const brand = title.trim() || 'Screenplay';
   return (
     <header className="app-header">
-      <Link to="/" className="brand">Screenplay</Link>
+      <Link to="/" className="brand" title={brand}>{brand}</Link>
       <div className="meta">
         <SavedIndicator />
         <div className="presence-dots">{list.map((u, i) => <Dot key={i} user={u} />)}</div>
