@@ -1,5 +1,14 @@
 import { loadSession, clearSession } from './auth/session.js';
 
+// Vite injects BASE_URL from the build's `base` config (always ends with '/').
+// All same-origin fetches and asset URLs need this prefix in production when
+// the SPA is served behind a path prefix (e.g. /lucas/).
+const BASE = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
+
+function withBase(p) {
+  return `${BASE}${p}`;
+}
+
 function authHeaders(extra = {}) {
   const s = loadSession();
   return {
@@ -22,13 +31,13 @@ async function check(res) {
 }
 
 export async function apiGet(path) {
-  const res = await fetch(`/api${path}`, { headers: authHeaders() });
+  const res = await fetch(withBase(`/api${path}`), { headers: authHeaders() });
   await check(res);
   return res.json();
 }
 
 export async function apiPostJson(path, body) {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(withBase(`/api${path}`), {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body || {}),
@@ -38,7 +47,7 @@ export async function apiPostJson(path, body) {
 }
 
 export async function apiPatchJson(path, body) {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(withBase(`/api${path}`), {
     method: 'PATCH',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body || {}),
@@ -48,7 +57,7 @@ export async function apiPatchJson(path, body) {
 }
 
 export async function apiDelete(path) {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(withBase(`/api${path}`), {
     method: 'DELETE',
     headers: authHeaders(),
   });
@@ -57,7 +66,7 @@ export async function apiDelete(path) {
 }
 
 export async function apiPostMultipart(path, formData) {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(withBase(`/api${path}`), {
     method: 'POST',
     headers: authHeaders(), // do NOT set content-type; browser sets boundary
     body: formData,
@@ -67,9 +76,9 @@ export async function apiPostMultipart(path, formData) {
 }
 
 export function imageUrl(id) {
-  return id ? `/image/${id}` : null;
+  return id ? withBase(`/image/${id}`) : null;
 }
 
 export function attachmentUrl(id) {
-  return id ? `/attachment/${id}` : null;
+  return id ? withBase(`/attachment/${id}`) : null;
 }

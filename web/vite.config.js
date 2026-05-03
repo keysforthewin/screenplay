@@ -4,8 +4,14 @@ import path from 'node:path';
 
 const root = path.resolve(import.meta.dirname);
 
+// Set WEB_BASE_PATH at build time when the SPA is served behind a path prefix
+// (e.g. WEB_BASE_PATH=/lucas/ when reverse-proxied at https://host/lucas/).
+// Must end with a trailing slash. Defaults to '/' (served at the root).
+const base = process.env.WEB_BASE_PATH || '/';
+
 export default defineConfig({
   root,
+  base,
   plugins: [react()],
   build: {
     outDir: path.resolve(root, 'dist'),
