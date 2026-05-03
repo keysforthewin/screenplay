@@ -8,9 +8,51 @@
 // doc. The browser polling /auth/status will see the new status on its next
 // poll.
 
-import { EmbedBuilder } from 'discord.js';
+import { ApplicationCommandType, EmbedBuilder } from 'discord.js';
 import { logger } from '../log.js';
 import { approveAuthRequest, denyAuthRequest } from '../mongo/auth.js';
+import { setHistoryClearedAt } from '../mongo/channelState.js';
+
+export const SLASH_COMMANDS = [
+  {
+    name: 'clear',
+    description: 'Clear the agent\'s conversation history for this channel.',
+    type: ApplicationCommandType.ChatInput,
+  },
+];
+
+export async function registerSlashCommands(client) {
+  if (!client.application) {
+    logger.warn('registerSlashCommands: client.application not yet ready');
+    return;
+  }
+  try {
+    await client.application.commands.set(SLASH_COMMANDS);
+    logger.info(`registered ${SLASH_COMMANDS.length} slash command(s)`);
+  } catch (e) {
+    logger.warn(`slash command registration failed: ${e.message}`);
+  }
+}
+
+async function handleClearCommand(interaction) {
+  try {
+    const when = await setHistoryClearedAt(interaction.channelId);
+    logger.info(
+      `history cleared by ${interaction.user?.tag || 'unknown'} ` +
+        `in channel=${interaction.channelId} at ${when.toISOString()}`,
+    );
+    await interaction.reply({
+      content: 'Conversation history cleared. The bot will start fresh from your next message.',
+    });
+  } catch (e) {
+    logger.error('clear command failed', e);
+    try {
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: `Failed to clear history: ${e.message}`, ephemeral: true });
+      }
+    } catch {}
+  }
+}
 
 const APPROVE_RE = /^auth:approve:(.+)$/;
 const DENY_RE = /^auth:deny:(.+)$/;
@@ -60,6 +102,12 @@ async function ackAlreadyDecided(interaction, request) {
 
 export function installInteractionHandlers(client) {
   client.on('interactionCreate', async (interaction) => {
+    if (interaction.isChatInputCommand?.()) {
+      if (interaction.commandName === 'clear') {
+        await handleClearCommand(interaction);
+      }
+      return;
+    }
     if (!interaction.isButton?.()) return;
     const id = interaction.customId || '';
     const approveMatch = id.match(APPROVE_RE);

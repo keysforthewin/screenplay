@@ -3,6 +3,7 @@ import { ALLOWED_IMAGE_TYPES } from './imageBytes.js';
 import { logger } from '../log.js';
 
 const HISTORY_LIMIT = 60;
+const DEFAULT_HISTORY_WINDOW_MS = 60 * 60 * 1000;
 export const SEARCH_SCAN_LIMIT = 5000;
 const SEARCH_TEXT_CAP = 20 * 1024;
 const PER_DOC_MATCH_CAP = 3;
@@ -290,9 +291,23 @@ export async function searchMessages({
   };
 }
 
-export async function loadHistoryForLlm(channelId) {
+export async function loadHistoryForLlm(
+  channelId,
+  { maxAgeMs = DEFAULT_HISTORY_WINDOW_MS, since = null } = {},
+) {
+  const query = { channel_id: channelId };
+  const createdAt = {};
+  if (maxAgeMs && maxAgeMs > 0) {
+    createdAt.$gte = new Date(Date.now() - maxAgeMs);
+  }
+  if (since instanceof Date) {
+    createdAt.$gt = since;
+  }
+  if (Object.keys(createdAt).length) {
+    query.created_at = createdAt;
+  }
   const docs = await col()
-    .find({ channel_id: channelId })
+    .find(query)
     .sort({ created_at: -1, _id: -1 })
     .limit(HISTORY_LIMIT)
     .toArray();
