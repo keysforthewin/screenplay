@@ -6,7 +6,9 @@
   "scripts": {
     "test": "vitest run",
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "build:web": "vite build --config web/vite.config.js",
+    "dev:web": "vite --config web/vite.config.js"
   },
   "keywords": [],
   "author": "",
@@ -18,17 +20,36 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",
     "@google/genai": "^1.50.1",
+    "@hocuspocus/extension-database": "^2.15.0",
+    "@hocuspocus/provider": "^2.15.0",
+    "@hocuspocus/server": "^2.15.0",
     "@resvg/resvg-js": "^2.6.2",
+    "@tiptap/core": "^2.10.0",
+    "@tiptap/extension-collaboration": "^2.10.0",
+    "@tiptap/extension-collaboration-cursor": "^2.10.0",
+    "@tiptap/pm": "^2.10.0",
+    "@tiptap/react": "^2.10.0",
+    "@tiptap/starter-kit": "^2.10.0",
     "discord.js": "^14.26.3",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "image-size": "^2.0.2",
+    "jsdom": "^25.0.1",
     "mathjs": "^15.2.0",
     "mongodb": "^6.21.0",
+    "multer": "^2.0.1",
     "pdfkit": "^0.18.0",
-    "sentiment": "^5.0.2"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "sentiment": "^5.0.2",
+    "tiptap-markdown": "^0.8.10",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.20"
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "^4.7.0",
+    "vite": "^7.0.0",
     "vitest": "^4.1.5"
   }
 }

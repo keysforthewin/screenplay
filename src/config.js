@@ -42,6 +42,11 @@ export const config = {
   web: {
     port: Number(process.env.WEB_PORT) || 3000,
     publicBaseUrl: process.env.WEB_PUBLIC_BASE_URL || null,
+    hocuspocusPort: Number(process.env.HOCUSPOCUS_PORT) || 3001,
+    hocuspocusPublicUrl: process.env.HOCUSPOCUS_PUBLIC_URL || null,
+    staticDir: process.env.WEB_STATIC_DIR || path.resolve(process.cwd(), 'web/dist'),
+    authRequestTtlMs: Number(process.env.AUTH_REQUEST_TTL_MS) || 5 * 60 * 1000,
+    botColor: process.env.BOT_PRESENCE_COLOR || '#ffb86b',
   },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || null,

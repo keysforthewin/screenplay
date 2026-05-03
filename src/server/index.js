@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';
+import fs from 'node:fs';
 import { config } from '../config.js';
 import { logger } from '../log.js';
 import {
@@ -11,6 +12,8 @@ import {
   findAttachmentFile,
   openAttachmentDownloadStream,
 } from '../mongo/attachments.js';
+import { buildAuthRouter } from '../web/auth.js';
+import { buildApiRouter } from '../web/entityRoutes.js';
 
 const PDF_FILENAME_RE = /^[a-z0-9][a-z0-9-]{0,150}\.pdf$/;
 const HEX24_RE = /^[a-f0-9]{24}$/i;
@@ -38,6 +41,9 @@ export function buildApp() {
   app.get('/health', (_req, res) => {
     res.json({ ok: true });
   });
+
+  app.use('/auth', buildAuthRouter());
+  app.use('/api', buildApiRouter());
 
   app.get('/pdf/:filename', async (req, res) => {
     const { filename } = req.params;
@@ -106,6 +112,19 @@ export function buildApp() {
     });
     stream.pipe(res);
   });
+
+  // Serve the built SPA (vite build output) if present. Fallback to index.html
+  // so client-side routing works (Login, /beat/:order, /character/:name, etc.).
+  if (config.web.staticDir && fs.existsSync(config.web.staticDir)) {
+    app.use(express.static(config.web.staticDir));
+    app.get(/^\/(?!auth|api|health|pdf|image|attachment).*/, (_req, res, next) => {
+      const indexPath = path.join(config.web.staticDir, 'index.html');
+      fs.access(indexPath, fs.constants.R_OK, (err) => {
+        if (err) return next();
+        res.sendFile(indexPath);
+      });
+    });
+  }
 
   return app;
 }

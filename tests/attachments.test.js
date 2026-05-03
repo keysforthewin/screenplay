@@ -323,11 +323,11 @@ describe('beat attachment handlers', () => {
       beat: beat._id.toString(),
       source_url: 'https://x.test/a.ogg',
     });
-    const out = JSON.parse(
-      await HANDLERS.list_beat_attachments({ beat: beat._id.toString() }),
-    );
+    const raw = await HANDLERS.list_beat_attachments({ beat: beat._id.toString() });
+    const out = JSON.parse(raw.replace(/\nEdit in browser:.*$/s, ''));
     expect(out.attachments).toHaveLength(1);
     expect(out.attachments[0].filename).toBe('a.ogg');
+    expect(raw).toMatch(/Edit in browser: http:\/\/localhost:3000\/beat\/\d+/);
   });
 
   it('remove_beat_attachment pulls from beat and calls deleteAttachment', async () => {
@@ -416,12 +416,12 @@ describe('character attachment handlers', () => {
         },
       ],
     });
-    const out = JSON.parse(
-      await HANDLERS.list_character_attachments({ character: 'Pauly' }),
-    );
+    const raw = await HANDLERS.list_character_attachments({ character: 'Pauly' });
+    const out = JSON.parse(raw.replace(/\nEdit in browser:.*$/s, ''));
     expect(out.character.name).toBe('Pauly');
     expect(out.attachments).toHaveLength(1);
     expect(out.attachments[0].filename).toBe('pauly.ogg');
+    expect(raw).toMatch(/Edit in browser: http:\/\/localhost:3000\/character\/Pauly/);
   });
 
   it('remove_character_attachment delegates and reports removal', async () => {

@@ -9,13 +9,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm test` — run the full Vitest suite once (`vitest run`).
 - `npx vitest run tests/beats.test.js` — run a single test file.
 - `npx vitest run -t "createBeat"` — run a single test by name.
+- `npm run build:web` — build the React/Vite SPA into `web/dist/`. The Express server serves it at `/` when present.
+- `npm run dev:web` — run the Vite dev server (port 5173) with `/api`, `/auth`, `/image`, `/attachment`, `/pdf` proxied to the Express server on 3000.
 - `docker compose up --build -d` — production-style run (bot + Mongo).
 
 `tests/setup.js` (loaded via `vitest.config.js`) populates the env vars `src/config.js` requires, so tests can be run without a real `.env`.
 
 ## Architecture
 
-Single-purpose Discord bot: every non-bot message in `MOVIE_CHANNEL_ID` triggers an agentic loop that mutates screenplay state in MongoDB. The Discord channel is the entire UI. A small Express server (`src/server/index.js`) runs alongside the bot to expose download URLs for generated/attached files: `GET /health`, `GET /pdf/:filename`, `GET /image/:fileId`, `GET /attachment/:fileId`. It listens on `WEB_PORT` (default 3000); URLs use `WEB_PUBLIC_BASE_URL` when set.
+Discord bot + collaborative editor SPA in one Node process: every non-bot message in `MOVIE_CHANNEL_ID` triggers an agentic loop that mutates screenplay state in MongoDB; the same state is editable in the browser by anyone the channel has approved. The Express server (`src/server/index.js`, `WEB_PORT` default 3000) hosts both the SPA (`web/dist/`) and the read endpoints (`GET /health`, `GET /pdf/:filename`, `GET /image/:fileId`, `GET /attachment/:fileId`) plus the new `/auth/*` and `/api/*` REST endpoints. A separate Hocuspocus WebSocket server (`HOCUSPOCUS_PORT` default 3001) handles y-doc sync. URLs use `WEB_PUBLIC_BASE_URL` when set.
+
+### Collaborative editor (SPA)
+
+`src/web/` is the backend half; `web/` is the React/Vite SPA.
+
+- **Auth**: visitors enter a name → `POST /auth/request` posts an embed with Approve/Deny buttons in `MOVIE_CHANNEL_ID` → click handler in `src/discord/interactions.js` updates the `auth_requests` doc → SPA polls `/auth/status` until approved → server returns a `session_id` stored in `localStorage` permanently. No revocation in v1; sessions never expire.
+- **Mutation gateway** (`src/web/gateway.js`): single writer for editable entities. The agent loop's tool handlers AND the SPA's REST endpoints both route through it. For text fields it opens a server-side direct connection to the entity's y-doc (via Hocuspocus) and applies edits as CRDT operations through a headless Tiptap editor (`src/web/headlessEditor.js`, runs Tiptap on Node via JSDOM). For non-text mutations (image add/remove, set main, plays_self toggle, etc.) it writes Mongo and broadcasts a stateless `{type:'fields_updated'}` ping to the room so connected SPAs re-render the affected widgets.
+- **Bot as collaborator**: when the bot mutates a text field, the gateway briefly sets the room's awareness with the bot's Discord display name and a fixed color (`config.web.botColor`), so connected humans see the bot's caret in the field it's editing. Awareness is cleared once the mutation finishes.
+- **Save model**: no Save button. Hocuspocus persists y-doc binary state to the `yjs_docs` collection on every store tick (~2s debounced). The same hook also renders each text fragment to markdown and writes it to the corresponding Mongo entity field via `src/web/roomRegistry.js`. The bot reads from Mongo at the start of each agent iteration, so it sees at most ~2s stale text — acceptable.
+- **Gateway fallback**: when Hocuspocus isn't running (tests, CLI scripts), text-mutation gateway calls fall back to writing Mongo directly via the existing helpers (`isHocuspocusRunning()` check). This keeps the test suite working without spinning up a real WebSocket server.
+- **Names are markdown**: every text field — including character `name` and `hollywood_actor` — uses the full Tiptap toolkit. `name_lower` is recomputed from `stripMarkdown(name)` so case-insensitive lookups still work (`src/util/markdown.js`). Discord renders markdown natively, so `**Steve**` displays bold there.
+
+### Room naming
+
+- `beat:<beat _id hex>` — fields `body`, `name`, `desc`
+- `character:<character _id hex>` — fields `name`, `hollywood_actor`, `fields.<each non-core template field>`
+- `notes` — one shared y-doc for all director's notes; each note's text is fragment `note:<note _id>:text`
+
+URLs use the human-meaningful identifier (`/beat/2` for the beat at order=2; `/character/Steve` for the character whose stripped name is "Steve") and the route resolver maps to the stable `_id` for the y-doc room name. Reordering beats breaks shared URLs but never shuffles y-doc state across the wrong rooms.
 
 ### Request lifecycle (`src/discord/messageHandler.js` → `src/agent/loop.js`)
 

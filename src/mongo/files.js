@@ -30,7 +30,7 @@ export async function attachImageToCharacter({ character, sourceUrl, filename, c
   };
 
   const { is_main } = await pushCharacterImage(c._id.toString(), meta, setAsMain);
-  return { ...meta, is_main };
+  return { character: c.name, ...meta, is_main };
 }
 
 export async function attachExistingImageToCharacter({ character, imageId, caption, setAsMain }) {
@@ -84,6 +84,7 @@ export async function listCharacterImages(character) {
   const c = await getCharacter(character);
   if (!c) throw new Error(`Character not found: ${character}`);
   return {
+    character: c.name,
     images: c.images || [],
     main_image_id: c.main_image_id || null,
   };

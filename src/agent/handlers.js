@@ -8,6 +8,8 @@ import * as DirectorNotes from '../mongo/directorNotes.js';
 import * as Files from '../mongo/files.js';
 import * as Images from '../mongo/images.js';
 import * as Attachments from '../mongo/attachments.js';
+import * as Gateway from '../web/gateway.js';
+import { beatUrl, characterUrl, notesUrl, withSpaLink } from '../web/links.js';
 import * as Tmdb from '../tmdb/client.js';
 import * as Tavily from '../tavily/client.js';
 import { generateImage as generateImageBytes, NANO_BANANA_MODEL } from '../gemini/client.js';
@@ -823,7 +825,7 @@ export const HANDLERS = {
   async get_character({ identifier }) {
     const c = await Characters.getCharacter(identifier);
     if (!c) return `No character found for "${identifier}".`;
-    return compact(c);
+    return withSpaLink(compact(c), characterUrl(c));
   },
 
   async create_character(input) {
@@ -839,7 +841,7 @@ export const HANDLERS = {
     });
     const note = await maybeAutoFetchActorPortrait(c._id.toString());
     const base = `Created character ${c.name} (_id ${c._id}).${note || ''}`;
-    return appendSimilarityHeadsUp('character', c, base);
+    return withSpaLink(await appendSimilarityHeadsUp('character', c, base), characterUrl(c));
   },
 
   async update_character({ identifier, patch }) {
@@ -850,13 +852,14 @@ export const HANDLERS = {
         patch = recovered;
       }
     }
-    const c = await Characters.updateCharacter(identifier, patch);
+    const c = await Gateway.updateCharacterViaGateway(identifier, patch);
     const note = await maybeAutoFetchActorPortrait(c._id.toString());
     const fresh = note ? await Characters.getCharacter(c._id.toString()) : c;
     const base = `Updated ${c.name}.${note || ''}\nCurrent state:\n${compact(fresh)}`;
     const touchedText =
       patch && (patch.name !== undefined || (patch.fields && typeof patch.fields === 'object'));
-    return touchedText ? appendSimilarityHeadsUp('character', fresh, base) : base;
+    const text = touchedText ? await appendSimilarityHeadsUp('character', fresh, base) : base;
+    return withSpaLink(text, characterUrl(fresh));
   },
 
   async bulk_update_character_field({ field_name, updates, batch_size } = {}) {
@@ -899,7 +902,7 @@ export const HANDLERS = {
               value = recovered;
             }
           }
-          const updated = await Characters.updateCharacter(row.character, {
+          const updated = await Gateway.updateCharacterViaGateway(row.character, {
             [patchKey]: value,
           });
           return { input: row.character, name: updated.name, value };
@@ -953,7 +956,10 @@ export const HANDLERS = {
     const fields = character.fields || {};
     const fieldNames = Object.keys(fields);
     if (fieldNames.length === 0) {
-      return `${character.name} has no custom fields to revise.`;
+      return withSpaLink(
+        `${character.name} has no custom fields to revise.`,
+        characterUrl(character),
+      );
     }
 
     const system =
@@ -997,7 +1003,10 @@ export const HANDLERS = {
     if (Object.keys(patch.fields).length === 0) delete patch.fields;
     if (patch.unset.length === 0) delete patch.unset;
     if (Object.keys(patch).length === 0) {
-      return `Revised ${character.name}: no changes (all ${fieldNames.length} field(s) kept).`;
+      return withSpaLink(
+        `Revised ${character.name}: no changes (all ${fieldNames.length} field(s) kept).`,
+        characterUrl(character),
+      );
     }
     const fresh = await Characters.updateCharacter(character._id.toString(), patch);
 
@@ -1005,7 +1014,7 @@ export const HANDLERS = {
     if (edited.length) lines.push(`- edited: ${edited.join(', ')}`);
     if (deleted.length) lines.push(`- removed: ${deleted.join(', ')}`);
     if (kept.length) lines.push(`- unchanged: ${kept.length} field(s)`);
-    return lines.join('\n');
+    return withSpaLink(lines.join('\n'), characterUrl(fresh));
   },
 
   async search_characters({ query }) {
@@ -1034,33 +1043,34 @@ export const HANDLERS = {
 
   async list_director_notes() {
     const doc = await DirectorNotes.getDirectorNotes();
-    return compact(
+    const text = compact(
       (doc.notes || []).map((n) => ({
         _id: n._id?.toString(),
         text: n.text,
         created_at: n.created_at,
       })),
     );
+    return withSpaLink(text, notesUrl());
   },
 
   async add_director_note({ text, position } = {}) {
-    const note = await DirectorNotes.addDirectorNote({ text, position });
-    return `Added director's note ${note._id}: ${preview(note.text)}`;
+    const note = await Gateway.addDirectorNoteViaGateway({ text, position });
+    return withSpaLink(`Added director's note ${note._id}: ${preview(note.text)}`, notesUrl());
   },
 
   async edit_director_note({ note_id, text } = {}) {
-    const note = await DirectorNotes.editDirectorNote({ noteId: note_id, text });
-    return `Updated director's note ${note._id}: ${preview(note.text)}`;
+    await Gateway.editDirectorNoteViaGateway({ noteId: note_id, text });
+    return withSpaLink(`Updated director's note ${note_id}: ${preview(text)}`, notesUrl());
   },
 
   async remove_director_note({ note_id } = {}) {
-    await DirectorNotes.removeDirectorNote({ noteId: note_id });
-    return `Removed director's note ${note_id}.`;
+    await Gateway.removeDirectorNoteViaGateway({ noteId: note_id });
+    return withSpaLink(`Removed director's note ${note_id}.`, notesUrl());
   },
 
   async reorder_director_notes({ note_ids } = {}) {
     const reordered = await DirectorNotes.reorderDirectorNotes({ noteIds: note_ids });
-    return `Reordered ${reordered.length} director's note(s).`;
+    return withSpaLink(`Reordered ${reordered.length} director's note(s).`, notesUrl());
   },
 
   async add_director_note_image({ note_id, source_url, filename, caption, set_as_main } = {}) {
@@ -1087,18 +1097,19 @@ export const HANDLERS = {
       meta,
       set_as_main,
     );
-    return `Added image to director's note ${target._id}.\n${compact({
+    const text = `Added image to director's note ${target._id}.\n${compact({
       _id: meta._id.toString(),
       filename: meta.filename,
       content_type: meta.content_type,
       size: meta.size,
       is_main,
     })}`;
+    return withSpaLink(text, notesUrl());
   },
 
   async list_director_note_images({ note_id } = {}) {
     const target = await resolveDirectorNote(note_id);
-    return compact({
+    const text = compact({
       note_id: target._id.toString(),
       main_image_id: target.main_image_id ? target.main_image_id.toString() : null,
       images: (target.images || []).map((i) => ({
@@ -1112,11 +1123,15 @@ export const HANDLERS = {
         uploaded_at: i.uploaded_at,
       })),
     });
+    return withSpaLink(text, notesUrl());
   },
 
   async set_main_director_note_image({ note_id, image_id } = {}) {
     const updated = await DirectorNotes.setDirectorNoteMainImage(note_id, image_id);
-    return `Main image for director's note ${updated._id} set to ${updated.main_image_id.toString()}.`;
+    return withSpaLink(
+      `Main image for director's note ${updated._id} set to ${updated.main_image_id.toString()}.`,
+      notesUrl(),
+    );
   },
 
   async remove_director_note_image({ note_id, image_id } = {}) {
@@ -1125,9 +1140,12 @@ export const HANDLERS = {
       image_id,
     );
     await Images.deleteImage(removed);
-    return `Removed image ${removed.toString()} from director's note ${updated._id}. Main image is now ${
-      updated.main_image_id ? updated.main_image_id.toString() : 'none'
-    }.`;
+    return withSpaLink(
+      `Removed image ${removed.toString()} from director's note ${updated._id}. Main image is now ${
+        updated.main_image_id ? updated.main_image_id.toString() : 'none'
+      }.`,
+      notesUrl(),
+    );
   },
 
   async attach_library_image_to_director_note({ image_id, note_id, set_as_main } = {}) {
@@ -1139,7 +1157,7 @@ export const HANDLERS = {
       file.metadata?.owner_id &&
       file.metadata.owner_id.equals(target._id)
     ) {
-      return `Image ${image_id} is already attached to this note.`;
+      return withSpaLink(`Image ${image_id} is already attached to this note.`, notesUrl());
     }
     if (file.metadata?.owner_type && file.metadata.owner_type !== null) {
       throw new Error(
@@ -1163,7 +1181,10 @@ export const HANDLERS = {
       meta,
       set_as_main,
     );
-    return `Attached image to director's note ${target._id}${is_main ? ' (now main image)' : ''}.`;
+    return withSpaLink(
+      `Attached image to director's note ${target._id}${is_main ? ' (now main image)' : ''}.`,
+      notesUrl(),
+    );
   },
 
   async add_director_note_attachment({ note_id, source_url, filename, caption } = {}) {
@@ -1183,18 +1204,19 @@ export const HANDLERS = {
       uploaded_at: file.uploaded_at,
     };
     await DirectorNotes.pushDirectorNoteAttachment(target._id.toString(), meta);
-    return `Added attachment to director's note ${target._id}.\n${compact({
+    const text = `Added attachment to director's note ${target._id}.\n${compact({
       _id: meta._id.toString(),
       filename: meta.filename,
       content_type: meta.content_type,
       size: meta.size,
       caption: meta.caption,
     })}`;
+    return withSpaLink(text, notesUrl());
   },
 
   async list_director_note_attachments({ note_id } = {}) {
     const target = await resolveDirectorNote(note_id);
-    return compact({
+    const text = compact({
       note_id: target._id.toString(),
       attachments: (target.attachments || []).map((a) => ({
         _id: a._id.toString(),
@@ -1205,6 +1227,7 @@ export const HANDLERS = {
         uploaded_at: a.uploaded_at,
       })),
     });
+    return withSpaLink(text, notesUrl());
   },
 
   async remove_director_note_attachment({ note_id, attachment_id } = {}) {
@@ -1213,7 +1236,10 @@ export const HANDLERS = {
       attachment_id,
     );
     await Attachments.deleteAttachment(removed);
-    return `Removed attachment ${removed.toString()} from director's note ${updated._id}.`;
+    return withSpaLink(
+      `Removed attachment ${removed.toString()} from director's note ${updated._id}.`,
+      notesUrl(),
+    );
   },
 
   async get_plot() {
@@ -1272,13 +1298,13 @@ export const HANDLERS = {
         ? `No beat found for "${identifier}".`
         : 'No current beat is set.';
     }
-    return compact(serializeBeat(b));
+    return withSpaLink(compact(serializeBeat(b)), beatUrl(b));
   },
 
   async create_beat({ name, desc, body, characters, order }) {
     const b = await Plots.createBeat({ name, desc, body, characters, order });
     const base = `Created beat "${b.name}" (order ${b.order}, _id ${b._id}). It is now the current beat if none was set.`;
-    return appendSimilarityHeadsUp('beat', b, base);
+    return withSpaLink(await appendSimilarityHeadsUp('beat', b, base), beatUrl(b));
   },
 
   async update_beat({ identifier, patch }) {
@@ -1293,17 +1319,21 @@ export const HANDLERS = {
         );
       }
     }
-    const b = await Plots.updateBeat(identifier, patch);
+    const b = await Gateway.updateBeatViaGateway(identifier, patch);
     const base = `Updated beat "${b.name}".\n${compact(serializeBeat(b))}`;
     const touchedText =
       patch && (patch.name !== undefined || patch.desc !== undefined || patch.body !== undefined);
-    return touchedText ? appendSimilarityHeadsUp('beat', b, base) : base;
+    const text = touchedText ? await appendSimilarityHeadsUp('beat', b, base) : base;
+    return withSpaLink(text, beatUrl(b));
   },
 
   async append_to_beat_body({ beat, content }) {
     const target = await resolveBeat(beat);
-    const updated = await Plots.appendBeatBody(target._id.toString(), content);
-    return `Appended ${String(content || '').length} chars to beat "${updated.name}". Body is now ${updated.body.length} chars.`;
+    const next = await Gateway.appendBeatBodyViaGateway(target._id.toString(), content);
+    return withSpaLink(
+      `Appended ${String(content || '').length} chars to beat "${target.name}". Body is now ${next.length} chars.`,
+      beatUrl(target),
+    );
   },
 
   async set_beat_body(input = {}) {
@@ -1325,10 +1355,14 @@ export const HANDLERS = {
     }
     const target = await resolveBeat(beat);
     const before = String(target.body || '').length;
-    const updated = await Plots.setBeatBody(target._id.toString(), body);
-    const delta = updated.body.length - before;
+    await Gateway.setBeatBodyViaGateway(target._id.toString(), body);
+    const after = body.length;
+    const delta = after - before;
     const sign = delta >= 0 ? '+' : '';
-    return `Replaced body of beat "${updated.name}". Was ${before} chars; now ${updated.body.length} chars (${sign}${delta}).`;
+    return withSpaLink(
+      `Replaced body of beat "${target.name}". Was ${before} chars; now ${after} chars (${sign}${delta}).`,
+      beatUrl(target),
+    );
   },
 
   async edit_beat_body(input = {}) {
@@ -1347,14 +1381,18 @@ export const HANDLERS = {
       return 'Tool error (edit_beat_body): `edits` must be a non-empty array of {find, replace} pairs.';
     }
     const target = await resolveBeat(beat);
-    const result = await Plots.editBeatBody(target._id.toString(), edits);
-    const perEdit = result.edits
+    const result = await Gateway.editBeatBodyViaGateway(target._id.toString(), edits);
+    const perEdit = result.applied
       .map((e, i) => {
-        const sign = e.delta >= 0 ? '+' : '';
-        return `  ${i + 1}. -${e.find_chars}/+${e.replace_chars} (Δ${sign}${e.delta})`;
+        const delta = e.replace_chars - e.find_chars;
+        const sign = delta >= 0 ? '+' : '';
+        return `  ${i + 1}. -${e.find_chars}/+${e.replace_chars} (Δ${sign}${delta})`;
       })
       .join('\n');
-    return `Applied ${result.edits.length} edit(s) to beat "${result.beat.name}". Body: ${result.beforeLen} → ${result.afterLen} chars.\n${perEdit}`;
+    return withSpaLink(
+      `Applied ${result.applied.length} edit(s) to beat "${target.name}". Body: ${result.beforeLen} → ${result.afterLen} chars.\n${perEdit}`,
+      beatUrl(target),
+    );
   },
 
   async search_beats({ query }) {
@@ -1382,13 +1420,19 @@ export const HANDLERS = {
   async link_character_to_beat({ beat, character }) {
     const target = await resolveBeat(beat);
     const updated = await Plots.linkCharacterToBeat(target._id.toString(), character);
-    return `Linked ${character} to beat "${updated.name}". Characters now: ${updated.characters.join(', ') || '(none)'}.`;
+    return withSpaLink(
+      `Linked ${character} to beat "${updated.name}". Characters now: ${updated.characters.join(', ') || '(none)'}.`,
+      beatUrl(updated),
+    );
   },
 
   async unlink_character_from_beat({ beat, character }) {
     const target = await resolveBeat(beat);
     const updated = await Plots.unlinkCharacterFromBeat(target._id.toString(), character);
-    return `Unlinked ${character} from beat "${updated.name}". Characters now: ${updated.characters.join(', ') || '(none)'}.`;
+    return withSpaLink(
+      `Unlinked ${character} from beat "${updated.name}". Characters now: ${updated.characters.join(', ') || '(none)'}.`,
+      beatUrl(updated),
+    );
   },
 
   async set_current_beat({ identifier }) {
@@ -1426,19 +1470,24 @@ export const HANDLERS = {
       caption: caption?.trim() || null,
       uploaded_at: file.uploaded_at,
     };
-    const { is_main } = await Plots.pushBeatImage(target._id.toString(), meta, set_as_main);
-    return `Added image to beat "${target.name}".\n${compact({
+    const { is_main } = await Gateway.addBeatImageViaGateway({
+      beatId: target._id.toString(),
+      imageMeta: meta,
+      setAsMain: set_as_main,
+    });
+    const text = `Added image to beat "${target.name}".\n${compact({
       _id: meta._id.toString(),
       filename: meta.filename,
       content_type: meta.content_type,
       size: meta.size,
       is_main,
     })}`;
+    return withSpaLink(text, beatUrl(target));
   },
 
   async list_beat_images({ beat } = {}) {
     const target = await resolveBeat(beat);
-    return compact({
+    const text = compact({
       beat: { _id: target._id.toString(), name: target.name },
       main_image_id: target.main_image_id ? target.main_image_id.toString() : null,
       images: (target.images || []).map((i) => ({
@@ -1452,21 +1501,34 @@ export const HANDLERS = {
         uploaded_at: i.uploaded_at,
       })),
     });
+    return withSpaLink(text, beatUrl(target));
   },
 
   async set_main_beat_image({ beat, image_id }) {
     const target = await resolveBeat(beat);
-    const updated = await Plots.setBeatMainImage(target._id.toString(), image_id);
-    return `Main image for beat "${updated.name}" set to ${updated.main_image_id.toString()}.`;
+    const updated = await Gateway.setBeatMainImageViaGateway({
+      beatId: target._id.toString(),
+      imageId: image_id,
+    });
+    return withSpaLink(
+      `Main image for beat "${updated.name}" set to ${updated.main_image_id.toString()}.`,
+      beatUrl(updated),
+    );
   },
 
   async remove_beat_image({ beat, image_id }) {
     const target = await resolveBeat(beat);
-    const { removed, beat: updated } = await Plots.pullBeatImage(target._id.toString(), image_id);
+    const { removed, beat: updated } = await Gateway.removeBeatImageViaGateway({
+      beatId: target._id.toString(),
+      imageId: image_id,
+    });
     await Images.deleteImage(removed);
-    return `Removed image ${removed.toString()} from beat "${updated.name}". Main image is now ${
-      updated.main_image_id ? updated.main_image_id.toString() : 'none'
-    }.`;
+    return withSpaLink(
+      `Removed image ${removed.toString()} from beat "${updated.name}". Main image is now ${
+        updated.main_image_id ? updated.main_image_id.toString() : 'none'
+      }.`,
+      beatUrl(updated),
+    );
   },
 
   async list_library_images() {
@@ -1488,7 +1550,10 @@ export const HANDLERS = {
       file.metadata?.owner_id &&
       file.metadata.owner_id.equals(target._id)
     ) {
-      return `Image ${image_id} is already attached to beat "${target.name}".`;
+      return withSpaLink(
+        `Image ${image_id} is already attached to beat "${target.name}".`,
+        beatUrl(target),
+      );
     }
     if (file.metadata?.owner_type === 'beat') {
       throw new Error(
@@ -1508,7 +1573,10 @@ export const HANDLERS = {
       uploaded_at: file.uploadDate,
     };
     const { is_main } = await Plots.pushBeatImage(target._id.toString(), meta, set_as_main);
-    return `Attached image to beat "${target.name}"${is_main ? ' (now main image)' : ''}.`;
+    return withSpaLink(
+      `Attached image to beat "${target.name}"${is_main ? ' (now main image)' : ''}.`,
+      beatUrl(target),
+    );
   },
 
   async attach_library_image_to_character({ image_id, character, set_as_main, caption } = {}) {
@@ -1518,12 +1586,19 @@ export const HANDLERS = {
       caption,
       setAsMain: set_as_main,
     });
+    const url = characterUrl({ name: res.character });
     if (res.already_attached) {
-      return `Image ${image_id} is already attached to character "${res.character}".`;
+      return withSpaLink(
+        `Image ${image_id} is already attached to character "${res.character}".`,
+        url,
+      );
     }
-    return `Attached image to character "${res.character || character}"${
-      res.is_main ? ' (now main image)' : ''
-    }.`;
+    return withSpaLink(
+      `Attached image to character "${res.character || character}"${
+        res.is_main ? ' (now main image)' : ''
+      }.`,
+      url,
+    );
   },
 
   async add_library_attachment({ source_url, filename, caption } = {}) {
@@ -1560,9 +1635,12 @@ export const HANDLERS = {
       caption,
     });
     if (res.already_attached) {
-      return `Attachment ${attachment_id} is already attached to beat "${target.name}".`;
+      return withSpaLink(
+        `Attachment ${attachment_id} is already attached to beat "${target.name}".`,
+        beatUrl(target),
+      );
     }
-    return `Attached attachment to beat "${target.name}".`;
+    return withSpaLink(`Attached attachment to beat "${target.name}".`, beatUrl(target));
   },
 
   async attach_library_attachment_to_character({ attachment_id, character, caption } = {}) {
@@ -1571,10 +1649,14 @@ export const HANDLERS = {
       attachmentId: attachment_id,
       caption,
     });
+    const url = characterUrl({ name: res.character });
     if (res.already_attached) {
-      return `Attachment ${attachment_id} is already attached to character "${res.character}".`;
+      return withSpaLink(
+        `Attachment ${attachment_id} is already attached to character "${res.character}".`,
+        url,
+      );
     }
-    return `Attached attachment to character "${res.character}".`;
+    return withSpaLink(`Attached attachment to character "${res.character}".`, url);
   },
 
   async attach_library_attachment_to_director_note({ attachment_id, note_id, caption } = {}) {
@@ -1585,9 +1667,12 @@ export const HANDLERS = {
       caption,
     });
     if (res.already_attached) {
-      return `Attachment ${attachment_id} is already attached to director's note ${target._id}.`;
+      return withSpaLink(
+        `Attachment ${attachment_id} is already attached to director's note ${target._id}.`,
+        notesUrl(),
+      );
     }
-    return `Attached attachment to director's note ${target._id}.`;
+    return withSpaLink(`Attached attachment to director's note ${target._id}.`, notesUrl());
   },
 
   async show_image({ image_id }) {
@@ -2031,18 +2116,19 @@ export const HANDLERS = {
       caption,
       setAsMain: set_as_main,
     });
-    return `Added image to ${character}.\n${compact({
+    const text = `Added image to ${meta.character || character}.\n${compact({
       _id: meta._id.toString(),
       filename: meta.filename,
       content_type: meta.content_type,
       size: meta.size,
       is_main: meta.is_main,
     })}`;
+    return withSpaLink(text, characterUrl({ name: meta.character }));
   },
 
   async list_character_images({ character }) {
-    const { images, main_image_id } = await Files.listCharacterImages(character);
-    return compact({
+    const { character: name, images, main_image_id } = await Files.listCharacterImages(character);
+    const text = compact({
       main_image_id: main_image_id ? main_image_id.toString() : null,
       images: images.map((i) => ({
         _id: i._id.toString(),
@@ -2053,18 +2139,25 @@ export const HANDLERS = {
         uploaded_at: i.uploaded_at,
       })),
     });
+    return withSpaLink(text, characterUrl({ name }));
   },
 
   async set_main_character_image({ character, image_id }) {
     const res = await Files.setMainCharacterImage({ character, imageId: image_id });
-    return `Main image for ${res.character} set to ${res.main_image_id.toString()}.`;
+    return withSpaLink(
+      `Main image for ${res.character} set to ${res.main_image_id.toString()}.`,
+      characterUrl({ name: res.character }),
+    );
   },
 
   async remove_character_image({ character, image_id }) {
     const res = await Files.removeCharacterImage({ character, imageId: image_id });
-    return `Removed image ${res.removed.toString()} from ${res.character}. Main image is now ${
-      res.main_image_id ? res.main_image_id.toString() : 'none'
-    }.`;
+    return withSpaLink(
+      `Removed image ${res.removed.toString()} from ${res.character}. Main image is now ${
+        res.main_image_id ? res.main_image_id.toString() : 'none'
+      }.`,
+      characterUrl({ name: res.character }),
+    );
   },
 
   async add_beat_attachment({ beat, source_url, filename, caption }) {
@@ -2084,18 +2177,19 @@ export const HANDLERS = {
       uploaded_at: file.uploaded_at,
     };
     await Plots.pushBeatAttachment(target._id.toString(), meta);
-    return `Added attachment to beat "${target.name}".\n${compact({
+    const text = `Added attachment to beat "${target.name}".\n${compact({
       _id: meta._id.toString(),
       filename: meta.filename,
       content_type: meta.content_type,
       size: meta.size,
       caption: meta.caption,
     })}`;
+    return withSpaLink(text, beatUrl(target));
   },
 
   async list_beat_attachments({ beat } = {}) {
     const target = await resolveBeat(beat);
-    return compact({
+    const text = compact({
       beat: { _id: target._id.toString(), name: target.name },
       attachments: (target.attachments || []).map((a) => ({
         _id: a._id.toString(),
@@ -2106,6 +2200,7 @@ export const HANDLERS = {
         uploaded_at: a.uploaded_at,
       })),
     });
+    return withSpaLink(text, beatUrl(target));
   },
 
   async remove_beat_attachment({ beat, attachment_id }) {
@@ -2115,7 +2210,10 @@ export const HANDLERS = {
       attachment_id,
     );
     await Attachments.deleteAttachment(removed);
-    return `Removed attachment ${removed.toString()} from beat "${updated.name}".`;
+    return withSpaLink(
+      `Removed attachment ${removed.toString()} from beat "${updated.name}".`,
+      beatUrl(updated),
+    );
   },
 
   async add_character_attachment({ character, source_url, filename, caption }) {
@@ -2125,19 +2223,20 @@ export const HANDLERS = {
       filename,
       caption,
     });
-    return `Added attachment to ${meta.character}.\n${compact({
+    const text = `Added attachment to ${meta.character}.\n${compact({
       _id: meta._id.toString(),
       filename: meta.filename,
       content_type: meta.content_type,
       size: meta.size,
       caption: meta.caption,
     })}`;
+    return withSpaLink(text, characterUrl({ name: meta.character }));
   },
 
   async list_character_attachments({ character }) {
     const { character: name, _id, attachments } =
       await Attachments.listCharacterAttachments(character);
-    return compact({
+    const text = compact({
       character: { _id: _id.toString(), name },
       attachments: attachments.map((a) => ({
         _id: a._id.toString(),
@@ -2148,6 +2247,7 @@ export const HANDLERS = {
         uploaded_at: a.uploaded_at,
       })),
     });
+    return withSpaLink(text, characterUrl({ name }));
   },
 
   async remove_character_attachment({ character, attachment_id }) {
@@ -2155,7 +2255,10 @@ export const HANDLERS = {
       character,
       attachmentId: attachment_id,
     });
-    return `Removed attachment ${res.removed.toString()} from ${res.character}.`;
+    return withSpaLink(
+      `Removed attachment ${res.removed.toString()} from ${res.character}.`,
+      characterUrl({ name: res.character }),
+    );
   },
 
   async tmdb_search_movie({ query, year }) {
