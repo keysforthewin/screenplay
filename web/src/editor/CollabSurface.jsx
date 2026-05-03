@@ -11,6 +11,7 @@ import * as Y from 'yjs';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import { apiGet } from '../api.js';
 import { usePresenceSetters } from './PresenceContext.jsx';
+import { colorForUser } from './userColor.js';
 
 const CollabContext = createContext(null);
 
@@ -18,15 +19,6 @@ export function useCollabRoom() {
   const ctx = useContext(CollabContext);
   if (!ctx) throw new Error('CollabField must be inside <CollabSurface>');
   return ctx;
-}
-
-function colorForUser(name) {
-  let hash = 0;
-  for (let i = 0; i < (name || '').length; i++) {
-    hash = (hash * 31 + name.charCodeAt(i)) | 0;
-  }
-  const hue = Math.abs(hash) % 360;
-  return `hsl(${hue} 70% 55%)`;
 }
 
 export function CollabSurface({ room, session, onPing, children }) {

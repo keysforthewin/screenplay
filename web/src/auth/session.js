@@ -1,5 +1,7 @@
 const KEY = 'screenplay_session_v1';
 
+const BASE = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
+
 export function loadSession() {
   try {
     const raw = localStorage.getItem(KEY);
@@ -21,7 +23,7 @@ export function clearSession() {
 }
 
 export async function validateSession(sessionId) {
-  const res = await fetch('/auth/validate', {
+  const res = await fetch(`${BASE}/auth/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ session_id: sessionId }),
@@ -31,7 +33,7 @@ export async function validateSession(sessionId) {
 }
 
 export async function requestApproval(username) {
-  const res = await fetch('/auth/request', {
+  const res = await fetch(`${BASE}/auth/request`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username }),
@@ -44,7 +46,7 @@ export async function requestApproval(username) {
 }
 
 export async function pollStatus(requestId) {
-  const res = await fetch(`/auth/status?request_id=${encodeURIComponent(requestId)}`);
+  const res = await fetch(`${BASE}/auth/status?request_id=${encodeURIComponent(requestId)}`);
   if (!res.ok) throw new Error(`status failed (${res.status})`);
   return res.json();
 }

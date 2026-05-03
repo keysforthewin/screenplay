@@ -1,5 +1,7 @@
 FROM node:22-alpine AS web-build
 WORKDIR /build
+ARG WEB_BASE_PATH=/
+ENV WEB_BASE_PATH=$WEB_BASE_PATH
 COPY package.json package-lock.json* ./
 RUN npm ci
 COPY web ./web

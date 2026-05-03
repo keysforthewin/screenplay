@@ -1,18 +1,10 @@
-import { useEditor, EditorContent } from '@tiptap/react';
+import { useEditor, EditorContent, BubbleMenu } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Collaboration from '@tiptap/extension-collaboration';
 import CollaborationCursor from '@tiptap/extension-collaboration-cursor';
 import { Markdown } from 'tiptap-markdown';
 import { useCollabRoom } from './CollabSurface.jsx';
-
-function colorForUser(name) {
-  let hash = 0;
-  for (let i = 0; i < (name || '').length; i++) {
-    hash = (hash * 31 + name.charCodeAt(i)) | 0;
-  }
-  const hue = Math.abs(hash) % 360;
-  return `hsl(${hue} 70% 55%)`;
-}
+import { colorForUser } from './userColor.js';
 
 export function CollabField({ label, field, multiline = false, placeholder }) {
   const { provider, ydoc, session } = useCollabRoom();
@@ -56,6 +48,7 @@ export function CollabField({ label, field, multiline = false, placeholder }) {
     <div className="field-block">
       {label && <span className="field-label">{label}</span>}
       <div className={`editor-shell${multiline ? '' : ' single-line'}`}>
+        {editor && <FormattingBubbleMenu editor={editor} multiline={multiline} />}
         <EditorContent editor={editor} />
         {placeholder && (!editor || editor.isEmpty) && (
           <div style={{ color: 'var(--fg-muted)', fontSize: 12, marginTop: 4 }}>
@@ -64,5 +57,59 @@ export function CollabField({ label, field, multiline = false, placeholder }) {
         )}
       </div>
     </div>
+  );
+}
+
+function FormattingBubbleMenu({ editor, multiline }) {
+  const btn = (active, onClick, label, title) => (
+    <button
+      type="button"
+      title={title}
+      className={active ? 'is-active' : ''}
+      onMouseDown={(e) => { e.preventDefault(); onClick(); }}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <BubbleMenu
+      editor={editor}
+      tippyOptions={{ duration: 100, placement: 'top' }}
+      className="bubble-menu"
+    >
+      {btn(editor.isActive('bold'),
+        () => editor.chain().focus().toggleBold().run(),
+        <strong>B</strong>, 'Bold (⌘B)')}
+      {btn(editor.isActive('italic'),
+        () => editor.chain().focus().toggleItalic().run(),
+        <em>I</em>, 'Italic (⌘I)')}
+      {btn(editor.isActive('strike'),
+        () => editor.chain().focus().toggleStrike().run(),
+        <span style={{ textDecoration: 'line-through' }}>S</span>, 'Strikethrough')}
+      {btn(editor.isActive('code'),
+        () => editor.chain().focus().toggleCode().run(),
+        <span style={{ fontFamily: 'monospace' }}>{'</>'}</span>, 'Inline code')}
+      {multiline && (
+        <>
+          <span className="bubble-menu-sep" aria-hidden="true" />
+          {btn(editor.isActive('heading', { level: 1 }),
+            () => editor.chain().focus().toggleHeading({ level: 1 }).run(),
+            'H1', 'Heading 1')}
+          {btn(editor.isActive('heading', { level: 2 }),
+            () => editor.chain().focus().toggleHeading({ level: 2 }).run(),
+            'H2', 'Heading 2')}
+          {btn(editor.isActive('heading', { level: 3 }),
+            () => editor.chain().focus().toggleHeading({ level: 3 }).run(),
+            'H3', 'Heading 3')}
+          <span className="bubble-menu-sep" aria-hidden="true" />
+          {btn(editor.isActive('bulletList'),
+            () => editor.chain().focus().toggleBulletList().run(),
+            '•', 'Bullet list')}
+          {btn(editor.isActive('orderedList'),
+            () => editor.chain().focus().toggleOrderedList().run(),
+            '1.', 'Numbered list')}
+        </>
+      )}
+    </BubbleMenu>
   );
 }
