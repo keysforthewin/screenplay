@@ -72,13 +72,15 @@ export function buildApiRouter() {
   router.use(requireSession());
 
   // Connection metadata for the SPA so it knows where to open WebSockets.
-  router.get('/info', (_req, res) => {
+  router.get('/info', async (_req, res) => {
     const wsUrl =
       config.web.hocuspocusPublicUrl ||
       `ws://${'localhost'}:${config.web.hocuspocusPort}`;
+    const plot = await getPlot();
     res.json({
       hocuspocus_url: wsUrl,
       bot_color: config.web.botColor,
+      screenplay_title: stripMarkdown(plot?.title || ''),
     });
   });
 
