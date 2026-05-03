@@ -34,6 +34,32 @@ function uploadBuffer({ buffer, filename, contentType, metadata }) {
   });
 }
 
+export async function uploadAttachmentBuffer({
+  buffer,
+  filename,
+  contentType,
+  ownerType = null,
+  ownerId = null,
+}) {
+  const ct = contentType || 'application/octet-stream';
+  const finalFilename = filename?.trim() || `attachment-${Date.now()}.bin`;
+  const metadata = {
+    owner_type: ownerType,
+    owner_id: ownerId ? toObjectId(ownerId) : null,
+    source: 'upload',
+    content_type: ct,
+  };
+  const id = await uploadBuffer({ buffer, filename: finalFilename, contentType: ct, metadata });
+  return {
+    _id: id,
+    filename: finalFilename,
+    content_type: ct,
+    size: buffer.length,
+    metadata,
+    uploaded_at: new Date(),
+  };
+}
+
 export async function uploadAttachmentFromUrl({
   sourceUrl,
   filename,
