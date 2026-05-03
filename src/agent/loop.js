@@ -4,6 +4,12 @@ import { logger } from '../log.js';
 import { TOOLS, CORE_TOOL_NAMES, toolDefsForApi } from './tools.js';
 import { searchTools } from './toolSearch.js';
 import { dispatchTool } from './handlers.js';
+import {
+  recordEntityTouch,
+  resolveEntityLinks,
+  appendEntityLinks,
+  createTouchedEntities,
+} from './entityLinks.js';
 import { buildSystemPrompt } from './systemPrompt.js';
 import { withMessageCacheBreakpoint } from './historyCache.js';
 import { listCharacters } from '../mongo/characters.js';
@@ -351,6 +357,7 @@ export async function runAgent({
   const agentStart = messages.length;
   const attachmentPaths = [];
   const attachmentLinks = [];
+  const touchedEntities = createTouchedEntities();
   const context = { discordUser, channelId };
   const model = config.anthropic.model;
 
@@ -489,7 +496,14 @@ export async function runAgent({
         } else if (truncated) {
           text = `${text}\n\n(Response truncated — output token limit reached. Ask me to continue.)`.trim();
         }
-        return { text, attachmentPaths, attachmentLinks, agentMessages: messages.slice(agentStart) };
+        const entityUrls = await resolveEntityLinks(touchedEntities);
+        const finalText = appendEntityLinks(text, entityUrls);
+        return {
+          text: finalText,
+          attachmentPaths,
+          attachmentLinks,
+          agentMessages: messages.slice(agentStart),
+        };
       }
 
       const toolUses = resp.content.filter((b) => b.type === 'tool_use');
@@ -533,6 +547,10 @@ export async function runAgent({
           )
         : [];
 
+      for (const tu of realToolUses) {
+        recordEntityTouch(tu.name, tu.input, touchedEntities);
+      }
+
       // Reassemble in the original tool_use order so tool_result blocks line up.
       const resultById = new Map();
       for (const r of metaResults) resultById.set(r.tool_use_id, r);
@@ -546,8 +564,10 @@ export async function runAgent({
     }
 
     logger.warn(`max iterations hit (${MAX_TOOL_ITERATIONS}) — returning fallback`);
+    const entityUrls = await resolveEntityLinks(touchedEntities);
+    const finalText = appendEntityLinks('(Agent hit max tool iterations.)', entityUrls);
     return {
-      text: '(Agent hit max tool iterations.)',
+      text: finalText,
       attachmentPaths,
       attachmentLinks,
       agentMessages: messages.slice(agentStart),
