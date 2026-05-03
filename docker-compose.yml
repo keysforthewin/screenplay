@@ -22,6 +22,7 @@ services:
       BACKUP_DIR: /data/backups
     ports:
       - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
+      - "${HOCUSPOCUS_PORT:-3001}:${HOCUSPOCUS_PORT:-3001}"
     volumes:
       - exports:/data/exports
       - ./backups:/data/backups
