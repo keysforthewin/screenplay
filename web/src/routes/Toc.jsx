@@ -114,20 +114,6 @@ export function Toc() {
         </section>
       )}
 
-      {(characters.length > 0 || (!filter && (toc.characters || []).length === 0)) && (
-        <section className="toc-section">
-          <h2>Characters</h2>
-          {characters.length === 0 && (
-            <p style={{ color: 'var(--fg-muted)' }}>No characters yet.</p>
-          )}
-          <ul>
-            {characters.map((c) => (
-              <li key={c.key}><Link to={c.to}>{c.label}</Link></li>
-            ))}
-          </ul>
-        </section>
-      )}
-
       {(beats.length > 0 || (!filter && (toc.beats || []).length === 0)) && (
         <section className="toc-section">
           <h2>Beats</h2>
@@ -137,6 +123,20 @@ export function Toc() {
           <ul>
             {beats.map((b) => (
               <li key={b.key}><Link to={b.to}>{b.label}</Link></li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {(characters.length > 0 || (!filter && (toc.characters || []).length === 0)) && (
+        <section className="toc-section">
+          <h2>Characters</h2>
+          {characters.length === 0 && (
+            <p style={{ color: 'var(--fg-muted)' }}>No characters yet.</p>
+          )}
+          <ul>
+            {characters.map((c) => (
+              <li key={c.key}><Link to={c.to}>{c.label}</Link></li>
             ))}
           </ul>
         </section>
