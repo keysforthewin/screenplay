@@ -2,6 +2,7 @@ import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import { config } from '../config.js';
 import { logger } from '../log.js';
 import { handleMessage } from './messageHandler.js';
+import { registerSlashCommands } from './interactions.js';
 
 export function createDiscordClient() {
   const client = new Client({
@@ -15,6 +16,7 @@ export function createDiscordClient() {
 
   client.once('ready', async () => {
     logger.info(`Discord ready as ${client.user.tag}`);
+    await registerSlashCommands(client);
     try {
       const channel = await client.channels.fetch(config.discord.movieChannelId);
       await channel.send(`🎬 Lucas online (${new Date().toISOString()})`);

@@ -12,6 +12,7 @@ import {
   recordAssistantMessage,
   recordAgentTurns,
 } from '../mongo/messages.js';
+import { getHistoryClearedAt } from '../mongo/channelState.js';
 import { sendReply } from './reply.js';
 import { shouldIgnoreMessage } from './messageFilter.js';
 
@@ -54,7 +55,11 @@ export async function handleMessage(msg) {
       logger.debug('typing started');
       typingTimer = setInterval(() => msg.channel.sendTyping().catch(() => {}), 8000);
 
-      const rawHistory = await loadHistoryForLlm(msg.channelId);
+      const clearedAt = await getHistoryClearedAt(msg.channelId);
+      const rawHistory = await loadHistoryForLlm(msg.channelId, {
+        maxAgeMs: config.trim.historyWindowMs,
+        since: clearedAt,
+      });
       logger.info(`history loaded ${rawHistory.length} msgs`);
       const { messages: history, stats: trimStats } = config.trim.enabled
         ? trimHistoryForLlm(rawHistory, {

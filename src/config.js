@@ -25,6 +25,7 @@ export const config = {
     enabled: !process.env.HISTORY_TRIM_DISABLED,
     summarizeStale: !process.env.HISTORY_SUMMARIZE_DISABLED,
     tokenBudget: Number(process.env.HISTORY_TOKEN_BUDGET) || 30000,
+    historyWindowMs: Number(process.env.HISTORY_WINDOW_MS) || 60 * 60 * 1000,
   },
   mongo: {
     uri: process.env.MONGO_URI || 'mongodb://localhost:27017',
