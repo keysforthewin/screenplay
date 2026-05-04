@@ -113,6 +113,14 @@ export function Library() {
                 <span title={img.filename} style={{ fontSize: 12, color: 'var(--fg-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {img.filename}
                 </span>
+                <a
+                  className="icon-link"
+                  href={imageUrl(img._id)}
+                  download={img.filename || `image-${img._id}`}
+                  title={`Download ${img.filename || 'image'}`}
+                >
+                  Save
+                </a>
                 <button onClick={() => deleteImage(img._id)}>Delete</button>
               </div>
             </div>
@@ -131,7 +139,13 @@ export function Library() {
         <ul className="attachment-list">
           {data.attachments.map((a) => (
             <li key={a._id}>
-              <a href={attachmentUrl(a._id)} target="_blank" rel="noreferrer">{a.filename}</a>
+              <a
+                href={attachmentUrl(a._id)}
+                download={a.filename || a._id}
+                title={`Download ${a.filename || 'file'}`}
+              >
+                {a.filename}
+              </a>
               <button onClick={() => deleteAttachment(a._id)}>Delete</button>
             </li>
           ))}

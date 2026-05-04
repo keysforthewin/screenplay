@@ -48,7 +48,11 @@ export function AttachmentList({
           const id = a._id.toString ? a._id.toString() : String(a._id);
           return (
             <li key={id}>
-              <a href={attachmentUrl(id)} target="_blank" rel="noreferrer">
+              <a
+                href={attachmentUrl(id)}
+                download={a.filename || id}
+                title={`Download ${a.filename || 'file'}`}
+              >
                 {a.filename || id}
               </a>
               {deletePath && <button onClick={() => remove(id)}>Delete</button>}

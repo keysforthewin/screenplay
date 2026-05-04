@@ -70,6 +70,14 @@ export function ImageGallery({
                 ) : (
                   <button onClick={() => setMain(id)}>Set main</button>
                 )}
+                <a
+                  className="icon-link"
+                  href={imageUrl(id)}
+                  download={img.filename || `image-${id}`}
+                  title={`Download ${img.filename || 'image'}`}
+                >
+                  Save
+                </a>
                 <button onClick={() => remove(id)}>×</button>
               </div>
             </div>
