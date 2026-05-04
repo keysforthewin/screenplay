@@ -45,6 +45,17 @@ function compact(obj) {
   return JSON.stringify(obj, null, 2);
 }
 
+function stripImageFilename(image) {
+  if (!image || typeof image !== 'object') return image;
+  const { filename: _filename, ...rest } = image;
+  return rest;
+}
+
+function withoutImageFilenames(doc) {
+  if (!doc || typeof doc !== 'object' || !Array.isArray(doc.images)) return doc;
+  return { ...doc, images: doc.images.map(stripImageFilename) };
+}
+
 function preview(text, n = 120) {
   if (!text) return '';
   const t = String(text).trim();
@@ -252,7 +263,6 @@ function serializeBeat(b) {
     characters: b.characters || [],
     images: (b.images || []).map((i) => ({
       _id: i._id.toString(),
-      filename: i.filename,
       content_type: i.content_type,
       size: i.size,
       source: i.source || 'upload',
@@ -831,7 +841,7 @@ export const HANDLERS = {
   async get_character({ identifier }) {
     const c = await Characters.getCharacter(identifier);
     if (!c) return `No character found for "${identifier}".`;
-    return withSpaLink(compact(c), characterUrl(c));
+    return withSpaLink(compact(withoutImageFilenames(c)), characterUrl(c));
   },
 
   async create_character(input) {
@@ -861,7 +871,7 @@ export const HANDLERS = {
     const c = await Gateway.updateCharacterViaGateway(identifier, patch);
     const note = await maybeAutoFetchActorPortrait(c._id.toString());
     const fresh = note ? await Characters.getCharacter(c._id.toString()) : c;
-    const base = `Updated ${c.name}.${note || ''}\nCurrent state:\n${compact(fresh)}`;
+    const base = `Updated ${c.name}.${note || ''}\nCurrent state:\n${compact(withoutImageFilenames(fresh))}`;
     const touchedText =
       patch && (patch.name !== undefined || (patch.fields && typeof patch.fields === 'object'));
     const text = touchedText ? await appendSimilarityHeadsUp('character', fresh, base) : base;
@@ -1112,7 +1122,6 @@ export const HANDLERS = {
     );
     const text = `Added image to director's note ${target._id}.\n${compact({
       _id: meta._id.toString(),
-      filename: meta.filename,
       content_type: meta.content_type,
       size: meta.size,
       is_main,
@@ -1127,7 +1136,6 @@ export const HANDLERS = {
       main_image_id: target.main_image_id ? target.main_image_id.toString() : null,
       images: (target.images || []).map((i) => ({
         _id: i._id.toString(),
-        filename: i.filename,
         content_type: i.content_type,
         size: i.size,
         source: i.source || 'upload',
@@ -1490,7 +1498,6 @@ export const HANDLERS = {
     });
     const text = `Added image to beat "${target.name}".\n${compact({
       _id: meta._id.toString(),
-      filename: meta.filename,
       content_type: meta.content_type,
       size: meta.size,
       is_main,
@@ -1505,7 +1512,6 @@ export const HANDLERS = {
       main_image_id: target.main_image_id ? target.main_image_id.toString() : null,
       images: (target.images || []).map((i) => ({
         _id: i._id.toString(),
-        filename: i.filename,
         content_type: i.content_type,
         size: i.size,
         source: i.source || 'upload',
@@ -1549,7 +1555,7 @@ export const HANDLERS = {
     return compact(
       files.map((f) => {
         const m = Images.imageFileToMeta(f);
-        return { ...m, _id: m._id.toString() };
+        return stripImageFilename({ ...m, _id: m._id.toString() });
       }),
     );
   },
@@ -2131,7 +2137,6 @@ export const HANDLERS = {
     });
     const text = `Added image to ${meta.character || character}.\n${compact({
       _id: meta._id.toString(),
-      filename: meta.filename,
       content_type: meta.content_type,
       size: meta.size,
       is_main: meta.is_main,
@@ -2145,7 +2150,6 @@ export const HANDLERS = {
       main_image_id: main_image_id ? main_image_id.toString() : null,
       images: images.map((i) => ({
         _id: i._id.toString(),
-        filename: i.filename,
         content_type: i.content_type,
         size: i.size,
         caption: i.caption,
