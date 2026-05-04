@@ -48,6 +48,7 @@ import {
 } from '../mongo/attachments.js';
 import { getCharacterTemplate, getPlotTemplate } from '../mongo/prompts.js';
 import { stripMarkdown } from '../util/markdown.js';
+import { buildTocResponse } from './toc.js';
 
 const HEX24 = /^[a-f0-9]{24}$/i;
 
@@ -92,20 +93,7 @@ export function buildApiRouter() {
       listBeats(),
       getDirectorNotes(),
     ]);
-    res.json({
-      characters: characters.map((c) => ({
-        _id: c._id,
-        name: c.name,
-        plain_name: stripMarkdown(c.name || ''),
-      })),
-      beats: beatList.map((b) => ({
-        _id: b._id,
-        order: b.order,
-        name: b.name,
-        plain_name: stripMarkdown(b.name || ''),
-      })),
-      notes_count: (notes.notes || []).length,
-    });
+    res.json(buildTocResponse(characters, beatList, (notes.notes || []).length));
   });
 
   router.get('/template', async (_req, res) => {
