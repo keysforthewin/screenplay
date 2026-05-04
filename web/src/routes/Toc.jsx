@@ -40,18 +40,32 @@ export function Toc() {
     ? [{ key: 'all', to: '/notes', label: notesLabel }]
     : [];
 
+  const dupCounts = (toc.characters || []).reduce((m, c) => {
+    const k = (c.plain_name || c.name || '').toLowerCase();
+    m.set(k, (m.get(k) || 0) + 1);
+    return m;
+  }, new Map());
+
   const characters = [...(toc.characters || [])]
     .sort((a, b) => {
       const an = (a.plain_name || a.name || '').toLowerCase();
       const bn = (b.plain_name || b.name || '').toLowerCase();
       return an.localeCompare(bn);
     })
-    .map((c) => ({
-      key: c._id,
-      to: `/character/${encodeURIComponent(c.plain_name || c.name)}`,
-      label: c.plain_name || c.name || '',
-      beats: c.beats || [],
-    }))
+    .map((c) => {
+      const nameKey = (c.plain_name || c.name || '').toLowerCase();
+      const isDup = (dupCounts.get(nameKey) || 0) > 1;
+      return {
+        key: c._id,
+        to: isDup
+          ? `/character/${c._id}`
+          : `/character/${encodeURIComponent(c.plain_name || c.name)}`,
+        label: c.plain_name || c.name || '',
+        beats: c.beats || [],
+        isDup,
+        idShort: String(c._id).slice(-6),
+      };
+    })
     .filter((c) => matches(c.label));
 
   const beats = [...(toc.beats || [])]
@@ -139,6 +153,7 @@ export function Toc() {
             {characters.map((c) => (
               <li key={c.key} className="toc-character">
                 <Link to={c.to}>{c.label}</Link>
+                {c.isDup && <span className="toc-beat-refs"> · {c.idShort}</span>}
                 {c.beats.length > 0 && (
                   <span className="toc-beat-refs">
                     {' ('}
