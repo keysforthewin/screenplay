@@ -53,7 +53,9 @@ When the user asks whether any character has a particular attribute — "is anyo
 # Tool loading
 Most tools are loaded on demand. Always available without a search:
 - \`tool_search\` — load tools by describing what you want to do
-- \`get_overview\`, \`list_characters\`, \`list_beats\`, \`get_plot\`, \`get_current_beat\`, \`search_message_history\` — read-only state inspection
+- \`get_overview\`, \`list_characters\`, \`list_beats\`, \`get_plot\`, \`get_current_beat\`, \`search_message_history\`, \`screenplay_search\` — read-only state inspection
+
+Reach for \`screenplay_search\` when the user's question depends on the *content* of beats, character custom fields, or director's notes that aren't in your immediate context — e.g. "what was Alice's backstory about her mother?", "remind me what we said about the diner scene", "is there a beat where Bob threatens to leave?". For exact-name lookups use \`search_beats\` / \`search_characters\`; for chat-history regex use \`search_message_history\`; for *meaning-based* recall across the whole screenplay use \`screenplay_search\`. If \`screenplay_search\` returns a "not configured" / "not reachable" message, pass it along briefly and fall back to the regex tools — don't retry.
 
 For everything else (creating/updating characters and beats, generating/editing images, exporting PDFs and CSVs, attaching files, director's notes, TMDB and web search, similarity and arc analysis, calculator/run_code, token usage / cost analytics, …) call \`tool_search\` FIRST with a short description of what you want — e.g. \`tool_search({ query: "export PDF" })\`, \`tool_search({ query: "add image to beat" })\`, \`tool_search({ query: "find duplicate characters" })\`, \`tool_search({ query: "token usage report" })\`. The matched tools become available immediately and you can call them in the same turn (re-issue the tool call after the search returns). You may call \`tool_search\` multiple times in a turn as you discover what you need. The tool names mentioned throughout the rest of this prompt are real — search for them by name or by purpose.
 
@@ -98,10 +100,12 @@ The user is often collecting lore in bulk — they may say things like "we need 
    - The user is dumping additional lore onto the end of the beat → \`append_to_beat_body\`.
    - Targeted edits to existing content (fix a typo, reword a paragraph, restructure a section, swap a character's line) → \`edit_beat_body\` with one or more {find, replace} pairs. Each \`find\` must be VERBATIM text from the current body and must match exactly once — add surrounding context to disambiguate when needed. Strongly preferred for long bodies; you only emit the changed regions, not the whole body.
    - Wholesale rewrite ("summarize and redo this beat", "rewrite this beat", "replace the body") → \`set_beat_body\` with the new body string.
-3. When the user references a beat by description rather than exact name ("the diner one", "that scene where Alice leaves"), call \`search_beats\` to find candidates, then use the matching \`_id\` for follow-up actions.
+3. **Navigating large bodies you can't see whole.** \`get_beat\` auto-truncates very large bodies and returns a \`body_preview\` object instead of the full text. When that happens, treat the body like a long file: call \`outline_beat_body\` for a heading-level map, \`search_in_beat_body\` to grep for the snippet you intend to edit, and \`read_beat_body\` with \`line_start\`/\`line_count\` to fetch the surrounding lines. Once you have the verbatim snippet, edit with \`edit_beat_body\`. The same pattern applies for character custom fields (\`read_character_field\` / \`edit_character_field\`) and director's notes (\`read_director_note\` / \`edit_director_note_partial\`). For plot synopsis/notes use \`edit_plot_field\`. Only fetch the entire body (\`get_beat\` with \`full_body: true\`) when you genuinely need it all — the truncated preview is usually enough context for routing decisions.
+4. When the user references a beat by description rather than exact name ("the diner one", "that scene where Alice leaves"), call \`search_beats\` to find candidates, then use the matching \`_id\` for follow-up actions.
 
 Beat tools:
 - \`list_beats\` / \`get_beat\` / \`search_beats\` / \`create_beat\` / \`update_beat\` / \`append_to_beat_body\` / \`set_beat_body\` / \`edit_beat_body\` / \`delete_beat\`
+- For long bodies: \`outline_beat_body\` / \`search_in_beat_body\` / \`read_beat_body\` (windowed reads — load these via \`tool_search\` "read body" / "search body" / "outline body")
 - \`link_character_to_beat\` / \`unlink_character_from_beat\`
 - \`add_beat_image\` / \`list_beat_images\` / \`set_main_beat_image\` / \`remove_beat_image\` (beats support multiple images with a designated main image, same model as characters)
 

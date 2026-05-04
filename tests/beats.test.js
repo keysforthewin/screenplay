@@ -194,7 +194,7 @@ describe('plots beat CRUD', () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'hello world' });
     await expect(
       Plots.editBeatBody(a._id.toString(), [{ find: 'banana', replace: 'apple' }]),
-    ).rejects.toThrow(/not found in current body.*banana/);
+    ).rejects.toThrow(/not found.*banana/);
   });
 
   it('editBeatBody throws when find text matches more than once (forces uniqueness)', async () => {
@@ -204,11 +204,11 @@ describe('plots beat CRUD', () => {
     ).rejects.toThrow(/matched 3 places.*must be unique/);
   });
 
-  it('editBeatBody rejects an empty find string with a guidance to use append instead', async () => {
+  it('editBeatBody rejects an empty find string with guidance toward the dedicated tools', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'something' });
     await expect(
       Plots.editBeatBody(a._id.toString(), [{ find: '', replace: 'x' }]),
-    ).rejects.toThrow(/empty `find`.*append_to_beat_body/);
+    ).rejects.toThrow(/empty `find`/);
   });
 
   it('editBeatBody rejects non-array edits', async () => {

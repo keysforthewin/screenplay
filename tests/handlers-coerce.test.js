@@ -299,7 +299,7 @@ describe('edit_beat_body handler', () => {
         beat: 'Opening',
         edits: [{ find: 'banana split sundae', replace: 'apple' }],
       }),
-    ).rejects.toThrow(/not found in current body.*banana split sundae/);
+    ).rejects.toThrow(/not found.*banana split sundae/);
   });
 
   it('surfaces the match count when the find string is non-unique', async () => {

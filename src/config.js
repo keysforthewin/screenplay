@@ -68,5 +68,34 @@ export const config = {
   tavily: {
     apiKey: process.env.TAVILY_API_KEY || null,
   },
+  chroma: {
+    // CHROMA_URL is auto-set to http://chroma:8000 inside docker-compose
+    // (the container always listens on 8000 internally); for local
+    // `npm run dev` we default to localhost:8599 (the chroma service
+    // publishes 8599 → 8000 to avoid clashing with anything else on 8000).
+    // Users only need to set VOYAGE_API_KEY.
+    url: process.env.CHROMA_URL || 'http://localhost:8599',
+    collection: process.env.CHROMA_COLLECTION || 'screenplay',
+  },
+  voyage: {
+    apiKey: process.env.VOYAGE_API_KEY || null,
+    model: process.env.VOYAGE_MODEL || 'voyage-3',
+  },
+  rag: {
+    // Enabled whenever VOYAGE_API_KEY is set. CHROMA_URL has a default;
+    // if Chroma isn't actually reachable the handler degrades to a
+    // friendly fallback string.
+    get enabled() {
+      return !!process.env.VOYAGE_API_KEY;
+    },
+    debounceMs: Number(process.env.RAG_DEBOUNCE_MS) || 1000,
+    messageWindow: Number(process.env.RAG_MESSAGE_WINDOW) || 5000,
+    defaultK: Number(process.env.RAG_DEFAULT_K) || 8,
+    pruneEveryN: Number(process.env.RAG_PRUNE_EVERY_N) || 100,
+  },
+  agent: {
+    bodyPreviewThreshold:
+      Number(process.env.AGENT_BODY_PREVIEW_THRESHOLD) || 8000,
+  },
   logLevel: process.env.LOG_LEVEL || 'info',
 };

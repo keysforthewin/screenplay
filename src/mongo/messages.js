@@ -1,6 +1,7 @@
 import { getDb } from './client.js';
 import { ALLOWED_IMAGE_TYPES } from './imageBytes.js';
 import { logger } from '../log.js';
+import { config } from '../config.js';
 
 const HISTORY_LIMIT = 60;
 const DEFAULT_HISTORY_WINDOW_MS = 60 * 60 * 1000;
@@ -9,8 +10,25 @@ const SEARCH_TEXT_CAP = 20 * 1024;
 const PER_DOC_MATCH_CAP = 3;
 const col = () => getDb().collection('messages');
 
+// RAG indexing — lazy import to avoid circular deps. Best-effort, never throws.
+let _insertCount = 0;
+async function ragIndexInserted(doc) {
+  try {
+    const { indexMessage } = await import('../rag/indexer.js');
+    indexMessage(doc).catch(() => {});
+  } catch {}
+  _insertCount += 1;
+  const every = config.rag?.pruneEveryN || 100;
+  if (doc?.channel_id && _insertCount % every === 0) {
+    try {
+      const { pruneMessagesOlderThan } = await import('../rag/indexer.js');
+      pruneMessagesOlderThan(doc.channel_id, config.rag.messageWindow).catch(() => {});
+    } catch {}
+  }
+}
+
 export async function recordUserMessage({ msg, text, attachments }) {
-  await col().insertOne({
+  const doc = {
     channel_id: msg.channelId,
     guild_id: msg.guildId || null,
     thread_id: msg.thread?.id || null,
@@ -30,12 +48,15 @@ export async function recordUserMessage({ msg, text, attachments }) {
     })),
     created_at: msg.createdAt || new Date(),
     recorded_at: new Date(),
-  });
+  };
+  const res = await col().insertOne(doc);
+  doc._id = res.insertedId;
   logger.info(`mongo: msg recorded role=user attach=${attachments.length}`);
+  ragIndexInserted(doc);
 }
 
 export async function recordAssistantMessage({ channelId, guildId = null, threadId = null, text }) {
-  await col().insertOne({
+  const doc = {
     channel_id: channelId,
     guild_id: guildId,
     thread_id: threadId,
@@ -46,8 +67,11 @@ export async function recordAssistantMessage({ channelId, guildId = null, thread
     attachments: [],
     created_at: new Date(),
     recorded_at: new Date(),
-  });
+  };
+  const res = await col().insertOne(doc);
+  doc._id = res.insertedId;
   logger.info('mongo: msg recorded role=assistant');
+  ragIndexInserted(doc);
 }
 
 // describe_image tool returns a content array containing a base64 image block.
@@ -90,8 +114,19 @@ export async function recordAgentTurns({ channelId, guildId = null, threadId = n
     created_at: new Date(now + i),
     recorded_at: new Date(),
   }));
-  await col().insertMany(docs);
+  const res = await col().insertMany(docs);
+  // Stamp _id back on the docs so RAG indexing can use them.
+  if (res?.insertedIds) {
+    for (const [k, v] of Object.entries(res.insertedIds)) {
+      const idx = Number(k);
+      if (Number.isInteger(idx) && docs[idx]) docs[idx]._id = v;
+    }
+  }
   logger.info(`mongo: msgs recorded role=agent count=${docs.length}`);
+  for (const d of docs) {
+    if (!d._id) continue;
+    ragIndexInserted(d);
+  }
 }
 
 export function docToLlmMessage(doc) {

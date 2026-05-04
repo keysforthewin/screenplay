@@ -67,6 +67,8 @@ import {
   pullDirectorNoteAttachment,
 } from '../mongo/directorNotes.js';
 import { setMainCharacterImage, removeCharacterImage } from '../mongo/files.js';
+import { enqueueReindex } from '../rag/queue.js';
+import { deleteEntity } from '../rag/indexer.js';
 
 let botDisplayName = 'Screenplay Bot';
 
@@ -132,6 +134,24 @@ function broadcastFieldsUpdated(roomName, payload) {
   });
 }
 
+// Map a gateway entityType/field tuple to the RAG reindex key. Used after
+// fallback (non-Yjs) writes — the Yjs path enqueues from roomRegistry
+// persistFields, so we only need this for the !isHocuspocusRunning() branch.
+function enqueueRagAfterFallback({ entityType, entityId, field }) {
+  if (entityType === 'beat') {
+    enqueueReindex('beat', String(entityId));
+    return;
+  }
+  if (entityType === 'character') {
+    enqueueReindex('character', String(entityId));
+    return;
+  }
+  if (entityType === 'notes' && typeof field === 'string') {
+    const m = field.match(/^note:([a-f0-9]{24}):text$/);
+    if (m) enqueueReindex('director_note', m[1]);
+  }
+}
+
 // ─── Text-field mutations ──────────────────────────────────────────────────
 //
 // When Hocuspocus is running (production), text mutations route through the
@@ -142,12 +162,68 @@ function broadcastFieldsUpdated(roomName, payload) {
 // back to writing Mongo directly via the underlying helpers — same end
 // result, no live broadcast.
 
+async function readEntityField({ entityType, entityId, field }) {
+  if (entityType === 'beat') {
+    const beat = await getBeat(entityId);
+    if (!beat) throw new Error(`Beat not found: ${entityId}`);
+    if (field === 'body') return String(beat.body || '');
+    if (field === 'name') return String(beat.name || '');
+    if (field === 'desc') return String(beat.desc || '');
+    throw new Error(`gateway fallback: unknown beat field "${field}"`);
+  }
+  if (entityType === 'character') {
+    const c = await getCharacter(entityId);
+    if (!c) throw new Error(`Character not found: ${entityId}`);
+    if (field === 'name') return String(c.name || '');
+    if (field === 'hollywood_actor') return String(c.hollywood_actor || '');
+    if (field.startsWith('fields.')) {
+      const v = c.fields?.[field.slice('fields.'.length)];
+      if (v == null) return '';
+      return typeof v === 'string' ? v : JSON.stringify(v);
+    }
+    throw new Error(`gateway fallback: unknown character field "${field}"`);
+  }
+  if (entityType === 'notes' && field.startsWith('note:') && field.endsWith(':text')) {
+    const noteId = field.slice('note:'.length, -':text'.length);
+    const doc = await getDirectorNotes();
+    const note = (doc.notes || []).find((n) => n._id?.toString?.() === String(noteId));
+    if (!note) throw new Error(`Director's note not found: ${noteId}`);
+    return String(note.text || '');
+  }
+  throw new Error(`gateway fallback: cannot read ${entityType}/${field}`);
+}
+
 async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
   if (entityType === 'beat' && field === 'body') {
     if (op === 'set') return Plots.setBeatBody(entityId, args.markdown);
     if (op === 'edit') return Plots.editBeatBody(entityId, args.edits);
     if (op === 'append') return Plots.appendBeatBody(entityId, args.content);
   }
+
+  if (op === 'edit') {
+    const { applyMarkdownEdits } = await import('../util/textWindow.js');
+    const current = await readEntityField({ entityType, entityId, field });
+    const result = applyMarkdownEdits(current, args.edits, 'edit_field');
+    await fallbackTextWrite({ entityType, entityId, field, op: 'set', markdown: result.body });
+    return {
+      edits: result.applied,
+      beforeLen: result.beforeLen,
+      afterLen: result.afterLen,
+      value: result.body,
+    };
+  }
+
+  if (op === 'append') {
+    const current = await readEntityField({ entityType, entityId, field });
+    const addition = String(args.content ?? '').trim();
+    if (!addition) throw new Error('No content to append.');
+    const sep = current.trim() ? '\n\n' : '';
+    const next = `${current}${sep}${addition}`;
+    await fallbackTextWrite({ entityType, entityId, field, op: 'set', markdown: next });
+    return { value: next };
+  }
+
+  // op === 'set' (or any unrecognized op falls through here)
   if (entityType === 'beat') {
     return Plots.updateBeat(entityId, { [field]: args.markdown });
   }
@@ -171,6 +247,7 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
 export async function setEntityFieldMarkdown({ entityType, entityId, field, markdown }) {
   if (!isHocuspocusRunning()) {
     await fallbackTextWrite({ entityType, entityId, field, op: 'set', markdown });
+    enqueueRagAfterFallback({ entityType, entityId, field });
     return;
   }
   const { setFragmentMarkdown } = await he();
@@ -188,6 +265,7 @@ export async function setEntityFieldMarkdown({ entityType, entityId, field, mark
 export async function editEntityFieldMarkdown({ entityType, entityId, field, edits }) {
   if (!isHocuspocusRunning()) {
     const result = await fallbackTextWrite({ entityType, entityId, field, op: 'edit', edits });
+    enqueueRagAfterFallback({ entityType, entityId, field });
     return {
       applied: (result?.edits || edits).map((e) => ({
         find_chars: e.find_chars ?? (e.find?.length || 0),
@@ -195,7 +273,7 @@ export async function editEntityFieldMarkdown({ entityType, entityId, field, edi
       })),
       beforeLen: result?.beforeLen ?? 0,
       afterLen: result?.afterLen ?? 0,
-      body: result?.beat?.body ?? '',
+      body: result?.beat?.body ?? result?.value ?? '',
     };
   }
   const { editFragmentMarkdown } = await he();
@@ -216,6 +294,7 @@ export async function editEntityFieldMarkdown({ entityType, entityId, field, edi
 export async function appendEntityFieldMarkdown({ entityType, entityId, field, content }) {
   if (!isHocuspocusRunning()) {
     const result = await fallbackTextWrite({ entityType, entityId, field, op: 'append', content });
+    enqueueRagAfterFallback({ entityType, entityId, field });
     return result?.body ?? '';
   }
   const { appendToFragmentMarkdown } = await he();
@@ -392,6 +471,26 @@ export async function editDirectorNoteViaGateway({ noteId, text }) {
   });
 }
 
+export async function editDirectorNoteTextViaGateway({ noteId, edits }) {
+  return editEntityFieldMarkdown({
+    entityType: 'notes',
+    entityId: 'notes',
+    field: `note:${String(noteId)}:text`,
+    edits,
+  });
+}
+
+export async function editCharacterFieldViaGateway({ identifier, field, edits }) {
+  const c = await getCharacter(identifier);
+  if (!c) throw new Error(`Character not found: ${identifier}`);
+  return editEntityFieldMarkdown({
+    entityType: 'character',
+    entityId: c._id.toString(),
+    field,
+    edits,
+  });
+}
+
 export async function addDirectorNoteViaGateway({ text, position }) {
   // Add the note in Mongo (it gets a fresh _id), then ping the room so the
   // /notes page renders the new editor for its text fragment. The fragment
@@ -401,6 +500,7 @@ export async function addDirectorNoteViaGateway({ text, position }) {
     changed: ['notes'],
     added_note_id: note._id.toString(),
   });
+  enqueueReindex('director_note', note._id.toString());
   return note;
 }
 
@@ -410,6 +510,8 @@ export async function removeDirectorNoteViaGateway({ noteId }) {
     changed: ['notes'],
     removed_note_id: String(noteId),
   });
+  // Immediate delete so stale chunks don't linger in retrieval.
+  deleteEntity('director_note', String(noteId)).catch(() => {});
 }
 
 // ─── Non-text mutations ────────────────────────────────────────────────────
