@@ -78,11 +78,11 @@ export async function handleMessage(msg) {
             `tokens_before≈${trimStats.tokensBefore} after≈${trimStats.tokensAfter}`,
         );
       }
-      await recordUserMessage({ msg, text, attachments });
-
       const displayName =
         msg.member?.displayName ?? msg.author.globalName ?? msg.author.username;
       const discordUser = { id: msg.author.id, displayName };
+
+      await recordUserMessage({ msg, text, attachments, displayName });
 
       const enhanceT0 = Date.now();
       const [characters, plot] = await Promise.all([listCharacters(), getPlot()]);

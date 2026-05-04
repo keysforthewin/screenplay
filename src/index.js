@@ -8,7 +8,6 @@ import { installLifecycleHandlers } from './lifecycle.js';
 import { startBackupScheduler } from './backup/scheduler.js';
 import { startHocuspocus } from './web/hocuspocus.js';
 import { bindDiscordClient } from './web/auth.js';
-import { setBotDisplayName } from './web/gateway.js';
 import { logger } from './log.js';
 
 async function main() {
@@ -21,9 +20,6 @@ async function main() {
   const bot = createDiscordClient();
   installInteractionHandlers(bot.client);
   bindDiscordClient(bot.client);
-  bot.client.once('ready', () => {
-    setBotDisplayName(bot.client.user?.displayName || bot.client.user?.username || 'Screenplay Bot');
-  });
   await bot.start();
   installLifecycleHandlers(bot.client);
   logger.info('screenplay bot online');
