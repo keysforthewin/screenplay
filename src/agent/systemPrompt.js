@@ -9,7 +9,7 @@ function summarizeBeat(b) {
 
 let stableTextCache = { key: null, text: null };
 
-function buildStableText({ characterTemplate, plotTemplate }) {
+function buildStableText({ characterTemplate, plotTemplate, botName }) {
   const fieldList = (characterTemplate.fields || [])
     .map((f) => `- ${f.name}${f.required ? ' [REQUIRED]' : ''}: ${f.description}`)
     .join('\n');
@@ -18,12 +18,13 @@ function buildStableText({ characterTemplate, plotTemplate }) {
     fields: characterTemplate.fields || [],
     synopsis_guidance: plotTemplate.synopsis_guidance,
     beat_guidance: plotTemplate.beat_guidance,
+    botName,
   });
   if (stableTextCache.key === key && stableTextCache.text !== null) {
     return stableTextCache.text;
   }
 
-  const text = `You are the Screenplay Bot, an agentic assistant helping a user develop a movie screenplay through a single Discord channel.
+  const text = `You are **${botName}**, an agentic assistant helping a user develop a movie screenplay through a single Discord channel. "${botName}" is the display name people see in Discord — when someone addresses you by name (e.g., "${botName}, …" or "hey ${botName}"), they are talking directly to you. Treat it as a direct request and act on it.
 
 # Your job
 The user sends freeform messages. Interpret intent and use tools to fetch or mutate state. **Don't ask follow-up questions** — see "# Style" for the narrow exceptions.
@@ -218,7 +219,7 @@ You are not yet writing the screenplay prose. The current phase is character + b
   return text;
 }
 
-function buildVolatileText({ characters, plot, directorNotes }) {
+function buildVolatileText({ characters, plot, directorNotes, senderName }) {
   const charList = characters.length
     ? characters.map((c) => `- ${c.name} (${formatCasting(c)})`).join('\n')
     : '(none yet)';
@@ -270,8 +271,13 @@ function buildVolatileText({ characters, plot, directorNotes }) {
           return `\n# Director's Notes\nThe director's standing rules for this screenplay. Apply them when creating characters, beats, or content; the user can override any rule for a specific case but assume them by default. Notes can also carry images and files via add_director_note_image / add_director_note_attachment — list_director_note_images / list_director_note_attachments enumerate them when needed.\n${body}\n`;
         })();
 
+  const senderLine =
+    typeof senderName === 'string' && senderName.trim()
+      ? `\nThe current message is from **${senderName.trim()}**. When they refer to themselves ("I", "me", "my"), that's who they mean.\n`
+      : '';
+
   return `# Current state
-${titleLine}
+${titleLine}${senderLine}
 Characters on file:
 ${charList}
 
@@ -290,9 +296,11 @@ export function buildSystemPrompt({
   plot,
   directorNotes,
   cache = true,
+  botName = 'Screenplay Bot',
+  senderName = null,
 }) {
-  const stable = buildStableText({ characterTemplate, plotTemplate });
-  const volatile = buildVolatileText({ characters, plot, directorNotes });
+  const stable = buildStableText({ characterTemplate, plotTemplate, botName });
+  const volatile = buildVolatileText({ characters, plot, directorNotes, senderName });
 
   const stableBlock = { type: 'text', text: stable };
   const volatileBlock = { type: 'text', text: volatile };

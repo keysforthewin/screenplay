@@ -27,7 +27,7 @@ async function ragIndexInserted(doc) {
   }
 }
 
-export async function recordUserMessage({ msg, text, attachments }) {
+export async function recordUserMessage({ msg, text, attachments, displayName = null }) {
   const doc = {
     channel_id: msg.channelId,
     guild_id: msg.guildId || null,
@@ -37,6 +37,8 @@ export async function recordUserMessage({ msg, text, attachments }) {
     author: {
       id: msg.author.id,
       tag: msg.author.tag,
+      displayName:
+        typeof displayName === 'string' && displayName.trim() ? displayName.trim() : null,
       bot: !!msg.author.bot,
     },
     content: text || '',
@@ -129,6 +131,17 @@ export async function recordAgentTurns({ channelId, guildId = null, threadId = n
   }
 }
 
+function speakerLabel(author) {
+  if (!author || typeof author !== 'object') return null;
+  if (typeof author.displayName === 'string' && author.displayName.trim()) {
+    return author.displayName.trim();
+  }
+  if (typeof author.tag === 'string' && author.tag.trim()) {
+    return author.tag.trim();
+  }
+  return null;
+}
+
 export function docToLlmMessage(doc) {
   if (Array.isArray(doc.content)) {
     return { role: doc.role, content: doc.content };
@@ -146,7 +159,9 @@ export function docToLlmMessage(doc) {
       blocks.push({ type: 'text', text: `[user attached file: ${name} (${type})]` });
     }
   }
-  blocks.push({ type: 'text', text: doc.content || '' });
+  const label = speakerLabel(doc.author);
+  const body = doc.content || '';
+  blocks.push({ type: 'text', text: label ? `[${label}] ${body}` : body });
   return { role: 'user', content: blocks };
 }
 

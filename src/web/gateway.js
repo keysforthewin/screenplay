@@ -76,6 +76,10 @@ export function setBotDisplayName(name) {
   if (typeof name === 'string' && name.trim()) botDisplayName = name.trim();
 }
 
+export function getBotDisplayName() {
+  return botDisplayName;
+}
+
 function botAwarenessUser(field) {
   return {
     name: botDisplayName,

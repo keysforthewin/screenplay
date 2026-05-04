@@ -11,6 +11,7 @@ import {
   createTouchedEntities,
 } from './entityLinks.js';
 import { buildSystemPrompt } from './systemPrompt.js';
+import { getBotDisplayName } from '../web/gateway.js';
 import { withMessageCacheBreakpoint } from './historyCache.js';
 import { listCharacters } from '../mongo/characters.js';
 import { getCharacterTemplate, getPlotTemplate } from '../mongo/prompts.js';
@@ -128,7 +129,11 @@ export async function measureSectionTokens({
   };
 }
 
-async function buildSystem({ omitDirectorNotes = false, cache = config.cache.enabled } = {}) {
+async function buildSystem({
+  omitDirectorNotes = false,
+  cache = config.cache.enabled,
+  senderName = null,
+} = {}) {
   const [characters, characterTemplate, plotTemplate, plot, directorNotes] =
     await Promise.all([
       listCharacters(),
@@ -144,6 +149,8 @@ async function buildSystem({ omitDirectorNotes = false, cache = config.cache.ena
     plot,
     directorNotes: omitDirectorNotes ? null : directorNotes,
     cache,
+    botName: getBotDisplayName(),
+    senderName,
   });
 }
 
@@ -373,6 +380,10 @@ export async function runAgent({
   const attachmentLinks = [];
   const touchedEntities = createTouchedEntities();
   const context = { discordUser, channelId };
+  const senderName =
+    typeof discordUser?.displayName === 'string' && discordUser.displayName.trim()
+      ? discordUser.displayName.trim()
+      : null;
   const model = config.anthropic.model;
 
   const anthropicTotals = {
@@ -432,12 +443,12 @@ export async function runAgent({
   };
 
   try {
-    let cachedSystem = await buildSystem();
+    let cachedSystem = await buildSystem({ senderName });
     let systemDirty = false;
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
       if (systemDirty) {
-        cachedSystem = await buildSystem();
+        cachedSystem = await buildSystem({ senderName });
         systemDirty = false;
       }
       const system = cachedSystem;
@@ -446,7 +457,7 @@ export async function runAgent({
       const currentTools = withToolsCache(toolDefsForApi(loadedToolNames));
 
       if (i === 0) {
-        const systemNoDirectorNotes = await buildSystem({ omitDirectorNotes: true });
+        const systemNoDirectorNotes = await buildSystem({ omitDirectorNotes: true, senderName });
         sectionTokensPromise = measureSectionTokens({
           model,
           system,

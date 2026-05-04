@@ -320,4 +320,71 @@ describe('buildSystemPrompt', () => {
     expect(out).toMatch(/parallel `tool_use` blocks/);
     expect(out).toMatch(/Don't `set_current_beat` reflexively/i);
   });
+
+  it('interpolates botName into the stable block and routes the by-name nudge through it', () => {
+    _resetStableTextCacheForTests();
+    const [stable] = buildSystemPrompt({
+      characters: [],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+      plot: { synopsis: '', beats: [] },
+      botName: 'Steve',
+      cache: false,
+    });
+    expect(stable.text).toMatch(/^You are \*\*Steve\*\*/);
+    expect(stable.text).toMatch(/addresses you by name/i);
+    expect(stable.text).not.toMatch(/^You are \*\*Screenplay Bot\*\*/);
+  });
+
+  it('defaults botName to "Screenplay Bot" when not provided', () => {
+    _resetStableTextCacheForTests();
+    const [stable] = buildSystemPrompt({
+      characters: [],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+      plot: { synopsis: '', beats: [] },
+      cache: false,
+    });
+    expect(stable.text).toMatch(/^You are \*\*Screenplay Bot\*\*/);
+  });
+
+  it('renders the current sender line in the volatile block when senderName is set', () => {
+    const [, volatile] = buildSystemPrompt({
+      characters: [],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+      plot: { synopsis: '', beats: [] },
+      senderName: 'Mira',
+      cache: false,
+    });
+    expect(volatile.text).toContain('current message is from **Mira**');
+    expect(volatile.text).toMatch(/refer to themselves/i);
+  });
+
+  it('omits the sender line when senderName is not provided', () => {
+    const [, volatile] = buildSystemPrompt({
+      characters: [],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+      plot: { synopsis: '', beats: [] },
+      cache: false,
+    });
+    expect(volatile.text).not.toMatch(/current message is from/);
+  });
+
+  it('cache key includes botName so the stable block rebuilds on name change', () => {
+    _resetStableTextCacheForTests();
+    const args = {
+      characters: [],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: 'g', beat_guidance: 'b' },
+      plot: { synopsis: '', beats: [] },
+      cache: false,
+    };
+    const [s1] = buildSystemPrompt({ ...args, botName: 'Steve' });
+    const [s2] = buildSystemPrompt({ ...args, botName: 'Mira' });
+    expect(s1.text).not.toBe(s2.text);
+    expect(s1.text).toContain('**Steve**');
+    expect(s2.text).toContain('**Mira**');
+  });
 });

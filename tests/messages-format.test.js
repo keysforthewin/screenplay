@@ -74,6 +74,61 @@ describe('docToLlmMessage', () => {
     const out = docToLlmMessage({ role: 'user', content: blocks, attachments: [] });
     expect(out).toEqual({ role: 'user', content: blocks });
   });
+
+  it('prepends [displayName] to user text when author.displayName is set', () => {
+    const out = docToLlmMessage({
+      role: 'user',
+      content: 'who am I?',
+      attachments: [],
+      author: { id: 'u1', displayName: 'Steve', tag: 'steve#0001' },
+    });
+    expect(out).toEqual({
+      role: 'user',
+      content: [{ type: 'text', text: '[Steve] who am I?' }],
+    });
+  });
+
+  it('falls back to author.tag when displayName is missing', () => {
+    const out = docToLlmMessage({
+      role: 'user',
+      content: 'hi',
+      attachments: [],
+      author: { id: 'u1', tag: 'mira#0002' },
+    });
+    expect(out).toEqual({
+      role: 'user',
+      content: [{ type: 'text', text: '[mira#0002] hi' }],
+    });
+  });
+
+  it('does not prepend a label when author has no displayName or tag', () => {
+    const out = docToLlmMessage({
+      role: 'user',
+      content: 'no label',
+      attachments: [],
+      author: { id: 'u1' },
+    });
+    expect(out).toEqual({
+      role: 'user',
+      content: [{ type: 'text', text: 'no label' }],
+    });
+  });
+
+  it('keeps attachment placeholders before the labeled body block', () => {
+    const out = docToLlmMessage({
+      role: 'user',
+      content: 'see this',
+      attachments: [{ url: 'a', filename: 'a.png', content_type: 'image/png', size: 1 }],
+      author: { id: 'u1', displayName: 'Steve' },
+    });
+    expect(out).toEqual({
+      role: 'user',
+      content: [
+        { type: 'text', text: '[user attached image]' },
+        { type: 'text', text: '[Steve] see this' },
+      ],
+    });
+  });
 });
 
 describe('loadHistoryForLlm', () => {
