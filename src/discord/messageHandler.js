@@ -5,6 +5,7 @@ import { config } from '../config.js';
 import { logger } from '../log.js';
 import { keyedMutex } from '../util/mutex.js';
 import { runAgent } from '../agent/loop.js';
+import { enhancePrompt } from '../agent/promptEnhance.js';
 import { trimHistoryForLlm } from '../agent/historyTrim.js';
 import {
   loadHistoryForLlm,
@@ -13,6 +14,9 @@ import {
   recordAgentTurns,
 } from '../mongo/messages.js';
 import { getHistoryClearedAt } from '../mongo/channelState.js';
+import { listCharacters } from '../mongo/characters.js';
+import { getPlot } from '../mongo/plots.js';
+import { recordAnthropicTextUsage } from '../mongo/tokenUsage.js';
 import { sendReply } from './reply.js';
 import { shouldIgnoreMessage } from './messageFilter.js';
 
@@ -80,6 +84,37 @@ export async function handleMessage(msg) {
         msg.member?.displayName ?? msg.author.globalName ?? msg.author.username;
       const discordUser = { id: msg.author.id, displayName };
 
+      const enhanceT0 = Date.now();
+      const [characters, plot] = await Promise.all([listCharacters(), getPlot()]);
+      const enhancement = await enhancePrompt({
+        userText: text,
+        characters,
+        beats: plot?.beats || [],
+        synopsis: plot?.synopsis || '',
+      });
+      if (enhancement.usage) {
+        try {
+          await recordAnthropicTextUsage({
+            discordUser,
+            channelId: msg.channelId,
+            model: config.anthropic.enhancerModel,
+            totals: {
+              input_tokens: enhancement.usage.input_tokens || 0,
+              output_tokens: enhancement.usage.output_tokens || 0,
+              cache_creation_input_tokens:
+                enhancement.usage.cache_creation_input_tokens || 0,
+              cache_read_input_tokens: enhancement.usage.cache_read_input_tokens || 0,
+              iteration_count: 1,
+            },
+          });
+        } catch (e) {
+          logger.warn(`enhancer usage record failed: ${e.message}`);
+        }
+      }
+      logger.info(
+        `prompt-enhancer ${Date.now() - enhanceT0}ms notes=${enhancement.notes ? 'yes' : 'no'} summary=${enhancement.summary ? 'yes' : 'no'}`,
+      );
+
       const agentT0 = Date.now();
       const result = await runAgent({
         history,
@@ -87,10 +122,14 @@ export async function handleMessage(msg) {
         attachments,
         discordUser,
         channelId: msg.channelId,
+        enhancementNotes: enhancement.notes,
       });
       attachmentPaths = result.attachmentPaths;
       const attachmentLinks = result.attachmentLinks || [];
-      const replyText = result.text || '(no reply)';
+      const baseReplyText = result.text || '(no reply)';
+      const replyText = enhancement.summary
+        ? `${baseReplyText}\n\n> _Interpreted: ${enhancement.summary}_`
+        : baseReplyText;
       logger.info(
         `agent done in ${Date.now() - agentT0}ms (${result.agentMessages.length} turns, ${attachmentPaths.length} attach, ${attachmentLinks.length} link)`,
       );

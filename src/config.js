@@ -16,6 +16,12 @@ export const config = {
     apiKey: required('ANTHROPIC_API_KEY'),
     model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-7',
     maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS) || 16000,
+    enhancerModel: process.env.ANTHROPIC_ENHANCER_MODEL || 'claude-haiku-4-5-20251001',
+  },
+  enhance: {
+    enabled: !process.env.ENHANCE_PROMPTS_DISABLED,
+    maxNotesChars: Number(process.env.ENHANCE_MAX_NOTES_CHARS) || 1500,
+    maxSummaryChars: Number(process.env.ENHANCE_MAX_SUMMARY_CHARS) || 200,
   },
   cache: {
     enabled: !process.env.PROMPT_CACHE_DISABLED,

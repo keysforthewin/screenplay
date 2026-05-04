@@ -147,7 +147,11 @@ async function buildSystem({ omitDirectorNotes = false, cache = config.cache.ena
   });
 }
 
-function buildUserContent(userText, attachments) {
+const ENHANCEMENT_PREAMBLE =
+  '[Interpretive notes from prompt pre-processor — these are hints, not ' +
+  'authoritative. The user text above is the source of truth.]';
+
+export function buildUserContent(userText, attachments, enhancementNotes = null) {
   const content = [];
   const images = attachments.filter((a) => a.kind !== 'file');
   const files = attachments.filter((a) => a.kind === 'file');
@@ -173,6 +177,12 @@ function buildUserContent(userText, attachments) {
     text = text ? `${prelude}\n\n${text}` : `${prelude}\n\n(no message)`;
   }
   content.push({ type: 'text', text });
+  if (typeof enhancementNotes === 'string' && enhancementNotes.trim()) {
+    content.push({
+      type: 'text',
+      text: `${ENHANCEMENT_PREAMBLE}\n\n${enhancementNotes.trim()}`,
+    });
+  }
   return content;
 }
 
@@ -349,10 +359,14 @@ export async function runAgent({
   attachments = [],
   discordUser = null,
   channelId = null,
+  enhancementNotes = null,
 }) {
   const messages = [
     ...history,
-    { role: 'user', content: buildUserContent(userText, attachments) },
+    {
+      role: 'user',
+      content: buildUserContent(userText, attachments, enhancementNotes),
+    },
   ];
   const agentStart = messages.length;
   const attachmentPaths = [];
