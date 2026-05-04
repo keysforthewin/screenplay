@@ -348,7 +348,7 @@ describe('buildSystemPrompt', () => {
     expect(stable.text).toMatch(/^You are \*\*Screenplay Bot\*\*/);
   });
 
-  it('renders the current sender line in the volatile block when senderName is set', () => {
+  it('names the current sender and explains the [name] prefix convention in the volatile block', () => {
     const [, volatile] = buildSystemPrompt({
       characters: [],
       characterTemplate: { fields: [] },
@@ -357,8 +357,11 @@ describe('buildSystemPrompt', () => {
       senderName: 'Mira',
       cache: false,
     });
-    expect(volatile.text).toContain('current message is from **Mira**');
-    expect(volatile.text).toMatch(/refer to themselves/i);
+    expect(volatile.text).toContain('Current message sender: **Mira**');
+    expect(volatile.text).toContain('[Mira]');
+    expect(volatile.text).toMatch(/prefixed with `\[<name>\]`/);
+    expect(volatile.text).toMatch(/refers? to themselves/i);
+    expect(volatile.text).toMatch(/who am I/i);
   });
 
   it('omits the sender line when senderName is not provided', () => {
@@ -369,7 +372,7 @@ describe('buildSystemPrompt', () => {
       plot: { synopsis: '', beats: [] },
       cache: false,
     });
-    expect(volatile.text).not.toMatch(/current message is from/);
+    expect(volatile.text).not.toMatch(/Current message sender/);
   });
 
   it('cache key includes botName so the stable block rebuilds on name change', () => {

@@ -158,7 +158,12 @@ const ENHANCEMENT_PREAMBLE =
   '[Interpretive notes from prompt pre-processor — these are hints, not ' +
   'authoritative. The user text above is the source of truth.]';
 
-export function buildUserContent(userText, attachments, enhancementNotes = null) {
+export function buildUserContent(
+  userText,
+  attachments,
+  enhancementNotes = null,
+  senderName = null,
+) {
   const content = [];
   const images = attachments.filter((a) => a.kind !== 'file');
   const files = attachments.filter((a) => a.kind === 'file');
@@ -179,9 +184,18 @@ export function buildUserContent(userText, attachments, enhancementNotes = null)
     );
     sections.push(`Attached files:\n${lines.join('\n')}`);
   }
+  // Prefix the message body with [senderName] so the live message uses the same
+  // attribution shape as historical messages (see docToLlmMessage). Without
+  // this, the most recent labeled history message wins the "who is 'I'?"
+  // attention and the bot misidentifies the current speaker.
+  const speaker =
+    typeof senderName === 'string' && senderName.trim() ? senderName.trim() : null;
+  const label = (s) => (speaker ? `[${speaker}] ${s}` : s);
   if (sections.length) {
     const prelude = sections.join('\n\n');
-    text = text ? `${prelude}\n\n${text}` : `${prelude}\n\n(no message)`;
+    text = text ? `${prelude}\n\n${label(text)}` : `${prelude}\n\n${label('(no message)')}`;
+  } else if (text) {
+    text = label(text);
   }
   content.push({ type: 'text', text });
   if (typeof enhancementNotes === 'string' && enhancementNotes.trim()) {
@@ -368,11 +382,15 @@ export async function runAgent({
   channelId = null,
   enhancementNotes = null,
 }) {
+  const senderName =
+    typeof discordUser?.displayName === 'string' && discordUser.displayName.trim()
+      ? discordUser.displayName.trim()
+      : null;
   const messages = [
     ...history,
     {
       role: 'user',
-      content: buildUserContent(userText, attachments, enhancementNotes),
+      content: buildUserContent(userText, attachments, enhancementNotes, senderName),
     },
   ];
   const agentStart = messages.length;
@@ -380,10 +398,6 @@ export async function runAgent({
   const attachmentLinks = [];
   const touchedEntities = createTouchedEntities();
   const context = { discordUser, channelId };
-  const senderName =
-    typeof discordUser?.displayName === 'string' && discordUser.displayName.trim()
-      ? discordUser.displayName.trim()
-      : null;
   const model = config.anthropic.model;
 
   const anthropicTotals = {

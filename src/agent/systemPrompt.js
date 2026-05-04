@@ -273,7 +273,7 @@ function buildVolatileText({ characters, plot, directorNotes, senderName }) {
 
   const senderLine =
     typeof senderName === 'string' && senderName.trim()
-      ? `\nThe current message is from **${senderName.trim()}**. When they refer to themselves ("I", "me", "my"), that's who they mean.\n`
+      ? `\nCurrent message sender: **${senderName.trim()}** — every user message in your context is prefixed with \`[<name>]\` so you can verify the speaker, and the most recent one (the message you are responding to right now) starts with \`[${senderName.trim()}]\`. When the user refers to themselves ("I", "me", "my", "who am I"), they mean ${senderName.trim()}.\n`
       : '';
 
   return `# Current state
