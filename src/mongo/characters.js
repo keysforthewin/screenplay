@@ -30,12 +30,13 @@ export async function getCharacter(identifier) {
   const lc = String(identifier).toLowerCase();
   const direct = await c.findOne({ name_lower: lc });
   if (direct) return direct;
-  // Tolerate markdown drift: legacy createCharacter wrote raw `name.toLowerCase()`
-  // into `name_lower`, but URLs and most callers use the markdown-stripped plain
-  // text. If the direct lookup misses, scan for a record whose stripped name
+  // Tolerate markdown/whitespace drift in the stored `name_lower`: legacy
+  // createCharacter wrote raw `name.toLowerCase()` (preserving newlines and
+  // markdown chars), but URLs and most callers use the stripped plain text.
+  // If the direct lookup misses, scan for a record whose `stripMarkdown(name)`
   // matches the stripped identifier.
   const stripped = stripMarkdown(String(identifier)).toLowerCase();
-  if (!stripped || stripped === lc) return null;
+  if (!stripped) return null;
   const all = await c.find({}).toArray();
   return all.find((d) => stripMarkdown(d.name || '').toLowerCase() === stripped) || null;
 }
