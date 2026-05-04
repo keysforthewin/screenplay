@@ -50,6 +50,7 @@ export function Toc() {
       key: c._id,
       to: `/character/${encodeURIComponent(c.plain_name || c.name)}`,
       label: c.plain_name || c.name || '',
+      beats: c.beats || [],
     }))
     .filter((c) => matches(c.label));
 
@@ -136,7 +137,21 @@ export function Toc() {
           )}
           <ul>
             {characters.map((c) => (
-              <li key={c.key}><Link to={c.to}>{c.label}</Link></li>
+              <li key={c.key} className="toc-character">
+                <Link to={c.to}>{c.label}</Link>
+                {c.beats.length > 0 && (
+                  <span className="toc-beat-refs">
+                    {' ('}
+                    {c.beats.map((b, i) => (
+                      <span key={b.order}>
+                        {i > 0 && ' · '}
+                        <Link to={`/beat/${b.order}`}>{b.plain_name || `Beat ${b.order}`}</Link>
+                      </span>
+                    ))}
+                    {')'}
+                  </span>
+                )}
+              </li>
             ))}
           </ul>
         </section>

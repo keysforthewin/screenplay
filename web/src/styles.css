@@ -163,6 +163,47 @@ input[type="text"], input[type="search"] {
   text-decoration: none;
 }
 
+/* Character rows host inline beat references after the name, so the <li> itself
+ * becomes the card and the character link is rendered inline. */
+.toc-section li.toc-character {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+.toc-section li.toc-character:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border);
+}
+.toc-section li.toc-character > a {
+  display: inline;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+}
+.toc-section li.toc-character > a:hover {
+  background: transparent;
+  border-color: transparent;
+  text-decoration: underline;
+}
+.toc-beat-refs {
+  margin-left: 4px;
+  font-size: 0.9em;
+  color: var(--fg-muted);
+}
+.toc-beat-refs a {
+  display: inline;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+}
+.toc-beat-refs a:hover {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg);
+  text-decoration: underline;
+}
+
 .field-block { margin: 18px 0; }
 .field-label {
   display: block;
