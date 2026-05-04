@@ -4,6 +4,7 @@ import { apiDelete, apiGet, apiPostJson } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
 import { ImageGallery } from '../widgets/ImageGallery.jsx';
+import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
 
 export function Notes({ session }) {
   const navigate = useNavigate();
@@ -45,7 +46,14 @@ export function Notes({ session }) {
       <p>
         <a href="#" onClick={(e) => { e.preventDefault(); navigate('/'); }}>← Back to TOC</a>
       </p>
-      <h1 style={{ marginTop: 0 }}>Director's notes</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
+        <h1 style={{ marginTop: 0 }}>Director's notes</h1>
+        <DownloadAllButton
+          path="/notes/download"
+          filename="director-notes.zip"
+          disabled={(data.notes || []).length === 0}
+        />
+      </div>
 
       <CollabSurface room="notes" session={session} onPing={onRefresh}>
         {(data.notes || []).length === 0 && (

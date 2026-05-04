@@ -5,6 +5,7 @@ import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
 import { ImageGallery } from '../widgets/ImageGallery.jsx';
 import { AttachmentList } from '../widgets/AttachmentList.jsx';
+import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
 
 export function Character({ session }) {
   const { name } = useParams();
@@ -55,7 +56,13 @@ export function Character({ session }) {
       <p>
         <a href="#" onClick={(e) => { e.preventDefault(); navigate('/'); }}>← Back to TOC</a>
       </p>
-      <h1 style={{ marginTop: 0 }}>{character.name || 'Character'}</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
+        <h1 style={{ marginTop: 0 }}>{character.name || 'Character'}</h1>
+        <DownloadAllButton
+          path={`/character/${character._id}/download`}
+          filename={`${(character.name || 'character').replace(/[^a-zA-Z0-9._-]+/g, '_')}.zip`}
+        />
+      </div>
 
       <CollabSurface room={room} session={session} onPing={onRefresh}>
         <CollabField label="Name" field="name" />

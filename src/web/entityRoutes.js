@@ -49,6 +49,12 @@ import {
 import { getCharacterTemplate, getPlotTemplate } from '../mongo/prompts.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { buildTocResponse } from './toc.js';
+import {
+  streamBeatZip,
+  streamCharacterZip,
+  streamLibraryZip,
+  streamNotesZip,
+} from './downloads.js';
 
 const HEX24 = /^[a-f0-9]{24}$/i;
 
@@ -150,6 +156,42 @@ export function buildApiRouter() {
       images: images.map(imageFileToMeta),
       attachments: attachments.map(attachmentFileToMeta),
     });
+  });
+
+  // ── bulk-download endpoints ─────────────────────────────────────────────
+  // Stream a zip of all images + attachments for the given scope. Auth is
+  // applied by the router-level requireSession() above.
+
+  router.get('/beat/:id/download', async (req, res, next) => {
+    try {
+      await streamBeatZip(req, res);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/character/:id/download', async (req, res, next) => {
+    try {
+      await streamCharacterZip(req, res);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/library/download', async (req, res, next) => {
+    try {
+      await streamLibraryZip(req, res);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/notes/download', async (req, res, next) => {
+    try {
+      await streamNotesZip(req, res);
+    } catch (e) {
+      next(e);
+    }
   });
 
   // ── library mutations ────────────────────────────────────────────────────

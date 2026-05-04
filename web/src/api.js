@@ -75,6 +75,34 @@ export async function apiPostMultipart(path, formData) {
   return res.json();
 }
 
+// Authenticated GET that streams a binary response into a download. The session
+// is in a header (not a cookie), so a plain <a download> wouldn't work.
+export async function apiDownload(path, fallbackName) {
+  const res = await fetch(withBase(`/api${path}`), { headers: authHeaders() });
+  await check(res);
+  const filename = filenameFromContentDisposition(res.headers.get('content-disposition')) || fallbackName;
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    // Defer revoke so the browser has a tick to start the download.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+}
+
+function filenameFromContentDisposition(value) {
+  if (!value) return null;
+  // Tolerate filename* and filename= forms; we only emit ASCII filename= server-side.
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(value);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
 export function imageUrl(id) {
   return id ? withBase(`/image/${id}`) : null;
 }
