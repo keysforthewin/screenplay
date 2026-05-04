@@ -17,7 +17,7 @@ import { buildImagePrompt } from '../gemini/promptBuilder.js';
 import * as Messages from '../mongo/messages.js';
 import { config } from '../config.js';
 import { exportToPdf } from '../pdf/export.js';
-import { buildOverview } from './overview.js';
+import { buildOverview, formatCasting } from './overview.js';
 import { logger } from '../log.js';
 import { countNgrams, topNgrams } from '../analysis/ngrams.js';
 import { rankSimilar, bagOfWords } from '../analysis/similarity.js';
@@ -819,7 +819,13 @@ export const HANDLERS = {
 
   async list_characters() {
     const list = await Characters.listCharacters();
-    return compact(list.map((c) => ({ _id: c._id.toString(), name: c.name })));
+    return compact(
+      list.map((c) => ({
+        _id: c._id.toString(),
+        name: c.name,
+        casting: formatCasting(c),
+      })),
+    );
   },
 
   async get_character({ identifier }) {
@@ -1019,7 +1025,14 @@ export const HANDLERS = {
 
   async search_characters({ query }) {
     const results = await Characters.searchCharacters(query);
-    return compact(results.map((c) => ({ _id: c._id.toString(), name: c.name })));
+    return compact(
+      results.map((c) => ({
+        _id: c._id.toString(),
+        name: c.name,
+        matched_fields: c.matched_fields,
+        preview: c.preview,
+      })),
+    );
   },
 
   async delete_character({ identifier }) {

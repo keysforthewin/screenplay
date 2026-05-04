@@ -10,7 +10,7 @@ function maybeId(s) {
 
 export async function listCharacters() {
   return col()
-    .find({}, { projection: { name: 1 } })
+    .find({}, { projection: { name: 1, plays_self: 1, hollywood_actor: 1 } })
     .sort({ name: 1 })
     .toArray();
 }
@@ -121,10 +121,39 @@ export async function updateCharacter(identifier, patch) {
   return getCharacter(existing._id.toString());
 }
 
+const SEARCHABLE_CORE_FIELDS = ['name', 'hollywood_actor'];
+
 export async function searchCharacters(query) {
   const q = String(query).toLowerCase();
   const all = await col().find({}).toArray();
-  return all.filter((c) => JSON.stringify(c).toLowerCase().includes(q));
+  const out = [];
+  for (const c of all) {
+    const matched_fields = [];
+    let firstHit = null;
+    for (const k of SEARCHABLE_CORE_FIELDS) {
+      const v = c[k];
+      if (typeof v === 'string' && v.toLowerCase().includes(q)) {
+        matched_fields.push(k);
+        if (firstHit === null) firstHit = v;
+      }
+    }
+    for (const [k, v] of Object.entries(c.fields || {})) {
+      const s = Array.isArray(v) ? v.join(', ') : v;
+      if (typeof s === 'string' && s.toLowerCase().includes(q)) {
+        matched_fields.push(`fields.${k}`);
+        if (firstHit === null) firstHit = s;
+      }
+    }
+    if (matched_fields.length) {
+      out.push({
+        _id: c._id,
+        name: c.name,
+        matched_fields,
+        preview: String(firstHit).slice(0, 200),
+      });
+    }
+  }
+  return out;
 }
 
 export async function deleteCharacter(identifier) {

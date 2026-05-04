@@ -278,6 +278,36 @@ describe('buildSystemPrompt', () => {
     expect(out).toContain('search_message_history');
   });
 
+  it('renders casting status next to each character name in the volatile block', () => {
+    const [, volatile] = buildSystemPrompt({
+      characters: [
+        { name: 'Alice', plays_self: true },
+        { name: 'Bob', plays_self: false, hollywood_actor: 'Bob Saget' },
+        { name: 'Carol', plays_self: false, hollywood_actor: null },
+      ],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+      plot: { synopsis: '', beats: [] },
+      cache: false,
+    });
+    expect(volatile.text).toContain('- Alice (plays self)');
+    expect(volatile.text).toContain('- Bob (played by Bob Saget)');
+    expect(volatile.text).toContain('- Carol (played by (unspecified))');
+  });
+
+  it('instructs the model to ground attribute-existence questions in tool data', () => {
+    const [stable] = buildSystemPrompt({
+      characters: [],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: 'g', beat_guidance: 'b' },
+      plot: { synopsis: '', beats: [] },
+      cache: false,
+    });
+    expect(stable.text).toContain('# Attribute-existence questions');
+    expect(stable.text).toMatch(/never infer casting/i);
+    expect(stable.text).toMatch(/matched_fields/);
+  });
+
   it('includes the brainstorming and reference-resolution sections', () => {
     const out = joined({
       characters: [],
