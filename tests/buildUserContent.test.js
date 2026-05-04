@@ -58,3 +58,68 @@ describe('buildUserContent enhancement notes', () => {
     expect(buildUserContent('x', [], '   \n  ')).toHaveLength(1);
   });
 });
+
+describe('buildUserContent sender label', () => {
+  it('prefixes [senderName] to the user text when senderName is set', () => {
+    const content = buildUserContent('who am I?', [], null, 'Steve');
+    expect(content).toEqual([{ type: 'text', text: '[Steve] who am I?' }]);
+  });
+
+  it('omits the prefix when senderName is null', () => {
+    const content = buildUserContent('who am I?', [], null, null);
+    expect(content).toEqual([{ type: 'text', text: 'who am I?' }]);
+  });
+
+  it('omits the prefix when senderName is an empty/whitespace string', () => {
+    expect(buildUserContent('hi', [], null, '   ')).toEqual([
+      { type: 'text', text: 'hi' },
+    ]);
+    expect(buildUserContent('hi', [], null, '')).toEqual([
+      { type: 'text', text: 'hi' },
+    ]);
+  });
+
+  it('labels the body after the attachment prelude (not the prelude itself)', () => {
+    const attachments = [
+      {
+        url: 'https://example.com/x.png',
+        filename: 'x.png',
+        contentType: 'image/png',
+        size: 100,
+        kind: 'image',
+      },
+    ];
+    const content = buildUserContent('see this', attachments, null, 'Mira');
+    expect(content).toHaveLength(2);
+    expect(content[0]).toEqual({
+      type: 'image',
+      source: { type: 'url', url: 'https://example.com/x.png' },
+    });
+    expect(content[1].type).toBe('text');
+    expect(content[1].text.startsWith('Attached images:')).toBe(true);
+    expect(content[1].text).toContain('[Mira] see this');
+    expect(content[1].text).not.toContain('[Mira] Attached images:');
+  });
+
+  it('labels the "(no message)" body when only attachments are sent', () => {
+    const attachments = [
+      {
+        url: 'https://example.com/x.png',
+        filename: 'x.png',
+        contentType: 'image/png',
+        size: 100,
+        kind: 'image',
+      },
+    ];
+    const content = buildUserContent('', attachments, null, 'Steve');
+    expect(content[1].text).toContain('[Steve] (no message)');
+  });
+
+  it('places the label before the enhancement-notes block (notes block stays unlabeled)', () => {
+    const content = buildUserContent('hi', [], 'note content', 'Steve');
+    expect(content).toHaveLength(2);
+    expect(content[0]).toEqual({ type: 'text', text: '[Steve] hi' });
+    expect(content[1].text).toContain('Interpretive notes from prompt pre-processor');
+    expect(content[1].text).not.toContain('[Steve]');
+  });
+});
