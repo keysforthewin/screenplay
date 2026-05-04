@@ -185,19 +185,19 @@ input[type="text"], input[type="search"] {
   border-color: transparent;
   text-decoration: underline;
 }
-.toc-beat-refs {
+.toc-section li.toc-character .toc-beat-refs {
   margin-left: 4px;
   font-size: 0.9em;
   color: var(--fg-muted);
 }
-.toc-beat-refs a {
+.toc-section li.toc-character .toc-beat-refs a {
   display: inline;
   padding: 0;
   border: 0;
   border-radius: 0;
   color: inherit;
 }
-.toc-beat-refs a:hover {
+.toc-section li.toc-character .toc-beat-refs a:hover {
   background: transparent;
   border-color: transparent;
   color: var(--fg);
