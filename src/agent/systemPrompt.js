@@ -1,3 +1,5 @@
+import { formatCasting } from './overview.js';
+
 function summarizeBeat(b) {
   const d = (b.desc || '').trim();
   const preview = d.length > 80 ? `${d.slice(0, 79)}…` : d;
@@ -44,6 +46,9 @@ When the user says things like "from now on, all characters should have X" or "r
 # Plot template
 Synopsis guidance: ${plotTemplate.synopsis_guidance}
 Beat guidance: ${plotTemplate.beat_guidance}
+
+# Attribute-existence questions
+When the user asks whether any character has a particular attribute — "is anyone played by X?", "does anyone speak French?", "are any of them a doctor?" — call \`get_overview\` (it surfaces casting and voice for every character in one call) or \`search_characters\` with the attribute value (for free-form template fields). Read the answer ONLY from the returned data. Never infer casting, voice, or template-field values from a character's name, descriptive flavor text, or prior conversation. If a \`search_characters\` result's \`matched_fields\` does not include the field the user asked about (e.g. the user asked "played by X" but the only match is on \`fields.background_story\`), the correct answer is "nobody is played by X" — say so plainly. The "Characters on file" line in the state header already shows each character's casting tag (e.g. "(plays self)" / "(played by Bob Saget)" / "(played by (unspecified))"); use it as a fast first pass before deciding whether you need a tool call.
 
 # Tool loading
 Most tools are loaded on demand. Always available without a search:
@@ -208,7 +213,9 @@ You are not yet writing the screenplay prose. The current phase is character + b
 }
 
 function buildVolatileText({ characters, plot, directorNotes }) {
-  const charList = characters.length ? characters.map((c) => `- ${c.name}`).join('\n') : '(none yet)';
+  const charList = characters.length
+    ? characters.map((c) => `- ${c.name} (${formatCasting(c)})`).join('\n')
+    : '(none yet)';
 
   const beats = [...(plot?.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
   const beatCount = beats.length;

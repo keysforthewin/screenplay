@@ -25,16 +25,18 @@ function pickDescriptiveField(character, templateFieldNames) {
   return null;
 }
 
+export function formatCasting(c) {
+  if (c.plays_self) return 'plays self';
+  if (c.hollywood_actor) return `played by ${c.hollywood_actor}`;
+  return 'played by (unspecified)';
+}
+
 function summarizeCharacter(c, templateFieldNames) {
   const filled = templateFieldNames.filter((n) => {
     const v = c.fields?.[n];
     return v !== undefined && v !== null && String(v).toString().trim() !== '';
   });
-  const casting = c.plays_self
-    ? 'plays self'
-    : c.hollywood_actor
-      ? `played by ${c.hollywood_actor}`
-      : 'played by (unspecified)';
+  const casting = formatCasting(c);
   const flavor = pickDescriptiveField(c, templateFieldNames);
   const images = c.images || [];
   return {
