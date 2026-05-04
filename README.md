@@ -39,8 +39,11 @@ The three keys at the top of the table are required. The rest are optional — l
 | `GEMINI_API_KEY` | optional | [aistudio.google.com](https://aistudio.google.com) → "Get API key". The free tier is plenty for development. | AI image generation (`generate_image`). |
 | `TMDB_READ_ACCESS_TOKEN` | optional | [themoviedb.org](https://www.themoviedb.org) → Settings → API → request a v4 key (free, instant for personal projects). Use the **v4 read access token** (the long JWT-style string), not the v3 API key. | Real-movie / real-actor lookup (`tmdb_*` tools) and auto-portraits. |
 | `TAVILY_API_KEY` | optional | [tavily.com](https://tavily.com) → sign up → API Keys. Free tier is ~1000 searches/month. | Live web search and the "is my character/plot derivative?" tools. |
+| `VOYAGE_API_KEY` | optional | Voyage key from [voyageai.com](https://www.voyageai.com). Chroma is brought up by docker-compose; no Chroma URL or key needed. | Semantic recall across the whole screenplay (`screenplay_search`). Without this the tool degrades to a friendly fallback. |
 
 A handful of additional knobs (PDF download URL, log level, etc.) live in `.env.example` with sensible defaults — touch them only if you need to.
+
+> **Semantic search (RAG).** Set `VOYAGE_API_KEY` and you're done — the bot maintains a vector index of every beat body, character custom field, director's note, and recent Discord message. ChromaDB runs as a docker-compose service (`docker compose up -d chroma` for local dev, or it comes up automatically with `docker compose up`). Live edits in the SPA or via the agent re-index automatically (~1s debounce). For a one-shot backfill (or after a wipe) run `npm run reindex`. The agent reaches for `screenplay_search` whenever a question depends on screenplay content not in its immediate context — meaning-based recall instead of exact-name regex.
 
 ## How to talk to it
 

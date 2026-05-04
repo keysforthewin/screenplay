@@ -1,6 +1,7 @@
 import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../log.js';
+import { applyMarkdownEdits } from '../util/textWindow.js';
 
 const col = () => getDb().collection('plots');
 
@@ -300,22 +301,6 @@ export async function updateBeat(identifier, patch) {
   return beats.find((b) => b._id && b._id.equals(beat._id));
 }
 
-function countOccurrences(haystack, needle) {
-  if (!needle) return 0;
-  let n = 0;
-  let i = 0;
-  while ((i = haystack.indexOf(needle, i)) !== -1) {
-    n++;
-    i += needle.length;
-  }
-  return n;
-}
-
-function previewSnippet(s, max = 80) {
-  const t = String(s || '').replace(/\s+/g, ' ').trim();
-  return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
-}
-
 export async function setBeatBody(identifier, body) {
   if (typeof body !== 'string') {
     throw new Error(`set_beat_body: \`body\` must be a string, got ${typeof body}.`);
@@ -332,52 +317,47 @@ export async function setBeatBody(identifier, body) {
 }
 
 export async function editBeatBody(identifier, edits) {
-  if (!Array.isArray(edits) || edits.length === 0) {
-    throw new Error('edit_beat_body: `edits` must be a non-empty array of {find, replace} pairs.');
-  }
   const plot = await getPlot();
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
-
-  let body = String(beat.body || '');
-  const beforeLen = body.length;
-  const results = [];
-
-  for (let i = 0; i < edits.length; i++) {
-    const e = edits[i];
-    if (!e || typeof e !== 'object' || Array.isArray(e)) {
-      throw new Error(`edit_beat_body: edit ${i} must be an object {find, replace}, got ${Array.isArray(e) ? 'array' : typeof e}.`);
-    }
-    if (typeof e.find !== 'string' || typeof e.replace !== 'string') {
-      throw new Error(`edit_beat_body: edit ${i} must have string \`find\` and \`replace\`. Got find=${typeof e.find}, replace=${typeof e.replace}.`);
-    }
-    if (!e.find) {
-      throw new Error(`edit_beat_body: edit ${i} has empty \`find\`. To add content to the end of the body, use append_to_beat_body instead.`);
-    }
-    const matches = countOccurrences(body, e.find);
-    if (matches === 0) {
-      throw new Error(`edit_beat_body: edit ${i} \`find\` text not found in current body. Use verbatim text from the body. Snippet: "${previewSnippet(e.find)}".`);
-    }
-    if (matches > 1) {
-      throw new Error(`edit_beat_body: edit ${i} \`find\` matched ${matches} places — must be unique. Add surrounding context to disambiguate. Snippet: "${previewSnippet(e.find)}".`);
-    }
-    body = body.replace(e.find, e.replace);
-    results.push({
-      find_chars: e.find.length,
-      replace_chars: e.replace.length,
-      delta: e.replace.length - e.find.length,
-    });
-  }
-
+  const { body, applied, beforeLen, afterLen } = applyMarkdownEdits(
+    String(beat.body || ''),
+    edits,
+    'edit_beat_body',
+  );
   const beats = (plot.beats || []).map((b) =>
     b._id && b._id.equals(beat._id) ? { ...b, body, updated_at: new Date() } : b,
   );
   await persistBeats(beats);
   const updated = beats.find((b) => b._id && b._id.equals(beat._id));
   logger.info(
-    `mongo: beat edit_body id=${beat._id} edits=${edits.length} before=${beforeLen} after=${body.length}`,
+    `mongo: beat edit_body id=${beat._id} edits=${edits.length} before=${beforeLen} after=${afterLen}`,
   );
-  return { beat: updated, edits: results, beforeLen, afterLen: body.length };
+  return { beat: updated, edits: applied, beforeLen, afterLen };
+}
+
+export async function editPlotField(field, edits) {
+  if (field !== 'synopsis' && field !== 'notes') {
+    throw new Error(`edit_plot_field: \`field\` must be "synopsis" or "notes", got "${field}".`);
+  }
+  const plot = await getPlot();
+  const current = String(plot[field] || '');
+  const { body, applied, beforeLen, afterLen } = applyMarkdownEdits(
+    current,
+    edits,
+    'edit_plot_field',
+  );
+  const result = await col().updateOne(
+    { _id: 'main' },
+    { $set: { [field]: body, updated_at: new Date() } },
+  );
+  if (!result || result.matchedCount === 0) {
+    throw new Error('editPlotField: plot doc {_id: "main"} not found — write did not apply.');
+  }
+  logger.info(
+    `mongo: plot edit_${field} edits=${edits.length} before=${beforeLen} after=${afterLen}`,
+  );
+  return { field, edits: applied, beforeLen, afterLen, value: body };
 }
 
 export async function appendBeatBody(identifier, content) {

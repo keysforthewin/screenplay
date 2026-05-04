@@ -41,10 +41,13 @@ export const TOOLS = [
   {
     name: 'get_character',
     keywords: ['fetch', 'lookup', 'character', 'person', 'role', 'cast', 'details', 'profile', 'sheet'],
-    description: 'Fetch the full document for one character by name (case-insensitive) or _id.',
+    description: "Fetch the full document for one character by name (case-insensitive) or _id. NOTE: any custom field whose value exceeds the body-preview threshold is replaced with a `{preview, hint}` object — call read_character_field to read it whole. Pass `full_fields: true` to bypass.",
     input_schema: {
       type: 'object',
-      properties: { identifier: { type: 'string', description: "Character's name or _id" } },
+      properties: {
+        identifier: { type: 'string', description: "Character's name or _id" },
+        full_fields: { type: 'boolean', description: 'If true, return all custom fields in full even if large. Default false.' },
+      },
       required: ['identifier'],
       additionalProperties: false,
     },
@@ -108,6 +111,53 @@ export const TOOLS = [
         },
       },
       required: ['identifier', 'patch'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'edit_character_field',
+    keywords: ['edit', 'modify', 'change', 'fix', 'tweak', 'patch', 'replace', 'find', 'character', 'field', 'partial', 'diff', 'reword', 'snippet', 'large'],
+    description: 'Apply targeted find/replace edits to a single character text field (`name`, `hollywood_actor`, or any custom field — pass the bare field name, no `fields.` prefix). Each edit\'s `find` must match the current value VERBATIM and UNIQUELY. Use for partial edits to long bios or descriptive fields — much cheaper on output tokens than re-emitting the whole field via update_character.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        character: { type: 'string', description: 'Character name (case-insensitive) or 24-char hex _id.' },
+        field: {
+          type: 'string',
+          description: 'Field to edit. Core: `name`, `hollywood_actor`. Otherwise the bare custom field name (e.g. `bio`, `motivation`); the handler stores it under fields.<name>.',
+        },
+        edits: {
+          type: 'array',
+          minItems: 1,
+          description: 'Sequential find/replace edits.',
+          items: {
+            type: 'object',
+            properties: {
+              find: { type: 'string', description: 'Verbatim snippet from the current value. Must match exactly once.' },
+              replace: { type: 'string', description: 'Replacement text. Empty string deletes the matched snippet.' },
+            },
+            required: ['find', 'replace'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['character', 'field', 'edits'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'read_character_field',
+    keywords: ['read', 'view', 'show', 'window', 'slice', 'lines', 'character', 'field', 'bio', 'large'],
+    description: 'Read a windowed slice of a single character text field, returning numbered lines. Use when the value is too large to load whole. `field` accepts `name`, `hollywood_actor`, or a bare custom field name (no `fields.` prefix).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        character: { type: 'string', description: 'Character name (case-insensitive) or _id.' },
+        field: { type: 'string', description: 'Field name. Core: `name`, `hollywood_actor`. Otherwise the bare custom field name.' },
+        line_start: { type: 'integer', minimum: 1, description: '1-indexed start line. Default 1.' },
+        line_count: { type: 'integer', minimum: 1, maximum: 2000, description: 'How many lines to return. Default 200.' },
+      },
+      required: ['character', 'field'],
       additionalProperties: false,
     },
   },
@@ -266,6 +316,48 @@ export const TOOLS = [
         text: { type: 'string', description: 'New text for the note.' },
       },
       required: ['note_id', 'text'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'edit_director_note_partial',
+    keywords: ['edit', 'modify', 'change', 'fix', 'tweak', 'patch', 'replace', 'find', 'director', 'note', 'partial', 'diff', 'snippet', 'large', 'reword'],
+    description: "Apply targeted find/replace edits to a director's note's text. Each edit's `find` must match the current text VERBATIM and UNIQUELY. Use for partial edits to long notes — much cheaper on output tokens than re-emitting the whole note via edit_director_note. To find the right _id, call list_director_notes first.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        note_id: { type: 'string', description: '24-char hex _id of the note to edit.' },
+        edits: {
+          type: 'array',
+          minItems: 1,
+          description: 'Sequential find/replace edits.',
+          items: {
+            type: 'object',
+            properties: {
+              find: { type: 'string', description: 'Verbatim snippet from the current text. Must match exactly once.' },
+              replace: { type: 'string', description: 'Replacement text. Empty string deletes the matched snippet.' },
+            },
+            required: ['find', 'replace'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['note_id', 'edits'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'read_director_note',
+    keywords: ['read', 'view', 'show', 'window', 'slice', 'lines', 'director', 'note', 'large'],
+    description: "Read a windowed slice of a director's note text, returning numbered lines. Use when the note is too large to load whole.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        note_id: { type: 'string', description: '24-char hex _id of the note.' },
+        line_start: { type: 'integer', minimum: 1, description: '1-indexed start line. Default 1.' },
+        line_count: { type: 'integer', minimum: 1, maximum: 2000, description: 'How many lines to return. Default 200.' },
+      },
+      required: ['note_id'],
       additionalProperties: false,
     },
   },
@@ -438,6 +530,33 @@ export const TOOLS = [
     },
   },
   {
+    name: 'edit_plot_field',
+    keywords: ['edit', 'modify', 'change', 'fix', 'tweak', 'patch', 'replace', 'find', 'plot', 'synopsis', 'notes', 'partial', 'diff', 'snippet', 'large', 'reword'],
+    description: 'Apply targeted find/replace edits to the plot `synopsis` or `notes` field. Each edit\'s `find` must match the current value VERBATIM and UNIQUELY. Use for partial edits to long synopses or plot-level notes — much cheaper on output tokens than re-emitting the whole field via update_plot.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        field: { type: 'string', enum: ['synopsis', 'notes'], description: 'Which plot field to edit.' },
+        edits: {
+          type: 'array',
+          minItems: 1,
+          description: 'Sequential find/replace edits.',
+          items: {
+            type: 'object',
+            properties: {
+              find: { type: 'string', description: 'Verbatim snippet from the current value. Must match exactly once.' },
+              replace: { type: 'string', description: 'Replacement text. Empty string deletes the matched snippet.' },
+            },
+            required: ['find', 'replace'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['field', 'edits'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'list_beats',
     keywords: ['list', 'all', 'beats', 'scenes', 'moments', 'show', 'enumerate', 'outline'],
     description: 'Return a compact list of all beats with id, order, name, a short desc preview, body length, character count, image count, and whether each is the current beat. Sorted by order. For substring/fuzzy lookup across name+desc+body, use search_beats instead.',
@@ -446,11 +565,12 @@ export const TOOLS = [
   {
     name: 'get_beat',
     keywords: ['fetch', 'beat', 'scene', 'moment', 'lookup', 'details'],
-    description: 'Fetch the full beat document (name, desc, body, characters, images, main_image_id). If no identifier is provided, returns the current beat (or null if none is set). Identifier accepts a beat _id (24-char hex), an order number as a string, or a beat name (case-insensitive exact match). For fuzzy matches like "the diner one" use search_beats first.',
+    description: 'Fetch the full beat document (name, desc, body, characters, images, main_image_id). If no identifier is provided, returns the current beat (or null if none is set). Identifier accepts a beat _id (24-char hex), an order number as a string, or a beat name (case-insensitive exact match). For fuzzy matches like "the diner one" use search_beats first. NOTE: when the body is large, `body` is replaced with a `body_preview` object pointing you at outline_beat_body / search_in_beat_body / read_beat_body. Pass `full_body: true` if you really need the entire body inline.',
     input_schema: {
       type: 'object',
       properties: {
         identifier: { type: 'string', description: 'Beat _id, order, or name. Omit to use the current beat.' },
+        full_body: { type: 'boolean', description: 'If true, return the entire body even if large. Default false (large bodies are auto-truncated).' },
       },
       additionalProperties: false,
     },
@@ -563,6 +683,52 @@ export const TOOLS = [
         },
       },
       required: ['beat', 'edits'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'read_beat_body',
+    keywords: ['read', 'view', 'show', 'window', 'slice', 'section', 'lines', 'body', 'beat', 'page', 'scroll', 'paginate', 'large'],
+    description: 'Read a windowed slice of a beat body, returning numbered lines. Use when a body is too large to load whole (the auto-truncated get_beat result will say so). `line_start` defaults to 1; `line_count` defaults to 200. Lines are 1-indexed. Returns body length metadata so you can decide whether to read more.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
+        line_start: { type: 'integer', minimum: 1, description: '1-indexed start line. Default 1.' },
+        line_count: { type: 'integer', minimum: 1, maximum: 2000, description: 'How many lines to return. Default 200.' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'search_in_beat_body',
+    keywords: ['search', 'grep', 'find', 'locate', 'where', 'occurrence', 'pattern', 'body', 'beat', 'lookup', 'large'],
+    description: 'Search a beat body for a pattern, returning each match with surrounding context lines. Substring search is case-insensitive by default. Pass `regex: true` to use a JavaScript regex (case-sensitive unless `case_insensitive: true`). Useful for locating the right snippet to edit in a long body before calling edit_beat_body.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
+        pattern: { type: 'string', description: 'Substring or regex (when `regex` is true).' },
+        regex: { type: 'boolean', description: 'Treat `pattern` as a JavaScript regex. Default false.' },
+        case_insensitive: { type: 'boolean', description: 'Force case-insensitive matching. Default true for substring, false for regex.' },
+        context_lines: { type: 'integer', minimum: 0, maximum: 20, description: 'Lines of context above and below each match. Default 3.' },
+        max_matches: { type: 'integer', minimum: 1, maximum: 100, description: 'Cap on returned matches. Default 20.' },
+      },
+      required: ['pattern'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'outline_beat_body',
+    keywords: ['outline', 'headings', 'structure', 'toc', 'sections', 'navigation', 'map', 'body', 'beat', 'overview'],
+    description: 'Return the markdown headings (level 1-6) of a beat body with their line numbers. A cheap navigation map for long bodies that use #/## scene markers. Returns an empty list if the body has no headings.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
+      },
+      required: [],
       additionalProperties: false,
     },
   },
@@ -1469,6 +1635,34 @@ export const TOOLS = [
     },
   },
   {
+    name: 'screenplay_search',
+    keywords: ['semantic', 'rag', 'vector', 'find', 'lookup', 'recall', 'remember', 'context', 'meaning', 'about', 'similar', 'meaning-based'],
+    description:
+      "Semantic search across the entire screenplay: full beat bodies (chunked), character custom fields, director's notes, and recent Discord messages. Use whenever the user's question depends on screenplay content not already in your context — full beat bodies, character custom field details, prior conversation specifics, or any \"what was that about…\" / \"find where we said…\" question. Prefer over `search_beats` (regex over names+desc only) when the user describes a scene/topic by meaning rather than by exact name; prefer over `search_message_history` when looking for screenplay content rather than chat-history quotes. Returns top-k chunks as JSON: each entry has entity_type, entity_id, entity_label, field, similarity score, and the original markdown snippet. Returns a friendly error string when VOYAGE_API_KEY/CHROMA_URL are not configured.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Natural-language query — phrase as a question, topic, or paraphrase.',
+        },
+        k: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 20,
+          description: 'Top-k results. Default 8.',
+        },
+        entity_types: {
+          type: 'array',
+          items: { type: 'string', enum: ['beat', 'character', 'director_note', 'message'] },
+          description: 'Optional filter to a subset of corpora. Default: all four.',
+        },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'analyze_dramatic_arc',
     keywords: ['arc', 'climax', 'pacing', 'structure', 'three-act', 'sentiment', 'analyze', 'dramatic', 'tension', 'narrative'],
     description:
@@ -1553,6 +1747,7 @@ export const CORE_TOOL_NAMES = new Set([
   'get_plot',
   'get_current_beat',
   'search_message_history',
+  'screenplay_search',
 ]);
 
 // Strip internal-only fields (`keywords`, `metaTool`) before sending to the

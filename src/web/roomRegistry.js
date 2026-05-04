@@ -24,6 +24,9 @@ import { getDb } from '../mongo/client.js';
 import { getCharacterTemplate } from '../mongo/prompts.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { logger } from '../log.js';
+import { enqueueReindex } from '../rag/queue.js';
+// Side-effect import: registers the reindex runner with the queue.
+import '../rag/indexer.js';
 
 const HEX24 = /^[a-f0-9]{24}$/i;
 
@@ -77,6 +80,7 @@ async function describeBeatRoom(id) {
       }
       if (!Object.keys(patch).length) return { changed: false };
       await updateBeat(id, patch);
+      enqueueReindex('beat', id);
       return { changed: true, fields: Object.keys(patch) };
     },
   };
@@ -136,6 +140,7 @@ async function describeCharacterRoom(id) {
         );
       }
       await updateCharacter(id, patch);
+      enqueueReindex('character', id);
       return { changed: true, fields: Object.keys(patch) };
     },
   };
@@ -182,6 +187,10 @@ async function describeNotesRoom() {
         { $set: { notes: nextNotes, updated_at: new Date() } },
       );
       logger.info(`mongo: director_notes batch update fields=${Object.keys(snapshot).length}`);
+      for (const fieldName of Object.keys(snapshot)) {
+        const m = fieldName.match(/^note:([a-f0-9]{24}):text$/);
+        if (m) enqueueReindex('director_note', m[1]);
+      }
       return { changed: true, fields: Object.keys(snapshot) };
     },
   };

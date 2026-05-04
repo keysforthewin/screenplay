@@ -10,6 +10,21 @@ services:
       timeout: 5s
       retries: 5
 
+  chroma:
+    image: chromadb/chroma:0.5.20
+    restart: unless-stopped
+    # Host-side default 8599 to avoid colliding with anything else on 8000.
+    # Inside the container Chroma always listens on 8000.
+    ports:
+      - "${CHROMA_PORT:-8599}:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   bot:
     build:
       context: .
@@ -19,9 +34,12 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
+      chroma:
+        condition: service_healthy
     env_file: .env
     environment:
       MONGO_URI: mongodb://mongo:27017
+      CHROMA_URL: http://chroma:8000
       BACKUP_DIR: /data/backups
     ports:
       - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
@@ -33,4 +51,5 @@ services:
 
 volumes:
   mongo-data:
+  chroma-data:
   exports:

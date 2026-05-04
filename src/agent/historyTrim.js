@@ -23,6 +23,7 @@ const TOOL_POLICY = {
   list_beat_attachments: { stubAtAge: 4 },
   list_character_attachments: { stubAtAge: 4 },
   search_message_history: { stubAtAge: 4 },
+  screenplay_search: { stubAtAge: 2 },
   // Always-large, content-only — research/analysis output, stales fast.
   get_overview: { stubAtAge: 2 },
   tavily_search: { stubAtAge: 2 },
@@ -41,6 +42,11 @@ const TOOL_POLICY = {
   get_plot: { stubAtAge: 3, sizeThreshold: 2000 },
   list_director_notes: { stubAtAge: 3, sizeThreshold: 2000 },
   get_current_beat: { stubAtAge: 3, sizeThreshold: 2000 },
+  // Windowed reads — stale fast, the body changes underneath.
+  read_beat_body: { stubAtAge: 2 },
+  search_in_beat_body: { stubAtAge: 2 },
+  read_director_note: { stubAtAge: 2 },
+  read_character_field: { stubAtAge: 2 },
 };
 
 function isRealUserMessage(m) {

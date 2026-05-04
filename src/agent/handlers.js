@@ -27,6 +27,12 @@ import { create, all } from 'mathjs';
 import { runJsInVm } from './codeRunner.js';
 import { decodeEscapes } from './decodeEscapes.js';
 import {
+  sliceLines,
+  searchLines,
+  extractOutline,
+  truncateForPreview,
+} from '../util/textWindow.js';
+import {
   recordGeminiImageUsage,
   aggregateUsage,
   aggregateToolUsage,
@@ -54,6 +60,31 @@ function stripImageFilename(image) {
 function withoutImageFilenames(doc) {
   if (!doc || typeof doc !== 'object' || !Array.isArray(doc.images)) return doc;
   return { ...doc, images: doc.images.map(stripImageFilename) };
+}
+
+function withTruncatedCharacterFields(doc, { fullFields = false } = {}) {
+  if (!doc || typeof doc !== 'object' || fullFields) return doc;
+  const threshold = config.agent?.bodyPreviewThreshold ?? 8000;
+  const fields = doc.fields;
+  if (!fields || typeof fields !== 'object') return doc;
+  let mutated = false;
+  const next = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if (typeof v === 'string' && v.length > threshold) {
+      const t = truncateForPreview(v, threshold);
+      next[k] = {
+        preview: t.preview,
+        total_chars: t.totalChars,
+        total_lines: t.totalLines,
+        truncated: true,
+        hint: `Field truncated. Call read_character_field with field="${k}" or search the value with the read tool.`,
+      };
+      mutated = true;
+    } else {
+      next[k] = v;
+    }
+  }
+  return mutated ? { ...doc, fields: next } : doc;
 }
 
 function preview(text, n = 120) {
@@ -253,13 +284,14 @@ function serializeBeatSummary(b, currentId) {
   };
 }
 
-function serializeBeat(b) {
-  return {
+function serializeBeat(b, { fullBody = false } = {}) {
+  const body = String(b.body || '');
+  const threshold = config.agent?.bodyPreviewThreshold ?? 8000;
+  const out = {
     _id: b._id.toString(),
     order: b.order,
     name: b.name,
     desc: b.desc || '',
-    body: b.body || '',
     characters: b.characters || [],
     images: (b.images || []).map((i) => ({
       _id: i._id.toString(),
@@ -273,6 +305,19 @@ function serializeBeat(b) {
     })),
     main_image_id: b.main_image_id ? b.main_image_id.toString() : null,
   };
+  if (fullBody || body.length <= threshold) {
+    out.body = body;
+  } else {
+    const t = truncateForPreview(body, threshold);
+    out.body_preview = {
+      preview: t.preview,
+      total_chars: t.totalChars,
+      total_lines: t.totalLines,
+      truncated: true,
+      hint: 'Body truncated. Use outline_beat_body for headings, search_in_beat_body to locate text, or read_beat_body with line_start/line_count for a full slice. Pass full_body:true to get_beat to bypass.',
+    };
+  }
+  return out;
 }
 
 async function maybeAutoFetchActorPortrait(characterIdentifier) {
@@ -838,10 +883,13 @@ export const HANDLERS = {
     );
   },
 
-  async get_character({ identifier }) {
+  async get_character({ identifier, full_fields } = {}) {
     const c = await Characters.getCharacter(identifier);
     if (!c) return `No character found for "${identifier}".`;
-    return withSpaLink(compact(withoutImageFilenames(c)), characterUrl(c));
+    return withSpaLink(
+      compact(withTruncatedCharacterFields(withoutImageFilenames(c), { fullFields: !!full_fields })),
+      characterUrl(c),
+    );
   },
 
   async create_character(input) {
@@ -1066,12 +1114,24 @@ export const HANDLERS = {
 
   async list_director_notes() {
     const doc = await DirectorNotes.getDirectorNotes();
+    const threshold = config.agent?.bodyPreviewThreshold ?? 8000;
     const text = compact(
-      (doc.notes || []).map((n) => ({
-        _id: n._id?.toString(),
-        text: n.text,
-        created_at: n.created_at,
-      })),
+      (doc.notes || []).map((n) => {
+        const noteText = String(n.text || '');
+        const base = { _id: n._id?.toString(), created_at: n.created_at };
+        if (noteText.length <= threshold) return { ...base, text: noteText };
+        const t = truncateForPreview(noteText, threshold);
+        return {
+          ...base,
+          text_preview: {
+            preview: t.preview,
+            total_chars: t.totalChars,
+            total_lines: t.totalLines,
+            truncated: true,
+            hint: `Note truncated. Call read_director_note with note_id="${base._id}" for a full slice.`,
+          },
+        };
+      }),
     );
     return withSpaLink(text, notesUrl());
   },
@@ -1312,14 +1372,14 @@ export const HANDLERS = {
     return compact(beats.map((b) => serializeBeatSummary(b, plot.current_beat_id)));
   },
 
-  async get_beat({ identifier } = {}) {
+  async get_beat({ identifier, full_body } = {}) {
     const b = await Plots.getBeat(identifier);
     if (!b) {
       return identifier
         ? `No beat found for "${identifier}".`
         : 'No current beat is set.';
     }
-    return withSpaLink(compact(serializeBeat(b)), beatUrl(b));
+    return withSpaLink(compact(serializeBeat(b, { fullBody: !!full_body })), beatUrl(b));
   },
 
   async create_beat({ name, desc, body, characters, order }) {
@@ -1414,6 +1474,195 @@ export const HANDLERS = {
       `Applied ${result.applied.length} edit(s) to beat "${target.name}". Body: ${result.beforeLen} → ${result.afterLen} chars.\n${perEdit}`,
       beatUrl(target),
     );
+  },
+
+  async read_beat_body({ beat, line_start, line_count } = {}) {
+    const target = await resolveBeat(beat);
+    const out = sliceLines(String(target.body || ''), line_start ?? 1, line_count ?? 200);
+    return withSpaLink(
+      compact({
+        beat_id: target._id.toString(),
+        beat_name: target.name,
+        total_lines: out.totalLines,
+        total_chars: out.totalChars,
+        range_start: out.rangeStart,
+        range_end: out.rangeEnd,
+        has_more: out.hasMore,
+        lines: out.lines,
+      }),
+      beatUrl(target),
+    );
+  },
+
+  async search_in_beat_body({
+    beat,
+    pattern,
+    regex,
+    case_insensitive,
+    context_lines,
+    max_matches,
+  } = {}) {
+    if (typeof pattern !== 'string' || !pattern) {
+      return 'Tool error (search_in_beat_body): `pattern` is required (non-empty string).';
+    }
+    const target = await resolveBeat(beat);
+    let out;
+    try {
+      out = searchLines(String(target.body || ''), pattern, {
+        regex: !!regex,
+        caseInsensitive:
+          typeof case_insensitive === 'boolean' ? case_insensitive : !regex,
+        contextLines: context_lines ?? 3,
+        maxMatches: max_matches ?? 20,
+      });
+    } catch (e) {
+      return `Tool error (search_in_beat_body): ${e.message}`;
+    }
+    return withSpaLink(
+      compact({
+        beat_id: target._id.toString(),
+        beat_name: target.name,
+        total_matches: out.totalMatches,
+        truncated: out.truncated,
+        matches: out.matches,
+      }),
+      beatUrl(target),
+    );
+  },
+
+  async outline_beat_body({ beat } = {}) {
+    const target = await resolveBeat(beat);
+    const headings = extractOutline(String(target.body || ''));
+    return withSpaLink(
+      compact({
+        beat_id: target._id.toString(),
+        beat_name: target.name,
+        heading_count: headings.length,
+        headings,
+      }),
+      beatUrl(target),
+    );
+  },
+
+  async read_director_note({ note_id, line_start, line_count } = {}) {
+    const note = await resolveDirectorNote(note_id);
+    const out = sliceLines(String(note.text || ''), line_start ?? 1, line_count ?? 200);
+    return withSpaLink(
+      compact({
+        note_id: note._id.toString(),
+        total_lines: out.totalLines,
+        total_chars: out.totalChars,
+        range_start: out.rangeStart,
+        range_end: out.rangeEnd,
+        has_more: out.hasMore,
+        lines: out.lines,
+      }),
+      notesUrl(),
+    );
+  },
+
+  async edit_director_note_partial({ note_id, edits } = {}) {
+    if (typeof note_id !== 'string' || !note_id.trim()) {
+      return 'Tool error (edit_director_note_partial): `note_id` is required.';
+    }
+    if (!Array.isArray(edits) || edits.length === 0) {
+      return 'Tool error (edit_director_note_partial): `edits` must be a non-empty array of {find, replace} pairs.';
+    }
+    await resolveDirectorNote(note_id);
+    const result = await Gateway.editDirectorNoteTextViaGateway({ noteId: note_id, edits });
+    const perEdit = (result.applied || [])
+      .map((e, i) => {
+        const delta = e.replace_chars - e.find_chars;
+        const sign = delta >= 0 ? '+' : '';
+        return `  ${i + 1}. -${e.find_chars}/+${e.replace_chars} (Δ${sign}${delta})`;
+      })
+      .join('\n');
+    return withSpaLink(
+      `Applied ${result.applied?.length ?? 0} edit(s) to director's note ${note_id}. Text: ${result.beforeLen} → ${result.afterLen} chars.\n${perEdit}`,
+      notesUrl(),
+    );
+  },
+
+  async read_character_field({ character, field, line_start, line_count } = {}) {
+    if (typeof character !== 'string' || !character.trim()) {
+      return 'Tool error (read_character_field): `character` is required.';
+    }
+    if (typeof field !== 'string' || !field.trim()) {
+      return 'Tool error (read_character_field): `field` is required.';
+    }
+    const c = await Characters.getCharacter(character);
+    if (!c) return `No character found for "${character}".`;
+    const CORE = new Set(['name', 'hollywood_actor']);
+    let value = '';
+    if (CORE.has(field)) {
+      value = String(c[field] || '');
+    } else {
+      const v = c.fields?.[field];
+      value = v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v);
+    }
+    const out = sliceLines(value, line_start ?? 1, line_count ?? 200);
+    return withSpaLink(
+      compact({
+        character: c.name,
+        field,
+        total_lines: out.totalLines,
+        total_chars: out.totalChars,
+        range_start: out.rangeStart,
+        range_end: out.rangeEnd,
+        has_more: out.hasMore,
+        lines: out.lines,
+      }),
+      characterUrl(c),
+    );
+  },
+
+  async edit_character_field({ character, field, edits } = {}) {
+    if (typeof character !== 'string' || !character.trim()) {
+      return 'Tool error (edit_character_field): `character` is required.';
+    }
+    if (typeof field !== 'string' || !field.trim()) {
+      return 'Tool error (edit_character_field): `field` is required.';
+    }
+    if (!Array.isArray(edits) || edits.length === 0) {
+      return 'Tool error (edit_character_field): `edits` must be a non-empty array of {find, replace} pairs.';
+    }
+    const CORE = new Set(['name', 'hollywood_actor']);
+    const resolvedField = CORE.has(field) ? field : `fields.${field}`;
+    const result = await Gateway.editCharacterFieldViaGateway({
+      identifier: character,
+      field: resolvedField,
+      edits,
+    });
+    const fresh = await Characters.getCharacter(character);
+    const perEdit = (result.applied || [])
+      .map((e, i) => {
+        const delta = e.replace_chars - e.find_chars;
+        const sign = delta >= 0 ? '+' : '';
+        return `  ${i + 1}. -${e.find_chars}/+${e.replace_chars} (Δ${sign}${delta})`;
+      })
+      .join('\n');
+    return withSpaLink(
+      `Applied ${result.applied?.length ?? 0} edit(s) to ${fresh?.name || character}.${resolvedField}. Value: ${result.beforeLen} → ${result.afterLen} chars.\n${perEdit}`,
+      characterUrl(fresh || { name: character }),
+    );
+  },
+
+  async edit_plot_field({ field, edits } = {}) {
+    if (field !== 'synopsis' && field !== 'notes') {
+      return 'Tool error (edit_plot_field): `field` must be "synopsis" or "notes".';
+    }
+    if (!Array.isArray(edits) || edits.length === 0) {
+      return 'Tool error (edit_plot_field): `edits` must be a non-empty array of {find, replace} pairs.';
+    }
+    const result = await Plots.editPlotField(field, edits);
+    const perEdit = (result.edits || [])
+      .map((e, i) => {
+        const delta = e.replace_chars - e.find_chars;
+        const sign = delta >= 0 ? '+' : '';
+        return `  ${i + 1}. -${e.find_chars}/+${e.replace_chars} (Δ${sign}${delta})`;
+      })
+      .join('\n');
+    return `Applied ${result.edits?.length ?? 0} edit(s) to plot.${field}. Value: ${result.beforeLen} → ${result.afterLen} chars.\n${perEdit}`;
   },
 
   async search_beats({ query }) {
@@ -2719,6 +2968,65 @@ export const HANDLERS = {
         excerpt: r.excerpt,
         match: r.match,
       })),
+    });
+  },
+
+  async screenplay_search({ query, k, entity_types } = {}) {
+    if (!query || typeof query !== 'string') return 'Error: `query` is required.';
+    const { isRagEnabled, getCollection } = await import('../rag/chromaClient.js');
+    const { embedTexts } = await import('../rag/embeddings.js');
+    if (!isRagEnabled()) {
+      return 'Semantic search is unavailable: VOYAGE_API_KEY is not configured. Use `search_beats` / `search_characters` / `search_message_history` as alternatives.';
+    }
+    const col = await getCollection();
+    if (!col) {
+      return 'Semantic search is temporarily unavailable: ChromaDB not reachable (run `docker compose up -d chroma`). Falling back: try `search_beats` / `search_characters` / `search_message_history`.';
+    }
+    const topK = Math.min(20, Math.max(1, Number(k) || config.rag.defaultK));
+    let where;
+    if (Array.isArray(entity_types) && entity_types.length) {
+      where = entity_types.length === 1
+        ? { entity_type: entity_types[0] }
+        : { entity_type: { $in: entity_types } };
+    }
+    let queryVec;
+    try {
+      [queryVec] = await embedTexts([query], { inputType: 'query' });
+    } catch (e) {
+      return `Semantic search failed (embedding error): ${e.message}`;
+    }
+    let res;
+    try {
+      res = await col.query({
+        queryEmbeddings: [queryVec],
+        nResults: topK,
+        where,
+      });
+    } catch (e) {
+      return `Semantic search failed (chroma query error): ${e.message}`;
+    }
+    const ids = (res?.ids?.[0] || []);
+    const distances = (res?.distances?.[0] || []);
+    const metadatas = (res?.metadatas?.[0] || []);
+    const documents = (res?.documents?.[0] || []);
+    const hits = ids.map((id, i) => {
+      const m = metadatas[i] || {};
+      const dist = typeof distances[i] === 'number' ? distances[i] : null;
+      const score = dist == null ? null : Math.max(0, Math.min(1, 1 - dist));
+      return {
+        id,
+        score: score == null ? null : Number(score.toFixed(4)),
+        entity_type: m.entity_type || null,
+        entity_id: m.entity_id || null,
+        entity_label: m.entity_label || null,
+        field: m.field || null,
+        text: m.text_md || documents[i] || '',
+      };
+    });
+    return compact({
+      query,
+      match_count: hits.length,
+      results: hits,
     });
   },
 

@@ -8,7 +8,8 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "build:web": "vite build --config web/vite.config.js",
-    "dev:web": "vite --config web/vite.config.js"
+    "dev:web": "vite --config web/vite.config.js",
+    "reindex": "node scripts/reindex-rag.js"
   },
   "keywords": [],
   "author": "",
@@ -31,6 +32,7 @@
     "@tiptap/react": "^2.10.0",
     "@tiptap/starter-kit": "^2.10.0",
     "archiver": "^7.0.1",
+    "chromadb": "^1.9.4",
     "discord.js": "^14.26.3",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
