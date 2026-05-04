@@ -1,6 +1,7 @@
 import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../log.js';
+import { stripMarkdown } from '../util/markdown.js';
 
 const col = () => getDb().collection('characters');
 
@@ -26,14 +27,24 @@ export async function getCharacter(identifier) {
     const byId = await c.findOne({ _id: id });
     if (byId) return byId;
   }
-  return c.findOne({ name_lower: String(identifier).toLowerCase() });
+  const lc = String(identifier).toLowerCase();
+  const direct = await c.findOne({ name_lower: lc });
+  if (direct) return direct;
+  // Tolerate markdown drift: legacy createCharacter wrote raw `name.toLowerCase()`
+  // into `name_lower`, but URLs and most callers use the markdown-stripped plain
+  // text. If the direct lookup misses, scan for a record whose stripped name
+  // matches the stripped identifier.
+  const stripped = stripMarkdown(String(identifier)).toLowerCase();
+  if (!stripped || stripped === lc) return null;
+  const all = await c.find({}).toArray();
+  return all.find((d) => stripMarkdown(d.name || '').toLowerCase() === stripped) || null;
 }
 
 export async function createCharacter({ name, plays_self, hollywood_actor, own_voice, fields = {} }) {
   const now = new Date();
   const doc = {
     name,
-    name_lower: name.toLowerCase(),
+    name_lower: stripMarkdown(name).toLowerCase(),
     plays_self: !!plays_self,
     hollywood_actor: hollywood_actor || null,
     own_voice: !!own_voice,
@@ -76,7 +87,7 @@ export async function updateCharacter(identifier, patch) {
   for (const [k, v] of Object.entries(patch)) {
     if (k === 'name') {
       set.name = v;
-      set.name_lower = v.toLowerCase();
+      set.name_lower = stripMarkdown(v).toLowerCase();
     } else if (k === 'fields' && v && typeof v === 'object') {
       for (const [fk, fv] of Object.entries(v)) set[`fields.${fk}`] = fv;
     } else if (k.startsWith('fields.')) {
