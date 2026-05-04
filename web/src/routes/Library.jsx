@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiDelete, apiGet, apiPostMultipart, imageUrl, attachmentUrl } from '../api.js';
+import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
 
 export function Library() {
   const navigate = useNavigate();
@@ -83,7 +84,14 @@ export function Library() {
       <p>
         <a href="#" onClick={(e) => { e.preventDefault(); navigate('/'); }}>← Back to TOC</a>
       </p>
-      <h1 style={{ marginTop: 0 }}>Library</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
+        <h1 style={{ marginTop: 0 }}>Library</h1>
+        <DownloadAllButton
+          path="/library/download"
+          filename="library.zip"
+          disabled={data.images.length === 0 && data.attachments.length === 0}
+        />
+      </div>
 
       <section className="field-block">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

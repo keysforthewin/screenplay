@@ -5,6 +5,7 @@ import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
 import { ImageGallery } from '../widgets/ImageGallery.jsx';
 import { AttachmentList } from '../widgets/AttachmentList.jsx';
+import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
 
 export function Beat({ session }) {
   const { order } = useParams();
@@ -42,7 +43,13 @@ export function Beat({ session }) {
       <p>
         <a href="#" onClick={(e) => { e.preventDefault(); navigate('/'); }}>← Back to TOC</a>
       </p>
-      <h1 style={{ marginTop: 0 }}>Beat #{beat.order}</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
+        <h1 style={{ marginTop: 0 }}>Beat #{beat.order}</h1>
+        <DownloadAllButton
+          path={`/beat/${beat._id}/download`}
+          filename={`beat-${beat.order}.zip`}
+        />
+      </div>
 
       <CollabSurface room={room} session={session} onPing={onRefresh}>
         <CollabField label="Name" field="name" />
