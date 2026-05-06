@@ -1,4 +1,5 @@
 import { formatCasting } from './overview.js';
+import { spaBaseUrl } from '../web/links.js';
 
 function summarizeBeat(b) {
   const d = (b.desc || '').trim();
@@ -9,7 +10,7 @@ function summarizeBeat(b) {
 
 let stableTextCache = { key: null, text: null };
 
-function buildStableText({ characterTemplate, plotTemplate, botName }) {
+function buildStableText({ characterTemplate, plotTemplate, botName, webBaseUrl }) {
   const fieldList = (characterTemplate.fields || [])
     .map((f) => `- ${f.name}${f.required ? ' [REQUIRED]' : ''}: ${f.description}`)
     .join('\n');
@@ -19,6 +20,7 @@ function buildStableText({ characterTemplate, plotTemplate, botName }) {
     synopsis_guidance: plotTemplate.synopsis_guidance,
     beat_guidance: plotTemplate.beat_guidance,
     botName,
+    webBaseUrl,
   });
   if (stableTextCache.key === key && stableTextCache.text !== null) {
     return stableTextCache.text;
@@ -34,6 +36,16 @@ You are a collaborator, not a transcriber. **Create eagerly.** When the user nam
 When the user requests something the template doesn't cover (e.g., "add favorite color to all characters"), update the template via the appropriate tool.
 
 The Characters/Beats summary in the "# Current state" section is for situational awareness only. When the user asks a specific question ("who do we have?", "which scene had the fence?", "is anyone a dog?", "what's the current beat?"), call the appropriate tool (\`list_characters\`, \`get_character\`, \`search_characters\`, \`list_beats\`, \`search_beats\`, \`get_current_beat\`, \`get_overview\`) — don't answer from the state header alone.
+
+# Web UI
+The screenplay has a collaborative browser editor at ${webBaseUrl}/. Anyone the channel approved can open it and edit beats, characters, and director's notes alongside you (you appear as a caret in fields you're editing). When the user asks for a "browser link", "edit link", "URL", "the page", "the site", or anywhere to view the screenplay in their browser, share the relevant page directly — don't say you don't have one:
+- Home / table of contents / overview / "all beats" / "all characters" → ${webBaseUrl}/
+- A single beat → ${webBaseUrl}/beat/<order> (e.g. ${webBaseUrl}/beat/1)
+- A single character → ${webBaseUrl}/character/<name> (URL-encode the name; the route resolves the stripped-markdown name)
+- Director's notes → ${webBaseUrl}/notes
+- Unassigned image library → ${webBaseUrl}/library
+
+Mutations already auto-append "Edit in browser: <url>" footers via the entity-link layer, so you don't need to repeat those URLs in your reply text. But for *read* requests like "give me a link to all the beats" or "where can I see this in the browser", emit the URL yourself.
 
 # Character template (the schema every character should satisfy)
 ${fieldList || '(empty — bootstrap defaults missing)'}
@@ -298,8 +310,9 @@ export function buildSystemPrompt({
   cache = true,
   botName = 'Screenplay Bot',
   senderName = null,
+  webBaseUrl = spaBaseUrl(),
 }) {
-  const stable = buildStableText({ characterTemplate, plotTemplate, botName });
+  const stable = buildStableText({ characterTemplate, plotTemplate, botName, webBaseUrl });
   const volatile = buildVolatileText({ characters, plot, directorNotes, senderName });
 
   const stableBlock = { type: 'text', text: stable };

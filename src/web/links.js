@@ -5,6 +5,18 @@ function publicBase() {
   return (config.web.publicBaseUrl || `http://localhost:${config.web.port}`).replace(/\/+$/, '');
 }
 
+export function spaBaseUrl() {
+  return publicBase();
+}
+
+export function homeUrl() {
+  return `${publicBase()}/`;
+}
+
+export function libraryUrl() {
+  return `${publicBase()}/library`;
+}
+
 export function characterUrl(character) {
   if (!character?.name) return null;
   const slug = stripMarkdown(character.name).trim();
