@@ -173,6 +173,11 @@ async function readEntityField({ entityType, entityId, field }) {
     if (field === 'body') return String(beat.body || '');
     if (field === 'name') return String(beat.name || '');
     if (field === 'desc') return String(beat.desc || '');
+    if (field.startsWith('specifics.')) {
+      const v = beat.specifics?.[field.slice('specifics.'.length)];
+      if (v == null) return '';
+      return typeof v === 'string' ? v : JSON.stringify(v);
+    }
     throw new Error(`gateway fallback: unknown beat field "${field}"`);
   }
   if (entityType === 'character') {
@@ -182,6 +187,11 @@ async function readEntityField({ entityType, entityId, field }) {
     if (field === 'hollywood_actor') return String(c.hollywood_actor || '');
     if (field.startsWith('fields.')) {
       const v = c.fields?.[field.slice('fields.'.length)];
+      if (v == null) return '';
+      return typeof v === 'string' ? v : JSON.stringify(v);
+    }
+    if (field.startsWith('specifics.')) {
+      const v = c.specifics?.[field.slice('specifics.'.length)];
       if (v == null) return '';
       return typeof v === 'string' ? v : JSON.stringify(v);
     }
@@ -236,7 +246,7 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
     if (field === 'name' || field === 'hollywood_actor') {
       return updateCharacter(entityId, { [field]: args.markdown });
     }
-    if (field.startsWith('fields.')) {
+    if (field.startsWith('fields.') || field.startsWith('specifics.')) {
       return updateCharacter(entityId, { [field]: args.markdown });
     }
   }
@@ -344,8 +354,9 @@ export async function appendBeatBodyViaGateway(beatId, content) {
   });
 }
 
-// updateBeat may include text fields (name/desc/body) and order; route the text
-// fields through the gateway and the order through Mongo.
+// updateBeat may include text fields (name/desc/body, specifics.*) and order
+// /characters/scene_sheet_image_id; route text fields through the gateway and
+// the rest through Mongo.
 export async function updateBeatViaGateway(identifier, patch) {
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new Error(
@@ -354,10 +365,18 @@ export async function updateBeatViaGateway(identifier, patch) {
       }. Wrap your fields in {patch: {body: "..."}} (or name/desc/order/characters).`,
     );
   }
-  const recognized = ['name', 'desc', 'body', 'order', 'characters'];
-  if (!recognized.some((k) => patch[k] !== undefined)) {
+  const isRecognizedKey = (k) =>
+    k === 'name' ||
+    k === 'desc' ||
+    k === 'body' ||
+    k === 'order' ||
+    k === 'characters' ||
+    k === 'specifics' ||
+    k.startsWith('specifics.') ||
+    k === 'scene_sheet_image_id';
+  if (!Object.keys(patch).some((k) => isRecognizedKey(k) && patch[k] !== undefined)) {
     throw new Error(
-      `update_beat: \`patch\` has no recognized fields. Expected one of: ${recognized.join(', ')}. Got keys: [${Object.keys(patch).join(', ')}].`,
+      `update_beat: \`patch\` has no recognized fields. Expected one of: name, desc, body, order, characters, specifics, specifics.<key>, scene_sheet_image_id. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
   const beat = await getBeat(identifier);
@@ -387,12 +406,35 @@ export async function updateBeatViaGateway(identifier, patch) {
       markdown: patch.body,
     });
   }
-  // order and characters are non-text → hit Mongo directly via existing helper
-  if (patch.order !== undefined || Array.isArray(patch.characters)) {
+  if (patch.specifics !== undefined && patch.specifics && typeof patch.specifics === 'object') {
+    for (const [sk, sv] of Object.entries(patch.specifics)) {
+      await setEntityFieldMarkdown({
+        entityType: 'beat',
+        entityId: beatId,
+        field: `specifics.${sk}`,
+        markdown: sv,
+      });
+    }
+  }
+  for (const k of Object.keys(patch)) {
+    if (k.startsWith('specifics.')) {
+      await setEntityFieldMarkdown({
+        entityType: 'beat',
+        entityId: beatId,
+        field: k,
+        markdown: patch[k],
+      });
+    }
+  }
+  // order, characters, and scene_sheet_image_id are non-text → hit Mongo directly.
+  const onlyDiscrete = {};
+  if (patch.order !== undefined) onlyDiscrete.order = patch.order;
+  if (Array.isArray(patch.characters)) onlyDiscrete.characters = patch.characters;
+  if (Object.prototype.hasOwnProperty.call(patch, 'scene_sheet_image_id')) {
+    onlyDiscrete.scene_sheet_image_id = patch.scene_sheet_image_id;
+  }
+  if (Object.keys(onlyDiscrete).length) {
     const { updateBeat: mongoUpdateBeat } = await import('../mongo/plots.js');
-    const onlyDiscrete = {};
-    if (patch.order !== undefined) onlyDiscrete.order = patch.order;
-    if (Array.isArray(patch.characters)) onlyDiscrete.characters = patch.characters;
     await mongoUpdateBeat(beatId, onlyDiscrete);
     broadcastFieldsUpdated(buildRoomName('beat', beatId), {
       changed: Object.keys(onlyDiscrete),
@@ -414,6 +456,8 @@ export async function updateCharacterViaGateway(identifier, patch) {
       k === 'name' ||
       k === 'fields' ||
       k.startsWith('fields.') ||
+      k === 'specifics' ||
+      k.startsWith('specifics.') ||
       k === 'plays_self' ||
       k === 'hollywood_actor' ||
       k === 'own_voice' ||
@@ -421,14 +465,14 @@ export async function updateCharacterViaGateway(identifier, patch) {
   );
   if (!recognized) {
     throw new Error(
-      `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, plays_self, hollywood_actor, own_voice, or unset. Got keys: [${Object.keys(patch).join(', ')}].`,
+      `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, specifics, specifics.<key>, plays_self, hollywood_actor, own_voice, or unset. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
   const c = await getCharacter(identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   const cid = c._id.toString();
-  // Split text fields (name, hollywood_actor, fields.*) from discrete fields
-  // (plays_self, own_voice) and `unset`.
+  // Split text fields (name, hollywood_actor, fields.*, specifics.*) from
+  // discrete fields (plays_self, own_voice) and `unset`.
   const textOps = [];
   const discrete = {};
   let unset;
@@ -440,6 +484,12 @@ export async function updateCharacterViaGateway(identifier, patch) {
         textOps.push({ field: `fields.${fk}`, markdown: fv });
       }
     } else if (k.startsWith('fields.')) {
+      textOps.push({ field: k, markdown: v });
+    } else if (k === 'specifics' && v && typeof v === 'object') {
+      for (const [sk, sv] of Object.entries(v)) {
+        textOps.push({ field: `specifics.${sk}`, markdown: sv });
+      }
+    } else if (k.startsWith('specifics.')) {
       textOps.push({ field: k, markdown: v });
     } else if (k === 'plays_self' || k === 'own_voice') {
       discrete[k] = v;
@@ -560,6 +610,19 @@ export async function removeBeatAttachmentViaGateway({ beatId, attachmentId }) {
   return result;
 }
 
+export async function setBeatSceneSheetImageViaGateway({ beatId, imageId }) {
+  const beat = await getBeat(String(beatId));
+  if (!beat) throw new Error(`Beat not found: ${beatId}`);
+  const id = beat._id.toString();
+  await Plots.updateBeat(id, {
+    scene_sheet_image_id: imageId == null ? null : String(imageId),
+  });
+  broadcastFieldsUpdated(buildRoomName('beat', id), {
+    changed: ['scene_sheet_image_id'],
+  });
+  return getBeat(id);
+}
+
 export async function addCharacterImageViaGateway({ character, imageMeta, setAsMain }) {
   const c = await getCharacter(character);
   if (!c) throw new Error(`Character not found: ${character}`);
@@ -588,6 +651,19 @@ export async function removeCharacterImageViaGateway({ character, imageId }) {
     changed: ['images', 'main_image_id'],
   });
   return result;
+}
+
+export async function setCharacterSheetImageViaGateway({ character, imageId }) {
+  const c = await getCharacter(character);
+  if (!c) throw new Error(`Character not found: ${character}`);
+  const cid = c._id.toString();
+  await mongoUpdateCharacter(cid, {
+    character_sheet_image_id: imageId == null ? null : String(imageId),
+  });
+  broadcastFieldsUpdated(buildRoomName('character', cid), {
+    changed: ['character_sheet_image_id'],
+  });
+  return getCharacter(cid);
 }
 
 export async function addDirectorNoteImageViaGateway({ noteId, imageMeta, setAsMain }) {

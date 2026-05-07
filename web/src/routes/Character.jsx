@@ -6,6 +6,15 @@ import { CollabField } from '../editor/CollabField.jsx';
 import { ImageGallery } from '../widgets/ImageGallery.jsx';
 import { AttachmentList } from '../widgets/AttachmentList.jsx';
 import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
+import { CharacterSpecifics } from './CharacterSpecifics.jsx';
+
+const TABS = ['details', 'specifics'];
+
+function readInitialTab() {
+  if (typeof window === 'undefined') return 'details';
+  const h = (window.location.hash || '').replace(/^#/, '');
+  return TABS.includes(h) ? h : 'details';
+}
 
 export function Character({ session }) {
   const { name } = useParams();
@@ -14,6 +23,7 @@ export function Character({ session }) {
   const [template, setTemplate] = useState(null);
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [activeTab, setActiveTab] = useState(readInitialTab);
 
   useEffect(() => {
     let cancelled = false;
@@ -32,6 +42,25 @@ export function Character({ session }) {
     })();
     return () => { cancelled = true; };
   }, [name, refreshKey]);
+
+  useEffect(() => {
+    function onHash() {
+      const next = readInitialTab();
+      setActiveTab(next);
+    }
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  function selectTab(tab) {
+    setActiveTab(tab);
+    if (typeof window !== 'undefined') {
+      const newHash = tab === 'details' ? '' : `#${tab}`;
+      if (window.location.hash !== newHash) {
+        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${newHash}`);
+      }
+    }
+  }
 
   function onRefresh() { setRefreshKey((k) => k + 1); }
 
@@ -64,59 +93,86 @@ export function Character({ session }) {
         />
       </div>
 
+      <div className="tab-nav" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'details'}
+          className={`tab-button${activeTab === 'details' ? ' is-active' : ''}`}
+          onClick={() => selectTab('details')}
+        >
+          Details
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'specifics'}
+          className={`tab-button${activeTab === 'specifics' ? ' is-active' : ''}`}
+          onClick={() => selectTab('specifics')}
+        >
+          Specifics
+        </button>
+      </div>
+
       <CollabSurface room={room} session={session} onPing={onRefresh}>
-        <CollabField label="Name" field="name" />
-        <CollabField label="Hollywood actor" field="hollywood_actor" />
+        <div className="tab-panel" hidden={activeTab !== 'details'}>
+          <CollabField label="Name" field="name" />
+          <CollabField label="Hollywood actor" field="hollywood_actor" />
 
-        <div className="field-block" style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-          <label>
-            <input
-              type="checkbox"
-              defaultChecked={!!character.plays_self}
-              onChange={(e) => patchBool('plays_self', e.target.checked)}
+          <div className="field-block" style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+            <label>
+              <input
+                type="checkbox"
+                defaultChecked={!!character.plays_self}
+                onChange={(e) => patchBool('plays_self', e.target.checked)}
+              />
+              {' '}Plays self
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                defaultChecked={!!character.own_voice}
+                onChange={(e) => patchBool('own_voice', e.target.checked)}
+              />
+              {' '}Own voice
+            </label>
+          </div>
+
+          {customFields.map((f) => (
+            <CollabField
+              key={f.name}
+              label={f.name.replace(/_/g, ' ')}
+              field={`fields.${f.name}`}
+              multiline
+              placeholder={f.description}
             />
-            {' '}Plays self
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              defaultChecked={!!character.own_voice}
-              onChange={(e) => patchBool('own_voice', e.target.checked)}
+          ))}
+
+          <div className="field-block">
+            <span className="field-label">Images</span>
+            <ImageGallery
+              images={character.images || []}
+              mainImageId={character.main_image_id}
+              onChange={onRefresh}
+              uploadPath={`/character/${character._id}/image`}
+              deletePath={(imageId) => `/character/${character._id}/image/${imageId}`}
+              mainPath={`/character/${character._id}/main-image`}
             />
-            {' '}Own voice
-          </label>
+          </div>
+
+          <div className="field-block">
+            <span className="field-label">Attachments</span>
+            <AttachmentList
+              attachments={character.attachments || []}
+              onChange={onRefresh}
+              uploadPath={null}
+              deletePath={null}
+            />
+          </div>
         </div>
 
-        {customFields.map((f) => (
-          <CollabField
-            key={f.name}
-            label={f.name.replace(/_/g, ' ')}
-            field={`fields.${f.name}`}
-            multiline
-            placeholder={f.description}
-          />
-        ))}
-
-        <div className="field-block">
-          <span className="field-label">Images</span>
-          <ImageGallery
-            images={character.images || []}
-            mainImageId={character.main_image_id}
-            onChange={onRefresh}
-            uploadPath={`/character/${character._id}/image`}
-            deletePath={(imageId) => `/character/${character._id}/image/${imageId}`}
-            mainPath={`/character/${character._id}/main-image`}
-          />
-        </div>
-
-        <div className="field-block">
-          <span className="field-label">Attachments</span>
-          <AttachmentList
-            attachments={character.attachments || []}
-            onChange={onRefresh}
-            uploadPath={null}
-            deletePath={null}
-          />
+        <div className="tab-panel" hidden={activeTab !== 'specifics'}>
+          <CharacterSpecifics character={character} onRefresh={onRefresh} />
         </div>
       </CollabSurface>
     </main>

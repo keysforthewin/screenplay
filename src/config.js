@@ -62,6 +62,9 @@ export const config = {
       location: process.env.GEMINI_VERTEX_LOCATION || 'us-central1',
     },
   },
+  openai: {
+    apiKey: process.env.OPENAI_API_KEY || null,
+  },
   tmdb: {
     readAccessToken: process.env.TMDB_READ_ACCESS_TOKEN || null,
   },

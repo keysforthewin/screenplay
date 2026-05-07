@@ -23,6 +23,8 @@ import { getDirectorNotes } from '../mongo/directorNotes.js';
 import { getDb } from '../mongo/client.js';
 import { getCharacterTemplate } from '../mongo/prompts.js';
 import { stripMarkdown } from '../util/markdown.js';
+import { SPECIFICS_FIELD_NAMES } from '../util/specifics.js';
+import { BEAT_SPECIFICS_FIELD_NAMES } from '../util/beatSpecifics.js';
 import { logger } from '../log.js';
 import { enqueueReindex } from '../rag/queue.js';
 // Side-effect import: registers the reindex runner with the queue.
@@ -59,24 +61,48 @@ export function isManagedRoom(roomName) {
 
 // Beat ----------------------------------------------------------------------
 
-const BEAT_FIELDS = ['name', 'desc', 'body'];
+const BEAT_TOP_FIELDS = ['name', 'desc', 'body'];
 
 async function describeBeatRoom(id) {
   const plot = await getPlot();
   const beat = (plot.beats || []).find((b) => b._id?.toString?.() === id);
   if (!beat) return null;
+  const fieldNames = [
+    ...BEAT_TOP_FIELDS,
+    ...BEAT_SPECIFICS_FIELD_NAMES.map((n) => `specifics.${n}`),
+  ];
+
+  function readMongoValue(fieldName) {
+    if (BEAT_TOP_FIELDS.includes(fieldName)) {
+      return beat[fieldName] != null ? String(beat[fieldName]) : '';
+    }
+    if (fieldName.startsWith('specifics.')) {
+      const key = fieldName.slice('specifics.'.length);
+      const v = beat.specifics?.[key];
+      if (v == null) return '';
+      return typeof v === 'string' ? v : JSON.stringify(v);
+    }
+    return '';
+  }
+
   return {
     type: 'beat',
     id,
-    fields: BEAT_FIELDS,
-    seed: BEAT_FIELDS.reduce((acc, f) => {
-      acc[f] = beat[f] != null ? String(beat[f]) : '';
+    fields: fieldNames,
+    seed: fieldNames.reduce((acc, f) => {
+      acc[f] = readMongoValue(f);
       return acc;
     }, {}),
     persistFields: async (snapshot) => {
       const patch = {};
-      for (const f of BEAT_FIELDS) {
-        if (snapshot[f] !== undefined && snapshot[f] !== beat[f]) patch[f] = snapshot[f];
+      for (const f of fieldNames) {
+        if (snapshot[f] === undefined) continue;
+        if (snapshot[f] === readMongoValue(f)) continue;
+        if (BEAT_TOP_FIELDS.includes(f)) {
+          patch[f] = snapshot[f];
+        } else if (f.startsWith('specifics.')) {
+          patch[f] = snapshot[f];
+        }
       }
       if (!Object.keys(patch).length) return { changed: false };
       await updateBeat(id, patch);
@@ -93,9 +119,15 @@ async function describeCharacterRoom(id) {
   if (!c) return null;
   const template = (await getCharacterTemplate())?.fields || [];
   // Editable text fields: name + hollywood_actor (top-level) + every non-core
-  // template field stored under `fields.<name>`.
+  // template field stored under `fields.<name>` + every specifics field stored
+  // under `specifics.<name>`.
   const customFieldNames = template.filter((t) => !t.core).map((t) => t.name);
-  const fieldNames = ['name', 'hollywood_actor', ...customFieldNames.map((n) => `fields.${n}`)];
+  const fieldNames = [
+    'name',
+    'hollywood_actor',
+    ...customFieldNames.map((n) => `fields.${n}`),
+    ...SPECIFICS_FIELD_NAMES.map((n) => `specifics.${n}`),
+  ];
 
   function readMongoValue(fieldName) {
     if (fieldName === 'name') return c.name || '';
@@ -103,6 +135,12 @@ async function describeCharacterRoom(id) {
     if (fieldName.startsWith('fields.')) {
       const key = fieldName.slice('fields.'.length);
       const v = c.fields?.[key];
+      if (v == null) return '';
+      return typeof v === 'string' ? v : JSON.stringify(v);
+    }
+    if (fieldName.startsWith('specifics.')) {
+      const key = fieldName.slice('specifics.'.length);
+      const v = c.specifics?.[key];
       if (v == null) return '';
       return typeof v === 'string' ? v : JSON.stringify(v);
     }
@@ -127,6 +165,8 @@ async function describeCharacterRoom(id) {
         } else if (f === 'hollywood_actor') {
           patch.hollywood_actor = snapshot[f];
         } else if (f.startsWith('fields.')) {
+          patch[f] = snapshot[f];
+        } else if (f.startsWith('specifics.')) {
           patch[f] = snapshot[f];
         }
       }

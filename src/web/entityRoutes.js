@@ -387,6 +387,39 @@ export function buildApiRouter() {
     }
   });
 
+  // ── beat "specifics" tab (web-only) ──────────────────────────────────────
+  // Auto-fill empty specifics fields by asking Claude vision about the beat's
+  // body/desc/name text and any attached reference images.
+  router.post('/beat/:id/specifics/autofill', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const { autofillBeatSpecifics } = await import('./beatSpecificsAutofill.js');
+      const result = await autofillBeatSpecifics({ beatId });
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Generate a UE5 production-grade scene reference sheet from beat.specifics
+  // using OpenAI gpt-image-2 and store it as scene_sheet_image_id.
+  router.post('/beat/:id/scene-sheet', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const quality = String(req.body?.quality || 'auto');
+      if (!['low', 'medium', 'high', 'auto'].includes(quality)) {
+        return res.status(400).json({ error: 'invalid quality' });
+      }
+      const { generateSceneSheetForBeat } = await import('./beatSceneSheet.js');
+      const result = await generateSceneSheetForBeat({ beatId, quality });
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // ── character mutations (non-text) ───────────────────────────────────────
 
   async function resolveCharacterId(req) {
@@ -466,6 +499,42 @@ export function buildApiRouter() {
       if (!Object.keys(patch).length) return res.status(400).json({ error: 'no patch fields' });
       const result = await updateCharacterViaGateway(cid, patch);
       res.json({ character: result });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── character "specifics" tab (web-only) ────────────────────────────────
+  // Auto-fill empty specifics fields by asking Claude vision about the
+  // character's reference images. Never overwrites non-empty fields.
+  router.post('/character/:id/specifics/autofill', async (req, res, next) => {
+    try {
+      const cid = await resolveCharacterId(req);
+      if (!cid) return res.status(404).json({ error: 'character not found' });
+      const { autofillCharacterSpecifics } = await import('./specificsAutofill.js');
+      const result = await autofillCharacterSpecifics({ characterId: cid });
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Generate a UE5 MetaHuman-style character sheet from the specifics fields
+  // using OpenAI gpt-image-2 and store it as character_sheet_image_id.
+  router.post('/character/:id/character-sheet', async (req, res, next) => {
+    try {
+      const cid = await resolveCharacterId(req);
+      if (!cid) return res.status(404).json({ error: 'character not found' });
+      const quality = String(req.body?.quality || 'auto');
+      if (!['low', 'medium', 'high', 'auto'].includes(quality)) {
+        return res.status(400).json({ error: 'invalid quality' });
+      }
+      const { generateCharacterSheetForCharacter } = await import('./characterSheet.js');
+      const result = await generateCharacterSheetForCharacter({
+        characterId: cid,
+        quality,
+      });
+      res.json(result);
     } catch (e) {
       next(e);
     }

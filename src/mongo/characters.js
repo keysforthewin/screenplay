@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../log.js';
 import { stripMarkdown } from '../util/markdown.js';
+import { isCharacterSpecificsFieldName } from '../util/specifics.js';
 
 const col = () => getDb().collection('characters');
 
@@ -74,11 +75,14 @@ export async function updateCharacter(identifier, patch) {
       k === 'plays_self' ||
       k === 'hollywood_actor' ||
       k === 'own_voice' ||
+      k === 'specifics' ||
+      k.startsWith('specifics.') ||
+      k === 'character_sheet_image_id' ||
       k === 'unset',
   );
   if (!hasRecognized) {
     throw new Error(
-      `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, plays_self, hollywood_actor, own_voice, or unset. Got keys: [${Object.keys(patch).join(', ')}].`,
+      `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, plays_self, hollywood_actor, own_voice, specifics, specifics.<key>, character_sheet_image_id, or unset. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
   const existing = await getCharacter(identifier);
@@ -93,6 +97,36 @@ export async function updateCharacter(identifier, patch) {
       for (const [fk, fv] of Object.entries(v)) set[`fields.${fk}`] = fv;
     } else if (k.startsWith('fields.')) {
       set[k] = v;
+    } else if (k === 'specifics' && v && typeof v === 'object') {
+      for (const [sk, sv] of Object.entries(v)) {
+        if (!isCharacterSpecificsFieldName(sk)) {
+          throw new Error(
+            `update_character: unknown specifics field "${sk}".`,
+          );
+        }
+        set[`specifics.${sk}`] = sv;
+      }
+    } else if (k.startsWith('specifics.')) {
+      const sk = k.slice('specifics.'.length);
+      if (!isCharacterSpecificsFieldName(sk)) {
+        throw new Error(
+          `update_character: unknown specifics field "${sk}".`,
+        );
+      }
+      set[k] = v;
+    } else if (k === 'character_sheet_image_id') {
+      // Allow null (clear) or an ObjectId / 24-hex string.
+      if (v === null) {
+        set.character_sheet_image_id = null;
+      } else if (v instanceof ObjectId) {
+        set.character_sheet_image_id = v;
+      } else if (typeof v === 'string' && /^[a-f0-9]{24}$/i.test(v)) {
+        set.character_sheet_image_id = new ObjectId(v);
+      } else {
+        throw new Error(
+          `update_character: character_sheet_image_id must be null or a 24-hex string, got ${typeof v}.`,
+        );
+      }
     } else if (['plays_self', 'hollywood_actor', 'own_voice'].includes(k)) {
       set[k] = v;
     } else if (k === 'unset') {
