@@ -11,6 +11,7 @@ import {
   createTouchedEntities,
 } from './entityLinks.js';
 import { buildSystemPrompt } from './systemPrompt.js';
+import { detectReviewIntent, reviewInterceptText } from './reviewMode.js';
 import { getBotDisplayName } from '../web/gateway.js';
 import { withMessageCacheBreakpoint } from './historyCache.js';
 import { listCharacters } from '../mongo/characters.js';
@@ -48,6 +49,7 @@ const MUTATING_PREFIXES = [
   'append_',
   'reorder_',
   'bulk_',
+  'revise_',
   'generate_image',
 ];
 
@@ -133,6 +135,7 @@ async function buildSystem({
   omitDirectorNotes = false,
   cache = config.cache.enabled,
   senderName = null,
+  reviewMode = false,
 } = {}) {
   const [characters, characterTemplate, plotTemplate, plot, directorNotes] =
     await Promise.all([
@@ -151,6 +154,7 @@ async function buildSystem({
     cache,
     botName: getBotDisplayName(),
     senderName,
+    reviewMode,
   });
 }
 
@@ -386,6 +390,10 @@ export async function runAgent({
     typeof discordUser?.displayName === 'string' && discordUser.displayName.trim()
       ? discordUser.displayName.trim()
       : null;
+  const reviewMode = detectReviewIntent(userText);
+  if (reviewMode) {
+    logger.info('agent → review-mode active for this turn (mutations will be intercepted)');
+  }
   const messages = [
     ...history,
     {
@@ -457,12 +465,12 @@ export async function runAgent({
   };
 
   try {
-    let cachedSystem = await buildSystem({ senderName });
+    let cachedSystem = await buildSystem({ senderName, reviewMode });
     let systemDirty = false;
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
       if (systemDirty) {
-        cachedSystem = await buildSystem({ senderName });
+        cachedSystem = await buildSystem({ senderName, reviewMode });
         systemDirty = false;
       }
       const system = cachedSystem;
@@ -471,7 +479,7 @@ export async function runAgent({
       const currentTools = withToolsCache(toolDefsForApi(loadedToolNames));
 
       if (i === 0) {
-        const systemNoDirectorNotes = await buildSystem({ omitDirectorNotes: true, senderName });
+        const systemNoDirectorNotes = await buildSystem({ omitDirectorNotes: true, senderName, reviewMode });
         sectionTokensPromise = measureSectionTokens({
           model,
           system,
@@ -547,9 +555,11 @@ export async function runAgent({
 
       const toolUses = resp.content.filter((b) => b.type === 'tool_use');
 
-      // Split out tool_search (handled inline so it can mutate loadedToolNames).
-      // Everything else goes through the normal handler dispatch.
+      // Split out tool_search (handled inline so it can mutate loadedToolNames),
+      // and — when review-mode is active — intercept any mutation tool call so
+      // its handler never runs. Everything else goes through normal dispatch.
       const metaResults = [];
+      const blockedResults = [];
       const realToolUses = [];
       for (const tu of toolUses) {
         if (tu.name === 'tool_search') {
@@ -569,6 +579,16 @@ export async function runAgent({
             slot.count += 1;
             slot.result_tokens += Math.ceil(content.length / 4);
             toolStats.set('tool_search', slot);
+          }
+        } else if (reviewMode && isMutatingTool(tu.name)) {
+          const content = reviewInterceptText(tu.name);
+          logger.info(`review-mode → blocked mutation tool '${tu.name}'`);
+          blockedResults.push({ type: 'tool_result', tool_use_id: tu.id, content });
+          if (toolStats instanceof Map) {
+            const slot = toolStats.get(tu.name) || { count: 0, result_tokens: 0 };
+            slot.count += 1;
+            slot.result_tokens += Math.ceil(content.length / 4);
+            toolStats.set(tu.name, slot);
           }
         } else {
           realToolUses.push(tu);
@@ -593,11 +613,14 @@ export async function runAgent({
       // Reassemble in the original tool_use order so tool_result blocks line up.
       const resultById = new Map();
       for (const r of metaResults) resultById.set(r.tool_use_id, r);
+      for (const r of blockedResults) resultById.set(r.tool_use_id, r);
       for (const r of realResults) resultById.set(r.tool_use_id, r);
       const results = toolUses.map((tu) => resultById.get(tu.id));
       messages.push({ role: 'user', content: results });
 
-      if (toolUses.some((tu) => isMutatingTool(tu.name))) {
+      // Only flip systemDirty for mutations that actually ran. Blocked mutations
+      // changed nothing in Mongo, so the cached system prompt is still accurate.
+      if (realToolUses.some((tu) => isMutatingTool(tu.name))) {
         systemDirty = true;
       }
     }

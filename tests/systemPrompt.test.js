@@ -390,4 +390,64 @@ describe('buildSystemPrompt', () => {
     expect(s1.text).toContain('**Steve**');
     expect(s2.text).toContain('**Mira**');
   });
+
+  describe('reviewMode parameter', () => {
+    it('returns 2 blocks when reviewMode is false (default)', () => {
+      const blocks = buildSystemPrompt({
+        characters: [],
+        characterTemplate: { fields: [] },
+        plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+        plot: { synopsis: '', beats: [] },
+      });
+      expect(blocks).toHaveLength(2);
+      expect(blocks.some((b) => /Review-mode/.test(b.text))).toBe(false);
+    });
+
+    it('appends a third unmarked block when reviewMode is true', () => {
+      const blocks = buildSystemPrompt({
+        characters: [],
+        characterTemplate: { fields: [] },
+        plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+        plot: { synopsis: '', beats: [] },
+        reviewMode: true,
+      });
+      expect(blocks).toHaveLength(3);
+      // Stable + volatile keep their cache_control; the suffix block does not.
+      expect(blocks[0].cache_control).toEqual({ type: 'ephemeral' });
+      expect(blocks[1].cache_control).toEqual({ type: 'ephemeral' });
+      expect(blocks[2].cache_control).toBeUndefined();
+      expect(blocks[2].text).toMatch(/Review-mode/);
+      expect(blocks[2].text).toMatch(/No changes will be made until you confirm/);
+      expect(blocks[2].text).toMatch(/Do not call mutation tools/);
+    });
+
+    it('reviewMode suffix carries the plan format skeleton', () => {
+      const blocks = buildSystemPrompt({
+        characters: [],
+        characterTemplate: { fields: [] },
+        plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+        plot: { synopsis: '', beats: [] },
+        reviewMode: true,
+      });
+      const suffix = blocks[2].text;
+      expect(suffix).toContain('Proposed plan');
+      expect(suffix).toContain('Before:');
+      expect(suffix).toContain('After:');
+      expect(suffix).toMatch(/1.{0,5}3 changes/);
+    });
+
+    it('does not modify the stable block contents when reviewMode toggles', () => {
+      _resetStableTextCacheForTests();
+      const args = {
+        characters: [],
+        characterTemplate: { fields: [] },
+        plotTemplate: { synopsis_guidance: 'g', beat_guidance: 'b' },
+        plot: { synopsis: '', beats: [] },
+        cache: false,
+      };
+      const [s1] = buildSystemPrompt({ ...args, reviewMode: false });
+      const [s2] = buildSystemPrompt({ ...args, reviewMode: true });
+      expect(s1.text).toBe(s2.text);
+    });
+  });
 });

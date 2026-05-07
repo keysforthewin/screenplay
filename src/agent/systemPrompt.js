@@ -1,5 +1,6 @@
 import { formatCasting } from './overview.js';
 import { spaBaseUrl } from '../web/links.js';
+import { REVIEW_MODE_SUFFIX } from './reviewMode.js';
 
 function summarizeBeat(b) {
   const d = (b.desc || '').trim();
@@ -311,6 +312,7 @@ export function buildSystemPrompt({
   botName = 'Screenplay Bot',
   senderName = null,
   webBaseUrl = spaBaseUrl(),
+  reviewMode = false,
 }) {
   const stable = buildStableText({ characterTemplate, plotTemplate, botName, webBaseUrl });
   const volatile = buildVolatileText({ characters, plot, directorNotes, senderName });
@@ -318,10 +320,17 @@ export function buildSystemPrompt({
   const stableBlock = { type: 'text', text: stable };
   const volatileBlock = { type: 'text', text: volatile };
   if (cache) {
+    // INVARIANT: cache_control belongs on the stable + volatile blocks only.
+    // The review-mode suffix (when appended below) MUST stay unmarked so
+    // per-turn mode flips don't bust the upstream cache breakpoints.
     stableBlock.cache_control = { type: 'ephemeral' };
     volatileBlock.cache_control = { type: 'ephemeral' };
   }
-  return [stableBlock, volatileBlock];
+  const blocks = [stableBlock, volatileBlock];
+  if (reviewMode) {
+    blocks.push({ type: 'text', text: REVIEW_MODE_SUFFIX });
+  }
+  return blocks;
 }
 
 export function joinSystemBlocks(blocks) {
