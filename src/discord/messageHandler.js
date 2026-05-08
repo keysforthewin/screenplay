@@ -55,16 +55,19 @@ export async function handleMessage(msg) {
     let typingTimer;
     let attachmentPaths = [];
     try {
+      const typingT0 = Date.now();
       await msg.channel.sendTyping();
-      logger.debug('typing started');
+      logger.info(`typing started (${Date.now() - typingT0}ms)`);
       typingTimer = setInterval(() => msg.channel.sendTyping().catch(() => {}), 8000);
 
+      const histT0 = Date.now();
+      logger.info('loading history from mongo');
       const clearedAt = await getHistoryClearedAt(msg.channelId);
       const rawHistory = await loadHistoryForLlm(msg.channelId, {
         maxAgeMs: config.trim.historyWindowMs,
         since: clearedAt,
       });
-      logger.info(`history loaded ${rawHistory.length} msgs`);
+      logger.info(`history loaded ${rawHistory.length} msgs (mongo ${Date.now() - histT0}ms)`);
       const { messages: history, stats: trimStats } = config.trim.enabled
         ? trimHistoryForLlm(rawHistory, {
             tokenBudget: config.trim.tokenBudget,
