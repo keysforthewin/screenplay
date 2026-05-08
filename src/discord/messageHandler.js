@@ -24,6 +24,59 @@ const mutex = keyedMutex();
 
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
+const STEP_SLOW_MS = 5000;
+
+function fireAndForgetTyping(channel) {
+  const t0 = Date.now();
+  const watchdog = setTimeout(() => {
+    logger.warn(
+      `sendTyping background: still pending after ${Date.now() - t0}ms (Discord REST may be wedged)`,
+    );
+  }, 5000);
+  if (watchdog.unref) watchdog.unref();
+  channel.sendTyping().then(
+    () => {
+      clearTimeout(watchdog);
+      const elapsed = Date.now() - t0;
+      if (elapsed >= 1000) logger.info(`sendTyping background: ok in ${elapsed}ms`);
+    },
+    (e) => {
+      clearTimeout(watchdog);
+      const status = e?.status ?? e?.httpStatus ?? '?';
+      const code = e?.code ?? '?';
+      logger.warn(
+        `sendTyping background: failed in ${Date.now() - t0}ms status=${status} code=${code} msg=${e?.message || e}`,
+      );
+    },
+  );
+}
+
+async function loggedStep(label, fn, slowMs = STEP_SLOW_MS) {
+  const t0 = Date.now();
+  logger.info(`step start: ${label}`);
+  let warned = false;
+  const watchdog = setInterval(() => {
+    warned = true;
+    logger.warn(`step pending: ${label} (${Date.now() - t0}ms)`);
+  }, slowMs);
+  if (watchdog.unref) watchdog.unref();
+  try {
+    const result = await fn();
+    clearInterval(watchdog);
+    const elapsed = Date.now() - t0;
+    if (warned || elapsed >= slowMs) {
+      logger.warn(`step done: ${label} ${elapsed}ms (slow)`);
+    } else {
+      logger.info(`step done: ${label} ${elapsed}ms`);
+    }
+    return result;
+  } catch (e) {
+    clearInterval(watchdog);
+    logger.warn(`step failed: ${label} after ${Date.now() - t0}ms: ${e.message}`);
+    throw e;
+  }
+}
+
 function extractAttachments(msg) {
   return [...msg.attachments.values()].map((a) => ({
     url: a.url,
@@ -51,23 +104,27 @@ export async function handleMessage(msg) {
     `discord msg ← ${msg.author.tag} chars=${text.length} attach=${attachments.length}: "${preview}"`,
   );
 
+  logger.info(`queueing into channel mutex (channel=${msg.channelId})`);
+  const mutexT0 = Date.now();
   await mutex.run(msg.channelId, async () => {
+    logger.info(`entered channel mutex after ${Date.now() - mutexT0}ms`);
     let typingTimer;
     let attachmentPaths = [];
     try {
-      const typingT0 = Date.now();
-      await msg.channel.sendTyping();
-      logger.info(`typing started (${Date.now() - typingT0}ms)`);
-      typingTimer = setInterval(() => msg.channel.sendTyping().catch(() => {}), 8000);
+      fireAndForgetTyping(msg.channel);
+      typingTimer = setInterval(() => fireAndForgetTyping(msg.channel), 8000);
 
       const histT0 = Date.now();
-      logger.info('loading history from mongo');
-      const clearedAt = await getHistoryClearedAt(msg.channelId);
-      const rawHistory = await loadHistoryForLlm(msg.channelId, {
-        maxAgeMs: config.trim.historyWindowMs,
-        since: clearedAt,
-      });
-      logger.info(`history loaded ${rawHistory.length} msgs (mongo ${Date.now() - histT0}ms)`);
+      const clearedAt = await loggedStep('mongo getHistoryClearedAt', () =>
+        getHistoryClearedAt(msg.channelId),
+      );
+      const rawHistory = await loggedStep('mongo loadHistoryForLlm', () =>
+        loadHistoryForLlm(msg.channelId, {
+          maxAgeMs: config.trim.historyWindowMs,
+          since: clearedAt,
+        }),
+      );
+      logger.info(`history loaded ${rawHistory.length} msgs (mongo total ${Date.now() - histT0}ms)`);
       const { messages: history, stats: trimStats } = config.trim.enabled
         ? trimHistoryForLlm(rawHistory, {
             tokenBudget: config.trim.tokenBudget,
@@ -85,16 +142,22 @@ export async function handleMessage(msg) {
         msg.member?.displayName ?? msg.author.globalName ?? msg.author.username;
       const discordUser = { id: msg.author.id, displayName };
 
-      await recordUserMessage({ msg, text, attachments, displayName });
+      await loggedStep('mongo recordUserMessage', () =>
+        recordUserMessage({ msg, text, attachments, displayName }),
+      );
 
       const enhanceT0 = Date.now();
-      const [characters, plot] = await Promise.all([listCharacters(), getPlot()]);
-      const enhancement = await enhancePrompt({
-        userText: text,
-        characters,
-        beats: plot?.beats || [],
-        synopsis: plot?.synopsis || '',
-      });
+      const [characters, plot] = await loggedStep('mongo listCharacters+getPlot', () =>
+        Promise.all([listCharacters(), getPlot()]),
+      );
+      const enhancement = await loggedStep('anthropic enhancePrompt', () =>
+        enhancePrompt({
+          userText: text,
+          characters,
+          beats: plot?.beats || [],
+          synopsis: plot?.synopsis || '',
+        }),
+      );
       if (enhancement.usage) {
         try {
           await recordAnthropicTextUsage({
@@ -119,14 +182,19 @@ export async function handleMessage(msg) {
       );
 
       const agentT0 = Date.now();
-      const result = await runAgent({
-        history,
-        userText: text,
-        attachments,
-        discordUser,
-        channelId: msg.channelId,
-        enhancementNotes: enhancement.notes,
-      });
+      const result = await loggedStep(
+        'agent runAgent',
+        () =>
+          runAgent({
+            history,
+            userText: text,
+            attachments,
+            discordUser,
+            channelId: msg.channelId,
+            enhancementNotes: enhancement.notes,
+          }),
+        15000,
+      );
       attachmentPaths = result.attachmentPaths;
       const attachmentLinks = result.attachmentLinks || [];
       const baseReplyText = result.text || '(no reply)';
@@ -149,7 +217,9 @@ export async function handleMessage(msg) {
       }
 
       clearInterval(typingTimer);
-      await sendReply(msg.channel, replyText, attachmentPaths, attachmentLinks);
+      await loggedStep('discord sendReply', () =>
+        sendReply(msg.channel, replyText, attachmentPaths, attachmentLinks),
+      );
       const pdfs = attachmentPaths.filter((p) => /\.pdf$/i.test(p)).length;
       const images = attachmentPaths.length - pdfs;
       logger.info(
