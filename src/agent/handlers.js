@@ -1027,7 +1027,7 @@ export const HANDLERS = {
     }
 
     const system =
-      'You revise character-sheet fields per the user\'s revision instructions. For each field, decide one of: "edit" (provide new text), "delete" (the field should be removed entirely), or "keep" (no change). Return JSON only, no prose, in the form {"actions":[{"field":"<name>","action":"edit|delete|keep","new_value":"..."}]}. Include "new_value" only when action is "edit". Preserve the original value type (string in, string out). Do not invent field names that were not provided.';
+      'You revise character-sheet fields per the user\'s revision instructions. For each field, decide one of: "edit" (provide new text), "delete" (the field should be removed entirely), or "keep" (no change). Return JSON only, no prose, in the form {"actions":[{"field":"<name>","action":"edit|delete|keep","new_value":"..."}]}. Include "new_value" only when action is "edit". `new_value` MUST always be a plain human-readable markdown string — never a JSON array, object, or stringified payload. If an existing field value looks like JSON (an array or object), rewrite it as prose or comma-separated text rather than preserving the JSON shape. Do not invent field names that were not provided.';
 
     const fieldDump = fieldNames
       .map((n) => `- ${n}: ${JSON.stringify(fields[n])}`)

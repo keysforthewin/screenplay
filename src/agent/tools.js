@@ -77,7 +77,7 @@ export const TOOLS = [
     name: 'update_character',
     keywords: ['update', 'edit', 'change', 'modify', 'patch', 'set', 'character', 'person', 'role', 'fix', 'remove', 'delete', 'unset'],
     description:
-      'Patch fields on an existing character. Pass `patch` as a JSON object, NOT a JSON string. Only include fields you want to change. Top-level keys: `name`, `plays_self`, `hollywood_actor`, `own_voice`, `fields` (object holding any custom template fields), and `unset` (array of custom field names to delete from this character). Examples: {"identifier":"Alice","patch":{"name":"Alicia"}} — {"identifier":"Alice","patch":{"fields":{"role":"protagonist"}}} — {"identifier":"Alice","patch":{"fields":{"alternate_names":["Ali","Allie"]}}} — {"identifier":"Alice","patch":{"unset":["pre_beat_5"]}}. For sweeping multi-field rewrites ("remove all references to X"), use `revise_character` instead.',
+      'Patch fields on an existing character. Pass `patch` as a JSON object, NOT a JSON string. Only include fields you want to change. Top-level keys: `name`, `plays_self`, `hollywood_actor`, `own_voice`, `fields` (object holding any custom template fields — VALUES MUST BE PLAIN HUMAN-READABLE STRINGS, never arrays or objects; lists go as comma-separated text, multi-part facts go as prose), and `unset` (array of custom field names to delete from this character). Examples: {"identifier":"Alice","patch":{"name":"Alicia"}} — {"identifier":"Alice","patch":{"fields":{"role":"protagonist"}}} — {"identifier":"Alice","patch":{"fields":{"alternate_names":"Ali, Allie"}}} — {"identifier":"Alice","patch":{"fields":{"name_changes":"Alicia Wong — changed 2019-06-01 after marriage"}}} — {"identifier":"Alice","patch":{"unset":["pre_beat_5"]}}. For sweeping multi-field rewrites ("remove all references to X"), use `revise_character` instead.',
     input_schema: {
       type: 'object',
       properties: {
@@ -97,7 +97,7 @@ export const TOOLS = [
             fields: {
               type: 'object',
               description:
-                'Custom template fields. Keys are template field names; values may be strings, numbers, booleans, arrays, objects, or null depending on the field. To modify a list-shaped field, fetch the character first with get_character and send the full new list — values are REPLACED, not merged. Setting a value to null KEEPS the key (with value null); to actually delete a field use `unset` instead.',
+                'Custom template fields. Keys are template field names; **values must be plain human-readable markdown strings** — never arrays, objects, or JSON-stringified payloads. Lists (alternate names, props, places) go as comma-separated text or a markdown bullet list. Multi-part facts (a name change with a reason or date) go as prose. Even if the template field description shows a JSON example, write the value as plain text. To modify a multi-line field, fetch the character first with get_character and send the full new text — values are REPLACED, not merged. Setting a value to null KEEPS the key (with value null); to actually delete a field use `unset` instead.',
               additionalProperties: true,
             },
             unset: {
@@ -186,7 +186,8 @@ export const TOOLS = [
                 description: 'Character name (case-insensitive) or 24-char hex _id.',
               },
               value: {
-                description: 'New value for the field. Type depends on the field.',
+                description:
+                  'New value for the field. For boolean core fields (`plays_self`, `own_voice`) pass true/false. Otherwise pass a plain human-readable markdown string — never a JSON array or object. Lists go as comma-separated text; multi-part facts go as prose.',
               },
             },
             required: ['character', 'value'],

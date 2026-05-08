@@ -16,8 +16,8 @@ const DEFAULT_CHARACTER_FIELDS = [
   { name: 'arc', description: 'How the character develops throughout the movie.', required: false, core: false },
   { name: 'events', description: 'Notable things that happen to them during the story.', required: false, core: false },
   { name: 'memes', description: 'Memes, catchphrases, or running jokes associated with them.', required: false, core: false },
-  { name: 'alternate_names', description: 'Other names this person is known by (array of strings). Example: ["Bobby", "The Boss"].', required: false, core: false },
-  { name: 'name_changes', description: 'Prior names with the date each change happened (array of {name, changed_on} objects). Example: [{ name: "Robert Smith", changed_on: "2018-05-12" }].', required: false, core: false },
+  { name: 'alternate_names', description: 'Other names this person is known by, as plain comma-separated text. Example: "Bobby, The Boss". Do NOT write a JSON array — this field is human-readable markdown.', required: false, core: false },
+  { name: 'name_changes', description: 'Prior names with the date and (if known) reason each change happened, written in plain English. Example: "Robert Smith — changed 2018-05-12 after his marriage; Bobby R — changed 2010-03-04 when he started DJing." Do NOT write a JSON array of objects — this field is human-readable prose.', required: false, core: false },
 ];
 
 const DEFAULT_PLOT_TEMPLATE = {

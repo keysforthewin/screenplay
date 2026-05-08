@@ -105,6 +105,9 @@ export function isCharacterSpecificsFieldName(name) {
   return SPECIFICS_FIELD_NAMES.includes(name);
 }
 
+// Character sheet prompt attribution:
+//   Created by IamEmily2050. Shared with us by GlitterPixely.
+//   Both are incredibly talented artists — go check out their work, it's worth a look.
 const SHEET_PROMPT_PREAMBLE = `Create a complex UE5 MetaHuman style production character sheet for the character described below.
 
 Use strict production continuity. The character must remain identical across all views. Preserve face identity, body proportions, hairstyle, outfit, accessories, markings, and all asymmetrical left/right details.

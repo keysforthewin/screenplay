@@ -24,10 +24,12 @@ describe('seedDefaults', () => {
     const alt = tpl.fields.find((f) => f.name === 'alternate_names');
     expect(alt.core).toBe(false);
     expect(alt.required).toBe(false);
-    expect(alt.description).toMatch(/array of strings/i);
+    expect(alt.description).toMatch(/comma-separated/i);
+    expect(alt.description).toMatch(/do not write a json array/i);
     const nc = tpl.fields.find((f) => f.name === 'name_changes');
     expect(nc.core).toBe(false);
-    expect(nc.description).toMatch(/changed_on/);
+    expect(nc.description).toMatch(/plain english/i);
+    expect(nc.description).toMatch(/do not write a json array/i);
   });
 
   it('does not duplicate fields when called twice', async () => {
