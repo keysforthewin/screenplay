@@ -382,6 +382,46 @@ input[type="text"], input[type="search"] {
 .library-actions .icon-link:hover { border-color: var(--accent); }
 .library-actions button { padding: 4px 8px; font-size: 12px; }
 
+/* Character/beat image gallery — same one-row layout as the library so the
+   thumbnail + name + description + actions read identically across pages. */
+.image-gallery-list { display: flex; flex-direction: column; }
+.gallery-row {
+  display: flex; gap: 16px; align-items: flex-start;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+.gallery-row:first-child { border-top: none; }
+.gallery-row.is-main .gallery-thumb img { border-color: var(--accent); }
+.gallery-thumb { flex: 0 0 220px; width: 220px; }
+.gallery-thumb a { display: block; }
+.gallery-thumb img {
+  width: 100%; max-height: 220px;
+  object-fit: cover; display: block;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.gallery-meta {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.gallery-meta .field-block { margin: 0; }
+.gallery-actions {
+  flex: 0 0 auto;
+  display: flex; flex-direction: column; gap: 8px;
+  align-items: stretch;
+  min-width: 80px;
+}
+.gallery-actions .icon-link {
+  display: inline-block; padding: 4px 8px; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 6px;
+  text-align: center;
+  text-decoration: none;
+  color: var(--fg);
+  background: var(--bg-elevated);
+}
+.gallery-actions .icon-link:hover { border-color: var(--accent); }
+.gallery-actions button { padding: 4px 8px; font-size: 12px; }
+
 .saved-indicator {
   font-size: 12px;
   color: var(--fg-muted);

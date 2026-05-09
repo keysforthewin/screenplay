@@ -244,7 +244,27 @@ export async function dispatchToolUses(
       const raw = await dispatchFn(tu.name, tu.input, context);
       const result = interceptAttachment(raw, attachmentPaths, attachmentLinks);
       resultText = summarizeToolResultForLog(result);
-      results.push({ type: 'tool_result', tool_use_id: tu.id, content: result });
+      // Handlers report failure by returning a string starting with "Tool error ("
+      // (canonical prefix produced by dispatchTool's catch in handlers.js, and
+      // by handler-internal validation paths). dispatchFn never throws those —
+      // it only throws for truly unexpected failures. Tag the tool_result with
+      // is_error: true so the model treats it as a hard failure (per Anthropic
+      // protocol) instead of a normal response that invites a destructive
+      // fallback. Also log the content so bot logs aren't opaque.
+      const isHandlerError =
+        typeof result === 'string' &&
+        (result.startsWith('Tool error (') || result.startsWith('Unknown tool: '));
+      if (isHandlerError) {
+        logger.warn(`tool failed ${tu.name}: ${result}`);
+        results.push({
+          type: 'tool_result',
+          tool_use_id: tu.id,
+          content: result,
+          is_error: true,
+        });
+      } else {
+        results.push({ type: 'tool_result', tool_use_id: tu.id, content: result });
+      }
     } catch (e) {
       // Defense in depth: dispatchTool already catches handler errors, but if anything
       // here throws (interceptAttachment, future code) we MUST still emit a tool_result

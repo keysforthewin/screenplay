@@ -136,14 +136,15 @@ describe('get_beat auto-truncation', () => {
   });
 });
 
-describe('edit_character_field', () => {
+describe('edit (character field)', () => {
   it('applies find/replace edits to a custom field via gateway fallback', async () => {
     const c = await Characters.createCharacter({
       name: 'Maya',
       fields: { bio: 'Maya is a rookie. Maya likes coffee.' },
     });
-    const out = await HANDLERS.edit_character_field({
-      character: 'Maya',
+    const out = await HANDLERS.edit({
+      collection: 'character',
+      identifier: 'Maya',
       field: 'bio',
       edits: [{ find: 'rookie', replace: 'veteran' }],
     });
@@ -158,8 +159,9 @@ describe('edit_character_field', () => {
       plays_self: false,
       hollywood_actor: 'Steve Mulligan Senior',
     });
-    const out = await HANDLERS.edit_character_field({
-      character: 'Steve',
+    const out = await HANDLERS.edit({
+      collection: 'character',
+      identifier: 'Steve',
       field: 'hollywood_actor',
       edits: [{ find: 'Senior', replace: 'Junior' }],
     });
@@ -174,8 +176,9 @@ describe('edit_character_field', () => {
       fields: { bio: 'apple apple apple' },
     });
     await expect(
-      HANDLERS.edit_character_field({
-        character: 'Maya',
+      HANDLERS.edit({
+        collection: 'character',
+        identifier: 'Maya',
         field: 'bio',
         edits: [{ find: 'apple', replace: 'orange' }],
       }),
@@ -185,8 +188,9 @@ describe('edit_character_field', () => {
   it('errors on missing find', async () => {
     await Characters.createCharacter({ name: 'Maya', fields: { bio: 'hello world' } });
     await expect(
-      HANDLERS.edit_character_field({
-        character: 'Maya',
+      HANDLERS.edit({
+        collection: 'character',
+        identifier: 'Maya',
         field: 'bio',
         edits: [{ find: 'banana', replace: 'apple' }],
       }),
@@ -194,11 +198,13 @@ describe('edit_character_field', () => {
   });
 });
 
-describe('edit_director_note_partial', () => {
+describe('edit (director note)', () => {
   it('applies find/replace to a director note via gateway fallback', async () => {
     const note = await DirectorNotes.addDirectorNote({ text: 'Always show Maya wearing red.' });
-    const out = await HANDLERS.edit_director_note_partial({
-      note_id: note._id.toString(),
+    const out = await HANDLERS.edit({
+      collection: 'director_note',
+      identifier: note._id.toString(),
+      field: 'text',
       edits: [{ find: 'red', replace: 'blue' }],
     });
     expect(out).toMatch(/Applied 1 edit/);
@@ -210,18 +216,21 @@ describe('edit_director_note_partial', () => {
   it('errors on ambiguous find', async () => {
     const note = await DirectorNotes.addDirectorNote({ text: 'red red red' });
     await expect(
-      HANDLERS.edit_director_note_partial({
-        note_id: note._id.toString(),
+      HANDLERS.edit({
+        collection: 'director_note',
+        identifier: note._id.toString(),
+        field: 'text',
         edits: [{ find: 'red', replace: 'blue' }],
       }),
     ).rejects.toThrow(/matched 3 places/);
   });
 });
 
-describe('edit_plot_field', () => {
+describe('edit (plot field)', () => {
   it('applies find/replace to plot synopsis via Mongo', async () => {
     await Plots.updatePlot({ synopsis: 'A story about Steve and Maya.' });
-    const out = await HANDLERS.edit_plot_field({
+    const out = await HANDLERS.edit({
+      collection: 'plot',
       field: 'synopsis',
       edits: [{ find: 'Steve and Maya', replace: 'two friends' }],
     });
@@ -231,17 +240,19 @@ describe('edit_plot_field', () => {
   });
 
   it('rejects unknown field', async () => {
-    const out = await HANDLERS.edit_plot_field({
-      field: 'title',
+    const out = await HANDLERS.edit({
+      collection: 'plot',
+      field: 'bogus',
       edits: [{ find: 'x', replace: 'y' }],
     });
-    expect(out).toMatch(/synopsis.*notes/);
+    expect(out).toMatch(/title.*synopsis.*notes/);
   });
 
   it('errors on missing find', async () => {
     await Plots.updatePlot({ notes: 'Tone is deadpan.' });
     await expect(
-      HANDLERS.edit_plot_field({
+      HANDLERS.edit({
+        collection: 'plot',
         field: 'notes',
         edits: [{ find: 'banana', replace: 'apple' }],
       }),

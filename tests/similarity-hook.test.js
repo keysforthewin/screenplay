@@ -68,8 +68,8 @@ describe('similarity post-hook on create_character', () => {
   });
 });
 
-describe('similarity post-hook on update_character', () => {
-  it('runs when patch.fields is provided', async () => {
+describe('similarity post-hook on edit (character)', () => {
+  it('runs when a custom field is edited', async () => {
     await Characters.createCharacter({
       name: 'Marcus',
       plays_self: true,
@@ -85,21 +85,24 @@ describe('similarity post-hook on update_character', () => {
       own_voice: true,
       fields: { background_story: 'no specific story yet' },
     });
-    const out = await HANDLERS.update_character({
+    const out = await HANDLERS.edit({
+      collection: 'character',
       identifier: 'Bland',
-      patch: {
-        fields: {
-          background_story:
+      field: 'fields.background_story',
+      edits: [
+        {
+          find: '',
+          replace:
             'A grizzled warrior who lost his family in a tragic fire and now seeks vengeance',
         },
-      },
+      ],
     });
-    expect(out).toMatch(/Updated Bland/);
+    expect(out).toMatch(/Replaced Bland\.fields\.background_story/);
     expect(out).toMatch(/Heads up/);
     expect(out).toMatch(/similar to "Marcus"/);
   });
 
-  it('skips the hook when patch only changes casting (no text)', async () => {
+  it('skips the hook when set_field only changes casting (no text)', async () => {
     await Characters.createCharacter({
       name: 'Twin1',
       plays_self: true,
@@ -112,11 +115,13 @@ describe('similarity post-hook on update_character', () => {
       own_voice: true,
       fields: { background_story: 'a duplicate story shared between twins exactly' },
     });
-    const out = await HANDLERS.update_character({
+    const out = await HANDLERS.set_field({
+      collection: 'character',
       identifier: 'Twin2',
-      patch: { plays_self: false, hollywood_actor: 'Ada Lovelace' },
+      field: 'plays_self',
+      value: false,
     });
-    expect(out).toMatch(/Updated Twin2/);
+    expect(out).toMatch(/Twin2\.plays_self = false/);
     expect(out).not.toMatch(/Heads up/);
   });
 });
@@ -139,8 +144,8 @@ describe('similarity post-hook on create_beat', () => {
   });
 });
 
-describe('similarity post-hook on update_beat', () => {
-  it('runs when patch touches text fields', async () => {
+describe('similarity post-hook on edit (beat)', () => {
+  it('runs when a text field is edited', async () => {
     const a = await HANDLERS.create_beat({
       name: 'A',
       desc: 'a forest meeting between two strangers about an old debt',
@@ -148,26 +153,30 @@ describe('similarity post-hook on update_beat', () => {
     expect(a).toMatch(/Created beat/);
     const b = await HANDLERS.create_beat({ name: 'B', desc: 'a placeholder' });
     const beatBId = b.match(/_id ([a-f0-9]{24})/)[1];
-    const out = await HANDLERS.update_beat({
+    const out = await HANDLERS.edit({
+      collection: 'beat',
       identifier: beatBId,
-      patch: { desc: 'a forest meeting between two strangers about an old debt' },
+      field: 'desc',
+      edits: [{ find: '', replace: 'a forest meeting between two strangers about an old debt' }],
     });
-    expect(out).toMatch(/Updated beat/);
+    expect(out).toMatch(/Replaced beat/);
     expect(out).toMatch(/Heads up/);
   });
 
-  it('skips the hook when patch only changes order', async () => {
+  it('skips the hook when set_field only changes order', async () => {
     await HANDLERS.create_beat({ name: 'A', desc: 'identical phrasing seven words long here ok' });
     const b = await HANDLERS.create_beat({
       name: 'B',
       desc: 'identical phrasing seven words long here ok',
     });
     const beatBId = b.match(/_id ([a-f0-9]{24})/)[1];
-    const out = await HANDLERS.update_beat({
+    const out = await HANDLERS.set_field({
+      collection: 'beat',
       identifier: beatBId,
-      patch: { order: 99 },
+      field: 'order',
+      value: 99,
     });
-    expect(out).toMatch(/Updated beat/);
+    expect(out).toMatch(/\.order = 99/);
     expect(out).not.toMatch(/Heads up/);
   });
 });

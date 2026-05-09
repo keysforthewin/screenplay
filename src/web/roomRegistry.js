@@ -32,6 +32,8 @@ import {
 import {
   listLibraryImages,
   setLibraryImageMeta,
+  setOwnedImageMeta,
+  findImageFile,
 } from '../mongo/images.js';
 import { getDb } from '../mongo/client.js';
 import { getCharacterTemplate } from '../mongo/prompts.js';
@@ -79,6 +81,67 @@ export function isManagedRoom(roomName) {
   return parseRoomName(roomName) !== null;
 }
 
+// Per-image text fragments shared between beat and character rooms.
+//
+//   image:<imageId>:name
+//   image:<imageId>:description
+//
+// Both back GridFS file metadata (images.files.metadata.{name,description}).
+// `name_lower` is recomputed from stripMarkdown(name) on every persist via
+// setOwnedImageMeta. The `image:` prefix collides with no other field key
+// pattern in beat/character rooms.
+
+const OWNED_IMAGE_FIELDS = ['name', 'description'];
+const OWNED_IMAGE_FIELD_RE = /^image:([a-f0-9]{24}):(name|description)$/;
+
+function ownedImageFieldName(imageId, field) {
+  return `image:${imageId}:${field}`;
+}
+
+async function describeOwnedImageFragments(images) {
+  const ids = (images || []).map((img) => img._id?.toString?.()).filter(Boolean);
+  if (!ids.length) return { fields: [], seed: {} };
+  const files = await Promise.all(ids.map((id) => findImageFile(id).catch(() => null)));
+  const fields = [];
+  const seed = {};
+  for (let i = 0; i < ids.length; i += 1) {
+    const id = ids[i];
+    const file = files[i];
+    for (const which of OWNED_IMAGE_FIELDS) {
+      const name = ownedImageFieldName(id, which);
+      fields.push(name);
+      seed[name] = String(file?.metadata?.[which] || '');
+    }
+  }
+  return { fields, seed };
+}
+
+async function persistOwnedImageFragments(snapshot, seed) {
+  const perImage = new Map();
+  const matched = [];
+  for (const [field, value] of Object.entries(snapshot || {})) {
+    const m = field.match(OWNED_IMAGE_FIELD_RE);
+    if (!m) continue;
+    matched.push(field);
+    if (value === undefined) continue;
+    if (value === (seed[field] || '')) continue;
+    const id = m[1];
+    const which = m[2];
+    if (!perImage.has(id)) perImage.set(id, {});
+    perImage.get(id)[which] = value;
+  }
+  const changedFields = [];
+  for (const [id, patch] of perImage.entries()) {
+    try {
+      await setOwnedImageMeta(id, patch);
+      for (const k of Object.keys(patch)) changedFields.push(ownedImageFieldName(id, k));
+    } catch (e) {
+      logger.warn(`owned image persist failed image=${id}: ${e.message}`);
+    }
+  }
+  return { matchedFields: matched, changedFields };
+}
+
 // Beat ----------------------------------------------------------------------
 
 const BEAT_TOP_FIELDS = ['name', 'desc', 'body'];
@@ -105,14 +168,19 @@ async function describeBeatRoom(id) {
     return '';
   }
 
+  const imageFragments = await describeOwnedImageFragments(beat.images);
+  const allFields = [...fieldNames, ...imageFragments.fields];
+  const seed = fieldNames.reduce((acc, f) => {
+    acc[f] = readMongoValue(f);
+    return acc;
+  }, {});
+  Object.assign(seed, imageFragments.seed);
+
   return {
     type: 'beat',
     id,
-    fields: fieldNames,
-    seed: fieldNames.reduce((acc, f) => {
-      acc[f] = readMongoValue(f);
-      return acc;
-    }, {}),
+    fields: allFields,
+    seed,
     persistFields: async (snapshot) => {
       const patch = {};
       for (const f of fieldNames) {
@@ -124,10 +192,15 @@ async function describeBeatRoom(id) {
           patch[f] = snapshot[f];
         }
       }
-      if (!Object.keys(patch).length) return { changed: false };
-      await updateBeat(id, patch);
-      enqueueReindex('beat', id);
-      return { changed: true, fields: Object.keys(patch) };
+      const imgPersist = await persistOwnedImageFragments(snapshot, imageFragments.seed);
+      const entityChangedKeys = Object.keys(patch);
+      if (entityChangedKeys.length) {
+        await updateBeat(id, patch);
+        enqueueReindex('beat', id);
+      }
+      const allChanged = [...entityChangedKeys, ...imgPersist.changedFields];
+      if (!allChanged.length) return { changed: false };
+      return { changed: true, fields: allChanged };
     },
   };
 }
@@ -167,14 +240,19 @@ async function describeCharacterRoom(id) {
     return '';
   }
 
+  const imageFragments = await describeOwnedImageFragments(c.images);
+  const allFields = [...fieldNames, ...imageFragments.fields];
+  const seed = fieldNames.reduce((acc, f) => {
+    acc[f] = readMongoValue(f);
+    return acc;
+  }, {});
+  Object.assign(seed, imageFragments.seed);
+
   return {
     type: 'character',
     id,
-    fields: fieldNames,
-    seed: fieldNames.reduce((acc, f) => {
-      acc[f] = readMongoValue(f);
-      return acc;
-    }, {}),
+    fields: allFields,
+    seed,
     persistFields: async (snapshot) => {
       const patch = {};
       for (const f of fieldNames) {
@@ -190,18 +268,23 @@ async function describeCharacterRoom(id) {
           patch[f] = snapshot[f];
         }
       }
-      if (!Object.keys(patch).length) return { changed: false };
-      // Recompute name_lower from stripped markdown to keep lookups working.
-      if (patch.name !== undefined) {
-        const stripped = stripMarkdown(patch.name);
-        await getDb().collection('characters').updateOne(
-          { _id: c._id },
-          { $set: { name_lower: stripped.toLowerCase() } },
-        );
+      const imgPersist = await persistOwnedImageFragments(snapshot, imageFragments.seed);
+      const entityChangedKeys = Object.keys(patch);
+      if (entityChangedKeys.length) {
+        // Recompute name_lower from stripped markdown to keep lookups working.
+        if (patch.name !== undefined) {
+          const stripped = stripMarkdown(patch.name);
+          await getDb().collection('characters').updateOne(
+            { _id: c._id },
+            { $set: { name_lower: stripped.toLowerCase() } },
+          );
+        }
+        await updateCharacter(id, patch);
+        enqueueReindex('character', id);
       }
-      await updateCharacter(id, patch);
-      enqueueReindex('character', id);
-      return { changed: true, fields: Object.keys(patch) };
+      const allChanged = [...entityChangedKeys, ...imgPersist.changedFields];
+      if (!allChanged.length) return { changed: false };
+      return { changed: true, fields: allChanged };
     },
   };
 }

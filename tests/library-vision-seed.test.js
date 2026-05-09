@@ -27,7 +27,7 @@ vi.mock('../src/llm/libraryImageMeta.js', () => ({
 }));
 
 const Images = await import('../src/mongo/images.js');
-const { kickoffLibraryVisionSeed } = await import('../src/web/libraryVisionWorker.js');
+const { kickoffLibraryVisionSeed, kickoffImageVisionSeed } = await import('../src/web/libraryVisionWorker.js');
 
 beforeEach(() => {
   fakeDb.reset();
@@ -92,9 +92,11 @@ describe('library vision seed worker', () => {
     expect(after.metadata.description).toBe('');
   });
 
-  it('does nothing when the buffer is missing', async () => {
-    const doc = seedLibrary();
-    kickoffLibraryVisionSeed(doc._id, null, 'image/png');
+  it('skips silently when the image does not exist in GridFS', async () => {
+    // No buffer + an unknown image id → worker tries GridFS download via
+    // readImageBuffer, which returns null (file not found), and the worker
+    // logs+exits without calling the LLM.
+    kickoffLibraryVisionSeed(new ObjectId(), null, null);
     await flushQueue();
     expect(analyzeMock).not.toHaveBeenCalled();
   });
@@ -107,5 +109,48 @@ describe('library vision seed worker', () => {
     const found = await Images.searchLibraryImages({ query: 'diner' });
     expect(found).toHaveLength(1);
     expect(found[0]._id.toString()).toBe(doc._id.toString());
+  });
+
+  it('routes character-owned images through setOwnedImageMeta (not the library setter)', async () => {
+    const charOwnerId = new ObjectId();
+    const doc = {
+      _id: new ObjectId(),
+      filename: 'c.png',
+      contentType: 'image/png',
+      length: 100,
+      uploadDate: new Date(),
+      metadata: {
+        owner_type: 'character',
+        owner_id: charOwnerId,
+        source: 'upload',
+        prompt: null,
+        generated_by: null,
+        name: '',
+        description: '',
+        name_lower: '',
+      },
+    };
+    fakeDb.collection('images.files')._docs.push(doc);
+
+    kickoffImageVisionSeed(doc._id, Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png', {
+      ownerType: 'character',
+      ownerId: charOwnerId,
+    });
+    await flushQueue();
+
+    const after = await fakeDb.collection('images.files').findOne({ _id: doc._id });
+    expect(after.metadata.name).toBe('Diner at dusk');
+    expect(after.metadata.description).toBe('A neon-lit diner glowing under a darkening sky.');
+    expect(after.metadata.owner_type).toBe('character');
+  });
+
+  it('dedups concurrent kickoffs for the same image id', async () => {
+    const doc = seedLibrary();
+    const buf = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    kickoffImageVisionSeed(doc._id, buf, 'image/png');
+    kickoffImageVisionSeed(doc._id, buf, 'image/png');
+    kickoffImageVisionSeed(doc._id, buf, 'image/png');
+    await flushQueue();
+    expect(analyzeMock).toHaveBeenCalledTimes(1);
   });
 });

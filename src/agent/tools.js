@@ -53,9 +53,118 @@ export const TOOLS = [
     },
   },
   {
+    name: 'edit',
+    keywords: [
+      'edit', 'update', 'change', 'modify', 'fix', 'tweak', 'patch', 'replace',
+      'find', 'reword', 'rewrite', 'revise', 'append', 'extend', 'add',
+      'snippet', 'partial', 'diff',
+      'body', 'text', 'name', 'desc', 'synopsis', 'notes', 'title',
+      'hollywood_actor', 'actor', 'bio', 'background', 'arc', 'origin',
+      'fields', 'specifics', 'custom',
+      'beat', 'scene', 'character', 'person', 'plot', 'screenplay',
+      'director', 'note', 'rule',
+    ],
+    description:
+      'Apply find/replace edits to any text field on any entity. Universal text-mutation primitive — replaces all the legacy edit_*/set_*/append_*/update_* tools.\n\n' +
+      '**Each edit\'s `find` must match the current value VERBATIM and UNIQUELY** (add surrounding context if a snippet appears more than once). Edits are applied sequentially, each operating on the result of the previous. Pass an empty `replace` to delete the matched snippet.\n\n' +
+      '**Empty `find` = whole-field replace.** Only allowed when `edits.length === 1`. Use this when the user asks to rewrite/replace the entire field. Multi-edit calls reject empty `find` to prevent accidental wipes during diff-style edits.\n\n' +
+      '**To append:** read the tail with `read_beat_body` / `read_character_field` / `read_director_note`, then submit a normal find/replace where the `find` is the last few characters of the current value and the `replace` is the same chars followed by the new content.\n\n' +
+      '**For long bodies you cannot fit in context:** locate with `outline_beat_body` or `search_in_beat_body`, window in with `read_beat_body`, then edit with the verbatim snippet from that window. The `find` is matched against the full server-side value, so editing line 5,000 of a 10,000-line beat works with only a 200-line window in your context.\n\n' +
+      'Field map:\n' +
+      '- `beat`: `body`, `name`, `desc`, or `specifics.<key>` (identifier = beat _id, order, or name; omit to use the current beat).\n' +
+      '- `character`: `name`, `hollywood_actor`, `fields.<custom>`, `specifics.<key>`, or a bare custom field name (auto-prefixed with `fields.`). Identifier = character name (case-insensitive) or _id.\n' +
+      '- `plot`: `title`, `synopsis`, `notes` (singleton; omit identifier).\n' +
+      '- `director_note`: `text` (identifier = note _id from `list_director_notes`).\n\n' +
+      'On error (e.g. find string not present, ambiguous, or invalid field) the tool returns `is_error: true` with a message. **Do not retry by switching to a wholesale rewrite or guessing.** Re-read the field with the appropriate read tool and retry with verbatim text, or surface the error to the user.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        collection: {
+          type: 'string',
+          enum: ['beat', 'character', 'plot', 'director_note'],
+          description: 'Which entity type to edit.',
+        },
+        identifier: {
+          type: 'string',
+          description:
+            'Entity identifier. Beat: _id, order number, or name. Character: name (case-insensitive) or _id. Director note: 24-hex _id from list_director_notes. Plot: omit (singleton).',
+        },
+        field: {
+          type: 'string',
+          description:
+            'Field name. See the description for the per-collection map. Examples: "body", "name", "desc", "synopsis", "notes", "title", "text", "hollywood_actor", "fields.bio", "specifics.location".',
+        },
+        edits: {
+          type: 'array',
+          minItems: 1,
+          description: 'Sequential find/replace edits. Empty `find` = whole-field replace (single-edit calls only).',
+          items: {
+            type: 'object',
+            properties: {
+              find: {
+                type: 'string',
+                description:
+                  'Verbatim snippet from the current value, must match exactly once. Empty string means "replace the entire field with `replace`" (only valid in single-edit calls).',
+              },
+              replace: { type: 'string', description: 'Replacement text. Empty string deletes the matched snippet.' },
+            },
+            required: ['find', 'replace'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['collection', 'field', 'edits'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'set_field',
+    keywords: [
+      'set', 'field', 'value', 'update', 'patch',
+      'boolean', 'array', 'order', 'reorder', 'position',
+      'plays_self', 'own_voice', 'casting', 'voice',
+      'characters', 'roster', 'cast', 'link',
+      'unset', 'delete', 'remove', 'drop',
+      'scene_sheet_image_id', 'image', 'metadata',
+      'beat', 'character',
+    ],
+    description:
+      'Atomic value assignment for non-text fields. For text fields (name, body, desc, fields.*, etc.) use `edit` instead.\n\n' +
+      'Supported field map:\n' +
+      '- `beat.order` (number) — beat position in the screenplay sequence.\n' +
+      '- `beat.characters` (array of strings) — replace the beat\'s character roster (names, not _ids).\n' +
+      '- `beat.scene_sheet_image_id` (24-hex string or null) — attach/detach the scene-sheet image.\n' +
+      '- `character.plays_self` (boolean) — character is the real person (true) vs. played by an actor (false).\n' +
+      '- `character.own_voice` (boolean) — character speaks in own voice (true) vs. dubbed/narrated (false).\n' +
+      '- `character.unset` (array of strings) — meta-op to delete custom field keys (`value` is the list of keys to remove).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        collection: {
+          type: 'string',
+          enum: ['beat', 'character'],
+          description: 'Which entity type.',
+        },
+        identifier: {
+          type: 'string',
+          description: 'Entity identifier. Beat: _id, order, or name. Character: name (case-insensitive) or _id.',
+        },
+        field: {
+          type: 'string',
+          description: 'Field name. See the per-collection map in the description.',
+        },
+        value: {
+          description: 'New value. Type depends on field — see the description.',
+        },
+      },
+      required: ['collection', 'identifier', 'field', 'value'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'create_character',
     keywords: ['create', 'new', 'add', 'make', 'introduce', 'character', 'person', 'role', 'cast', 'protagonist', 'antagonist', 'stub'],
-    description: 'Create a new character. Only `name` is required — call this as soon as the user names someone, even if other fields aren\'t known yet. Defaults: plays_self=true, own_voice=true. Use `update_character` later to fill in details as the conversation provides them.',
+    description: 'Create a new character. Only `name` is required — call this as soon as the user names someone, even if other fields aren\'t known yet. Defaults: plays_self=true, own_voice=true. Use `edit` later to fill in details as the conversation provides them.',
     input_schema: {
       type: 'object',
       properties: {
@@ -70,78 +179,6 @@ export const TOOLS = [
         },
       },
       required: ['name'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'update_character',
-    keywords: ['update', 'edit', 'change', 'modify', 'patch', 'set', 'character', 'person', 'role', 'fix', 'remove', 'delete', 'unset'],
-    description:
-      'Patch fields on an existing character. Pass `patch` as a JSON object, NOT a JSON string. Only include fields you want to change. Top-level keys: `name`, `plays_self`, `hollywood_actor`, `own_voice`, `fields` (object holding any custom template fields — VALUES MUST BE PLAIN HUMAN-READABLE STRINGS, never arrays or objects; lists go as comma-separated text, multi-part facts go as prose), and `unset` (array of custom field names to delete from this character). Examples: {"identifier":"Alice","patch":{"name":"Alicia"}} — {"identifier":"Alice","patch":{"fields":{"role":"protagonist"}}} — {"identifier":"Alice","patch":{"fields":{"alternate_names":"Ali, Allie"}}} — {"identifier":"Alice","patch":{"fields":{"name_changes":"Alicia Wong — changed 2019-06-01 after marriage"}}} — {"identifier":"Alice","patch":{"unset":["pre_beat_5"]}}. For sweeping multi-field rewrites ("remove all references to X"), use `revise_character` instead.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        identifier: {
-          type: 'string',
-          description: "Character's name (case-insensitive) or 24-char hex _id.",
-        },
-        patch: {
-          type: 'object',
-          description:
-            'Object containing the fields to change. NEVER pass a raw string or array here — always wrap your value(s) in an object.',
-          properties: {
-            name: { type: 'string', description: 'New character name.' },
-            plays_self: { type: 'boolean' },
-            hollywood_actor: { type: 'string' },
-            own_voice: { type: 'boolean' },
-            fields: {
-              type: 'object',
-              description:
-                'Custom template fields. Keys are template field names; **values must be plain human-readable markdown strings** — never arrays, objects, or JSON-stringified payloads. Lists (alternate names, props, places) go as comma-separated text or a markdown bullet list. Multi-part facts (a name change with a reason or date) go as prose. Even if the template field description shows a JSON example, write the value as plain text. To modify a multi-line field, fetch the character first with get_character and send the full new text — values are REPLACED, not merged. Setting a value to null KEEPS the key (with value null); to actually delete a field use `unset` instead.',
-              additionalProperties: true,
-            },
-            unset: {
-              type: 'array',
-              items: { type: 'string' },
-              description:
-                'Custom field names (without the "fields." prefix) to delete from this character. Use this rather than setting fields to null when you want the key gone entirely.',
-            },
-          },
-          additionalProperties: true,
-        },
-      },
-      required: ['identifier', 'patch'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'edit_character_field',
-    keywords: ['edit', 'modify', 'change', 'fix', 'tweak', 'patch', 'replace', 'find', 'character', 'field', 'partial', 'diff', 'reword', 'snippet', 'large'],
-    description: 'Apply targeted find/replace edits to a single character text field (`name`, `hollywood_actor`, or any custom field — pass the bare field name, no `fields.` prefix). Each edit\'s `find` must match the current value VERBATIM and UNIQUELY. Use for partial edits to long bios or descriptive fields — much cheaper on output tokens than re-emitting the whole field via update_character.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        character: { type: 'string', description: 'Character name (case-insensitive) or 24-char hex _id.' },
-        field: {
-          type: 'string',
-          description: 'Field to edit. Core: `name`, `hollywood_actor`. Otherwise the bare custom field name (e.g. `bio`, `motivation`); the handler stores it under fields.<name>.',
-        },
-        edits: {
-          type: 'array',
-          minItems: 1,
-          description: 'Sequential find/replace edits.',
-          items: {
-            type: 'object',
-            properties: {
-              find: { type: 'string', description: 'Verbatim snippet from the current value. Must match exactly once.' },
-              replace: { type: 'string', description: 'Replacement text. Empty string deletes the matched snippet.' },
-            },
-            required: ['find', 'replace'],
-            additionalProperties: false,
-          },
-        },
-      },
-      required: ['character', 'field', 'edits'],
       additionalProperties: false,
     },
   },
@@ -303,47 +340,6 @@ export const TOOLS = [
         },
       },
       required: ['text'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'edit_director_note',
-    keywords: ['edit', 'update', 'change', 'modify', 'director', 'note', 'rule', 'directive', 'revise'],
-    description: "Replace the text of an existing director's note, identified by its _id. Use when the user wants to revise a rule (\"change the Ewok rule to Wookiees\") rather than add a new one. Returns a status string. To find the right _id, call list_director_notes first.",
-    input_schema: {
-      type: 'object',
-      properties: {
-        note_id: { type: 'string', description: '24-char hex _id of the note to edit.' },
-        text: { type: 'string', description: 'New text for the note.' },
-      },
-      required: ['note_id', 'text'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'edit_director_note_partial',
-    keywords: ['edit', 'modify', 'change', 'fix', 'tweak', 'patch', 'replace', 'find', 'director', 'note', 'partial', 'diff', 'snippet', 'large', 'reword'],
-    description: "Apply targeted find/replace edits to a director's note's text. Each edit's `find` must match the current text VERBATIM and UNIQUELY. Use for partial edits to long notes — much cheaper on output tokens than re-emitting the whole note via edit_director_note. To find the right _id, call list_director_notes first.",
-    input_schema: {
-      type: 'object',
-      properties: {
-        note_id: { type: 'string', description: '24-char hex _id of the note to edit.' },
-        edits: {
-          type: 'array',
-          minItems: 1,
-          description: 'Sequential find/replace edits.',
-          items: {
-            type: 'object',
-            properties: {
-              find: { type: 'string', description: 'Verbatim snippet from the current text. Must match exactly once.' },
-              replace: { type: 'string', description: 'Replacement text. Empty string deletes the matched snippet.' },
-            },
-            required: ['find', 'replace'],
-            additionalProperties: false,
-          },
-        },
-      },
-      required: ['note_id', 'edits'],
       additionalProperties: false,
     },
   },
@@ -517,47 +513,6 @@ export const TOOLS = [
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
-    name: 'update_plot',
-    keywords: ['plot', 'synopsis', 'story', 'update', 'edit', 'change', 'modify', 'notes', 'title', 'name', 'rename'],
-    description: 'Modify the screenplay title, plot synopsis, or notes. The title shows on the PDF cover page and biases the auto-generated PDF filename. Pass an empty string to clear the title. To work with beats, use the dedicated beat tools (list_beats, get_beat, create_beat, update_beat, delete_beat) — this tool does not edit beats.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        title: { type: 'string', description: 'Screenplay title shown on the PDF cover page. Pass "" to clear.' },
-        synopsis: { type: 'string' },
-        notes: { type: 'string' },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'edit_plot_field',
-    keywords: ['edit', 'modify', 'change', 'fix', 'tweak', 'patch', 'replace', 'find', 'plot', 'synopsis', 'notes', 'partial', 'diff', 'snippet', 'large', 'reword'],
-    description: 'Apply targeted find/replace edits to the plot `synopsis` or `notes` field. Each edit\'s `find` must match the current value VERBATIM and UNIQUELY. Use for partial edits to long synopses or plot-level notes — much cheaper on output tokens than re-emitting the whole field via update_plot.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        field: { type: 'string', enum: ['synopsis', 'notes'], description: 'Which plot field to edit.' },
-        edits: {
-          type: 'array',
-          minItems: 1,
-          description: 'Sequential find/replace edits.',
-          items: {
-            type: 'object',
-            properties: {
-              find: { type: 'string', description: 'Verbatim snippet from the current value. Must match exactly once.' },
-              replace: { type: 'string', description: 'Replacement text. Empty string deletes the matched snippet.' },
-            },
-            required: ['find', 'replace'],
-            additionalProperties: false,
-          },
-        },
-      },
-      required: ['field', 'edits'],
-      additionalProperties: false,
-    },
-  },
-  {
     name: 'list_beats',
     keywords: ['list', 'all', 'beats', 'scenes', 'moments', 'show', 'enumerate', 'outline'],
     description: 'Return a compact list of all beats with id, order, name, a short desc preview, body length, character count, image count, and whether each is the current beat. Sorted by order. For substring/fuzzy lookup across name+desc+body, use search_beats instead.',
@@ -603,87 +558,6 @@ export const TOOLS = [
         order: { type: 'number', description: 'Optional explicit order. Omit to append.' },
       },
       required: ['desc'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'update_beat',
-    keywords: ['update', 'edit', 'change', 'modify', 'patch', 'beat', 'scene', 'moment', 'fix'],
-    description: 'Patch non-body fields on an existing beat (name, desc, order, characters). For body changes, prefer the dedicated body tools — set_beat_body for a full rewrite, edit_beat_body for partial find/replace edits, append_to_beat_body to add to the end. Body via this tool still works but is the legacy path; the dedicated tools are flatter and avoid JSON-encoding pitfalls for long content.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        identifier: { type: 'string', description: 'Beat _id, order, or name.' },
-        patch: {
-          type: 'object',
-          description:
-            'Object containing the fields to change. NEVER pass a raw string or array here — always wrap your value(s) in an object.',
-          properties: {
-            name: { type: 'string' },
-            desc: { type: 'string' },
-            body: { type: 'string', description: 'REPLACES existing body. Use append_to_beat_body to append.' },
-            order: { type: 'number' },
-            characters: { type: 'array', items: { type: 'string' } },
-          },
-          additionalProperties: false,
-        },
-      },
-      required: ['identifier', 'patch'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'append_to_beat_body',
-    keywords: ['append', 'add', 'extend', 'beat', 'scene', 'moment', 'body', 'content', 'lore', 'more'],
-    description: 'Append content to a beat\'s `body` field without overwriting. Inserts a blank-line separator between the existing body and the new content. Prefer this over update_beat when the user is dumping additional lore onto an existing beat ("also, in this scene Bob says X..." → append). If `beat` is omitted, the current beat is used.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use the current beat.' },
-        content: { type: 'string', description: 'Text to append to the beat body.' },
-      },
-      required: ['content'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'set_beat_body',
-    keywords: ['set', 'replace', 'rewrite', 'body', 'beat', 'overwrite', 'redo', 'summarize', 'reset', 'scene'],
-    description: 'Replace a beat\'s entire body with new text. Use for wholesale rewrites — e.g. when the user says "summarize and redo this beat" or "replace this beat\'s body". For incremental additions use append_to_beat_body; for targeted edits to a long body use edit_beat_body. Flat shape (no nested patch object) — preferred over update_beat for body changes.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        beat: { type: 'string', description: 'Beat _id, order, or name.' },
-        body: { type: 'string', description: 'The new body text. Replaces the existing body entirely. Empty string clears the body.' },
-      },
-      required: ['beat', 'body'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'edit_beat_body',
-    keywords: ['edit', 'modify', 'change', 'fix', 'tweak', 'patch', 'replace', 'find', 'body', 'beat', 'partial', 'diff', 'snippet', 'reword'],
-    description: 'Apply targeted find/replace edits to a beat body. Each edit\'s `find` string must match the current body VERBATIM and UNIQUELY (add surrounding context if a snippet appears more than once). Edits are applied sequentially in order, each operating on the result of the previous. Pass an empty `replace` to delete the matched snippet. Use this for partial edits to long bodies — much cheaper on output tokens than re-emitting the whole body via set_beat_body.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        beat: { type: 'string', description: 'Beat _id, order, or name.' },
-        edits: {
-          type: 'array',
-          minItems: 1,
-          description: 'Sequential find/replace edits.',
-          items: {
-            type: 'object',
-            properties: {
-              find: { type: 'string', description: 'Verbatim snippet from the current body. Must match exactly once.' },
-              replace: { type: 'string', description: 'Replacement text. Empty string deletes the matched snippet.' },
-            },
-            required: ['find', 'replace'],
-            additionalProperties: false,
-          },
-        },
-      },
-      required: ['beat', 'edits'],
       additionalProperties: false,
     },
   },
@@ -1793,6 +1667,7 @@ export const CORE_TOOL_NAMES = new Set([
   'get_current_beat',
   'search_message_history',
   'screenplay_search',
+  'edit',
 ]);
 
 // Strip internal-only fields (`keywords`, `metaTool`) before sending to the

@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { apiDelete, apiPostJson, apiPostMultipart, imageUrl } from '../api.js';
+import { CollabField } from '../editor/CollabField.jsx';
 
 export function ImageGallery({
   images,
@@ -57,18 +58,38 @@ export function ImageGallery({
   return (
     <div>
       {error && <div className="error-banner">{error}</div>}
-      <div className="image-grid" style={{ marginBottom: 8 }}>
+      <div className="image-gallery-list" style={{ marginBottom: 8 }}>
         {(images || []).map((img) => {
           const id = img._id.toString ? img._id.toString() : String(img._id);
           const isMain = mainId && id === mainId;
           return (
-            <div key={id} className={`image-card${isMain ? ' is-main' : ''}`}>
-              <img src={imageUrl(id)} alt={img.filename || ''} loading="lazy" />
-              <div className="actions">
+            <div key={id} className={`gallery-row${isMain ? ' is-main' : ''}`}>
+              <div className="gallery-thumb">
+                <a
+                  href={imageUrl(id)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open full size in new tab"
+                >
+                  <img src={imageUrl(id)} alt={img.filename || ''} loading="lazy" />
+                </a>
+              </div>
+              <div className="gallery-meta">
+                <CollabField
+                  field={`image:${id}:name`}
+                  placeholder="Untitled"
+                />
+                <CollabField
+                  field={`image:${id}:description`}
+                  multiline
+                  placeholder="Description…"
+                />
+              </div>
+              <div className="gallery-actions">
                 {isMain ? (
                   <span style={{ color: 'var(--accent)', fontSize: 12 }}>★ main</span>
                 ) : (
-                  <button onClick={() => setMain(id)}>Set main</button>
+                  mainPath && <button onClick={() => setMain(id)}>Set main</button>
                 )}
                 <a
                   className="icon-link"
@@ -76,9 +97,9 @@ export function ImageGallery({
                   download={img.filename || `image-${id}`}
                   title={`Download ${img.filename || 'image'}`}
                 >
-                  Save
+                  Download
                 </a>
-                <button onClick={() => remove(id)}>×</button>
+                {deletePath && <button onClick={() => remove(id)}>Delete</button>}
               </div>
             </div>
           );

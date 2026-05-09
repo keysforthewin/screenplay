@@ -40,7 +40,10 @@ import {
   updateBeatViaGateway,
   updateCharacterViaGateway,
 } from './gateway.js';
-import { kickoffLibraryVisionSeed } from './libraryVisionWorker.js';
+import {
+  kickoffLibraryVisionSeed,
+  kickoffImageVisionSeed,
+} from './libraryVisionWorker.js';
 import { getPlot, listBeats, getBeat } from '../mongo/plots.js';
 import {
   countStoryboardsByBeat,
@@ -155,6 +158,23 @@ export function buildApiRouter() {
     });
   });
 
+  // Lazy backfill: kick off the vision worker for any owned image whose
+  // GridFS metadata has neither name nor description set. Fire-and-forget;
+  // the worker dedups in-flight ids itself.
+  async function backfillOwnedImageCaptions(ownerType, ownerId, images) {
+    const ids = (images || []).map((i) => i._id?.toString?.()).filter(Boolean);
+    if (!ids.length) return;
+    const files = await Promise.all(ids.map((id) => findImageFile(id).catch(() => null)));
+    for (let i = 0; i < ids.length; i += 1) {
+      const file = files[i];
+      if (!file) continue;
+      const hasName = !!(file.metadata?.name || '').trim();
+      const hasDesc = !!(file.metadata?.description || '').trim();
+      if (hasName || hasDesc) continue;
+      kickoffImageVisionSeed(ids[i], null, null, { ownerType, ownerId });
+    }
+  }
+
   router.get('/beat', async (req, res) => {
     const { order, id } = req.query;
     let beat = null;
@@ -165,6 +185,7 @@ export function buildApiRouter() {
     }
     if (!beat) return res.status(404).json({ error: 'beat not found' });
     res.json({ beat });
+    backfillOwnedImageCaptions('beat', beat._id?.toString?.(), beat.images).catch(() => {});
   });
 
   router.get('/character', async (req, res) => {
@@ -173,6 +194,7 @@ export function buildApiRouter() {
     const c = await getCharacter(name);
     if (!c) return res.status(404).json({ error: 'character not found' });
     res.json({ character: c });
+    backfillOwnedImageCaptions('character', c._id?.toString?.(), c.images).catch(() => {});
   });
 
   router.get('/notes', async (_req, res) => {
@@ -321,7 +343,7 @@ export function buildApiRouter() {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      validateImageBuffer(req.file.buffer);
+      const sniffed = validateImageBuffer(req.file.buffer);
       const file = await uploadGeneratedImage({
         buffer: req.file.buffer,
         contentType: req.file.mimetype,
@@ -343,6 +365,10 @@ export function buildApiRouter() {
         setAsMain,
       });
       res.json(result);
+      kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
+        ownerType: 'beat',
+        ownerId: beatId,
+      });
     } catch (e) {
       next(e);
     }
@@ -490,7 +516,7 @@ export function buildApiRouter() {
       const cid = await resolveCharacterId(req);
       if (!cid) return res.status(404).json({ error: 'character not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      validateImageBuffer(req.file.buffer);
+      const sniffed = validateImageBuffer(req.file.buffer);
       const file = await uploadGeneratedImage({
         buffer: req.file.buffer,
         contentType: req.file.mimetype,
@@ -512,6 +538,10 @@ export function buildApiRouter() {
         setAsMain,
       });
       res.json(result);
+      kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
+        ownerType: 'character',
+        ownerId: cid,
+      });
     } catch (e) {
       next(e);
     }

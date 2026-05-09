@@ -245,6 +245,27 @@ export async function setLibraryImageMeta(imageId, { name, description } = {}) {
   return { changed: true, fields: Object.keys(set) };
 }
 
+// Update metadata fields on an image owned by an entity (character/beat/
+// director_note). Mirrors setLibraryImageMeta but does NOT reject when
+// owner_type !== null. Recomputes name_lower from stripped markdown when
+// `name` is supplied for parity with the library search path.
+export async function setOwnedImageMeta(imageId, { name, description } = {}) {
+  if (name === undefined && description === undefined) return { changed: false };
+  const oid = toObjectId(imageId);
+  const file = await filesCol().findOne({ _id: oid });
+  if (!file) throw new Error(`Image not found: ${imageId}`);
+  const set = {};
+  if (name !== undefined) {
+    set['metadata.name'] = String(name || '');
+    set['metadata.name_lower'] = libraryNameLower(name);
+  }
+  if (description !== undefined) {
+    set['metadata.description'] = String(description || '');
+  }
+  await filesCol().updateOne({ _id: oid }, { $set: set });
+  return { changed: true, fields: Object.keys(set) };
+}
+
 // Substring search across library images by metadata.name_lower and
 // metadata.description. Done in JS rather than via $regex so the in-memory
 // fake Mongo used in tests keeps working.

@@ -1,9 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { dispatchToolUses } from '../src/agent/loop.js';
 
-// Suppress noisy expected-warning output.
+const { warnMock } = vi.hoisted(() => ({ warnMock: vi.fn() }));
 vi.mock('../src/log.js', () => ({
-  logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
+  logger: { info: () => {}, warn: warnMock, debug: () => {}, error: () => {} },
 }));
 
 describe('dispatchToolUses error isolation', () => {
@@ -158,5 +158,49 @@ describe('dispatchToolUses error isolation', () => {
     expect(attachmentPaths).toEqual(['/tmp/t.bin']);
     expect(attachmentLinks).toEqual([]);
     expect(results[0].content).toBe('bytes');
+  });
+});
+
+describe('dispatchToolUses handler-error tagging', () => {
+  beforeEach(() => warnMock.mockClear());
+
+  it('tags returned "Tool error (..." strings with is_error:true and warns', async () => {
+    const dispatchFn = async () =>
+      'Tool error (edit_beat_body): edit 0: find string not present in current markdown.';
+    const results = await dispatchToolUses(
+      [{ id: 'use_x', name: 'edit_beat_body', input: {} }],
+      [],
+      null,
+      dispatchFn,
+    );
+    expect(results).toHaveLength(1);
+    expect(results[0].is_error).toBe(true);
+    expect(results[0].content).toMatch(/find string not present/);
+    expect(warnMock).toHaveBeenCalledTimes(1);
+    expect(String(warnMock.mock.calls[0][0])).toContain('edit_beat_body');
+  });
+
+  it('tags "Unknown tool: ..." with is_error:true', async () => {
+    const dispatchFn = async () => 'Unknown tool: nope';
+    const results = await dispatchToolUses(
+      [{ id: 'u', name: 'nope', input: {} }],
+      [],
+      null,
+      dispatchFn,
+    );
+    expect(results[0].is_error).toBe(true);
+    expect(results[0].content).toBe('Unknown tool: nope');
+  });
+
+  it('does NOT tag normal string returns with is_error', async () => {
+    const dispatchFn = async () => 'Edited beat "intro". Body: 100 → 110 chars.';
+    const results = await dispatchToolUses(
+      [{ id: 'u', name: 'edit_beat_body', input: {} }],
+      [],
+      null,
+      dispatchFn,
+    );
+    expect(results[0].is_error).toBeUndefined();
+    expect(warnMock).not.toHaveBeenCalled();
   });
 });

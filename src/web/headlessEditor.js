@@ -91,6 +91,14 @@ export function setFragmentMarkdown(ydoc, field, markdown) {
   }
 }
 
+// Render a short, log-safe quoted preview of a find snippet. Newlines are
+// escaped so the message stays single-line; long snippets are truncated.
+function quoteSnippet(s, max = 80) {
+  const flat = String(s ?? '').replace(/\r/g, '').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
+  const trimmed = flat.length > max ? `${flat.slice(0, max)}…` : flat;
+  return JSON.stringify(trimmed);
+}
+
 // Apply a list of {find, replace} edits to the markdown rendering of a fragment.
 // Returns {applied, beforeLen, afterLen, snapshots}. If any find string is
 // missing or ambiguous the function throws and no edits are applied.
@@ -108,11 +116,18 @@ export function editFragmentMarkdown(ydoc, field, edits) {
     }
     const first = body.indexOf(find);
     if (first < 0) {
-      throw new Error(`edit ${i}: find string not present in current markdown.`);
+      throw new Error(
+        `edit ${i}: find string not present in current markdown ` +
+          `(looked for ${quoteSnippet(find)}, body is ${body.length} chars). ` +
+          `Re-read the field with the windowed read tool and retry with verbatim text — do NOT fall back to a wholesale setter.`,
+      );
     }
     const second = body.indexOf(find, first + find.length);
     if (second >= 0) {
-      throw new Error(`edit ${i}: find string is ambiguous (matches more than once).`);
+      throw new Error(
+        `edit ${i}: find string is ambiguous (matches more than once for ${quoteSnippet(find)}). ` +
+          `Add surrounding context to make it unique and retry.`,
+      );
     }
     body = body.slice(0, first) + replace + body.slice(first + find.length);
     applied.push({ find_chars: find.length, replace_chars: replace.length });

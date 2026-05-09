@@ -57,6 +57,22 @@ describe('headlessEditor', () => {
     ).toThrow(/ambiguous/);
   });
 
+  it('editFragmentMarkdown error includes find snippet and body length when find is missing', () => {
+    const ydoc = new Y.Doc();
+    setFragmentMarkdown(ydoc, 'body', 'hello world');
+    let caught;
+    try {
+      editFragmentMarkdown(ydoc, 'body', [{ find: 'goodbye', replace: 'x' }]);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeDefined();
+    expect(caught.message).toMatch(/find string not present/);
+    expect(caught.message).toMatch(/"goodbye"/);
+    expect(caught.message).toMatch(/\d+ chars/);
+    expect(caught.message).toMatch(/do NOT fall back/);
+  });
+
   it('appendToFragmentMarkdown adds with blank-line separator when content exists', () => {
     const ydoc = new Y.Doc();
     setFragmentMarkdown(ydoc, 'body', 'first paragraph');

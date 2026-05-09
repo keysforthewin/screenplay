@@ -89,6 +89,7 @@ import {
 import { setMainCharacterImage, removeCharacterImage } from '../mongo/files.js';
 import {
   setLibraryImageMeta,
+  setOwnedImageMeta,
   findImageFile,
   deleteImage,
 } from '../mongo/images.js';
@@ -204,6 +205,14 @@ async function readEntityField({ entityType, entityId, field }) {
       if (v == null) return '';
       return typeof v === 'string' ? v : JSON.stringify(v);
     }
+    {
+      const m = field.match(/^image:([a-f0-9]{24}):(name|description)$/);
+      if (m) {
+        const file = await findImageFile(m[1]);
+        if (!file) throw new Error(`Image not found: ${m[1]}`);
+        return String(file.metadata?.[m[2]] || '');
+      }
+    }
     throw new Error(`gateway fallback: unknown beat field "${field}"`);
   }
   if (entityType === 'character') {
@@ -220,6 +229,14 @@ async function readEntityField({ entityType, entityId, field }) {
       const v = c.specifics?.[field.slice('specifics.'.length)];
       if (v == null) return '';
       return typeof v === 'string' ? v : JSON.stringify(v);
+    }
+    {
+      const m = field.match(/^image:([a-f0-9]{24}):(name|description)$/);
+      if (m) {
+        const file = await findImageFile(m[1]);
+        if (!file) throw new Error(`Image not found: ${m[1]}`);
+        return String(file.metadata?.[m[2]] || '');
+      }
     }
     throw new Error(`gateway fallback: unknown character field "${field}"`);
   }
@@ -286,9 +303,13 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
 
   // op === 'set' (or any unrecognized op falls through here)
   if (entityType === 'beat') {
+    const m = field.match(/^image:([a-f0-9]{24}):(name|description)$/);
+    if (m) return setOwnedImageMeta(m[1], { [m[2]]: args.markdown });
     return Plots.updateBeat(entityId, { [field]: args.markdown });
   }
   if (entityType === 'character') {
+    const m = field.match(/^image:([a-f0-9]{24}):(name|description)$/);
+    if (m) return setOwnedImageMeta(m[1], { [m[2]]: args.markdown });
     const { updateCharacter } = await import('../mongo/characters.js');
     if (field === 'name' || field === 'hollywood_actor') {
       return updateCharacter(entityId, { [field]: args.markdown });
@@ -1081,6 +1102,46 @@ export async function setLibraryImageMetaViaGateway({ imageId, name, description
   }
   broadcastFieldsUpdated('library', {
     changed: ['library_images'],
+    image_id: String(imageId),
+  });
+}
+
+// Owned-image (character / beat) metadata writer. Mirrors
+// setLibraryImageMetaViaGateway but routes through the entity's own y-doc
+// room so connected SPAs see the bot's caret in the image card and the
+// values appear live. Falls back to direct Mongo via setOwnedImageMeta when
+// Hocuspocus isn't running (tests, CLI).
+export async function setOwnedImageMetaViaGateway({
+  imageId,
+  ownerType,
+  ownerId,
+  name,
+  description,
+}) {
+  if (name === undefined && description === undefined) return;
+  if (ownerType !== 'beat' && ownerType !== 'character') {
+    throw new Error(`setOwnedImageMetaViaGateway: unsupported ownerType "${ownerType}"`);
+  }
+  const idStr = String(ownerId || '');
+  if (!idStr) throw new Error('setOwnedImageMetaViaGateway: ownerId required');
+  if (name !== undefined) {
+    await setEntityFieldMarkdown({
+      entityType: ownerType,
+      entityId: idStr,
+      field: `image:${String(imageId)}:name`,
+      markdown: name,
+    });
+  }
+  if (description !== undefined) {
+    await setEntityFieldMarkdown({
+      entityType: ownerType,
+      entityId: idStr,
+      field: `image:${String(imageId)}:description`,
+      markdown: description,
+    });
+  }
+  broadcastFieldsUpdated(buildRoomName(ownerType, idStr), {
+    changed: ['image_meta'],
     image_id: String(imageId),
   });
 }

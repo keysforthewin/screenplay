@@ -32,6 +32,7 @@ import {
   searchLines,
   extractOutline,
   truncateForPreview,
+  applyMarkdownEdits,
 } from '../util/textWindow.js';
 import {
   recordGeminiImageUsage,
@@ -868,6 +869,133 @@ async function runSimilaritySearch({ query, maxResults = 8, rawContentTopN = 3 }
   }));
 }
 
+// Helpers used by the unified `edit` handler. Throw to signal user-facing
+// errors — dispatchTool wraps them into the canonical "Tool error (edit): ..."
+// shape, and dispatchToolUses tags the tool_result with is_error: true.
+async function resolveEditTarget({ collection, identifier, field }) {
+  if (collection === 'beat') {
+    const target = await resolveBeat(identifier);
+    let gatewayField;
+    let currentValue;
+    if (field === 'name' || field === 'desc' || field === 'body') {
+      gatewayField = field;
+      currentValue = String(target[field] || '');
+    } else if (typeof field === 'string' && field.startsWith('specifics.')) {
+      gatewayField = field;
+      const key = field.slice('specifics.'.length);
+      const v = target.specifics?.[key];
+      currentValue = v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v);
+    } else {
+      throw new Error(`beat field must be name, desc, body, or specifics.<key>; got "${field}".`);
+    }
+    return {
+      entityType: 'beat',
+      entityId: target._id.toString(),
+      gatewayField,
+      currentValue,
+      displayName: `beat "${target.name}".${gatewayField}`,
+      urlForLink: beatUrl(target),
+    };
+  }
+  if (collection === 'character') {
+    if (typeof identifier !== 'string' || !identifier.trim()) {
+      throw new Error('`identifier` is required for character.');
+    }
+    const c = await Characters.getCharacter(identifier);
+    if (!c) throw new Error(`No character found for "${identifier}".`);
+    let gatewayField;
+    let currentValue;
+    if (field === 'name' || field === 'hollywood_actor') {
+      gatewayField = field;
+      currentValue = String(c[field] || '');
+    } else if (typeof field === 'string' && field.startsWith('fields.')) {
+      gatewayField = field;
+      const key = field.slice('fields.'.length);
+      const v = c.fields?.[key];
+      currentValue = v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v);
+    } else if (typeof field === 'string' && field.startsWith('specifics.')) {
+      gatewayField = field;
+      const key = field.slice('specifics.'.length);
+      const v = c.specifics?.[key];
+      currentValue = v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v);
+    } else if (typeof field === 'string' && field.trim()) {
+      // bare custom field name → fields.<name>
+      gatewayField = `fields.${field}`;
+      const v = c.fields?.[field];
+      currentValue = v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v);
+    } else {
+      throw new Error(`character field must be a non-empty string; got ${JSON.stringify(field)}.`);
+    }
+    return {
+      entityType: 'character',
+      entityId: c._id.toString(),
+      gatewayField,
+      currentValue,
+      displayName: `${c.name}.${gatewayField}`,
+      urlForLink: characterUrl(c),
+    };
+  }
+  if (collection === 'director_note') {
+    if (field !== 'text') {
+      throw new Error(`director_note field must be "text"; got "${field}".`);
+    }
+    if (typeof identifier !== 'string' || !identifier.trim()) {
+      throw new Error('`identifier` is required for director_note.');
+    }
+    const note = await resolveDirectorNote(identifier);
+    return {
+      entityType: 'notes',
+      entityId: 'notes',
+      gatewayField: `note:${note._id.toString()}:text`,
+      currentValue: String(note.text || ''),
+      displayName: `director's note ${note._id}.text`,
+      urlForLink: notesUrl(),
+    };
+  }
+  throw new Error(`Unsupported collection: ${collection}`);
+}
+
+function formatPerEditSummary(applied) {
+  return (applied || [])
+    .map((e, i) => {
+      const delta = e.replace_chars - e.find_chars;
+      const sign = delta >= 0 ? '+' : '';
+      return `  ${i + 1}. -${e.find_chars}/+${e.replace_chars} (Δ${sign}${delta})`;
+    })
+    .join('\n');
+}
+
+async function editPlotEntity({ field, edits, isWholeReplace }) {
+  if (field !== 'title' && field !== 'synopsis' && field !== 'notes') {
+    return `Tool error (edit): plot field must be title, synopsis, or notes; got "${field}".`;
+  }
+  const plot = await Plots.getPlot();
+  const current = String(plot[field] || '');
+  if (isWholeReplace) {
+    const newText = String(edits[0].replace ?? '');
+    await Plots.updatePlot({ [field]: newText });
+    const delta = newText.length - current.length;
+    const sign = delta >= 0 ? '+' : '';
+    return `Replaced plot.${field}. Was ${current.length} chars; now ${newText.length} chars (${sign}${delta}).`;
+  }
+  if (field === 'synopsis' || field === 'notes') {
+    const result = await Plots.editPlotField(field, edits);
+    return (
+      `Applied ${result.edits?.length ?? 0} edit(s) to plot.${field}. ` +
+      `Value: ${result.beforeLen} → ${result.afterLen} chars.\n` +
+      formatPerEditSummary(result.edits)
+    );
+  }
+  // field === 'title' — partial edit via applyMarkdownEdits, then write back.
+  const { body, applied, beforeLen, afterLen } = applyMarkdownEdits(current, edits, 'edit');
+  await Plots.updatePlot({ title: body });
+  return (
+    `Applied ${applied.length} edit(s) to plot.title. ` +
+    `Value: ${beforeLen} → ${afterLen} chars.\n` +
+    formatPerEditSummary(applied)
+  );
+}
+
 export const HANDLERS = {
   async get_overview() {
     return compact(await buildOverview());
@@ -893,6 +1021,181 @@ export const HANDLERS = {
     );
   },
 
+  // Universal find/replace on any text field. Empty `find` (single-edit calls
+  // only) means whole-field replace.
+  async edit(input = {}) {
+    if (typeof input === 'string') {
+      const recovered = coerceStringifiedJson(input);
+      if (recovered) {
+        logger.info('edit: recovered stringified JSON input from model');
+        input = recovered;
+      }
+    }
+    const { collection, identifier, field, edits } = input || {};
+
+    const VALID_COLLECTIONS = ['beat', 'character', 'plot', 'director_note'];
+    if (!VALID_COLLECTIONS.includes(collection)) {
+      return `Tool error (edit): \`collection\` must be one of ${VALID_COLLECTIONS.join(', ')}; got ${JSON.stringify(collection)}.`;
+    }
+    if (typeof field !== 'string' || !field.trim()) {
+      return 'Tool error (edit): `field` is required.';
+    }
+    if (!Array.isArray(edits) || edits.length === 0) {
+      return 'Tool error (edit): `edits` must be a non-empty array of {find, replace} pairs.';
+    }
+    for (let i = 0; i < edits.length; i++) {
+      const e = edits[i];
+      if (!e || typeof e !== 'object' || Array.isArray(e)) {
+        return `Tool error (edit): edit ${i} must be an object {find, replace}.`;
+      }
+      if (typeof e.find !== 'string' || typeof e.replace !== 'string') {
+        return `Tool error (edit): edit ${i} must have string \`find\` and \`replace\` (got find=${typeof e.find}, replace=${typeof e.replace}).`;
+      }
+    }
+    const isWholeReplace = edits.length === 1 && edits[0].find === '';
+    if (!isWholeReplace) {
+      for (let i = 0; i < edits.length; i++) {
+        if (edits[i].find === '') {
+          return `Tool error (edit): edit ${i} has empty \`find\`. Empty find (whole-field replace) is only allowed in single-edit calls — for partial edits every \`find\` must be a verbatim snippet.`;
+        }
+      }
+    }
+
+    if (collection === 'plot') {
+      return await editPlotEntity({ field, edits, isWholeReplace });
+    }
+
+    const target = await resolveEditTarget({ collection, identifier, field });
+
+    let summary;
+    if (isWholeReplace) {
+      const newText = String(edits[0].replace ?? '');
+      await Gateway.setEntityFieldMarkdown({
+        entityType: target.entityType,
+        entityId: target.entityId,
+        field: target.gatewayField,
+        markdown: newText,
+      });
+      const before = target.currentValue.length;
+      const after = newText.length;
+      const delta = after - before;
+      const sign = delta >= 0 ? '+' : '';
+      summary = `Replaced ${target.displayName}. Was ${before} chars; now ${after} chars (${sign}${delta}).`;
+    } else {
+      const result = await Gateway.editEntityFieldMarkdown({
+        entityType: target.entityType,
+        entityId: target.entityId,
+        field: target.gatewayField,
+        edits,
+      });
+      summary =
+        `Applied ${result.applied?.length ?? 0} edit(s) to ${target.displayName}. ` +
+        `Value: ${result.beforeLen} → ${result.afterLen} chars.\n` +
+        formatPerEditSummary(result.applied);
+    }
+    // Side effects mirror the legacy update_*/edit_*_field handlers so existing
+    // post-hook behavior survives the consolidation.
+    if (collection === 'character') {
+      // Similarity heads-up when name or any custom field changed.
+      if (target.gatewayField === 'name' || target.gatewayField.startsWith('fields.')) {
+        const fresh = await Characters.getCharacter(target.entityId);
+        if (fresh) summary = await appendSimilarityHeadsUp('character', fresh, summary);
+      }
+      // Auto-attach a TMDB portrait when the character is plays_self=false with
+      // a hollywood_actor set and no main image.
+      const note = await maybeAutoFetchActorPortrait(target.entityId);
+      if (note) summary = `${summary}${note}`;
+    } else if (collection === 'beat') {
+      if (
+        target.gatewayField === 'name' ||
+        target.gatewayField === 'desc' ||
+        target.gatewayField === 'body'
+      ) {
+        const fresh = await Plots.getBeat(target.entityId);
+        if (fresh) summary = await appendSimilarityHeadsUp('beat', fresh, summary);
+      }
+    }
+    return withSpaLink(summary, target.urlForLink);
+  },
+
+  // Atomic value assignment for non-text fields. For text fields use `edit`.
+  async set_field(input = {}) {
+    if (typeof input === 'string') {
+      const recovered = coerceStringifiedJson(input);
+      if (recovered) {
+        logger.info('set_field: recovered stringified JSON input from model');
+        input = recovered;
+      }
+    }
+    const { collection, identifier, field, value } = input || {};
+
+    if (collection !== 'beat' && collection !== 'character') {
+      return `Tool error (set_field): \`collection\` must be "beat" or "character"; got ${JSON.stringify(collection)}.`;
+    }
+    if (typeof identifier !== 'string' || !identifier.trim()) {
+      return 'Tool error (set_field): `identifier` is required.';
+    }
+    if (typeof field !== 'string' || !field.trim()) {
+      return 'Tool error (set_field): `field` is required.';
+    }
+    if (value === undefined) {
+      return 'Tool error (set_field): `value` is required.';
+    }
+
+    if (collection === 'beat') {
+      if (field === 'order') {
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+          return `Tool error (set_field): beat.order must be a finite number; got ${JSON.stringify(value)}.`;
+        }
+      } else if (field === 'characters') {
+        if (!Array.isArray(value) || value.some((s) => typeof s !== 'string')) {
+          return 'Tool error (set_field): beat.characters must be an array of strings.';
+        }
+      } else if (field === 'scene_sheet_image_id') {
+        if (value !== null && (typeof value !== 'string' || !/^[a-f0-9]{24}$/i.test(value))) {
+          return 'Tool error (set_field): beat.scene_sheet_image_id must be a 24-char hex string or null.';
+        }
+      } else {
+        return `Tool error (set_field): beat field must be one of order, characters, scene_sheet_image_id; got "${field}". For text fields (name, desc, body, specifics.*) use \`edit\` instead.`;
+      }
+      const beat = await Gateway.updateBeatViaGateway(identifier, { [field]: value });
+      const display =
+        field === 'characters'
+          ? `[${value.map((s) => JSON.stringify(s)).join(', ')}]`
+          : JSON.stringify(value);
+      return withSpaLink(
+        `Set beat "${beat.name}".${field} = ${display}.`,
+        beatUrl(beat),
+      );
+    }
+
+    // collection === 'character'
+    let patch;
+    if (field === 'plays_self' || field === 'own_voice') {
+      if (typeof value !== 'boolean') {
+        return `Tool error (set_field): character.${field} must be a boolean; got ${JSON.stringify(value)}.`;
+      }
+      patch = { [field]: value };
+    } else if (field === 'unset') {
+      if (!Array.isArray(value) || value.some((s) => typeof s !== 'string')) {
+        return 'Tool error (set_field): character.unset must be an array of custom field name strings.';
+      }
+      patch = { unset: value };
+    } else {
+      return `Tool error (set_field): character field must be one of plays_self, own_voice, unset; got "${field}". For text fields (name, hollywood_actor, fields.*, specifics.*) use \`edit\` instead.`;
+    }
+    const c = await Gateway.updateCharacterViaGateway(identifier, patch);
+    let summary;
+    if (field === 'unset') {
+      summary = `Unset ${value.length} field(s) on ${c.name}: [${value.join(', ')}].`;
+    } else {
+      summary = `Set ${c.name}.${field} = ${value}.`;
+    }
+    const note = await maybeAutoFetchActorPortrait(c._id.toString());
+    if (note) summary = `${summary}${note}`;
+    return withSpaLink(summary, characterUrl(c));
+  },
+
   async create_character(input) {
     const playsSelf = input.plays_self === undefined ? true : !!input.plays_self;
     const ownVoice = input.own_voice === undefined ? true : !!input.own_voice;
@@ -907,24 +1210,6 @@ export const HANDLERS = {
     const note = await maybeAutoFetchActorPortrait(c._id.toString());
     const base = `Created character ${c.name} (_id ${c._id}).${note || ''}`;
     return withSpaLink(await appendSimilarityHeadsUp('character', c, base), characterUrl(c));
-  },
-
-  async update_character({ identifier, patch }) {
-    if (typeof patch === 'string') {
-      const recovered = coerceStringifiedJson(patch);
-      if (recovered) {
-        logger.info('update_character: recovered stringified JSON patch from model');
-        patch = recovered;
-      }
-    }
-    const c = await Gateway.updateCharacterViaGateway(identifier, patch);
-    const note = await maybeAutoFetchActorPortrait(c._id.toString());
-    const fresh = note ? await Characters.getCharacter(c._id.toString()) : c;
-    const base = `Updated ${c.name}.${note || ''}\nCurrent state:\n${compact(withoutImageFilenames(fresh))}`;
-    const touchedText =
-      patch && (patch.name !== undefined || (patch.fields && typeof patch.fields === 'object'));
-    const text = touchedText ? await appendSimilarityHeadsUp('character', fresh, base) : base;
-    return withSpaLink(text, characterUrl(fresh));
   },
 
   async bulk_update_character_field({ field_name, updates, batch_size } = {}) {
@@ -1142,11 +1427,6 @@ export const HANDLERS = {
     return withSpaLink(`Added director's note ${note._id}: ${preview(note.text)}`, notesUrl());
   },
 
-  async edit_director_note({ note_id, text } = {}) {
-    await Gateway.editDirectorNoteViaGateway({ noteId: note_id, text });
-    return withSpaLink(`Updated director's note ${note_id}: ${preview(text)}`, notesUrl());
-  },
-
   async remove_director_note({ note_id } = {}) {
     await Gateway.removeDirectorNoteViaGateway({ noteId: note_id });
     return withSpaLink(`Removed director's note ${note_id}.`, notesUrl());
@@ -1335,38 +1615,6 @@ export const HANDLERS = {
     });
   },
 
-  async update_plot(patch) {
-    // Model sometimes overgeneralizes from update_character / update_beat (which
-    // take {identifier, patch}) and wraps the args in a `patch` field, or even
-    // sends the whole thing as a stringified JSON. Defensively recover both shapes.
-    if (typeof patch === 'string') {
-      const recovered = coerceStringifiedJson(patch);
-      if (recovered) {
-        logger.info('update_plot: recovered stringified JSON patch from model');
-        patch = recovered;
-      }
-    }
-    if (
-      patch && typeof patch === 'object' && !Array.isArray(patch)
-      && Object.keys(patch).length === 1
-      && Object.prototype.hasOwnProperty.call(patch, 'patch')
-    ) {
-      const inner = patch.patch;
-      if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
-        logger.info('update_plot: unwrapped { patch: ... } shape from model');
-        patch = inner;
-      } else if (typeof inner === 'string') {
-        const recovered = coerceStringifiedJson(inner);
-        if (recovered) {
-          logger.info('update_plot: unwrapped { patch: "<stringified>" } shape from model');
-          patch = recovered;
-        }
-      }
-    }
-    const p = await Plots.updatePlot(patch);
-    return `Plot updated.\n${compact({ title: p.title || '', synopsis: p.synopsis, notes: p.notes })}`;
-  },
-
   async list_beats() {
     const plot = await Plots.getPlot();
     const beats = [...(plot.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
@@ -1387,94 +1635,6 @@ export const HANDLERS = {
     const b = await Plots.createBeat({ name, desc, body, characters, order });
     const base = `Created beat "${b.name}" (order ${b.order}, _id ${b._id}). It is now the current beat if none was set.`;
     return withSpaLink(await appendSimilarityHeadsUp('beat', b, base), beatUrl(b));
-  },
-
-  async update_beat({ identifier, patch }) {
-    if (typeof patch === 'string') {
-      const recovered = coerceStringifiedJson(patch);
-      if (recovered) {
-        logger.info('update_beat: recovered stringified JSON patch from model');
-        patch = recovered;
-      } else {
-        logger.warn(
-          `update_beat: stringified patch could NOT be recovered (len=${patch.length}, preview=${JSON.stringify(preview(patch, 240))})`,
-        );
-      }
-    }
-    const b = await Gateway.updateBeatViaGateway(identifier, patch);
-    const base = `Updated beat "${b.name}".\n${compact(serializeBeat(b))}`;
-    const touchedText =
-      patch && (patch.name !== undefined || patch.desc !== undefined || patch.body !== undefined);
-    const text = touchedText ? await appendSimilarityHeadsUp('beat', b, base) : base;
-    return withSpaLink(text, beatUrl(b));
-  },
-
-  async append_to_beat_body({ beat, content }) {
-    const target = await resolveBeat(beat);
-    const next = await Gateway.appendBeatBodyViaGateway(target._id.toString(), content);
-    return withSpaLink(
-      `Appended ${String(content || '').length} chars to beat "${target.name}". Body is now ${next.length} chars.`,
-      beatUrl(target),
-    );
-  },
-
-  async set_beat_body(input = {}) {
-    // Defensively recover if the model handed us the whole input as a stringified
-    // JSON blob (the same failure mode the update_beat handler defends against).
-    if (typeof input === 'string') {
-      const recovered = coerceStringifiedJson(input);
-      if (recovered) {
-        logger.info('set_beat_body: recovered stringified JSON input from model');
-        input = recovered;
-      }
-    }
-    const { beat, body } = input || {};
-    if (typeof beat !== 'string' || !beat.trim()) {
-      return 'Tool error (set_beat_body): `beat` is required (id, order, or name).';
-    }
-    if (typeof body !== 'string') {
-      return `Tool error (set_beat_body): \`body\` must be a string, got ${typeof body}.`;
-    }
-    const target = await resolveBeat(beat);
-    const before = String(target.body || '').length;
-    await Gateway.setBeatBodyViaGateway(target._id.toString(), body);
-    const after = body.length;
-    const delta = after - before;
-    const sign = delta >= 0 ? '+' : '';
-    return withSpaLink(
-      `Replaced body of beat "${target.name}". Was ${before} chars; now ${after} chars (${sign}${delta}).`,
-      beatUrl(target),
-    );
-  },
-
-  async edit_beat_body(input = {}) {
-    if (typeof input === 'string') {
-      const recovered = coerceStringifiedJson(input);
-      if (recovered) {
-        logger.info('edit_beat_body: recovered stringified JSON input from model');
-        input = recovered;
-      }
-    }
-    const { beat, edits } = input || {};
-    if (typeof beat !== 'string' || !beat.trim()) {
-      return 'Tool error (edit_beat_body): `beat` is required (id, order, or name).';
-    }
-    if (!Array.isArray(edits) || edits.length === 0) {
-      return 'Tool error (edit_beat_body): `edits` must be a non-empty array of {find, replace} pairs.';
-    }
-    const target = await resolveBeat(beat);
-    const result = await Gateway.editBeatBodyViaGateway(target._id.toString(), edits);
-    const perEdit = result.applied
-      .map((e, i) => {
-        const delta = e.replace_chars - e.find_chars;
-        const sign = delta >= 0 ? '+' : '';
-        return `  ${i + 1}. -${e.find_chars}/+${e.replace_chars} (Δ${sign}${delta})`;
-      })
-      .join('\n');
-    return withSpaLink(
-      `Applied ${result.applied.length} edit(s) to beat "${target.name}". Body: ${result.beforeLen} → ${result.afterLen} chars.\n${perEdit}`,
-      beatUrl(target),
-    );
   },
 
   async read_beat_body({ beat, line_start, line_count } = {}) {
@@ -1562,28 +1722,6 @@ export const HANDLERS = {
     );
   },
 
-  async edit_director_note_partial({ note_id, edits } = {}) {
-    if (typeof note_id !== 'string' || !note_id.trim()) {
-      return 'Tool error (edit_director_note_partial): `note_id` is required.';
-    }
-    if (!Array.isArray(edits) || edits.length === 0) {
-      return 'Tool error (edit_director_note_partial): `edits` must be a non-empty array of {find, replace} pairs.';
-    }
-    await resolveDirectorNote(note_id);
-    const result = await Gateway.editDirectorNoteTextViaGateway({ noteId: note_id, edits });
-    const perEdit = (result.applied || [])
-      .map((e, i) => {
-        const delta = e.replace_chars - e.find_chars;
-        const sign = delta >= 0 ? '+' : '';
-        return `  ${i + 1}. -${e.find_chars}/+${e.replace_chars} (Δ${sign}${delta})`;
-      })
-      .join('\n');
-    return withSpaLink(
-      `Applied ${result.applied?.length ?? 0} edit(s) to director's note ${note_id}. Text: ${result.beforeLen} → ${result.afterLen} chars.\n${perEdit}`,
-      notesUrl(),
-    );
-  },
-
   async read_character_field({ character, field, line_start, line_count } = {}) {
     if (typeof character !== 'string' || !character.trim()) {
       return 'Tool error (read_character_field): `character` is required.';
@@ -1615,55 +1753,6 @@ export const HANDLERS = {
       }),
       characterUrl(c),
     );
-  },
-
-  async edit_character_field({ character, field, edits } = {}) {
-    if (typeof character !== 'string' || !character.trim()) {
-      return 'Tool error (edit_character_field): `character` is required.';
-    }
-    if (typeof field !== 'string' || !field.trim()) {
-      return 'Tool error (edit_character_field): `field` is required.';
-    }
-    if (!Array.isArray(edits) || edits.length === 0) {
-      return 'Tool error (edit_character_field): `edits` must be a non-empty array of {find, replace} pairs.';
-    }
-    const CORE = new Set(['name', 'hollywood_actor']);
-    const resolvedField = CORE.has(field) ? field : `fields.${field}`;
-    const result = await Gateway.editCharacterFieldViaGateway({
-      identifier: character,
-      field: resolvedField,
-      edits,
-    });
-    const fresh = await Characters.getCharacter(character);
-    const perEdit = (result.applied || [])
-      .map((e, i) => {
-        const delta = e.replace_chars - e.find_chars;
-        const sign = delta >= 0 ? '+' : '';
-        return `  ${i + 1}. -${e.find_chars}/+${e.replace_chars} (Δ${sign}${delta})`;
-      })
-      .join('\n');
-    return withSpaLink(
-      `Applied ${result.applied?.length ?? 0} edit(s) to ${fresh?.name || character}.${resolvedField}. Value: ${result.beforeLen} → ${result.afterLen} chars.\n${perEdit}`,
-      characterUrl(fresh || { name: character }),
-    );
-  },
-
-  async edit_plot_field({ field, edits } = {}) {
-    if (field !== 'synopsis' && field !== 'notes') {
-      return 'Tool error (edit_plot_field): `field` must be "synopsis" or "notes".';
-    }
-    if (!Array.isArray(edits) || edits.length === 0) {
-      return 'Tool error (edit_plot_field): `edits` must be a non-empty array of {find, replace} pairs.';
-    }
-    const result = await Plots.editPlotField(field, edits);
-    const perEdit = (result.edits || [])
-      .map((e, i) => {
-        const delta = e.replace_chars - e.find_chars;
-        const sign = delta >= 0 ? '+' : '';
-        return `  ${i + 1}. -${e.find_chars}/+${e.replace_chars} (Δ${sign}${delta})`;
-      })
-      .join('\n');
-    return `Applied ${result.edits?.length ?? 0} edit(s) to plot.${field}. Value: ${result.beforeLen} → ${result.afterLen} chars.\n${perEdit}`;
   },
 
   async search_beats({ query }) {

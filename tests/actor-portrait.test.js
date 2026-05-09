@@ -141,8 +141,8 @@ describe('create_character auto-portrait', () => {
   });
 });
 
-describe('update_character auto-portrait', () => {
-  it('fetches portrait when update sets hollywood_actor and there is no main image', async () => {
+describe('edit (character) auto-portrait', () => {
+  it('fetches portrait when edit sets hollywood_actor and there is no main image', async () => {
     await seedExistingCharacter();
     Tmdb.findActorPortraitUrl.mockResolvedValue({
       ok: true,
@@ -150,9 +150,11 @@ describe('update_character auto-portrait', () => {
       tmdb_person_id: 99,
       person_name: 'Bob Odenkirk',
     });
-    const out = await HANDLERS.update_character({
+    const out = await HANDLERS.edit({
+      collection: 'character',
       identifier: 'Bob',
-      patch: { hollywood_actor: 'Bob Odenkirk' },
+      field: 'hollywood_actor',
+      edits: [{ find: '', replace: 'Bob Odenkirk' }],
     });
     expect(Tmdb.findActorPortraitUrl).toHaveBeenCalledWith('Bob Odenkirk');
     expect(Files.attachImageToCharacter).toHaveBeenCalledTimes(1);
@@ -166,13 +168,15 @@ describe('update_character auto-portrait', () => {
       hollywood_actor: 'Old Actor',
       main_image_id: new ObjectId(),
     });
-    const out = await HANDLERS.update_character({
+    const out = await HANDLERS.edit({
+      collection: 'character',
       identifier: 'Alice',
-      patch: { hollywood_actor: 'New Actor' },
+      field: 'hollywood_actor',
+      edits: [{ find: '', replace: 'New Actor' }],
     });
     expect(Tmdb.findActorPortraitUrl).not.toHaveBeenCalled();
     expect(Files.attachImageToCharacter).not.toHaveBeenCalled();
-    expect(out).toMatch(/Updated Alice/);
+    expect(out).toMatch(/Replaced Alice\.hollywood_actor/);
     expect(out).not.toMatch(/Auto-attached/);
   });
 
@@ -182,9 +186,11 @@ describe('update_character auto-portrait', () => {
       name_lower: 'real person',
       plays_self: true,
     });
-    await HANDLERS.update_character({
+    await HANDLERS.edit({
+      collection: 'character',
       identifier: 'Real Person',
-      patch: { fields: { background_story: 'born in 1970' } },
+      field: 'fields.background_story',
+      edits: [{ find: '', replace: 'born in 1970' }],
     });
     expect(Tmdb.findActorPortraitUrl).not.toHaveBeenCalled();
     expect(Files.attachImageToCharacter).not.toHaveBeenCalled();

@@ -30,13 +30,15 @@ describe('SPA edit links in handler output', () => {
     expect(out).toMatch(/Edit in browser: http:\/\/localhost:3000\/beat\/1$/m);
   });
 
-  it('update_character appends a character URL using the stripped name', async () => {
+  it('edit (character) appends a character URL using the stripped name', async () => {
     await Characters.createCharacter({ name: 'Alice', fields: {} });
-    const out = await HANDLERS.update_character({
+    const out = await HANDLERS.edit({
+      collection: 'character',
       identifier: 'Alice',
-      patch: { fields: { role: 'lead' } },
+      field: 'fields.role',
+      edits: [{ find: '', replace: 'lead' }],
     });
-    expect(out).toMatch(/Updated Alice/);
+    expect(out).toMatch(/Replaced Alice\.fields\.role/);
     expect(out).toMatch(/Edit in browser: http:\/\/localhost:3000\/character\/Alice$/m);
   });
 
