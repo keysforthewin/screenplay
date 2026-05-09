@@ -28,6 +28,17 @@ const VALID_SIZES = new Set([
 ]);
 const VALID_QUALITIES = new Set(['low', 'medium', 'high', 'auto']);
 
+// Console-log the full prompt before every image generation. The user wants
+// to see exactly what's being sent so they can debug safety-system rejections.
+function logPrompt(label, prompt, extras = {}) {
+  const meta = Object.entries(extras)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(' ');
+  logger.info(
+    `${label} ${meta}\n────── prompt (${prompt.length} chars) ──────\n${prompt}\n──────────────────────────────────────────`,
+  );
+}
+
 export async function generateCharacterSheetImage({
   prompt,
   size = '1536x1024',
@@ -46,6 +57,11 @@ export async function generateCharacterSheetImage({
   if (!VALID_QUALITIES.has(quality)) {
     throw new Error(`generateCharacterSheetImage: invalid quality "${quality}".`);
   }
+
+  logPrompt(`openai images.generations → ${GPT_IMAGE_MODEL}`, prompt, {
+    size,
+    quality,
+  });
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
@@ -98,10 +114,11 @@ export async function generateCharacterSheetImage({
   }
   const buffer = Buffer.from(b64, 'base64');
   const contentType = validateImageBuffer(buffer);
+  const usage = data?.usage || null;
   logger.info(
-    `openai: ${GPT_IMAGE_MODEL} size=${size} quality=${quality} bytes=${buffer.length} ${latencyMs}ms`,
+    `openai: ${GPT_IMAGE_MODEL} size=${size} quality=${quality} bytes=${buffer.length} in_tok=${usage?.input_tokens || 0} out_tok=${usage?.output_tokens || 0} total_tok=${usage?.total_tokens || 0} ${latencyMs}ms`,
   );
-  return { buffer, contentType, model: GPT_IMAGE_MODEL, latencyMs };
+  return { buffer, contentType, model: GPT_IMAGE_MODEL, latencyMs, usage };
 }
 
 // images.edits — multipart POST that includes a reference image alongside the
@@ -130,6 +147,13 @@ export async function generateCharacterSheetImageEdit({
   if (!VALID_QUALITIES.has(quality)) {
     throw new Error(`generateCharacterSheetImageEdit: invalid quality "${quality}".`);
   }
+
+  logPrompt(`openai images.edits → ${GPT_IMAGE_MODEL}`, prompt, {
+    size,
+    quality,
+    input_image_bytes: inputImage.buffer.length,
+    input_image_type: inputImage.contentType,
+  });
 
   const fd = new FormData();
   fd.append('model', GPT_IMAGE_MODEL);
@@ -184,8 +208,9 @@ export async function generateCharacterSheetImageEdit({
   }
   const buffer = Buffer.from(b64, 'base64');
   const contentType = validateImageBuffer(buffer);
+  const usage = data?.usage || null;
   logger.info(
-    `openai edit: ${GPT_IMAGE_MODEL} size=${size} quality=${quality} in_bytes=${inputImage.buffer.length} out_bytes=${buffer.length} ${latencyMs}ms`,
+    `openai edit: ${GPT_IMAGE_MODEL} size=${size} quality=${quality} in_bytes=${inputImage.buffer.length} out_bytes=${buffer.length} in_tok=${usage?.input_tokens || 0} out_tok=${usage?.output_tokens || 0} total_tok=${usage?.total_tokens || 0} ${latencyMs}ms`,
   );
-  return { buffer, contentType, model: GPT_IMAGE_MODEL, latencyMs };
+  return { buffer, contentType, model: GPT_IMAGE_MODEL, latencyMs, usage };
 }

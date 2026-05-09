@@ -30,6 +30,8 @@ export async function generateSceneSheetForBeat({
   quality = 'auto',
   model = 'gemini',
   omitImages = false,
+  discordUser = null,
+  channelId = null,
 }) {
   const beat = await getBeat(beatId);
   if (!beat) {
@@ -49,6 +51,8 @@ export async function generateSceneSheetForBeat({
       quality,
       mainImageId: beat.main_image_id || null,
       omitImages,
+      discordUser,
+      channelId,
     });
 
   const id = beat._id.toString();

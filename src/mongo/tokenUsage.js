@@ -5,6 +5,7 @@ const col = () => getDb().collection('token_usage');
 export const KIND_ANTHROPIC_TEXT = 'anthropic_text';
 export const KIND_ANTHROPIC_IMAGE_INPUT = 'anthropic_image_input';
 export const KIND_GEMINI_IMAGE = 'gemini_image';
+export const KIND_OPENAI_IMAGE = 'openai_image';
 
 function envelope({ kind, discordUser, channelId, model, tokens, meta }) {
   return {
@@ -127,10 +128,37 @@ export async function recordGeminiImageUsage({ discordUser, channelId, model, us
   );
 }
 
+// OpenAI's gpt-image-* responses include a `usage` block with
+// input_tokens / output_tokens / total_tokens (and detail breakdowns).
+export async function recordOpenAIImageUsage({ discordUser, channelId, model, usage }) {
+  if (!usage) return;
+  const inputTokens = Number(usage.input_tokens) || 0;
+  const outputTokens = Number(usage.output_tokens) || 0;
+  const totalTokens = Number(usage.total_tokens) || inputTokens + outputTokens;
+  if (totalTokens <= 0) return;
+  await col().insertOne(
+    envelope({
+      kind: KIND_OPENAI_IMAGE,
+      discordUser,
+      channelId,
+      model,
+      tokens: totalTokens,
+      meta: {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        total_tokens: totalTokens,
+        input_tokens_details: usage.input_tokens_details || null,
+        output_tokens_details: usage.output_tokens_details || null,
+      },
+    }),
+  );
+}
+
 function kindBucketField(kind) {
   if (kind === KIND_ANTHROPIC_TEXT) return 'anthropic_text';
   if (kind === KIND_ANTHROPIC_IMAGE_INPUT) return 'anthropic_image_input';
   if (kind === KIND_GEMINI_IMAGE) return 'gemini_image';
+  if (kind === KIND_OPENAI_IMAGE) return 'openai_image';
   return null;
 }
 
@@ -150,6 +178,7 @@ export async function aggregateUsage({ since = null, userQuery = null } = {}) {
         anthropic_text: 0,
         anthropic_image_input: 0,
         gemini_image: 0,
+        openai_image: 0,
         total: 0,
         _latest: doc.created_at,
       };

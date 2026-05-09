@@ -36,6 +36,8 @@ export async function generateCharacterSheetForCharacter({
   quality = 'auto',
   model = 'gemini',
   omitImages = false,
+  discordUser = null,
+  channelId = null,
 }) {
   const character = await getCharacter(characterId);
   if (!character) {
@@ -55,6 +57,8 @@ export async function generateCharacterSheetForCharacter({
       quality,
       mainImageId: character.main_image_id || null,
       omitImages,
+      discordUser,
+      channelId,
     });
 
   const cid = character._id.toString();

@@ -3233,19 +3233,19 @@ export const HANDLERS = {
     lines.push('');
     if (userQuery && userRows.length === 1) {
       const r = userRows[0];
-      lines.push(`| User | Anthropic text | Anthropic image | Gemini image | Total |`);
-      lines.push(`|---|---:|---:|---:|---:|`);
+      lines.push(`| User | Anthropic text | Anthropic image | Gemini image | OpenAI image | Total |`);
+      lines.push(`|---|---:|---:|---:|---:|---:|`);
       lines.push(
         `| ${r.discord_user_display_name} | ${fmt(r.anthropic_text)} | ` +
-          `${fmt(r.anthropic_image_input)} | ${fmt(r.gemini_image)} | ${fmt(r.total)} |`,
+          `${fmt(r.anthropic_image_input)} | ${fmt(r.gemini_image)} | ${fmt(r.openai_image)} | ${fmt(r.total)} |`,
       );
     } else {
-      lines.push(`| Rank | User | Anthropic text | Anthropic image | Gemini image | Total |`);
-      lines.push(`|---:|---|---:|---:|---:|---:|`);
+      lines.push(`| Rank | User | Anthropic text | Anthropic image | Gemini image | OpenAI image | Total |`);
+      lines.push(`|---:|---|---:|---:|---:|---:|---:|`);
       userRows.forEach((r, i) => {
         lines.push(
           `| ${i + 1} | ${r.discord_user_display_name} | ${fmt(r.anthropic_text)} | ` +
-            `${fmt(r.anthropic_image_input)} | ${fmt(r.gemini_image)} | ${fmt(r.total)} |`,
+            `${fmt(r.anthropic_image_input)} | ${fmt(r.gemini_image)} | ${fmt(r.openai_image)} | ${fmt(r.total)} |`,
         );
       });
     }

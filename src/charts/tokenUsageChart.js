@@ -26,6 +26,7 @@ const COLORS = {
   anthropic_text: '#5b8def',
   anthropic_image_input: '#f5a623',
   gemini_image: '#7ed321',
+  openai_image: '#10a37f',
   tool_tokens: '#5b8def',
   tool_invocations: '#9b51e0',
   section_system: '#5b8def',
@@ -61,11 +62,17 @@ const SECTION_COLORS = {
   user_input: '#bd10e0',
 };
 
-const SEGMENT_ORDER = ['anthropic_text', 'anthropic_image_input', 'gemini_image'];
+const SEGMENT_ORDER = [
+  'anthropic_text',
+  'anthropic_image_input',
+  'gemini_image',
+  'openai_image',
+];
 const SEGMENT_LABELS = {
   anthropic_text: 'Anthropic text (tokens)',
   anthropic_image_input: 'Anthropic image input (tokens)',
   gemini_image: 'Gemini image gen (tokens)',
+  openai_image: 'OpenAI image gen (tokens)',
 };
 
 const WINDOW_LABELS = {

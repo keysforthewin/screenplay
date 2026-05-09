@@ -28,17 +28,23 @@ afterEach(() => {
   global.fetch = realFetch;
 });
 
-function okResponse(b64) {
+function okResponse(b64, usage = null) {
   return {
     ok: true,
     status: 200,
-    json: async () => ({ data: [{ b64_json: b64 }] }),
+    json: async () => ({ data: [{ b64_json: b64 }], usage }),
   };
 }
 
 describe('generateCharacterSheetImageEdit', () => {
   it('POSTs multipart to /v1/images/edits with the input image and prompt', async () => {
-    global.fetch.mockResolvedValueOnce(okResponse(TINY_PNG.toString('base64')));
+    global.fetch.mockResolvedValueOnce(
+      okResponse(TINY_PNG.toString('base64'), {
+        input_tokens: 42,
+        output_tokens: 100,
+        total_tokens: 142,
+      }),
+    );
 
     const result = await generateCharacterSheetImageEdit({
       prompt: 'A heroic robot character sheet.',
@@ -72,6 +78,11 @@ describe('generateCharacterSheetImageEdit', () => {
     expect(result.contentType).toBe('image/png');
     expect(result.model).toBe('gpt-image-2');
     expect(typeof result.latencyMs).toBe('number');
+    expect(result.usage).toEqual({
+      input_tokens: 42,
+      output_tokens: 100,
+      total_tokens: 142,
+    });
   });
 
   it('rejects when prompt is empty', async () => {

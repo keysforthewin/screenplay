@@ -95,6 +95,15 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
 });
 
+// Synthesize a discordUser-shaped object from the SPA session so token-usage
+// rows for web-triggered work attribute to the visitor's username (prefixed
+// with `web:` so a Discord user with the same display name doesn't merge).
+function webDiscordUser(req) {
+  const name = req?.session?.username;
+  if (!name) return null;
+  return { id: `web:${name}`, displayName: name };
+}
+
 export function buildApiRouter() {
   const router = express.Router();
   router.use(express.json({ limit: '1mb' }));
@@ -459,6 +468,7 @@ export function buildApiRouter() {
         quality,
         model,
         omitImages,
+        discordUser: webDiscordUser(req),
       });
       res.json(result);
     } catch (e) {
@@ -587,6 +597,7 @@ export function buildApiRouter() {
         quality,
         model,
         omitImages,
+        discordUser: webDiscordUser(req),
       });
       res.json(result);
     } catch (e) {

@@ -40,12 +40,14 @@ export async function generateImage({ prompt, aspectRatio, inputImage, inputImag
     : inputImage
       ? [inputImage]
       : [];
+  // Console-log the full prompt before every call so safety-system rejections
+  // are debuggable. Goes to logger.info (visible by default).
   logger.info(
     `gemini → model=${MODEL} prompt=${finalPrompt.length}c aspect=${aspectRatio || 'default'}${
       imageInputs.length
         ? ` editing inputs=${imageInputs.length} bytes=${imageInputs.reduce((n, i) => n + i.buffer.length, 0)}`
         : ''
-    }`,
+    }\n────── prompt (${finalPrompt.length} chars) ──────\n${finalPrompt}\n──────────────────────────────────────────`,
   );
   const contents = imageInputs.length
     ? [

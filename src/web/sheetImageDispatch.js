@@ -15,6 +15,7 @@ import {
   GPT_IMAGE_MODEL,
 } from '../openai/imageClient.js';
 import { generateImage as geminiGenerate, NANO_BANANA_MODEL } from '../gemini/client.js';
+import { recordGeminiImageUsage, recordOpenAIImageUsage } from '../mongo/tokenUsage.js';
 
 const SHEET_SIZE = '1536x1024';
 
@@ -38,6 +39,8 @@ export async function dispatchSheetGeneration({
   quality = 'auto',
   mainImageId = null,
   omitImages = false,
+  discordUser = null,
+  channelId = null,
 }) {
   if (!['gemini', 'openai'].includes(model)) {
     const err = new Error(`Unknown sheet model "${model}".`);
@@ -62,7 +65,22 @@ export async function dispatchSheetGeneration({
 
   if (model === 'gemini') {
     const t0 = Date.now();
-    const { buffer, contentType } = await geminiGenerate({ prompt, inputImage });
+    const { buffer, contentType, usageMetadata } = await geminiGenerate({
+      prompt,
+      inputImage,
+    });
+    if (usageMetadata) {
+      try {
+        await recordGeminiImageUsage({
+          discordUser,
+          channelId,
+          model: NANO_BANANA_MODEL,
+          usageMetadata,
+        });
+      } catch (e) {
+        logger.warn(`gemini token usage persist failed: ${e.message}`);
+      }
+    }
     return {
       buffer,
       contentType,
@@ -73,19 +91,29 @@ export async function dispatchSheetGeneration({
   }
 
   // openai
-  if (inputImage) {
-    const r = await generateCharacterSheetImageEdit({
-      prompt,
-      inputImage,
-      size: SHEET_SIZE,
-      quality,
-    });
-    return { ...r, usedInputImage: true };
+  const r = inputImage
+    ? await generateCharacterSheetImageEdit({
+        prompt,
+        inputImage,
+        size: SHEET_SIZE,
+        quality,
+      })
+    : await generateCharacterSheetImage({ prompt, size: SHEET_SIZE, quality });
+  if (r.usage) {
+    try {
+      await recordOpenAIImageUsage({
+        discordUser,
+        channelId,
+        model: r.model || GPT_IMAGE_MODEL,
+        usage: r.usage,
+      });
+    } catch (e) {
+      logger.warn(`openai token usage persist failed: ${e.message}`);
+    }
   }
-  const r = await generateCharacterSheetImage({
-    prompt,
-    size: SHEET_SIZE,
-    quality,
-  });
-  return { ...r, usedInputImage: false, model: r.model || GPT_IMAGE_MODEL };
+  return {
+    ...r,
+    usedInputImage: !!inputImage,
+    model: r.model || GPT_IMAGE_MODEL,
+  };
 }
