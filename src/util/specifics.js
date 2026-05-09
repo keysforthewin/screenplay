@@ -114,7 +114,7 @@ Use strict production continuity. The character must remain identical across all
 
 Use a technical 3D character-reference layout, not a glamour poster. Include orthographic style body views, clean studio lighting, neutral background, panel borders, callout lines, body landmark labels, surface detail panels, hands/feet reference, hair/groom reference, and costume detail panels. Left and right are always from the character's perspective. Never mirror asymmetrical details between views.
 
-Separate neutral body documentation from complex costume documentation. Use a simple readable base outfit for body measurement panels. Put complex clothing, armor, asymmetrical garments, props, and accessories into costume panels.`;
+Separate neutral body documentation from complex costume documentation. For body measurement and landmark panels, the character must wear a plain white tank top and plain white athletic shorts as the base outfit — this is mandatory across every body-reference view. Never depict the character nude, partially nude, topless, or in underwear, even when documenting proportions or anatomy. Put complex clothing, armor, asymmetrical garments, props, and accessories into the costume detail panels only.`;
 
 const REQUIRED_VIEWS_BLOCK = `REQUIRED VIEWS:
 1. Front view
