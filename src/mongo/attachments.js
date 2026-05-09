@@ -191,8 +191,48 @@ export function attachmentFileToMeta(file) {
     content_type: file.contentType || file.metadata?.content_type || 'application/octet-stream',
     size: file.length,
     source: file.metadata?.source || 'upload',
+    name: file.metadata?.name || '',
+    description: file.metadata?.description || '',
     uploaded_at: file.uploadDate,
   };
+}
+
+// Update the library-attachment-only metadata fields (name / description).
+// Refuses to touch attachments owned by an entity (owner_type !== null);
+// owned attachments use setOwnedAttachmentMeta. Mirrors setLibraryImageMeta in
+// src/mongo/images.js. The legacy embedded `caption` field on
+// plot.beats[*].attachments[] / characters.attachments[] / director-note
+// attachments is not authoritative — name / description in GridFS metadata are.
+export async function setLibraryAttachmentMeta(attachmentId, { name, description } = {}) {
+  if (name === undefined && description === undefined) return { changed: false };
+  const oid = toObjectId(attachmentId);
+  const file = await filesCol().findOne({ _id: oid });
+  if (!file) throw new Error(`Attachment not found: ${attachmentId}`);
+  const ownerType = file.metadata?.owner_type;
+  if (ownerType !== null && ownerType !== undefined) {
+    throw new Error(
+      `Attachment ${attachmentId} is owned by ${ownerType}; library metadata not applicable.`,
+    );
+  }
+  const set = {};
+  if (name !== undefined) set['metadata.name'] = String(name || '');
+  if (description !== undefined) set['metadata.description'] = String(description || '');
+  await filesCol().updateOne({ _id: oid }, { $set: set });
+  return { changed: true, fields: Object.keys(set) };
+}
+
+// Update metadata fields on an attachment owned by an entity (character/beat/
+// director_note). Mirrors setOwnedImageMeta but for attachments.
+export async function setOwnedAttachmentMeta(attachmentId, { name, description } = {}) {
+  if (name === undefined && description === undefined) return { changed: false };
+  const oid = toObjectId(attachmentId);
+  const file = await filesCol().findOne({ _id: oid });
+  if (!file) throw new Error(`Attachment not found: ${attachmentId}`);
+  const set = {};
+  if (name !== undefined) set['metadata.name'] = String(name || '');
+  if (description !== undefined) set['metadata.description'] = String(description || '');
+  await filesCol().updateOne({ _id: oid }, { $set: set });
+  return { changed: true, fields: Object.keys(set) };
 }
 
 async function pushCharacterAttachment(characterId, attachmentMeta) {

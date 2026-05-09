@@ -421,6 +421,126 @@ input[type="text"], input[type="search"] {
 }
 .gallery-actions .icon-link:hover { border-color: var(--accent); }
 .gallery-actions button { padding: 4px 8px; font-size: 12px; }
+.gallery-add { margin-top: 12px; }
+
+/* Attachment one-row inline editing — same shape as gallery/library, no
+   thumbnail. The file column shows a glyph + filename + size; the meta
+   column shows two CollabFields (name + description). */
+.attachment-gallery-list { display: flex; flex-direction: column; }
+.attachment-row {
+  display: flex; gap: 16px; align-items: flex-start;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+.attachment-row:first-child { border-top: none; }
+.attachment-file {
+  flex: 0 0 220px; width: 220px; min-width: 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.attachment-file .attachment-glyph {
+  font-size: 28px; line-height: 1;
+}
+.attachment-file .filename {
+  font-weight: 500; word-break: break-all;
+  color: var(--fg);
+}
+.attachment-file .filesize {
+  color: var(--fg-muted); font-size: 12px;
+}
+.attachment-meta {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.attachment-meta .field-block { margin: 0; }
+.attachment-actions {
+  flex: 0 0 auto;
+  display: flex; flex-direction: column; gap: 8px;
+  align-items: stretch;
+  min-width: 80px;
+}
+.attachment-actions .icon-link {
+  display: inline-block; padding: 4px 8px; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 6px;
+  text-align: center;
+  text-decoration: none;
+  color: var(--fg);
+  background: var(--bg-elevated);
+}
+.attachment-actions .icon-link:hover { border-color: var(--accent); }
+.attachment-actions button { padding: 4px 8px; font-size: 12px; }
+.attachment-add { margin-top: 12px; }
+
+/* Beat → linked characters list. Thumbnail + name + actions. */
+.beat-character-list { display: flex; flex-direction: column; }
+.beat-character-row {
+  display: flex; gap: 16px; align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.beat-character-row:first-child { border-top: none; }
+.beat-character-thumb {
+  flex: 0 0 64px; width: 64px; height: 64px;
+}
+.beat-character-thumb img {
+  width: 100%; height: 100%; object-fit: cover;
+  border-radius: 6px; border: 1px solid var(--border);
+  display: block;
+}
+.beat-character-thumb-placeholder {
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 28px;
+  border-radius: 6px; border: 1px dashed var(--border);
+  color: var(--fg-muted);
+  background: var(--bg-elevated);
+}
+.beat-character-name {
+  flex: 1 1 auto; min-width: 0;
+  word-break: break-word;
+}
+.beat-character-actions {
+  flex: 0 0 auto;
+  display: flex; gap: 8px; align-items: center;
+}
+.beat-character-actions .icon-link {
+  display: inline-block; padding: 4px 8px; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 6px;
+  text-decoration: none; color: var(--fg);
+  background: var(--bg-elevated);
+}
+.beat-character-actions .icon-link:hover { border-color: var(--accent); }
+.beat-character-add {
+  margin-top: 12px; max-width: 360px;
+}
+
+/* Mobile: collapse the gallery/library/attachment row into a stack so the
+   image/file column sits on top of the name/description fields rather than
+   beside them. */
+@media (max-width: 600px) {
+  .gallery-row,
+  .library-row,
+  .attachment-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .gallery-thumb,
+  .library-thumb,
+  .attachment-file {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+  .gallery-thumb img,
+  .library-thumb img {
+    max-height: 320px;
+  }
+  .gallery-actions,
+  .library-actions,
+  .attachment-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+}
 
 .saved-indicator {
   font-size: 12px;

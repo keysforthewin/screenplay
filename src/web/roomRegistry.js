@@ -35,6 +35,12 @@ import {
   setOwnedImageMeta,
   findImageFile,
 } from '../mongo/images.js';
+import {
+  listLibraryAttachments,
+  setLibraryAttachmentMeta,
+  setOwnedAttachmentMeta,
+  findAttachmentFile,
+} from '../mongo/attachments.js';
 import { getDb } from '../mongo/client.js';
 import { getCharacterTemplate } from '../mongo/prompts.js';
 import { stripMarkdown } from '../util/markdown.js';
@@ -142,6 +148,67 @@ async function persistOwnedImageFragments(snapshot, seed) {
   return { matchedFields: matched, changedFields };
 }
 
+// Per-attachment text fragments shared between beat and character rooms,
+// mirroring the OWNED_IMAGE_* helpers above.
+//
+//   attachment:<attachmentId>:name
+//   attachment:<attachmentId>:description
+//
+// Both back GridFS file metadata (attachments.files.metadata.{name,description}).
+// The legacy embedded `caption` field on the entity's attachments[] array is
+// not authoritative — name/description in GridFS metadata are.
+
+const OWNED_ATTACH_FIELDS = ['name', 'description'];
+const OWNED_ATTACH_FIELD_RE = /^attachment:([a-f0-9]{24}):(name|description)$/;
+
+function ownedAttachmentFieldName(attachmentId, field) {
+  return `attachment:${attachmentId}:${field}`;
+}
+
+async function describeOwnedAttachmentFragments(attachments) {
+  const ids = (attachments || []).map((a) => a._id?.toString?.()).filter(Boolean);
+  if (!ids.length) return { fields: [], seed: {} };
+  const files = await Promise.all(ids.map((id) => findAttachmentFile(id).catch(() => null)));
+  const fields = [];
+  const seed = {};
+  for (let i = 0; i < ids.length; i += 1) {
+    const id = ids[i];
+    const file = files[i];
+    for (const which of OWNED_ATTACH_FIELDS) {
+      const name = ownedAttachmentFieldName(id, which);
+      fields.push(name);
+      seed[name] = String(file?.metadata?.[which] || '');
+    }
+  }
+  return { fields, seed };
+}
+
+async function persistOwnedAttachmentFragments(snapshot, seed) {
+  const perAttachment = new Map();
+  const matched = [];
+  for (const [field, value] of Object.entries(snapshot || {})) {
+    const m = field.match(OWNED_ATTACH_FIELD_RE);
+    if (!m) continue;
+    matched.push(field);
+    if (value === undefined) continue;
+    if (value === (seed[field] || '')) continue;
+    const id = m[1];
+    const which = m[2];
+    if (!perAttachment.has(id)) perAttachment.set(id, {});
+    perAttachment.get(id)[which] = value;
+  }
+  const changedFields = [];
+  for (const [id, patch] of perAttachment.entries()) {
+    try {
+      await setOwnedAttachmentMeta(id, patch);
+      for (const k of Object.keys(patch)) changedFields.push(ownedAttachmentFieldName(id, k));
+    } catch (e) {
+      logger.warn(`owned attachment persist failed attachment=${id}: ${e.message}`);
+    }
+  }
+  return { matchedFields: matched, changedFields };
+}
+
 // Beat ----------------------------------------------------------------------
 
 const BEAT_TOP_FIELDS = ['name', 'desc', 'body'];
@@ -169,12 +236,13 @@ async function describeBeatRoom(id) {
   }
 
   const imageFragments = await describeOwnedImageFragments(beat.images);
-  const allFields = [...fieldNames, ...imageFragments.fields];
+  const attachmentFragments = await describeOwnedAttachmentFragments(beat.attachments);
+  const allFields = [...fieldNames, ...imageFragments.fields, ...attachmentFragments.fields];
   const seed = fieldNames.reduce((acc, f) => {
     acc[f] = readMongoValue(f);
     return acc;
   }, {});
-  Object.assign(seed, imageFragments.seed);
+  Object.assign(seed, imageFragments.seed, attachmentFragments.seed);
 
   return {
     type: 'beat',
@@ -193,12 +261,20 @@ async function describeBeatRoom(id) {
         }
       }
       const imgPersist = await persistOwnedImageFragments(snapshot, imageFragments.seed);
+      const attachPersist = await persistOwnedAttachmentFragments(
+        snapshot,
+        attachmentFragments.seed,
+      );
       const entityChangedKeys = Object.keys(patch);
       if (entityChangedKeys.length) {
         await updateBeat(id, patch);
         enqueueReindex('beat', id);
       }
-      const allChanged = [...entityChangedKeys, ...imgPersist.changedFields];
+      const allChanged = [
+        ...entityChangedKeys,
+        ...imgPersist.changedFields,
+        ...attachPersist.changedFields,
+      ];
       if (!allChanged.length) return { changed: false };
       return { changed: true, fields: allChanged };
     },
@@ -241,12 +317,13 @@ async function describeCharacterRoom(id) {
   }
 
   const imageFragments = await describeOwnedImageFragments(c.images);
-  const allFields = [...fieldNames, ...imageFragments.fields];
+  const attachmentFragments = await describeOwnedAttachmentFragments(c.attachments);
+  const allFields = [...fieldNames, ...imageFragments.fields, ...attachmentFragments.fields];
   const seed = fieldNames.reduce((acc, f) => {
     acc[f] = readMongoValue(f);
     return acc;
   }, {});
-  Object.assign(seed, imageFragments.seed);
+  Object.assign(seed, imageFragments.seed, attachmentFragments.seed);
 
   return {
     type: 'character',
@@ -269,6 +346,10 @@ async function describeCharacterRoom(id) {
         }
       }
       const imgPersist = await persistOwnedImageFragments(snapshot, imageFragments.seed);
+      const attachPersist = await persistOwnedAttachmentFragments(
+        snapshot,
+        attachmentFragments.seed,
+      );
       const entityChangedKeys = Object.keys(patch);
       if (entityChangedKeys.length) {
         // Recompute name_lower from stripped markdown to keep lookups working.
@@ -282,7 +363,11 @@ async function describeCharacterRoom(id) {
         await updateCharacter(id, patch);
         enqueueReindex('character', id);
       }
-      const allChanged = [...entityChangedKeys, ...imgPersist.changedFields];
+      const allChanged = [
+        ...entityChangedKeys,
+        ...imgPersist.changedFields,
+        ...attachPersist.changedFields,
+      ];
       if (!allChanged.length) return { changed: false };
       return { changed: true, fields: allChanged };
     },
@@ -461,8 +546,19 @@ function libraryFieldName(imageId, field) {
 
 const LIBRARY_FIELD_RE = /^library:([a-f0-9]{24}):(name|description)$/;
 
+const LIBRARY_ATTACH_FIELDS = ['name', 'description'];
+
+function libraryAttachmentFieldName(attachmentId, field) {
+  return `library_attachment:${attachmentId}:${field}`;
+}
+
+const LIBRARY_ATTACH_FIELD_RE = /^library_attachment:([a-f0-9]{24}):(name|description)$/;
+
 async function describeLibraryRoom() {
-  const files = await listLibraryImages();
+  const [files, attachmentFiles] = await Promise.all([
+    listLibraryImages(),
+    listLibraryAttachments(),
+  ]);
   const fields = [];
   const seed = {};
   const fileById = new Map();
@@ -475,6 +571,16 @@ async function describeLibraryRoom() {
       seed[fieldName] = String(f.metadata?.[fname] || '');
     }
   }
+  const attachmentById = new Map();
+  for (const f of attachmentFiles) {
+    const id = f._id.toString();
+    attachmentById.set(id, f);
+    for (const fname of LIBRARY_ATTACH_FIELDS) {
+      const fieldName = libraryAttachmentFieldName(id, fname);
+      fields.push(fieldName);
+      seed[fieldName] = String(f.metadata?.[fname] || '');
+    }
+  }
 
   return {
     type: 'library',
@@ -482,20 +588,34 @@ async function describeLibraryRoom() {
     fields,
     seed,
     persistFields: async (snapshot) => {
-      // Group by image id so each persist is a single Mongo update per file.
+      // Group by image / attachment id so each persist is a single Mongo
+      // update per file.
       const perImage = new Map();
+      const perAttachment = new Map();
       for (const [field, value] of Object.entries(snapshot)) {
-        const m = field.match(LIBRARY_FIELD_RE);
-        if (!m) continue;
-        const id = m[1];
-        const which = m[2];
-        const current = fileById.get(id);
-        if (!current) continue;
-        if (value === (current.metadata?.[which] || '')) continue;
-        if (!perImage.has(id)) perImage.set(id, {});
-        perImage.get(id)[which] = value;
+        const im = field.match(LIBRARY_FIELD_RE);
+        if (im) {
+          const id = im[1];
+          const which = im[2];
+          const current = fileById.get(id);
+          if (!current) continue;
+          if (value === (current.metadata?.[which] || '')) continue;
+          if (!perImage.has(id)) perImage.set(id, {});
+          perImage.get(id)[which] = value;
+          continue;
+        }
+        const am = field.match(LIBRARY_ATTACH_FIELD_RE);
+        if (am) {
+          const id = am[1];
+          const which = am[2];
+          const current = attachmentById.get(id);
+          if (!current) continue;
+          if (value === (current.metadata?.[which] || '')) continue;
+          if (!perAttachment.has(id)) perAttachment.set(id, {});
+          perAttachment.get(id)[which] = value;
+        }
       }
-      if (!perImage.size) return { changed: false };
+      if (!perImage.size && !perAttachment.size) return { changed: false };
       const changedFields = [];
       for (const [id, patch] of perImage.entries()) {
         try {
@@ -505,6 +625,16 @@ async function describeLibraryRoom() {
           }
         } catch (e) {
           logger.warn(`library persist failed image=${id}: ${e.message}`);
+        }
+      }
+      for (const [id, patch] of perAttachment.entries()) {
+        try {
+          await setLibraryAttachmentMeta(id, patch);
+          for (const k of Object.keys(patch)) {
+            changedFields.push(libraryAttachmentFieldName(id, k));
+          }
+        } catch (e) {
+          logger.warn(`library persist failed attachment=${id}: ${e.message}`);
         }
       }
       return changedFields.length

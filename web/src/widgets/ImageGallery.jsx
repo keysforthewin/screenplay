@@ -106,13 +106,23 @@ export function ImageGallery({
         })}
       </div>
       {uploadPath && (
-        <input
-          ref={fileInput}
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          onChange={upload}
-          disabled={busy}
-        />
+        <div className="gallery-add">
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={() => fileInput.current?.click()}
+          >
+            + Add image
+          </button>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            onChange={upload}
+            hidden
+          />
+        </div>
       )}
     </div>
   );

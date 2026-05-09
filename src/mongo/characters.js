@@ -12,7 +12,7 @@ function maybeId(s) {
 
 export async function listCharacters() {
   return col()
-    .find({}, { projection: { name: 1, plays_self: 1, hollywood_actor: 1 } })
+    .find({}, { projection: { name: 1, plays_self: 1, hollywood_actor: 1, main_image_id: 1 } })
     .sort({ name: 1 })
     .toArray();
 }

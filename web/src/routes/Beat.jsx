@@ -5,6 +5,7 @@ import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
 import { ImageGallery } from '../widgets/ImageGallery.jsx';
 import { AttachmentList } from '../widgets/AttachmentList.jsx';
+import { BeatCharacters } from '../widgets/BeatCharacters.jsx';
 import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
 import { BeatSpecifics } from './BeatSpecifics.jsx';
 
@@ -20,6 +21,7 @@ export function Beat({ session }) {
   const { order } = useParams();
   const navigate = useNavigate();
   const [beat, setBeat] = useState(null);
+  const [toc, setToc] = useState(null);
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [activeTab, setActiveTab] = useState(readInitialTab);
@@ -28,8 +30,14 @@ export function Beat({ session }) {
     let cancelled = false;
     (async () => {
       try {
-        const r = await apiGet(`/beat?order=${encodeURIComponent(order)}`);
-        if (!cancelled) setBeat(r.beat);
+        const [r, t] = await Promise.all([
+          apiGet(`/beat?order=${encodeURIComponent(order)}`),
+          apiGet('/toc'),
+        ]);
+        if (!cancelled) {
+          setBeat(r.beat);
+          setToc(t);
+        }
       } catch (e) {
         if (!cancelled) setError(e.message);
       }
@@ -134,7 +142,13 @@ export function Beat({ session }) {
               onChange={onRefresh}
               uploadPath={`/beat/${beat._id}/attachment`}
               deletePath={(id) => `/beat/${beat._id}/attachment/${id}`}
+              fieldPrefix="attachment"
             />
+          </div>
+
+          <div className="field-block">
+            <span className="field-label">Characters</span>
+            <BeatCharacters beat={beat} toc={toc} onRefresh={onRefresh} />
           </div>
         </div>
 

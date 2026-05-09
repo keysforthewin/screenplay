@@ -37,6 +37,7 @@ export function buildTocResponse(
         _id: c._id,
         name: c.name,
         plain_name: plain,
+        main_image_id: c.main_image_id || null,
         beats: beatsByCharacterKey.get(plain.toLowerCase()) || [],
       };
     }),

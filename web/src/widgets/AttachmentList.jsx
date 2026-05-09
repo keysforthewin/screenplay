@@ -1,11 +1,32 @@
 import { useRef, useState } from 'react';
 import { apiDelete, apiPostMultipart, attachmentUrl } from '../api.js';
+import { CollabField } from '../editor/CollabField.jsx';
+
+function formatBytes(n) {
+  if (!Number.isFinite(n) || n < 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function fileGlyph(contentType) {
+  const t = String(contentType || '').toLowerCase();
+  if (t.startsWith('image/')) return '🖼️';
+  if (t.startsWith('audio/')) return '🎵';
+  if (t.startsWith('video/')) return '🎬';
+  if (t.includes('pdf')) return '📕';
+  if (t.startsWith('text/') || t.includes('json') || t.includes('xml')) return '📄';
+  if (t.includes('zip') || t.includes('compressed') || t.includes('tar')) return '🗜️';
+  return '📎';
+}
 
 export function AttachmentList({
   attachments,
   onChange,
   uploadPath,
   deletePath,
+  fieldPrefix = 'attachment',
 }) {
   const fileInput = useRef(null);
   const [busy, setBusy] = useState(false);
@@ -43,24 +64,64 @@ export function AttachmentList({
   return (
     <div>
       {error && <div className="error-banner">{error}</div>}
-      <ul className="attachment-list">
+      <div className="attachment-gallery-list" style={{ marginBottom: 8 }}>
         {(attachments || []).map((a) => {
-          const id = a._id.toString ? a._id.toString() : String(a._id);
+          const id = a._id?.toString ? a._id.toString() : String(a._id);
           return (
-            <li key={id}>
-              <a
-                href={attachmentUrl(id)}
-                download={a.filename || id}
-                title={`Download ${a.filename || 'file'}`}
-              >
-                {a.filename || id}
-              </a>
-              {deletePath && <button onClick={() => remove(id)}>Delete</button>}
-            </li>
+            <div key={id} className="attachment-row">
+              <div className="attachment-file">
+                <div className="attachment-glyph" aria-hidden="true">{fileGlyph(a.content_type)}</div>
+                <a
+                  className="filename"
+                  href={attachmentUrl(id)}
+                  download={a.filename || id}
+                  title={`Download ${a.filename || 'file'}`}
+                >
+                  {a.filename || id}
+                </a>
+                {Number.isFinite(a.size) && (
+                  <span className="filesize">{formatBytes(a.size)}</span>
+                )}
+              </div>
+              <div className="attachment-meta">
+                <CollabField
+                  field={`${fieldPrefix}:${id}:name`}
+                  placeholder="Untitled"
+                />
+                <CollabField
+                  field={`${fieldPrefix}:${id}:description`}
+                  multiline
+                  placeholder="Description…"
+                />
+              </div>
+              <div className="attachment-actions">
+                <a
+                  className="icon-link"
+                  href={attachmentUrl(id)}
+                  download={a.filename || id}
+                  title={`Download ${a.filename || 'file'}`}
+                >
+                  Download
+                </a>
+                {deletePath && <button onClick={() => remove(id)}>Delete</button>}
+              </div>
+            </div>
           );
         })}
-      </ul>
-      {uploadPath && <input ref={fileInput} type="file" onChange={upload} disabled={busy} />}
+      </div>
+      {uploadPath && (
+        <div className="attachment-add">
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={() => fileInput.current?.click()}
+          >
+            + Add attachment
+          </button>
+          <input ref={fileInput} type="file" onChange={upload} hidden />
+        </div>
+      )}
     </div>
   );
 }

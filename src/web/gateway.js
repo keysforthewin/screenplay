@@ -93,6 +93,11 @@ import {
   findImageFile,
   deleteImage,
 } from '../mongo/images.js';
+import {
+  setLibraryAttachmentMeta,
+  setOwnedAttachmentMeta,
+  findAttachmentFile,
+} from '../mongo/attachments.js';
 import { enqueueReindex } from '../rag/queue.js';
 import { deleteEntity } from '../rag/indexer.js';
 import { stripMarkdown } from '../util/markdown.js';
@@ -213,6 +218,14 @@ async function readEntityField({ entityType, entityId, field }) {
         return String(file.metadata?.[m[2]] || '');
       }
     }
+    {
+      const m = field.match(/^attachment:([a-f0-9]{24}):(name|description)$/);
+      if (m) {
+        const file = await findAttachmentFile(m[1]);
+        if (!file) throw new Error(`Attachment not found: ${m[1]}`);
+        return String(file.metadata?.[m[2]] || '');
+      }
+    }
     throw new Error(`gateway fallback: unknown beat field "${field}"`);
   }
   if (entityType === 'character') {
@@ -235,6 +248,14 @@ async function readEntityField({ entityType, entityId, field }) {
       if (m) {
         const file = await findImageFile(m[1]);
         if (!file) throw new Error(`Image not found: ${m[1]}`);
+        return String(file.metadata?.[m[2]] || '');
+      }
+    }
+    {
+      const m = field.match(/^attachment:([a-f0-9]{24}):(name|description)$/);
+      if (m) {
+        const file = await findAttachmentFile(m[1]);
+        if (!file) throw new Error(`Attachment not found: ${m[1]}`);
         return String(file.metadata?.[m[2]] || '');
       }
     }
@@ -262,11 +283,23 @@ async function readEntityField({ entityType, entityId, field }) {
     return String(d[m[2]] || '');
   }
   if (entityType === 'library') {
-    const m = field.match(/^library:([a-f0-9]{24}):(name|description)$/);
-    if (!m) throw new Error(`gateway fallback: unknown library field "${field}"`);
-    const file = await findImageFile(m[1]);
-    if (!file) throw new Error(`Library image not found: ${m[1]}`);
-    return String(file.metadata?.[m[2]] || '');
+    {
+      const m = field.match(/^library:([a-f0-9]{24}):(name|description)$/);
+      if (m) {
+        const file = await findImageFile(m[1]);
+        if (!file) throw new Error(`Library image not found: ${m[1]}`);
+        return String(file.metadata?.[m[2]] || '');
+      }
+    }
+    {
+      const m = field.match(/^library_attachment:([a-f0-9]{24}):(name|description)$/);
+      if (m) {
+        const file = await findAttachmentFile(m[1]);
+        if (!file) throw new Error(`Library attachment not found: ${m[1]}`);
+        return String(file.metadata?.[m[2]] || '');
+      }
+    }
+    throw new Error(`gateway fallback: unknown library field "${field}"`);
   }
   throw new Error(`gateway fallback: cannot read ${entityType}/${field}`);
 }
@@ -303,13 +336,25 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
 
   // op === 'set' (or any unrecognized op falls through here)
   if (entityType === 'beat') {
-    const m = field.match(/^image:([a-f0-9]{24}):(name|description)$/);
-    if (m) return setOwnedImageMeta(m[1], { [m[2]]: args.markdown });
+    {
+      const m = field.match(/^image:([a-f0-9]{24}):(name|description)$/);
+      if (m) return setOwnedImageMeta(m[1], { [m[2]]: args.markdown });
+    }
+    {
+      const m = field.match(/^attachment:([a-f0-9]{24}):(name|description)$/);
+      if (m) return setOwnedAttachmentMeta(m[1], { [m[2]]: args.markdown });
+    }
     return Plots.updateBeat(entityId, { [field]: args.markdown });
   }
   if (entityType === 'character') {
-    const m = field.match(/^image:([a-f0-9]{24}):(name|description)$/);
-    if (m) return setOwnedImageMeta(m[1], { [m[2]]: args.markdown });
+    {
+      const m = field.match(/^image:([a-f0-9]{24}):(name|description)$/);
+      if (m) return setOwnedImageMeta(m[1], { [m[2]]: args.markdown });
+    }
+    {
+      const m = field.match(/^attachment:([a-f0-9]{24}):(name|description)$/);
+      if (m) return setOwnedAttachmentMeta(m[1], { [m[2]]: args.markdown });
+    }
     const { updateCharacter } = await import('../mongo/characters.js');
     if (field === 'name' || field === 'hollywood_actor') {
       return updateCharacter(entityId, { [field]: args.markdown });
@@ -334,9 +379,15 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
     return mongoUpdateDialog(m[1], { [m[2]]: args.markdown });
   }
   if (entityType === 'library') {
-    const m = field.match(/^library:([a-f0-9]{24}):(name|description)$/);
-    if (!m) throw new Error(`gateway fallback: unknown library field "${field}"`);
-    return setLibraryImageMeta(m[1], { [m[2]]: args.markdown });
+    {
+      const m = field.match(/^library:([a-f0-9]{24}):(name|description)$/);
+      if (m) return setLibraryImageMeta(m[1], { [m[2]]: args.markdown });
+    }
+    {
+      const m = field.match(/^library_attachment:([a-f0-9]{24}):(name|description)$/);
+      if (m) return setLibraryAttachmentMeta(m[1], { [m[2]]: args.markdown });
+    }
+    throw new Error(`gateway fallback: unknown library field "${field}"`);
   }
   throw new Error(`gateway fallback not implemented for ${entityType}/${field}`);
 }
@@ -1143,6 +1194,72 @@ export async function setOwnedImageMetaViaGateway({
   broadcastFieldsUpdated(buildRoomName(ownerType, idStr), {
     changed: ['image_meta'],
     image_id: String(imageId),
+  });
+}
+
+function libraryAttachmentFieldName(attachmentId, field) {
+  return `library_attachment:${String(attachmentId)}:${field}`;
+}
+
+export async function setLibraryAttachmentMetaViaGateway({ attachmentId, name, description }) {
+  if (name === undefined && description === undefined) return;
+  if (name !== undefined) {
+    await setEntityFieldMarkdown({
+      entityType: 'library',
+      entityId: 'library',
+      field: libraryAttachmentFieldName(attachmentId, 'name'),
+      markdown: name,
+    });
+  }
+  if (description !== undefined) {
+    await setEntityFieldMarkdown({
+      entityType: 'library',
+      entityId: 'library',
+      field: libraryAttachmentFieldName(attachmentId, 'description'),
+      markdown: description,
+    });
+  }
+  broadcastFieldsUpdated('library', {
+    changed: ['library_attachments'],
+    attachment_id: String(attachmentId),
+  });
+}
+
+// Owned-attachment (character / beat) metadata writer. Mirrors
+// setOwnedImageMetaViaGateway for attachments. Falls back to direct Mongo via
+// setOwnedAttachmentMeta when Hocuspocus isn't running.
+export async function setOwnedAttachmentMetaViaGateway({
+  attachmentId,
+  ownerType,
+  ownerId,
+  name,
+  description,
+}) {
+  if (name === undefined && description === undefined) return;
+  if (ownerType !== 'beat' && ownerType !== 'character') {
+    throw new Error(`setOwnedAttachmentMetaViaGateway: unsupported ownerType "${ownerType}"`);
+  }
+  const idStr = String(ownerId || '');
+  if (!idStr) throw new Error('setOwnedAttachmentMetaViaGateway: ownerId required');
+  if (name !== undefined) {
+    await setEntityFieldMarkdown({
+      entityType: ownerType,
+      entityId: idStr,
+      field: `attachment:${String(attachmentId)}:name`,
+      markdown: name,
+    });
+  }
+  if (description !== undefined) {
+    await setEntityFieldMarkdown({
+      entityType: ownerType,
+      entityId: idStr,
+      field: `attachment:${String(attachmentId)}:description`,
+      markdown: description,
+    });
+  }
+  broadcastFieldsUpdated(buildRoomName(ownerType, idStr), {
+    changed: ['attachment_meta'],
+    attachment_id: String(attachmentId),
   });
 }
 

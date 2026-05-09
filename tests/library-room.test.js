@@ -98,4 +98,53 @@ describe('library room', () => {
     });
     expect(result.changed).toBe(false);
   });
+
+  function seedLibraryAttachment({ id, name = '', description = '' } = {}) {
+    const doc = {
+      _id: id || new ObjectId(),
+      filename: 'doc.pdf',
+      contentType: 'application/pdf',
+      length: 555,
+      uploadDate: new Date(),
+      metadata: {
+        owner_type: null,
+        owner_id: null,
+        source: 'upload',
+        content_type: 'application/pdf',
+        name,
+        description,
+      },
+    };
+    fakeDb.collection('attachments.files')._docs.push(doc);
+    return doc;
+  }
+
+  it('describeLibraryRoom exposes library_attachment fragments seeded from GridFS metadata', async () => {
+    const a = seedLibraryAttachment({ name: 'Treatment', description: 'first draft' });
+
+    const desc = await resolveRoom('library');
+    expect(desc.fields).toEqual(
+      expect.arrayContaining([
+        `library_attachment:${a._id}:name`,
+        `library_attachment:${a._id}:description`,
+      ]),
+    );
+    expect(desc.seed[`library_attachment:${a._id}:name`]).toBe('Treatment');
+    expect(desc.seed[`library_attachment:${a._id}:description`]).toBe('first draft');
+  });
+
+  it('persistFields routes library_attachment:<id>:name back to attachments GridFS metadata', async () => {
+    const a = seedLibraryAttachment({ name: 'old', description: 'desc' });
+
+    const desc = await resolveRoom('library');
+    const result = await desc.persistFields({
+      [`library_attachment:${a._id}:name`]: 'NEW',
+      [`library_attachment:${a._id}:description`]: 'desc',
+    });
+    expect(result.changed).toBe(true);
+    expect(result.fields).toEqual([`library_attachment:${a._id}:name`]);
+    const after = await fakeDb.collection('attachments.files').findOne({ _id: a._id });
+    expect(after.metadata.name).toBe('NEW');
+    expect(after.metadata.description).toBe('desc');
+  });
 });

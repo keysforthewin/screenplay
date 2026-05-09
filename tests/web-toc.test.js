@@ -109,4 +109,17 @@ describe('buildTocResponse', () => {
     expect(out.beats[1].storyboard_count).toBe(0);
     expect(out.beats[1].dialog_count).toBe(5);
   });
+
+  it('projects main_image_id on each character (or null when absent)', () => {
+    const portraitId = new ObjectId();
+    const characters = [
+      { _id: new ObjectId(), name: 'Alice', main_image_id: portraitId },
+      { _id: new ObjectId(), name: 'Bob' },
+    ];
+    const out = buildTocResponse(characters, [], 0);
+    const alice = out.characters.find((c) => c.plain_name === 'Alice');
+    const bob = out.characters.find((c) => c.plain_name === 'Bob');
+    expect(alice.main_image_id).toBe(portraitId);
+    expect(bob.main_image_id).toBe(null);
+  });
 });
