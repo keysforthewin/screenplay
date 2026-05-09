@@ -9,6 +9,7 @@ import * as Files from '../mongo/files.js';
 import * as Images from '../mongo/images.js';
 import * as Attachments from '../mongo/attachments.js';
 import * as Gateway from '../web/gateway.js';
+import { kickoffLibraryVisionSeed } from '../web/libraryVisionWorker.js';
 import { beatUrl, characterUrl, notesUrl, withSpaLink } from '../web/links.js';
 import * as Tmdb from '../tmdb/client.js';
 import * as Tavily from '../tavily/client.js';
@@ -1809,6 +1810,55 @@ export const HANDLERS = {
     );
   },
 
+  async search_library_images({ query, limit } = {}) {
+    if (typeof query !== 'string' || !query.trim()) {
+      return 'Error: query (non-empty string) required.';
+    }
+    const files = await Images.searchLibraryImages({ query, limit });
+    return compact(
+      files.map((f) => {
+        const m = Images.imageFileToMeta(f);
+        return stripImageFilename({ ...m, _id: m._id.toString() });
+      }),
+    );
+  },
+
+  async show_library_image({ image_id, note } = {}) {
+    if (!image_id) return 'Error: image_id required.';
+    const file = await Images.findImageFile(image_id);
+    if (!file) return `Error: image not found: ${image_id}`;
+    const ownerType = file.metadata?.owner_type;
+    if (ownerType !== null && ownerType !== undefined) {
+      return `Error: image ${image_id} is owned by ${ownerType}; use show_image instead.`;
+    }
+    const { path: filepath } = await Images.streamImageToTmp(image_id);
+    const caption = String(note || file.metadata?.name || '').trim();
+    return `__IMAGE_PATH__:${filepath}|${caption}|${file._id.toString()}`;
+  },
+
+  async replace_library_image({ source_image_id, new_image_id, copy_metadata } = {}) {
+    if (!source_image_id) return 'Error: source_image_id required.';
+    if (!new_image_id) return 'Error: new_image_id required.';
+    if (String(source_image_id) === String(new_image_id)) {
+      return 'Error: source_image_id and new_image_id must differ.';
+    }
+    try {
+      const result = await Gateway.replaceLibraryImageViaGateway({
+        sourceImageId: source_image_id,
+        newImageId: new_image_id,
+        copyMetadata: copy_metadata !== false,
+      });
+      return compact({
+        ok: true,
+        new_image_id: result.new_image_id,
+        replaced_source_id: String(source_image_id),
+        copy_metadata: copy_metadata !== false,
+      });
+    } catch (e) {
+      return `Error: ${e.message}`;
+    }
+  },
+
   async attach_library_image_to_beat({ image_id, beat, set_as_main }) {
     const target = await resolveBeat(beat);
     const file = await Images.findImageFile(image_id);
@@ -1988,6 +2038,7 @@ export const HANDLERS = {
       beat,
       include_recent_chat,
       aspect_ratio,
+      source_image_id,
       attach_to_current_beat,
       attach_to_character,
       attach_to_beat,
@@ -2006,6 +2057,23 @@ export const HANDLERS = {
     }
 
     const generateT0 = Date.now();
+
+    let inputImage = null;
+    if (source_image_id) {
+      const fetched = await Images.readImageBuffer(source_image_id);
+      if (!fetched) return `Error: source image not found: ${source_image_id}`;
+      const srcCt = fetched.file.contentType || fetched.file.metadata?.contentType;
+      const SUPPORTED = new Set(['image/png', 'image/jpeg', 'image/webp']);
+      if (!SUPPORTED.has(srcCt)) {
+        return `Error: source image ${source_image_id} has unsupported type ${srcCt || 'unknown'}.`;
+      }
+      const MAX_SRC = 7 * 1024 * 1024;
+      if (fetched.buffer.length > MAX_SRC) {
+        const mb = (fetched.buffer.length / 1024 / 1024).toFixed(1);
+        return `Error: source image too large for img2img (${mb} MB). NanoBanana input cap is ~7 MB.`;
+      }
+      inputImage = { buffer: fetched.buffer, contentType: srcCt };
+    }
 
     let beatDoc = null;
     if (include_beat || beat) {
@@ -2044,6 +2112,7 @@ export const HANDLERS = {
     const { buffer, contentType, usageMetadata } = await generateImageBytes({
       prompt: finalPrompt,
       aspectRatio: aspect_ratio,
+      inputImage: inputImage || undefined,
     });
 
     if (usageMetadata) {
@@ -2091,6 +2160,16 @@ export const HANDLERS = {
       ownerType,
       ownerId,
     });
+
+    // Library-bound images get auto-captioned by the vision worker.
+    if (!ownerType) {
+      kickoffLibraryVisionSeed(file._id, buffer, contentType);
+      try {
+        await Gateway.addLibraryImageViaGateway({ imageMeta: file });
+      } catch (e) {
+        logger.warn(`generate_image: library broadcast failed: ${e.message}`);
+      }
+    }
 
     let where = 'saved to library';
     if (useCharacter) {
@@ -2267,6 +2346,15 @@ export const HANDLERS = {
       ownerType: targetOwnerType,
       ownerId: targetOwnerId,
     });
+
+    if (!targetOwnerType) {
+      kickoffLibraryVisionSeed(file._id, buffer, contentType);
+      try {
+        await Gateway.addLibraryImageViaGateway({ imageMeta: file });
+      } catch (e) {
+        logger.warn(`edit_image: library broadcast failed: ${e.message}`);
+      }
+    }
 
     let where = 'saved to library';
     if (targetCharacter) {

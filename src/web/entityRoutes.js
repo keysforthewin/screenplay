@@ -16,26 +16,48 @@ import {
   addDirectorNoteAttachmentViaGateway,
   addDirectorNoteImageViaGateway,
   addDirectorNoteViaGateway,
+  addLibraryImageViaGateway,
+  addStoryboardReferenceImageViaGateway,
+  createDialogViaGateway,
+  createStoryboardViaGateway,
+  deleteDialogViaGateway,
+  deleteStoryboardViaGateway,
   removeBeatAttachmentViaGateway,
   removeBeatImageViaGateway,
   removeCharacterImageViaGateway,
   removeDirectorNoteAttachmentViaGateway,
   removeDirectorNoteImageViaGateway,
   removeDirectorNoteViaGateway,
+  removeLibraryImageViaGateway,
+  removeStoryboardReferenceImageViaGateway,
+  reorderDialogsViaGateway,
+  reorderStoryboardsViaGateway,
   setBeatMainImageViaGateway,
   setCharacterMainImageViaGateway,
   setDirectorNoteMainImageViaGateway,
+  setStoryboardAudioViaGateway,
+  setStoryboardImageViaGateway,
   updateBeatViaGateway,
   updateCharacterViaGateway,
 } from './gateway.js';
+import { kickoffLibraryVisionSeed } from './libraryVisionWorker.js';
 import { getPlot, listBeats, getBeat } from '../mongo/plots.js';
+import {
+  countStoryboardsByBeat,
+  getStoryboard,
+  listStoryboards,
+} from '../mongo/storyboards.js';
+import {
+  countDialogsByBeat,
+  getDialog,
+  listDialogs,
+} from '../mongo/dialogs.js';
 import { listCharacters, getCharacter, findAllCharacters } from '../mongo/characters.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import {
   listLibraryImages,
   imageFileToMeta,
   uploadGeneratedImage,
-  deleteImage,
   findImageFile,
 } from '../mongo/images.js';
 import { validateImageBuffer } from '../mongo/imageBytes.js';
@@ -94,12 +116,23 @@ export function buildApiRouter() {
   // ── reads ────────────────────────────────────────────────────────────────
 
   router.get('/toc', async (_req, res) => {
-    const [characters, beatList, notes] = await Promise.all([
-      listCharacters(),
-      listBeats(),
-      getDirectorNotes(),
-    ]);
-    res.json(buildTocResponse(characters, beatList, (notes.notes || []).length));
+    const [characters, beatList, notes, storyboardCounts, dialogCounts] =
+      await Promise.all([
+        listCharacters(),
+        listBeats(),
+        getDirectorNotes(),
+        countStoryboardsByBeat(),
+        countDialogsByBeat(),
+      ]);
+    res.json(
+      buildTocResponse(
+        characters,
+        beatList,
+        (notes.notes || []).length,
+        storyboardCounts,
+        dialogCounts,
+      ),
+    );
   });
 
   router.get('/template', async (_req, res) => {
@@ -201,7 +234,7 @@ export function buildApiRouter() {
       if (!req.file) return res.status(400).json({ error: 'file required' });
       const buffer = req.file.buffer;
       const contentType = req.file.mimetype;
-      validateImageBuffer(buffer);
+      const sniffed = validateImageBuffer(buffer);
       const meta = await uploadGeneratedImage({
         buffer,
         contentType,
@@ -211,7 +244,9 @@ export function buildApiRouter() {
         ownerId: null,
         filename: safeFilename(req.file.originalname, `library-${Date.now()}.png`),
       });
+      await addLibraryImageViaGateway({ imageMeta: meta });
       res.json({ image: { ...meta, _id: meta._id, content_type: meta.content_type } });
+      kickoffLibraryVisionSeed(meta._id, buffer, sniffed || contentType);
     } catch (e) {
       next(e);
     }
@@ -226,7 +261,7 @@ export function buildApiRouter() {
       if (file.metadata?.owner_type !== null && file.metadata?.owner_type !== undefined) {
         return res.status(409).json({ error: 'image is attached to an entity' });
       }
-      await deleteImage(id);
+      await removeLibraryImageViaGateway({ imageId: id });
       res.json({ ok: true });
     } catch (e) {
       next(e);
@@ -653,6 +688,543 @@ export function buildApiRouter() {
         attachmentId: req.params.attachId,
       });
       res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── storyboard mutations ────────────────────────────────────────────────
+
+  async function resolveStoryboardId(req) {
+    const { id } = req.params;
+    if (!isOidHex(id)) return null;
+    const sb = await getStoryboard(id);
+    return sb?._id?.toString() || null;
+  }
+
+  // List all storyboards for a beat. Beat may be referred to by hex id or by
+  // beat order (e.g. "2"); we resolve to the beat's _id first.
+  router.get('/storyboards', async (req, res, next) => {
+    try {
+      const beatRef = req.query.beat_id;
+      if (beatRef == null || beatRef === '') {
+        return res.status(400).json({ error: 'beat_id required' });
+      }
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const items = await listStoryboards({ beatId: beat._id });
+      res.json({
+        beat: {
+          _id: beat._id,
+          order: beat.order,
+          name: beat.name,
+          body: beat.body,
+          characters: beat.characters || [],
+          images: beat.images || [],
+          main_image_id: beat.main_image_id || null,
+        },
+        storyboards: items,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/storyboards', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const sb = await createStoryboardViaGateway({
+        beatId: beat._id,
+        textPrompt: String(req.body?.text_prompt || ''),
+      });
+      res.json({ storyboard: sb });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete('/storyboard/:id', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const result = await deleteStoryboardViaGateway({ storyboardId: sbId });
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Bulk reorder for a single beat. Body: { beat_id, ordered_ids: [hex...] }
+  router.post('/storyboards/reorder', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      const orderedIds = req.body?.ordered_ids;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      if (!Array.isArray(orderedIds)) {
+        return res.status(400).json({ error: 'ordered_ids must be an array' });
+      }
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const result = await reorderStoryboardsViaGateway({
+        beatId: beat._id,
+        orderedIds,
+      });
+      res.json({ storyboards: result });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Upload a frame image (start_frame|end_frame|character_sheet). The image
+  // is owned by the storyboard's beat for GridFS metadata bookkeeping.
+  router.post('/storyboard/:id/image', upload.single('file'), async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      if (!req.file) return res.status(400).json({ error: 'file required' });
+      const role = String(req.body?.role || req.query.role || '').trim();
+      if (!['start_frame', 'end_frame', 'character_sheet'].includes(role)) {
+        return res.status(400).json({ error: 'role must be start_frame|end_frame|character_sheet' });
+      }
+      validateImageBuffer(req.file.buffer);
+      const sb = await getStoryboard(sbId);
+      const file = await uploadGeneratedImage({
+        buffer: req.file.buffer,
+        contentType: req.file.mimetype,
+        ownerType: 'beat',
+        ownerId: sb.beat_id,
+        filename: safeFilename(
+          req.file.originalname,
+          `storyboard-${sbId}-${role}-${Date.now()}.png`,
+        ),
+      });
+      const result = await setStoryboardImageViaGateway({
+        storyboardId: sbId,
+        role,
+        imageId: file._id,
+      });
+      res.json({ storyboard: result, image: { _id: file._id, content_type: file.content_type } });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete('/storyboard/:id/image/:role', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const role = String(req.params.role);
+      if (!['start_frame', 'end_frame', 'character_sheet'].includes(role)) {
+        return res.status(400).json({ error: 'role must be start_frame|end_frame|character_sheet' });
+      }
+      const result = await setStoryboardImageViaGateway({
+        storyboardId: sbId,
+        role,
+        imageId: null,
+      });
+      res.json({ storyboard: result });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/storyboard/:id/reference', upload.single('file'), async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      if (!req.file) return res.status(400).json({ error: 'file required' });
+      validateImageBuffer(req.file.buffer);
+      const sb = await getStoryboard(sbId);
+      const file = await uploadGeneratedImage({
+        buffer: req.file.buffer,
+        contentType: req.file.mimetype,
+        ownerType: 'beat',
+        ownerId: sb.beat_id,
+        filename: safeFilename(
+          req.file.originalname,
+          `storyboard-${sbId}-ref-${Date.now()}.png`,
+        ),
+      });
+      const result = await addStoryboardReferenceImageViaGateway({
+        storyboardId: sbId,
+        imageId: file._id,
+      });
+      res.json({ storyboard: result, image: { _id: file._id, content_type: file.content_type } });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete('/storyboard/:id/reference/:imageId', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      if (!isOidHex(req.params.imageId)) {
+        return res.status(400).json({ error: 'invalid image_id' });
+      }
+      const result = await removeStoryboardReferenceImageViaGateway({
+        storyboardId: sbId,
+        imageId: req.params.imageId,
+      });
+      res.json({ storyboard: result });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/storyboard/:id/audio', upload.single('file'), async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      if (!req.file) return res.status(400).json({ error: 'file required' });
+      const ct = req.file.mimetype || 'audio/mpeg';
+      if (!ct.startsWith('audio/')) {
+        return res.status(400).json({ error: 'file must be audio/*' });
+      }
+      const sb = await getStoryboard(sbId);
+      const file = await uploadAttachmentBuffer({
+        buffer: req.file.buffer,
+        filename: safeFilename(
+          req.file.originalname,
+          `storyboard-${sbId}-audio-${Date.now()}.bin`,
+        ),
+        contentType: ct,
+        ownerType: 'beat',
+        ownerId: sb.beat_id,
+      });
+      const result = await setStoryboardAudioViaGateway({
+        storyboardId: sbId,
+        audioFileId: file._id,
+      });
+      res.json({
+        storyboard: result,
+        audio: {
+          _id: file._id,
+          filename: file.filename,
+          content_type: file.content_type,
+          size: file.size,
+        },
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete('/storyboard/:id/audio', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const result = await setStoryboardAudioViaGateway({
+        storyboardId: sbId,
+        audioFileId: null,
+      });
+      res.json({ storyboard: result });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Kick off auto-generation for a beat. Runs the generation pipeline in the
+  // background so the request returns quickly; the SPA listens for stateless
+  // ping broadcasts on storyboards:<beatId> and refetches as items appear.
+  router.post('/storyboards/generate', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const target = Number(req.body?.count) > 0 ? Number(req.body.count) : null;
+      const { startStoryboardGenerationJob, BeatBusyError } = await import(
+        './storyboardGenerate.js'
+      );
+      try {
+        const jobId = await startStoryboardGenerationJob({
+          beatId: beat._id.toString(),
+          targetCount: target,
+        });
+        res.status(202).json({ job_id: jobId, beat_id: beat._id });
+      } catch (e) {
+        if (e instanceof BeatBusyError) {
+          return res.status(409).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/storyboards/generate/:jobId', async (req, res, next) => {
+    try {
+      const { getStoryboardGenerationJob } = await import('./storyboardGenerate.js');
+      const job = getStoryboardGenerationJob(req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'job not found' });
+      res.json({ job });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Wipe every storyboard for a beat (page-level "Delete all" button).
+  router.post('/storyboards/clear', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { isBeatLocked } = await import('./beatLocks.js');
+      if (isBeatLocked(beat._id)) {
+        return res
+          .status(409)
+          .json({ error: 'Storyboard work in progress for this beat; try again' });
+      }
+      const { deleteAllStoryboardsForBeatViaGateway } = await import('./gateway.js');
+      const result = await deleteAllStoryboardsForBeatViaGateway({ beatId: beat._id });
+      res.json({ ...result, beat_id: beat._id.toString() });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // LLM-driven batch edit. Body: { beat_id, instructions }. Synchronous —
+  // returns the new storyboard list once Anthropic + apply have completed.
+  router.post('/storyboards/edit', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      const instructions = req.body?.instructions;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      if (!instructions || typeof instructions !== 'string' || !instructions.trim()) {
+        return res.status(400).json({ error: 'instructions (non-empty string) required' });
+      }
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { isBeatLocked, withBeatLock } = await import('./beatLocks.js');
+      if (isBeatLocked(beat._id)) {
+        return res
+          .status(409)
+          .json({ error: 'Storyboard work in progress for this beat; try again' });
+      }
+      const { editStoryboard, InvalidOpsError } = await import('./storyboardEdit.js');
+      try {
+        const result = await withBeatLock(beat._id, () =>
+          editStoryboard({ beatId: beat._id, instructions }),
+        );
+        res.json(result);
+      } catch (e) {
+        if (e instanceof InvalidOpsError) {
+          return res.status(422).json({ error: e.message, details: e.details });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── dialog mutations ────────────────────────────────────────────────────
+
+  async function resolveDialogId(req) {
+    const { id } = req.params;
+    if (!isOidHex(id)) return null;
+    const d = await getDialog(id);
+    return d?._id?.toString() || null;
+  }
+
+  router.get('/dialogs', async (req, res, next) => {
+    try {
+      const beatRef = req.query.beat_id;
+      if (beatRef == null || beatRef === '') {
+        return res.status(400).json({ error: 'beat_id required' });
+      }
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const items = await listDialogs({ beatId: beat._id });
+      res.json({
+        beat: {
+          _id: beat._id,
+          order: beat.order,
+          name: beat.name,
+          body: beat.body,
+          characters: beat.characters || [],
+        },
+        dialogs: items,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/dialogs', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const d = await createDialogViaGateway({
+        beatId: beat._id,
+        body: String(req.body?.body || ''),
+        character: String(req.body?.character || ''),
+      });
+      res.json({ dialog: d });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete('/dialog/:id', async (req, res, next) => {
+    try {
+      const dId = await resolveDialogId(req);
+      if (!dId) return res.status(404).json({ error: 'dialog not found' });
+      const result = await deleteDialogViaGateway({ dialogId: dId });
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Set the speaker on a dialog item to an existing character. The supplied
+  // name must match (case-insensitive on stripMarkdown) a character in the
+  // project — the SPA's <CharacterSelect> enforces this client-side, but we
+  // re-validate here so the gateway never stores an unknown speaker.
+  router.patch('/dialog/:id', async (req, res, next) => {
+    try {
+      const dId = await resolveDialogId(req);
+      if (!dId) return res.status(404).json({ error: 'dialog not found' });
+      const { character } = req.body || {};
+      if (typeof character !== 'string') {
+        return res.status(400).json({ error: 'character (string) required' });
+      }
+      const { setDialogCharacterViaGateway } = await import('./gateway.js');
+      try {
+        const dialog = await setDialogCharacterViaGateway({
+          dialogId: dId,
+          characterName: character,
+        });
+        res.json({ dialog });
+      } catch (e) {
+        if (/^No character named|character is required/.test(e.message)) {
+          return res.status(400).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/dialogs/reorder', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      const orderedIds = req.body?.ordered_ids;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      if (!Array.isArray(orderedIds)) {
+        return res.status(400).json({ error: 'ordered_ids must be an array' });
+      }
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const result = await reorderDialogsViaGateway({
+        beatId: beat._id,
+        orderedIds,
+      });
+      res.json({ dialogs: result });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Kick off auto-extraction for a beat. Runs the generation in the
+  // background so the request returns quickly; the SPA listens for stateless
+  // ping broadcasts on dialogs:<beatId> and refetches as items appear.
+  router.post('/dialogs/generate', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { startDialogGenerationJob, BeatBusyError } = await import(
+        './dialogGenerate.js'
+      );
+      try {
+        const jobId = await startDialogGenerationJob({
+          beatId: beat._id.toString(),
+        });
+        res.status(202).json({ job_id: jobId, beat_id: beat._id });
+      } catch (e) {
+        if (e instanceof BeatBusyError) {
+          return res.status(409).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/dialogs/generate/:jobId', async (req, res, next) => {
+    try {
+      const { getDialogGenerationJob } = await import('./dialogGenerate.js');
+      const job = getDialogGenerationJob(req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'job not found' });
+      res.json({ job });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Wipe every dialog for a beat (page-level "Delete all" button).
+  router.post('/dialogs/clear', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { isBeatLocked } = await import('./beatLocks.js');
+      if (isBeatLocked(beat._id)) {
+        return res
+          .status(409)
+          .json({ error: 'Dialog work in progress for this beat; try again' });
+      }
+      const { deleteAllDialogsForBeatViaGateway } = await import('./gateway.js');
+      const result = await deleteAllDialogsForBeatViaGateway({ beatId: beat._id });
+      res.json({ ...result, beat_id: beat._id.toString() });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // LLM-driven batch edit. Body: { beat_id, instructions }. Synchronous —
+  // returns the new dialog list once Anthropic + apply have completed.
+  router.post('/dialogs/edit', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      const instructions = req.body?.instructions;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      if (!instructions || typeof instructions !== 'string' || !instructions.trim()) {
+        return res.status(400).json({ error: 'instructions (non-empty string) required' });
+      }
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { isBeatLocked, withBeatLock } = await import('./beatLocks.js');
+      if (isBeatLocked(beat._id)) {
+        return res
+          .status(409)
+          .json({ error: 'Dialog work in progress for this beat; try again' });
+      }
+      const { editDialog, InvalidOpsError } = await import('./dialogEdit.js');
+      try {
+        const result = await withBeatLock(beat._id, () =>
+          editDialog({ beatId: beat._id, instructions }),
+        );
+        res.json(result);
+      } catch (e) {
+        if (e instanceof InvalidOpsError) {
+          return res.status(422).json({ error: e.message, details: e.details });
+        }
+        throw e;
+      }
     } catch (e) {
       next(e);
     }

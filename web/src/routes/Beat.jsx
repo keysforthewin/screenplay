@@ -74,10 +74,18 @@ export function Beat({ session }) {
       </p>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
         <h1 style={{ marginTop: 0 }}>Beat #{beat.order}</h1>
-        <DownloadAllButton
-          path={`/beat/${beat._id}/download`}
-          filename={`beat-${beat.order}.zip`}
-        />
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <DownloadAllButton
+            path={`/beat/${beat._id}/download`}
+            filename={`beat-${beat.order}.zip`}
+          />
+          <button
+            onClick={() => navigate(`/storyboard/${beat.order}`)}
+            title="Open the storyboard for this beat"
+          >
+            View storyboard
+          </button>
+        </div>
       </div>
 
       <div className="tab-nav" role="tablist">

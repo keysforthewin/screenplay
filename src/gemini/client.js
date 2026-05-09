@@ -28,27 +28,34 @@ function appendAspectRatioHint(prompt, aspectRatio) {
   return `${prompt}\n\nFraming: render with a ${aspectRatio} aspect ratio.`;
 }
 
-export async function generateImage({ prompt, aspectRatio, inputImage }) {
+export async function generateImage({ prompt, aspectRatio, inputImage, inputImages }) {
   if (!prompt || !prompt.trim()) {
     throw new Error('Empty prompt; nothing to generate.');
   }
   const ai = getClient();
   const finalPrompt = appendAspectRatioHint(prompt, aspectRatio);
-  const editing = !!inputImage;
+  // Normalize legacy `inputImage` into an array.
+  const imageInputs = Array.isArray(inputImages) && inputImages.length
+    ? inputImages
+    : inputImage
+      ? [inputImage]
+      : [];
   logger.info(
     `gemini → model=${MODEL} prompt=${finalPrompt.length}c aspect=${aspectRatio || 'default'}${
-      editing ? ` editing input=${inputImage.buffer.length}B/${inputImage.contentType}` : ''
+      imageInputs.length
+        ? ` editing inputs=${imageInputs.length} bytes=${imageInputs.reduce((n, i) => n + i.buffer.length, 0)}`
+        : ''
     }`,
   );
-  const contents = editing
+  const contents = imageInputs.length
     ? [
         { text: finalPrompt },
-        {
+        ...imageInputs.map((img) => ({
           inlineData: {
-            mimeType: inputImage.contentType,
-            data: inputImage.buffer.toString('base64'),
+            mimeType: img.contentType,
+            data: img.buffer.toString('base64'),
           },
-        },
+        })),
       ]
     : finalPrompt;
   const t0 = Date.now();

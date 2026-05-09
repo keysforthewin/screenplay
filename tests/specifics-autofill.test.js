@@ -23,11 +23,13 @@ vi.mock('../src/mongo/images.js', () => ({
 
 const Characters = await import('../src/mongo/characters.js');
 const Autofill = await import('../src/web/specificsAutofill.js');
+const { _setAnthropicClientForTests, _resetAnthropicClientForTests } =
+  await import('../src/anthropic/client.js');
 
 let lastAnthropicArgs = null;
 function mockAnthropicReturning(toolInput) {
   lastAnthropicArgs = null;
-  Autofill._setAnthropicFactoryForTests(() => ({
+  _setAnthropicClientForTests({
     messages: {
       create: async (args) => {
         lastAnthropicArgs = args;
@@ -38,12 +40,13 @@ function mockAnthropicReturning(toolInput) {
         };
       },
     },
-  }));
+  });
 }
 
 beforeEach(() => {
   fakeDb.reset();
   lastAnthropicArgs = null;
+  _resetAnthropicClientForTests();
 });
 
 describe('autofillCharacterSpecifics', () => {
@@ -146,11 +149,11 @@ describe('autofillCharacterSpecifics', () => {
       { _id: c._id },
       { $set: { images: [{ _id: new ObjectId(), content_type: 'image/png' }] } },
     );
-    Autofill._setAnthropicFactoryForTests(() => ({
+    _setAnthropicClientForTests({
       messages: {
         create: async () => ({ content: [{ type: 'text', text: 'no tool call' }] }),
       },
-    }));
+    });
 
     const result = await Autofill.autofillCharacterSpecifics({
       characterId: c._id.toString(),

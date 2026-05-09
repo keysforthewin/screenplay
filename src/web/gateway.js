@@ -66,9 +66,35 @@ import {
   pushDirectorNoteAttachment,
   pullDirectorNoteAttachment,
 } from '../mongo/directorNotes.js';
+import {
+  createStoryboard as mongoCreateStoryboard,
+  updateStoryboard as mongoUpdateStoryboard,
+  deleteStoryboard as mongoDeleteStoryboard,
+  deleteStoryboardsForBeat as mongoDeleteStoryboardsForBeat,
+  getStoryboard as mongoGetStoryboard,
+  reorderStoryboardsForBeat as mongoReorderStoryboards,
+  pushReferenceImage as mongoPushReferenceImage,
+  pullReferenceImage as mongoPullReferenceImage,
+  listStoryboards,
+} from '../mongo/storyboards.js';
+import {
+  createDialog as mongoCreateDialog,
+  updateDialog as mongoUpdateDialog,
+  deleteDialog as mongoDeleteDialog,
+  deleteDialogsForBeat as mongoDeleteDialogsForBeat,
+  getDialog as mongoGetDialog,
+  reorderDialogsForBeat as mongoReorderDialogs,
+  listDialogs,
+} from '../mongo/dialogs.js';
 import { setMainCharacterImage, removeCharacterImage } from '../mongo/files.js';
+import {
+  setLibraryImageMeta,
+  findImageFile,
+  deleteImage,
+} from '../mongo/images.js';
 import { enqueueReindex } from '../rag/queue.js';
 import { deleteEntity } from '../rag/indexer.js';
+import { stripMarkdown } from '../util/markdown.js';
 
 let botDisplayName = 'Screenplay Bot';
 
@@ -204,6 +230,27 @@ async function readEntityField({ entityType, entityId, field }) {
     if (!note) throw new Error(`Director's note not found: ${noteId}`);
     return String(note.text || '');
   }
+  if (entityType === 'storyboards') {
+    const m = field.match(/^item:([a-f0-9]{24}):text_prompt$/);
+    if (!m) throw new Error(`gateway fallback: unknown storyboards field "${field}"`);
+    const sb = await mongoGetStoryboard(m[1]);
+    if (!sb) throw new Error(`Storyboard not found: ${m[1]}`);
+    return String(sb.text_prompt || '');
+  }
+  if (entityType === 'dialogs') {
+    const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
+    if (!m) throw new Error(`gateway fallback: unknown dialogs field "${field}"`);
+    const d = await mongoGetDialog(m[1]);
+    if (!d) throw new Error(`Dialog not found: ${m[1]}`);
+    return String(d[m[2]] || '');
+  }
+  if (entityType === 'library') {
+    const m = field.match(/^library:([a-f0-9]{24}):(name|description)$/);
+    if (!m) throw new Error(`gateway fallback: unknown library field "${field}"`);
+    const file = await findImageFile(m[1]);
+    if (!file) throw new Error(`Library image not found: ${m[1]}`);
+    return String(file.metadata?.[m[2]] || '');
+  }
   throw new Error(`gateway fallback: cannot read ${entityType}/${field}`);
 }
 
@@ -254,6 +301,21 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
     const noteId = field.slice('note:'.length, -':text'.length);
     const { editDirectorNote } = await import('../mongo/directorNotes.js');
     return editDirectorNote({ noteId, text: args.markdown });
+  }
+  if (entityType === 'storyboards') {
+    const m = field.match(/^item:([a-f0-9]{24}):text_prompt$/);
+    if (!m) throw new Error(`gateway fallback: unknown storyboards field "${field}"`);
+    return mongoUpdateStoryboard(m[1], { text_prompt: args.markdown });
+  }
+  if (entityType === 'dialogs') {
+    const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
+    if (!m) throw new Error(`gateway fallback: unknown dialogs field "${field}"`);
+    return mongoUpdateDialog(m[1], { [m[2]]: args.markdown });
+  }
+  if (entityType === 'library') {
+    const m = field.match(/^library:([a-f0-9]{24}):(name|description)$/);
+    if (!m) throw new Error(`gateway fallback: unknown library field "${field}"`);
+    return setLibraryImageMeta(m[1], { [m[2]]: args.markdown });
   }
   throw new Error(`gateway fallback not implemented for ${entityType}/${field}`);
 }
@@ -709,6 +771,369 @@ export async function removeDirectorNoteAttachmentViaGateway({ noteId, attachmen
     note_id: String(noteId),
   });
   return result;
+}
+
+// ─── Storyboards ──────────────────────────────────────────────────────────
+//
+// Storyboards live in their own top-level collection but share one y-doc per
+// beat (room: "storyboards:<beatId>") with a fragment per item:
+// "item:<storyboardId>:text_prompt". Mutations that change room composition
+// (create / delete / reorder) broadcast a `fields_updated` ping to the room
+// so the SPA refetches.
+
+function storyboardItemField(storyboardId) {
+  return `item:${storyboardId}:text_prompt`;
+}
+
+export async function setStoryboardTextPromptViaGateway({ storyboardId, text }) {
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  return setEntityFieldMarkdown({
+    entityType: 'storyboards',
+    entityId: sb.beat_id.toString(),
+    field: storyboardItemField(sb._id.toString()),
+    markdown: text,
+  });
+}
+
+export async function createStoryboardViaGateway({ beatId, textPrompt, order, seedFragments }) {
+  const sb = await mongoCreateStoryboard({ beatId, textPrompt, order });
+  // Seed the y-doc fragment(s) BEFORE broadcasting the ping. Otherwise the
+  // SPA refetches and mounts its CollabField on an empty fragment before the
+  // seed write lands, so the user sees an empty editor (and the next
+  // onStoreDocument tick clobbers Mongo back to empty).
+  if (seedFragments) {
+    for (const [key, text] of Object.entries(seedFragments)) {
+      if (key !== 'text_prompt') continue;
+      try {
+        await setEntityFieldMarkdown({
+          entityType: 'storyboards',
+          entityId: String(beatId),
+          field: storyboardItemField(sb._id.toString()),
+          markdown: text,
+        });
+      } catch (e) {
+        logger.warn(`createStoryboard: seed text_prompt failed: ${e.message}`);
+      }
+    }
+  }
+  broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
+    changed: ['storyboards'],
+    added_storyboard_id: sb._id.toString(),
+  });
+  return sb;
+}
+
+export async function deleteStoryboardViaGateway({ storyboardId }) {
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const beatId = sb.beat_id.toString();
+  await mongoDeleteStoryboard(storyboardId);
+  // Recompact orders so the remaining items are 1..N-1 contiguous.
+  const remaining = await listStoryboards({ beatId });
+  await mongoReorderStoryboards(
+    beatId,
+    remaining.map((s) => s._id.toString()),
+  );
+  broadcastFieldsUpdated(buildRoomName('storyboards', beatId), {
+    changed: ['storyboards'],
+    removed_storyboard_id: String(storyboardId),
+  });
+  return { ok: true, beat_id: beatId };
+}
+
+export async function reorderStoryboardsViaGateway({ beatId, orderedIds }) {
+  const result = await mongoReorderStoryboards(beatId, orderedIds);
+  broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
+    changed: ['order'],
+  });
+  return result;
+}
+
+export async function deleteAllStoryboardsForBeatViaGateway({ beatId }) {
+  const removed = await mongoDeleteStoryboardsForBeat(beatId);
+  broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
+    changed: ['storyboards'],
+    cleared: true,
+  });
+  return { ok: true, removed_count: removed.length };
+}
+
+const STORYBOARD_ROLES = new Set([
+  'start_frame',
+  'end_frame',
+  'character_sheet',
+]);
+
+function storyboardRoleField(role) {
+  if (role === 'start_frame') return 'start_frame_id';
+  if (role === 'end_frame') return 'end_frame_id';
+  if (role === 'character_sheet') return 'character_sheet_image_id';
+  return null;
+}
+
+export async function setStoryboardImageViaGateway({ storyboardId, role, imageId }) {
+  if (!STORYBOARD_ROLES.has(role)) {
+    throw new Error(`unknown storyboard role: ${role}`);
+  }
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const field = storyboardRoleField(role);
+  await mongoUpdateStoryboard(storyboardId, {
+    [field]: imageId == null ? null : String(imageId),
+  });
+  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
+    changed: [field],
+    storyboard_id: String(storyboardId),
+  });
+  return mongoGetStoryboard(storyboardId);
+}
+
+export async function addStoryboardReferenceImageViaGateway({ storyboardId, imageId }) {
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const next = await mongoPushReferenceImage(storyboardId, imageId);
+  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
+    changed: ['reference_image_ids'],
+    storyboard_id: String(storyboardId),
+  });
+  return next;
+}
+
+export async function removeStoryboardReferenceImageViaGateway({ storyboardId, imageId }) {
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const next = await mongoPullReferenceImage(storyboardId, imageId);
+  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
+    changed: ['reference_image_ids'],
+    storyboard_id: String(storyboardId),
+  });
+  return next;
+}
+
+export async function setStoryboardAudioViaGateway({ storyboardId, audioFileId }) {
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  await mongoUpdateStoryboard(storyboardId, {
+    audio_file_id: audioFileId == null ? null : String(audioFileId),
+  });
+  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
+    changed: ['audio_file_id'],
+    storyboard_id: String(storyboardId),
+  });
+  return mongoGetStoryboard(storyboardId);
+}
+
+// ─── Dialogs ──────────────────────────────────────────────────────────────
+//
+// Dialogs live in their own top-level collection but share one y-doc per
+// beat (room: "dialogs:<beatId>") with two fragments per item:
+// "item:<dialogId>:body" and "item:<dialogId>:character". Mutations that
+// change room composition (create / delete / reorder) broadcast a
+// `fields_updated` ping to the room so the SPA refetches.
+
+function dialogItemField(dialogId, field) {
+  return `item:${dialogId}:${field}`;
+}
+
+const DIALOG_TEXT_FIELDS = new Set(['body', 'character']);
+
+export async function setDialogTextFieldViaGateway({ dialogId, field, text }) {
+  if (!DIALOG_TEXT_FIELDS.has(field)) {
+    throw new Error(`unknown dialog field: ${field}`);
+  }
+  const d = await mongoGetDialog(dialogId);
+  if (!d) throw new Error(`Dialog not found: ${dialogId}`);
+  await setEntityFieldMarkdown({
+    entityType: 'dialogs',
+    entityId: d.beat_id.toString(),
+    field: dialogItemField(d._id.toString(), field),
+    markdown: text,
+  });
+  // The body field is rendered through a CollabField on the SPA, so y-doc
+  // sync is enough. The character field is rendered through a non-collab
+  // <CharacterSelect>, so we need a stateless ping for connected SPAs to
+  // re-fetch the row when bot tools (or LLM batch edits) change it.
+  if (field === 'character') {
+    broadcastFieldsUpdated(buildRoomName('dialogs', d.beat_id.toString()), {
+      changed: ['character'],
+      dialog_id: d._id.toString(),
+    });
+  }
+}
+
+// Set a dialog's `character` to a specific existing character's name. The
+// name must match (case-insensitive on stripMarkdown) one of the characters
+// in the project — the SPA uses this from its autocomplete <CharacterSelect>
+// to enforce that dialog speakers are always known characters.
+export async function setDialogCharacterViaGateway({ dialogId, characterName }) {
+  const d = await mongoGetDialog(dialogId);
+  if (!d) throw new Error(`Dialog not found: ${dialogId}`);
+  const raw = String(characterName ?? '').trim();
+  if (!raw) {
+    throw new Error('character is required');
+  }
+  const c = await getCharacter(raw);
+  if (!c) {
+    throw new Error(`No character named "${raw}". Pick from the project's character list.`);
+  }
+  const canonical = stripMarkdown(c.name || '').trim() || raw;
+  await mongoUpdateDialog(d._id.toString(), { character: canonical });
+  broadcastFieldsUpdated(buildRoomName('dialogs', d.beat_id.toString()), {
+    changed: ['character'],
+    dialog_id: d._id.toString(),
+  });
+  return mongoGetDialog(d._id.toString());
+}
+
+export async function createDialogViaGateway({ beatId, body, character, order, seedFragments }) {
+  const d = await mongoCreateDialog({ beatId, body, character, order });
+  // Seed body / character y-doc fragments BEFORE broadcasting the ping (see
+  // createStoryboardViaGateway for the same reasoning). Without this, the
+  // SPA's CollabField for the new dialog mounts against an empty fragment
+  // and shows a blank body until the user reloads.
+  if (seedFragments) {
+    for (const [field, text] of Object.entries(seedFragments)) {
+      if (!DIALOG_TEXT_FIELDS.has(field)) continue;
+      try {
+        await setEntityFieldMarkdown({
+          entityType: 'dialogs',
+          entityId: String(beatId),
+          field: dialogItemField(d._id.toString(), field),
+          markdown: text,
+        });
+      } catch (e) {
+        logger.warn(`createDialog: seed ${field} failed: ${e.message}`);
+      }
+    }
+  }
+  broadcastFieldsUpdated(buildRoomName('dialogs', String(beatId)), {
+    changed: ['dialogs'],
+    added_dialog_id: d._id.toString(),
+  });
+  return d;
+}
+
+export async function deleteDialogViaGateway({ dialogId }) {
+  const d = await mongoGetDialog(dialogId);
+  if (!d) throw new Error(`Dialog not found: ${dialogId}`);
+  const beatId = d.beat_id.toString();
+  await mongoDeleteDialog(dialogId);
+  // Recompact orders so the remaining items are 1..N-1 contiguous.
+  const remaining = await listDialogs({ beatId });
+  await mongoReorderDialogs(
+    beatId,
+    remaining.map((x) => x._id.toString()),
+  );
+  broadcastFieldsUpdated(buildRoomName('dialogs', beatId), {
+    changed: ['dialogs'],
+    removed_dialog_id: String(dialogId),
+  });
+  return { ok: true, beat_id: beatId };
+}
+
+export async function reorderDialogsViaGateway({ beatId, orderedIds }) {
+  const result = await mongoReorderDialogs(beatId, orderedIds);
+  broadcastFieldsUpdated(buildRoomName('dialogs', String(beatId)), {
+    changed: ['order'],
+  });
+  return result;
+}
+
+export async function deleteAllDialogsForBeatViaGateway({ beatId }) {
+  const removed = await mongoDeleteDialogsForBeat(beatId);
+  broadcastFieldsUpdated(buildRoomName('dialogs', String(beatId)), {
+    changed: ['dialogs'],
+    cleared: true,
+  });
+  return { ok: true, removed_count: removed.length };
+}
+
+// ─── Library ───────────────────────────────────────────────────────────────
+//
+// All library images share one y-doc (room: "library") with two fragments per
+// image: "library:<imageId>:name" and "library:<imageId>:description". Mongo
+// is the source of truth — the persist hook in roomRegistry writes back to
+// images.files.metadata. These gateway helpers exist so REST handlers and
+// the agent can write through the same path the SPA uses.
+
+function libraryFieldName(imageId, field) {
+  return `library:${String(imageId)}:${field}`;
+}
+
+export async function setLibraryImageMetaViaGateway({ imageId, name, description }) {
+  if (name === undefined && description === undefined) return;
+  if (name !== undefined) {
+    await setEntityFieldMarkdown({
+      entityType: 'library',
+      entityId: 'library',
+      field: libraryFieldName(imageId, 'name'),
+      markdown: name,
+    });
+  }
+  if (description !== undefined) {
+    await setEntityFieldMarkdown({
+      entityType: 'library',
+      entityId: 'library',
+      field: libraryFieldName(imageId, 'description'),
+      markdown: description,
+    });
+  }
+  broadcastFieldsUpdated('library', {
+    changed: ['library_images'],
+    image_id: String(imageId),
+  });
+}
+
+// Called from REST handlers and agent tools after a fresh upload. The
+// library room composition has changed (new fragments exist for the new
+// image's name/description); the broadcast prompts the SPA to refetch.
+export async function addLibraryImageViaGateway({ imageMeta }) {
+  broadcastFieldsUpdated('library', {
+    changed: ['library_images'],
+    added_image_id: imageMeta?._id ? String(imageMeta._id) : null,
+  });
+  return imageMeta;
+}
+
+export async function removeLibraryImageViaGateway({ imageId }) {
+  await deleteImage(imageId);
+  broadcastFieldsUpdated('library', {
+    changed: ['library_images'],
+    removed_image_id: String(imageId),
+  });
+}
+
+// Replace one library image with another, copying name/description from the
+// source onto the new image and deleting the source. Both ids must currently
+// be library images (owner_type === null).
+export async function replaceLibraryImageViaGateway({ sourceImageId, newImageId, copyMetadata = true }) {
+  const src = await findImageFile(sourceImageId);
+  if (!src) throw new Error(`Source image not found: ${sourceImageId}`);
+  const next = await findImageFile(newImageId);
+  if (!next) throw new Error(`New image not found: ${newImageId}`);
+  const srcOwner = src.metadata?.owner_type;
+  const nextOwner = next.metadata?.owner_type;
+  if (srcOwner !== null && srcOwner !== undefined) {
+    throw new Error(`Source image ${sourceImageId} is not in the library (owner_type=${srcOwner}).`);
+  }
+  if (nextOwner !== null && nextOwner !== undefined) {
+    throw new Error(`New image ${newImageId} is not in the library (owner_type=${nextOwner}).`);
+  }
+  if (copyMetadata) {
+    const name = src.metadata?.name || '';
+    const description = src.metadata?.description || '';
+    if (name || description) {
+      await setLibraryImageMeta(newImageId, { name, description });
+    }
+  }
+  await deleteImage(sourceImageId);
+  broadcastFieldsUpdated('library', {
+    changed: ['library_images'],
+    removed_image_id: String(sourceImageId),
+    added_image_id: String(newImageId),
+  });
+  return { ok: true, new_image_id: String(newImageId) };
 }
 
 // ─── Inspection helpers ────────────────────────────────────────────────────

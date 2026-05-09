@@ -66,6 +66,47 @@ describe('buildTocResponse', () => {
     const beats = [beat(1, 'Opening', ['Alice'])];
     const out = buildTocResponse(characters, beats, 7);
     expect(out.notes_count).toBe(7);
-    expect(out.beats).toEqual([{ _id: beats[0]._id, order: 1, name: 'Opening', plain_name: 'Opening' }]);
+    expect(out.beats).toEqual([
+      {
+        _id: beats[0]._id,
+        order: 1,
+        name: 'Opening',
+        plain_name: 'Opening',
+        body_empty: true,
+        storyboard_count: 0,
+        dialog_count: 0,
+      },
+    ]);
+  });
+
+  it('flags beats with empty body and includes storyboard counts', () => {
+    const beats = [
+      { ...beat(1, 'Opening', []), body: 'has content' },
+      { ...beat(2, 'Closing', []), body: '' },
+      beat(3, 'Climax'),
+    ];
+    const counts = new Map();
+    counts.set(beats[0]._id.toString(), 3);
+    counts.set(beats[2]._id.toString(), 1);
+    const out = buildTocResponse([], beats, 0, counts);
+    expect(out.beats[0].body_empty).toBe(false);
+    expect(out.beats[0].storyboard_count).toBe(3);
+    expect(out.beats[1].body_empty).toBe(true);
+    expect(out.beats[1].storyboard_count).toBe(0);
+    expect(out.beats[2].body_empty).toBe(true);
+    expect(out.beats[2].storyboard_count).toBe(1);
+  });
+
+  it('threads dialog_count through alongside storyboard_count', () => {
+    const beats = [beat(1, 'Opening', []), beat(2, 'Confrontation', [])];
+    const sbCounts = new Map();
+    sbCounts.set(beats[0]._id.toString(), 2);
+    const dCounts = new Map();
+    dCounts.set(beats[1]._id.toString(), 5);
+    const out = buildTocResponse([], beats, 0, sbCounts, dCounts);
+    expect(out.beats[0].storyboard_count).toBe(2);
+    expect(out.beats[0].dialog_count).toBe(0);
+    expect(out.beats[1].storyboard_count).toBe(0);
+    expect(out.beats[1].dialog_count).toBe(5);
   });
 });

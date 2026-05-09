@@ -8,9 +8,14 @@ import { installLifecycleHandlers } from './lifecycle.js';
 import { startBackupScheduler } from './backup/scheduler.js';
 import { startHocuspocus } from './web/hocuspocus.js';
 import { bindDiscordClient } from './web/auth.js';
+import { getAnthropic } from './anthropic/client.js';
 import { logger } from './log.js';
 
 async function main() {
+  // Construct the shared Anthropic client before anything else can pull in
+  // src/web/headlessEditor.js (Hocuspocus, the gateway, etc.). That module
+  // installs JSDOM globals on first use, which trips the SDK's browser guard.
+  getAnthropic();
   await connectMongo();
   await ensureAuthIndexes();
   await seedDefaults();

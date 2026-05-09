@@ -23,11 +23,13 @@ vi.mock('../src/mongo/images.js', () => ({
 
 const Plots = await import('../src/mongo/plots.js');
 const Autofill = await import('../src/web/beatSpecificsAutofill.js');
+const { _setAnthropicClientForTests, _resetAnthropicClientForTests } =
+  await import('../src/anthropic/client.js');
 
 let lastAnthropicArgs = null;
 function mockAnthropicReturning(toolInput) {
   lastAnthropicArgs = null;
-  Autofill._setAnthropicFactoryForTests(() => ({
+  _setAnthropicClientForTests({
     messages: {
       create: async (args) => {
         lastAnthropicArgs = args;
@@ -38,12 +40,13 @@ function mockAnthropicReturning(toolInput) {
         };
       },
     },
-  }));
+  });
 }
 
 beforeEach(() => {
   fakeDb.reset();
   lastAnthropicArgs = null;
+  _resetAnthropicClientForTests();
 });
 
 describe('autofillBeatSpecifics', () => {
@@ -146,11 +149,11 @@ describe('autofillBeatSpecifics', () => {
 
   it('returns no_tool_call when the model does not invoke the tool', async () => {
     const b = await Plots.createBeat({ name: 'Diner', desc: 'd', body: 'body' });
-    Autofill._setAnthropicFactoryForTests(() => ({
+    _setAnthropicClientForTests({
       messages: {
         create: async () => ({ content: [{ type: 'text', text: 'no tool call' }] }),
       },
-    }));
+    });
     const result = await Autofill.autofillBeatSpecifics({ beatId: b._id.toString() });
     expect(result.filled).toEqual([]);
     expect(result.reason).toBe('no_tool_call');

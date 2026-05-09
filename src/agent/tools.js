@@ -856,8 +856,51 @@ export const TOOLS = [
   {
     name: 'list_library_images',
     keywords: ['library', 'unassigned', 'images', 'pictures', 'list', 'show', 'orphan', 'pool'],
-    description: 'List unassigned (library) images — images that have been uploaded or generated but are not yet attached to any beat. Useful when the user says "save that image to the diner beat" and you need to find the image_id.',
+    description: 'List unassigned (library) images — images that have been uploaded or generated but are not yet attached to any beat. Each entry includes the auto-generated `name` and `description` fields if the vision pass has completed. Useful when the user says "save that image to the diner beat" and you need to find the image_id.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'search_library_images',
+    keywords: ['library', 'search', 'find', 'image', 'images', 'name', 'description', 'caption', 'lookup'],
+    description: 'Substring search across library image names and descriptions (case-insensitive). Returns matching images with `_id`, `name`, `description`, `filename`, `content_type`, `size`, and `uploaded_at`. Empty array when nothing matches. Use this when the user says "show me the sunset image", "find the diner picture", or wants to pick a library image by content.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Free-text query matched against library image name + description.' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max results. Default 20.' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'show_library_image',
+    keywords: ['library', 'show', 'display', 'view', 'discord', 'post', 'send', 'image', 'picture'],
+    description: 'Post a library image to Discord by attaching it to the bot reply. Use after `search_library_images` (or `list_library_images`) when the user asks to see a specific library image. The optional `note` becomes the caption shown alongside the file; defaults to the image\'s stored name. Errors if the image_id is not currently in the library (use `show_image` for entity-attached images).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        image_id: { type: 'string', description: '24-hex GridFS file id of the library image.' },
+        note: { type: 'string', description: 'Optional caption text to show alongside the image.' },
+      },
+      required: ['image_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'replace_library_image',
+    keywords: ['replace', 'swap', 'update', 'regenerate', 'overwrite', 'library', 'image', 'variant'],
+    description: 'Replace one library image with another: copy the source\'s name + description onto the new image, then delete the source. Use after the user has accepted a regenerated variant (typically you ran `generate_image` with `source_image_id` to produce the variant, showed it, and the user said "keep the new one"). Both ids must currently be library images. Set `copy_metadata: false` to skip the name/description copy and just delete the source.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        source_image_id: { type: 'string', description: '24-hex id of the existing library image to be replaced (will be deleted).' },
+        new_image_id: { type: 'string', description: '24-hex id of the replacement library image (kept, gains the source\'s name/description).' },
+        copy_metadata: { type: 'boolean', description: 'Copy name + description from source to new. Default true.' },
+      },
+      required: ['source_image_id', 'new_image_id'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'attach_library_image_to_beat',
@@ -989,7 +1032,7 @@ export const TOOLS = [
     name: 'generate_image',
     keywords: ['generate', 'create', 'draw', 'render', 'make', 'ai', 'nano', 'banana', 'image', 'picture', 'illustration', 'art', 'visual', 'gemini'],
     description:
-      'Generate an image with Google\'s "Nano Banana" (gemini-2.5-flash-image). The bot will display the generated image in its reply. ONLY call this when the user has explicitly asked for an image (e.g., "draw this", "generate an image of...", "show me what this looks like"). Compose the prompt from one or more of: an explicit `prompt` string, the current/named beat (set `include_beat: true`), or recent conversation context (set `include_recent_chat: true`). At least one of these inputs must be provided.\n\nDestination precedence (the image is owned by exactly one entity, or none): (1) `attach_to_character` wins; (2) else `attach_to_beat` (any beat, not just current); (3) else `attach_to_current_beat` (default true when a current beat is set); (4) else the library — where it can be attached later via `attach_library_image_to_{character,beat,director_note}`. `attach_to_character` and `attach_to_beat` are mutually exclusive. `set_as_main` applies to whichever target is chosen. Returns the image_id and displays the image. Requires GEMINI_API_KEY to be configured.',
+      'Generate an image with Google\'s "Nano Banana" (gemini-2.5-flash-image). The bot will display the generated image in its reply. ONLY call this when the user has explicitly asked for an image (e.g., "draw this", "generate an image of...", "show me what this looks like"). Compose the prompt from one or more of: an explicit `prompt` string, the current/named beat (set `include_beat: true`), or recent conversation context (set `include_recent_chat: true`). At least one of these inputs must be provided.\n\nPass `source_image_id` to base the new image on an existing image (img2img). The source image is loaded and shipped to NanoBanana as a reference; the result is a brand-new image (the source is not modified). For "edit this image to..." style requests prefer `edit_image` instead — its semantics are clearer about whether the original survives.\n\nDestination precedence (the image is owned by exactly one entity, or none): (1) `attach_to_character` wins; (2) else `attach_to_beat` (any beat, not just current); (3) else `attach_to_current_beat` (default true when a current beat is set); (4) else the library — where it can be attached later via `attach_library_image_to_{character,beat,director_note}`. `attach_to_character` and `attach_to_beat` are mutually exclusive. `set_as_main` applies to whichever target is chosen. Returns the image_id and displays the image. Requires GEMINI_API_KEY to be configured.',
     input_schema: {
       type: 'object',
       properties: {
@@ -998,6 +1041,7 @@ export const TOOLS = [
         beat: { type: 'string', description: 'Identifier for the beat to draw from when include_beat is true. Defaults to the current beat. Use `attach_to_beat` to also bind the generated image to a beat.' },
         include_recent_chat: { type: 'boolean', description: 'When true, include a short summary of recent conversation in the prompt.' },
         aspect_ratio: { type: 'string', enum: ['1:1', '16:9', '9:16', '4:3', '3:4'], description: 'Optional aspect ratio. Defaults to 16:9.' },
+        source_image_id: { type: 'string', description: 'Optional 24-hex GridFS image id. When set, the image is loaded and passed to NanoBanana as a reference (img2img). The source is not modified.' },
         attach_to_current_beat: { type: 'boolean', description: 'Default true when a current beat is set; false otherwise. When false, the image lands in the library (unless `attach_to_character` / `attach_to_beat` is set). Ignored when either of those is set.' },
         attach_to_character: { type: 'string', description: "Character name or 24-char hex _id. When set, the generated image is owned by this character (pushed onto its images[]). Mutually exclusive with attach_to_beat." },
         attach_to_beat: { type: 'string', description: "Beat _id, order, or name to bind the generated image to. Overrides attach_to_current_beat. Mutually exclusive with attach_to_character." },

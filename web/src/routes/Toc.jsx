@@ -1,11 +1,38 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { apiGet } from '../api.js';
+import { NotesPanel } from '../widgets/NotesPanel.jsx';
+import { LibraryPanel } from '../widgets/LibraryPanel.jsx';
 
-export function Toc() {
+const TABS = [
+  { id: 'characters', label: 'Characters' },
+  { id: 'beats', label: 'Beats' },
+  { id: 'dialog', label: 'Dialog' },
+  { id: 'storyboards', label: 'Storyboards' },
+  { id: 'notes', label: "Director's notes" },
+  { id: 'library', label: 'Library' },
+];
+const TAB_IDS = TABS.map((t) => t.id);
+const ACTIVE_TAB_KEY = 'toc.activeTab';
+
+function readInitialTab() {
+  if (typeof window === 'undefined') return 'characters';
+  try {
+    const stored = window.localStorage?.getItem(ACTIVE_TAB_KEY);
+    if (stored && TAB_IDS.includes(stored)) return stored;
+  } catch {
+    // ignore storage errors
+  }
+  return 'characters';
+}
+
+export function Toc({ session }) {
   const [toc, setToc] = useState(null);
+  const [notesData, setNotesData] = useState(null);
+  const [libraryData, setLibraryData] = useState(null);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState('');
+  const [activeTab, setActiveTab] = useState(readInitialTab);
 
   useEffect(() => {
     let cancelled = false;
@@ -19,6 +46,36 @@ export function Toc() {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  const refetchNotes = useCallback(async () => {
+    try {
+      const r = await apiGet('/notes');
+      setNotesData(r);
+    } catch (e) {
+      setError(e.message);
+    }
+  }, []);
+
+  const refetchLibrary = useCallback(async () => {
+    try {
+      const r = await apiGet('/library');
+      setLibraryData(r);
+    } catch (e) {
+      setError(e.message);
+    }
+  }, []);
+
+  useEffect(() => { refetchNotes(); }, [refetchNotes]);
+  useEffect(() => { refetchLibrary(); }, [refetchLibrary]);
+
+  function selectTab(tab) {
+    setActiveTab(tab);
+    try {
+      window.localStorage?.setItem(ACTIVE_TAB_KEY, tab);
+    } catch {
+      // ignore storage errors
+    }
+  }
 
   const filter = useMemo(() => query.trim().toLowerCase(), [query]);
   const matches = (label) => !filter || label.toLowerCase().includes(filter);
@@ -34,11 +91,6 @@ export function Toc() {
   if (!toc) {
     return <div className="app"><p style={{ color: 'var(--fg-muted)' }}>Loading…</p></div>;
   }
-
-  const notesLabel = `All notes (${toc.notes_count || 0})`;
-  const notesItems = matches(notesLabel)
-    ? [{ key: 'all', to: '/notes', label: notesLabel }]
-    : [];
 
   const dupCounts = (toc.characters || []).reduce((m, c) => {
     const k = (c.plain_name || c.name || '').toLowerCase();
@@ -74,19 +126,96 @@ export function Toc() {
       key: b._id,
       to: `/beat/${b.order}`,
       label: `#${b.order} — ${b.plain_name || b.name || 'Untitled'}`,
+      bodyEmpty: !!b.body_empty,
     }))
     .filter((b) => matches(b.label));
 
-  const libraryItems = matches('Browse library')
-    ? [{ key: 'browse', to: '/library', label: 'Browse library' }]
-    : [];
+  const dialogBeats = [...(toc.beats || [])]
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    .map((b) => {
+      const title = b.plain_name || b.name || 'Untitled';
+      const count = b.dialog_count || 0;
+      const missing = count === 0;
+      return {
+        key: b._id,
+        to: `/dialog/${b.order}`,
+        order: b.order,
+        title,
+        missing,
+        count,
+        searchLabel: `#${b.order} — ${title}`,
+      };
+    })
+    .filter((b) => matches(b.searchLabel));
 
-  const allEmpty =
-    filter &&
-    notesItems.length === 0 &&
-    characters.length === 0 &&
-    beats.length === 0 &&
-    libraryItems.length === 0;
+  const storyboardBeats = [...(toc.beats || [])]
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    .map((b) => {
+      const title = b.plain_name || b.name || 'Untitled';
+      const count = b.storyboard_count || 0;
+      const missing = count === 0;
+      return {
+        key: b._id,
+        to: `/storyboard/${b.order}`,
+        order: b.order,
+        title,
+        missing,
+        count,
+        searchLabel: `#${b.order} — ${title}`,
+      };
+    })
+    .filter((b) => matches(b.searchLabel));
+
+  const allNotes = notesData?.notes || [];
+  const filteredNotes = !filter
+    ? allNotes
+    : allNotes.filter((n) => (n.text || '').toLowerCase().includes(filter));
+
+  const libraryImages = libraryData?.images || [];
+  const stripForFilter = (s) =>
+    String(s || '')
+      .replace(/[*_`~]/g, '')
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/gm, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  const libraryMatchCount = !filter
+    ? libraryImages.length
+    : libraryImages.filter(
+        (img) =>
+          stripForFilter(img.name).includes(filter) ||
+          String(img.description || '').toLowerCase().includes(filter),
+      ).length;
+  // Tab is visible without a filter (always), or when the literal "Library"
+  // matches the filter, or when at least one image matches the filter on its
+  // name/description.
+  const libraryVisible =
+    !filter || matches('Library') || libraryMatchCount > 0;
+
+  const tabCounts = {
+    characters: characters.length,
+    beats: beats.length,
+    dialog: dialogBeats.length,
+    storyboards: storyboardBeats.length,
+    notes: filteredNotes.length,
+    library: libraryVisible ? Math.max(libraryMatchCount, matches('Library') ? 1 : 0) : 0,
+  };
+  // While the filter is active, hide tabs whose contents don't match. With no
+  // filter, every tab is visible (even when its underlying list is empty).
+  const visibleTabs = filter
+    ? TABS.filter((t) => tabCounts[t.id] > 0)
+    : TABS;
+  const visibleTabIds = visibleTabs.map((t) => t.id);
+  // The user's chosen tab (persisted) may currently be filtered out — if so,
+  // display the first visible tab instead, but don't overwrite the saved
+  // preference, so clearing the filter snaps them back.
+  const displayedTab = visibleTabIds.includes(activeTab)
+    ? activeTab
+    : visibleTabIds[0] || activeTab;
+
+  const noResults = filter && visibleTabs.length === 0;
 
   return (
     <main className="app">
@@ -114,74 +243,159 @@ export function Toc() {
         )}
       </div>
 
-      {allEmpty && (
+      {visibleTabs.length > 0 && (
+        <div className="tab-nav" role="tablist">
+          {visibleTabs.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={displayedTab === t.id}
+              className={`tab-button${displayedTab === t.id ? ' is-active' : ''}`}
+              onClick={() => selectTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {noResults && (
         <p style={{ color: 'var(--fg-muted)' }}>No items match “{query}”.</p>
       )}
 
-      {notesItems.length > 0 && (
-        <section className="toc-section">
-          <h2>Director's notes</h2>
-          <ul>
-            {notesItems.map((it) => (
-              <li key={it.key}><Link to={it.to}>{it.label}</Link></li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <div className="tab-panel" hidden={displayedTab !== 'characters' || noResults}>
+        {characters.length === 0 ? (
+          <p style={{ color: 'var(--fg-muted)' }}>No characters yet.</p>
+        ) : (
+          <section className="toc-section">
+            <ul>
+              {characters.map((c) => (
+                <li key={c.key} className="toc-character">
+                  <Link to={c.to}>{c.label}</Link>
+                  {c.isDup && <span className="toc-beat-refs"> · {c.idShort}</span>}
+                  {c.beats.length > 0 && (
+                    <span className="toc-beat-refs">
+                      {' ('}
+                      {c.beats.map((b, i) => (
+                        <span key={b.order}>
+                          {i > 0 && ' · '}
+                          <Link to={`/beat/${b.order}`}>{b.plain_name || `Beat ${b.order}`}</Link>
+                        </span>
+                      ))}
+                      {')'}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+      </div>
 
-      {(beats.length > 0 || (!filter && (toc.beats || []).length === 0)) && (
-        <section className="toc-section">
-          <h2>Beats</h2>
-          {beats.length === 0 && (
-            <p style={{ color: 'var(--fg-muted)' }}>No beats yet.</p>
-          )}
-          <ul>
-            {beats.map((b) => (
-              <li key={b.key}><Link to={b.to}>{b.label}</Link></li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <div className="tab-panel" hidden={displayedTab !== 'beats' || noResults}>
+        {beats.length === 0 ? (
+          <p style={{ color: 'var(--fg-muted)' }}>No beats yet.</p>
+        ) : (
+          <section className="toc-section">
+            <ul>
+              {beats.map((b) => (
+                <li key={b.key}>
+                  <Link
+                    to={b.to}
+                    title={b.bodyEmpty ? 'Beat body is empty' : undefined}
+                  >
+                    {`${b.bodyEmpty ? '* ' : ''}${b.label}`}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+      </div>
 
-      {(characters.length > 0 || (!filter && (toc.characters || []).length === 0)) && (
-        <section className="toc-section">
-          <h2>Characters</h2>
-          {characters.length === 0 && (
-            <p style={{ color: 'var(--fg-muted)' }}>No characters yet.</p>
-          )}
-          <ul>
-            {characters.map((c) => (
-              <li key={c.key} className="toc-character">
-                <Link to={c.to}>{c.label}</Link>
-                {c.isDup && <span className="toc-beat-refs"> · {c.idShort}</span>}
-                {c.beats.length > 0 && (
-                  <span className="toc-beat-refs">
-                    {' ('}
-                    {c.beats.map((b, i) => (
-                      <span key={b.order}>
-                        {i > 0 && ' · '}
-                        <Link to={`/beat/${b.order}`}>{b.plain_name || `Beat ${b.order}`}</Link>
-                      </span>
-                    ))}
-                    {')'}
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <div className="tab-panel" hidden={displayedTab !== 'dialog' || noResults}>
+        <p style={{ color: 'var(--fg-muted)', marginTop: 0 }}>
+          Each beat has its own dialog. <strong>*</strong> marks beats with no
+          dialog yet.
+        </p>
+        {dialogBeats.length === 0 ? (
+          <p style={{ color: 'var(--fg-muted)' }}>No beats yet.</p>
+        ) : (
+          <section className="toc-section">
+            <ul>
+              {dialogBeats.map((b) => {
+                const prefix = b.missing ? '* ' : '';
+                const suffix = b.missing ? '' : ` (${b.count})`;
+                return (
+                  <li key={b.key}>
+                    <Link
+                      to={b.to}
+                      title={b.missing ? 'No dialog for this beat yet' : undefined}
+                    >
+                      {`${prefix}#${b.order} — ${b.title}${suffix}`}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
+      </div>
 
-      {libraryItems.length > 0 && (
-        <section className="toc-section">
-          <h2>Library</h2>
-          <ul>
-            {libraryItems.map((it) => (
-              <li key={it.key}><Link to={it.to}>{it.label}</Link></li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <div className="tab-panel" hidden={displayedTab !== 'storyboards' || noResults}>
+        <p style={{ color: 'var(--fg-muted)', marginTop: 0 }}>
+          Each beat has its own storyboard. <strong>*</strong> marks beats with no
+          storyboards yet.
+        </p>
+        {storyboardBeats.length === 0 ? (
+          <p style={{ color: 'var(--fg-muted)' }}>No beats yet.</p>
+        ) : (
+          <section className="toc-section">
+            <ul>
+              {storyboardBeats.map((b) => {
+                const prefix = b.missing ? '* ' : '';
+                const suffix = b.missing ? '' : ` (${b.count})`;
+                return (
+                  <li key={b.key}>
+                    <Link
+                      to={b.to}
+                      title={b.missing ? 'No storyboards for this beat yet' : undefined}
+                    >
+                      {`${prefix}#${b.order} — ${b.title}${suffix}`}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
+      </div>
+
+      <div className="tab-panel" hidden={displayedTab !== 'notes' || noResults}>
+        {notesData ? (
+          <NotesPanel
+            notes={filteredNotes}
+            session={session}
+            onChange={refetchNotes}
+          />
+        ) : (
+          <p style={{ color: 'var(--fg-muted)' }}>Loading notes…</p>
+        )}
+      </div>
+
+      <div className="tab-panel" hidden={displayedTab !== 'library' || noResults}>
+        {libraryData ? (
+          <LibraryPanel
+            data={libraryData}
+            session={session}
+            onChange={refetchLibrary}
+            query={query}
+          />
+        ) : (
+          <p style={{ color: 'var(--fg-muted)' }}>Loading library…</p>
+        )}
+      </div>
     </main>
   );
 }

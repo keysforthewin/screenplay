@@ -9,6 +9,11 @@ const root = path.resolve(import.meta.dirname);
 // Must end with a trailing slash. Defaults to '/' (served at the root).
 const base = process.env.WEB_BASE_PATH || '/';
 
+// Backend address Vite proxies /api, /auth, /image, /attachment, /pdf to.
+// On the host this is the local Express server; inside Docker dev it's the
+// `bot` service, so we override via VITE_API_TARGET=http://bot:3000.
+const apiTarget = process.env.VITE_API_TARGET || 'http://localhost:3000';
+
 export default defineConfig({
   root,
   base,
@@ -19,13 +24,15 @@ export default defineConfig({
     sourcemap: true,
   },
   server: {
+    host: '0.0.0.0',
     port: 5173,
+    strictPort: true,
     proxy: {
-      '/api': 'http://localhost:3000',
-      '/auth': 'http://localhost:3000',
-      '/image': 'http://localhost:3000',
-      '/attachment': 'http://localhost:3000',
-      '/pdf': 'http://localhost:3000',
+      '/api': apiTarget,
+      '/auth': apiTarget,
+      '/image': apiTarget,
+      '/attachment': apiTarget,
+      '/pdf': apiTarget,
     },
   },
 });

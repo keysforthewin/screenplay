@@ -11,9 +11,14 @@ import {
   extensionForType,
   toObjectId,
 } from './imageBytes.js';
+import { stripMarkdown } from '../util/markdown.js';
 import { logger } from '../log.js';
 
 const BUCKET_NAME = 'images';
+
+function libraryNameLower(name) {
+  return stripMarkdown(name || '').toLowerCase().trim();
+}
 
 let bucket;
 function getBucket() {
@@ -42,6 +47,8 @@ export async function uploadGeneratedImage({
   ownerType = null,
   ownerId = null,
   filename,
+  name = '',
+  description = '',
 }) {
   const sniffed = validateImageBuffer(buffer);
   const ct = contentType || sniffed;
@@ -53,6 +60,9 @@ export async function uploadGeneratedImage({
     source: 'generated',
     prompt: prompt || null,
     generated_by: generatedBy || null,
+    name: String(name || ''),
+    description: String(description || ''),
+    name_lower: libraryNameLower(name),
   };
   const id = await uploadBuffer({ buffer, filename: finalFilename, contentType: ct, metadata });
   logger.info(
@@ -73,6 +83,8 @@ export async function uploadImageFromUrl({
   filename,
   ownerType = null,
   ownerId = null,
+  name = '',
+  description = '',
 }) {
   const { buffer, contentType } = await fetchImageFromUrl(sourceUrl);
   const finalFilename = filename?.trim() || deriveImageFilename(sourceUrl, contentType);
@@ -82,6 +94,9 @@ export async function uploadImageFromUrl({
     source: 'upload',
     prompt: null,
     generated_by: null,
+    name: String(name || ''),
+    description: String(description || ''),
+    name_lower: libraryNameLower(name),
   };
   const id = await uploadBuffer({ buffer, filename: finalFilename, contentType, metadata });
   logger.info(
@@ -198,8 +213,61 @@ export function imageFileToMeta(file) {
     source: file.metadata?.source || 'upload',
     prompt: file.metadata?.prompt || null,
     generated_by: file.metadata?.generated_by || null,
+    name: file.metadata?.name || '',
+    description: file.metadata?.description || '',
     uploaded_at: file.uploadDate,
   };
+}
+
+// Update the library-image-only metadata fields (name / description). Recomputes
+// name_lower from stripped markdown whenever `name` is supplied so case-
+// insensitive search keeps working. Refuses to touch images that are currently
+// owned by an entity (owner_type !== null) — entity-scoped images use their
+// own per-entity caption fields.
+export async function setLibraryImageMeta(imageId, { name, description } = {}) {
+  if (name === undefined && description === undefined) return { changed: false };
+  const oid = toObjectId(imageId);
+  const file = await filesCol().findOne({ _id: oid });
+  if (!file) throw new Error(`Image not found: ${imageId}`);
+  const ownerType = file.metadata?.owner_type;
+  if (ownerType !== null && ownerType !== undefined) {
+    throw new Error(`Image ${imageId} is owned by ${ownerType}; library metadata not applicable.`);
+  }
+  const set = {};
+  if (name !== undefined) {
+    set['metadata.name'] = String(name || '');
+    set['metadata.name_lower'] = libraryNameLower(name);
+  }
+  if (description !== undefined) {
+    set['metadata.description'] = String(description || '');
+  }
+  await filesCol().updateOne({ _id: oid }, { $set: set });
+  return { changed: true, fields: Object.keys(set) };
+}
+
+// Substring search across library images by metadata.name_lower and
+// metadata.description. Done in JS rather than via $regex so the in-memory
+// fake Mongo used in tests keeps working.
+export async function searchLibraryImages({ query, limit = 20 } = {}) {
+  const all = await listLibraryImages();
+  const q = String(query || '').toLowerCase().trim();
+  const filtered = q
+    ? all.filter((f) => {
+        const nameLower = (f.metadata?.name_lower || libraryNameLower(f.metadata?.name)).toLowerCase();
+        const desc = (f.metadata?.description || '').toLowerCase();
+        return nameLower.includes(q) || desc.includes(q);
+      })
+    : all;
+  const cap = Math.max(1, Math.min(50, Number(limit) || 20));
+  return filtered.slice(0, cap);
+}
+
+export async function ensureLibraryImageIndexes() {
+  try {
+    await filesCol().createIndex({ 'metadata.owner_type': 1, 'metadata.name_lower': 1 });
+  } catch (e) {
+    logger.warn(`mongo: ensureLibraryImageIndexes failed: ${e.message}`);
+  }
 }
 
 export function ensureObjectId(id) {

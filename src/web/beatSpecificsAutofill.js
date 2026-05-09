@@ -8,12 +8,12 @@
 // rich body text but no images. Bails only when there is neither text nor
 // eligible images to send.
 
-import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
 import { logger } from '../log.js';
 import { BEAT_SPECIFICS_FIELDS, BEAT_SPECIFICS_FIELD_NAMES } from '../util/beatSpecifics.js';
 import { readImageBuffer } from '../mongo/images.js';
 import { getBeat } from '../mongo/plots.js';
+import { getAnthropic } from '../anthropic/client.js';
 import { setEntityFieldMarkdown } from './gateway.js';
 
 const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -126,11 +126,6 @@ async function loadImageInputs(images) {
   return out;
 }
 
-let anthropicFactory = () => new Anthropic({ apiKey: config.anthropic.apiKey });
-export function _setAnthropicFactoryForTests(fn) {
-  anthropicFactory = fn;
-}
-
 export async function autofillBeatSpecifics({ beatId }) {
   const beat = await getBeat(beatId);
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
@@ -143,7 +138,7 @@ export async function autofillBeatSpecifics({ beatId }) {
     return { filled: [], reason: 'no_context' };
   }
 
-  const client = anthropicFactory();
+  const client = getAnthropic();
   const resp = await client.messages.create({
     model: config.anthropic.model,
     max_tokens: 2048,

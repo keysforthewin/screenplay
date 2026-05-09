@@ -4,7 +4,19 @@ function plainKey(s) {
   return stripMarkdown(s || '').toLowerCase();
 }
 
-export function buildTocResponse(characters, beats, notesCount) {
+function bodyIsEmpty(body) {
+  return !stripMarkdown(String(body || '')).trim();
+}
+
+export function buildTocResponse(
+  characters,
+  beats,
+  notesCount,
+  storyboardCounts,
+  dialogCounts,
+) {
+  const counts = storyboardCounts || new Map();
+  const dialogs = dialogCounts || new Map();
   const beatsByCharacterKey = new Map();
   const sortedBeats = [...(beats || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   for (const b of sortedBeats) {
@@ -33,6 +45,9 @@ export function buildTocResponse(characters, beats, notesCount) {
       order: b.order,
       name: b.name,
       plain_name: stripMarkdown(b.name || ''),
+      body_empty: bodyIsEmpty(b.body),
+      storyboard_count: counts.get(b._id?.toString?.()) || 0,
+      dialog_count: dialogs.get(b._id?.toString?.()) || 0,
     })),
     notes_count: notesCount || 0,
   };

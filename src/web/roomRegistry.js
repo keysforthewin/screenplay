@@ -6,6 +6,7 @@
 //   beat:<beat _id hex>
 //   character:<character _id hex>
 //   notes
+//   storyboards:<beat _id hex>   — one room per beat, multiple item fragments
 //
 // Each entity exposes a list of *text fields* (each becomes a Yjs XmlFragment
 // inside the y-doc) plus knowledge of how to read/write each field to Mongo.
@@ -20,6 +21,18 @@ import { ObjectId } from 'mongodb';
 import { getPlot, updateBeat } from '../mongo/plots.js';
 import { getCharacter, updateCharacter } from '../mongo/characters.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
+import {
+  listStoryboards,
+  updateStoryboard,
+} from '../mongo/storyboards.js';
+import {
+  listDialogs,
+  updateDialog,
+} from '../mongo/dialogs.js';
+import {
+  listLibraryImages,
+  setLibraryImageMeta,
+} from '../mongo/images.js';
 import { getDb } from '../mongo/client.js';
 import { getCharacterTemplate } from '../mongo/prompts.js';
 import { stripMarkdown } from '../util/markdown.js';
@@ -39,10 +52,16 @@ function isOidHex(s) {
 export function parseRoomName(roomName) {
   if (typeof roomName !== 'string') return null;
   if (roomName === 'notes') return { type: 'notes' };
+  if (roomName === 'library') return { type: 'library' };
   const m = roomName.match(/^([a-z_]+):(.+)$/);
   if (!m) return null;
   const [, type, rest] = m;
-  if (type === 'beat' || type === 'character') {
+  if (
+    type === 'beat' ||
+    type === 'character' ||
+    type === 'storyboards' ||
+    type === 'dialogs'
+  ) {
     if (!isOidHex(rest)) return null;
     return { type, id: rest };
   }
@@ -51,6 +70,7 @@ export function parseRoomName(roomName) {
 
 export function buildRoomName(type, id) {
   if (type === 'notes') return 'notes';
+  if (type === 'library') return 'library';
   if (!isOidHex(String(id))) throw new Error(`invalid id for room: ${id}`);
   return `${type}:${id}`;
 }
@@ -236,6 +256,181 @@ async function describeNotesRoom() {
   };
 }
 
+// Storyboards ---------------------------------------------------------------
+//
+// One y-doc per beat (room: "storyboards:<beatId>"). Each storyboard's
+// `text_prompt` is a fragment named "item:<storyboard _id>:text_prompt". When
+// storyboards are added/removed the room composition changes; the seed reflects
+// whatever exists in Mongo at the time the room is loaded.
+
+function storyboardFieldName(storyboardId) {
+  return `item:${storyboardId}:text_prompt`;
+}
+
+async function describeStoryboardsRoom(beatId) {
+  const sbs = await listStoryboards({ beatId });
+  const fields = sbs.map((s) => storyboardFieldName(s._id.toString()));
+  const seed = {};
+  const sbById = new Map();
+  for (const s of sbs) {
+    seed[storyboardFieldName(s._id.toString())] = s.text_prompt || '';
+    sbById.set(s._id.toString(), s);
+  }
+  return {
+    type: 'storyboards',
+    id: beatId,
+    fields,
+    seed,
+    persistFields: async (snapshot) => {
+      const changedFields = [];
+      for (const [field, value] of Object.entries(snapshot)) {
+        const m = field.match(/^item:([a-f0-9]{24}):text_prompt$/);
+        if (!m) continue;
+        const sbId = m[1];
+        const current = sbById.get(sbId);
+        if (!current) continue;
+        if (value === current.text_prompt) continue;
+        try {
+          await updateStoryboard(sbId, { text_prompt: value });
+          changedFields.push(field);
+        } catch (e) {
+          logger.warn(`storyboards persist failed sb=${sbId}: ${e.message}`);
+        }
+      }
+      return changedFields.length
+        ? { changed: true, fields: changedFields }
+        : { changed: false };
+    },
+  };
+}
+
+// Dialogs -------------------------------------------------------------------
+//
+// One y-doc per beat (room: "dialogs:<beatId>"). Each dialog item exposes two
+// fragments: "item:<dialog _id>:body" and "item:<dialog _id>:character". When
+// dialogs are added/removed the room composition changes; the seed reflects
+// whatever exists in Mongo at the time the room is loaded.
+
+const DIALOG_FIELD_NAMES = ['body', 'character'];
+
+function dialogFieldName(dialogId, field) {
+  return `item:${dialogId}:${field}`;
+}
+
+async function describeDialogsRoom(beatId) {
+  const dialogs = await listDialogs({ beatId });
+  const fields = [];
+  const seed = {};
+  const dialogById = new Map();
+  for (const d of dialogs) {
+    const id = d._id.toString();
+    dialogById.set(id, d);
+    for (const f of DIALOG_FIELD_NAMES) {
+      const fieldName = dialogFieldName(id, f);
+      fields.push(fieldName);
+      seed[fieldName] = d[f] || '';
+    }
+  }
+  return {
+    type: 'dialogs',
+    id: beatId,
+    fields,
+    seed,
+    persistFields: async (snapshot) => {
+      const changedFields = [];
+      for (const [field, value] of Object.entries(snapshot)) {
+        const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
+        if (!m) continue;
+        const dId = m[1];
+        const fieldName = m[2];
+        const current = dialogById.get(dId);
+        if (!current) continue;
+        if (value === (current[fieldName] || '')) continue;
+        try {
+          await updateDialog(dId, { [fieldName]: value });
+          changedFields.push(field);
+        } catch (e) {
+          logger.warn(`dialogs persist failed dialog=${dId} field=${fieldName}: ${e.message}`);
+        }
+      }
+      return changedFields.length
+        ? { changed: true, fields: changedFields }
+        : { changed: false };
+    },
+  };
+}
+
+// Library -------------------------------------------------------------------
+//
+// One y-doc shared by the entire library (room: "library"). Each library
+// image exposes two text fragments:
+//   library:<imageId>:name
+//   library:<imageId>:description
+// Both back GridFS file metadata (images.files.metadata.{name,description});
+// `name_lower` is recomputed from stripMarkdown(name) on every persist so
+// case-insensitive search keeps working.
+
+const LIBRARY_FIELDS = ['name', 'description'];
+
+function libraryFieldName(imageId, field) {
+  return `library:${imageId}:${field}`;
+}
+
+const LIBRARY_FIELD_RE = /^library:([a-f0-9]{24}):(name|description)$/;
+
+async function describeLibraryRoom() {
+  const files = await listLibraryImages();
+  const fields = [];
+  const seed = {};
+  const fileById = new Map();
+  for (const f of files) {
+    const id = f._id.toString();
+    fileById.set(id, f);
+    for (const fname of LIBRARY_FIELDS) {
+      const fieldName = libraryFieldName(id, fname);
+      fields.push(fieldName);
+      seed[fieldName] = String(f.metadata?.[fname] || '');
+    }
+  }
+
+  return {
+    type: 'library',
+    id: 'library',
+    fields,
+    seed,
+    persistFields: async (snapshot) => {
+      // Group by image id so each persist is a single Mongo update per file.
+      const perImage = new Map();
+      for (const [field, value] of Object.entries(snapshot)) {
+        const m = field.match(LIBRARY_FIELD_RE);
+        if (!m) continue;
+        const id = m[1];
+        const which = m[2];
+        const current = fileById.get(id);
+        if (!current) continue;
+        if (value === (current.metadata?.[which] || '')) continue;
+        if (!perImage.has(id)) perImage.set(id, {});
+        perImage.get(id)[which] = value;
+      }
+      if (!perImage.size) return { changed: false };
+      const changedFields = [];
+      for (const [id, patch] of perImage.entries()) {
+        try {
+          await setLibraryImageMeta(id, patch);
+          for (const k of Object.keys(patch)) {
+            changedFields.push(libraryFieldName(id, k));
+          }
+        } catch (e) {
+          logger.warn(`library persist failed image=${id}: ${e.message}`);
+        }
+      }
+      return changedFields.length
+        ? { changed: true, fields: changedFields }
+        : { changed: false };
+    },
+  };
+}
+
 // Resolver ------------------------------------------------------------------
 
 export async function resolveRoom(roomName) {
@@ -248,6 +443,12 @@ export async function resolveRoom(roomName) {
       return describeCharacterRoom(parsed.id);
     case 'notes':
       return describeNotesRoom();
+    case 'library':
+      return describeLibraryRoom();
+    case 'storyboards':
+      return describeStoryboardsRoom(parsed.id);
+    case 'dialogs':
+      return describeDialogsRoom(parsed.id);
     default:
       return null;
   }

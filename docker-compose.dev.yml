@@ -1,0 +1,61 @@
+# Dev mode overlay. Used together with docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
+#
+# Replaces the production bot image with a dev image that bind-mounts source
+# and runs `node --watch`, and adds a `web` service running the Vite dev
+# server on :5173 with HMR.
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: screenplay-bot-dev
+    command: ["node", "--watch", "src/index.js"]
+    volumes:
+      # Bind-mount the project so file edits propagate. node_modules is kept
+      # in a named volume so the container's npm-installed deps aren't
+      # shadowed by anything that might exist on the host.
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./web:/app/web
+      - ./tests:/app/tests
+      - ./package.json:/app/package.json
+      - ./package-lock.json:/app/package-lock.json
+      - ./vitest.config.js:/app/vitest.config.js
+      - bot-node-modules:/app/node_modules
+      - exports:/data/exports
+      - ./backups:/data/backups
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      CHROMA_URL: http://chroma:8000
+      BACKUP_DIR: /data/backups
+      # Tell the SPA where to open its WebSocket. Browser is on the host,
+      # so it points at the host-mapped Hocuspocus port.
+      WEB_PUBLIC_BASE_URL: http://localhost:3000
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: screenplay-bot-dev
+    command:
+      - npx
+      - vite
+      - --config
+      - web/vite.config.js
+    working_dir: /app
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./web:/app/web
+      - ./package.json:/app/package.json
+      - ./package-lock.json:/app/package-lock.json
+      - bot-node-modules:/app/node_modules
+    environment:
+      VITE_API_TARGET: http://bot:3000
+    depends_on:
+      - bot
+
+volumes:
+  bot-node-modules:

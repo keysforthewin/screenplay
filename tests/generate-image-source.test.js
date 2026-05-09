@@ -1,0 +1,112 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { ObjectId } from 'mongodb';
+import { createFakeDb } from './_fakeMongo.js';
+
+const fakeDb = createFakeDb();
+
+vi.mock('../src/mongo/client.js', () => ({
+  getDb: () => fakeDb,
+  connectMongo: async () => fakeDb,
+}));
+vi.mock('../src/log.js', () => ({
+  logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
+}));
+
+const generateCalls = [];
+vi.mock('../src/gemini/client.js', () => ({
+  generateImage: async ({ prompt, inputImage }) => {
+    generateCalls.push({ prompt, hasInput: !!inputImage, inputBytes: inputImage?.buffer?.length });
+    return {
+      buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      contentType: 'image/png',
+      usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+    };
+  },
+  NANO_BANANA_MODEL: 'gemini-2.5-flash-image',
+}));
+
+const visionSeedCalls = [];
+vi.mock('../src/web/libraryVisionWorker.js', () => ({
+  kickoffLibraryVisionSeed: (id, buf, ct) => {
+    visionSeedCalls.push({ id: String(id), bytes: buf?.length, ct });
+  },
+}));
+
+const uploadCalls = [];
+vi.mock('../src/mongo/images.js', async () => {
+  const real = await vi.importActual('../src/mongo/images.js');
+  return {
+    ...real,
+    uploadGeneratedImage: async (args) => {
+      uploadCalls.push({ ownerType: args.ownerType, ownerId: args.ownerId });
+      return {
+        _id: new ObjectId(),
+        filename: 'gen.png',
+        content_type: 'image/png',
+        size: 4,
+        uploaded_at: new Date(),
+      };
+    },
+    streamImageToTmp: async (id) => ({ path: `/tmp/${String(id)}.png` }),
+    readImageBuffer: async (id) => ({
+      buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01, 0x02, 0x03]),
+      file: {
+        _id: id instanceof ObjectId ? id : new ObjectId(String(id)),
+        contentType: 'image/png',
+        metadata: { owner_type: null, owner_id: null },
+      },
+    }),
+  };
+});
+
+vi.mock('../src/config.js', async () => {
+  const real = await vi.importActual('../src/config.js');
+  return {
+    ...real,
+    config: {
+      ...real.config,
+      gemini: { apiKey: 'fake-key', vertex: { project: null, location: null } },
+      discord: { ...real.config.discord, movieChannelId: 'cX' },
+    },
+  };
+});
+
+const { HANDLERS } = await import('../src/agent/handlers.js');
+
+beforeEach(() => {
+  fakeDb.reset();
+  generateCalls.length = 0;
+  uploadCalls.length = 0;
+  visionSeedCalls.length = 0;
+});
+
+describe('generate_image with source_image_id', () => {
+  it('passes the source image bytes to the gemini client as inputImage', async () => {
+    const out = await HANDLERS.generate_image({
+      prompt: 'lower the sun a bit',
+      source_image_id: new ObjectId().toString(),
+    });
+    expect(out).toMatch(/saved to library/);
+    expect(generateCalls).toHaveLength(1);
+    expect(generateCalls[0].hasInput).toBe(true);
+    expect(generateCalls[0].inputBytes).toBeGreaterThan(0);
+  });
+
+  it('library-bound generations kick off the vision seed', async () => {
+    await HANDLERS.generate_image({ prompt: 'a leopard at dusk' });
+    expect(visionSeedCalls).toHaveLength(1);
+    expect(visionSeedCalls[0].ct).toBe('image/png');
+  });
+
+  it('does not kick off the vision seed when the image is attached to a beat', async () => {
+    const Plots = await import('../src/mongo/plots.js');
+    const beat = await Plots.createBeat({ name: 'Diner', desc: 'tense' });
+    await HANDLERS.generate_image({
+      prompt: 'establishing shot',
+      attach_to_beat: 'Diner',
+    });
+    expect(uploadCalls[0].ownerType).toBe('beat');
+    expect(uploadCalls[0].ownerId.equals(beat._id)).toBe(true);
+    expect(visionSeedCalls).toHaveLength(0);
+  });
+});

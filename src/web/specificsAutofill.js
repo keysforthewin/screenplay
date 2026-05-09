@@ -8,12 +8,12 @@
 // Kept in its own module so it's testable in isolation (mock the Anthropic
 // client and the gateway writes).
 
-import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
 import { logger } from '../log.js';
 import { SPECIFICS_FIELDS, SPECIFICS_FIELD_NAMES } from '../util/specifics.js';
 import { readImageBuffer } from '../mongo/images.js';
 import { getCharacter } from '../mongo/characters.js';
+import { getAnthropic } from '../anthropic/client.js';
 import { setEntityFieldMarkdown } from './gateway.js';
 
 const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -130,12 +130,6 @@ async function loadImageInputs(images) {
   return out;
 }
 
-// Allow tests to inject a fake Anthropic client.
-let anthropicFactory = () => new Anthropic({ apiKey: config.anthropic.apiKey });
-export function _setAnthropicFactoryForTests(fn) {
-  anthropicFactory = fn;
-}
-
 export async function autofillCharacterSpecifics({ characterId }) {
   const character = await getCharacter(characterId);
   if (!character) throw new Error(`Character not found: ${characterId}`);
@@ -151,7 +145,7 @@ export async function autofillCharacterSpecifics({ characterId }) {
   }
 
   const textContext = buildCharacterTextContext(character);
-  const client = anthropicFactory();
+  const client = getAnthropic();
   const resp = await client.messages.create({
     model: config.anthropic.model,
     max_tokens: 2048,
