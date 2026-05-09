@@ -67,29 +67,34 @@ describe('generateSceneSheetForBeat', () => {
       },
     });
 
-    let receivedPrompt = null;
-    let receivedSize = null;
-    let receivedQuality = null;
-    Sheet._setGeneratorForTests(async ({ prompt, size, quality }) => {
-      receivedPrompt = prompt;
-      receivedSize = size;
-      receivedQuality = quality;
-      return { buffer: TINY_PNG, contentType: 'image/png', model: 'gpt-image-2', latencyMs: 12 };
+    let received = null;
+    Sheet._setGeneratorForTests(async (args) => {
+      received = args;
+      return {
+        buffer: TINY_PNG,
+        contentType: 'image/png',
+        model: 'gemini-2.5-flash-image',
+        latencyMs: 12,
+        usedInputImage: false,
+      };
     });
 
     const result = await Sheet.generateSceneSheetForBeat({
       beatId: b._id.toString(),
       quality: 'low',
+      model: 'gemini',
     });
 
-    expect(receivedPrompt).toContain('UE5 production-grade scene reference sheet');
-    expect(receivedPrompt).toContain('SCENE TYPE:\ninterior');
-    expect(receivedPrompt).toContain('TIME / PERIOD:\ndusk');
-    expect(receivedPrompt).toContain('SET DRESSING / LAYOUT:\nred vinyl booths');
-    expect(receivedPrompt).toContain('REQUIRED VIEWS:');
-    expect(receivedPrompt).toContain('SCENE NAME: Diner Showdown');
-    expect(receivedSize).toBe('1536x1024');
-    expect(receivedQuality).toBe('low');
+    expect(received.prompt).toContain('UE5 production-grade scene reference sheet');
+    expect(received.prompt).toContain('SCENE TYPE:\ninterior');
+    expect(received.prompt).toContain('TIME / PERIOD:\ndusk');
+    expect(received.prompt).toContain('SET DRESSING / LAYOUT:\nred vinyl booths');
+    expect(received.prompt).toContain('REQUIRED VIEWS:');
+    expect(received.prompt).toContain('SCENE NAME: Diner Showdown');
+    expect(received.quality).toBe('low');
+    expect(received.model).toBe('gemini');
+    expect(received.omitImages).toBe(false);
+    expect(received.mainImageId).toBeNull();
 
     expect(uploadedImages).toHaveLength(1);
     expect(uploadedImages[0].ownerType).toBe('beat');
@@ -99,6 +104,44 @@ describe('generateSceneSheetForBeat', () => {
     expect(updated.scene_sheet_image_id).toBeDefined();
     expect(updated.scene_sheet_image_id.toString()).toBe(result.image_id);
     expect(deletedImages).toEqual([]);
+    expect(result.model).toBe('gemini-2.5-flash-image');
+    expect(result.used_input_image).toBe(false);
+  });
+
+  it('forwards beat.main_image_id and omitImages to the dispatcher', async () => {
+    const b = await Plots.createBeat({ name: 'Diner', desc: 'd' });
+    const setImage = new ObjectId();
+    // beats live inside the plots singleton's beats[] array, so write to the
+    // embedded entry directly via the fake collection.
+    const plot = await fakeDb.collection('plots').findOne({ _id: 'main' });
+    const beats = plot.beats.map((bt) =>
+      bt._id && bt._id.equals(b._id) ? { ...bt, main_image_id: setImage } : bt,
+    );
+    await fakeDb
+      .collection('plots')
+      .updateOne({ _id: 'main' }, { $set: { beats } });
+
+    let received = null;
+    Sheet._setGeneratorForTests(async (args) => {
+      received = args;
+      return {
+        buffer: TINY_PNG,
+        contentType: 'image/png',
+        model: 'gemini-2.5-flash-image',
+        latencyMs: 1,
+        usedInputImage: true,
+      };
+    });
+
+    await Sheet.generateSceneSheetForBeat({
+      beatId: b._id.toString(),
+      quality: 'auto',
+      model: 'gemini',
+      omitImages: false,
+    });
+
+    expect(received.mainImageId.toString()).toBe(setImage.toString());
+    expect(received.omitImages).toBe(false);
   });
 
   it('deletes the previous sheet image on regeneration', async () => {
@@ -111,13 +154,15 @@ describe('generateSceneSheetForBeat', () => {
     Sheet._setGeneratorForTests(async () => ({
       buffer: TINY_PNG,
       contentType: 'image/png',
-      model: 'gpt-image-2',
+      model: 'gemini-2.5-flash-image',
       latencyMs: 5,
+      usedInputImage: false,
     }));
 
     const result = await Sheet.generateSceneSheetForBeat({
       beatId: b._id.toString(),
       quality: 'auto',
+      model: 'gemini',
     });
 
     expect(deletedImages).toEqual([previousId.toString()]);
@@ -131,13 +176,15 @@ describe('generateSceneSheetForBeat', () => {
     Sheet._setGeneratorForTests(async () => ({
       buffer: TINY_PNG,
       contentType: 'image/png',
-      model: 'gpt-image-2',
+      model: 'gemini-2.5-flash-image',
+      usedInputImage: false,
     }));
     let err;
     try {
       await Sheet.generateSceneSheetForBeat({
         beatId: 'aaaaaaaaaaaaaaaaaaaaaaaa',
         quality: 'auto',
+        model: 'gemini',
       });
     } catch (e) {
       err = e;

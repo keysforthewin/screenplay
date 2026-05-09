@@ -1,8 +1,20 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CollabField } from '../editor/CollabField.jsx';
 import { apiPostJson, imageUrl } from '../api.js';
 
 const QUALITY_OPTIONS = ['low', 'medium', 'high', 'auto'];
+const MODEL_STORAGE_KEY = 'screenplay.sheet.model';
+const VALID_MODELS = new Set(['gemini', 'openai']);
+const MODEL_LABEL = { gemini: 'Gemini (Nano Banana)', openai: 'OpenAI (gpt-image)' };
+
+function readStoredModel() {
+  try {
+    const v = localStorage.getItem(MODEL_STORAGE_KEY);
+    return VALID_MODELS.has(v) ? v : 'gemini';
+  } catch {
+    return 'gemini';
+  }
+}
 
 // Generic "Specifics" tab used by both the character editor and the beat
 // editor. The caller passes:
@@ -27,10 +39,18 @@ export function SpecificsTab({
   onRefresh,
 }) {
   const [quality, setQuality] = useState('auto');
+  const [model, setModel] = useState(readStoredModel);
+  const [omitImages, setOmitImages] = useState(false);
   const [autofilling, setAutofilling] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(MODEL_STORAGE_KEY, model);
+    } catch {}
+  }, [model]);
 
   async function runAutofill() {
     setError(null);
@@ -70,8 +90,14 @@ export function SpecificsTab({
     setNotice(null);
     setGenerating(true);
     try {
-      const r = await apiPostJson(generateUrl, { quality });
-      setNotice(`${entityLabel === 'scene' ? 'Scene' : 'Character'} sheet generated (${r.model || 'gpt-image-2'}).`);
+      const r = await apiPostJson(generateUrl, {
+        quality,
+        model,
+        omit_images: omitImages,
+      });
+      const noticeWord = entityLabel === 'scene' ? 'Scene' : 'Character';
+      const refNote = r.used_input_image ? ' with main image as reference' : ' (text-only)';
+      setNotice(`${noticeWord} sheet generated via ${r.model || model}${refNote}.`);
       onRefresh?.();
       setTimeout(() => {
         document.getElementById('sheet-image')?.scrollIntoView({
@@ -119,21 +145,45 @@ export function SpecificsTab({
           {generating ? 'Generating…' : generateLabel}
         </button>
         <span className="quality-group">
-          Quality:
-          {QUALITY_OPTIONS.map((q) => (
-            <label key={q}>
-              <input
-                type="radio"
-                name="sheet-quality"
-                value={q}
-                checked={quality === q}
-                disabled={generating}
-                onChange={() => setQuality(q)}
-              />
-              {q}
-            </label>
-          ))}
+          Model:
+          <select
+            value={model}
+            disabled={generating}
+            onChange={(e) => setModel(e.target.value)}
+          >
+            <option value="gemini">{MODEL_LABEL.gemini}</option>
+            <option value="openai">{MODEL_LABEL.openai}</option>
+          </select>
         </span>
+        <span className="quality-group">
+          <label>
+            <input
+              type="checkbox"
+              checked={omitImages}
+              disabled={generating}
+              onChange={(e) => setOmitImages(e.target.checked)}
+            />
+            Omit main image (text-only)
+          </label>
+        </span>
+        {model === 'openai' && (
+          <span className="quality-group">
+            Quality:
+            {QUALITY_OPTIONS.map((q) => (
+              <label key={q}>
+                <input
+                  type="radio"
+                  name="sheet-quality"
+                  value={q}
+                  checked={quality === q}
+                  disabled={generating}
+                  onChange={() => setQuality(q)}
+                />
+                {q}
+              </label>
+            ))}
+          </span>
+        )}
       </div>
 
       {error && <div className="error-banner">{error}</div>}

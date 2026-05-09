@@ -1,35 +1,36 @@
 // beatSceneSheet.js
 //
 // Mirror of characterSheet.js for *beats* (scenes). Generates a UE5
-// production-grade scene reference sheet from `beat.specifics.*` using
-// OpenAI gpt-image-2 and stores it as `beat.scene_sheet_image_id`.
+// production-grade scene reference sheet from `beat.specifics.*` and stores
+// it as `beat.scene_sheet_image_id`. Model selection (Gemini vs OpenAI) and
+// the optional main-image reference are routed through
+// `dispatchSheetGeneration`.
 //
 // Replace-on-regenerate: the prior GridFS file is deleted after the new one
 // is recorded.
 
-import { config } from '../config.js';
 import { logger } from '../log.js';
 import { buildSceneSheetPrompt } from '../util/beatSpecifics.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { getBeat } from '../mongo/plots.js';
 import { uploadGeneratedImage, deleteImage } from '../mongo/images.js';
-import { generateCharacterSheetImage, GPT_IMAGE_MODEL } from '../openai/imageClient.js';
+import { dispatchSheetGeneration } from './sheetImageDispatch.js';
 import { setBeatSceneSheetImageViaGateway } from './gateway.js';
 
-let generatorImpl = generateCharacterSheetImage;
+let dispatchImpl = dispatchSheetGeneration;
 export function _setGeneratorForTests(fn) {
-  generatorImpl = fn;
+  dispatchImpl = fn;
 }
 export function _resetGeneratorForTests() {
-  generatorImpl = generateCharacterSheetImage;
+  dispatchImpl = dispatchSheetGeneration;
 }
 
-export async function generateSceneSheetForBeat({ beatId, quality = 'auto' }) {
-  if (!config.openai.apiKey) {
-    const err = new Error('OPENAI_API_KEY is not configured.');
-    err.status = 400;
-    throw err;
-  }
+export async function generateSceneSheetForBeat({
+  beatId,
+  quality = 'auto',
+  model = 'gemini',
+  omitImages = false,
+}) {
   const beat = await getBeat(beatId);
   if (!beat) {
     const err = new Error(`Beat not found: ${beatId}`);
@@ -41,18 +42,21 @@ export async function generateSceneSheetForBeat({ beatId, quality = 'auto' }) {
   const sceneName = stripMarkdown(beat.name || '') || null;
   const prompt = buildSceneSheetPrompt(specifics, { sceneName });
 
-  const { buffer, contentType, model, latencyMs } = await generatorImpl({
-    prompt,
-    size: '1536x1024',
-    quality,
-  });
+  const { buffer, contentType, model: usedModel, latencyMs, usedInputImage } =
+    await dispatchImpl({
+      prompt,
+      model,
+      quality,
+      mainImageId: beat.main_image_id || null,
+      omitImages,
+    });
 
   const id = beat._id.toString();
   const file = await uploadGeneratedImage({
     buffer,
     contentType,
     prompt,
-    generatedBy: model || GPT_IMAGE_MODEL,
+    generatedBy: usedModel || model,
     ownerType: 'beat',
     ownerId: id,
     filename: `scene-sheet-${id}-${Date.now()}.png`,
@@ -76,14 +80,15 @@ export async function generateSceneSheetForBeat({ beatId, quality = 'auto' }) {
   }
 
   logger.info(
-    `scene sheet: beat=${id} image=${file._id} quality=${quality} ${latencyMs ?? '?'}ms`,
+    `scene sheet: beat=${id} image=${file._id} model=${usedModel} input_image=${usedInputImage ? 'yes' : 'no'} quality=${quality} ${latencyMs ?? '?'}ms`,
   );
   return {
     image_id: file._id.toString(),
     content_type: file.content_type,
     size: file.size,
     quality,
-    model: model || GPT_IMAGE_MODEL,
+    model: usedModel,
+    used_input_image: !!usedInputImage,
     latency_ms: latencyMs ?? null,
   };
 }

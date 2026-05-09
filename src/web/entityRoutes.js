@@ -437,8 +437,9 @@ export function buildApiRouter() {
     }
   });
 
-  // Generate a UE5 production-grade scene reference sheet from beat.specifics
-  // using OpenAI gpt-image-2 and store it as scene_sheet_image_id.
+  // Generate a UE5 production-grade scene reference sheet from beat.specifics.
+  // Caller picks the model (gemini | openai); when `omit_images` is false and
+  // the beat has a main_image_id, that image is sent as a reference.
   router.post('/beat/:id/scene-sheet', async (req, res, next) => {
     try {
       const beatId = await resolveBeatId(req);
@@ -447,8 +448,18 @@ export function buildApiRouter() {
       if (!['low', 'medium', 'high', 'auto'].includes(quality)) {
         return res.status(400).json({ error: 'invalid quality' });
       }
+      const model = String(req.body?.model || 'gemini');
+      if (!['gemini', 'openai'].includes(model)) {
+        return res.status(400).json({ error: 'invalid model' });
+      }
+      const omitImages = !!req.body?.omit_images;
       const { generateSceneSheetForBeat } = await import('./beatSceneSheet.js');
-      const result = await generateSceneSheetForBeat({ beatId, quality });
+      const result = await generateSceneSheetForBeat({
+        beatId,
+        quality,
+        model,
+        omitImages,
+      });
       res.json(result);
     } catch (e) {
       next(e);
@@ -554,8 +565,9 @@ export function buildApiRouter() {
     }
   });
 
-  // Generate a UE5 MetaHuman-style character sheet from the specifics fields
-  // using OpenAI gpt-image-2 and store it as character_sheet_image_id.
+  // Generate a UE5 MetaHuman-style character sheet from the specifics fields.
+  // Caller picks the model (gemini | openai); when `omit_images` is false and
+  // the character has a main_image_id, that image is sent as a reference.
   router.post('/character/:id/character-sheet', async (req, res, next) => {
     try {
       const cid = await resolveCharacterId(req);
@@ -564,10 +576,17 @@ export function buildApiRouter() {
       if (!['low', 'medium', 'high', 'auto'].includes(quality)) {
         return res.status(400).json({ error: 'invalid quality' });
       }
+      const model = String(req.body?.model || 'gemini');
+      if (!['gemini', 'openai'].includes(model)) {
+        return res.status(400).json({ error: 'invalid model' });
+      }
+      const omitImages = !!req.body?.omit_images;
       const { generateCharacterSheetForCharacter } = await import('./characterSheet.js');
       const result = await generateCharacterSheetForCharacter({
         characterId: cid,
         quality,
+        model,
+        omitImages,
       });
       res.json(result);
     } catch (e) {
