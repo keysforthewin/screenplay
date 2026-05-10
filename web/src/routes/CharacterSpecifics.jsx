@@ -18,9 +18,14 @@ export function CharacterSpecifics({ character, onRefresh }) {
   const [notice, setNotice] = useState(null);
   const [genOpen, setGenOpen] = useState(false);
   const [sheets, setSheets] = useState([]);
+  // Bumped whenever a sheet-list operation (rename, delete, reorder, generate)
+  // wants this component to re-pull /character-sheets. Renames don't change
+  // the id list, so we can't rely on `sheetIds.join(',')` alone.
+  const [sheetsRefreshKey, setSheetsRefreshKey] = useState(0);
 
   // Fetch each sheet's name from GridFS metadata so the list shows
-  // human-readable labels. Refetched whenever the id list changes.
+  // human-readable labels. Refetched whenever the id list changes or a sheet
+  // operation explicitly requests a refresh.
   useEffect(() => {
     let cancelled = false;
     if (!sheetIds.length) {
@@ -41,7 +46,12 @@ export function CharacterSpecifics({ character, onRefresh }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cid, sheetIds.join(',')]);
+  }, [cid, sheetIds.join(','), sheetsRefreshKey]);
+
+  function refreshSheets() {
+    setSheetsRefreshKey((k) => k + 1);
+    onRefresh?.();
+  }
 
   async function runAutofill() {
     setError(null);
@@ -107,7 +117,7 @@ export function CharacterSpecifics({ character, onRefresh }) {
         <span className="field-label">
           Character sheets {sheets.length > 0 ? `(${sheets.length})` : ''}
         </span>
-        <CharacterSheetList characterId={cid} sheets={sheets} onRefresh={onRefresh} />
+        <CharacterSheetList characterId={cid} sheets={sheets} onRefresh={refreshSheets} />
       </div>
 
       <GenerateSheetDialog

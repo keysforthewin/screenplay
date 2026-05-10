@@ -176,13 +176,17 @@ function SheetTitleInput({ characterId, sheetId, initialName, onSaved }) {
 
   // If the parent refetches and the name on disk has changed (e.g. another
   // user just renamed it), pick up the new value — but don't clobber a
-  // half-typed local edit.
+  // half-typed local edit. Only react to actual `initialName` changes; a
+  // `saving` toggle would otherwise rebind to a stale parent value the
+  // moment our own PATCH resolves (the parent's sheet-list refetch is
+  // async and may not have landed yet).
   useEffect(() => {
     if (!saving && document.activeElement !== inputRef.current) {
       setValue(initialName);
       setSavedName(initialName);
     }
-  }, [initialName, saving]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialName]);
 
   async function commit() {
     const next = value.trim();
