@@ -21,16 +21,27 @@ export async function findAllCharacters() {
   return col().find({}).sort({ name: 1 }).toArray();
 }
 
+// Synthesize `character_sheet_image_ids: ObjectId[]` on legacy docs that only
+// have the scalar `character_sheet_image_id`. In-memory only — the next
+// successful write through the multi-sheet helpers persists the array form
+// and unsets the scalar.
+function backfillSheetIds(doc) {
+  if (!doc) return doc;
+  if (Array.isArray(doc.character_sheet_image_ids)) return doc;
+  doc.character_sheet_image_ids = doc.character_sheet_image_id ? [doc.character_sheet_image_id] : [];
+  return doc;
+}
+
 export async function getCharacter(identifier) {
   const c = col();
   const id = maybeId(identifier);
   if (id) {
     const byId = await c.findOne({ _id: id });
-    if (byId) return byId;
+    if (byId) return backfillSheetIds(byId);
   }
   const lc = String(identifier).toLowerCase();
   const direct = await c.findOne({ name_lower: lc });
-  if (direct) return direct;
+  if (direct) return backfillSheetIds(direct);
   // Tolerate markdown/whitespace drift in the stored `name_lower`: legacy
   // createCharacter wrote raw `name.toLowerCase()` (preserving newlines and
   // markdown chars), but URLs and most callers use the stripped plain text.
@@ -39,7 +50,8 @@ export async function getCharacter(identifier) {
   const stripped = stripMarkdown(String(identifier)).toLowerCase();
   if (!stripped) return null;
   const all = await c.find({}).toArray();
-  return all.find((d) => stripMarkdown(d.name || '').toLowerCase() === stripped) || null;
+  const match = all.find((d) => stripMarkdown(d.name || '').toLowerCase() === stripped);
+  return match ? backfillSheetIds(match) : null;
 }
 
 export async function createCharacter({ name, plays_self, hollywood_actor, own_voice, fields = {} }) {
@@ -213,6 +225,94 @@ export async function deleteCharacter(identifier) {
     image_ids: (c.images || []).map((i) => i._id).filter(Boolean),
     attachment_ids: (c.attachments || []).map((a) => a._id).filter(Boolean),
   };
+}
+
+function toSheetOid(id) {
+  if (id instanceof ObjectId) return id;
+  if (typeof id === 'string' && /^[a-f0-9]{24}$/i.test(id)) return new ObjectId(id);
+  throw new Error(`character_sheet_image_ids: expected 24-hex string, got ${JSON.stringify(id)}`);
+}
+
+function currentSheetOids(doc) {
+  if (Array.isArray(doc.character_sheet_image_ids)) return doc.character_sheet_image_ids.map(toSheetOid);
+  if (doc.character_sheet_image_id) return [toSheetOid(doc.character_sheet_image_id)];
+  return [];
+}
+
+export async function appendCharacterSheetImage(identifier, fileId) {
+  const c = await getCharacter(identifier);
+  if (!c) throw new Error(`Character not found: ${identifier}`);
+  const oid = toSheetOid(fileId);
+  const current = currentSheetOids(c);
+  if (current.some((x) => x.equals(oid))) {
+    return { character: c.name, _id: c._id, character_sheet_image_ids: current };
+  }
+  const next = [...current, oid];
+  await col().updateOne(
+    { _id: c._id },
+    {
+      $set: { character_sheet_image_ids: next, updated_at: new Date() },
+      $unset: { character_sheet_image_id: '' },
+    },
+  );
+  logger.info(`mongo: character sheet append id=${c._id} file=${oid} count=${next.length}`);
+  return { character: c.name, _id: c._id, character_sheet_image_ids: next };
+}
+
+export async function removeCharacterSheetImage(identifier, fileId) {
+  const c = await getCharacter(identifier);
+  if (!c) throw new Error(`Character not found: ${identifier}`);
+  const oid = toSheetOid(fileId);
+  const current = currentSheetOids(c);
+  if (!current.some((x) => x.equals(oid))) {
+    throw new Error(`Sheet ${fileId} is not attached to ${c.name}`);
+  }
+  const next = current.filter((x) => !x.equals(oid));
+  await col().updateOne(
+    { _id: c._id },
+    {
+      $set: { character_sheet_image_ids: next, updated_at: new Date() },
+      $unset: { character_sheet_image_id: '' },
+    },
+  );
+  logger.info(`mongo: character sheet remove id=${c._id} file=${oid} count=${next.length}`);
+  return { character: c.name, _id: c._id, character_sheet_image_ids: next };
+}
+
+export async function reorderCharacterSheetImages(identifier, orderedIds) {
+  if (!Array.isArray(orderedIds)) {
+    throw new Error('reorderCharacterSheetImages: orderedIds must be an array');
+  }
+  const c = await getCharacter(identifier);
+  if (!c) throw new Error(`Character not found: ${identifier}`);
+  const current = currentSheetOids(c);
+  const incoming = orderedIds.map(toSheetOid);
+  if (incoming.length !== current.length) {
+    throw new Error(
+      `reorderCharacterSheetImages: expected ${current.length} ids, got ${incoming.length}`,
+    );
+  }
+  const currentSet = new Set(current.map((x) => x.toString()));
+  for (const oid of incoming) {
+    if (!currentSet.has(oid.toString())) {
+      throw new Error(`reorderCharacterSheetImages: id ${oid} not in current set`);
+    }
+  }
+  const seen = new Set();
+  for (const oid of incoming) {
+    const k = oid.toString();
+    if (seen.has(k)) throw new Error(`reorderCharacterSheetImages: duplicate id ${k}`);
+    seen.add(k);
+  }
+  await col().updateOne(
+    { _id: c._id },
+    {
+      $set: { character_sheet_image_ids: incoming, updated_at: new Date() },
+      $unset: { character_sheet_image_id: '' },
+    },
+  );
+  logger.info(`mongo: character sheet reorder id=${c._id} count=${incoming.length}`);
+  return { character: c.name, _id: c._id, character_sheet_image_ids: incoming };
 }
 
 export async function pushCharacterImage(identifier, imageMeta, setAsMain = false) {

@@ -13,7 +13,9 @@ const Characters = await import('../src/mongo/characters.js');
 const {
   setEntityFieldMarkdown,
   updateCharacterViaGateway,
-  setCharacterSheetImageViaGateway,
+  appendCharacterSheetImageViaGateway,
+  removeCharacterSheetImageViaGateway,
+  reorderCharacterSheetImagesViaGateway,
 } = await import('../src/web/gateway.js');
 
 beforeEach(() => {
@@ -56,29 +58,69 @@ describe('gateway — specifics text-field fallback (no Hocuspocus)', () => {
   });
 });
 
-describe('gateway — setCharacterSheetImageViaGateway', () => {
-  it('sets and clears character_sheet_image_id via Mongo', async () => {
+describe('gateway — character sheet image helpers', () => {
+  it('appendCharacterSheetImageViaGateway pushes new ids and dedupes', async () => {
     const c = await Characters.createCharacter({ name: 'Rae' });
-    const imageId = new ObjectId();
+    const a = new ObjectId();
+    const b = new ObjectId();
 
-    await setCharacterSheetImageViaGateway({
+    await appendCharacterSheetImageViaGateway({
       character: c._id.toString(),
-      imageId: imageId.toString(),
+      imageId: a.toString(),
     });
-    let updated = await Characters.getCharacter(c._id.toString());
-    expect(updated.character_sheet_image_id.equals(imageId)).toBe(true);
+    await appendCharacterSheetImageViaGateway({
+      character: c._id.toString(),
+      imageId: b.toString(),
+    });
+    // Re-append the first should be a no-op (dedup).
+    await appendCharacterSheetImageViaGateway({
+      character: c._id.toString(),
+      imageId: a.toString(),
+    });
 
-    await setCharacterSheetImageViaGateway({
+    const updated = await Characters.getCharacter(c._id.toString());
+    expect(updated.character_sheet_image_ids.map((x) => x.toString())).toEqual([
+      a.toString(),
+      b.toString(),
+    ]);
+  });
+
+  it('reorderCharacterSheetImagesViaGateway permutes the array', async () => {
+    const c = await Characters.createCharacter({ name: 'Rae' });
+    const a = new ObjectId();
+    const b = new ObjectId();
+    await appendCharacterSheetImageViaGateway({ character: c._id.toString(), imageId: a.toString() });
+    await appendCharacterSheetImageViaGateway({ character: c._id.toString(), imageId: b.toString() });
+
+    await reorderCharacterSheetImagesViaGateway({
       character: c._id.toString(),
-      imageId: null,
+      orderedIds: [b.toString(), a.toString()],
     });
-    updated = await Characters.getCharacter(c._id.toString());
-    expect(updated.character_sheet_image_id).toBeNull();
+    const updated = await Characters.getCharacter(c._id.toString());
+    expect(updated.character_sheet_image_ids.map((x) => x.toString())).toEqual([
+      b.toString(),
+      a.toString(),
+    ]);
+  });
+
+  it('removeCharacterSheetImageViaGateway pulls the id from the array', async () => {
+    const c = await Characters.createCharacter({ name: 'Rae' });
+    const a = new ObjectId();
+    const b = new ObjectId();
+    await appendCharacterSheetImageViaGateway({ character: c._id.toString(), imageId: a.toString() });
+    await appendCharacterSheetImageViaGateway({ character: c._id.toString(), imageId: b.toString() });
+
+    await removeCharacterSheetImageViaGateway({
+      character: c._id.toString(),
+      imageId: a.toString(),
+    });
+    const updated = await Characters.getCharacter(c._id.toString());
+    expect(updated.character_sheet_image_ids.map((x) => x.toString())).toEqual([b.toString()]);
   });
 
   it('throws when the character does not exist', async () => {
     await expect(
-      setCharacterSheetImageViaGateway({
+      appendCharacterSheetImageViaGateway({
         character: 'aaaaaaaaaaaaaaaaaaaaaaaa',
         imageId: new ObjectId().toString(),
       }),

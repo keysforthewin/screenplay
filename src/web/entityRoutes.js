@@ -25,11 +25,13 @@ import {
   removeBeatAttachmentViaGateway,
   removeBeatImageViaGateway,
   removeCharacterImageViaGateway,
+  removeCharacterSheetImageViaGateway,
   removeDirectorNoteAttachmentViaGateway,
   removeDirectorNoteImageViaGateway,
   removeDirectorNoteViaGateway,
   removeLibraryImageViaGateway,
   removeStoryboardReferenceImageViaGateway,
+  reorderCharacterSheetImagesViaGateway,
   reorderDialogsViaGateway,
   reorderStoryboardsViaGateway,
   setBeatMainImageViaGateway,
@@ -186,6 +188,47 @@ export function buildApiRouter() {
     if (!beat) return res.status(404).json({ error: 'beat not found' });
     res.json({ beat });
     backfillOwnedImageCaptions('beat', beat._id?.toString?.(), beat.images).catch(() => {});
+  });
+
+  // Resolve every character named in a beat to its current Mongo doc, with
+  // per-character sheet metadata so the storyboard page can render a
+  // pre-generation sheet picker. Uses the same name-resolution path as the
+  // storyboard renderer (findCharactersInBeat) — so the dropdown reflects
+  // exactly what generation will pick up.
+  router.get('/beat/:id/characters', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const beat = await getBeat(beatId);
+      const { findCharactersInBeat } = await import('./storyboardGenerate.js');
+      const docs = await findCharactersInBeat(beat);
+      const out = [];
+      for (const c of docs) {
+        const sheetIds = Array.isArray(c.character_sheet_image_ids)
+          ? c.character_sheet_image_ids
+          : c.character_sheet_image_id
+            ? [c.character_sheet_image_id]
+            : [];
+        const sheets = [];
+        for (const sid of sheetIds) {
+          const file = await findImageFile(sid);
+          sheets.push({
+            _id: String(sid),
+            name: file?.metadata?.name || '',
+            content_type: file?.contentType || null,
+          });
+        }
+        out.push({
+          _id: c._id.toString(),
+          name: stripMarkdown(c.name || ''),
+          main_image_id: c.main_image_id ? c.main_image_id.toString() : null,
+          sheets,
+        });
+      }
+      res.json({ characters: out });
+    } catch (e) {
+      next(e);
+    }
   });
 
   router.get('/character', async (req, res) => {
@@ -605,9 +648,32 @@ export function buildApiRouter() {
     }
   });
 
-  // Generate a UE5 MetaHuman-style character sheet from the specifics fields.
-  // Caller picks the model (gemini | openai); when `omit_images` is false and
-  // the character has a main_image_id, that image is sent as a reference.
+  // Return the prompt that the sheet generator WOULD use, given the
+  // character's current specifics. The SPA shows this in the "Generate
+  // character sheet" dialog so the user can edit it before submitting.
+  router.get('/character/:id/character-sheet/preview-prompt', async (req, res, next) => {
+    try {
+      const cid = await resolveCharacterId(req);
+      if (!cid) return res.status(404).json({ error: 'character not found' });
+      const c = await getCharacter(cid);
+      if (!c) return res.status(404).json({ error: 'character not found' });
+      const { buildCharacterSheetPrompt } = await import('../util/specifics.js');
+      const characterName = stripMarkdown(c.name || '') || null;
+      const prompt = buildCharacterSheetPrompt(c.specifics || {}, { characterName });
+      res.json({ prompt });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Generate a UE5 MetaHuman-style character sheet. Append-only: each call
+  // pushes a new id onto `character_sheet_image_ids[]`. Caller picks the
+  // model (gemini | openai); reference images come from `reference_image_ids`
+  // (a multi-select of the character's portrait gallery) when provided, else
+  // the character's main image. The default prompt is built from the
+  // character's specifics; pass `prompt` to override (e.g. variant/young
+  // version edits). `sheet_name` becomes the GridFS metadata.name and is
+  // surfaced in the sheet list and the storyboard sheet picker.
   router.post('/character/:id/character-sheet', async (req, res, next) => {
     try {
       const cid = await resolveCharacterId(req);
@@ -621,16 +687,118 @@ export function buildApiRouter() {
         return res.status(400).json({ error: 'invalid model' });
       }
       const omitImages = !!req.body?.omit_images;
+      const customPrompt =
+        typeof req.body?.prompt === 'string' && req.body.prompt.trim()
+          ? req.body.prompt
+          : null;
+      const sheetName =
+        typeof req.body?.sheet_name === 'string' && req.body.sheet_name.trim()
+          ? req.body.sheet_name.trim()
+          : null;
+      let referenceImageIds = null;
+      if (Array.isArray(req.body?.reference_image_ids)) {
+        referenceImageIds = req.body.reference_image_ids
+          .map((x) => String(x || ''))
+          .filter(Boolean);
+        for (const rid of referenceImageIds) {
+          if (!isOidHex(rid)) {
+            return res
+              .status(400)
+              .json({ error: `reference_image_ids: ${rid} is not a 24-hex string` });
+          }
+        }
+      }
       const { generateCharacterSheetForCharacter } = await import('./characterSheet.js');
       const result = await generateCharacterSheetForCharacter({
         characterId: cid,
         quality,
         model,
         omitImages,
+        customPrompt,
+        sheetName,
+        referenceImageIds,
         discordUser: webDiscordUser(req),
       });
       res.json(result);
     } catch (e) {
+      next(e);
+    }
+  });
+
+  // List the character's sheets in order, with the GridFS metadata.name for
+  // each so the SPA can render labels. Returns the same shape used by the
+  // sheet picker on the storyboard page.
+  router.get('/character/:id/character-sheets', async (req, res, next) => {
+    try {
+      const cid = await resolveCharacterId(req);
+      if (!cid) return res.status(404).json({ error: 'character not found' });
+      const c = await getCharacter(cid);
+      if (!c) return res.status(404).json({ error: 'character not found' });
+      const sheetIds = Array.isArray(c.character_sheet_image_ids)
+        ? c.character_sheet_image_ids
+        : c.character_sheet_image_id
+          ? [c.character_sheet_image_id]
+          : [];
+      const sheets = [];
+      for (const sid of sheetIds) {
+        const file = await findImageFile(sid);
+        sheets.push({
+          _id: String(sid),
+          name: file?.metadata?.name || '',
+          content_type: file?.contentType || null,
+        });
+      }
+      res.json({ sheets });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Reorder the character_sheet_image_ids array. The first entry is treated
+  // as the default sheet during storyboard generation.
+  router.post('/character/:id/character-sheets/reorder', async (req, res, next) => {
+    try {
+      const cid = await resolveCharacterId(req);
+      if (!cid) return res.status(404).json({ error: 'character not found' });
+      if (!Array.isArray(req.body?.ordered_ids)) {
+        return res.status(400).json({ error: 'ordered_ids array required' });
+      }
+      const orderedIds = req.body.ordered_ids.map((x) => String(x || '')).filter(Boolean);
+      for (const id of orderedIds) {
+        if (!isOidHex(id)) {
+          return res.status(400).json({ error: `invalid sheet id ${id}` });
+        }
+      }
+      const result = await reorderCharacterSheetImagesViaGateway({
+        character: cid,
+        orderedIds,
+      });
+      res.json(result);
+    } catch (e) {
+      if (/expected \d+ ids|not in current set|duplicate id/.test(e?.message || '')) {
+        return res.status(400).json({ error: e.message });
+      }
+      next(e);
+    }
+  });
+
+  // Delete a single sheet from the character. Drops the GridFS bytes.
+  router.delete('/character/:id/character-sheet/:sheetId', async (req, res, next) => {
+    try {
+      const cid = await resolveCharacterId(req);
+      if (!cid) return res.status(404).json({ error: 'character not found' });
+      if (!isOidHex(req.params.sheetId)) {
+        return res.status(400).json({ error: 'invalid sheet id' });
+      }
+      const result = await removeCharacterSheetImageViaGateway({
+        character: cid,
+        imageId: req.params.sheetId,
+      });
+      res.json(result);
+    } catch (e) {
+      if (/not attached to/.test(e?.message || '')) {
+        return res.status(404).json({ error: e.message });
+      }
       next(e);
     }
   });
@@ -990,6 +1158,9 @@ export function buildApiRouter() {
   // Kick off auto-generation for a beat. Runs the generation pipeline in the
   // background so the request returns quickly; the SPA listens for stateless
   // ping broadcasts on storyboards:<beatId> and refetches as items appear.
+  // Optional `character_sheet_overrides` is { [charId]: sheetImageId } — the
+  // renderer uses the override sheet as the reference image for that
+  // character instead of falling back to the default sheet/main image.
   router.post('/storyboards/generate', async (req, res, next) => {
     try {
       const beatRef = req.body?.beat_id;
@@ -997,6 +1168,21 @@ export function buildApiRouter() {
       const beat = await getBeat(String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const target = Number(req.body?.count) > 0 ? Number(req.body.count) : null;
+      let characterSheetOverrides = null;
+      const rawOverrides = req.body?.character_sheet_overrides;
+      if (rawOverrides && typeof rawOverrides === 'object' && !Array.isArray(rawOverrides)) {
+        characterSheetOverrides = {};
+        for (const [charId, sheetId] of Object.entries(rawOverrides)) {
+          if (sheetId === '' || sheetId == null) continue;
+          if (!isOidHex(String(charId))) {
+            return res.status(400).json({ error: `invalid character id ${charId}` });
+          }
+          if (!isOidHex(String(sheetId))) {
+            return res.status(400).json({ error: `invalid sheet id ${sheetId}` });
+          }
+          characterSheetOverrides[String(charId)] = String(sheetId);
+        }
+      }
       const { startStoryboardGenerationJob, BeatBusyError } = await import(
         './storyboardGenerate.js'
       );
@@ -1004,6 +1190,7 @@ export function buildApiRouter() {
         const jobId = await startStoryboardGenerationJob({
           beatId: beat._id.toString(),
           targetCount: target,
+          characterSheetOverrides,
         });
         res.status(202).json({ job_id: jobId, beat_id: beat._id });
       } catch (e) {

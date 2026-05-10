@@ -95,10 +95,10 @@ describe('generateCharacterSheetImageEdit', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it('rejects when inputImage is missing', async () => {
+  it('rejects when no input images are supplied', async () => {
     await expect(
       generateCharacterSheetImageEdit({ prompt: 'hi' }),
-    ).rejects.toThrow(/inputImage/);
+    ).rejects.toThrow(/at least one input image/);
     expect(global.fetch).not.toHaveBeenCalled();
   });
 

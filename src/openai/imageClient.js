@@ -121,13 +121,15 @@ export async function generateCharacterSheetImage({
   return { buffer, contentType, model: GPT_IMAGE_MODEL, latencyMs, usage };
 }
 
-// images.edits — multipart POST that includes a reference image alongside the
-// prompt. Used when the user wants the character's main image to seed the sheet
-// generation. Mirrors generateCharacterSheetImage's response shape so the caller
-// can treat the two interchangeably.
+// images.edits — multipart POST that includes one or more reference images
+// alongside the prompt. Used when the user wants existing imagery (the
+// character's main image, additional pose references, etc.) to seed the sheet
+// generation. Mirrors generateCharacterSheetImage's response shape so the
+// caller can treat the two interchangeably.
 export async function generateCharacterSheetImageEdit({
   prompt,
   inputImage,
+  inputImages,
   size = '1536x1024',
   quality = 'auto',
   timeoutMs = DEFAULT_TIMEOUT_MS,
@@ -138,8 +140,18 @@ export async function generateCharacterSheetImageEdit({
   if (typeof prompt !== 'string' || !prompt.trim()) {
     throw new Error('generateCharacterSheetImageEdit: `prompt` is required.');
   }
-  if (!inputImage?.buffer || !inputImage?.contentType) {
-    throw new Error('generateCharacterSheetImageEdit: `inputImage` is required.');
+  const images = Array.isArray(inputImages) && inputImages.length
+    ? inputImages
+    : inputImage
+      ? [inputImage]
+      : [];
+  if (!images.length) {
+    throw new Error('generateCharacterSheetImageEdit: at least one input image is required.');
+  }
+  for (const img of images) {
+    if (!img?.buffer || !img?.contentType) {
+      throw new Error('generateCharacterSheetImageEdit: each input image needs buffer + contentType.');
+    }
   }
   if (!VALID_SIZES.has(size)) {
     throw new Error(`generateCharacterSheetImageEdit: invalid size "${size}".`);
@@ -151,18 +163,21 @@ export async function generateCharacterSheetImageEdit({
   logPrompt(`openai images.edits → ${GPT_IMAGE_MODEL}`, prompt, {
     size,
     quality,
-    input_image_bytes: inputImage.buffer.length,
-    input_image_type: inputImage.contentType,
+    input_image_count: images.length,
+    input_image_bytes: images.reduce((n, i) => n + i.buffer.length, 0),
   });
 
   const fd = new FormData();
   fd.append('model', GPT_IMAGE_MODEL);
   fd.append('prompt', prompt);
-  fd.append(
-    'image[]',
-    new Blob([inputImage.buffer], { type: inputImage.contentType }),
-    `main.${extensionForType(inputImage.contentType)}`,
-  );
+  for (let i = 0; i < images.length; i++) {
+    const img = images[i];
+    fd.append(
+      'image[]',
+      new Blob([img.buffer], { type: img.contentType }),
+      `ref-${i}.${extensionForType(img.contentType)}`,
+    );
+  }
   fd.append('size', size);
   fd.append('quality', quality);
 
@@ -210,7 +225,7 @@ export async function generateCharacterSheetImageEdit({
   const contentType = validateImageBuffer(buffer);
   const usage = data?.usage || null;
   logger.info(
-    `openai edit: ${GPT_IMAGE_MODEL} size=${size} quality=${quality} in_bytes=${inputImage.buffer.length} out_bytes=${buffer.length} in_tok=${usage?.input_tokens || 0} out_tok=${usage?.output_tokens || 0} total_tok=${usage?.total_tokens || 0} ${latencyMs}ms`,
+    `openai edit: ${GPT_IMAGE_MODEL} size=${size} quality=${quality} in_count=${images.length} in_bytes=${images.reduce((n, i) => n + i.buffer.length, 0)} out_bytes=${buffer.length} in_tok=${usage?.input_tokens || 0} out_tok=${usage?.output_tokens || 0} total_tok=${usage?.total_tokens || 0} ${latencyMs}ms`,
   );
   return { buffer, contentType, model: GPT_IMAGE_MODEL, latencyMs, usage };
 }

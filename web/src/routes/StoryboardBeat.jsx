@@ -19,6 +19,7 @@ import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { StoryboardItem } from '../widgets/StoryboardItem.jsx';
 import { ConfirmDialog } from '../widgets/Modal.jsx';
 import { StoryboardEditDialog } from '../widgets/StoryboardEditDialog.jsx';
+import { CharacterSheetSelector } from '../widgets/CharacterSheetSelector.jsx';
 
 export function StoryboardBeat({ session }) {
   const { order } = useParams();
@@ -34,6 +35,12 @@ export function StoryboardBeat({ session }) {
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteAllError, setDeleteAllError] = useState(null);
+
+  // Per-character sheet override. Keys are character _id hex strings; values
+  // are sheet image ids (or '' for "use default"). Sent to /storyboards/generate
+  // body when non-empty.
+  const [sheetOverrides, setSheetOverrides] = useState({});
+  const [beatCharacters, setBeatCharacters] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,6 +58,25 @@ export function StoryboardBeat({ session }) {
       cancelled = true;
     };
   }, [order, refreshKey]);
+
+  // Load characters resolved for this beat, plus their sheet lists, so the
+  // sheet picker rendered above the Generate button reflects the same
+  // resolution path the renderer will take.
+  useEffect(() => {
+    if (!data?.beat?._id) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await apiGet(`/beat/${data.beat._id}/characters`);
+        if (!cancelled) setBeatCharacters(r.characters || []);
+      } catch {
+        if (!cancelled) setBeatCharacters([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [data?.beat?._id, refreshKey]);
 
   const onRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
@@ -148,9 +174,13 @@ export function StoryboardBeat({ session }) {
     setGenerationError(null);
     setGenerationStatus({ status: 'queued', completed: 0, planned: 0, failed: 0 });
     try {
-      const r = await apiPostJson('/storyboards/generate', {
-        beat_id: data.beat._id,
-      });
+      const overrides = {};
+      for (const [cid, sid] of Object.entries(sheetOverrides)) {
+        if (sid) overrides[cid] = sid;
+      }
+      const body = { beat_id: data.beat._id };
+      if (Object.keys(overrides).length) body.character_sheet_overrides = overrides;
+      const r = await apiPostJson('/storyboards/generate', body);
       const jobId = r.job_id;
       pollRef.current = setInterval(() => pollJob(jobId), 2000);
       // Trigger one immediate poll so status updates fast.
@@ -251,6 +281,40 @@ export function StoryboardBeat({ session }) {
           </button>
         </div>
       </div>
+
+      {beatCharacters.length > 0 && (
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 12,
+            margin: '8px 0 12px',
+            padding: '8px 12px',
+            background: 'var(--accent-bg, rgba(255,255,255,0.04))',
+            borderRadius: 4,
+          }}
+        >
+          <span style={{ fontSize: 12, color: 'var(--fg-muted)', alignSelf: 'center' }}>
+            Character sheets for generation:
+          </span>
+          {beatCharacters.map((c) => (
+            <label
+              key={c._id}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
+            >
+              <span>{c.name}:</span>
+              <CharacterSheetSelector
+                character={c}
+                value={sheetOverrides[c._id] || ''}
+                disabled={generating}
+                onChange={(sheetId) =>
+                  setSheetOverrides((prev) => ({ ...prev, [c._id]: sheetId }))
+                }
+              />
+            </label>
+          ))}
+        </div>
+      )}
 
       {generationError && (
         <div className="error-banner">Generation error: {generationError}</div>

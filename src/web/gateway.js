@@ -55,6 +55,9 @@ import {
   getCharacter,
   updateCharacter as mongoUpdateCharacter,
   pushCharacterImage,
+  appendCharacterSheetImage,
+  removeCharacterSheetImage,
+  reorderCharacterSheetImages,
 } from '../mongo/characters.js';
 import {
   getDirectorNotes,
@@ -787,17 +790,43 @@ export async function removeCharacterImageViaGateway({ character, imageId }) {
   return result;
 }
 
-export async function setCharacterSheetImageViaGateway({ character, imageId }) {
+export async function appendCharacterSheetImageViaGateway({ character, imageId }) {
   const c = await getCharacter(character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const cid = c._id.toString();
-  await mongoUpdateCharacter(cid, {
-    character_sheet_image_id: imageId == null ? null : String(imageId),
-  });
+  const result = await appendCharacterSheetImage(cid, imageId);
   broadcastFieldsUpdated(buildRoomName('character', cid), {
-    changed: ['character_sheet_image_id'],
+    changed: ['character_sheet_image_ids'],
   });
-  return getCharacter(cid);
+  return result;
+}
+
+export async function removeCharacterSheetImageViaGateway({ character, imageId }) {
+  const c = await getCharacter(character);
+  if (!c) throw new Error(`Character not found: ${character}`);
+  const cid = c._id.toString();
+  const result = await removeCharacterSheetImage(cid, imageId);
+  // Drop the underlying GridFS bytes — the sheet is owned by this character.
+  try {
+    await deleteImage(imageId);
+  } catch (e) {
+    logger.warn(`gateway: delete sheet image ${imageId} failed: ${e.message}`);
+  }
+  broadcastFieldsUpdated(buildRoomName('character', cid), {
+    changed: ['character_sheet_image_ids'],
+  });
+  return result;
+}
+
+export async function reorderCharacterSheetImagesViaGateway({ character, orderedIds }) {
+  const c = await getCharacter(character);
+  if (!c) throw new Error(`Character not found: ${character}`);
+  const cid = c._id.toString();
+  const result = await reorderCharacterSheetImages(cid, orderedIds);
+  broadcastFieldsUpdated(buildRoomName('character', cid), {
+    changed: ['character_sheet_image_ids'],
+  });
+  return result;
 }
 
 export async function addDirectorNoteImageViaGateway({ noteId, imageMeta, setAsMain }) {

@@ -132,7 +132,11 @@ export class BeatBusyError extends Error {
   }
 }
 
-export async function startStoryboardGenerationJob({ beatId, targetCount }) {
+export async function startStoryboardGenerationJob({
+  beatId,
+  targetCount,
+  characterSheetOverrides = null,
+}) {
   const beat = await getBeat(beatId);
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
   if (isBeatLocked(beat._id)) {
@@ -154,23 +158,23 @@ export async function startStoryboardGenerationJob({ beatId, targetCount }) {
   // Fire and forget; errors are recorded on the job. Holding the per-beat lock
   // for the duration prevents concurrent generates and edit calls from racing
   // the delete-then-recreate window.
-  withBeatLock(beat._id, () => runStoryboardGenerationJob({ job, beat, targetCount })).catch(
-    (e) => {
-      job.status = 'error';
-      job.error = e.message;
-      job.finished_at = new Date();
-      logger.error(`storyboard gen job ${jobId} crashed: ${e.message}`);
-    },
-  );
+  withBeatLock(beat._id, () =>
+    runStoryboardGenerationJob({ job, beat, targetCount, characterSheetOverrides }),
+  ).catch((e) => {
+    job.status = 'error';
+    job.error = e.message;
+    job.finished_at = new Date();
+    logger.error(`storyboard gen job ${jobId} crashed: ${e.message}`);
+  });
   return jobId;
 }
 
-async function runStoryboardGenerationJob({ job, beat, targetCount }) {
+async function runStoryboardGenerationJob({ job, beat, targetCount, characterSheetOverrides }) {
   // Plan first. If the planner returns nothing (model failure, rate limit,
   // empty body) we preserve the user's existing storyboards rather than
   // wiping them for no result.
   job.status = 'planning';
-  const characterDocs = await loadCharacterDocs(beat.characters || []);
+  const characterDocs = await findCharactersInBeat(beat);
   const planned = await planFrames({
     beat,
     characters: characterDocs,
@@ -191,7 +195,7 @@ async function runStoryboardGenerationJob({ job, beat, targetCount }) {
   job.status = 'rendering';
   // Pre-load each character's reference image once so we don't re-read GridFS
   // for every frame. Map keys are stripped lowercase names.
-  const charImages = await loadCharacterReferenceImages(characterDocs);
+  const charImages = await loadCharacterReferenceImages(characterDocs, characterSheetOverrides);
   const beatSetImage = await loadBeatSetImage(beat);
   await runWithConcurrency(planned, SEGMENT_CONCURRENCY, async (frame, index) => {
     try {
@@ -217,9 +221,13 @@ async function runStoryboardGenerationJob({ job, beat, targetCount }) {
   );
 }
 
-async function loadCharacterDocs(characterNames) {
+// Resolve every character named in a beat's `characters` list to its current
+// Mongo doc. Exported so the SPA's pre-generation sheet picker hits the same
+// resolution path that the renderer uses — guaranteeing the dropdown reflects
+// what the renderer will actually pick up.
+export async function findCharactersInBeat(beat) {
   const out = [];
-  for (const raw of characterNames || []) {
+  for (const raw of beat?.characters || []) {
     const stripped = stripMarkdown(raw || '').trim();
     if (!stripped) continue;
     try {
@@ -232,11 +240,22 @@ async function loadCharacterDocs(characterNames) {
   return out;
 }
 
-async function loadCharacterReferenceImages(characterDocs) {
+function defaultSheetIdFor(c) {
+  if (Array.isArray(c.character_sheet_image_ids) && c.character_sheet_image_ids.length) {
+    return c.character_sheet_image_ids[0];
+  }
+  return c.character_sheet_image_id || null;
+}
+
+async function loadCharacterReferenceImages(characterDocs, overrides) {
+  const overrideMap = overrides && typeof overrides === 'object' ? overrides : {};
   const map = new Map();
   for (const c of characterDocs) {
+    const cid = c._id?.toString?.();
+    const overrideId = cid ? overrideMap[cid] : null;
+    const sheetId = overrideId || defaultSheetIdFor(c);
     const id =
-      c.character_sheet_image_id ||
+      sheetId ||
       c.main_image_id ||
       (Array.isArray(c.images) && c.images[0]?._id) ||
       null;
@@ -247,7 +266,7 @@ async function loadCharacterReferenceImages(characterDocs) {
     map.set(key, {
       ...ref,
       characterName: stripMarkdown(c.name || ''),
-      characterSheetImageId: c.character_sheet_image_id || null,
+      characterSheetImageId: sheetId || null,
     });
   }
   return map;

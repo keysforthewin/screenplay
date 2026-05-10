@@ -259,3 +259,23 @@ describe('storyboard auto-generation', () => {
     expect(after.map((s) => s.text_prompt)).toEqual(['keep 1', 'keep 2']);
   });
 });
+
+describe('findCharactersInBeat', () => {
+  it('resolves every name in beat.characters to its current Mongo doc', async () => {
+    const Characters = await import('../src/mongo/characters.js');
+    await Characters.createCharacter({ name: 'Alice' });
+    await Characters.createCharacter({ name: 'Bob' });
+
+    const beat = await Plots.createBeat({
+      name: 'B',
+      desc: 'd',
+      body: 'b',
+      characters: ['Alice', 'Bob', '   ', 'Nonexistent'],
+    });
+
+    const docs = await Generate.findCharactersInBeat(beat);
+    const names = docs.map((d) => d.name).sort();
+    // Empty strings are skipped; unknown names resolve to null and drop.
+    expect(names).toEqual(['Alice', 'Bob']);
+  });
+});

@@ -19,18 +19,27 @@ import { recordGeminiImageUsage, recordOpenAIImageUsage } from '../mongo/tokenUs
 
 const SHEET_SIZE = '1536x1024';
 
-async function loadInputImage(mainImageId) {
-  if (!mainImageId) return null;
+async function loadInputImage(imageId) {
+  if (!imageId) return null;
   try {
-    const r = await readImageBuffer(mainImageId);
+    const r = await readImageBuffer(imageId);
     if (!r) return null;
     const declared = r.file.contentType || r.file.metadata?.contentType || null;
     const sniffed = validateImageBuffer(r.buffer);
     return { buffer: r.buffer, contentType: declared || sniffed };
   } catch (e) {
-    logger.warn(`sheet gen: could not load main image ${mainImageId}: ${e.message}`);
+    logger.warn(`sheet gen: could not load image ${imageId}: ${e.message}`);
     return null;
   }
+}
+
+async function loadInputImages(imageIds) {
+  const out = [];
+  for (const id of imageIds || []) {
+    const img = await loadInputImage(id);
+    if (img) out.push(img);
+  }
+  return out;
 }
 
 export async function dispatchSheetGeneration({
@@ -38,6 +47,7 @@ export async function dispatchSheetGeneration({
   model = 'gemini',
   quality = 'auto',
   mainImageId = null,
+  referenceImageIds = null,
   omitImages = false,
   discordUser = null,
   channelId = null,
@@ -61,13 +71,22 @@ export async function dispatchSheetGeneration({
     throw err;
   }
 
-  const inputImage = omitImages ? null : await loadInputImage(mainImageId);
+  let inputImages = [];
+  if (!omitImages) {
+    if (Array.isArray(referenceImageIds) && referenceImageIds.length) {
+      inputImages = await loadInputImages(referenceImageIds);
+    } else if (mainImageId) {
+      const single = await loadInputImage(mainImageId);
+      if (single) inputImages = [single];
+    }
+  }
+  const usedInputImage = inputImages.length > 0;
 
   if (model === 'gemini') {
     const t0 = Date.now();
     const { buffer, contentType, usageMetadata } = await geminiGenerate({
       prompt,
-      inputImage,
+      inputImages: usedInputImage ? inputImages : undefined,
     });
     if (usageMetadata) {
       try {
@@ -86,15 +105,16 @@ export async function dispatchSheetGeneration({
       contentType,
       model: NANO_BANANA_MODEL,
       latencyMs: Date.now() - t0,
-      usedInputImage: !!inputImage,
+      usedInputImage,
+      inputImageCount: inputImages.length,
     };
   }
 
   // openai
-  const r = inputImage
+  const r = usedInputImage
     ? await generateCharacterSheetImageEdit({
         prompt,
-        inputImage,
+        inputImages,
         size: SHEET_SIZE,
         quality,
       })
@@ -113,7 +133,8 @@ export async function dispatchSheetGeneration({
   }
   return {
     ...r,
-    usedInputImage: !!inputImage,
+    usedInputImage,
+    inputImageCount: inputImages.length,
     model: r.model || GPT_IMAGE_MODEL,
   };
 }
