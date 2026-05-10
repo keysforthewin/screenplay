@@ -64,6 +64,7 @@ export const config = {
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY || null,
+    imageTimeoutMs: Number(process.env.OPENAI_IMAGE_TIMEOUT_MS) || 600_000,
   },
   tmdb: {
     readAccessToken: process.env.TMDB_READ_ACCESS_TOKEN || null,

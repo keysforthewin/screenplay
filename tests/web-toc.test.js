@@ -75,6 +75,9 @@ describe('buildTocResponse', () => {
         body_empty: true,
         storyboard_count: 0,
         dialog_count: 0,
+        search_text: 'opening\nalice',
+        dialog_search_text: '',
+        storyboard_search_text: '',
       },
     ]);
   });
@@ -108,6 +111,83 @@ describe('buildTocResponse', () => {
     expect(out.beats[0].dialog_count).toBe(0);
     expect(out.beats[1].storyboard_count).toBe(0);
     expect(out.beats[1].dialog_count).toBe(5);
+  });
+
+  it('builds search_text on beats from name + body + characters list', () => {
+    const beats = [
+      {
+        ...beat(1, '**Opening** scene', ['Alice', 'Bob']),
+        body: 'Alice pushes the door open. *The wind howls.*',
+      },
+    ];
+    const out = buildTocResponse([], beats, 0);
+    const s = out.beats[0].search_text;
+    expect(s).toContain('opening scene');
+    expect(s).toContain('alice pushes the door open');
+    expect(s).toContain('the wind howls');
+    expect(s).toContain('alice');
+    expect(s).toContain('bob');
+  });
+
+  it('aggregates dialog text per beat into dialog_search_text', () => {
+    const beats = [beat(1, 'Diner', []), beat(2, 'Park', [])];
+    const allDialogs = [
+      { beat_id: beats[0]._id, body: "Don't go in there.", character: 'Pauly' },
+      { beat_id: beats[0]._id, body: 'Why not?', character: 'Lisa' },
+      { beat_id: beats[1]._id, body: 'Run!', character: 'Sam' },
+    ];
+    const out = buildTocResponse([], beats, 0, null, null, {
+      allDialogs,
+    });
+    const diner = out.beats.find((b) => b.order === 1);
+    const park = out.beats.find((b) => b.order === 2);
+    expect(diner.dialog_search_text).toContain("don't go in there");
+    expect(diner.dialog_search_text).toContain('pauly');
+    expect(diner.dialog_search_text).toContain('why not');
+    expect(diner.dialog_search_text).not.toContain('run!');
+    expect(park.dialog_search_text).toContain('run!');
+    expect(park.dialog_search_text).toContain('sam');
+  });
+
+  it('aggregates storyboard scene prompts per beat into storyboard_search_text', () => {
+    const beats = [beat(1, 'Chase', []), beat(2, 'Quiet', [])];
+    const allStoryboards = [
+      { beat_id: beats[0]._id, text_prompt: 'wide shot of the alley at dusk' },
+      { beat_id: beats[0]._id, text_prompt: 'close on running feet' },
+      { beat_id: beats[1]._id, text_prompt: 'still life of teacup' },
+    ];
+    const out = buildTocResponse([], beats, 0, null, null, {
+      allStoryboards,
+    });
+    const chase = out.beats.find((b) => b.order === 1);
+    const quiet = out.beats.find((b) => b.order === 2);
+    expect(chase.storyboard_search_text).toContain('alley at dusk');
+    expect(chase.storyboard_search_text).toContain('running feet');
+    expect(chase.storyboard_search_text).not.toContain('teacup');
+    expect(quiet.storyboard_search_text).toContain('teacup');
+  });
+
+  it('builds character search_text from name + hollywood_actor + fields values', () => {
+    const characters = [
+      {
+        _id: new ObjectId(),
+        name: '**Pauly**',
+        hollywood_actor: 'Joe Pesci',
+        fields: {
+          description: 'Short-tempered diner owner.',
+          backstory: 'Used to box in Jersey.',
+          eye_color: 'brown',
+          custom_obj: { not: 'a string' },
+        },
+      },
+    ];
+    const out = buildTocResponse(characters, [], 0);
+    const s = out.characters[0].search_text;
+    expect(s).toContain('pauly');
+    expect(s).toContain('joe pesci');
+    expect(s).toContain('short-tempered diner owner');
+    expect(s).toContain('used to box in jersey');
+    expect(s).toContain('brown');
   });
 
   it('projects main_image_id on each character (or null when absent)', () => {

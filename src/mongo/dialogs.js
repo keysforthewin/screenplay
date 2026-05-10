@@ -8,6 +8,7 @@
 //   order: number (1..N within a beat)
 //   body: string (markdown — what the character says)
 //   character: string (markdown — the speaker's name)
+//   audio_file_id: ObjectId | null  (GridFS attachments bucket — recorded line)
 //   created_at, updated_at: Date
 
 import { ObjectId } from 'mongodb';
@@ -30,12 +31,20 @@ function maybeOid(id) {
   return null;
 }
 
+function normalizeFileId(v) {
+  if (v == null) return null;
+  if (v instanceof ObjectId) return v;
+  if (typeof v === 'string' && HEX24.test(v)) return new ObjectId(v);
+  throw new Error(`invalid file id: ${v}`);
+}
+
 function backfill(doc) {
   if (!doc) return doc;
   return {
     ...doc,
     body: typeof doc.body === 'string' ? doc.body : '',
     character: typeof doc.character === 'string' ? doc.character : '',
+    audio_file_id: doc.audio_file_id ?? null,
   };
 }
 
@@ -82,6 +91,7 @@ export async function createDialog({ beatId, order, body = '', character = '' } 
     order: Number(nextOrder),
     body: String(body || ''),
     character: String(character || ''),
+    audio_file_id: null,
     created_at: now,
     updated_at: now,
   };
@@ -93,6 +103,7 @@ export async function createDialog({ beatId, order, body = '', character = '' } 
 }
 
 const TEXT_FIELDS = new Set(['body', 'character']);
+const ID_FIELDS = new Set(['audio_file_id']);
 
 export async function updateDialog(id, patch) {
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
@@ -104,6 +115,8 @@ export async function updateDialog(id, patch) {
   for (const [k, v] of Object.entries(patch)) {
     if (TEXT_FIELDS.has(k)) {
       set[k] = String(v ?? '');
+    } else if (ID_FIELDS.has(k)) {
+      set[k] = normalizeFileId(v);
     } else if (k === 'order') {
       if (!Number.isFinite(Number(v))) {
         throw new Error(`update_dialog: order must be a number, got ${v}`);

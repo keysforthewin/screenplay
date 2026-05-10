@@ -78,7 +78,17 @@ export function Toc({ session }) {
   }
 
   const filter = useMemo(() => query.trim().toLowerCase(), [query]);
-  const matches = (label) => !filter || label.toLowerCase().includes(filter);
+  // Match the visible label OR the entry's per-tab `search_text` blob, so the
+  // user can filter by content (beat body, dialog lines, scene prompts,
+  // character fields) and not just by the rendered list label.
+  const matches = (label, ...searchBlobs) => {
+    if (!filter) return true;
+    if (label && label.toLowerCase().includes(filter)) return true;
+    for (const s of searchBlobs) {
+      if (typeof s === 'string' && s && s.includes(filter)) return true;
+    }
+    return false;
+  };
 
   if (error) {
     return (
@@ -116,9 +126,10 @@ export function Toc({ session }) {
         beats: c.beats || [],
         isDup,
         idShort: String(c._id).slice(-6),
+        searchText: c.search_text || '',
       };
     })
-    .filter((c) => matches(c.label));
+    .filter((c) => matches(c.label, c.searchText));
 
   const beats = [...(toc.beats || [])]
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
@@ -127,8 +138,9 @@ export function Toc({ session }) {
       to: `/beat/${b.order}`,
       label: `#${b.order} — ${b.plain_name || b.name || 'Untitled'}`,
       bodyEmpty: !!b.body_empty,
+      searchText: b.search_text || '',
     }))
-    .filter((b) => matches(b.label));
+    .filter((b) => matches(b.label, b.searchText));
 
   const dialogBeats = [...(toc.beats || [])]
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
@@ -144,9 +156,10 @@ export function Toc({ session }) {
         missing,
         count,
         searchLabel: `#${b.order} — ${title}`,
+        searchText: b.dialog_search_text || '',
       };
     })
-    .filter((b) => matches(b.searchLabel));
+    .filter((b) => matches(b.searchLabel, b.searchText));
 
   const storyboardBeats = [...(toc.beats || [])]
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
@@ -162,9 +175,10 @@ export function Toc({ session }) {
         missing,
         count,
         searchLabel: `#${b.order} — ${title}`,
+        searchText: b.storyboard_search_text || '',
       };
     })
-    .filter((b) => matches(b.searchLabel));
+    .filter((b) => matches(b.searchLabel, b.searchText));
 
   const allNotes = notesData?.notes || [];
   const filteredNotes = !filter

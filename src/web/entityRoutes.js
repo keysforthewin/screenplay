@@ -18,6 +18,7 @@ import {
   addDirectorNoteViaGateway,
   addLibraryImageViaGateway,
   addStoryboardReferenceImageViaGateway,
+  copyDialogAudioToStoryboardViaGateway,
   createDialogViaGateway,
   createStoryboardViaGateway,
   deleteDialogViaGateway,
@@ -38,6 +39,7 @@ import {
   setCharacterMainImageViaGateway,
   setDirectorNoteMainImageViaGateway,
   setCharacterSheetMetaViaGateway,
+  setDialogAudioViaGateway,
   setOwnedImageMetaViaGateway,
   setStoryboardAudioViaGateway,
   setStoryboardImageViaGateway,
@@ -133,13 +135,20 @@ export function buildApiRouter() {
   // ── reads ────────────────────────────────────────────────────────────────
 
   router.get('/toc', async (_req, res) => {
-    const [characters, beatList, notes, storyboardCounts, dialogCounts] =
+    // findAllCharacters (not listCharacters) — we need fields.{...} content for
+    // the deep filter to match on description/body-style template fields.
+    // listDialogs() / listStoryboards() unfiltered return every row; we group
+    // them per beat in buildTocResponse to back the dialog/storyboard tab
+    // filter without forcing N+1 round trips here.
+    const [characters, beatList, notes, storyboardCounts, dialogCounts, allDialogs, allStoryboards] =
       await Promise.all([
-        listCharacters(),
+        findAllCharacters(),
         listBeats(),
         getDirectorNotes(),
         countStoryboardsByBeat(),
         countDialogsByBeat(),
+        listDialogs(),
+        listStoryboards(),
       ]);
     res.json(
       buildTocResponse(
@@ -148,6 +157,7 @@ export function buildApiRouter() {
         (notes.notes || []).length,
         storyboardCounts,
         dialogCounts,
+        { allDialogs, allStoryboards },
       ),
     );
   });
@@ -1334,6 +1344,36 @@ export function buildApiRouter() {
     }
   });
 
+  // Copy a dialog item's audio onto this scene as an independent file. The
+  // dialog and scene keep separate GridFS files — deleting one does not
+  // affect the other.
+  router.post('/storyboard/:id/audio/from-dialog', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const dialogId = req.body?.dialog_id;
+      if (!isOidHex(String(dialogId || ''))) {
+        return res.status(400).json({ error: 'dialog_id required' });
+      }
+      try {
+        const result = await copyDialogAudioToStoryboardViaGateway({
+          storyboardId: sbId,
+          dialogId: String(dialogId),
+        });
+        res.json(result);
+      } catch (e) {
+        if (
+          /no audio to copy|different beats|not found/i.test(e.message || '')
+        ) {
+          return res.status(400).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // Kick off auto-generation for a beat. Runs the generation pipeline in the
   // background so the request returns quickly; the SPA listens for stateless
   // ping broadcasts on storyboards:<beatId> and refetches as items appear.
@@ -1543,6 +1583,62 @@ export function buildApiRouter() {
         }
         throw e;
       }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Upload an audio recording or file for this dialog item. The file is
+  // validated as audio/* and stored in the attachments GridFS bucket; the
+  // dialog's audio_file_id is updated through the gateway so a stateless
+  // ping refreshes connected SPAs.
+  router.post('/dialog/:id/audio', upload.single('file'), async (req, res, next) => {
+    try {
+      const dId = await resolveDialogId(req);
+      if (!dId) return res.status(404).json({ error: 'dialog not found' });
+      if (!req.file) return res.status(400).json({ error: 'file required' });
+      const ct = req.file.mimetype || 'audio/mpeg';
+      if (!ct.startsWith('audio/')) {
+        return res.status(400).json({ error: 'file must be audio/*' });
+      }
+      const dialog = await getDialog(dId);
+      const file = await uploadAttachmentBuffer({
+        buffer: req.file.buffer,
+        filename: safeFilename(
+          req.file.originalname,
+          `dialog-${dId}-audio-${Date.now()}.bin`,
+        ),
+        contentType: ct,
+        ownerType: 'dialog',
+        ownerId: dialog._id,
+      });
+      const result = await setDialogAudioViaGateway({
+        dialogId: dId,
+        audioFileId: file._id,
+      });
+      res.json({
+        dialog: result,
+        audio: {
+          _id: file._id,
+          filename: file.filename,
+          content_type: file.content_type,
+          size: file.size,
+        },
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete('/dialog/:id/audio', async (req, res, next) => {
+    try {
+      const dId = await resolveDialogId(req);
+      if (!dId) return res.status(404).json({ error: 'dialog not found' });
+      const result = await setDialogAudioViaGateway({
+        dialogId: dId,
+        audioFileId: null,
+      });
+      res.json({ dialog: result });
     } catch (e) {
       next(e);
     }

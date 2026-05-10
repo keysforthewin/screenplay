@@ -81,6 +81,50 @@ describe('dialogs mongo helpers', () => {
     ).rejects.toThrow(/unknown field/);
   });
 
+  it('createDialog defaults audio_file_id to null', async () => {
+    const d = await Dialogs.createDialog({ beatId: beatA });
+    expect(d.audio_file_id).toBe(null);
+  });
+
+  it('updateDialog accepts audio_file_id as a 24-hex string', async () => {
+    const d = await Dialogs.createDialog({ beatId: beatA });
+    const fileId = new ObjectId();
+    const updated = await Dialogs.updateDialog(d._id, {
+      audio_file_id: fileId.toString(),
+    });
+    expect(updated.audio_file_id.toString()).toBe(fileId.toString());
+  });
+
+  it('updateDialog clears audio_file_id when set to null', async () => {
+    const d = await Dialogs.createDialog({ beatId: beatA });
+    const fileId = new ObjectId();
+    await Dialogs.updateDialog(d._id, { audio_file_id: fileId.toString() });
+    const cleared = await Dialogs.updateDialog(d._id, { audio_file_id: null });
+    expect(cleared.audio_file_id).toBe(null);
+  });
+
+  it('updateDialog rejects non-hex audio_file_id', async () => {
+    const d = await Dialogs.createDialog({ beatId: beatA });
+    await expect(
+      Dialogs.updateDialog(d._id, { audio_file_id: 'not-an-id' }),
+    ).rejects.toThrow(/invalid file id/);
+  });
+
+  it('listDialogs backfills audio_file_id for legacy docs missing the field', async () => {
+    // Simulate a pre-migration doc inserted before audio_file_id existed.
+    fakeDb.collection('dialogs')._docs.push({
+      _id: new ObjectId(),
+      beat_id: beatA,
+      order: 1,
+      body: 'old line',
+      character: 'Old Speaker',
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+    const [legacy] = await Dialogs.listDialogs({ beatId: beatA });
+    expect(legacy.audio_file_id).toBe(null);
+  });
+
   it('reorderDialogsForBeat rewrites the order field', async () => {
     const a = await Dialogs.createDialog({ beatId: beatA });
     const b = await Dialogs.createDialog({ beatId: beatA });

@@ -100,6 +100,7 @@ import {
   setLibraryAttachmentMeta,
   setOwnedAttachmentMeta,
   findAttachmentFile,
+  copyAttachmentBuffer,
 } from '../mongo/attachments.js';
 import { enqueueReindex } from '../rag/queue.js';
 import { deleteEntity } from '../rag/indexer.js';
@@ -1092,6 +1093,47 @@ export async function setStoryboardAudioViaGateway({ storyboardId, audioFileId }
   return mongoGetStoryboard(storyboardId);
 }
 
+// Copy a dialog item's audio bytes into a fresh GridFS file owned by the
+// target storyboard, then point the storyboard's audio_file_id at the new
+// file. The dialog and storyboard end up holding independent copies — deleting
+// or replacing one does not affect the other.
+export async function copyDialogAudioToStoryboardViaGateway({
+  storyboardId,
+  dialogId,
+}) {
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const d = await mongoGetDialog(dialogId);
+  if (!d) throw new Error(`Dialog not found: ${dialogId}`);
+  if (!d.audio_file_id) {
+    throw new Error(`Dialog ${dialogId} has no audio to copy.`);
+  }
+  if (sb.beat_id.toString() !== d.beat_id.toString()) {
+    throw new Error(
+      `Dialog ${dialogId} and storyboard ${storyboardId} belong to different beats.`,
+    );
+  }
+  const newFile = await copyAttachmentBuffer({
+    sourceFileId: d.audio_file_id,
+    filename: `scene-${storyboardId}-audio-${Date.now()}`,
+    ownerType: 'beat',
+    ownerId: sb.beat_id,
+  });
+  const storyboard = await setStoryboardAudioViaGateway({
+    storyboardId,
+    audioFileId: newFile._id,
+  });
+  return {
+    storyboard,
+    audio: {
+      _id: newFile._id,
+      filename: newFile.filename,
+      content_type: newFile.content_type,
+      size: newFile.size,
+    },
+  };
+}
+
 // ─── Dialogs ──────────────────────────────────────────────────────────────
 //
 // Dialogs live in their own top-level collection but share one y-doc per
@@ -1215,6 +1257,22 @@ export async function deleteAllDialogsForBeatViaGateway({ beatId }) {
     cleared: true,
   });
   return { ok: true, removed_count: removed.length };
+}
+
+// Attach or detach a dialog item's recorded audio file. Pass `audioFileId:
+// null` to unlink (the GridFS bytes are left in place, mirroring the
+// storyboard-audio convention).
+export async function setDialogAudioViaGateway({ dialogId, audioFileId }) {
+  const d = await mongoGetDialog(dialogId);
+  if (!d) throw new Error(`Dialog not found: ${dialogId}`);
+  await mongoUpdateDialog(dialogId, {
+    audio_file_id: audioFileId == null ? null : String(audioFileId),
+  });
+  broadcastFieldsUpdated(buildRoomName('dialogs', d.beat_id.toString()), {
+    changed: ['audio_file_id'],
+    dialog_id: String(dialogId),
+  });
+  return mongoGetDialog(dialogId);
 }
 
 // ─── Library ───────────────────────────────────────────────────────────────

@@ -2,8 +2,16 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { CollabField } from '../editor/CollabField.jsx';
 import { CharacterSelect } from './CharacterSelect.jsx';
+import { AudioSlot } from './AudioSlot.jsx';
 
-export function DialogItem({ dialog, index, characters, onDelete, onCharacterChange }) {
+export function DialogItem({
+  dialog,
+  index,
+  characters,
+  onDelete,
+  onCharacterChange,
+  onAudioChange,
+}) {
   const id = dialog._id?.toString?.() || String(dialog._id);
   const {
     attributes,
@@ -59,6 +67,13 @@ export function DialogItem({ dialog, index, characters, onDelete, onCharacterCha
             placeholder="What the character says…"
           />
         </div>
+        <AudioSlot
+          audioId={dialog.audio_file_id}
+          uploadEndpoint={`/dialog/${id}/audio`}
+          deleteEndpoint={`/dialog/${id}/audio`}
+          recordingPrefix={`dialog-${id}`}
+          onRefresh={onAudioChange}
+        />
       </div>
     </div>
   );

@@ -93,6 +93,33 @@ export async function findAttachmentFile(attachmentId) {
   return filesCol().findOne({ _id: toObjectId(attachmentId) });
 }
 
+// Duplicate an existing attachment's bytes into a brand-new GridFS file, with
+// optional new owner metadata. Returns the new file's metadata (same shape as
+// uploadAttachmentBuffer). The new file gets a fresh _id — callers can rely on
+// this to break ownership links (e.g. "copy this dialog's audio onto a scene
+// as an independent file, not a reference").
+export async function copyAttachmentBuffer({
+  sourceFileId,
+  filename,
+  ownerType = null,
+  ownerId = null,
+}) {
+  const read = await readAttachmentBuffer(sourceFileId);
+  if (!read) throw new Error(`Attachment not found: ${sourceFileId}`);
+  const { buffer, file } = read;
+  const ct =
+    file.contentType || file.metadata?.content_type || 'application/octet-stream';
+  const finalFilename =
+    filename?.trim() || file.filename || `copy-${Date.now()}.bin`;
+  return uploadAttachmentBuffer({
+    buffer,
+    filename: finalFilename,
+    contentType: ct,
+    ownerType,
+    ownerId,
+  });
+}
+
 export async function listLibraryAttachments() {
   return filesCol()
     .find({ 'metadata.owner_type': null })

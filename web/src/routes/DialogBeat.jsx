@@ -310,6 +310,7 @@ export function DialogBeat({ session }) {
                       characters={characters}
                       onDelete={() => deleteDialog(d._id)}
                       onCharacterChange={setDialogCharacter}
+                      onAudioChange={onRefresh}
                     />
                   ))}
                 </div>

@@ -14,7 +14,6 @@ import { validateImageBuffer, extensionForType } from '../mongo/imageBytes.js';
 export const GPT_IMAGE_MODEL = 'gpt-image-2';
 const ENDPOINT = 'https://api.openai.com/v1/images/generations';
 const EDIT_ENDPOINT = 'https://api.openai.com/v1/images/edits';
-const DEFAULT_TIMEOUT_MS = 180_000;
 
 const VALID_SIZES = new Set([
   '1024x1024',
@@ -43,7 +42,7 @@ export async function generateCharacterSheetImage({
   prompt,
   size = '1536x1024',
   quality = 'auto',
-  timeoutMs = DEFAULT_TIMEOUT_MS,
+  timeoutMs,
 } = {}) {
   if (!config.openai.apiKey) {
     throw new Error('OPENAI_API_KEY is not configured.');
@@ -58,13 +57,15 @@ export async function generateCharacterSheetImage({
     throw new Error(`generateCharacterSheetImage: invalid quality "${quality}".`);
   }
 
+  const effectiveTimeoutMs = timeoutMs ?? config.openai.imageTimeoutMs ?? 600_000;
+
   logPrompt(`openai images.generations → ${GPT_IMAGE_MODEL}`, prompt, {
     size,
     quality,
   });
 
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  const timer = setTimeout(() => ac.abort(), effectiveTimeoutMs);
   const t0 = Date.now();
   let res;
   try {
@@ -86,7 +87,7 @@ export async function generateCharacterSheetImage({
   } catch (e) {
     if (e?.name === 'AbortError') {
       throw new Error(
-        `OpenAI image generation timed out after ${Math.round(timeoutMs / 1000)}s.`,
+        `OpenAI image generation timed out after ${Math.round(effectiveTimeoutMs / 1000)}s.`,
       );
     }
     throw e;
@@ -132,7 +133,7 @@ export async function generateCharacterSheetImageEdit({
   inputImages,
   size = '1536x1024',
   quality = 'auto',
-  timeoutMs = DEFAULT_TIMEOUT_MS,
+  timeoutMs,
 } = {}) {
   if (!config.openai.apiKey) {
     throw new Error('OPENAI_API_KEY is not configured.');
@@ -160,6 +161,8 @@ export async function generateCharacterSheetImageEdit({
     throw new Error(`generateCharacterSheetImageEdit: invalid quality "${quality}".`);
   }
 
+  const effectiveTimeoutMs = timeoutMs ?? config.openai.imageTimeoutMs ?? 600_000;
+
   logPrompt(`openai images.edits → ${GPT_IMAGE_MODEL}`, prompt, {
     size,
     quality,
@@ -182,7 +185,7 @@ export async function generateCharacterSheetImageEdit({
   fd.append('quality', quality);
 
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  const timer = setTimeout(() => ac.abort(), effectiveTimeoutMs);
   const t0 = Date.now();
   let res;
   try {
@@ -195,7 +198,7 @@ export async function generateCharacterSheetImageEdit({
   } catch (e) {
     if (e?.name === 'AbortError') {
       throw new Error(
-        `OpenAI image edit timed out after ${Math.round(timeoutMs / 1000)}s.`,
+        `OpenAI image edit timed out after ${Math.round(effectiveTimeoutMs / 1000)}s.`,
       );
     }
     throw e;
