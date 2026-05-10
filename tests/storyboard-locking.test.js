@@ -128,7 +128,7 @@ describe('generation rejects concurrent jobs for the same beat', () => {
         }),
       },
     }));
-    Generate._setGeminiForTests(async () => ({
+    Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('x'),
       contentType: 'image/png',
     }));

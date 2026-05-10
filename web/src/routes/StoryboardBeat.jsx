@@ -19,7 +19,7 @@ import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { StoryboardItem } from '../widgets/StoryboardItem.jsx';
 import { ConfirmDialog } from '../widgets/Modal.jsx';
 import { StoryboardEditDialog } from '../widgets/StoryboardEditDialog.jsx';
-import { CharacterSheetSelector } from '../widgets/CharacterSheetSelector.jsx';
+import { StoryboardGenerateDialog } from '../widgets/StoryboardGenerateDialog.jsx';
 import { formatRuntime } from '../shotTypes.js';
 
 export function StoryboardBeat({ session }) {
@@ -32,15 +32,14 @@ export function StoryboardBeat({ session }) {
   const [generationError, setGenerationError] = useState(null);
   const [generationStatus, setGenerationStatus] = useState(null);
   const pollRef = useRef(null);
-  const [confirmGenerate, setConfirmGenerate] = useState(false);
+  const [genDialogOpen, setGenDialogOpen] = useState(false);
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteAllError, setDeleteAllError] = useState(null);
 
-  // Per-character sheet override. Keys are character _id hex strings; values
-  // are sheet image ids (or '' for "use default"). Sent to /storyboards/generate
-  // body when non-empty.
-  const [sheetOverrides, setSheetOverrides] = useState({});
+  // beatCharacters is fetched once per beat and passed to the generation
+  // dialog so the user can pick which sheet to use for each character. The
+  // override mapping itself lives inside the dialog now.
   const [beatCharacters, setBeatCharacters] = useState([]);
 
   useEffect(() => {
@@ -174,18 +173,16 @@ export function StoryboardBeat({ session }) {
     }
   }
 
-  async function generate() {
+  async function generate({ sheetOverrides, imageModel }) {
     if (!data?.beat) return;
     setGenerating(true);
     setGenerationError(null);
     setGenerationStatus({ status: 'queued', completed: 0, planned: 0, failed: 0 });
     try {
-      const overrides = {};
-      for (const [cid, sid] of Object.entries(sheetOverrides)) {
-        if (sid) overrides[cid] = sid;
+      const body = { beat_id: data.beat._id, image_model: imageModel };
+      if (sheetOverrides && Object.keys(sheetOverrides).length) {
+        body.character_sheet_overrides = sheetOverrides;
       }
-      const body = { beat_id: data.beat._id };
-      if (Object.keys(overrides).length) body.character_sheet_overrides = overrides;
       const r = await apiPostJson('/storyboards/generate', body);
       const jobId = r.job_id;
       pollRef.current = setInterval(() => pollJob(jobId), 2000);
@@ -198,11 +195,12 @@ export function StoryboardBeat({ session }) {
   }
 
   function onGenerateClick() {
-    if (sortedItems.length > 0) {
-      setConfirmGenerate(true);
-    } else {
-      generate();
-    }
+    setGenDialogOpen(true);
+  }
+
+  function onGenDialogSubmit(settings) {
+    setGenDialogOpen(false);
+    generate(settings);
   }
 
   async function deleteAll() {
@@ -289,40 +287,6 @@ export function StoryboardBeat({ session }) {
         </div>
       </div>
 
-      {beatCharacters.length > 0 && (
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 12,
-            margin: '8px 0 12px',
-            padding: '8px 12px',
-            background: 'var(--accent-bg, rgba(255,255,255,0.04))',
-            borderRadius: 4,
-          }}
-        >
-          <span style={{ fontSize: 12, color: 'var(--fg-muted)', alignSelf: 'center' }}>
-            Character sheets for generation:
-          </span>
-          {beatCharacters.map((c) => (
-            <label
-              key={c._id}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
-            >
-              <span>{c.name}:</span>
-              <CharacterSheetSelector
-                character={c}
-                value={sheetOverrides[c._id] || ''}
-                disabled={generating}
-                onChange={(sheetId) =>
-                  setSheetOverrides((prev) => ({ ...prev, [c._id]: sheetId }))
-                }
-              />
-            </label>
-          ))}
-        </div>
-      )}
-
       {generationError && (
         <div className="error-banner">Generation error: {generationError}</div>
       )}
@@ -394,17 +358,12 @@ export function StoryboardBeat({ session }) {
         </CollabSurface>
       )}
 
-      <ConfirmDialog
-        open={confirmGenerate}
-        title="Replace existing storyboards?"
-        message={
-          `This beat has ${sortedItems.length} storyboard ${sortedItems.length === 1 ? 'item' : 'items'}. ` +
-          `They will be deleted and replaced when generation produces a new plan. ` +
-          `If planning fails, your current items are preserved.`
-        }
-        confirmLabel="Generate"
-        onConfirm={() => { setConfirmGenerate(false); generate(); }}
-        onCancel={() => setConfirmGenerate(false)}
+      <StoryboardGenerateDialog
+        open={genDialogOpen}
+        onClose={() => setGenDialogOpen(false)}
+        onSubmit={onGenDialogSubmit}
+        beatCharacters={beatCharacters}
+        existingCount={sortedItems.length}
       />
 
       <ConfirmDialog

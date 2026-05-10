@@ -10,6 +10,8 @@ import {
   imageUrl,
 } from '../api.js';
 import { CollabField } from '../editor/CollabField.jsx';
+import { FrameRegenerateDialog } from './FrameRegenerateDialog.jsx';
+import { ImageLightbox } from './ImageLightbox.jsx';
 import {
   SHOT_TYPES,
   durationCapFor,
@@ -112,11 +114,20 @@ function ShotMetaRow({ sb, sbId, onRefresh }) {
   );
 }
 
-function FrameSlot({ label, role, imageId, sbId, generatable, onRefresh }) {
+function FrameSlot({
+  label,
+  role,
+  imageId,
+  sbId,
+  generatable,
+  onRefresh,
+  onOpenLightbox,
+}) {
   const fileInput = useRef(null);
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState(null);
   const [error, setError] = useState(null);
+  const [regenOpen, setRegenOpen] = useState(false);
   const url = imageUrl(imageId);
 
   async function upload(e) {
@@ -154,12 +165,15 @@ function FrameSlot({ label, role, imageId, sbId, generatable, onRefresh }) {
     }
   }
 
-  async function generate() {
+  async function submitRegen({ mode, imageModel, editPrompt }) {
+    setRegenOpen(false);
     setBusy(true);
-    setBusyLabel('Generating…');
+    setBusyLabel(mode === 'edit' ? 'Editing…' : 'Generating…');
     setError(null);
     try {
-      await apiPostJson(`/storyboard/${sbId}/frame/${role}/generate`, {});
+      const body = { image_model: imageModel, mode };
+      if (mode === 'edit') body.edit_prompt = editPrompt;
+      await apiPostJson(`/storyboard/${sbId}/frame/${role}/generate`, body);
       await onRefresh?.();
     } catch (err) {
       setError(err.message);
@@ -174,7 +188,11 @@ function FrameSlot({ label, role, imageId, sbId, generatable, onRefresh }) {
       <div className="storyboard-frame-label">{label}</div>
       {url ? (
         <div className="storyboard-frame-img-wrap">
-          <img src={url} alt={label} />
+          <img
+            src={url}
+            alt={label}
+            onClick={() => onOpenLightbox?.(url, label)}
+          />
           <button
             type="button"
             className="storyboard-frame-remove"
@@ -218,19 +236,28 @@ function FrameSlot({ label, role, imageId, sbId, generatable, onRefresh }) {
             type="button"
             className="storyboard-frame-generate"
             disabled={busy}
-            title={`Generate ${label.toLowerCase()} from the prompt + scene + character sheets`}
-            onClick={generate}
+            title={`Generate ${label.toLowerCase()} — opens the generate dialog`}
+            onClick={() => setRegenOpen(true)}
           >
-            {busyLabel === 'Generating…' ? 'Generating…' : url ? 'Regenerate' : 'Generate'}
+            {busyLabel || (url ? 'Regenerate' : 'Generate')}
           </button>
         )}
       </div>
       {error && <div className="error-banner small">{error}</div>}
+      {generatable && (
+        <FrameRegenerateDialog
+          open={regenOpen}
+          onClose={() => setRegenOpen(false)}
+          onSubmit={submitRegen}
+          role={role}
+          hasImage={Boolean(url)}
+        />
+      )}
     </div>
   );
 }
 
-function ReferenceImages({ ids, sbId, onRefresh }) {
+function ReferenceImages({ ids, sbId, onRefresh, onOpenLightbox }) {
   const fileInput = useRef(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -274,7 +301,11 @@ function ReferenceImages({ ids, sbId, onRefresh }) {
           const key = id?.toString?.() || String(id);
           return (
             <div className="storyboard-ref-thumb" key={key}>
-              <img src={imageUrl(key)} alt="reference" />
+              <img
+                src={imageUrl(key)}
+                alt="reference"
+                onClick={() => onOpenLightbox?.(imageUrl(key), 'Reference')}
+              />
               <button
                 type="button"
                 className="storyboard-frame-remove"
@@ -312,7 +343,23 @@ function AudioSlot({ audioId, sbId, onRefresh }) {
   const fileInput = useRef(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [recording, setRecording] = useState(false);
+  const [recordingMs, setRecordingMs] = useState(0);
+  const recorderRef = useRef(null);
+  const streamRef = useRef(null);
+  const chunksRef = useRef([]);
+  const tickRef = useRef(null);
   const url = attachmentUrl(audioId);
+
+  // Stop any active mic stream / timer if the component unmounts mid-record
+  // (e.g. user navigates away). Without this the mic indicator would linger.
+  useEffect(() => {
+    return () => {
+      try { recorderRef.current?.stop(); } catch (_) { /* noop */ }
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      if (tickRef.current) clearInterval(tickRef.current);
+    };
+  }, []);
 
   async function upload(e) {
     const file = e.target.files?.[0];
@@ -345,25 +392,137 @@ function AudioSlot({ audioId, sbId, onRefresh }) {
     }
   }
 
+  async function startRecord() {
+    setError(null);
+    if (
+      typeof navigator === 'undefined' ||
+      !navigator.mediaDevices?.getUserMedia ||
+      typeof MediaRecorder === 'undefined'
+    ) {
+      setError('Browser microphone recording is not supported here.');
+      return;
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (_err) {
+      setError('Microphone access denied or unavailable.');
+      return;
+    }
+    // webm/opus is the default in Chromium/Firefox; Safari only supports mp4.
+    // The server's `audio/*` regex accepts either.
+    const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', ''].find(
+      (t) => !t || MediaRecorder.isTypeSupported(t),
+    );
+    const recorder = new MediaRecorder(
+      stream,
+      mime ? { mimeType: mime } : undefined,
+    );
+    chunksRef.current = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data?.size) chunksRef.current.push(e.data);
+    };
+    recorder.onstop = () => {
+      uploadRecording(recorder.mimeType || mime || 'audio/webm');
+    };
+    recorder.start();
+    recorderRef.current = recorder;
+    streamRef.current = stream;
+    setRecording(true);
+    setRecordingMs(0);
+    const startedAt = Date.now();
+    tickRef.current = setInterval(() => {
+      setRecordingMs(Date.now() - startedAt);
+    }, 250);
+  }
+
+  function stopRecord() {
+    try { recorderRef.current?.stop(); } catch (_) { /* noop */ }
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    if (tickRef.current) clearInterval(tickRef.current);
+    tickRef.current = null;
+    recorderRef.current = null;
+    streamRef.current = null;
+    setRecording(false);
+  }
+
+  async function uploadRecording(contentType) {
+    setBusy(true);
+    setError(null);
+    try {
+      const blob = new Blob(chunksRef.current, { type: contentType });
+      if (!blob.size) {
+        setError('Recording was empty.');
+        return;
+      }
+      const ext = contentType.includes('mp4') ? 'm4a' : 'webm';
+      const file = new File([blob], `recording-${Date.now()}.${ext}`, {
+        type: contentType,
+      });
+      const fd = new FormData();
+      fd.append('file', file);
+      await apiPostMultipart(`/storyboard/${sbId}/audio`, fd);
+      await onRefresh?.();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      chunksRef.current = [];
+      setBusy(false);
+    }
+  }
+
+  const totalSec = Math.floor(recordingMs / 1000);
+  const mm = String(Math.floor(totalSec / 60)).padStart(1, '0');
+  const ss = String(totalSec % 60).padStart(2, '0');
+  const uploadLabel = url ? 'Replace audio' : '+ Upload audio';
+
   return (
     <div className="storyboard-audio">
       <div className="storyboard-frame-label">Audio</div>
-      {url ? (
+      {url && (
         <div className="storyboard-audio-row">
           <audio controls src={url} preload="metadata" />
-          <button type="button" disabled={busy} onClick={remove}>
+          <button
+            type="button"
+            disabled={busy || recording}
+            onClick={remove}
+          >
             ×
           </button>
         </div>
-      ) : (
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => fileInput.current?.click()}
-        >
-          {busy ? 'Uploading…' : '+ Upload audio'}
-        </button>
       )}
+      <div className="storyboard-audio-actions">
+        {recording ? (
+          <>
+            <button
+              type="button"
+              className="storyboard-audio-record-btn recording"
+              onClick={stopRecord}
+            >
+              <span className="storyboard-audio-record-dot" />■ Stop · {mm}:{ss}
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => fileInput.current?.click()}
+            >
+              {busy ? 'Uploading…' : uploadLabel}
+            </button>
+            <button
+              type="button"
+              className="storyboard-audio-record-btn"
+              disabled={busy}
+              onClick={startRecord}
+              title="Record from your microphone"
+            >
+              <span className="storyboard-audio-record-dot" />Record
+            </button>
+          </>
+        )}
+      </div>
       <input
         ref={fileInput}
         type="file"
@@ -386,6 +545,9 @@ export function StoryboardItem({ sb, index, onRefresh, onDelete }) {
     transition,
     isDragging,
   } = useSortable({ id });
+
+  const [lightbox, setLightbox] = useState(null);
+  const openLightbox = (src, alt) => setLightbox({ src, alt });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -431,6 +593,7 @@ export function StoryboardItem({ sb, index, onRefresh, onDelete }) {
           sbId={id}
           generatable
           onRefresh={onRefresh}
+          onOpenLightbox={openLightbox}
         />
         <FrameSlot
           label="End frame"
@@ -439,6 +602,7 @@ export function StoryboardItem({ sb, index, onRefresh, onDelete }) {
           sbId={id}
           generatable
           onRefresh={onRefresh}
+          onOpenLightbox={openLightbox}
         />
         <FrameSlot
           label="Character sheet"
@@ -446,6 +610,7 @@ export function StoryboardItem({ sb, index, onRefresh, onDelete }) {
           imageId={sb.character_sheet_image_id}
           sbId={id}
           onRefresh={onRefresh}
+          onOpenLightbox={openLightbox}
         />
       </div>
 
@@ -453,6 +618,7 @@ export function StoryboardItem({ sb, index, onRefresh, onDelete }) {
         ids={sb.reference_image_ids}
         sbId={id}
         onRefresh={onRefresh}
+        onOpenLightbox={openLightbox}
       />
 
       <AudioSlot audioId={sb.audio_file_id} sbId={id} onRefresh={onRefresh} />
@@ -465,6 +631,12 @@ export function StoryboardItem({ sb, index, onRefresh, onDelete }) {
           placeholder="Describe what happens in this frame…"
         />
       </div>
+
+      <ImageLightbox
+        src={lightbox?.src || null}
+        alt={lightbox?.alt}
+        onClose={() => setLightbox(null)}
+      />
     </div>
   );
 }

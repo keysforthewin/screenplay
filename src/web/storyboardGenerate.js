@@ -34,11 +34,13 @@ import {
   MAX_TRANSITION_LEN,
 } from '../mongo/storyboards.js';
 import { stripMarkdown } from '../util/markdown.js';
-import { generateImage } from '../gemini/client.js';
+import { dispatchStoryboardImage } from './storyboardImageDispatch.js';
+import { describeReferenceImage } from '../llm/referenceImageDescription.js';
 import {
   createStoryboardViaGateway,
   deleteAllStoryboardsForBeatViaGateway,
   setStoryboardImageViaGateway,
+  setStoryboardStartFrameDescriptionViaGateway,
 } from './gateway.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 
@@ -137,6 +139,13 @@ const SYSTEM_PROMPT = [
   '- start_prompt = the moment the action begins.',
   '- end_prompt = the SAME shot moments later, showing motion progression. Same camera, same composition, slightly different pose / position. NOT a different angle, NOT a different beat.',
   '',
+  'Example of a good start_prompt / end_prompt pair:',
+  '  start_prompt: "Sarah stands in the doorway, hand on the knob, glancing back over her shoulder. Wide shot, hallway behind her, dim warm practical light from a sconce."',
+  '  end_prompt:   "Sarah\'s hand has turned the knob a quarter-turn; her gaze has shifted forward into the room. Same wide shot, same hallway, same sconce."',
+  'Example of a BAD end_prompt (do NOT do this):',
+  '  end_prompt: "Sarah enters the room and looks around at the furniture."  ← too much progression; that is a different shot.',
+  'Rule of thumb: the end_prompt should describe the same scene a beat or two of action later — a hand has moved, a head has turned, a step has been taken. If you have to mention a new location, a new camera angle, or a new framing, you have written a different shot, not an end frame.',
+  '',
   '# Coverage and rhythm',
   '- Plan for cinematic rhythm, not just narrative coverage. Pad the shot list with embellishment shots:',
   '  - Open with an establishing wide of the location.',
@@ -160,14 +169,27 @@ const SYSTEM_PROMPT = [
   '- The user message specifies how many frames to plan; honor it.',
 ].join('\n');
 
-let geminiOverride = null;
-export function _setGeminiForTests(fn) {
-  geminiOverride = fn;
+let dispatcherOverride = null;
+export function _setImageDispatcherForTests(fn) {
+  dispatcherOverride = fn;
 }
 
+// Single image-generation entry point. Tests override this; production routes
+// through the model dispatcher. Args carry the model + mode so the override
+// can assert which path the pipeline picked.
 async function callGenerateImage(args) {
-  if (geminiOverride) return geminiOverride(args);
-  return generateImage(args);
+  if (dispatcherOverride) return dispatcherOverride(args);
+  return dispatchStoryboardImage(args);
+}
+
+let describerOverride = null;
+export function _setDescriberForTests(fn) {
+  describerOverride = fn;
+}
+
+async function callDescribeReferenceImage(args) {
+  if (describerOverride) return describerOverride(args);
+  return describeReferenceImage(args);
 }
 
 // In-memory job tracker. Sufficient for single-process runtime; status survives
@@ -193,6 +215,7 @@ export async function startStoryboardGenerationJob({
   beatId,
   targetCount,
   characterSheetOverrides = null,
+  imageModel = 'gemini',
 }) {
   const beat = await getBeat(beatId);
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
@@ -216,7 +239,13 @@ export async function startStoryboardGenerationJob({
   // for the duration prevents concurrent generates and edit calls from racing
   // the delete-then-recreate window.
   withBeatLock(beat._id, () =>
-    runStoryboardGenerationJob({ job, beat, targetCount, characterSheetOverrides }),
+    runStoryboardGenerationJob({
+      job,
+      beat,
+      targetCount,
+      characterSheetOverrides,
+      imageModel,
+    }),
   ).catch((e) => {
     job.status = 'error';
     job.error = e.message;
@@ -226,7 +255,13 @@ export async function startStoryboardGenerationJob({
   return jobId;
 }
 
-async function runStoryboardGenerationJob({ job, beat, targetCount, characterSheetOverrides }) {
+async function runStoryboardGenerationJob({
+  job,
+  beat,
+  targetCount,
+  characterSheetOverrides,
+  imageModel,
+}) {
   // Plan first. If the planner returns nothing (model failure, rate limit,
   // empty body) we preserve the user's existing storyboards rather than
   // wiping them for no result.
@@ -262,6 +297,7 @@ async function runStoryboardGenerationJob({ job, beat, targetCount, characterShe
         order: index + 1,
         charImages,
         beatSetImage,
+        imageModel,
       });
       job.completed += 1;
     } catch (e) {
@@ -335,6 +371,10 @@ async function loadBeatSetImage(beat) {
   return loadImageInput(id);
 }
 
+// Load image bytes + content type + stored description from GridFS metadata.
+// The description (when present, populated by the vision seed worker) is
+// passed into buildVisualPrompt so the model gets a concordant text+image
+// reference instead of having to infer everything from pixels alone.
 async function loadImageInput(imageId) {
   try {
     const result = await readImageBuffer(imageId);
@@ -342,7 +382,9 @@ async function loadImageInput(imageId) {
     const { buffer, file } = result;
     const ct = file.contentType || file.metadata?.contentType;
     if (!ANTHROPIC_OK.has(ct)) return null;
-    return { buffer, contentType: ct, _id: file._id };
+    const description = String(file.metadata?.description || '').trim();
+    const name = String(file.metadata?.name || '').trim();
+    return { buffer, contentType: ct, _id: file._id, description, name };
   } catch (e) {
     logger.warn(`storyboard gen: read image ${imageId} failed: ${e.message}`);
     return null;
@@ -444,14 +486,19 @@ function cleanPlannedFrame(f) {
   ];
 }
 
-async function renderFrame({ beat, frame, order, charImages, beatSetImage }) {
+async function renderFrame({ beat, frame, order, charImages, beatSetImage, imageModel = 'gemini' }) {
   const sceneNames = (frame.characters_in_scene || [])
     .map((n) => stripMarkdown(n || '').toLowerCase())
     .filter(Boolean);
+  // Reserve a slot for the start-frame continuity ref on the end-frame call.
+  // The start frame doesn't need that slot (no continuity ref on start in the
+  // batch path), so we cap characters by the tighter of the two budgets so
+  // the same charRefs list works for both calls.
+  const charCap = Math.max(0, MAX_REFERENCE_IMAGES - (beatSetImage ? 1 : 0) - 1);
   const charRefs = sceneNames
     .map((n) => charImages.get(n))
     .filter(Boolean)
-    .slice(0, MAX_REFERENCE_IMAGES - (beatSetImage ? 1 : 0));
+    .slice(0, charCap);
   // seedFragments populates the y-doc text_prompt fragment before the
   // gateway's broadcast, so the SPA's CollabField renders the prompt
   // immediately rather than appearing empty until reload.
@@ -467,11 +514,17 @@ async function renderFrame({ beat, frame, order, charImages, beatSetImage }) {
     charactersInScene: frame.characters_in_scene ?? [],
   });
 
-  const inputImages = [
+  const baseInputImages = [
     ...charRefs.map((r) => ({ buffer: r.buffer, contentType: r.contentType })),
     ...(beatSetImage ? [{ buffer: beatSetImage.buffer, contentType: beatSetImage.contentType }] : []),
   ];
 
+  // 1. Render the start frame using characters + set image as references.
+  //    Sequenced before the end frame so the end frame can use the start
+  //    frame as a continuity reference + verbal anchor (the description we
+  //    auto-generate next). This is the central fix for end-frame drift —
+  //    in the previous implementation start and end ran in parallel from
+  //    the same inputs, so the model had no way to keep them consistent.
   const startContext = buildVisualPrompt({
     framePrompt: frame.start_prompt,
     description: frame.description,
@@ -480,6 +533,66 @@ async function renderFrame({ beat, frame, order, charImages, beatSetImage }) {
     role: 'start',
     shotType: frame.shot_type ?? null,
   });
+  let startBuffer = null;
+  let startContentType = null;
+  try {
+    const startResult = await callGenerateImage({
+      prompt: startContext,
+      model: imageModel,
+      mode: 'generate',
+      inputImages: baseInputImages,
+    });
+    startBuffer = startResult.buffer;
+    startContentType = startResult.contentType;
+    await persistFrameImage({
+      storyboardId: sb._id,
+      role: 'start_frame',
+      result: startResult,
+      beatId: beat._id,
+      orderHint: `start-${order}`,
+    });
+  } catch (e) {
+    logger.warn(`storyboard gen: start frame ${order} failed: ${e?.message || e}`);
+  }
+
+  // 2. Caption the rendered start frame so the end-frame call has a verbal
+  //    anchor for what to preserve. Persisted on the storyboard doc as
+  //    start_frame_description (read back by the regen path too). Failures
+  //    collapse to empty string — never block end-frame generation.
+  let startDescription = '';
+  if (startBuffer) {
+    try {
+      const captioned = await callDescribeReferenceImage({
+        buffer: startBuffer,
+        contentType: startContentType,
+        kind: 'auto',
+      });
+      startDescription = captioned.description || '';
+      if (startDescription) {
+        try {
+          await setStoryboardStartFrameDescriptionViaGateway({
+            storyboardId: sb._id,
+            description: startDescription,
+          });
+        } catch (e) {
+          logger.warn(`storyboard gen: persist start_frame_description ${order} failed: ${e.message}`);
+        }
+      }
+    } catch (e) {
+      logger.warn(`storyboard gen: caption start frame ${order} failed: ${e.message}`);
+    }
+  }
+
+  // 3. Render the end frame. Now uses the start frame as a continuity ref
+  //    (image) and the auto-generated description (text). The continuity
+  //    image lands LAST in inputImages so the prompt's "the final image
+  //    above is THIS shot's start frame" sentence is unambiguous.
+  const continuityRef = startBuffer
+    ? buildStartFrameContinuityRef({ buffer: startBuffer, contentType: startContentType, description: startDescription })
+    : null;
+  const endInputImages = continuityRef
+    ? [...baseInputImages, { buffer: continuityRef.buffer, contentType: continuityRef.contentType }]
+    : baseInputImages;
   const endContext = buildVisualPrompt({
     framePrompt: frame.end_prompt,
     description: frame.description,
@@ -487,42 +600,24 @@ async function renderFrame({ beat, frame, order, charImages, beatSetImage }) {
     beatSetImage,
     role: 'end',
     shotType: frame.shot_type ?? null,
+    continuityRef,
   });
-
-  const [startResult, endResult] = await Promise.allSettled([
-    callGenerateImage({
-      prompt: startContext,
-      aspectRatio: '16:9',
-      inputImages,
-    }),
-    callGenerateImage({
+  try {
+    const endResult = await callGenerateImage({
       prompt: endContext,
-      aspectRatio: '16:9',
-      inputImages,
-    }),
-  ]);
-
-  if (startResult.status === 'fulfilled') {
-    await persistFrameImage({
-      storyboardId: sb._id,
-      role: 'start_frame',
-      result: startResult.value,
-      beatId: beat._id,
-      orderHint: `start-${order}`,
+      model: imageModel,
+      mode: 'generate',
+      inputImages: endInputImages,
     });
-  } else {
-    logger.warn(`storyboard gen: start frame ${order} failed: ${startResult.reason?.message || startResult.reason}`);
-  }
-  if (endResult.status === 'fulfilled') {
     await persistFrameImage({
       storyboardId: sb._id,
       role: 'end_frame',
-      result: endResult.value,
+      result: endResult,
       beatId: beat._id,
       orderHint: `end-${order}`,
     });
-  } else {
-    logger.warn(`storyboard gen: end frame ${order} failed: ${endResult.reason?.message || endResult.reason}`);
+  } catch (e) {
+    logger.warn(`storyboard gen: end frame ${order} failed: ${e?.message || e}`);
   }
 
   // If the segment names a single primary character, attach that character's
@@ -538,6 +633,29 @@ async function renderFrame({ beat, frame, order, charImages, beatSetImage }) {
       logger.warn(`storyboard gen: attach char sheet failed: ${e.message}`);
     }
   }
+}
+
+// Shared label/directive for "use the start frame as a continuity reference
+// for the end frame" — used by both the batch render path (where we pass an
+// in-memory buffer just rendered) and the single-frame regen path (where we
+// re-load from GridFS). Demotes the set / character images to secondary
+// references; this addresses the previous problem of the model averaging
+// lighting between the start frame and the set image.
+function buildStartFrameContinuityRef({ buffer, contentType, description }) {
+  return {
+    buffer,
+    contentType,
+    description: description || '',
+    label:
+      "PRIMARY reference: the final image above is THIS shot's start frame. " +
+      'Match it frame-for-frame. The set image and character sheets above are ' +
+      'secondary references — defer to the start frame for any conflict in ' +
+      'lighting, palette, geometry, or composition.',
+    directive:
+      "Reproduce the start frame's exact lighting, palette, geometry, and " +
+      "composition. Only the character's pose / motion changes, by the small " +
+      'amount described above.',
+  };
 }
 
 function buildTextPrompt(frame) {
@@ -612,6 +730,34 @@ function buildVisualPrompt({
     lines.push('Reference materials:');
     lines.push(...refLines);
   }
+
+  // Verbal anchors for each reference image. Multimodal models stick
+  // closer to fine details (window arches, brick coursing, lamp color
+  // temperature, hairstyle specifics) when given concordant text + image
+  // cues than image alone. Skipped silently when no reference has a
+  // stored description (legacy uploads without auto-captions).
+  const detailLines = [];
+  for (const ref of charRefs) {
+    if (ref.description) {
+      detailLines.push(
+        `- ${ref.characterName || 'Character'}: ${stripMarkdown(ref.description)}`,
+      );
+    }
+  }
+  if (beatSetImage?.description) {
+    detailLines.push(`- Set: ${stripMarkdown(beatSetImage.description)}`);
+  }
+  if (role === 'end' && continuityRef?.description) {
+    detailLines.push(
+      `- Start frame to match: ${stripMarkdown(continuityRef.description)}`,
+    );
+  }
+  if (detailLines.length) {
+    lines.push('');
+    lines.push('Reference details (match these specifics, not just the visuals):');
+    lines.push(...detailLines);
+  }
+
   lines.push('');
   lines.push(
     role === 'start'
@@ -629,7 +775,7 @@ async function persistFrameImage({ storyboardId, role, result, beatId, orderHint
     buffer: result.buffer,
     contentType: result.contentType,
     prompt: null,
-    generatedBy: 'gemini-2.5-flash-image',
+    generatedBy: result.model || 'unknown',
     ownerType: 'beat',
     ownerId: beatId,
     filename: `storyboard-${storyboardId}-${orderHint}.png`,
@@ -668,18 +814,40 @@ export class FrameRoleError extends Error {
   }
 }
 
+export class EditModeError extends Error {
+  constructor(message) {
+    super(message);
+    this.code = 'BAD_EDIT_MODE';
+    this.status = 400;
+  }
+}
+
 // Regenerate a single frame (start_frame | end_frame) on an existing storyboard
-// row. Reuses the batch pipeline's reference loaders so the inputs match
-// exactly: the beat's scene image plus each in-scene character's sheet (or all
-// beat characters if the row doesn't pin a single character). The row's
-// current `text_prompt` is used verbatim — when the user edits it via the SPA
-// they get a regenerated frame that reflects the new prompt.
+// row. Two modes:
 //
-// Synchronous: the SPA awaits the response. Nano banana is fast enough that
-// this fits within typical HTTP timeouts; the character-sheet job/poll
-// pattern exists for gpt-image-2 (60+s) and isn't needed here.
-export async function regenerateStoryboardFrame({ storyboardId, role }) {
+// - 'full' (default): reuses the batch pipeline's reference loaders so the
+//   inputs match exactly — the beat's scene image plus each in-scene
+//   character's sheet (or all beat characters if the row doesn't pin a single
+//   character), plus a continuity ref (the row's own start frame for end-frame
+//   regen, or the previous row's end frame for start-frame regen on row #2+).
+//   The row's current `text_prompt` drives the visual prompt.
+// - 'edit': passes only the existing frame image plus the user's `editPrompt`
+//   to the chosen image model. Skips reference loading entirely. Use for small
+//   inline tweaks ("remove the lamp on the left") on an almost-good image.
+//
+// Synchronous: the SPA awaits the response. Nano banana is fast enough; the
+// gpt-image-2 path can take 60+s but still fits within HTTP timeouts.
+export async function regenerateStoryboardFrame({
+  storyboardId,
+  role,
+  imageModel = 'gemini',
+  mode = 'full',
+  editPrompt = null,
+}) {
   if (!FRAME_ROLES.has(role)) throw new FrameRoleError(role);
+  if (!['full', 'edit'].includes(mode)) {
+    throw new EditModeError(`Unknown regen mode "${mode}".`);
+  }
   const sb = await getStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const beat = await getBeat(sb.beat_id);
@@ -688,45 +856,76 @@ export async function regenerateStoryboardFrame({ storyboardId, role }) {
     throw new BeatBusyError(beat._id.toString());
   }
 
-  const beatSetImage = await loadBeatSetImage(beat);
-  const charRefs = await loadFrameCharacterRefs({ beat, sb, beatSetImage });
-  const continuityRef = await loadContinuityReference({ sb, role });
+  let prompt;
+  let inputImages;
+  let dispatchMode;
+  if (mode === 'edit') {
+    if (typeof editPrompt !== 'string' || !editPrompt.trim()) {
+      throw new EditModeError('Edit mode requires a non-empty editPrompt.');
+    }
+    const existingId =
+      role === 'start_frame' ? sb.start_frame_id : sb.end_frame_id;
+    if (!existingId) {
+      throw new EditModeError(
+        `No existing ${role.replace('_', ' ')} to edit. Use full regenerate instead.`,
+      );
+    }
+    const existing = await loadImageInput(existingId);
+    if (!existing) {
+      throw new EditModeError(
+        `Could not read existing ${role.replace('_', ' ')} bytes for editing.`,
+      );
+    }
+    prompt = editPrompt.trim();
+    inputImages = [{ buffer: existing.buffer, contentType: existing.contentType }];
+    dispatchMode = 'edit';
+  } else {
+    const beatSetImage = await loadBeatSetImage(beat);
+    const charRefs = await loadFrameCharacterRefs({ beat, sb, beatSetImage });
+    const continuityRef = await loadContinuityReference({ sb, role });
 
-  // Reference image budget: characters first (cap to leave room for set +
-  // continuity), set image, then continuity ref last so it always lands in
-  // the slot the prompt's "final image above" sentence refers to.
-  const continuitySlots = continuityRef ? 1 : 0;
-  const setSlots = beatSetImage ? 1 : 0;
-  const charsToInclude = charRefs.slice(
-    0,
-    Math.max(0, MAX_REFERENCE_IMAGES - setSlots - continuitySlots),
-  );
+    // Reference image budget: characters first (cap to leave room for set +
+    // continuity), set image, then continuity ref last so it always lands in
+    // the slot the prompt's "final image above" sentence refers to.
+    const continuitySlots = continuityRef ? 1 : 0;
+    const setSlots = beatSetImage ? 1 : 0;
+    const charsToInclude = charRefs.slice(
+      0,
+      Math.max(0, MAX_REFERENCE_IMAGES - setSlots - continuitySlots),
+    );
 
-  const inputImages = [
-    ...charsToInclude.map((r) => ({ buffer: r.buffer, contentType: r.contentType })),
-    ...(beatSetImage
-      ? [{ buffer: beatSetImage.buffer, contentType: beatSetImage.contentType }]
-      : []),
-    ...(continuityRef
-      ? [{ buffer: continuityRef.buffer, contentType: continuityRef.contentType }]
-      : []),
-  ];
+    inputImages = [
+      ...charsToInclude.map((r) => ({ buffer: r.buffer, contentType: r.contentType })),
+      ...(beatSetImage
+        ? [{ buffer: beatSetImage.buffer, contentType: beatSetImage.contentType }]
+        : []),
+      ...(continuityRef
+        ? [{ buffer: continuityRef.buffer, contentType: continuityRef.contentType }]
+        : []),
+    ];
 
-  const prompt = buildVisualPrompt({
-    framePrompt: sb.text_prompt || '',
-    description: '',
-    charRefs: charsToInclude,
-    beatSetImage,
-    role: role === 'start_frame' ? 'start' : 'end',
-    shotType: sb.shot_type || null,
-    continuityRef: continuityRef
-      ? { label: continuityRef.label, directive: continuityRef.directive }
-      : null,
-  });
+    prompt = buildVisualPrompt({
+      framePrompt: sb.text_prompt || '',
+      description: '',
+      charRefs: charsToInclude,
+      beatSetImage,
+      role: role === 'start_frame' ? 'start' : 'end',
+      shotType: sb.shot_type || null,
+      continuityRef: continuityRef
+        ? {
+            label: continuityRef.label,
+            directive: continuityRef.directive,
+            description: continuityRef.description || '',
+          }
+        : null,
+    });
+    dispatchMode = 'generate';
+  }
 
   const result = await callGenerateImage({
     prompt,
-    aspectRatio: '16:9',
+    model: imageModel,
+    mode: dispatchMode,
     inputImages,
   });
 
@@ -738,6 +937,29 @@ export async function regenerateStoryboardFrame({ storyboardId, role }) {
     orderHint: `${role === 'start_frame' ? 'start' : 'end'}-${sb.order}`,
   });
 
+  // After (re)generating the start frame, recaption it so the storyboard's
+  // start_frame_description reflects the new image. Otherwise the next
+  // end-frame regen would inject a stale description that doesn't match
+  // what's actually rendered. Applies to edit mode too — even a small tweak
+  // can shift the lighting/composition the description anchors to. Failures
+  // collapse silently — the missing description just means the end frame
+  // loses its verbal anchor.
+  if (role === 'start_frame') {
+    try {
+      const captioned = await callDescribeReferenceImage({
+        buffer: result.buffer,
+        contentType: result.contentType,
+        kind: 'auto',
+      });
+      await setStoryboardStartFrameDescriptionViaGateway({
+        storyboardId: sb._id,
+        description: captioned.description || '',
+      });
+    } catch (e) {
+      logger.warn(`storyboard regen: caption start frame ${sb._id} failed: ${e.message}`);
+    }
+  }
+
   return { image_id: file._id.toString() };
 }
 
@@ -745,21 +967,26 @@ export async function regenerateStoryboardFrame({ storyboardId, role }) {
 // - end_frame regen: the row's own start_frame_id (so the end matches the start).
 // - start_frame regen: the previous row's end_frame_id (so the cut between
 //   shots feels continuous).
-// Returns { buffer, contentType, label, directive } or null. The caller
-// appends this last in inputImages so the prompt's "final image above"
-// sentence is unambiguous.
+// Returns { buffer, contentType, description, label, directive } or null.
+// The caller appends this last in inputImages so the prompt's "final image
+// above" sentence is unambiguous. Description (when present) is injected
+// into the prompt by buildVisualPrompt as a verbal anchor for what to
+// preserve.
 async function loadContinuityReference({ sb, role }) {
   if (role === 'end_frame') {
     if (!sb.start_frame_id) return null;
     const ref = await loadImageInput(sb.start_frame_id);
     if (!ref) return null;
-    return {
-      ...ref,
-      label:
-        "The final image above is THIS shot's start frame. Maintain visual continuity with it: same camera, same composition, same lighting; only motion progresses.",
-      directive:
-        'Match the start frame above frame-for-frame: identical camera angle, framing, and character positioning, with only natural motion progression.',
-    };
+    // Prefer the storyboard's denormalized start_frame_description (written
+    // at generate time by the batch path). Fall back to the GridFS metadata
+    // description on the start frame file. Either is fine — they're written
+    // from the same describer call.
+    const description = sb.start_frame_description || ref.description || '';
+    return buildStartFrameContinuityRef({
+      buffer: ref.buffer,
+      contentType: ref.contentType,
+      description,
+    });
   }
   if (role === 'start_frame') {
     if (sb.order <= 1) return null;

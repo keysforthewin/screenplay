@@ -23,8 +23,8 @@ vi.mock('../src/log.js', () => ({
 // production "missing image" branch).
 const fakeImageStore = new Map();
 
-function fakeRef(label, contentType = 'image/png') {
-  return { buffer: Buffer.from(`fake-${label}`), contentType };
+function fakeRef(label, contentType = 'image/png', description = '') {
+  return { buffer: Buffer.from(`fake-${label}`), contentType, description };
 }
 
 vi.mock('../src/mongo/images.js', () => ({
@@ -34,7 +34,11 @@ vi.mock('../src/mongo/images.js', () => ({
     if (!entry) return null;
     return {
       buffer: entry.buffer,
-      file: { _id: id, contentType: entry.contentType, metadata: {} },
+      file: {
+        _id: id,
+        contentType: entry.contentType,
+        metadata: { description: entry.description || '', name: entry.name || '' },
+      },
     };
   }),
   uploadGeneratedImage: vi.fn(async ({ filename, contentType }) => {
@@ -58,6 +62,10 @@ beforeEach(() => {
   fakeDb.reset();
   fakeImageStore.clear();
   BeatLocks._clearBeatLocksForTests();
+  // Default the describer override to a no-op so tests that don't care
+  // about captioning don't make real Anthropic calls. Tests that DO care
+  // override this with a fake that returns a known description.
+  Generate._setDescriberForTests(async () => ({ name: '', description: '' }));
 });
 
 async function seedScenario({ withScene = true, characters = ['Alice', 'Bob'] } = {}) {
@@ -114,7 +122,7 @@ describe('regenerateStoryboardFrame', () => {
   it('passes the scene image + every beat character sheet to gemini and persists the start frame', async () => {
     const { beat, sb, characterDocs, sceneId } = await seedScenario();
     const calls = [];
-    Generate._setGeminiForTests(async (args) => {
+    Generate._setImageDispatcherForTests(async (args) => {
       calls.push(args);
       return { buffer: Buffer.from('generated-png'), contentType: 'image/png' };
     });
@@ -126,7 +134,9 @@ describe('regenerateStoryboardFrame', () => {
 
     expect(calls).toHaveLength(1);
     const call = calls[0];
-    expect(call.aspectRatio).toBe('16:9');
+    // Default model is gemini; mode is generate (not edit).
+    expect(call.model).toBe('gemini');
+    expect(call.mode).toBe('generate');
     // start vs end disambiguation is in the suffix added by buildVisualPrompt.
     expect(call.prompt).toContain('Alice opens the diner door.');
     expect(call.prompt).toMatch(/Render the beginning moment/);
@@ -151,7 +161,7 @@ describe('regenerateStoryboardFrame', () => {
   it('uses end-moment language when role is end_frame and only updates end_frame_id', async () => {
     const { sb } = await seedScenario({ characters: ['Alice'] });
     const calls = [];
-    Generate._setGeminiForTests(async (args) => {
+    Generate._setImageDispatcherForTests(async (args) => {
       calls.push(args);
       return { buffer: Buffer.from('end-png'), contentType: 'image/png' };
     });
@@ -176,7 +186,7 @@ describe('regenerateStoryboardFrame', () => {
     });
 
     const calls = [];
-    Generate._setGeminiForTests(async (args) => {
+    Generate._setImageDispatcherForTests(async (args) => {
       calls.push(args);
       return { buffer: Buffer.from('out'), contentType: 'image/png' };
     });
@@ -197,7 +207,7 @@ describe('regenerateStoryboardFrame', () => {
   it('still succeeds when the beat has no scene image', async () => {
     const { sb } = await seedScenario({ withScene: false, characters: ['Alice'] });
     const calls = [];
-    Generate._setGeminiForTests(async (args) => {
+    Generate._setImageDispatcherForTests(async (args) => {
       calls.push(args);
       return { buffer: Buffer.from('no-scene'), contentType: 'image/png' };
     });
@@ -215,7 +225,7 @@ describe('regenerateStoryboardFrame', () => {
 
   it('throws BeatBusyError if the beat is currently locked', async () => {
     const { beat, sb } = await seedScenario();
-    Generate._setGeminiForTests(async () => ({
+    Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('x'),
       contentType: 'image/png',
     }));
@@ -241,7 +251,7 @@ describe('regenerateStoryboardFrame', () => {
 
   it('throws FrameRoleError for an unsupported role', async () => {
     const { sb } = await seedScenario({ characters: [] });
-    Generate._setGeminiForTests(async () => ({
+    Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('x'),
       contentType: 'image/png',
     }));
@@ -254,7 +264,7 @@ describe('regenerateStoryboardFrame', () => {
   });
 
   it('throws when the storyboard does not exist', async () => {
-    Generate._setGeminiForTests(async () => ({
+    Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('x'),
       contentType: 'image/png',
     }));
@@ -274,7 +284,7 @@ describe('regenerateStoryboardFrame', () => {
     await Storyboards.updateStoryboard(sb._id, { start_frame_id: startId });
 
     const calls = [];
-    Generate._setGeminiForTests(async (args) => {
+    Generate._setImageDispatcherForTests(async (args) => {
       calls.push(args);
       return { buffer: Buffer.from('end-out'), contentType: 'image/png' };
     });
@@ -305,7 +315,7 @@ describe('regenerateStoryboardFrame', () => {
     });
 
     const calls = [];
-    Generate._setGeminiForTests(async (args) => {
+    Generate._setImageDispatcherForTests(async (args) => {
       calls.push(args);
       return { buffer: Buffer.from('start-out'), contentType: 'image/png' };
     });
@@ -326,7 +336,7 @@ describe('regenerateStoryboardFrame', () => {
     expect(sb.order).toBe(1);
 
     const calls = [];
-    Generate._setGeminiForTests(async (args) => {
+    Generate._setImageDispatcherForTests(async (args) => {
       calls.push(args);
       return { buffer: Buffer.from('out'), contentType: 'image/png' };
     });
@@ -347,7 +357,7 @@ describe('regenerateStoryboardFrame', () => {
     await Storyboards.updateStoryboard(sb._id, { shot_type: 'close_up' });
 
     const calls = [];
-    Generate._setGeminiForTests(async (args) => {
+    Generate._setImageDispatcherForTests(async (args) => {
       calls.push(args);
       return { buffer: Buffer.from('out'), contentType: 'image/png' };
     });
@@ -358,5 +368,284 @@ describe('regenerateStoryboardFrame', () => {
     });
 
     expect(calls[0].prompt).toMatch(/Shot type: CLOSE UP\./);
+  });
+
+  it("injects the storyboard's start_frame_description as a verbal anchor when regenerating end_frame", async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    // Pin a start_frame_id on the row + a denormalized description that
+    // simulates what the batch render would have written.
+    const startId = new ObjectId();
+    fakeImageStore.set(startId.toString(), fakeRef('row-start', 'image/png'));
+    await Storyboards.updateStoryboard(sb._id, {
+      start_frame_id: startId,
+      start_frame_description:
+        'Diner interior, pink booths, single hanging lamp, warm tungsten light from camera-left.',
+    });
+
+    const calls = [];
+    Generate._setImageDispatcherForTests(async (args) => {
+      calls.push(args);
+      return { buffer: Buffer.from('end-out'), contentType: 'image/png' };
+    });
+
+    await Generate.regenerateStoryboardFrame({
+      storyboardId: sb._id.toString(),
+      role: 'end_frame',
+    });
+
+    // The verbal anchor is injected under the "Reference details" header.
+    expect(calls[0].prompt).toMatch(/Reference details/);
+    expect(calls[0].prompt).toMatch(/Start frame to match: Diner interior, pink booths/);
+    // And the existing PRIMARY/secondary directive is in place.
+    expect(calls[0].prompt).toMatch(/PRIMARY reference/);
+  });
+
+  it('falls back to GridFS metadata description when start_frame_description is empty', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    const startId = new ObjectId();
+    // Stored on the GridFS file, not on the storyboard doc.
+    fakeImageStore.set(startId.toString(), {
+      ...fakeRef('row-start', 'image/png'),
+      description: 'Stored on GridFS, not the storyboard.',
+    });
+    await Storyboards.updateStoryboard(sb._id, { start_frame_id: startId });
+    // start_frame_description left empty.
+
+    const calls = [];
+    Generate._setImageDispatcherForTests(async (args) => {
+      calls.push(args);
+      return { buffer: Buffer.from('end-out'), contentType: 'image/png' };
+    });
+
+    await Generate.regenerateStoryboardFrame({
+      storyboardId: sb._id.toString(),
+      role: 'end_frame',
+    });
+
+    expect(calls[0].prompt).toMatch(
+      /Start frame to match: Stored on GridFS, not the storyboard\./,
+    );
+  });
+
+  it('injects character and set descriptions from GridFS metadata as verbal anchors', async () => {
+    // Seed scenario but with descriptions on the character sheet and scene image.
+    const c = await Characters.createCharacter({ name: 'Alice' });
+    const sheetId = new ObjectId();
+    fakeImageStore.set(sheetId.toString(), {
+      ...fakeRef('sheet-Alice', 'image/png'),
+      description: 'Alice has shoulder-length ash blonde hair and a denim jacket.',
+    });
+    await fakeDb
+      .collection('characters')
+      .updateOne(
+        { _id: c._id },
+        { $set: { character_sheet_image_ids: [sheetId] } },
+      );
+
+    const beat = await Plots.createBeat({
+      name: 'Diner reunion',
+      desc: '',
+      body: '',
+      characters: ['Alice'],
+    });
+    const sceneId = new ObjectId();
+    fakeImageStore.set(sceneId.toString(), {
+      ...fakeRef('scene', 'image/png'),
+      description:
+        'Mid-century roadside diner with checkered linoleum floor and a single neon OPEN sign in the window.',
+    });
+    await Plots.pushBeatImage(
+      beat._id,
+      {
+        _id: sceneId,
+        filename: 'scene.png',
+        content_type: 'image/png',
+        size: 1,
+        uploaded_at: new Date(),
+      },
+      true,
+    );
+    const sb = await Storyboards.createStoryboard({
+      beatId: beat._id,
+      textPrompt: 'Alice opens the diner door.',
+    });
+
+    const calls = [];
+    Generate._setImageDispatcherForTests(async (args) => {
+      calls.push(args);
+      return { buffer: Buffer.from('out'), contentType: 'image/png' };
+    });
+
+    await Generate.regenerateStoryboardFrame({
+      storyboardId: sb._id.toString(),
+      role: 'start_frame',
+    });
+
+    expect(calls[0].prompt).toMatch(/Reference details/);
+    expect(calls[0].prompt).toMatch(/Alice: Alice has shoulder-length ash blonde hair/);
+    expect(calls[0].prompt).toMatch(/Set: Mid-century roadside diner/);
+  });
+
+  it('skips the Reference details block entirely when no reference has a description', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+
+    const calls = [];
+    Generate._setImageDispatcherForTests(async (args) => {
+      calls.push(args);
+      return { buffer: Buffer.from('out'), contentType: 'image/png' };
+    });
+
+    await Generate.regenerateStoryboardFrame({
+      storyboardId: sb._id.toString(),
+      role: 'start_frame',
+    });
+
+    // No descriptions on any reference → no "Reference details" header.
+    expect(calls[0].prompt).not.toMatch(/Reference details/);
+    // Original "Reference materials" listing still works (existing test
+    // covers that explicitly; this is the negative form).
+    expect(calls[0].prompt).toMatch(/Reference materials/);
+  });
+
+  it('captions the regenerated start frame and persists start_frame_description', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    // Override the describer to return a known fake caption.
+    Generate._setDescriberForTests(async () => ({
+      name: 'Diner doorway',
+      description:
+        'Wide shot of a diner doorway. Warm tungsten key from camera-left, pink booth visible behind.',
+    }));
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('start-out'),
+      contentType: 'image/png',
+    }));
+
+    await Generate.regenerateStoryboardFrame({
+      storyboardId: sb._id.toString(),
+      role: 'start_frame',
+    });
+
+    const stored = await Storyboards.getStoryboard(sb._id);
+    expect(stored.start_frame_description).toMatch(/Wide shot of a diner doorway/);
+  });
+
+  it('passes imageModel="openai" through to the dispatcher on full regen', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    const calls = [];
+    Generate._setImageDispatcherForTests(async (args) => {
+      calls.push(args);
+      return { buffer: Buffer.from('out'), contentType: 'image/png' };
+    });
+
+    await Generate.regenerateStoryboardFrame({
+      storyboardId: sb._id.toString(),
+      role: 'start_frame',
+      imageModel: 'openai',
+    });
+
+    expect(calls[0].model).toBe('openai');
+    expect(calls[0].mode).toBe('generate');
+    // Full regen still loads sheet + scene refs.
+    expect(calls[0].inputImages.map((i) => i.buffer.toString())).toEqual([
+      'fake-sheet-Alice',
+      'fake-scene',
+    ]);
+  });
+
+  it('edit mode skips reference loading and passes only the existing frame + edit prompt', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice', 'Bob'] });
+    // Pin a start_frame on the row so edit mode has something to read.
+    const startId = new ObjectId();
+    fakeImageStore.set(startId.toString(), fakeRef('existing-start'));
+    await Storyboards.updateStoryboard(sb._id, { start_frame_id: startId });
+
+    const calls = [];
+    Generate._setImageDispatcherForTests(async (args) => {
+      calls.push(args);
+      return { buffer: Buffer.from('edited'), contentType: 'image/png' };
+    });
+
+    await Generate.regenerateStoryboardFrame({
+      storyboardId: sb._id.toString(),
+      role: 'start_frame',
+      mode: 'edit',
+      editPrompt: 'remove the lamp on the left',
+      imageModel: 'gemini',
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].mode).toBe('edit');
+    expect(calls[0].model).toBe('gemini');
+    // Only the existing start frame's bytes; no character sheets, scene image,
+    // or continuity refs.
+    expect(calls[0].inputImages.map((i) => i.buffer.toString())).toEqual([
+      'fake-existing-start',
+    ]);
+    // The user's prompt is sent verbatim — none of the buildVisualPrompt
+    // scaffolding ("Render the beginning moment", "Reference materials", etc.).
+    expect(calls[0].prompt).toBe('remove the lamp on the left');
+    expect(calls[0].prompt).not.toMatch(/Render the beginning moment/);
+    expect(calls[0].prompt).not.toMatch(/Reference materials/);
+  });
+
+  it('edit mode without editPrompt throws EditModeError', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('x'),
+      contentType: 'image/png',
+    }));
+    await expect(
+      Generate.regenerateStoryboardFrame({
+        storyboardId: sb._id.toString(),
+        role: 'start_frame',
+        mode: 'edit',
+        editPrompt: '   ',
+      }),
+    ).rejects.toBeInstanceOf(Generate.EditModeError);
+  });
+
+  it('edit mode with no existing image throws EditModeError', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    // start_frame_id is null on a freshly-created row.
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('x'),
+      contentType: 'image/png',
+    }));
+    await expect(
+      Generate.regenerateStoryboardFrame({
+        storyboardId: sb._id.toString(),
+        role: 'start_frame',
+        mode: 'edit',
+        editPrompt: 'add fog',
+      }),
+    ).rejects.toBeInstanceOf(Generate.EditModeError);
+  });
+
+  it('edit mode on start_frame still re-captions the new image', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    const startId = new ObjectId();
+    fakeImageStore.set(startId.toString(), fakeRef('existing-start'));
+    await Storyboards.updateStoryboard(sb._id, { start_frame_id: startId });
+
+    const describerCalls = [];
+    Generate._setDescriberForTests(async (args) => {
+      describerCalls.push(args);
+      return { name: '', description: 'updated caption after edit' };
+    });
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('edited'),
+      contentType: 'image/png',
+    }));
+
+    await Generate.regenerateStoryboardFrame({
+      storyboardId: sb._id.toString(),
+      role: 'start_frame',
+      mode: 'edit',
+      editPrompt: 'add fog',
+    });
+
+    expect(describerCalls).toHaveLength(1);
+    const stored = await Storyboards.getStoryboard(sb._id);
+    expect(stored.start_frame_description).toBe('updated caption after edit');
   });
 });

@@ -1116,7 +1116,7 @@ export function buildApiRouter() {
       if (!['start_frame', 'end_frame', 'character_sheet'].includes(role)) {
         return res.status(400).json({ error: 'role must be start_frame|end_frame|character_sheet' });
       }
-      validateImageBuffer(req.file.buffer);
+      const sniffed = validateImageBuffer(req.file.buffer);
       const sb = await getStoryboard(sbId);
       const file = await uploadGeneratedImage({
         buffer: req.file.buffer,
@@ -1134,6 +1134,14 @@ export function buildApiRouter() {
         imageId: file._id,
       });
       res.json({ storyboard: result, image: { _id: file._id, content_type: file.content_type } });
+      // Caption the upload so the end-frame call (which uses descriptions as
+      // verbal anchors) has structured detail to lock onto. The vision worker
+      // dispatches to the detailed describer for owner_type='beat'.
+      kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
+        ownerType: 'beat',
+        ownerId: sb.beat_id,
+        kind: role === 'character_sheet' ? 'character' : 'auto',
+      });
     } catch (e) {
       next(e);
     }
@@ -1171,16 +1179,50 @@ export function buildApiRouter() {
       if (!['start_frame', 'end_frame'].includes(role)) {
         return res.status(400).json({ error: 'role must be start_frame|end_frame' });
       }
-      const { regenerateStoryboardFrame, BeatBusyError } = await import(
+      const imageModel = req.body?.image_model ?? 'gemini';
+      if (!['gemini', 'openai'].includes(imageModel)) {
+        return res
+          .status(400)
+          .json({ error: 'image_model must be gemini|openai' });
+      }
+      const mode = req.body?.mode ?? 'full';
+      if (!['full', 'edit'].includes(mode)) {
+        return res.status(400).json({ error: 'mode must be full|edit' });
+      }
+      let editPrompt = null;
+      if (mode === 'edit') {
+        const raw = req.body?.edit_prompt;
+        if (typeof raw !== 'string' || !raw.trim()) {
+          return res
+            .status(400)
+            .json({ error: 'edit_prompt (non-empty string) required when mode=edit' });
+        }
+        if (raw.length > 1024) {
+          return res
+            .status(400)
+            .json({ error: 'edit_prompt must be ≤ 1024 chars' });
+        }
+        editPrompt = raw;
+      }
+      const { regenerateStoryboardFrame, BeatBusyError, EditModeError } = await import(
         './storyboardGenerate.js'
       );
       try {
-        const result = await regenerateStoryboardFrame({ storyboardId: sbId, role });
+        const result = await regenerateStoryboardFrame({
+          storyboardId: sbId,
+          role,
+          imageModel,
+          mode,
+          editPrompt,
+        });
         const sb = await getStoryboard(sbId);
         res.json({ storyboard: sb, image: { _id: result.image_id } });
       } catch (e) {
         if (e instanceof BeatBusyError) {
           return res.status(409).json({ error: e.message });
+        }
+        if (e instanceof EditModeError) {
+          return res.status(400).json({ error: e.message });
         }
         throw e;
       }
@@ -1194,7 +1236,7 @@ export function buildApiRouter() {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      validateImageBuffer(req.file.buffer);
+      const sniffed = validateImageBuffer(req.file.buffer);
       const sb = await getStoryboard(sbId);
       const file = await uploadGeneratedImage({
         buffer: req.file.buffer,
@@ -1211,6 +1253,13 @@ export function buildApiRouter() {
         imageId: file._id,
       });
       res.json({ storyboard: result, image: { _id: file._id, content_type: file.content_type } });
+      // Caption the reference so storyboard generation can read it from
+      // GridFS metadata and inject it into prompts as a verbal anchor.
+      kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
+        ownerType: 'beat',
+        ownerId: sb.beat_id,
+        kind: 'auto',
+      });
     } catch (e) {
       next(e);
     }
@@ -1313,6 +1362,12 @@ export function buildApiRouter() {
           characterSheetOverrides[String(charId)] = String(sheetId);
         }
       }
+      const imageModel = req.body?.image_model ?? 'gemini';
+      if (!['gemini', 'openai'].includes(imageModel)) {
+        return res
+          .status(400)
+          .json({ error: 'image_model must be gemini|openai' });
+      }
       const { startStoryboardGenerationJob, BeatBusyError } = await import(
         './storyboardGenerate.js'
       );
@@ -1321,6 +1376,7 @@ export function buildApiRouter() {
           beatId: beat._id.toString(),
           targetCount: target,
           characterSheetOverrides,
+          imageModel,
         });
         res.status(202).json({ job_id: jobId, beat_id: beat._id });
       } catch (e) {

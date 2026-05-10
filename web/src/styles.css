@@ -855,6 +855,7 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   width: 100%;
   height: auto;
   border-radius: 4px;
+  cursor: zoom-in;
 }
 .storyboard-frame-empty {
   flex: 1;
@@ -926,6 +927,7 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   width: 100%;
   height: 100%;
   object-fit: cover;
+  cursor: zoom-in;
 }
 .storyboard-ref-add {
   width: 64px;
@@ -955,6 +957,82 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   flex: 1;
   height: 32px;
 }
+.storyboard-audio-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.storyboard-audio-record-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.storyboard-audio-record-btn.recording {
+  background: #b00020;
+  color: #fff;
+  border-color: #b00020;
+}
+.storyboard-audio-record-btn.recording:hover { border-color: #ff8896; }
+.storyboard-audio-record-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #b00020;
+  animation: storyboard-record-pulse 1s infinite;
+}
+.storyboard-audio-record-btn.recording .storyboard-audio-record-dot {
+  background: #fff;
+}
+@keyframes storyboard-record-pulse {
+  50% { opacity: 0.3; }
+}
+
+/* Image lightbox — full-screen viewer for frames and reference images */
+.image-lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  cursor: zoom-out;
+}
+.image-lightbox-img {
+  max-width: 100vw;
+  max-height: 100vh;
+  object-fit: contain;
+  cursor: zoom-in;
+  user-select: none;
+}
+.image-lightbox-img.zoomed {
+  max-width: none;
+  max-height: none;
+  cursor: zoom-out;
+}
+.image-lightbox-close {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 201;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.image-lightbox-close:hover { background: rgba(0, 0, 0, 0.85); }
+
 .storyboard-prompt {
   border-top: 1px dashed var(--border);
   padding-top: 8px;

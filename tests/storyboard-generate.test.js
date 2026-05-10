@@ -104,7 +104,7 @@ describe('storyboard auto-generation', () => {
   it('plans frames and renders start + end images for each one', async () => {
     _setAnthropicClientForTests(fakeAnthropicClient(TWO_FRAME_PLAN));
     const generated = [];
-    Generate._setGeminiForTests(async ({ prompt }) => {
+    Generate._setImageDispatcherForTests(async ({ prompt }) => {
       generated.push(prompt);
       return {
         buffer: Buffer.from('fake-png-bytes'),
@@ -162,7 +162,7 @@ describe('storyboard auto-generation', () => {
   it('marks the job as partial if some frames fail', async () => {
     _setAnthropicClientForTests(fakeAnthropicClient(TWO_FRAME_PLAN));
     let call = 0;
-    Generate._setGeminiForTests(async () => {
+    Generate._setImageDispatcherForTests(async () => {
       call += 1;
       // Every other call fails.
       if (call % 2 === 0) throw new Error('gemini boom');
@@ -194,7 +194,7 @@ describe('storyboard auto-generation', () => {
 
   it('returns immediately with status=done when the model returns no frames', async () => {
     _setAnthropicClientForTests(fakeAnthropicClient({ frames: [] }));
-    Generate._setGeminiForTests(async () => {
+    Generate._setImageDispatcherForTests(async () => {
       throw new Error('should not be called');
     });
 
@@ -216,7 +216,7 @@ describe('storyboard auto-generation', () => {
 
   it('replaces existing storyboards when the planner produces a non-empty plan', async () => {
     _setAnthropicClientForTests(fakeAnthropicClient(TWO_FRAME_PLAN));
-    Generate._setGeminiForTests(async () => ({
+    Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('fake'),
       contentType: 'image/png',
     }));
@@ -266,7 +266,7 @@ describe('storyboard auto-generation', () => {
         ],
       }),
     );
-    Generate._setGeminiForTests(async () => ({
+    Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('fake'),
       contentType: 'image/png',
     }));
@@ -304,7 +304,7 @@ describe('storyboard auto-generation', () => {
         ],
       }),
     );
-    Generate._setGeminiForTests(async () => ({
+    Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('fake'),
       contentType: 'image/png',
     }));
@@ -348,7 +348,7 @@ describe('storyboard auto-generation', () => {
         ],
       }),
     );
-    Generate._setGeminiForTests(async () => ({
+    Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('fake'),
       contentType: 'image/png',
     }));
@@ -375,7 +375,7 @@ describe('storyboard auto-generation', () => {
 
   it('preserves existing storyboards when the planner returns no frames', async () => {
     _setAnthropicClientForTests(fakeAnthropicClient({ frames: [] }));
-    Generate._setGeminiForTests(async () => {
+    Generate._setImageDispatcherForTests(async () => {
       throw new Error('should not be called');
     });
 
@@ -401,6 +401,34 @@ describe('storyboard auto-generation', () => {
     expect(after).toHaveLength(2);
     expect(after.map((s) => s._id.toString()).sort()).toEqual(beforeIds);
     expect(after.map((s) => s.text_prompt)).toEqual(['keep 1', 'keep 2']);
+  });
+
+  it('threads imageModel="openai" through every dispatcher call', async () => {
+    _setAnthropicClientForTests(fakeAnthropicClient(TWO_FRAME_PLAN));
+    const calls = [];
+    Generate._setImageDispatcherForTests(async (args) => {
+      calls.push(args);
+      return { buffer: Buffer.from('out'), contentType: 'image/png' };
+    });
+
+    const beat = await Plots.createBeat({
+      name: 'M',
+      desc: '',
+      body: '',
+      characters: [],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+      imageModel: 'openai',
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+    // 2 frames × (start + end) = 4 dispatcher calls, every one with model=openai.
+    expect(calls).toHaveLength(4);
+    for (const c of calls) {
+      expect(c.model).toBe('openai');
+      expect(c.mode).toBe('generate');
+    }
   });
 });
 

@@ -26,12 +26,26 @@ vi.mock('../src/llm/libraryImageMeta.js', () => ({
   analyzeLibraryImage: analyzeMock,
 }));
 
+// Owner-typed (beat / character / storyboard reference) uploads use the
+// detailed describer instead of the terse library caption. Mock it here so
+// the test asserts on the same fake response shape regardless of which
+// describer the worker dispatches to.
+const describeMock = vi.fn(async () => ({
+  name: 'Diner at dusk',
+  description: 'A neon-lit diner glowing under a darkening sky.',
+}));
+vi.mock('../src/llm/referenceImageDescription.js', () => ({
+  describeReferenceImage: describeMock,
+  REFERENCE_KINDS: ['auto', 'character', 'location', 'prop'],
+}));
+
 const Images = await import('../src/mongo/images.js');
 const { kickoffLibraryVisionSeed, kickoffImageVisionSeed } = await import('../src/web/libraryVisionWorker.js');
 
 beforeEach(() => {
   fakeDb.reset();
   analyzeMock.mockClear();
+  describeMock.mockClear();
 });
 
 function seedLibrary() {
@@ -138,6 +152,10 @@ describe('library vision seed worker', () => {
     });
     await flushQueue();
 
+    // Character-owned images go through the detailed describer (not the
+    // terse library caption) and the setOwnedImageMeta writer.
+    expect(describeMock).toHaveBeenCalledTimes(1);
+    expect(analyzeMock).not.toHaveBeenCalled();
     const after = await fakeDb.collection('images.files').findOne({ _id: doc._id });
     expect(after.metadata.name).toBe('Diner at dusk');
     expect(after.metadata.description).toBe('A neon-lit diner glowing under a darkening sky.');

@@ -10,6 +10,7 @@
 
 import { logger } from '../log.js';
 import { analyzeLibraryImage } from '../llm/libraryImageMeta.js';
+import { describeReferenceImage } from '../llm/referenceImageDescription.js';
 import { readImageBuffer } from '../mongo/images.js';
 import {
   setLibraryImageMetaViaGateway,
@@ -46,17 +47,39 @@ async function writeMeta({ imageId, ownerType, ownerId, name, description }) {
   });
 }
 
+// Pick the describer based on owner. Library images keep the terse
+// `analyzeLibraryImage` caption (used for search/browse UX). Beat,
+// character, and storyboard reference images get the detailed
+// `describeReferenceImage` output so the storyboard pipeline has a verbal
+// anchor when re-feeding them to the image generator.
+function pickDescriber(ownerType, kindHint) {
+  if (kindHint && kindHint !== 'library') {
+    return (buf, ct) => describeReferenceImage({ buffer: buf, contentType: ct, kind: kindHint });
+  }
+  if (ownerType === 'character') {
+    return (buf, ct) => describeReferenceImage({ buffer: buf, contentType: ct, kind: 'character' });
+  }
+  if (ownerType === 'beat' || ownerType === 'director_note') {
+    return (buf, ct) => describeReferenceImage({ buffer: buf, contentType: ct, kind: 'auto' });
+  }
+  return analyzeLibraryImage;
+}
+
 // Core worker — schedules a microtask, calls the vision LLM, writes results.
 //
 // `buffer` and `contentType` may be omitted; in that case the worker
 // downloads the image bytes from GridFS itself. This is the path used by
 // the lazy-backfill on GET /character and GET /beat where we don't have
 // the buffer in hand.
+//
+// `kind` overrides the default describer choice ('character' | 'location'
+// | 'prop' | 'auto' | 'library'). When omitted, the worker picks one from
+// the ownerType.
 export function kickoffImageVisionSeed(
   imageId,
   buffer = null,
   contentType = null,
-  { ownerType = null, ownerId = null } = {},
+  { ownerType = null, ownerId = null, kind = null } = {},
 ) {
   if (!imageId) return;
   const idStr = String(imageId);
@@ -74,7 +97,8 @@ export function kickoffImageVisionSeed(
         buf = downloaded.buffer;
         ct = downloaded.file?.contentType || ct;
       }
-      const { name, description } = await analyzeLibraryImage(buf, ct);
+      const describer = pickDescriber(ownerType, kind);
+      const { name, description } = await describer(buf, ct);
       if (!name && !description) {
         logger.info(`vision seed: image=${idStr} produced no caption`);
         return;

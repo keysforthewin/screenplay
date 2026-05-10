@@ -990,6 +990,27 @@ function storyboardRoleField(role) {
   return null;
 }
 
+// Persist the auto-generated description of a storyboard's start frame.
+// Used by the storyboard generator after it captions the rendered start
+// frame, so the end-frame call can read this string back as a verbal
+// anchor for what to preserve. Backend-only; not exposed via the SPA's
+// scalar-update path.
+export async function setStoryboardStartFrameDescriptionViaGateway({
+  storyboardId,
+  description,
+}) {
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  await mongoUpdateStoryboard(storyboardId, {
+    start_frame_description: String(description || ''),
+  });
+  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
+    changed: ['start_frame_description'],
+    storyboard_id: String(storyboardId),
+  });
+  return mongoGetStoryboard(storyboardId);
+}
+
 export async function setStoryboardImageViaGateway({ storyboardId, role, imageId }) {
   if (!STORYBOARD_ROLES.has(role)) {
     throw new Error(`unknown storyboard role: ${role}`);
