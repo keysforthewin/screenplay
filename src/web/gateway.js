@@ -1293,6 +1293,32 @@ export async function setOwnedImageMetaViaGateway({
   });
 }
 
+// Character sheets live on c.character_sheet_image_ids[] — outside the
+// c.images[] array that the character room descriptor registers as
+// fragments. A y-doc fragment write for a sheet image therefore never
+// reaches Mongo on the store tick. Sheet names also render via plain
+// inputs (not CollabField), so going through the y-doc adds no UX value.
+// Write GridFS metadata directly, then broadcast so connected SPAs
+// refetch the sheet list.
+export async function setCharacterSheetMetaViaGateway({
+  character,
+  imageId,
+  name,
+  description,
+}) {
+  if (name === undefined && description === undefined) return;
+  const cidStr = String(character || '');
+  if (!cidStr) throw new Error('setCharacterSheetMetaViaGateway: character required');
+  await setOwnedImageMeta(String(imageId), {
+    ...(name !== undefined ? { name } : {}),
+    ...(description !== undefined ? { description } : {}),
+  });
+  broadcastFieldsUpdated(buildRoomName('character', cidStr), {
+    changed: ['character_sheet_meta'],
+    image_id: String(imageId),
+  });
+}
+
 function libraryAttachmentFieldName(attachmentId, field) {
   return `library_attachment:${String(attachmentId)}:${field}`;
 }

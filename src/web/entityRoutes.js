@@ -37,6 +37,7 @@ import {
   setBeatMainImageViaGateway,
   setCharacterMainImageViaGateway,
   setDirectorNoteMainImageViaGateway,
+  setCharacterSheetMetaViaGateway,
   setOwnedImageMetaViaGateway,
   setStoryboardAudioViaGateway,
   setStoryboardImageViaGateway,
@@ -778,10 +779,9 @@ export function buildApiRouter() {
       if (!sheetIds.includes(String(req.params.sheetId))) {
         return res.status(404).json({ error: 'sheet not attached to this character' });
       }
-      await setOwnedImageMetaViaGateway({
+      await setCharacterSheetMetaViaGateway({
+        character: cid,
         imageId: req.params.sheetId,
-        ownerType: 'character',
-        ownerId: cid,
         name: req.body.name,
       });
       res.json({ ok: true, name: req.body.name });
