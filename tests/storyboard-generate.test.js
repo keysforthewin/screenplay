@@ -51,12 +51,18 @@ const TWO_FRAME_PLAN = {
   frames: [
     {
       description: 'Alice walks into the diner.',
+      shot_type: 'cinematic_wide',
+      duration_seconds: 12,
+      transition_in: '',
       start_prompt: 'Wide shot of Alice entering through the diner door, dusk light.',
       end_prompt: 'Alice halfway across the room, scanning the booths.',
       characters_in_scene: ['Alice'],
     },
     {
       description: 'Alice sits down across from Bob.',
+      shot_type: 'two_shot',
+      duration_seconds: 4,
+      transition_in: 'Picks up Alice mid-stride from #1.',
       start_prompt: 'Two-shot of Alice approaching the booth.',
       end_prompt: 'Alice seated, Bob looking up.',
       characters_in_scene: ['Alice', 'Bob'],
@@ -136,6 +142,21 @@ describe('storyboard auto-generation', () => {
     }
     // Order is contiguous.
     expect(stored.map((s) => s.order)).toEqual([1, 2]);
+
+    // Shot metadata from the planner survives to storage.
+    expect(stored[0].shot_type).toBe('cinematic_wide');
+    expect(stored[0].duration_seconds).toBe(12);
+    expect(stored[0].transition_in).toBe(null); // empty string in plan
+    expect(stored[0].characters_in_scene).toEqual(['Alice']);
+
+    expect(stored[1].shot_type).toBe('two_shot');
+    expect(stored[1].duration_seconds).toBe(4);
+    expect(stored[1].transition_in).toBe('Picks up Alice mid-stride from #1.');
+    expect(stored[1].characters_in_scene).toEqual(['Alice', 'Bob']);
+
+    // Each prompt sent to Gemini carries the shot-type cue.
+    expect(generated.some((p) => /Shot type: CINEMATIC WIDE\./.test(p))).toBe(true);
+    expect(generated.some((p) => /Shot type: TWO SHOT\./.test(p))).toBe(true);
   });
 
   it('marks the job as partial if some frames fail', async () => {
@@ -227,6 +248,129 @@ describe('storyboard auto-generation', () => {
     for (const sb of after) {
       expect(oldIds.has(sb._id.toString())).toBe(false);
     }
+  });
+
+  it('clamps planner-emitted duration that exceeds the shot_type cap', async () => {
+    _setAnthropicClientForTests(
+      fakeAnthropicClient({
+        frames: [
+          {
+            description: 'Tight on Alice, eyes welling.',
+            shot_type: 'close_up',
+            duration_seconds: 12, // close_up cap is 5
+            transition_in: '',
+            start_prompt: 'Tight close-up of Alice, looking down.',
+            end_prompt: 'Tight close-up of Alice, looking up.',
+            characters_in_scene: ['Alice'],
+          },
+        ],
+      }),
+    );
+    Generate._setGeminiForTests(async () => ({
+      buffer: Buffer.from('fake'),
+      contentType: 'image/png',
+    }));
+
+    const beat = await Plots.createBeat({
+      name: 'Clamp',
+      desc: 'c',
+      body: 'c',
+      characters: ['Alice'],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    await waitForJob(jobId);
+
+    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
+    expect(stored).toHaveLength(1);
+    expect(stored[0].shot_type).toBe('close_up');
+    expect(stored[0].duration_seconds).toBe(5);
+  });
+
+  it('trims characters_in_scene to MAX_CHARS_PER_SHOT', async () => {
+    _setAnthropicClientForTests(
+      fakeAnthropicClient({
+        frames: [
+          {
+            description: 'Crowd shot.',
+            shot_type: 'cinematic_wide',
+            duration_seconds: 8,
+            transition_in: '',
+            start_prompt: 'Wide shot of the diner.',
+            end_prompt: 'Wide shot of the diner, slight zoom.',
+            characters_in_scene: ['Alice', 'Bob', 'Carol', 'Dave'],
+          },
+        ],
+      }),
+    );
+    Generate._setGeminiForTests(async () => ({
+      buffer: Buffer.from('fake'),
+      contentType: 'image/png',
+    }));
+
+    const beat = await Plots.createBeat({
+      name: 'Crowd',
+      desc: 'c',
+      body: 'c',
+      characters: ['Alice', 'Bob', 'Carol', 'Dave'],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    await waitForJob(jobId);
+
+    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
+    expect(stored[0].characters_in_scene).toEqual(['Alice', 'Bob']);
+  });
+
+  it('handles atmospheric/insert frames with empty characters_in_scene', async () => {
+    _setAnthropicClientForTests(
+      fakeAnthropicClient({
+        frames: [
+          {
+            description: 'Establishing wide.',
+            shot_type: 'establishing',
+            duration_seconds: 5,
+            transition_in: '',
+            start_prompt: 'Wide of the diner exterior at dusk.',
+            end_prompt: 'Same wide; neon sign flickers on.',
+            characters_in_scene: [],
+          },
+          {
+            description: 'Insert: coffee cup steaming.',
+            shot_type: 'insert',
+            duration_seconds: 3,
+            transition_in: 'Match cut from neon glow to steam.',
+            start_prompt: 'Macro shot of a coffee cup, steam rising.',
+            end_prompt: 'Macro shot of a coffee cup, ripple as a hand reaches in.',
+          },
+        ],
+      }),
+    );
+    Generate._setGeminiForTests(async () => ({
+      buffer: Buffer.from('fake'),
+      contentType: 'image/png',
+    }));
+
+    const beat = await Plots.createBeat({
+      name: 'Atmos',
+      desc: 'a',
+      body: 'a',
+      characters: ['Alice'],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    const job = await waitForJob(jobId);
+    expect(['done', 'partial']).toContain(job.status);
+
+    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
+    expect(stored).toHaveLength(2);
+    expect(stored[0].shot_type).toBe('establishing');
+    expect(stored[0].characters_in_scene).toEqual([]);
+    expect(stored[1].shot_type).toBe('insert');
+    expect(stored[1].transition_in).toBe('Match cut from neon glow to steam.');
   });
 
   it('preserves existing storyboards when the planner returns no frames', async () => {

@@ -8,8 +8,16 @@
 // `character_sheet_image_ids[]` array — old sheets are kept until the user
 // deletes them.
 //
+// Generation runs asynchronously inside an in-memory job map so the SPA can
+// queue a request and poll for completion (gpt-image-2 with high quality +
+// reference images can take 60–120s, far longer than a sensible HTTP read
+// timeout). The synchronous `generateCharacterSheetForCharacter` is still
+// exported for direct unit tests; production callers go through the job
+// wrapper at `startCharacterSheetGenerationJob`.
+//
 // Called by POST /api/character/:id/character-sheet in entityRoutes.js.
 
+import { ObjectId } from 'mongodb';
 import { logger } from '../log.js';
 import { buildCharacterSheetPrompt } from '../util/specifics.js';
 import { stripMarkdown } from '../util/markdown.js';
@@ -139,4 +147,83 @@ export async function generateCharacterSheetForCharacter({
     sheet_name: finalSheetName,
     latency_ms: latencyMs ?? null,
   };
+}
+
+// In-memory job tracker. Lifetimes mirror src/web/storyboardGenerate.js: a
+// single-process map; status survives only as long as the Node process. The
+// SPA polls /api/character-sheet/job/:jobId every couple seconds.
+const jobs = new Map();
+
+// Per-character lock so a user double-clicking Generate doesn't kick off two
+// concurrent dispatcher calls. Multiple characters can generate in parallel.
+const characterLocks = new Set();
+
+function makeJobId() {
+  return new ObjectId().toString();
+}
+
+export function getCharacterSheetGenerationJob(jobId) {
+  return jobs.get(jobId) || null;
+}
+
+export class CharacterBusyError extends Error {
+  constructor(characterId) {
+    super(`Character sheet generation already in progress for ${characterId}`);
+    this.code = 'CHARACTER_BUSY';
+    this.status = 409;
+  }
+}
+
+// Queue a sheet-generation job. Returns the job id immediately; the actual
+// work runs in the background. The SPA polls
+// /api/character-sheet/job/:jobId for status and reads `result` once
+// `status === 'done'`. Validation that requires loading the character (the
+// reference-image ownership check) happens inside the runner; shape errors
+// are reported on the job, not as 4xx, so the caller can treat any 4xx from
+// the POST as a hard failure.
+export async function startCharacterSheetGenerationJob(args = {}) {
+  const cidStr = String(args.characterId || '');
+  if (!cidStr) {
+    const err = new Error('characterId required');
+    err.status = 400;
+    throw err;
+  }
+  if (characterLocks.has(cidStr)) {
+    throw new CharacterBusyError(cidStr);
+  }
+  const jobId = makeJobId();
+  const job = {
+    job_id: jobId,
+    character_id: cidStr,
+    status: 'queued',
+    started_at: new Date(),
+    finished_at: null,
+    error: null,
+    result: null,
+  };
+  jobs.set(jobId, job);
+  characterLocks.add(cidStr);
+  // Fire and forget. Errors are recorded on the job so polling surfaces them.
+  runCharacterSheetGenerationJob(job, args).finally(() => {
+    characterLocks.delete(cidStr);
+  });
+  return jobId;
+}
+
+async function runCharacterSheetGenerationJob(job, args) {
+  job.status = 'generating';
+  try {
+    const result = await generateCharacterSheetForCharacter(args);
+    job.result = result;
+    job.status = 'done';
+    job.finished_at = new Date();
+    logger.info(
+      `character sheet job ${job.job_id} done character=${job.character_id} image=${result.image_id}`,
+    );
+  } catch (e) {
+    job.status = 'error';
+    job.error = e?.message || 'Generation failed';
+    job.finished_at = new Date();
+    logger.warn(`character sheet job ${job.job_id} failed: ${job.error}`);
+  }
 }

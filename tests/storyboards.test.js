@@ -152,3 +152,161 @@ describe('storyboards mongo helpers', () => {
     expect(b).toHaveLength(1);
   });
 });
+
+describe('storyboard scalar metadata', () => {
+  it('seeds new metadata fields as null/[] by default', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    expect(sb.duration_seconds).toBe(null);
+    expect(sb.shot_type).toBe(null);
+    expect(sb.transition_in).toBe(null);
+    expect(sb.characters_in_scene).toEqual([]);
+  });
+
+  it('accepts metadata at create time and persists it', async () => {
+    const sb = await Storyboards.createStoryboard({
+      beatId: beatA,
+      durationSeconds: 5,
+      shotType: 'close_up',
+      transitionIn: 'Picks up where #1 left off.',
+      charactersInScene: ['Alice'],
+    });
+    expect(sb.duration_seconds).toBe(5);
+    expect(sb.shot_type).toBe('close_up');
+    expect(sb.transition_in).toBe('Picks up where #1 left off.');
+    expect(sb.characters_in_scene).toEqual(['Alice']);
+  });
+
+  it('createStoryboard ignores invalid shot_type silently (planner pre-validates)', async () => {
+    const sb = await Storyboards.createStoryboard({
+      beatId: beatA,
+      shotType: 'not_a_real_thing',
+    });
+    expect(sb.shot_type).toBe(null);
+  });
+
+  it('createStoryboard trims characters_in_scene at MAX_CHARS_PER_SHOT', async () => {
+    const sb = await Storyboards.createStoryboard({
+      beatId: beatA,
+      charactersInScene: ['Alice', 'Bob', 'Carol', 'Dave'],
+    });
+    expect(sb.characters_in_scene).toEqual(['Alice', 'Bob']);
+  });
+
+  it('createStoryboard strips markdown from character names', async () => {
+    const sb = await Storyboards.createStoryboard({
+      beatId: beatA,
+      charactersInScene: ['**Alice**', '_Bob_'],
+    });
+    expect(sb.characters_in_scene).toEqual(['Alice', 'Bob']);
+  });
+
+  it('updateStoryboard accepts a valid shot_type + duration combination', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const updated = await Storyboards.updateStoryboard(sb._id, {
+      shot_type: 'cinematic_wide',
+      duration_seconds: 12,
+    });
+    expect(updated.shot_type).toBe('cinematic_wide');
+    expect(updated.duration_seconds).toBe(12);
+  });
+
+  it('updateStoryboard clamps duration_seconds to the cap for the new shot_type', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const updated = await Storyboards.updateStoryboard(sb._id, {
+      shot_type: 'close_up',
+      duration_seconds: 12,
+    });
+    expect(updated.shot_type).toBe('close_up');
+    // close_up cap is 5
+    expect(updated.duration_seconds).toBe(5);
+  });
+
+  it('updateStoryboard clamps duration_seconds against existing shot_type when only duration changes', async () => {
+    const sb = await Storyboards.createStoryboard({
+      beatId: beatA,
+      shotType: 'two_shot',
+    });
+    const updated = await Storyboards.updateStoryboard(sb._id, {
+      duration_seconds: 30,
+    });
+    // two_shot cap is 5
+    expect(updated.duration_seconds).toBe(5);
+  });
+
+  it('updateStoryboard rejects an unknown shot_type', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    await expect(
+      Storyboards.updateStoryboard(sb._id, { shot_type: 'epic_montage' }),
+    ).rejects.toThrow(/shot_type must be one of/);
+  });
+
+  it('updateStoryboard rejects a non-numeric duration_seconds', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    await expect(
+      Storyboards.updateStoryboard(sb._id, { duration_seconds: 'lots' }),
+    ).rejects.toThrow(/duration_seconds must be/);
+  });
+
+  it('updateStoryboard accepts null duration_seconds to clear it', async () => {
+    const sb = await Storyboards.createStoryboard({
+      beatId: beatA,
+      durationSeconds: 5,
+      shotType: 'close_up',
+    });
+    const cleared = await Storyboards.updateStoryboard(sb._id, {
+      duration_seconds: null,
+    });
+    expect(cleared.duration_seconds).toBe(null);
+  });
+
+  it('updateStoryboard truncates transition_in to MAX_TRANSITION_LEN', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const longString = 'a'.repeat(500);
+    const updated = await Storyboards.updateStoryboard(sb._id, {
+      transition_in: longString,
+    });
+    expect(updated.transition_in).toHaveLength(Storyboards.MAX_TRANSITION_LEN);
+  });
+
+  it('updateStoryboard accepts null transition_in to clear it', async () => {
+    const sb = await Storyboards.createStoryboard({
+      beatId: beatA,
+      transitionIn: 'a continuity note',
+    });
+    const cleared = await Storyboards.updateStoryboard(sb._id, {
+      transition_in: null,
+    });
+    expect(cleared.transition_in).toBe(null);
+  });
+
+  it('updateStoryboard trims and dedups characters_in_scene', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const updated = await Storyboards.updateStoryboard(sb._id, {
+      characters_in_scene: ['Alice', 'Bob', 'Carol', 'Dave'],
+    });
+    expect(updated.characters_in_scene).toEqual(['Alice', 'Bob']);
+  });
+
+  it('updateStoryboard rejects non-array characters_in_scene', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    await expect(
+      Storyboards.updateStoryboard(sb._id, { characters_in_scene: 'Alice' }),
+    ).rejects.toThrow(/characters_in_scene must be/);
+  });
+
+  it('clampDuration helper is idempotent inside the cap and clamps above', () => {
+    expect(Storyboards.clampDuration(5, 'close_up')).toBe(5);
+    expect(Storyboards.clampDuration(12, 'cinematic_wide')).toBe(12);
+    expect(Storyboards.clampDuration(20, 'cinematic_wide')).toBe(15);
+    expect(Storyboards.clampDuration(0, 'close_up')).toBe(null);
+    expect(Storyboards.clampDuration(-3, 'close_up')).toBe(null);
+    expect(Storyboards.clampDuration('not a number', 'close_up')).toBe(null);
+  });
+
+  it('durationCapFor falls back to ABSOLUTE_DURATION_CAP for unknown shot_types', () => {
+    expect(Storyboards.durationCapFor(null)).toBe(Storyboards.ABSOLUTE_DURATION_CAP);
+    expect(Storyboards.durationCapFor('not_a_type')).toBe(
+      Storyboards.ABSOLUTE_DURATION_CAP,
+    );
+  });
+});

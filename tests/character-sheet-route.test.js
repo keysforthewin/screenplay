@@ -330,3 +330,112 @@ describe('generateCharacterSheetForCharacter', () => {
     expect(err.status).toBe(404);
   });
 });
+
+describe('startCharacterSheetGenerationJob', () => {
+  async function waitForJob(jobId, { timeoutMs = 1000 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const job = Sheet.getCharacterSheetGenerationJob(jobId);
+      if (job && (job.status === 'done' || job.status === 'error')) return job;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    throw new Error('job never completed');
+  }
+
+  it('queues a job, runs it, and stores the result', async () => {
+    const c = await Characters.createCharacter({ name: 'Rae' });
+    Sheet._setGeneratorForTests(async () => ({
+      buffer: TINY_PNG,
+      contentType: 'image/png',
+      model: 'gemini-2.5-flash-image',
+      latencyMs: 7,
+      usedInputImage: false,
+      inputImageCount: 0,
+    }));
+
+    const jobId = await Sheet.startCharacterSheetGenerationJob({
+      characterId: c._id.toString(),
+      quality: 'auto',
+      model: 'gemini',
+      sheetName: 'Hero Pose',
+    });
+    expect(typeof jobId).toBe('string');
+
+    const initial = Sheet.getCharacterSheetGenerationJob(jobId);
+    expect(initial).toBeTruthy();
+    expect(['queued', 'generating', 'done']).toContain(initial.status);
+
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+    expect(job.character_id).toBe(c._id.toString());
+    expect(job.error).toBeNull();
+    expect(job.result?.sheet_name).toBe('Hero Pose');
+    expect(job.result?.image_id).toBeTruthy();
+
+    // Sheet was appended on the character.
+    const updated = await Characters.getCharacter(c._id.toString());
+    expect(updated.character_sheet_image_ids.map((x) => x.toString())).toContain(
+      job.result.image_id,
+    );
+  });
+
+  it('records dispatcher errors on the job (status="error", error message set)', async () => {
+    const c = await Characters.createCharacter({ name: 'Rae' });
+    Sheet._setGeneratorForTests(async () => {
+      throw new Error('safety system rejected request');
+    });
+
+    const jobId = await Sheet.startCharacterSheetGenerationJob({
+      characterId: c._id.toString(),
+      quality: 'auto',
+      model: 'gemini',
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('error');
+    expect(job.error).toMatch(/safety system/);
+    expect(job.result).toBeNull();
+  });
+
+  it('rejects a second concurrent job for the same character with CharacterBusyError', async () => {
+    const c = await Characters.createCharacter({ name: 'Rae' });
+    let release;
+    const block = new Promise((r) => {
+      release = r;
+    });
+    Sheet._setGeneratorForTests(async () => {
+      await block;
+      return {
+        buffer: TINY_PNG,
+        contentType: 'image/png',
+        model: 'gemini-2.5-flash-image',
+        latencyMs: 1,
+        usedInputImage: false,
+      };
+    });
+
+    const firstId = await Sheet.startCharacterSheetGenerationJob({
+      characterId: c._id.toString(),
+      model: 'gemini',
+    });
+
+    let busyErr;
+    try {
+      await Sheet.startCharacterSheetGenerationJob({
+        characterId: c._id.toString(),
+        model: 'gemini',
+      });
+    } catch (e) {
+      busyErr = e;
+    }
+    expect(busyErr).toBeDefined();
+    expect(busyErr).toBeInstanceOf(Sheet.CharacterBusyError);
+
+    // Let the first job finish so the lock clears for subsequent tests.
+    release();
+    await waitForJob(firstId);
+  });
+
+  it('getCharacterSheetGenerationJob returns null for unknown ids', () => {
+    expect(Sheet.getCharacterSheetGenerationJob('does-not-exist')).toBeNull();
+  });
+});

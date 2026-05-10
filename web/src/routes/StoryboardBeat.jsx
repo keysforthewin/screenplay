@@ -20,6 +20,7 @@ import { StoryboardItem } from '../widgets/StoryboardItem.jsx';
 import { ConfirmDialog } from '../widgets/Modal.jsx';
 import { StoryboardEditDialog } from '../widgets/StoryboardEditDialog.jsx';
 import { CharacterSheetSelector } from '../widgets/CharacterSheetSelector.jsx';
+import { formatRuntime } from '../shotTypes.js';
 
 export function StoryboardBeat({ session }) {
   const { order } = useParams();
@@ -106,6 +107,11 @@ export function StoryboardBeat({ session }) {
     if (!localOrder) return [];
     return localOrder.map((id) => sbsById.get(id)).filter(Boolean);
   }, [localOrder, sbsById]);
+
+  const totalRuntime = useMemo(
+    () => sortedItems.reduce((sum, s) => sum + (s.duration_seconds || 0), 0),
+    [sortedItems],
+  );
 
   async function handleDragEnd(event) {
     const { active, over } = event;
@@ -256,9 +262,10 @@ export function StoryboardBeat({ session }) {
             onClick={onGenerateClick}
             disabled={generating}
             title={
-              sortedItems.length
+              (sortedItems.length
                 ? 'Replace existing storyboards with a freshly generated set'
-                : 'Auto-generate storyboards from the beat body and characters'
+                : 'Auto-generate storyboards from the beat body and characters') +
+              ' · Generation may take a couple of minutes — each frame produces 2 images.'
             }
           >
             {generating ? 'Generating…' : 'Generate'}
@@ -342,6 +349,13 @@ export function StoryboardBeat({ session }) {
               · {generationStatus.failed} failed
             </span>
           )}
+        </div>
+      )}
+
+      {sortedItems.length > 0 && (
+        <div className="storyboard-runtime-tally">
+          Total runtime: <strong>{formatRuntime(totalRuntime)}</strong>{' '}
+          ({sortedItems.length} {sortedItems.length === 1 ? 'shot' : 'shots'})
         </div>
       )}
 

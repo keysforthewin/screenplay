@@ -37,10 +37,12 @@ import {
   setBeatMainImageViaGateway,
   setCharacterMainImageViaGateway,
   setDirectorNoteMainImageViaGateway,
+  setOwnedImageMetaViaGateway,
   setStoryboardAudioViaGateway,
   setStoryboardImageViaGateway,
   updateBeatViaGateway,
   updateCharacterViaGateway,
+  updateStoryboardScalarsViaGateway,
 } from './gateway.js';
 import {
   kickoffLibraryVisionSeed,
@@ -666,10 +668,13 @@ export function buildApiRouter() {
     }
   });
 
-  // Generate a UE5 MetaHuman-style character sheet. Append-only: each call
-  // pushes a new id onto `character_sheet_image_ids[]`. Caller picks the
-  // model (gemini | openai); reference images come from `reference_image_ids`
-  // (a multi-select of the character's portrait gallery) when provided, else
+  // Queue a character-sheet generation job. Returns 202 + { job_id } so the
+  // caller can poll /character-sheet/job/:jobId — generation can take 60+ s
+  // (gpt-image-2 with high quality + reference images), well past any
+  // sensible HTTP read timeout. Append-only: each completed job pushes a new
+  // id onto `character_sheet_image_ids[]`. Caller picks the model
+  // (gemini | openai); reference images come from `reference_image_ids` (a
+  // multi-select of the character's portrait gallery) when provided, else
   // the character's main image. The default prompt is built from the
   // character's specifics; pass `prompt` to override (e.g. variant/young
   // version edits). `sheet_name` becomes the GridFS metadata.name and is
@@ -708,18 +713,78 @@ export function buildApiRouter() {
           }
         }
       }
-      const { generateCharacterSheetForCharacter } = await import('./characterSheet.js');
-      const result = await generateCharacterSheetForCharacter({
-        characterId: cid,
-        quality,
-        model,
-        omitImages,
-        customPrompt,
-        sheetName,
-        referenceImageIds,
-        discordUser: webDiscordUser(req),
+      const { startCharacterSheetGenerationJob, CharacterBusyError } = await import(
+        './characterSheet.js'
+      );
+      try {
+        const jobId = await startCharacterSheetGenerationJob({
+          characterId: cid,
+          quality,
+          model,
+          omitImages,
+          customPrompt,
+          sheetName,
+          referenceImageIds,
+          discordUser: webDiscordUser(req),
+        });
+        res.status(202).json({ job_id: jobId, character_id: cid });
+      } catch (e) {
+        if (e instanceof CharacterBusyError) {
+          return res.status(409).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Poll the status of a character-sheet generation job. Returns
+  // { job: { status, result, error, … } }. status ∈
+  // {queued, generating, done, error}. When status='done', `result` carries
+  // the same fields the synchronous call previously returned (image_id,
+  // sheet_name, model, used_input_image, latency_ms, …). 404 if the job id
+  // is unknown (server restart drops the in-memory map).
+  router.get('/character-sheet/job/:jobId', async (req, res, next) => {
+    try {
+      const { getCharacterSheetGenerationJob } = await import('./characterSheet.js');
+      const job = getCharacterSheetGenerationJob(req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'job not found' });
+      res.json({ job });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Inline rename of a character sheet. Writes the new name to the GridFS
+  // metadata via the gateway (which mirrors into the y-doc when
+  // Hocuspocus is running so connected SPAs see the change live).
+  router.patch('/character/:id/character-sheet/:sheetId', async (req, res, next) => {
+    try {
+      const cid = await resolveCharacterId(req);
+      if (!cid) return res.status(404).json({ error: 'character not found' });
+      if (!isOidHex(req.params.sheetId)) {
+        return res.status(400).json({ error: 'invalid sheet id' });
+      }
+      if (typeof req.body?.name !== 'string') {
+        return res.status(400).json({ error: 'name required' });
+      }
+      const c = await getCharacter(cid);
+      const sheetIds = Array.isArray(c?.character_sheet_image_ids)
+        ? c.character_sheet_image_ids.map((x) => String(x))
+        : c?.character_sheet_image_id
+          ? [String(c.character_sheet_image_id)]
+          : [];
+      if (!sheetIds.includes(String(req.params.sheetId))) {
+        return res.status(404).json({ error: 'sheet not attached to this character' });
+      }
+      await setOwnedImageMetaViaGateway({
+        imageId: req.params.sheetId,
+        ownerType: 'character',
+        ownerId: cid,
+        name: req.body.name,
       });
-      res.json(result);
+      res.json({ ok: true, name: req.body.name });
     } catch (e) {
       next(e);
     }
@@ -985,6 +1050,40 @@ export function buildApiRouter() {
     }
   });
 
+  // Edit shot metadata (duration / shot_type / transition / characters_in_scene).
+  // Validation/clamping happens inside updateStoryboard; we surface its
+  // human-readable error messages directly so the SPA can show them.
+  router.patch('/storyboard/:id', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const { duration_seconds, shot_type, transition_in, characters_in_scene } =
+        req.body || {};
+      const patch = {};
+      if (duration_seconds !== undefined) patch.duration_seconds = duration_seconds;
+      if (shot_type !== undefined) patch.shot_type = shot_type;
+      if (transition_in !== undefined) patch.transition_in = transition_in;
+      if (characters_in_scene !== undefined)
+        patch.characters_in_scene = characters_in_scene;
+      if (!Object.keys(patch).length)
+        return res.status(400).json({ error: 'no patch fields' });
+      try {
+        const result = await updateStoryboardScalarsViaGateway({
+          storyboardId: sbId,
+          patch,
+        });
+        res.json({ storyboard: result });
+      } catch (e) {
+        if (typeof e?.message === 'string' && e.message.startsWith('update_storyboard:')) {
+          return res.status(400).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // Bulk reorder for a single beat. Body: { beat_id, ordered_ids: [hex...] }
   router.post('/storyboards/reorder', async (req, res, next) => {
     try {
@@ -1054,6 +1153,37 @@ export function buildApiRouter() {
         imageId: null,
       });
       res.json({ storyboard: result });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Regenerate a single start_frame or end_frame on an existing storyboard
+  // row. Runs nano banana with the beat's scene image plus character
+  // sheet(s) as references, driven by the row's current text_prompt. The
+  // character_sheet role is intentionally excluded — that slot is a
+  // reference, not a generated frame.
+  router.post('/storyboard/:id/frame/:role/generate', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const role = String(req.params.role);
+      if (!['start_frame', 'end_frame'].includes(role)) {
+        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+      }
+      const { regenerateStoryboardFrame, BeatBusyError } = await import(
+        './storyboardGenerate.js'
+      );
+      try {
+        const result = await regenerateStoryboardFrame({ storyboardId: sbId, role });
+        const sb = await getStoryboard(sbId);
+        res.json({ storyboard: sb, image: { _id: result.image_id } });
+      } catch (e) {
+        if (e instanceof BeatBusyError) {
+          return res.status(409).json({ error: e.message });
+        }
+        throw e;
+      }
     } catch (e) {
       next(e);
     }

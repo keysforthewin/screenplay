@@ -897,8 +897,25 @@ export async function setStoryboardTextPromptViaGateway({ storyboardId, text }) 
   });
 }
 
-export async function createStoryboardViaGateway({ beatId, textPrompt, order, seedFragments }) {
-  const sb = await mongoCreateStoryboard({ beatId, textPrompt, order });
+export async function createStoryboardViaGateway({
+  beatId,
+  textPrompt,
+  order,
+  seedFragments,
+  durationSeconds = null,
+  shotType = null,
+  transitionIn = null,
+  charactersInScene = [],
+}) {
+  const sb = await mongoCreateStoryboard({
+    beatId,
+    textPrompt,
+    order,
+    durationSeconds,
+    shotType,
+    transitionIn,
+    charactersInScene,
+  });
   // Seed the y-doc fragment(s) BEFORE broadcasting the ping. Otherwise the
   // SPA refetches and mounts its CollabField on an empty fragment before the
   // seed write lands, so the user sees an empty editor (and the next
@@ -988,6 +1005,35 @@ export async function setStoryboardImageViaGateway({ storyboardId, role, imageId
     storyboard_id: String(storyboardId),
   });
   return mongoGetStoryboard(storyboardId);
+}
+
+// PATCH-style scalar update for the SPA's editable shot metadata. Validates
+// each field via mongoUpdateStoryboard's existing rules (clamp + warn for
+// duration, throw on bad shot_type, trim characters_in_scene). Broadcasts a
+// fields_updated ping so other connected SPA tabs refresh.
+const STORYBOARD_SCALAR_FIELDS = new Set([
+  'duration_seconds',
+  'shot_type',
+  'transition_in',
+  'characters_in_scene',
+]);
+
+export async function updateStoryboardScalarsViaGateway({ storyboardId, patch }) {
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const filtered = {};
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (STORYBOARD_SCALAR_FIELDS.has(k)) filtered[k] = v;
+  }
+  if (!Object.keys(filtered).length) {
+    throw new Error('updateStoryboardScalars: no recognized fields');
+  }
+  const result = await mongoUpdateStoryboard(storyboardId, filtered);
+  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
+    changed: Object.keys(filtered),
+    storyboard_id: String(storyboardId),
+  });
+  return result;
 }
 
 export async function addStoryboardReferenceImageViaGateway({ storyboardId, imageId }) {

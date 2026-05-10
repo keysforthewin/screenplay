@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   DndContext,
   KeyboardSensor,
@@ -15,7 +15,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { apiDelete, apiPostJson, imageUrl } from '../api.js';
+import { apiDelete, apiPatchJson, apiPostJson, imageUrl } from '../api.js';
 
 // Drag-reorderable list of character sheets. The first row is the
 // "default" sheet that storyboard generation falls back to when the user
@@ -97,7 +97,9 @@ export function CharacterSheetList({ characterId, sheets, onRefresh }) {
                 key={sheet._id}
                 sheet={sheet}
                 isDefault={idx === 0}
+                characterId={characterId}
                 onDelete={() => deleteSheet(sheet._id)}
+                onRefresh={onRefresh}
               />
             ))}
           </div>
@@ -107,7 +109,7 @@ export function CharacterSheetList({ characterId, sheets, onRefresh }) {
   );
 }
 
-function SheetRow({ sheet, isDefault, onDelete }) {
+function SheetRow({ sheet, isDefault, characterId, onDelete, onRefresh }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: sheet._id,
   });
@@ -134,7 +136,12 @@ function SheetRow({ sheet, isDefault, onDelete }) {
         </a>
       </div>
       <div className="gallery-meta">
-        <div style={{ fontWeight: 600 }}>{sheet.name || '(unnamed sheet)'}</div>
+        <SheetTitleInput
+          characterId={characterId}
+          sheetId={sheet._id}
+          initialName={sheet.name || ''}
+          onSaved={onRefresh}
+        />
         {isDefault && (
           <div style={{ fontSize: 12, color: 'var(--accent)' }}>★ default for storyboard</div>
         )}
@@ -152,6 +159,72 @@ function SheetRow({ sheet, isDefault, onDelete }) {
           Delete
         </button>
       </div>
+    </div>
+  );
+}
+
+// Inline-editable title for one sheet. The on-blur PATCH writes through the
+// gateway (which mirrors into the y-doc when Hocuspocus is running, so other
+// connected SPAs see the change live). On Enter the input commits and blurs;
+// on Escape the input reverts to the last-saved value and blurs.
+function SheetTitleInput({ characterId, sheetId, initialName, onSaved }) {
+  const [value, setValue] = useState(initialName);
+  const [savedName, setSavedName] = useState(initialName);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const inputRef = useRef(null);
+
+  // If the parent refetches and the name on disk has changed (e.g. another
+  // user just renamed it), pick up the new value — but don't clobber a
+  // half-typed local edit.
+  useEffect(() => {
+    if (!saving && document.activeElement !== inputRef.current) {
+      setValue(initialName);
+      setSavedName(initialName);
+    }
+  }, [initialName, saving]);
+
+  async function commit() {
+    const next = value.trim();
+    if (next === savedName) return;
+    setError(null);
+    setSaving(true);
+    try {
+      await apiPatchJson(`/character/${characterId}/character-sheet/${sheetId}`, { name: next });
+      setSavedName(next);
+      onSaved?.();
+    } catch (e) {
+      setError(e.message || 'Rename failed');
+      setValue(savedName); // revert on failure
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <input
+        ref={inputRef}
+        type="text"
+        value={value}
+        placeholder="Untitled sheet"
+        disabled={saving}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            inputRef.current?.blur();
+          } else if (e.key === 'Escape') {
+            setValue(savedName);
+            inputRef.current?.blur();
+          }
+        }}
+        style={{ fontWeight: 600, fontSize: 14, padding: '4px 6px' }}
+      />
+      {error && (
+        <span style={{ fontSize: 12, color: 'var(--err, #f88)' }}>{error}</span>
+      )}
     </div>
   );
 }

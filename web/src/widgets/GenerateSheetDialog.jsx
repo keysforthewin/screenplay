@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
 import { apiGet, apiPostJson, imageUrl } from '../api.js';
+
+const POLL_INTERVAL_MS = 2000;
 
 const QUALITY_OPTIONS = ['low', 'medium', 'high', 'auto'];
 const MODEL_STORAGE_KEY = 'screenplay.sheet.model';
@@ -35,9 +37,25 @@ export function GenerateSheetDialog({ open, onClose, character, onGenerated }) {
   const [selectedRefIds, setSelectedRefIds] = useState([]);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState(null);
+  const [jobStatus, setJobStatus] = useState(null);
+  const pollRef = useRef(null);
 
   const portraitImages = character?.images || [];
   const mainImageId = character?.main_image_id ? String(character.main_image_id) : null;
+
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }
+
+  // Stop polling on unmount so a closed dialog doesn't keep firing requests.
+  // The job continues server-side; the page's character room broadcast still
+  // refreshes the sheet list when the new sheet is appended.
+  useEffect(() => {
+    return () => stopPolling();
+  }, []);
 
   useEffect(() => {
     try {
@@ -46,16 +64,16 @@ export function GenerateSheetDialog({ open, onClose, character, onGenerated }) {
   }, [model]);
 
   // When the dialog opens, fetch the server-built default prompt and
-  // reset the form. Default-select the main image as a reference.
+  // reset the form. Default-select the main image as a reference. Reset
+  // any in-flight job state from a previous open.
   useEffect(() => {
     if (!open || !cid) return;
     let cancelled = false;
     setPromptError(null);
     setError(null);
+    setJobStatus(null);
+    stopPolling();
     setPromptLoading(true);
-    setSheetName('');
-    const existingCount = (character?.character_sheet_image_ids || []).length;
-    const placeholder = `Sheet ${existingCount + 1}`;
     setSheetName('');
     setSelectedRefIds(mainImageId ? [mainImageId] : []);
     (async () => {
@@ -80,9 +98,32 @@ export function GenerateSheetDialog({ open, onClose, character, onGenerated }) {
     );
   }
 
+  async function pollJob(jobId) {
+    try {
+      const r = await apiGet(`/character-sheet/job/${jobId}`);
+      const job = r?.job;
+      if (!job) return;
+      setJobStatus(job);
+      if (job.status === 'done') {
+        stopPolling();
+        setGenerating(false);
+        onGenerated?.(job.result || {});
+        // Brief pause so the user sees the success message, then close.
+        setTimeout(() => onClose?.(), 800);
+      } else if (job.status === 'error') {
+        stopPolling();
+        setGenerating(false);
+        setError(job.error || 'Generation failed.');
+      }
+    } catch {
+      // Transient errors are tolerated; polling keeps trying.
+    }
+  }
+
   async function submit() {
     if (!cid) return;
     setError(null);
+    setJobStatus({ status: 'queued' });
     setGenerating(true);
     try {
       const body = {
@@ -94,13 +135,32 @@ export function GenerateSheetDialog({ open, onClose, character, onGenerated }) {
         reference_image_ids: omitImages ? [] : selectedRefIds,
       };
       const r = await apiPostJson(`/character/${cid}/character-sheet`, body);
-      onGenerated?.(r);
-      onClose?.();
+      const jobId = r?.job_id;
+      if (!jobId) {
+        // Backwards-compat with synchronous response shape (shouldn't happen
+        // against the new server, but harmless): treat it as a completed
+        // result.
+        setGenerating(false);
+        onGenerated?.(r);
+        onClose?.();
+        return;
+      }
+      // Trigger one immediate poll so status updates fast, then steady state.
+      pollJob(jobId);
+      pollRef.current = setInterval(() => pollJob(jobId), POLL_INTERVAL_MS);
     } catch (e) {
-      setError(e.message || 'Generation failed');
-    } finally {
       setGenerating(false);
+      setError(e.message || 'Generation failed');
     }
+  }
+
+  function statusText(job) {
+    if (!job) return null;
+    if (job.status === 'queued') return 'Queued…';
+    if (job.status === 'generating') return 'Generating… (this can take 60–120 s)';
+    if (job.status === 'done') return `Done — sheet "${job.result?.sheet_name || 'sheet'}" added.`;
+    if (job.status === 'error') return `Error: ${job.error || 'Generation failed.'}`;
+    return null;
   }
 
   const existingCount = (character?.character_sheet_image_ids || []).length;
@@ -110,12 +170,12 @@ export function GenerateSheetDialog({ open, onClose, character, onGenerated }) {
     <Modal
       open={open}
       title="Generate character sheet"
-      onClose={generating ? undefined : onClose}
-      dismissible={!generating}
+      onClose={onClose}
+      dismissible
       footer={
         <>
-          <button type="button" onClick={onClose} disabled={generating}>
-            Cancel
+          <button type="button" onClick={onClose}>
+            {generating ? 'Close' : 'Cancel'}
           </button>
           <button
             type="button"
@@ -123,7 +183,11 @@ export function GenerateSheetDialog({ open, onClose, character, onGenerated }) {
             onClick={submit}
             disabled={generating || promptLoading || !prompt.trim()}
           >
-            {generating ? 'Generating…' : 'Generate'}
+            {generating
+              ? jobStatus?.status === 'queued'
+                ? 'Queued…'
+                : 'Generating…'
+              : 'Generate'}
           </button>
         </>
       }
@@ -131,6 +195,24 @@ export function GenerateSheetDialog({ open, onClose, character, onGenerated }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {error && <div className="error-banner">{error}</div>}
         {promptError && <div className="error-banner">{promptError}</div>}
+        {jobStatus && jobStatus.status !== 'error' && (
+          <div
+            style={{
+              background: 'var(--accent-bg, rgba(255,255,255,0.04))',
+              padding: '8px 12px',
+              borderRadius: 4,
+              fontSize: 13,
+            }}
+          >
+            {statusText(jobStatus)}
+            {jobStatus.status === 'generating' && (
+              <span style={{ marginLeft: 6, color: 'var(--fg-muted)' }}>
+                You can close this dialog — the job continues in the background and the sheet will
+                appear in the list when it's ready.
+              </span>
+            )}
+          </div>
+        )}
 
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <span className="field-label">Sheet name</span>
