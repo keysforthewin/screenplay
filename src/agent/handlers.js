@@ -13,8 +13,11 @@ import { kickoffLibraryVisionSeed } from '../web/libraryVisionWorker.js';
 import { beatUrl, characterUrl, notesUrl, withSpaLink } from '../web/links.js';
 import * as Tmdb from '../tmdb/client.js';
 import * as Tavily from '../tavily/client.js';
-import { generateImage as generateImageBytes, NANO_BANANA_MODEL } from '../gemini/client.js';
 import { buildImagePrompt } from '../gemini/promptBuilder.js';
+import {
+  checkProviderConfigured,
+  generateOrEditImage,
+} from './imageProviderDispatch.js';
 import * as Messages from '../mongo/messages.js';
 import { config } from '../config.js';
 import { exportToPdf } from '../pdf/export.js';
@@ -35,7 +38,6 @@ import {
   applyMarkdownEdits,
 } from '../util/textWindow.js';
 import {
-  recordGeminiImageUsage,
   aggregateUsage,
   aggregateToolUsage,
   aggregateSectionTokens,
@@ -2123,6 +2125,7 @@ export const HANDLERS = {
   async generate_image(
     {
       prompt,
+      provider,
       include_beat,
       beat,
       include_recent_chat,
@@ -2135,9 +2138,9 @@ export const HANDLERS = {
     },
     context = null,
   ) {
-    if (!config.gemini.apiKey && !config.gemini.vertex.project) {
-      return 'Error: Gemini is not configured. Set GEMINI_VERTEX_PROJECT (+ GOOGLE_APPLICATION_CREDENTIALS) for Vertex AI, or GEMINI_API_KEY for the Developer API.';
-    }
+    const chosenProvider = provider === 'openai' ? 'openai' : 'gemini';
+    const configErr = checkProviderConfigured(chosenProvider);
+    if (configErr) return configErr;
     if (!prompt && !include_beat && !include_recent_chat) {
       return 'Error: provide at least one of `prompt`, `include_beat: true`, or `include_recent_chat: true`.';
     }
@@ -2159,7 +2162,7 @@ export const HANDLERS = {
       const MAX_SRC = 7 * 1024 * 1024;
       if (fetched.buffer.length > MAX_SRC) {
         const mb = (fetched.buffer.length / 1024 / 1024).toFixed(1);
-        return `Error: source image too large for img2img (${mb} MB). NanoBanana input cap is ~7 MB.`;
+        return `Error: source image too large for img2img (${mb} MB). Input cap is ~7 MB.`;
       }
       inputImage = { buffer: fetched.buffer, contentType: srcCt };
     }
@@ -2198,24 +2201,14 @@ export const HANDLERS = {
       recentMessages,
     });
 
-    const { buffer, contentType, usageMetadata } = await generateImageBytes({
+    const { buffer, contentType, model: usedModel } = await generateOrEditImage({
+      provider: chosenProvider,
       prompt: finalPrompt,
       aspectRatio: aspect_ratio,
-      inputImage: inputImage || undefined,
+      inputImage,
+      discordUser: context?.discordUser || null,
+      channelId: context?.channelId || null,
     });
-
-    if (usageMetadata) {
-      try {
-        await recordGeminiImageUsage({
-          discordUser: context?.discordUser || null,
-          channelId: context?.channelId || null,
-          model: NANO_BANANA_MODEL,
-          usageMetadata,
-        });
-      } catch (e) {
-        logger.warn(`gemini token usage persist failed: ${e.message}`);
-      }
-    }
 
     let ownerType = null;
     let ownerId = null;
@@ -2245,7 +2238,7 @@ export const HANDLERS = {
       buffer,
       contentType,
       prompt: finalPrompt,
-      generatedBy: 'gemini-2.5-flash-image',
+      generatedBy: usedModel,
       ownerType,
       ownerId,
     });
@@ -2284,7 +2277,7 @@ export const HANDLERS = {
         size: file.size,
         source: 'generated',
         prompt: finalPrompt,
-        generated_by: 'gemini-2.5-flash-image',
+        generated_by: usedModel,
         caption: null,
         uploaded_at: file.uploaded_at,
       };
@@ -2304,6 +2297,7 @@ export const HANDLERS = {
       source_image_id,
       prompt,
       replace_source,
+      provider,
       aspect_ratio,
       attach_to_character,
       attach_to_beat,
@@ -2311,9 +2305,9 @@ export const HANDLERS = {
     },
     context = null,
   ) {
-    if (!config.gemini.apiKey && !config.gemini.vertex.project) {
-      return 'Error: Gemini is not configured. Set GEMINI_VERTEX_PROJECT (+ GOOGLE_APPLICATION_CREDENTIALS) for Vertex AI, or GEMINI_API_KEY for the Developer API.';
-    }
+    const chosenProvider = provider === 'openai' ? 'openai' : 'gemini';
+    const configErr = checkProviderConfigured(chosenProvider);
+    if (configErr) return configErr;
     if (!source_image_id) return 'Error: source_image_id is required.';
     if (!prompt || !String(prompt).trim()) {
       return 'Error: prompt is required (describe the change to make).';
@@ -2338,7 +2332,7 @@ export const HANDLERS = {
     const MAX_SRC = 7 * 1024 * 1024;
     if (srcBuffer.length > MAX_SRC) {
       const mb = (srcBuffer.length / 1024 / 1024).toFixed(1);
-      return `Error: source image too large for editing (${mb} MB). NanoBanana input cap is ~7 MB — choose a smaller image, or describe the edit and use generate_image.`;
+      return `Error: source image too large for editing (${mb} MB). Input cap is ~7 MB — choose a smaller image, or describe the edit and use generate_image.`;
     }
 
     const srcOwnerType = srcFile.metadata?.owner_type || null;
@@ -2408,30 +2402,20 @@ export const HANDLERS = {
 
     const editPrompt = String(prompt).trim();
 
-    const { buffer, contentType, usageMetadata } = await generateImageBytes({
+    const { buffer, contentType, model: usedModel } = await generateOrEditImage({
+      provider: chosenProvider,
       prompt: editPrompt,
       aspectRatio: aspect_ratio,
       inputImage: { buffer: srcBuffer, contentType: srcContentType },
+      discordUser: context?.discordUser || null,
+      channelId: context?.channelId || null,
     });
-
-    if (usageMetadata) {
-      try {
-        await recordGeminiImageUsage({
-          discordUser: context?.discordUser || null,
-          channelId: context?.channelId || null,
-          model: NANO_BANANA_MODEL,
-          usageMetadata,
-        });
-      } catch (e) {
-        logger.warn(`gemini token usage persist failed: ${e.message}`);
-      }
-    }
 
     const file = await Images.uploadGeneratedImage({
       buffer,
       contentType,
       prompt: editPrompt,
-      generatedBy: NANO_BANANA_MODEL,
+      generatedBy: usedModel,
       ownerType: targetOwnerType,
       ownerId: targetOwnerId,
     });
@@ -2469,7 +2453,7 @@ export const HANDLERS = {
         size: file.size,
         source: 'generated',
         prompt: editPrompt,
-        generated_by: NANO_BANANA_MODEL,
+        generated_by: usedModel,
         caption: null,
         uploaded_at: file.uploaded_at,
       };
@@ -2483,7 +2467,7 @@ export const HANDLERS = {
         size: file.size,
         source: 'generated',
         prompt: editPrompt,
-        generated_by: NANO_BANANA_MODEL,
+        generated_by: usedModel,
         caption: null,
         uploaded_at: file.uploaded_at,
       };
