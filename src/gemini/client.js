@@ -4,6 +4,14 @@ import { logger } from '../log.js';
 
 const MODEL = 'gemini-2.5-flash-image';
 
+// Force the OAuth transporter (gaxios, used transitively by google-auth-library)
+// to use Node's built-in global fetch. Otherwise gaxios falls through to a
+// dynamic `await import('node-fetch')` and — if that import resolves with
+// `.default` undefined for any reason on the host — every Vertex auth call
+// fails with "fetchImpl is not a function" before the request leaves the
+// process. Node ≥18 has global fetch, so this is always safe.
+const TRANSPORTER_OPTIONS = { fetchImplementation: globalThis.fetch };
+
 let client;
 function getClient() {
   if (client) return client;
@@ -12,6 +20,9 @@ function getClient() {
       vertexai: true,
       project: config.gemini.vertex.project,
       location: config.gemini.vertex.location,
+      googleAuthOptions: {
+        clientOptions: { transporterOptions: TRANSPORTER_OPTIONS },
+      },
     });
   } else if (config.gemini.apiKey) {
     client = new GoogleGenAI({ apiKey: config.gemini.apiKey });
