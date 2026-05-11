@@ -69,29 +69,17 @@ export const config = {
   tmdb: {
     readAccessToken: process.env.TMDB_READ_ACCESS_TOKEN || null,
   },
-  wan: {
-    // Alibaba Wan 2.7 image-to-video on DashScope. Optional — without the key
-    // the video-gen endpoint surfaces a friendly error and other features keep
-    // working. `dashscope-intl` is the canonical international host; the
-    // Beijing host (dashscope.aliyuncs.com) and Virginia host are accepted via
-    // WAN_BASE_URL.
-    apiKey: process.env.DASHSCOPE_API_KEY || null,
-    baseUrl: process.env.WAN_BASE_URL || 'https://dashscope-intl.aliyuncs.com',
-    model: process.env.WAN_MODEL || 'wan2.7-i2v',
-    defaultResolution: process.env.WAN_DEFAULT_RESOLUTION || '720P',
-    defaultDurationSeconds: Number(process.env.WAN_DEFAULT_DURATION_SECONDS) || 5,
-    pollIntervalMs: Number(process.env.WAN_POLL_INTERVAL_MS) || 5000,
-    timeoutMs: Number(process.env.WAN_TIMEOUT_MS) || 10 * 60 * 1000,
-  },
-  aliyunOss: {
-    // Required when Wan video-gen is enabled — DashScope only accepts public
-    // URLs for inputs, so we upload the four input files to an OSS bucket and
-    // pass back signed URLs.
-    accessKeyId: process.env.ALIYUN_OSS_ACCESS_KEY_ID || null,
-    accessKeySecret: process.env.ALIYUN_OSS_ACCESS_KEY_SECRET || null,
-    bucket: process.env.ALIYUN_OSS_BUCKET || null,
-    region: process.env.ALIYUN_OSS_REGION || 'oss-cn-wulanchabu',
-    signedUrlExpiresSeconds: Number(process.env.ALIYUN_OSS_SIGNED_URL_EXPIRES) || 1800,
+  fal: {
+    // fal.ai serverless models for video generation. Optional — without the
+    // key the "Generate video" button on a storyboard scene surfaces a
+    // friendly error and everything else keeps working. The SDK reads
+    // FAL_KEY itself; we keep our own copy here so isConfigured() can stay
+    // a pure function of config.
+    apiKey: process.env.FAL_KEY || null,
+    defaultModelId: process.env.FAL_DEFAULT_VIDEO_MODEL || 'kling-3-pro',
+    // Input assets are uploaded into fal storage with this lifecycle. fal
+    // bills for storage, so we expire inputs after a week by default.
+    storageLifetimeDays: Number(process.env.FAL_STORAGE_LIFETIME_DAYS) || 7,
   },
   tavily: {
     apiKey: process.env.TAVILY_API_KEY || null,

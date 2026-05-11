@@ -9,6 +9,18 @@ import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
 import { logger } from '../log.js';
 import { requireSession } from './auth.js';
+import { getSession, touchSession } from '../mongo/auth.js';
+import {
+  startVideoGenerationJob,
+  getVideoGenerationJob,
+  subscribeToJob,
+  unsubscribeFromJob,
+  serializeJob,
+  VideoBeatBusyError,
+  MissingInputsError,
+  FalNotConfiguredError,
+  UnknownVideoModelError,
+} from './falVideoGenerate.js';
 import {
   addBeatImageViaGateway,
   addBeatAttachmentViaGateway,
@@ -123,6 +135,76 @@ function webDiscordUser(req) {
 export function buildApiRouter() {
   const router = express.Router();
   router.use(express.json({ limit: '1mb' }));
+
+  // Server-Sent Events stream of fal video-generation job status. Registered
+  // BEFORE requireSession() because EventSource cannot set custom headers —
+  // so this route validates a session id from the query string instead.
+  router.get('/storyboard/:id/video-job/:jobId/events', async (req, res, next) => {
+    try {
+      const sid = String(req.query?.session_id || '');
+      if (!sid) {
+        res.status(401).json({ error: 'missing session' });
+        return;
+      }
+      const session = await getSession(sid);
+      if (!session) {
+        res.status(401).json({ error: 'invalid session' });
+        return;
+      }
+      touchSession(sid).catch(() => {});
+      req.session = session;
+
+      const job = getVideoGenerationJob(req.params.jobId);
+      if (!job) {
+        res.status(404).json({ error: 'job not found' });
+        return;
+      }
+      // SSE preamble. flushHeaders ensures the browser opens the stream
+      // immediately rather than waiting for the first body bytes.
+      res.set({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      res.flushHeaders?.();
+      // Initial snapshot so the SPA renders state immediately on connect.
+      res.write(`event: snapshot\ndata: ${JSON.stringify(serializeJob(job))}\n\n`);
+
+      const listener = (snap) => {
+        const terminal = snap.status === 'done' || snap.status === 'error';
+        const eventName = terminal ? snap.status : 'update';
+        res.write(`event: ${eventName}\ndata: ${JSON.stringify(snap)}\n\n`);
+        if (terminal) {
+          unsubscribeFromJob(snap.job_id, listener);
+          res.end();
+        }
+      };
+      subscribeToJob(req.params.jobId, listener);
+
+      // If the job is already terminal at connect time, close after the
+      // snapshot — no further events will fire.
+      if (job.status === 'done' || job.status === 'error') {
+        unsubscribeFromJob(req.params.jobId, listener);
+        res.end();
+        return;
+      }
+
+      // Periodic SSE comment to keep proxies from idling the socket.
+      const keepalive = setInterval(() => {
+        res.write(`: keepalive ${Date.now()}\n\n`);
+      }, 20_000);
+      keepalive.unref?.();
+
+      req.on('close', () => {
+        clearInterval(keepalive);
+        unsubscribeFromJob(req.params.jobId, listener);
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   router.use(requireSession());
 
   // Connection metadata for the SPA so it knows where to open WebSockets.
@@ -1588,9 +1670,11 @@ export function buildApiRouter() {
     }
   });
 
-  // Wan 2.7 image-to-video generation. Returns 202 + { job_id,
-  // estimated_seconds } immediately; the SPA polls the matching GET endpoint
-  // every ~2s for progress.
+  // fal.ai video generation. Returns 202 + { job_id } immediately; the SPA
+  // opens an EventSource at /storyboard/:id/video-job/:jobId/events for
+  // pushed status updates. `model_id` chooses which fal model — see
+  // src/fal/videoModels.js for the registered list; defaults to the
+  // configured default (kling-3-pro).
   router.post('/storyboard/:id/video/generate', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
@@ -1606,33 +1690,28 @@ export function buildApiRouter() {
       let durationSeconds = null;
       if (rawDuration != null && rawDuration !== '') {
         const n = Number(rawDuration);
-        if (!Number.isFinite(n) || n < 2 || n > 15) {
+        if (!Number.isFinite(n) || n < 1 || n > 15) {
           return res
             .status(400)
-            .json({ error: 'duration_seconds must be a number between 2 and 15' });
+            .json({ error: 'duration_seconds must be a number between 1 and 15' });
         }
         durationSeconds = n;
       }
-      const resolution = req.body?.resolution || null;
-      if (resolution && !['480P', '720P', '1080P'].includes(resolution)) {
-        return res
-          .status(400)
-          .json({ error: 'resolution must be 480P|720P|1080P' });
-      }
-      const {
-        startVideoGenerationJob,
-        VideoBeatBusyError,
-        MissingInputsError,
-        WanNotConfiguredError,
-      } = await import('./storyboardVideoGenerate.js');
+      const modelId =
+        typeof req.body?.model_id === 'string' && req.body.model_id.trim()
+          ? req.body.model_id.trim()
+          : null;
+      const generateAudio =
+        req.body?.generate_audio === undefined ? true : Boolean(req.body.generate_audio);
       try {
-        const { job_id, estimated_seconds } = await startVideoGenerationJob({
+        const { job_id } = await startVideoGenerationJob({
           storyboardId: sbId,
+          modelId,
           prompt,
           durationSeconds,
-          resolution,
+          generateAudio,
         });
-        res.status(202).json({ job_id, estimated_seconds });
+        res.status(202).json({ job_id });
       } catch (e) {
         if (e instanceof VideoBeatBusyError) {
           return res.status(409).json({ error: e.message });
@@ -1640,8 +1719,11 @@ export function buildApiRouter() {
         if (e instanceof MissingInputsError) {
           return res.status(400).json({ error: e.message, missing: e.missing });
         }
-        if (e instanceof WanNotConfiguredError) {
+        if (e instanceof FalNotConfiguredError) {
           return res.status(503).json({ error: e.message });
+        }
+        if (e instanceof UnknownVideoModelError) {
+          return res.status(400).json({ error: e.message });
         }
         throw e;
       }
@@ -1650,22 +1732,29 @@ export function buildApiRouter() {
     }
   });
 
-  router.get('/storyboard/:id/video-job/:jobId', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const { getVideoGenerationJob } = await import('./storyboardVideoGenerate.js');
-      const job = getVideoGenerationJob(req.params.jobId);
-      if (!job) return res.status(404).json({ error: 'job not found' });
-      res.json({ job });
-    } catch (e) {
-      next(e);
-    }
+  // List the fal video models the SPA picker should expose. Mirrors the
+  // server-side registry so adding/removing a model is a single-file change.
+  router.get('/video-models', async (_req, res) => {
+    const { VIDEO_MODELS } = await import('../fal/videoModels.js');
+    const { config } = await import('../config.js');
+    res.json({
+      default_model_id: config.fal.defaultModelId,
+      configured: Boolean(config.fal.apiKey),
+      models: VIDEO_MODELS.map((m) => ({
+        id: m.id,
+        label: m.label,
+        description: m.description,
+        durations: m.durations,
+        default_duration: m.defaultDuration,
+        supports_generate_audio: m.supportsGenerateAudio,
+        inputs: m.inputs,
+      })),
+    });
   });
 
   // Discard the current video on a storyboard scene. Deletes the GridFS
-  // attachment and clears video_file_id. The Wan task itself can't be
-  // recalled, but its expired output URL is harmless.
+  // attachment and clears video_file_id. The fal request can't be recalled,
+  // but its output URL expires on fal's storage TTL anyway.
   router.delete('/storyboard/:id/video', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);

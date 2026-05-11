@@ -45,7 +45,7 @@ export function StoryboardVideoPanel({ sb, storyboardId, onRefresh }) {
       <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'center' }}>
         {sb.video_duration_seconds ? (
           <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-            {sb.video_duration_seconds}s · Wan 2.7
+            {sb.video_duration_seconds}s
           </span>
         ) : null}
         <button type="button" disabled={busy} onClick={discard}>

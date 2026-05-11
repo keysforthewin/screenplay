@@ -110,3 +110,12 @@ export function imageUrl(id) {
 export function attachmentUrl(id) {
   return id ? withBase(`/attachment/${id}`) : null;
 }
+
+// EventSource cannot set custom headers, so SSE endpoints must accept a
+// session id via query string. The server applies the same getSession
+// check it would for a header-bearing request.
+export function apiSseUrl(path) {
+  const s = loadSession();
+  const sep = path.includes('?') ? '&' : '?';
+  return `${withBase(`/api${path}`)}${sep}session_id=${encodeURIComponent(s?.session_id || '')}`;
+}

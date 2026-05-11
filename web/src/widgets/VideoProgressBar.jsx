@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react';
 
-// Time-based progress bar for Wan 2.7 video generation. The API has no
-// native progress signal, so we drive the bar from elapsed time vs a
-// rolling-average estimate. Bar caps at 95% while the job is running and
-// jumps to 100% on `done` so the user gets honest "still working" feedback
-// without it ever appearing to stall.
+// Progress display for fal.ai video generation. fal exposes queue position
+// while a request waits in line and a discrete IN_PROGRESS state once
+// rendering starts, but no real-time percent. We render two modes:
+//   - IN_QUEUE: show the queue position (and indeterminate striped bar)
+//   - IN_PROGRESS / preparing / uploading / downloading / persisting: show
+//     elapsed time + an indeterminate bar
+//   - done: solid 100% green
+//   - error: red 0%, message
 //
-// Re-renders on a 500ms tick so the bar advances smoothly between the SPA's
-// 2s polls. Reads `started_at` from the job (set server-side at submit)
-// rather than the SPA's open time so the math stays correct even when the
-// dialog is reopened on a job already in flight.
-export function VideoProgressBar({ job, estimatedSeconds }) {
+// Re-renders every 500ms while a job is running so the elapsed counter
+// advances smoothly between SSE pushes. Reads `started_at` from the job
+// itself so the math stays correct after a reconnect.
+export function VideoProgressBar({ job }) {
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -23,8 +25,8 @@ export function VideoProgressBar({ job, estimatedSeconds }) {
 
   const startedAt = job.started_at ? new Date(job.started_at).getTime() : now;
   const elapsedSec = Math.max(0, Math.floor((now - startedAt) / 1000));
-  const est = Math.max(30, Number(estimatedSeconds) || 180);
 
+  let stripeAnim = false;
   let pct;
   let label;
   if (job.status === 'done') {
@@ -33,30 +35,24 @@ export function VideoProgressBar({ job, estimatedSeconds }) {
   } else if (job.status === 'error') {
     pct = 0;
     label = `Error: ${job.error || 'Generation failed.'}`;
+  } else if (job.status === 'IN_QUEUE') {
+    pct = 12;
+    stripeAnim = true;
+    label =
+      job.queue_position != null && job.queue_position > 0
+        ? `Waiting · queue position ${job.queue_position}`
+        : `Waiting · elapsed ${formatSec(elapsedSec)}`;
   } else {
-    pct = Math.min(95, (elapsedSec / est) * 100);
-    const remaining = Math.max(0, est - elapsedSec);
-    label = `~${formatSec(remaining)} remaining · elapsed ${formatSec(elapsedSec)}`;
+    pct = 50;
+    stripeAnim = true;
+    label = `Elapsed ${formatSec(elapsedSec)}`;
   }
 
   const stepText = job.step || stepDefault(job.status);
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 6,
-        fontSize: 13,
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'baseline',
-        }}
-      >
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
         <span style={{ color: job.status === 'error' ? '#ff8896' : 'var(--fg, inherit)' }}>
           {stepText}
         </span>
@@ -83,11 +79,21 @@ export function VideoProgressBar({ job, estimatedSeconds }) {
                 ? '#b00020'
                 : job.status === 'done'
                   ? '#4caf50'
-                  : 'var(--accent, #6c8eef)',
+                  : stripeAnim
+                    ? 'repeating-linear-gradient(45deg, var(--accent, #6c8eef) 0 10px, rgba(108,142,239,0.6) 10px 20px)'
+                    : 'var(--accent, #6c8eef)',
             transition: 'width 400ms linear',
+            animation: stripeAnim ? 'video-progress-stripes 1.4s linear infinite' : undefined,
+            backgroundSize: stripeAnim ? '28px 28px' : undefined,
           }}
         />
       </div>
+      <style>{`
+        @keyframes video-progress-stripes {
+          0%   { background-position: 0 0; }
+          100% { background-position: 28px 0; }
+        }
+      `}</style>
     </div>
   );
 }
@@ -104,14 +110,16 @@ function stepDefault(status) {
   switch (status) {
     case 'queued':
       return 'Queued';
-    case 'loading':
-      return 'Loading inputs';
+    case 'preparing':
+      return 'Preparing inputs';
     case 'uploading':
-      return 'Uploading inputs to OSS';
+      return 'Uploading inputs to fal';
     case 'submitting':
-      return 'Submitting to Wan 2.7';
-    case 'rendering':
-      return 'Wan is rendering the video';
+      return 'Submitting to fal';
+    case 'IN_QUEUE':
+      return 'Queued at fal';
+    case 'IN_PROGRESS':
+      return 'Rendering on fal';
     case 'downloading':
       return 'Downloading rendered video';
     case 'persisting':
