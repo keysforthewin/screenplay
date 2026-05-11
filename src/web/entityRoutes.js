@@ -71,9 +71,15 @@ import {
 import { getPlot, listBeats, getBeat } from '../mongo/plots.js';
 import {
   countStoryboardsByBeat,
+  getPreviousStoryboardInBeat,
   getStoryboard,
   listStoryboards,
 } from '../mongo/storyboards.js';
+import {
+  grabStartFrameFromPrevious,
+  FfmpegMissingError,
+  FfmpegFailedError,
+} from './storyboardGrabFrame.js';
 import {
   countDialogsByBeat,
   getDialog,
@@ -1486,6 +1492,38 @@ export function buildApiRouter() {
     }
   });
 
+  // Grab the last frame of the previous storyboard's generated video and
+  // install it as this storyboard's start_frame. Used for seamless joining
+  // between successive shots (Kling 3 Pro, Veo 3.1 first-last-frame).
+  router.post('/storyboard/:id/grab-start-frame-from-previous', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const sb = await getStoryboard(sbId);
+      const prev = await getPreviousStoryboardInBeat(sb.beat_id, sb.order);
+      if (!prev) {
+        return res.status(400).json({ error: 'no previous storyboard in this beat' });
+      }
+      if (!prev.video_file_id) {
+        return res.status(400).json({ error: 'previous shot has no generated video' });
+      }
+      try {
+        const result = await grabStartFrameFromPrevious({ currentSbId: sbId, prev });
+        res.json({ storyboard: result.storyboard, image: result.image });
+      } catch (e) {
+        if (e instanceof FfmpegMissingError) {
+          return res.status(500).json({ error: e.message });
+        }
+        if (e instanceof FfmpegFailedError) {
+          return res.status(500).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // Regenerate a single start_frame or end_frame on an existing storyboard
   // row. Runs nano banana with the beat's scene image plus character
   // sheet(s) as references, driven by the row's current text_prompt. The
@@ -1732,24 +1770,25 @@ export function buildApiRouter() {
     }
   });
 
-  // List the fal video models the SPA picker should expose. Mirrors the
-  // server-side registry so adding/removing a model is a single-file change.
-  router.get('/video-models', async (_req, res) => {
-    const { VIDEO_MODELS } = await import('../fal/videoModels.js');
-    const { config } = await import('../config.js');
-    res.json({
-      default_model_id: config.fal.defaultModelId,
-      configured: Boolean(config.fal.apiKey),
-      models: VIDEO_MODELS.map((m) => ({
-        id: m.id,
-        label: m.label,
-        description: m.description,
-        durations: m.durations,
-        default_duration: m.defaultDuration,
-        supports_generate_audio: m.supportsGenerateAudio,
-        inputs: m.inputs,
-      })),
-    });
+  // List the fal video models the SPA picker should expose. Combines the
+  // server-side registry (hand-tuned, executable) with data/fal-models.json
+  // (the wide catalog of i2v endpoints, browse-only). The SPA picker uses
+  // `is_registered` to decide which rows are selectable for generation.
+  router.get('/video-models', async (_req, res, next) => {
+    try {
+      const { loadCatalog } = await import('../fal/videoModels.js');
+      const { config } = await import('../config.js');
+      const catalog = await loadCatalog();
+      res.json({
+        default_model_id: config.fal.defaultModelId,
+        configured: Boolean(config.fal.apiKey),
+        catalog_generated_at: catalog.generated_at,
+        catalog_error: catalog.catalog_error,
+        models: catalog.models,
+      });
+    } catch (err) {
+      next(err);
+    }
   });
 
   // Discard the current video on a storyboard scene. Deletes the GridFS

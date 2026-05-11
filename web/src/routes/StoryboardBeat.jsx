@@ -347,6 +347,7 @@ export function StoryboardBeat({ session }) {
                       key={sb._id?.toString?.() || String(sb._id)}
                       sb={sb}
                       index={index}
+                      prevSb={sortedItems[index - 1] ?? null}
                       onRefresh={onRefresh}
                       onDelete={() => deleteStoryboard(sb._id)}
                     />

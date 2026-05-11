@@ -9,7 +9,8 @@
     "dev": "node --watch src/index.js",
     "build:web": "vite build --config web/vite.config.js",
     "dev:web": "vite --config web/vite.config.js",
-    "reindex": "node scripts/reindex-rag.js"
+    "reindex": "node scripts/reindex-rag.js",
+    "refresh:fal-models": "node scripts/list-fal-video-models.js && node scripts/cluster-fal-video-models.js"
   },
   "keywords": [],
   "author": "",

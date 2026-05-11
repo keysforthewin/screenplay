@@ -125,6 +125,7 @@ function FrameSlot({
   generatable,
   onRefresh,
   onOpenLightbox,
+  prevSb,
 }) {
   const fileInput = useRef(null);
   const [busy, setBusy] = useState(false);
@@ -132,6 +133,7 @@ function FrameSlot({
   const [error, setError] = useState(null);
   const [regenOpen, setRegenOpen] = useState(false);
   const url = imageUrl(imageId);
+  const canGrab = role === 'start_frame' && prevSb != null;
 
   async function upload(e) {
     const file = e.target.files?.[0];
@@ -165,6 +167,37 @@ function FrameSlot({
       setError(err.message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function grabFromPrevious() {
+    if (!canGrab) return;
+    setBusy(true);
+    setBusyLabel('Grabbing…');
+    setError(null);
+    try {
+      await apiPostJson(`/storyboard/${sbId}/grab-start-frame-from-previous`, {});
+      await onRefresh?.();
+    } catch (err) {
+      // Server bodies are JSON `{ error: '...' }`. The api helper rethrows the
+      // raw body string, so parse it to pick out the friendly explanation.
+      let serverMsg = err.message || '';
+      try {
+        const parsed = JSON.parse(serverMsg);
+        if (parsed && typeof parsed.error === 'string') serverMsg = parsed.error;
+      } catch {
+        // not JSON; leave as-is.
+      }
+      if (serverMsg === 'previous shot has no generated video') {
+        setError(
+          'The previous storyboard item must have a generated video before you can grab its last frame.',
+        );
+      } else {
+        setError(serverMsg || 'Grab failed.');
+      }
+    } finally {
+      setBusy(false);
+      setBusyLabel(null);
     }
   }
 
@@ -244,6 +277,17 @@ function FrameSlot({
             onClick={() => setRegenOpen(true)}
           >
             {busyLabel || (url ? 'Regenerate' : 'Generate')}
+          </button>
+        )}
+        {canGrab && (
+          <button
+            type="button"
+            className="storyboard-frame-grab"
+            disabled={busy}
+            title="Use the last frame of the previous shot's generated video as this start frame."
+            onClick={grabFromPrevious}
+          >
+            {busyLabel === 'Grabbing…' ? 'Grabbing…' : 'Grab from previous'}
           </button>
         )}
       </div>
@@ -344,7 +388,7 @@ function ReferenceImages({ ids, sbId, onRefresh, onOpenLightbox }) {
 }
 
 
-export function StoryboardItem({ sb, index, onRefresh, onDelete }) {
+export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
   const id = sb._id?.toString?.() || String(sb._id);
   const {
     attributes,
@@ -401,6 +445,7 @@ export function StoryboardItem({ sb, index, onRefresh, onDelete }) {
           imageId={sb.start_frame_id}
           sbId={id}
           generatable
+          prevSb={prevSb}
           onRefresh={onRefresh}
           onOpenLightbox={openLightbox}
         />
