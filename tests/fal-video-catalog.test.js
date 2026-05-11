@@ -11,6 +11,13 @@ const FAMILIES = [
   { label: 'Seedance', match: /seedance/, want: {} },
   { label: 'Wan', match: /(\/wan[-/]|^wan\/)/, want: {} },
   { label: 'Vidu', match: /\/vidu\//, want: {} },
+  { label: 'Veo 3.1 Fast', match: /\/veo3\.1\/fast\//, want: {} },
+  { label: 'Kling', match: /\/kling-video\//, want: {} },
+  { label: 'Happy Horse', match: /\/happy-horse\//, want: {} },
+  { label: 'PixVerse', match: /\/pixverse\//, want: {} },
+  { label: 'Pika', match: /\/pika\//, want: {} },
+  { label: 'LongCat', match: /\/longcat-video\//, want: {} },
+  { label: 'MiniMax', match: /\/minimax\//, want: {} },
 ];
 
 describe('fal video catalog: generic auto-wiring', () => {
@@ -70,10 +77,48 @@ describe('fal video catalog: generic auto-wiring', () => {
 
   it('refuses to auto-wire endpoints outside the allowlist', async () => {
     const { getVideoModelOrCatalog } = await import('../src/fal/videoModels.js');
-    // Kling 1 is in the catalog but NOT in the allowlist; should resolve to
-    // null (preview) unless it happens to also be in VIDEO_MODELS.
-    const m = await getVideoModelOrCatalog('fal-ai/kling-video/v1/standard/image-to-video');
+    // Hunyuan Portrait is in the catalog but NOT in the allowlist; should
+    // resolve to null (preview) unless it happens to also be in VIDEO_MODELS.
+    const m = await getVideoModelOrCatalog('fal-ai/hunyuan-portrait');
     expect(m).toBeNull();
+  });
+
+  it('flashhead resolves to the bespoke registered entry (not a synth)', async () => {
+    const { getVideoModelOrCatalog, getVideoModel } = await import('../src/fal/videoModels.js');
+    const direct = getVideoModel('flashhead');
+    expect(direct).toBeTruthy();
+    expect(direct._synthetic).toBeUndefined();
+    const input = direct.buildInput({
+      prompt: 'A neon street at night.',
+      startFrameUrl: 'https://fal.example/anchor.png',
+    });
+    // Flashhead uses `text`, not `prompt`.
+    expect(input.text).toContain('neon street');
+    expect(input.prompt).toBeUndefined();
+    expect(input.image_url).toBe('https://fal.example/anchor.png');
+
+    // The SPA submits with `chosenModel.id`, which is the registered id for
+    // bespoke entries — getVideoModelOrCatalog('flashhead') routes through
+    // the registry, not the catalog auto-wire path.
+    const byId = await getVideoModelOrCatalog('flashhead');
+    expect(byId).toBe(direct);
+  });
+
+  it('exposes flashhead as Ready in loadCatalog()', async () => {
+    const { loadCatalog } = await import('../src/fal/videoModels.js');
+    const catalog = await loadCatalog();
+    const row = catalog.models.find((m) => m.endpoint_id === 'fal-ai/flashhead');
+    expect(row).toBeTruthy();
+    expect(row.is_registered).toBe(true);
+    expect(row.id).toBe('flashhead');
+  });
+
+  it('exposes the Wan 2.6 Flash variant as Ready via the wan prefix', async () => {
+    const { loadCatalog } = await import('../src/fal/videoModels.js');
+    const catalog = await loadCatalog();
+    const row = catalog.models.find((m) => m.endpoint_id === 'wan/v2.6/image-to-video/flash');
+    if (!row) return; // manifest may drift
+    expect(row.is_registered).toBe(true);
   });
 
   it('extractVideoUrl handles common fal response shapes', async () => {

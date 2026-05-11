@@ -167,6 +167,35 @@ export const VIDEO_MODELS = [
       return data?.video?.url || null;
     },
   },
+
+  {
+    id: 'flashhead',
+    label: 'Flashhead',
+    falModel: 'fal-ai/flashhead',
+    description:
+      'Soul AI Lab Flashhead. Image-to-video where the prompt is delivered as the ' +
+      "model's `text` field. Single anchor image, no end frame.",
+    durations: [],
+    defaultDuration: null,
+    supportsGenerateAudio: false,
+    inputs: {
+      startFrame: INPUT_NEEDS.REQUIRED,
+      endFrame: INPUT_NEEDS.UNUSED,
+      characterSheet: INPUT_NEEDS.UNUSED,
+      characterElements: INPUT_NEEDS.UNUSED,
+      referenceImages: INPUT_NEEDS.UNUSED,
+      audio: INPUT_NEEDS.UNUSED,
+    },
+    buildInput(bundle) {
+      return {
+        image_url: bundle.startFrameUrl,
+        text: capPrompt(bundle.prompt) || 'Cinematic shot.',
+      };
+    },
+    extractVideoUrl(data) {
+      return data?.video?.url || data?.output?.url || null;
+    },
+  },
 ];
 
 const MODELS_BY_ID = new Map(VIDEO_MODELS.map((m) => [m.id, m]));
@@ -266,7 +295,10 @@ const AUDIO_NAMES = new Set([
 // Family allowlist. An endpoint is in an allowed family if any path segment
 // of its id equals (or starts with `<prefix>-` / `<prefix>/`) one of these.
 // Segment-prefix matching avoids matching "swan*" via the "wan" prefix.
-const CATALOG_READY_PREFIXES = ['ltx', 'grok-imagine', 'bytedance', 'wan', 'vidu'];
+const CATALOG_READY_PREFIXES = [
+  'ltx', 'grok-imagine', 'bytedance', 'wan', 'vidu',
+  'veo3.1', 'kling', 'happy-horse', 'pixverse', 'pika', 'longcat', 'minimax',
+];
 
 function isAllowedFamily(endpointId) {
   if (!endpointId) return false;

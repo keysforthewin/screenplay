@@ -381,9 +381,10 @@ function ModelPicker({
   onRefreshCatalog,
 }) {
   // Sort, in priority order:
-  //   1. added_at desc (newest first, nulls last) — when any model has a date.
-  //   2. version-number heuristic (Wan 2.7 > Wan 2.6) — when no model has a date.
-  //   3. Ready before Preview.
+  //   1. Ready (is_registered=true) before Preview — clean visual split.
+  //   2. Within each group: added_at desc (newest first, nulls last).
+  //   3. Within-group fallback when no entries have dates: version-number
+  //      heuristic (Wan 2.7 > Wan 2.6).
   //   4. price asc (nulls last).
   //   5. display_name asc.
   const anyDates = useMemo(
@@ -393,6 +394,7 @@ function ModelPicker({
   const sortedModels = useMemo(() => {
     const arr = [...visibleModels];
     arr.sort((a, b) => {
+      if (a.is_registered !== b.is_registered) return a.is_registered ? -1 : 1;
       if (anyDates) {
         const ad = a.added_at ? Date.parse(a.added_at) : NaN;
         const bd = b.added_at ? Date.parse(b.added_at) : NaN;
@@ -405,7 +407,6 @@ function ModelPicker({
         const bv = versionScore(b);
         if (av !== bv) return bv - av;
       }
-      if (a.is_registered !== b.is_registered) return a.is_registered ? -1 : 1;
       const ap = a.price_min_usd;
       const bp = b.price_min_usd;
       if (ap != null || bp != null) {
