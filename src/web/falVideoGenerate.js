@@ -40,7 +40,7 @@ import { setStoryboardVideoViaGateway } from './gateway.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 import { fal, isConfigured as falIsConfigured } from '../fal/client.js';
 import {
-  getVideoModel,
+  getVideoModelOrCatalog,
   validateStoryboardInputs,
 } from '../fal/videoModels.js';
 
@@ -164,7 +164,7 @@ export async function startVideoGenerationJob({
   }
 
   const chosenId = modelId || config.fal.defaultModelId;
-  const model = getVideoModel(chosenId);
+  const model = await getVideoModelOrCatalog(chosenId);
   if (!model) throw new UnknownVideoModelError(chosenId);
 
   const sb = await mongoGetStoryboard(storyboardId);

@@ -51,6 +51,12 @@ function matchOperator(dv, op) {
       case '$lt':
         if (dv === undefined || dv === null || !(dv < v)) return false;
         break;
+      case '$ne':
+        if (dv === v) return false;
+        break;
+      case '$exists':
+        if (Boolean(v) !== (dv !== undefined)) return false;
+        break;
       default:
         return false;
     }

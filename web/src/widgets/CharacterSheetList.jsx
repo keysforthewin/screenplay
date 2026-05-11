@@ -15,7 +15,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { apiDelete, apiPatchJson, apiPostJson, imageUrl } from '../api.js';
+import { apiDelete, apiPatchJson, apiPostJson, imageUrl, thumbUrl } from '../api.js';
 
 // Drag-reorderable list of character sheets. The first row is the
 // "default" sheet that storyboard generation falls back to when the user
@@ -132,7 +132,7 @@ function SheetRow({ sheet, isDefault, characterId, onDelete, onRefresh }) {
       </button>
       <div className="gallery-thumb">
         <a href={imageUrl(sheet._id)} target="_blank" rel="noreferrer">
-          <img src={imageUrl(sheet._id)} alt={sheet.name || 'character sheet'} />
+          <img src={thumbUrl(sheet._id)} alt={sheet.name || 'character sheet'} loading="lazy" />
         </a>
       </div>
       <div className="gallery-meta">

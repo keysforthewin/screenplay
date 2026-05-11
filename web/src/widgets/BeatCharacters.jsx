@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { apiPatchJson, imageUrl } from '../api.js';
+import { apiPatchJson, thumbUrl } from '../api.js';
 import { CharacterSelect } from './CharacterSelect.jsx';
 
 function plainOf(s) {
@@ -100,7 +100,7 @@ export function BeatCharacters({ beat, toc, onRefresh }) {
             <div key={raw} className="beat-character-row">
               <div className="beat-character-thumb">
                 {thumbStr ? (
-                  <img src={imageUrl(thumbStr)} alt={plain || raw} loading="lazy" />
+                  <img src={thumbUrl(thumbStr)} alt={plain || raw} loading="lazy" />
                 ) : (
                   <div className="beat-character-thumb-placeholder" aria-hidden="true">
                     👤

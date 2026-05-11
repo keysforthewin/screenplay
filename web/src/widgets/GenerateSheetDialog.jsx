@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
-import { apiGet, apiPostJson, imageUrl } from '../api.js';
+import { apiGet, apiPostJson, imageUrl, thumbUrl } from '../api.js';
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -321,8 +321,9 @@ export function GenerateSheetDialog({ open, onClose, character, onGenerated }) {
                     }}
                   >
                     <img
-                      src={imageUrl(id)}
+                      src={thumbUrl(id)}
                       alt={img.caption || img.filename || 'portrait'}
+                      loading="lazy"
                       style={{ width: '100%', height: 100, objectFit: 'cover' }}
                     />
                     <input

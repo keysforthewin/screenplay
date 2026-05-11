@@ -401,6 +401,7 @@ async function main() {
       inputs_optional: Object.keys(optional_params_obj),
       inputs: computeInputs(required_params_obj, optional_params_obj),
       price_min_usd: extractPriceMinUsd(row.price),
+      added_at: row.added_at || null,
     };
   });
 
@@ -449,6 +450,7 @@ function writeCatalogJson(enriched) {
       inputs: r.inputs,
       inputs_required: r.inputs_required,
       inputs_optional: r.inputs_optional,
+      added_at: r.added_at,
     }))
     .sort((a, b) => {
       const ap = a.price_min_usd;

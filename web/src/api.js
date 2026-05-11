@@ -107,6 +107,10 @@ export function imageUrl(id) {
   return id ? withBase(`/image/${id}`) : null;
 }
 
+export function thumbUrl(id) {
+  return id ? withBase(`/image/${id}/thumb`) : null;
+}
+
 export function attachmentUrl(id) {
   return id ? withBase(`/attachment/${id}`) : null;
 }

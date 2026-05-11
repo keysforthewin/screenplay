@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CollabField } from '../editor/CollabField.jsx';
-import { apiPostJson, imageUrl } from '../api.js';
+import { apiPostJson, imageUrl, thumbUrl } from '../api.js';
 
 const QUALITY_OPTIONS = ['low', 'medium', 'high', 'auto'];
 const MODEL_STORAGE_KEY = 'screenplay.sheet.model';
@@ -214,8 +214,9 @@ export function SpecificsTab({
             <img
               id="sheet-image"
               className="character-sheet-image"
-              src={imageUrl(imageId)}
+              src={thumbUrl(imageId)}
               alt={imageAltText || sheetLabel}
+              loading="lazy"
             />
           </>
         ) : (

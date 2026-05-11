@@ -7,6 +7,7 @@ import {
   apiPostJson,
   apiPostMultipart,
   imageUrl,
+  thumbUrl,
 } from '../api.js';
 import { CollabField } from '../editor/CollabField.jsx';
 import { FrameRegenerateDialog } from './FrameRegenerateDialog.jsx';
@@ -133,6 +134,7 @@ function FrameSlot({
   const [error, setError] = useState(null);
   const [regenOpen, setRegenOpen] = useState(false);
   const url = imageUrl(imageId);
+  const thumbSrc = thumbUrl(imageId);
   const canGrab = role === 'start_frame' && prevSb != null;
 
   async function upload(e) {
@@ -226,8 +228,9 @@ function FrameSlot({
       {url ? (
         <div className="storyboard-frame-img-wrap">
           <img
-            src={url}
+            src={thumbSrc}
             alt={label}
+            loading="lazy"
             onClick={() => onOpenLightbox?.(url, label)}
           />
           <button
@@ -350,8 +353,9 @@ function ReferenceImages({ ids, sbId, onRefresh, onOpenLightbox }) {
           return (
             <div className="storyboard-ref-thumb" key={key}>
               <img
-                src={imageUrl(key)}
+                src={thumbUrl(key)}
                 alt="reference"
+                loading="lazy"
                 onClick={() => onOpenLightbox?.(imageUrl(key), 'Reference')}
               />
               <button

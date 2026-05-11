@@ -26,11 +26,11 @@ function getBucket() {
   return bucket;
 }
 
-function filesCol() {
+export function filesCol() {
   return getDb().collection(`${BUCKET_NAME}.files`);
 }
 
-function uploadBuffer({ buffer, filename, contentType, metadata }) {
+export function uploadBuffer({ buffer, filename, contentType, metadata }) {
   return new Promise((resolve, reject) => {
     const stream = getBucket().openUploadStream(filename, { contentType, metadata });
     stream.on('error', reject);
@@ -118,7 +118,7 @@ export async function findImageFile(imageId) {
 
 export async function listLibraryImages() {
   return filesCol()
-    .find({ 'metadata.owner_type': null })
+    .find({ 'metadata.owner_type': null, 'metadata.kind': { $ne: 'thumbnail' } })
     .sort({ uploadDate: -1 })
     .toArray();
 }
@@ -268,7 +268,8 @@ export async function setOwnedImageMeta(imageId, { name, description } = {}) {
 
 // Substring search across library images by metadata.name_lower and
 // metadata.description. Done in JS rather than via $regex so the in-memory
-// fake Mongo used in tests keeps working.
+// fake Mongo used in tests keeps working. listLibraryImages already filters
+// out cached thumbnails (metadata.kind === 'thumbnail').
 export async function searchLibraryImages({ query, limit = 20 } = {}) {
   const all = await listLibraryImages();
   const q = String(query || '').toLowerCase().trim();

@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { apiDelete, apiPostJson, apiPostMultipart, imageUrl } from '../api.js';
+import { apiDelete, apiPostJson, apiPostMultipart, imageUrl, thumbUrl } from '../api.js';
 import { CollabField } from '../editor/CollabField.jsx';
 import { ImageEditDialog } from './ImageEditDialog.jsx';
 
@@ -120,7 +120,7 @@ export function ImageGallery({
                   rel="noreferrer"
                   title="Open full size in new tab"
                 >
-                  <img src={imageUrl(id)} alt={img.filename || ''} loading="lazy" />
+                  <img src={thumbUrl(id)} alt={img.filename || ''} loading="lazy" />
                 </a>
               </div>
               <div className="gallery-meta">

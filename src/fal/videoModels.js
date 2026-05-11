@@ -214,8 +214,13 @@ export function validateStoryboardInputs(model, storyboard) {
   const missing = [];
   for (const [inputKey, need] of Object.entries(model.inputs)) {
     if (need !== INPUT_NEEDS.REQUIRED) continue;
+    if (inputKey === 'referenceImages') {
+      const ids = storyboard?.reference_image_ids;
+      if (!Array.isArray(ids) || !ids.length) missing.push('reference images');
+      continue;
+    }
     const field = INPUT_TO_FIELD[inputKey];
-    if (!field) continue; // characterElements/referenceImages have no single storyboard field
+    if (!field) continue; // characterElements has no single storyboard field
     if (!storyboard[field]) missing.push(INPUT_LABEL[inputKey] || inputKey);
   }
   return missing;
@@ -225,8 +230,190 @@ export function validateStoryboardInputs(model, storyboard) {
 // Catalog (data/fal-models.json) — the wide list of i2v fal endpoints the SPA
 // picker browses. Most catalog entries are "Preview" (no registry wiring);
 // the few in VIDEO_MODELS are "Ready" and selectable for generation.
+//
+// Families in CATALOG_READY_PREFIXES additionally get a generic auto-wire
+// path: when the model's required params are all things we know how to fill
+// (start frame, end frame, reference images, character sheet, audio, prompt),
+// synthesizeCatalogModel() builds a registry-shaped object on the fly and
+// the picker promotes the row to Ready. This avoids hand-writing 50+ entries.
 
 const CATALOG_PATH = path.join(process.cwd(), 'data', 'fal-models.json');
+
+// Param-name sets — copies of the ones in scripts/cluster-fal-video-models.js.
+// We can't import that script: it's a build tool that pulls in node:fs paths
+// relative to cwd, and a tiny duplication is cheaper than the coupling.
+const START_NAMES = new Set([
+  'image_url', 'first_frame_url', 'start_image_url', 'first_image_url',
+  'first_frame_image_url', 'start_frame', 'source_image_url', 'input_image_url',
+]);
+const END_NAMES = new Set([
+  'end_image_url', 'last_frame_url', 'tail_image_url', 'end_frame', 'last_image_url',
+]);
+const REFERENCE_NAMES = new Set([
+  'image_urls', 'ref_image_urls', 'reference_image_urls', 'input_image_urls',
+  'reference_image_url', 'image_references', 'reference_video_urls',
+]);
+const CHARACTER_NAMES = new Set([
+  'character', 'character_ids', 'character_orientation', 'multi_character',
+  'subject_reference_image_url', 'character_image', 'character_sheet',
+]);
+const AUDIO_NAMES = new Set([
+  'audio_url', 'audio_urls', 'driven_audio_url', 'audio_input',
+  'voice_url', 'speech_url', 'first_audio_url', 'reference_audio_url',
+  'second_audio_url', 'audio_file',
+]);
+
+// Family allowlist. An endpoint is in an allowed family if any path segment
+// of its id equals (or starts with `<prefix>-` / `<prefix>/`) one of these.
+// Segment-prefix matching avoids matching "swan*" via the "wan" prefix.
+const CATALOG_READY_PREFIXES = ['ltx', 'grok-imagine', 'bytedance', 'wan', 'vidu'];
+
+function isAllowedFamily(endpointId) {
+  if (!endpointId) return false;
+  const segs = String(endpointId).toLowerCase().split('/');
+  return segs.some((seg) =>
+    CATALOG_READY_PREFIXES.some((p) => seg === p || seg.startsWith(p + '-')),
+  );
+}
+
+// Generic-wireable iff every required param is either 'prompt' or covered by
+// one of our name-sets. Models that need params we can't fill (e.g.
+// template_id, video_url) stay Preview.
+const UNIVERSAL_REQUIRED = new Set(['prompt']);
+const ALL_MAPPED = new Set([
+  ...START_NAMES,
+  ...END_NAMES,
+  ...REFERENCE_NAMES,
+  ...CHARACTER_NAMES,
+  ...AUDIO_NAMES,
+]);
+
+function canGenericWire(row) {
+  const req = row?.inputs_required;
+  if (!Array.isArray(req)) return false;
+  return req.every((p) => UNIVERSAL_REQUIRED.has(p) || ALL_MAPPED.has(p));
+}
+
+function pickFirstParam(nameSet, allParams) {
+  for (const name of allParams) if (nameSet.has(name)) return name;
+  return null;
+}
+
+// Build a registry-shape model from a catalog row. The returned object has
+// the same surface as VIDEO_MODELS entries so the orchestrator's loop in
+// runVideoGenerationJob() works without branching.
+function synthesizeCatalogModel(row) {
+  const required = row.inputs_required || [];
+  const optional = row.inputs_optional || [];
+  // Iterate required first so we prefer required param names when a model
+  // declares both (rare but possible).
+  const allParams = [...required, ...optional];
+  const allSet = new Set(allParams);
+
+  const startParam = pickFirstParam(START_NAMES, allParams);
+  const endParam = pickFirstParam(END_NAMES, allParams);
+  const refParam = pickFirstParam(REFERENCE_NAMES, allParams);
+  const charParam = pickFirstParam(CHARACTER_NAMES, allParams);
+  const audioParam = pickFirstParam(AUDIO_NAMES, allParams);
+
+  const supportsGenerateAudio = allSet.has('generate_audio');
+  const hasDuration = allSet.has('duration');
+  const durationsEnum = Array.isArray(row.durations_enum) ? row.durations_enum.map(String) : [];
+
+  // Detect duration format from enum entries: '8s', '8.0', '8'.
+  let durationFormat = 'int';
+  if (durationsEnum.length) {
+    const sample = durationsEnum[0];
+    if (/s$/.test(sample)) durationFormat = 'suffix-s';
+    else if (sample.includes('.')) durationFormat = 'float';
+  }
+
+  function formatDuration(seconds) {
+    const n = Number(seconds);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    if (durationFormat === 'suffix-s') return `${Math.round(n)}s`;
+    if (durationFormat === 'float') return String(n.toFixed(1));
+    return String(Math.round(n));
+  }
+
+  // Default duration: prefer the largest enum value if the API enforces one;
+  // otherwise leave null (the orchestrator falls back to storyboard / 5s).
+  const defaultDuration = durationsEnum.length ? durationsEnum[durationsEnum.length - 1] : null;
+
+  function buildInput(bundle) {
+    const input = { prompt: capPrompt(bundle.prompt) || 'Cinematic shot.' };
+    if (startParam && bundle.startFrameUrl) input[startParam] = bundle.startFrameUrl;
+    if (endParam && bundle.endFrameUrl) input[endParam] = bundle.endFrameUrl;
+    if (charParam && bundle.characterSheetUrl) input[charParam] = bundle.characterSheetUrl;
+    if (audioParam && bundle.audioUrl) input[audioParam] = bundle.audioUrl;
+    if (refParam && Array.isArray(bundle.referenceImageUrls) && bundle.referenceImageUrls.length) {
+      // Array-typed params end in `s`/`urls`; singular ones take one URL.
+      if (refParam.endsWith('urls') || refParam.endsWith('_urls') || refParam.endsWith('s')) {
+        input[refParam] = bundle.referenceImageUrls;
+      } else {
+        input[refParam] = bundle.referenceImageUrls[0];
+      }
+    }
+    if (hasDuration) {
+      const formatted = formatDuration(bundle.durationSeconds);
+      if (formatted != null) input.duration = formatted;
+    }
+    if (supportsGenerateAudio) input.generate_audio = Boolean(bundle.generateAudio);
+    return input;
+  }
+
+  function extractVideoUrl(data) {
+    return (
+      data?.video?.url ||
+      data?.output?.url ||
+      (typeof data?.output === 'string' ? data.output : null) ||
+      data?.video_url ||
+      data?.videos?.[0]?.url ||
+      null
+    );
+  }
+
+  return {
+    id: row.endpoint_id,
+    label: row.display_name || row.endpoint_id,
+    falModel: row.endpoint_id,
+    description:
+      [row.model_lab, row.model_family].filter(Boolean).join(' · ') ||
+      `Auto-wired from catalog. Required: ${required.join(', ') || '(none)'}.`,
+    durations: durationsEnum,
+    defaultDuration,
+    supportsGenerateAudio,
+    inputs: row.inputs || { ...DEFAULT_CATALOG_INPUTS },
+    buildInput,
+    extractVideoUrl,
+    _synthetic: true,
+  };
+}
+
+// Cache synthesized models so repeated jobs don't rebuild. Cleared at module
+// scope so tests using `_resetForTests()` (none today, but easy to add) can
+// reset; the catalog itself is also cheap to re-read so the cache is purely
+// a per-process optimization.
+const SYNTH_CACHE = new Map();
+
+// Async lookup that consults the registry first, then falls back to the
+// catalog manifest for endpoints in allowlisted families with generic-
+// wireable inputs. Returns null when the id is unknown OR known but not
+// auto-wireable (callers should treat both as "preview not ready").
+export async function getVideoModelOrCatalog(id) {
+  const registered = getVideoModel(id);
+  if (registered) return registered;
+  if (!id) return null;
+  if (SYNTH_CACHE.has(id)) return SYNTH_CACHE.get(id);
+  const cat = await loadCatalog();
+  const row = cat.models.find((m) => m.endpoint_id === id);
+  if (!row) return null;
+  if (!isAllowedFamily(id)) return null;
+  if (!canGenericWire(row)) return null;
+  const model = synthesizeCatalogModel(row);
+  SYNTH_CACHE.set(id, model);
+  return model;
+}
 
 // Default `inputs` shape used when a catalog entry doesn't specify one
 // (defensive — newer manifests always include it).
@@ -257,6 +444,10 @@ function registryToDialogShape(m) {
 // dialog row shape. Registered fields win over catalog ones because the
 // registry's hand-tuned description / duration list is more useful in the
 // dropdown than the raw OpenAPI extraction.
+//
+// Rows in CATALOG_READY_PREFIXES whose required params are all in our
+// name-sets get promoted to is_registered=true with id=endpoint_id; the
+// orchestrator resolves these via getVideoModelOrCatalog() at submit time.
 function mergeCatalogRow(catalogRow, registered) {
   const base = {
     endpoint_id: catalogRow.endpoint_id,
@@ -274,6 +465,9 @@ function mergeCatalogRow(catalogRow, registered) {
     price_text: catalogRow.price_text || null,
     price_min_usd: catalogRow.price_min_usd ?? null,
     inputs: catalogRow.inputs || { ...DEFAULT_CATALOG_INPUTS },
+    inputs_required: Array.isArray(catalogRow.inputs_required) ? catalogRow.inputs_required : [],
+    inputs_optional: Array.isArray(catalogRow.inputs_optional) ? catalogRow.inputs_optional : [],
+    added_at: catalogRow.added_at || null,
     is_registered: false,
     id: null,
     label: catalogRow.display_name,
@@ -293,6 +487,16 @@ function mergeCatalogRow(catalogRow, registered) {
       default_duration: r.default_duration,
       supports_generate_audio: r.supports_generate_audio,
       inputs: r.inputs,
+    };
+  }
+  if (isAllowedFamily(catalogRow.endpoint_id) && canGenericWire(catalogRow)) {
+    return {
+      ...base,
+      is_registered: true,
+      id: catalogRow.endpoint_id,
+      description:
+        [catalogRow.model_lab, catalogRow.model_family].filter(Boolean).join(' · ') ||
+        'Auto-wired from catalog.',
     };
   }
   return base;

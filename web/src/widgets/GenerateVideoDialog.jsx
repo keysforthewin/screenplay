@@ -380,21 +380,43 @@ function ModelPicker({
   onModelClick,
   onRefreshCatalog,
 }) {
-  // Sort: Ready first, then by price asc (nulls last), then by display_name.
+  // Sort, in priority order:
+  //   1. added_at desc (newest first, nulls last) — when any model has a date.
+  //   2. version-number heuristic (Wan 2.7 > Wan 2.6) — when no model has a date.
+  //   3. Ready before Preview.
+  //   4. price asc (nulls last).
+  //   5. display_name asc.
+  const anyDates = useMemo(
+    () => visibleModels.some((m) => m.added_at),
+    [visibleModels],
+  );
   const sortedModels = useMemo(() => {
     const arr = [...visibleModels];
     arr.sort((a, b) => {
+      if (anyDates) {
+        const ad = a.added_at ? Date.parse(a.added_at) : NaN;
+        const bd = b.added_at ? Date.parse(b.added_at) : NaN;
+        const aHas = Number.isFinite(ad);
+        const bHas = Number.isFinite(bd);
+        if (aHas !== bHas) return aHas ? -1 : 1;
+        if (aHas && bHas && ad !== bd) return bd - ad;
+      } else {
+        const av = versionScore(a);
+        const bv = versionScore(b);
+        if (av !== bv) return bv - av;
+      }
       if (a.is_registered !== b.is_registered) return a.is_registered ? -1 : 1;
       const ap = a.price_min_usd;
       const bp = b.price_min_usd;
-      if (ap == null && bp == null) return (a.display_name || '').localeCompare(b.display_name || '');
-      if (ap == null) return 1;
-      if (bp == null) return -1;
-      if (ap !== bp) return ap - bp;
+      if (ap != null || bp != null) {
+        if (ap == null) return 1;
+        if (bp == null) return -1;
+        if (ap !== bp) return ap - bp;
+      }
       return (a.display_name || '').localeCompare(b.display_name || '');
     });
     return arr;
-  }, [visibleModels]);
+  }, [visibleModels, anyDates]);
 
   if (!registry) {
     return (
@@ -601,6 +623,7 @@ function ModelRow({ model, selected, disabled, onClick }) {
   const priceLabel = model.price_min_usd != null ? `from $${formatUsd(model.price_min_usd)}` : null;
   const maxLabel = typeof model.max_seconds === 'number' ? `max ${model.max_seconds}s` : null;
   const resBadges = (model.resolutions || []).slice(0, 4);
+  const addedLabel = formatAddedAt(model.added_at);
   return (
     <button
       type="button"
@@ -642,6 +665,7 @@ function ModelRow({ model, selected, disabled, onClick }) {
         ) : model.price_text ? (
           <span title={model.price_text}>— price</span>
         ) : null}
+        {addedLabel ? <span title={model.added_at}>{addedLabel}</span> : null}
       </div>
       {selected && model.description ? (
         <div style={{ marginTop: 6, fontSize: 12, color: 'var(--fg-muted)', whiteSpace: 'pre-wrap' }}>
@@ -662,4 +686,24 @@ function formatUsd(n) {
   if (n >= 1) return n.toFixed(2);
   if (n >= 0.01) return n.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
   return n.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function formatAddedAt(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return `added ${d.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  })}`;
+}
+
+// Fallback sort key when the catalog has no per-model dates. Pulls the first
+// number out of `model_family` (e.g. "Wan 2.7" -> 2.7, "Vidu Q3" -> 3); the
+// sort uses this descending so newer versions float to the top within a lab.
+function versionScore(model) {
+  const family = model.model_family || '';
+  const match = String(family).match(/(\d+(?:\.\d+)?)/);
+  return match ? parseFloat(match[1]) : 0;
 }

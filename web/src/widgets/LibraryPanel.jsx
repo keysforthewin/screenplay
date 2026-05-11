@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react';
-import { apiDelete, apiPostMultipart, imageUrl } from '../api.js';
+import { apiDelete, apiPostMultipart, imageUrl, thumbUrl } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
 import { AttachmentList } from './AttachmentList.jsx';
@@ -106,7 +106,7 @@ export function LibraryPanel({ data, session, onChange, query }) {
                   rel="noreferrer"
                   title="Open full size in new tab"
                 >
-                  <img src={imageUrl(img._id)} alt={stripMd(img.name) || img.filename} loading="lazy" />
+                  <img src={thumbUrl(img._id)} alt={stripMd(img.name) || img.filename} loading="lazy" />
                 </a>
               </div>
               <div className="library-meta">

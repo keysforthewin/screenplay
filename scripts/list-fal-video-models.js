@@ -42,6 +42,13 @@ async function listAllVideoModels() {
   do {
     const data = await falFetch(`${API_BASE}/models?page=${page}`);
     pages = data.pages;
+    // Probe: on the first page, log the field names on the first item so we
+    // can confirm which date field fal exposes (if any). The discovery API is
+    // undocumented and may change shape; printing keys keeps us honest.
+    if (page === 1 && data.items?.[0]) {
+      const sampleKeys = Object.keys(data.items[0]).sort();
+      console.error(`  probe: /api/models item keys = ${JSON.stringify(sampleKeys)}`);
+    }
     for (const item of data.items) {
       if (VIDEO_CATEGORIES.has(item.category)) collected.push(item);
     }
@@ -49,6 +56,28 @@ async function listAllVideoModels() {
     page += 1;
   } while (page <= pages);
   return collected;
+}
+
+// Pick the first date-like field present on a discovery item. fal's response
+// shape is undocumented; we try the common ISO 8601 variants. Returns null if
+// nothing usable is found.
+const DATE_FIELDS = [
+  'createdAt', 'created_at',
+  'publishedAt', 'published_at',
+  'releasedAt', 'released_at',
+  'addedAt', 'added_at',
+  'updatedAt', 'updated_at',
+];
+function pickAddedAt(item) {
+  for (const f of DATE_FIELDS) {
+    const v = item?.[f];
+    if (typeof v === 'string' && v) return v;
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      // Heuristic: treat numbers > 10^12 as ms, smaller as seconds.
+      return new Date(v > 1e12 ? v : v * 1000).toISOString();
+    }
+  }
+  return null;
 }
 
 async function fetchOpenApi(endpointId) {
@@ -149,6 +178,7 @@ function toCsv(rows) {
     'optional_params',
     'output_shape',
     'price',
+    'added_at',
   ];
   const lines = [headers.join(',')];
   for (const r of rows) {
@@ -164,6 +194,7 @@ function toCsv(rows) {
       csvCell(r.optionalParams),
       csvCell(r.output),
       csvCell(r.price),
+      csvCell(r.addedAt),
     ].join(','));
   }
   return lines.join('\n') + '\n';
@@ -195,6 +226,7 @@ async function main() {
         optionalParams: io.optionalParams,
         output: io.output,
         price: m.pricingInfoOverride,
+        addedAt: pickAddedAt(m),
       });
       console.error(`  [${i}/${videoModels.length}] ok: ${m.id}`);
     } catch (err) {
@@ -211,6 +243,7 @@ async function main() {
         optionalParams: {},
         output: {},
         price: m.pricingInfoOverride,
+        addedAt: pickAddedAt(m),
       });
     }
     await sleep(DETAIL_DELAY_MS);

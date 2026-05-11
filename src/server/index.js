@@ -8,6 +8,7 @@ import {
   findImageFile,
   openImageDownloadStream,
 } from '../mongo/images.js';
+import { ensureThumbnailForImage } from '../mongo/imageThumbnails.js';
 import {
   findAttachmentFile,
   openAttachmentDownloadStream,
@@ -57,6 +58,43 @@ export function buildApp() {
       return res.status(404).send('PDF not found.');
     }
     res.download(filepath, filename);
+  });
+
+  app.get('/image/:fileId/thumb', async (req, res) => {
+    const { fileId } = req.params;
+    if (!isHex24(fileId)) {
+      return res.status(400).send('Invalid id.');
+    }
+    let serveId;
+    try {
+      serveId = await ensureThumbnailForImage(fileId);
+    } catch (e) {
+      logger.warn(
+        `web /image/:id/thumb generation failed for ${fileId}: ${e.message} — falling back to original`,
+      );
+      serveId = fileId;
+    }
+    let file;
+    try {
+      file = await findImageFile(serveId);
+    } catch (e) {
+      logger.warn(`web /image/:id/thumb lookup failed: ${e.message}`);
+      return res.status(500).send('Lookup failed.');
+    }
+    if (!file) return res.status(404).send('Image not found.');
+    const ct = file.contentType || 'image/jpeg';
+    const safe = safeContentDispositionFilename(file.filename);
+    res.setHeader('Content-Type', ct);
+    res.setHeader('Content-Disposition', `inline; filename="${safe}"`);
+    if (file.length) res.setHeader('Content-Length', String(file.length));
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    const stream = openImageDownloadStream(file._id);
+    stream.on('error', (err) => {
+      logger.warn(`web /image/:id/thumb stream error: ${err.message}`);
+      if (!res.headersSent) res.status(500);
+      res.end();
+    });
+    stream.pipe(res);
   });
 
   app.get('/image/:fileId', async (req, res) => {
