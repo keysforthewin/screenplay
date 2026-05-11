@@ -332,3 +332,87 @@ export async function pushCharacterImage(identifier, imageMeta, setAsMain = fals
   );
   return { character: c.name, _id: c._id, is_main: promote };
 }
+
+// Replace one image meta in the character's embedded images[] array,
+// preserving the slot position. If the replaced image was the main image,
+// the new image becomes the main image. Throws if the old image isn't
+// attached. Does NOT touch GridFS — the caller is responsible for deleting
+// the old bytes.
+export async function replaceCharacterImage(identifier, oldImageId, newImageMeta) {
+  const c = await getCharacter(identifier);
+  if (!c) throw new Error(`Character not found: ${identifier}`);
+  const oldOid = oldImageId instanceof ObjectId ? oldImageId : new ObjectId(String(oldImageId));
+  const images = c.images || [];
+  const idx = images.findIndex((i) => i._id && i._id.equals(oldOid));
+  if (idx < 0) throw new Error(`Image ${oldImageId} is not attached to ${c.name}`);
+  const wasMain = c.main_image_id && c.main_image_id.equals(oldOid);
+  const newImages = [...images];
+  newImages[idx] = newImageMeta;
+  const newMain = wasMain ? newImageMeta._id : c.main_image_id || null;
+  await col().updateOne(
+    { _id: c._id },
+    {
+      $set: {
+        images: newImages,
+        main_image_id: newMain,
+        updated_at: new Date(),
+      },
+    },
+  );
+  logger.info(
+    `mongo: character image replace id=${c._id} old=${oldOid} new=${newImageMeta._id}${wasMain ? ' (main)' : ''}`,
+  );
+  return {
+    character: c.name,
+    _id: c._id,
+    replaced: oldOid,
+    new_image_id: newImageMeta._id,
+    was_main: !!wasMain,
+  };
+}
+
+// Remove an image from a character's embedded images[] array WITHOUT deleting
+// the GridFS file. Used by the move-on-attach path; callers that want full
+// deletion should use Files.removeCharacterImage instead.
+export async function pullCharacterImage(identifier, imageId) {
+  const c = await getCharacter(identifier);
+  if (!c) throw new Error(`Character not found: ${identifier}`);
+  const oid = imageId instanceof ObjectId ? imageId : new ObjectId(String(imageId));
+  const images = c.images || [];
+  if (!images.some((i) => i._id && i._id.equals(oid))) {
+    throw new Error(`Image ${imageId} is not attached to ${c.name}`);
+  }
+  const remaining = images.filter((i) => !i._id.equals(oid));
+  const wasMain = c.main_image_id && c.main_image_id.equals(oid);
+  const newMain = wasMain ? remaining[0]?._id || null : c.main_image_id || null;
+  await col().updateOne(
+    { _id: c._id },
+    {
+      $pull: { images: { _id: oid } },
+      $set: { main_image_id: newMain, updated_at: new Date() },
+    },
+  );
+  logger.info(`mongo: character image pull id=${c._id} image=${oid}`);
+  return { character: c.name, _id: c._id, removed: oid, main_image_id: newMain };
+}
+
+// Remove an attachment from a character's embedded attachments[] array WITHOUT
+// deleting the GridFS file. Used by the move-on-attach path.
+export async function pullCharacterAttachment(identifier, attachmentId) {
+  const c = await getCharacter(identifier);
+  if (!c) throw new Error(`Character not found: ${identifier}`);
+  const oid = attachmentId instanceof ObjectId ? attachmentId : new ObjectId(String(attachmentId));
+  const attachments = c.attachments || [];
+  if (!attachments.some((a) => a._id && a._id.equals(oid))) {
+    throw new Error(`Attachment ${attachmentId} is not attached to ${c.name}`);
+  }
+  await col().updateOne(
+    { _id: c._id },
+    {
+      $pull: { attachments: { _id: oid } },
+      $set: { updated_at: new Date() },
+    },
+  );
+  logger.info(`mongo: character attachment pull id=${c._id} attach=${oid}`);
+  return { character: c.name, _id: c._id, removed: oid };
+}

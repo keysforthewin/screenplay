@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { apiDelete, apiPostJson, apiPostMultipart, imageUrl } from '../api.js';
 import { CollabField } from '../editor/CollabField.jsx';
+import { ImageEditDialog } from './ImageEditDialog.jsx';
 
 export function ImageGallery({
   images,
@@ -9,10 +10,21 @@ export function ImageGallery({
   uploadPath,
   deletePath,
   mainPath,
+  // Optional. When provided, an "Edit" button opens a dialog that POSTs to
+  // editPath(imageId) with { mode, image_model, prompt } and replaces the
+  // image in place. Use on entity-owned galleries (beat/character); skip on
+  // the library where regenerate isn't wired up.
+  editPath,
+  // Optional. When provided, a "Move to library" button POSTs to
+  // moveToLibraryPath(imageId). Use on entity-owned galleries.
+  moveToLibraryPath,
 }) {
   const fileInput = useRef(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [editingImageId, setEditingImageId] = useState(null);
+  const [regenBusyId, setRegenBusyId] = useState(null);
+  const [moveBusyId, setMoveBusyId] = useState(null);
 
   async function upload(e) {
     const file = e.target.files?.[0];
@@ -53,6 +65,41 @@ export function ImageGallery({
     }
   }
 
+  async function moveToLibrary(id) {
+    if (!moveToLibraryPath) return;
+    if (!confirm('Move this image to the library?')) return;
+    setMoveBusyId(id);
+    setError(null);
+    try {
+      await apiPostJson(moveToLibraryPath(id), {});
+      await onChange?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setMoveBusyId(null);
+    }
+  }
+
+  async function submitEdit({ mode, imageModel, prompt }) {
+    if (!editPath || !editingImageId) return;
+    const id = editingImageId;
+    setEditingImageId(null);
+    setRegenBusyId(id);
+    setError(null);
+    try {
+      await apiPostJson(editPath(id), {
+        mode,
+        image_model: imageModel,
+        prompt,
+      });
+      await onChange?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setRegenBusyId(null);
+    }
+  }
+
   const mainId = mainImageId?.toString?.() || (typeof mainImageId === 'string' ? mainImageId : null);
 
   return (
@@ -62,6 +109,8 @@ export function ImageGallery({
         {(images || []).map((img) => {
           const id = img._id.toString ? img._id.toString() : String(img._id);
           const isMain = mainId && id === mainId;
+          const regenBusy = regenBusyId === id;
+          const moveBusy = moveBusyId === id;
           return (
             <div key={id} className={`gallery-row${isMain ? ' is-main' : ''}`}>
               <div className="gallery-thumb">
@@ -99,6 +148,24 @@ export function ImageGallery({
                 >
                   Download
                 </a>
+                {editPath && (
+                  <button
+                    onClick={() => setEditingImageId(id)}
+                    disabled={regenBusy}
+                    title="Edit or regenerate this image with an AI model"
+                  >
+                    {regenBusy ? 'Editing…' : 'Edit…'}
+                  </button>
+                )}
+                {moveToLibraryPath && (
+                  <button
+                    onClick={() => moveToLibrary(id)}
+                    disabled={moveBusy}
+                    title="Detach from this entity and put back in the library"
+                  >
+                    {moveBusy ? 'Moving…' : 'To library'}
+                  </button>
+                )}
                 {deletePath && <button onClick={() => remove(id)}>Delete</button>}
               </div>
             </div>
@@ -123,6 +190,13 @@ export function ImageGallery({
             hidden
           />
         </div>
+      )}
+      {editPath && (
+        <ImageEditDialog
+          open={!!editingImageId}
+          onClose={() => setEditingImageId(null)}
+          onSubmit={submitEdit}
+        />
       )}
     </div>
   );

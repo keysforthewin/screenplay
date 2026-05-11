@@ -49,12 +49,15 @@ import {
   pullBeatImage,
   pushBeatAttachment,
   pullBeatAttachment,
+  replaceBeatImage,
   getBeat,
 } from '../mongo/plots.js';
 import {
   getCharacter,
   updateCharacter as mongoUpdateCharacter,
   pushCharacterImage,
+  pullCharacterImage,
+  replaceCharacterImage,
   appendCharacterSheetImage,
   removeCharacterSheetImage,
   reorderCharacterSheetImages,
@@ -93,6 +96,7 @@ import { setMainCharacterImage, removeCharacterImage } from '../mongo/files.js';
 import {
   setLibraryImageMeta,
   setOwnedImageMeta,
+  setImageOwner,
   findImageFile,
   deleteImage,
 } from '../mongo/images.js';
@@ -791,6 +795,85 @@ export async function removeCharacterImageViaGateway({ character, imageId }) {
   return result;
 }
 
+// Replace a beat's image with a new one at the same slot position. Caller
+// has already uploaded `newImageMeta` to GridFS; this helper swaps the meta
+// inside beat.images[], updates main_image_id when applicable, deletes the
+// old GridFS bytes, then broadcasts to the room.
+export async function replaceBeatImageViaGateway({ beatId, oldImageId, newImageMeta }) {
+  const result = await replaceBeatImage(String(beatId), oldImageId, newImageMeta);
+  try {
+    await deleteImage(oldImageId);
+  } catch (e) {
+    logger.warn(`gateway: delete replaced beat image ${oldImageId} failed: ${e.message}`);
+  }
+  broadcastFieldsUpdated(buildRoomName('beat', String(beatId)), {
+    changed: ['images', 'main_image_id'],
+  });
+  return result;
+}
+
+export async function replaceCharacterImageViaGateway({ character, oldImageId, newImageMeta }) {
+  const c = await getCharacter(character);
+  if (!c) throw new Error(`Character not found: ${character}`);
+  const cid = c._id.toString();
+  const result = await replaceCharacterImage(cid, oldImageId, newImageMeta);
+  try {
+    await deleteImage(oldImageId);
+  } catch (e) {
+    logger.warn(`gateway: delete replaced character image ${oldImageId} failed: ${e.message}`);
+  }
+  broadcastFieldsUpdated(buildRoomName('character', cid), {
+    changed: ['images', 'main_image_id'],
+  });
+  return result;
+}
+
+// Move an entity-owned image into the library: detach from the owner's
+// images[] array, clear the GridFS owner metadata, and broadcast both rooms.
+// The GridFS bytes are kept (no delete) — the file becomes a library image.
+export async function moveBeatImageToLibraryViaGateway({ beatId, imageId }) {
+  const result = await pullBeatImage(String(beatId), imageId);
+  await setImageOwner(imageId, { ownerType: null, ownerId: null });
+  broadcastFieldsUpdated(buildRoomName('beat', String(beatId)), {
+    changed: ['images', 'main_image_id'],
+  });
+  broadcastFieldsUpdated('library', {
+    changed: ['library_images'],
+    added_image_id: String(imageId),
+  });
+  return result;
+}
+
+export async function moveCharacterImageToLibraryViaGateway({ character, imageId }) {
+  const c = await getCharacter(character);
+  if (!c) throw new Error(`Character not found: ${character}`);
+  const cid = c._id.toString();
+  const result = await pullCharacterImage(cid, imageId);
+  await setImageOwner(imageId, { ownerType: null, ownerId: null });
+  broadcastFieldsUpdated(buildRoomName('character', cid), {
+    changed: ['images', 'main_image_id'],
+  });
+  broadcastFieldsUpdated('library', {
+    changed: ['library_images'],
+    added_image_id: String(imageId),
+  });
+  return result;
+}
+
+export async function moveDirectorNoteImageToLibraryViaGateway({ noteId, imageId }) {
+  const result = await pullDirectorNoteImage(String(noteId), imageId);
+  await setImageOwner(imageId, { ownerType: null, ownerId: null });
+  broadcastFieldsUpdated('notes', {
+    changed: [`note:${noteId}:images`, `note:${noteId}:main_image_id`],
+    note_id: String(noteId),
+  });
+  broadcastFieldsUpdated('library', {
+    changed: ['library_images'],
+    added_image_id: String(imageId),
+  });
+  return result;
+}
+
 export async function appendCharacterSheetImageViaGateway({ character, imageId }) {
   const c = await getCharacter(character);
   if (!c) throw new Error(`Character not found: ${character}`);
@@ -1088,6 +1171,37 @@ export async function setStoryboardAudioViaGateway({ storyboardId, audioFileId }
   });
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
     changed: ['audio_file_id'],
+    storyboard_id: String(storyboardId),
+  });
+  return mongoGetStoryboard(storyboardId);
+}
+
+// Attach a generated video to a storyboard. Used by the Wan 2.7 image-to-video
+// pipeline after it downloads the MP4 into our GridFS attachments bucket.
+// Pass videoFileId=null to clear the slot. durationSeconds (when known) is
+// the actual MP4 duration the inline player uses for its timeline.
+export async function setStoryboardVideoViaGateway({
+  storyboardId,
+  videoFileId,
+  durationSeconds = null,
+}) {
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const patch = {
+    video_file_id: videoFileId == null ? null : String(videoFileId),
+  };
+  if (videoFileId == null) {
+    patch.video_duration_seconds = null;
+    patch.video_generated_at = null;
+  } else {
+    if (durationSeconds != null && Number.isFinite(Number(durationSeconds))) {
+      patch.video_duration_seconds = Number(durationSeconds);
+    }
+    patch.video_generated_at = new Date();
+  }
+  await mongoUpdateStoryboard(storyboardId, patch);
+  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
+    changed: Object.keys(patch),
     storyboard_id: String(storyboardId),
   });
   return mongoGetStoryboard(storyboardId);

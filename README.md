@@ -9,7 +9,7 @@ screenplay is a Discord bot that turns a chat channel into a screenplay-writing 
 - **Plot organised into ordered beats.** Each beat has a short name, a one-line summary, and a long-form body that grows over time. A "current beat" pointer means you don't have to re-name the beat on every follow-up.
 - **Director notes.** Screenplay-wide rules and reminders the bot keeps in mind when writing or revising — tone, formatting conventions, content avoidances. They sit alongside characters and beats as a third top-level entity.
 - **Auto-portraits.** Give a character a real-world actor and the bot quietly attaches a headshot the next time you touch the character.
-- **Reference images and file attachments.** Beats, characters, and director notes can each carry images (PNG/JPEG/WEBP, ≤25 MB) and non-image files — audio, video, PDF, scripts (≤100 MB). The bot pulls them back up by name when relevant.
+- **Reference images and file attachments.** Beats, characters, and director notes can each carry images (PNG/JPEG/WEBP, ≤100 MB) and non-image files — audio, video, PDF, scripts (≤100 MB). The bot pulls them back up by name when relevant.
 - **PDF and CSV export.** Export the whole screenplay as a PDF, or slice characters and beats into spreadsheet reports — filter, group, aggregate, then open in Sheets or Excel.
 - **Real-movie / real-actor grounding** via TheMovieDB — search films, look up casts, pull posters and headshots.
 - **Live web search** via Tavily — ground real-world references, current events, or check whether your character or plot resembles existing fiction.
@@ -25,6 +25,16 @@ docker compose up --build -d
 ```
 
 To stop: `docker compose down`.
+
+### Reverse proxy (production)
+
+If you front the bot with nginx (or any other reverse proxy), raise the upload body limit so large image uploads from the SPA aren't truncated to nginx's default 1 MB. The server-side cap is `MAX_IMAGE_BYTES` in `src/mongo/imageBytes.js` (currently 100 MB) and multer is also at 100 MB; nginx must allow at least the same. Add to your `server { ... }` block:
+
+```nginx
+client_max_body_size 100M;
+```
+
+Then `sudo nginx -t && sudo systemctl reload nginx`.
 
 ## Configuration
 

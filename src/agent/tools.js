@@ -792,6 +792,19 @@ export const TOOLS = [
     },
   },
   {
+    name: 'move_image_to_library',
+    keywords: ['move', 'detach', 'unassign', 'library', 'image', 'picture', 'unattach', 'release', 'stash'],
+    description: "Move an entity-owned image (currently attached to a beat, character, or director note) back into the library. Detaches the image from the owner's images[] array, clears the GridFS owner metadata, and keeps the bytes intact so the image continues to render and can be re-attached later via attach_library_image_to_{beat,character,director_note}. Pass only the `image_id` — the current owner is read from the GridFS metadata, so the caller doesn't need to know it. Returns an error if the image is already a library image (no-op) or if the owner can no longer be found.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        image_id: { type: 'string', description: 'GridFS file _id (24-char hex) of the image to move.' },
+      },
+      required: ['image_id'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'add_library_attachment',
     keywords: ['library', 'upload', 'add', 'file', 'audio', 'video', 'pdf', 'document', 'unassigned', 'stash'],
     description:

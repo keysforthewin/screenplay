@@ -55,6 +55,24 @@ function compact(obj) {
   return JSON.stringify(obj, null, 2);
 }
 
+// Render a "(moved from beat \"foo\")" suffix for attach_library_image_to_*
+// and attach_library_attachment_to_* success messages, given the descriptor
+// returned by detachImageFromCurrentOwner / detachAttachmentFromCurrentOwner.
+// Returns "" when the source was a library item (no prior owner).
+function formatMovedFromSuffix(movedFrom) {
+  if (!movedFrom || !movedFrom.prior_owner_type) return '';
+  const labelByType = {
+    beat: 'beat',
+    character: 'character',
+    director_note: "director's note",
+  };
+  const label = labelByType[movedFrom.prior_owner_type] || movedFrom.prior_owner_type;
+  if (movedFrom.prior_owner_name) {
+    return ` (moved from ${label} "${movedFrom.prior_owner_name}")`;
+  }
+  return ` (moved from ${label})`;
+}
+
 function stripImageFilename(image) {
   if (!image || typeof image !== 'object') return image;
   const { filename: _filename, ...rest } = image;
@@ -1523,11 +1541,7 @@ export const HANDLERS = {
     ) {
       return withSpaLink(`Image ${image_id} is already attached to this note.`, notesUrl());
     }
-    if (file.metadata?.owner_type && file.metadata.owner_type !== null) {
-      throw new Error(
-        `Image ${image_id} is currently attached to a ${file.metadata.owner_type}. Detach it first.`,
-      );
-    }
+    const movedFrom = await Files.detachImageFromCurrentOwner(file);
     await Images.setImageOwner(image_id, { ownerType: 'director_note', ownerId: target._id });
     const meta = {
       _id: file._id,
@@ -1545,8 +1559,9 @@ export const HANDLERS = {
       meta,
       set_as_main,
     );
+    const moveSuffix = formatMovedFromSuffix(movedFrom);
     return withSpaLink(
-      `Attached image to director's note ${target._id}${is_main ? ' (now main image)' : ''}.`,
+      `Attached image to director's note ${target._id}${is_main ? ' (now main image)' : ''}${moveSuffix}.`,
       notesUrl(),
     );
   },
@@ -1964,11 +1979,7 @@ export const HANDLERS = {
         beatUrl(target),
       );
     }
-    if (file.metadata?.owner_type === 'beat') {
-      throw new Error(
-        `Image ${image_id} is currently attached to a different beat. Detach it first with remove_beat_image.`,
-      );
-    }
+    const movedFrom = await Files.detachImageFromCurrentOwner(file);
     await Images.setImageOwner(image_id, { ownerType: 'beat', ownerId: target._id });
     const meta = {
       _id: file._id,
@@ -1982,10 +1993,63 @@ export const HANDLERS = {
       uploaded_at: file.uploadDate,
     };
     const { is_main } = await Plots.pushBeatImage(target._id.toString(), meta, set_as_main);
+    const moveSuffix = formatMovedFromSuffix(movedFrom);
     return withSpaLink(
-      `Attached image to beat "${target.name}"${is_main ? ' (now main image)' : ''}.`,
+      `Attached image to beat "${target.name}"${is_main ? ' (now main image)' : ''}${moveSuffix}.`,
       beatUrl(target),
     );
+  },
+
+  async move_image_to_library({ image_id } = {}) {
+    if (!image_id) return 'Error: image_id required.';
+    const file = await Images.findImageFile(image_id);
+    if (!file) return `Error: image not found: ${image_id}`;
+    const ownerType = file.metadata?.owner_type;
+    const ownerId = file.metadata?.owner_id;
+    if (!ownerType || !ownerId) {
+      return `Image ${image_id} is already in the library.`;
+    }
+    try {
+      if (ownerType === 'beat') {
+        const beat = await Plots.getBeat(String(ownerId));
+        if (!beat) {
+          return `Error: image's owner beat ${ownerId} was not found.`;
+        }
+        await Gateway.moveBeatImageToLibraryViaGateway({
+          beatId: beat._id.toString(),
+          imageId: image_id,
+        });
+        return withSpaLink(
+          `Moved image ${image_id} from beat "${beat.name}" to the library.`,
+          beatUrl(beat),
+        );
+      }
+      if (ownerType === 'character') {
+        const c = await Characters.getCharacter(String(ownerId));
+        if (!c) return `Error: image's owner character ${ownerId} was not found.`;
+        await Gateway.moveCharacterImageToLibraryViaGateway({
+          character: c._id.toString(),
+          imageId: image_id,
+        });
+        return withSpaLink(
+          `Moved image ${image_id} from character "${c.name}" to the library.`,
+          characterUrl({ name: c.name }),
+        );
+      }
+      if (ownerType === 'director_note') {
+        await Gateway.moveDirectorNoteImageToLibraryViaGateway({
+          noteId: String(ownerId),
+          imageId: image_id,
+        });
+        return withSpaLink(
+          `Moved image ${image_id} from director note ${ownerId} to the library.`,
+          notesUrl(),
+        );
+      }
+      return `Error: image ${image_id} has unsupported owner_type "${ownerType}".`;
+    } catch (e) {
+      return `Error: ${e.message}`;
+    }
   },
 
   async attach_library_image_to_character({ image_id, character, set_as_main, caption } = {}) {
@@ -2002,10 +2066,11 @@ export const HANDLERS = {
         url,
       );
     }
+    const moveSuffix = formatMovedFromSuffix(res.moved_from);
     return withSpaLink(
       `Attached image to character "${res.character || character}"${
         res.is_main ? ' (now main image)' : ''
-      }.`,
+      }${moveSuffix}.`,
       url,
     );
   },
@@ -2049,7 +2114,11 @@ export const HANDLERS = {
         beatUrl(target),
       );
     }
-    return withSpaLink(`Attached attachment to beat "${target.name}".`, beatUrl(target));
+    const moveSuffix = formatMovedFromSuffix(res.moved_from);
+    return withSpaLink(
+      `Attached attachment to beat "${target.name}"${moveSuffix}.`,
+      beatUrl(target),
+    );
   },
 
   async attach_library_attachment_to_character({ attachment_id, character, caption } = {}) {
@@ -2065,7 +2134,11 @@ export const HANDLERS = {
         url,
       );
     }
-    return withSpaLink(`Attached attachment to character "${res.character}".`, url);
+    const moveSuffix = formatMovedFromSuffix(res.moved_from);
+    return withSpaLink(
+      `Attached attachment to character "${res.character}"${moveSuffix}.`,
+      url,
+    );
   },
 
   async attach_library_attachment_to_director_note({ attachment_id, note_id, caption } = {}) {
@@ -2081,7 +2154,11 @@ export const HANDLERS = {
         notesUrl(),
       );
     }
-    return withSpaLink(`Attached attachment to director's note ${target._id}.`, notesUrl());
+    const moveSuffix = formatMovedFromSuffix(res.moved_from);
+    return withSpaLink(
+      `Attached attachment to director's note ${target._id}${moveSuffix}.`,
+      notesUrl(),
+    );
   },
 
   async show_image({ image_id }) {

@@ -132,6 +132,10 @@ export function Beat({ session }) {
               uploadPath={`/beat/${beat._id}/image`}
               deletePath={(imageId) => `/beat/${beat._id}/image/${imageId}`}
               mainPath={`/beat/${beat._id}/main-image`}
+              editPath={(imageId) => `/beat/${beat._id}/image/${imageId}/regenerate`}
+              moveToLibraryPath={(imageId) =>
+                `/beat/${beat._id}/image/${imageId}/move-to-library`
+              }
             />
           </div>
 

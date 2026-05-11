@@ -621,6 +621,117 @@ describe('regenerateStoryboardFrame', () => {
     ).rejects.toBeInstanceOf(Generate.EditModeError);
   });
 
+  it('custom mode sends the user prompt verbatim with no input images', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice', 'Bob'] });
+
+    const calls = [];
+    Generate._setImageDispatcherForTests(async (args) => {
+      calls.push(args);
+      return { buffer: Buffer.from('custom-out'), contentType: 'image/png' };
+    });
+
+    const result = await Generate.regenerateStoryboardFrame({
+      storyboardId: sb._id.toString(),
+      role: 'start_frame',
+      mode: 'custom',
+      customPrompt: '  a lone red balloon drifting over a gray cityscape  ',
+      imageModel: 'gemini',
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].mode).toBe('generate');
+    expect(calls[0].model).toBe('gemini');
+    // Trimmed, verbatim — no buildVisualPrompt scaffolding.
+    expect(calls[0].prompt).toBe(
+      'a lone red balloon drifting over a gray cityscape',
+    );
+    expect(calls[0].prompt).not.toMatch(/Render the beginning moment/);
+    expect(calls[0].prompt).not.toMatch(/Reference materials/);
+    // No reference images at all.
+    expect(calls[0].inputImages).toEqual([]);
+
+    // Image was still persisted to the row.
+    const stored = await Storyboards.getStoryboard(sb._id);
+    expect(stored.start_frame_id.toString()).toBe(result.image_id);
+  });
+
+  it('custom mode works when the slot is empty (no existing image required)', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    // Confirm precondition: no start frame yet.
+    expect(sb.start_frame_id).toBeNull();
+
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('custom-out'),
+      contentType: 'image/png',
+    }));
+
+    const result = await Generate.regenerateStoryboardFrame({
+      storyboardId: sb._id.toString(),
+      role: 'start_frame',
+      mode: 'custom',
+      customPrompt: 'a misty forest at dawn',
+    });
+
+    expect(result.image_id).toBeTruthy();
+    const stored = await Storyboards.getStoryboard(sb._id);
+    expect(stored.start_frame_id.toString()).toBe(result.image_id);
+  });
+
+  it('custom mode without customPrompt throws EditModeError', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('x'),
+      contentType: 'image/png',
+    }));
+    await expect(
+      Generate.regenerateStoryboardFrame({
+        storyboardId: sb._id.toString(),
+        role: 'start_frame',
+        mode: 'custom',
+        customPrompt: '   ',
+      }),
+    ).rejects.toBeInstanceOf(Generate.EditModeError);
+  });
+
+  it('custom mode on start_frame still re-captions the new image', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    Generate._setDescriberForTests(async () => ({
+      name: '',
+      description: 'caption for custom-generated start frame',
+    }));
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('custom-out'),
+      contentType: 'image/png',
+    }));
+
+    await Generate.regenerateStoryboardFrame({
+      storyboardId: sb._id.toString(),
+      role: 'start_frame',
+      mode: 'custom',
+      customPrompt: 'a misty forest at dawn',
+    });
+
+    const stored = await Storyboards.getStoryboard(sb._id);
+    expect(stored.start_frame_description).toBe(
+      'caption for custom-generated start frame',
+    );
+  });
+
+  it('rejects an unknown mode', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('x'),
+      contentType: 'image/png',
+    }));
+    await expect(
+      Generate.regenerateStoryboardFrame({
+        storyboardId: sb._id.toString(),
+        role: 'start_frame',
+        mode: 'bogus',
+      }),
+    ).rejects.toBeInstanceOf(Generate.EditModeError);
+  });
+
   it('edit mode on start_frame still re-captions the new image', async () => {
     const { sb } = await seedScenario({ characters: ['Alice'] });
     const startId = new ObjectId();

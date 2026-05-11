@@ -32,6 +32,10 @@ import {
   removeDirectorNoteViaGateway,
   removeLibraryImageViaGateway,
   removeStoryboardReferenceImageViaGateway,
+  replaceBeatImageViaGateway,
+  replaceCharacterImageViaGateway,
+  moveBeatImageToLibraryViaGateway,
+  moveCharacterImageToLibraryViaGateway,
   reorderCharacterSheetImagesViaGateway,
   reorderDialogsViaGateway,
   reorderStoryboardsViaGateway,
@@ -43,6 +47,7 @@ import {
   setOwnedImageMetaViaGateway,
   setStoryboardAudioViaGateway,
   setStoryboardImageViaGateway,
+  setStoryboardVideoViaGateway,
   updateBeatViaGateway,
   updateCharacterViaGateway,
   updateStoryboardScalarsViaGateway,
@@ -69,6 +74,7 @@ import {
   imageFileToMeta,
   uploadGeneratedImage,
   findImageFile,
+  readImageBuffer,
 } from '../mongo/images.js';
 import { validateImageBuffer } from '../mongo/imageBytes.js';
 import {
@@ -441,6 +447,118 @@ export function buildApiRouter() {
     }
   });
 
+  // Replace a beat's image with a model-generated one. Two modes:
+  // - mode='edit'     → pass the existing bytes + prompt to the chosen image
+  //                     model's edits endpoint.
+  // - mode='generate' → pure text-to-image; the slot is replaced by a fresh
+  //                     image built from the prompt alone.
+  // The slot position is preserved; if the replaced image was main, the new
+  // image becomes main. Old GridFS bytes are deleted.
+  router.post('/beat/:id/image/:imageId/regenerate', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const oldImageId = req.params.imageId;
+      if (!isOidHex(oldImageId)) return res.status(400).json({ error: 'invalid image id' });
+      const mode = String(req.body?.mode ?? 'edit');
+      if (!['edit', 'generate'].includes(mode)) {
+        return res.status(400).json({ error: 'mode must be edit|generate' });
+      }
+      const imageModel = String(req.body?.image_model ?? 'gemini');
+      if (!['gemini', 'openai'].includes(imageModel)) {
+        return res.status(400).json({ error: 'image_model must be gemini|openai' });
+      }
+      const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
+      if (!prompt) {
+        return res.status(400).json({ error: 'prompt (non-empty string) required' });
+      }
+      if (prompt.length > 4096) {
+        return res.status(400).json({ error: 'prompt must be ≤ 4096 chars' });
+      }
+
+      let existingImage = null;
+      if (mode === 'edit') {
+        const r = await readImageBuffer(oldImageId);
+        if (!r) return res.status(404).json({ error: 'existing image not found' });
+        const declared = r.file.contentType || r.file.metadata?.contentType || null;
+        existingImage = { buffer: r.buffer, contentType: declared || 'image/png' };
+      }
+
+      const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
+      let result;
+      try {
+        result = await dispatchImageReplace({
+          prompt,
+          mode,
+          model: imageModel,
+          existingImage,
+          discordUser: webDiscordUser(req),
+        });
+      } catch (e) {
+        if (e?.status === 400) return res.status(400).json({ error: e.message });
+        throw e;
+      }
+
+      const file = await uploadGeneratedImage({
+        buffer: result.buffer,
+        contentType: result.contentType,
+        prompt,
+        generatedBy: result.model,
+        ownerType: 'beat',
+        ownerId: beatId,
+        filename: `beat-${beatId}-${Date.now()}.png`,
+      });
+      const newMeta = {
+        _id: file._id,
+        filename: file.filename,
+        content_type: file.content_type,
+        size: file.size,
+        source: 'generated',
+        prompt,
+        generated_by: result.model,
+        uploaded_at: file.uploaded_at,
+      };
+      const replaceResult = await replaceBeatImageViaGateway({
+        beatId,
+        oldImageId,
+        newImageMeta: newMeta,
+      });
+      res.json({
+        beat: replaceResult.beat,
+        image: { _id: file._id, content_type: file.content_type },
+        replaced: String(oldImageId),
+        was_main: replaceResult.was_main,
+        model: result.model,
+      });
+      kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
+        ownerType: 'beat',
+        ownerId: beatId,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/beat/:id/image/:imageId/move-to-library', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const imageId = req.params.imageId;
+      if (!isOidHex(imageId)) return res.status(400).json({ error: 'invalid image id' });
+      try {
+        const result = await moveBeatImageToLibraryViaGateway({ beatId, imageId });
+        res.json({ ok: true, image_id: imageId, beat: result.beat });
+      } catch (e) {
+        if (/not attached/i.test(e?.message || '')) {
+          return res.status(404).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
   router.post('/beat/:id/main-image', async (req, res, next) => {
     try {
       const beatId = await resolveBeatId(req);
@@ -612,6 +730,116 @@ export function buildApiRouter() {
         imageId: req.params.imageId,
       });
       res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Replace a character's image with a model-generated one. See the beat-side
+  // route above for the full body shape — this is the parallel endpoint.
+  router.post('/character/:id/image/:imageId/regenerate', async (req, res, next) => {
+    try {
+      const cid = await resolveCharacterId(req);
+      if (!cid) return res.status(404).json({ error: 'character not found' });
+      const oldImageId = req.params.imageId;
+      if (!isOidHex(oldImageId)) return res.status(400).json({ error: 'invalid image id' });
+      const mode = String(req.body?.mode ?? 'edit');
+      if (!['edit', 'generate'].includes(mode)) {
+        return res.status(400).json({ error: 'mode must be edit|generate' });
+      }
+      const imageModel = String(req.body?.image_model ?? 'gemini');
+      if (!['gemini', 'openai'].includes(imageModel)) {
+        return res.status(400).json({ error: 'image_model must be gemini|openai' });
+      }
+      const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
+      if (!prompt) {
+        return res.status(400).json({ error: 'prompt (non-empty string) required' });
+      }
+      if (prompt.length > 4096) {
+        return res.status(400).json({ error: 'prompt must be ≤ 4096 chars' });
+      }
+
+      let existingImage = null;
+      if (mode === 'edit') {
+        const r = await readImageBuffer(oldImageId);
+        if (!r) return res.status(404).json({ error: 'existing image not found' });
+        const declared = r.file.contentType || r.file.metadata?.contentType || null;
+        existingImage = { buffer: r.buffer, contentType: declared || 'image/png' };
+      }
+
+      const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
+      let result;
+      try {
+        result = await dispatchImageReplace({
+          prompt,
+          mode,
+          model: imageModel,
+          existingImage,
+          discordUser: webDiscordUser(req),
+        });
+      } catch (e) {
+        if (e?.status === 400) return res.status(400).json({ error: e.message });
+        throw e;
+      }
+
+      const file = await uploadGeneratedImage({
+        buffer: result.buffer,
+        contentType: result.contentType,
+        prompt,
+        generatedBy: result.model,
+        ownerType: 'character',
+        ownerId: cid,
+        filename: `character-${cid}-${Date.now()}.png`,
+      });
+      const newMeta = {
+        _id: file._id,
+        filename: file.filename,
+        content_type: file.content_type,
+        size: file.size,
+        source: 'generated',
+        prompt,
+        generated_by: result.model,
+        uploaded_at: file.uploaded_at,
+      };
+      const replaceResult = await replaceCharacterImageViaGateway({
+        character: cid,
+        oldImageId,
+        newImageMeta: newMeta,
+      });
+      res.json({
+        character: replaceResult.character,
+        image: { _id: file._id, content_type: file.content_type },
+        replaced: String(oldImageId),
+        was_main: replaceResult.was_main,
+        model: result.model,
+      });
+      kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
+        ownerType: 'character',
+        ownerId: cid,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/character/:id/image/:imageId/move-to-library', async (req, res, next) => {
+    try {
+      const cid = await resolveCharacterId(req);
+      if (!cid) return res.status(404).json({ error: 'character not found' });
+      const imageId = req.params.imageId;
+      if (!isOidHex(imageId)) return res.status(400).json({ error: 'invalid image id' });
+      try {
+        const result = await moveCharacterImageToLibraryViaGateway({
+          character: cid,
+          imageId,
+        });
+        res.json({ ok: true, image_id: imageId, character: result.character });
+      } catch (e) {
+        if (/not attached/i.test(e?.message || '')) {
+          return res.status(404).json({ error: e.message });
+        }
+        throw e;
+      }
     } catch (e) {
       next(e);
     }
@@ -1196,8 +1424,8 @@ export function buildApiRouter() {
           .json({ error: 'image_model must be gemini|openai' });
       }
       const mode = req.body?.mode ?? 'full';
-      if (!['full', 'edit'].includes(mode)) {
-        return res.status(400).json({ error: 'mode must be full|edit' });
+      if (!['full', 'edit', 'custom'].includes(mode)) {
+        return res.status(400).json({ error: 'mode must be full|edit|custom' });
       }
       let editPrompt = null;
       if (mode === 'edit') {
@@ -1214,6 +1442,21 @@ export function buildApiRouter() {
         }
         editPrompt = raw;
       }
+      let customPrompt = null;
+      if (mode === 'custom') {
+        const raw = req.body?.custom_prompt;
+        if (typeof raw !== 'string' || !raw.trim()) {
+          return res
+            .status(400)
+            .json({ error: 'custom_prompt (non-empty string) required when mode=custom' });
+        }
+        if (raw.length > 2048) {
+          return res
+            .status(400)
+            .json({ error: 'custom_prompt must be ≤ 2048 chars' });
+        }
+        customPrompt = raw;
+      }
       const { regenerateStoryboardFrame, BeatBusyError, EditModeError } = await import(
         './storyboardGenerate.js'
       );
@@ -1224,6 +1467,7 @@ export function buildApiRouter() {
           imageModel,
           mode,
           editPrompt,
+          customPrompt,
         });
         const sb = await getStoryboard(sbId);
         res.json({ storyboard: sb, image: { _id: result.image_id } });
@@ -1338,6 +1582,107 @@ export function buildApiRouter() {
         storyboardId: sbId,
         audioFileId: null,
       });
+      res.json({ storyboard: result });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Wan 2.7 image-to-video generation. Returns 202 + { job_id,
+  // estimated_seconds } immediately; the SPA polls the matching GET endpoint
+  // every ~2s for progress.
+  router.post('/storyboard/:id/video/generate', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const prompt =
+        typeof req.body?.prompt === 'string' && req.body.prompt.trim()
+          ? req.body.prompt.trim()
+          : null;
+      if (prompt && prompt.length > 2000) {
+        return res.status(400).json({ error: 'prompt must be ≤ 2000 chars' });
+      }
+      const rawDuration = req.body?.duration_seconds;
+      let durationSeconds = null;
+      if (rawDuration != null && rawDuration !== '') {
+        const n = Number(rawDuration);
+        if (!Number.isFinite(n) || n < 2 || n > 15) {
+          return res
+            .status(400)
+            .json({ error: 'duration_seconds must be a number between 2 and 15' });
+        }
+        durationSeconds = n;
+      }
+      const resolution = req.body?.resolution || null;
+      if (resolution && !['480P', '720P', '1080P'].includes(resolution)) {
+        return res
+          .status(400)
+          .json({ error: 'resolution must be 480P|720P|1080P' });
+      }
+      const {
+        startVideoGenerationJob,
+        VideoBeatBusyError,
+        MissingInputsError,
+        WanNotConfiguredError,
+      } = await import('./storyboardVideoGenerate.js');
+      try {
+        const { job_id, estimated_seconds } = await startVideoGenerationJob({
+          storyboardId: sbId,
+          prompt,
+          durationSeconds,
+          resolution,
+        });
+        res.status(202).json({ job_id, estimated_seconds });
+      } catch (e) {
+        if (e instanceof VideoBeatBusyError) {
+          return res.status(409).json({ error: e.message });
+        }
+        if (e instanceof MissingInputsError) {
+          return res.status(400).json({ error: e.message, missing: e.missing });
+        }
+        if (e instanceof WanNotConfiguredError) {
+          return res.status(503).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/storyboard/:id/video-job/:jobId', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const { getVideoGenerationJob } = await import('./storyboardVideoGenerate.js');
+      const job = getVideoGenerationJob(req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'job not found' });
+      res.json({ job });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Discard the current video on a storyboard scene. Deletes the GridFS
+  // attachment and clears video_file_id. The Wan task itself can't be
+  // recalled, but its expired output URL is harmless.
+  router.delete('/storyboard/:id/video', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const sb = await getStoryboard(sbId);
+      const oldId = sb?.video_file_id || null;
+      const result = await setStoryboardVideoViaGateway({
+        storyboardId: sbId,
+        videoFileId: null,
+      });
+      if (oldId) {
+        try {
+          await deleteAttachment(oldId);
+        } catch (e) {
+          logger.warn(`storyboard video delete: GridFS cleanup ${oldId} failed: ${e.message}`);
+        }
+      }
       res.json({ storyboard: result });
     } catch (e) {
       next(e);

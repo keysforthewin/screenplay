@@ -92,17 +92,52 @@ describe('attachExistingAttachmentToCharacter', () => {
     expect(second.already_attached).toBe(true);
   });
 
-  it('throws when the attachment is owned elsewhere', async () => {
+  it('moves the attachment off a real prior beat when reattaching to a character', async () => {
+    const c = await Characters.createCharacter({ name: 'Bronze Leopard' });
+    const beat = await Plots.createBeat({ name: 'Diner Showdown' });
+    const file = seedLibraryAttachment({
+      metadata: { owner_type: 'beat', owner_id: beat._id },
+    });
+    await Plots.pushBeatAttachment(beat._id.toString(), {
+      _id: file._id,
+      filename: file.filename,
+      content_type: file.contentType,
+      size: file.length,
+      uploaded_at: file.uploadDate,
+    });
+
+    const res = await Attachments.attachExistingAttachmentToCharacter({
+      character: 'Bronze Leopard',
+      attachmentId: file._id,
+    });
+    expect(res.character).toBe('Bronze Leopard');
+    expect(res.moved_from?.prior_owner_type).toBe('beat');
+    expect(res.moved_from?.prior_owner_name).toBe('Diner Showdown');
+
+    const plot = await Plots.getPlot();
+    const updatedBeat = plot.beats.find((b) => b._id.equals(beat._id));
+    expect(updatedBeat.attachments || []).toHaveLength(0);
+
+    const updated = await fakeDb.collection('characters').findOne({ _id: c._id });
+    expect(updated.attachments).toHaveLength(1);
+
+    const fileAfter = await fakeDb.collection('attachments.files').findOne({ _id: file._id });
+    expect(fileAfter.metadata.owner_type).toBe('character');
+  });
+
+  it('succeeds with stale prior-owner metadata pointing at a deleted beat', async () => {
     await Characters.createCharacter({ name: 'Bronze Leopard' });
     const file = seedLibraryAttachment({
       metadata: { owner_type: 'beat', owner_id: new ObjectId() },
     });
-    await expect(
-      Attachments.attachExistingAttachmentToCharacter({
-        character: 'Bronze Leopard',
-        attachmentId: file._id,
-      }),
-    ).rejects.toThrow(/attached to a beat/);
+    const res = await Attachments.attachExistingAttachmentToCharacter({
+      character: 'Bronze Leopard',
+      attachmentId: file._id,
+    });
+    expect(res.moved_from?.prior_owner_type).toBe('beat');
+    expect(res.moved_from?.prior_owner_name).toBeNull();
+    const fileAfter = await fakeDb.collection('attachments.files').findOne({ _id: file._id });
+    expect(fileAfter.metadata.owner_type).toBe('character');
   });
 
   it('throws when the attachment_id does not exist', async () => {
@@ -181,6 +216,74 @@ describe('attachExistingAttachmentToDirectorNote', () => {
   });
 });
 
+describe('attachment move-on-attach across owner types', () => {
+  it('moves an attachment from one character to another', async () => {
+    const cA = await Characters.createCharacter({ name: 'Bronze Leopard' });
+    const cB = await Characters.createCharacter({ name: 'Silver Wolf' });
+    const file = seedLibraryAttachment();
+
+    await Attachments.attachExistingAttachmentToCharacter({
+      character: 'Bronze Leopard',
+      attachmentId: file._id,
+    });
+    const res = await Attachments.attachExistingAttachmentToCharacter({
+      character: 'Silver Wolf',
+      attachmentId: file._id,
+    });
+
+    expect(res.moved_from?.prior_owner_type).toBe('character');
+    expect(res.moved_from?.prior_owner_name).toBe('Bronze Leopard');
+
+    const wolf = await fakeDb.collection('characters').findOne({ _id: cB._id });
+    expect(wolf.attachments).toHaveLength(1);
+    const leopard = await fakeDb.collection('characters').findOne({ _id: cA._id });
+    expect(leopard.attachments || []).toHaveLength(0);
+  });
+
+  it('moves an attachment from a note onto a beat', async () => {
+    const note = await DirectorNotes.addDirectorNote({ text: 'lighting cues' });
+    const beat = await Plots.createBeat({ name: 'Climax' });
+    const file = seedLibraryAttachment({
+      metadata: { owner_type: 'director_note', owner_id: note._id },
+    });
+    await fakeDb.collection('prompts').updateOne(
+      { _id: 'director_notes' },
+      {
+        $set: {
+          notes: [
+            {
+              ...(await DirectorNotes.getDirectorNotes()).notes[0],
+              attachments: [
+                {
+                  _id: file._id,
+                  filename: file.filename,
+                  content_type: file.contentType,
+                  size: file.length,
+                  uploaded_at: file.uploadDate,
+                },
+              ],
+            },
+          ],
+        },
+      },
+    );
+
+    const res = await Attachments.attachExistingAttachmentToBeat({
+      beat: 'Climax',
+      attachmentId: file._id,
+    });
+    expect(res.moved_from?.prior_owner_type).toBe('director_note');
+
+    const dn = await DirectorNotes.getDirectorNotes();
+    const updatedNote = dn.notes.find((n) => n._id.equals(note._id));
+    expect(updatedNote.attachments || []).toHaveLength(0);
+
+    const plot = await Plots.getPlot();
+    const updatedBeat = plot.beats.find((b) => b._id.equals(beat._id));
+    expect(updatedBeat.attachments).toHaveLength(1);
+  });
+});
+
 describe('handler: list_library_attachments and attach_library_attachment_to_character', () => {
   it('lists library attachments and dispatches the character attach', async () => {
     const { HANDLERS } = await import('../src/agent/handlers.js');
@@ -197,5 +300,27 @@ describe('handler: list_library_attachments and attach_library_attachment_to_cha
       character: 'Bronze Leopard',
     });
     expect(out).toMatch(/Attached attachment to character "Bronze Leopard"/);
+  });
+
+  it('surfaces a "(moved from beat ...)" suffix in the handler message', async () => {
+    const { HANDLERS } = await import('../src/agent/handlers.js');
+    await Characters.createCharacter({ name: 'Bronze Leopard' });
+    const beat = await Plots.createBeat({ name: 'Diner Showdown' });
+    const file = seedLibraryAttachment({
+      metadata: { owner_type: 'beat', owner_id: beat._id },
+    });
+    await Plots.pushBeatAttachment(beat._id.toString(), {
+      _id: file._id,
+      filename: file.filename,
+      content_type: file.contentType,
+      size: file.length,
+      uploaded_at: file.uploadDate,
+    });
+
+    const out = await HANDLERS.attach_library_attachment_to_character({
+      attachment_id: file._id.toString(),
+      character: 'Bronze Leopard',
+    });
+    expect(out).toMatch(/moved from beat "Diner Showdown"/);
   });
 });

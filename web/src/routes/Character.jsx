@@ -157,6 +157,12 @@ export function Character({ session }) {
               uploadPath={`/character/${character._id}/image`}
               deletePath={(imageId) => `/character/${character._id}/image/${imageId}`}
               mainPath={`/character/${character._id}/main-image`}
+              editPath={(imageId) =>
+                `/character/${character._id}/image/${imageId}/regenerate`
+              }
+              moveToLibraryPath={(imageId) =>
+                `/character/${character._id}/image/${imageId}/move-to-library`
+              }
             />
           </div>
 

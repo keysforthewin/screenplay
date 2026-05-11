@@ -542,6 +542,38 @@ export async function setBeatMainImage(beatIdentifier, imageId) {
   return beats.find((b) => b._id && b._id.equals(beat._id));
 }
 
+// Replace one image meta in the beat's images[] array, preserving the slot
+// position. If the replaced image was the main image, the new image becomes
+// the main image. Throws if the old image isn't attached to the beat. Does
+// NOT touch GridFS — the caller is responsible for deleting old bytes.
+export async function replaceBeatImage(beatIdentifier, oldImageId, newImageMeta) {
+  const plot = await getPlot();
+  const beat = findBeat(plot, beatIdentifier);
+  if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
+  const oldOid = oldImageId instanceof ObjectId ? oldImageId : new ObjectId(String(oldImageId));
+  const idx = (beat.images || []).findIndex((i) => i._id.equals(oldOid));
+  if (idx < 0) throw new Error(`Image ${oldImageId} is not attached to this beat`);
+  const images = [...beat.images];
+  images[idx] = newImageMeta;
+  const wasMain = beat.main_image_id && beat.main_image_id.equals(oldOid);
+  const newMain = wasMain ? newImageMeta._id : beat.main_image_id || null;
+  const beats = (plot.beats || []).map((b) =>
+    b._id && b._id.equals(beat._id)
+      ? { ...b, images, main_image_id: newMain, updated_at: new Date() }
+      : b,
+  );
+  await persistBeats(beats);
+  logger.info(
+    `mongo: beat image replace id=${beat._id} old=${oldOid} new=${newImageMeta._id}${wasMain ? ' (main)' : ''}`,
+  );
+  return {
+    beat: beats.find((b) => b._id && b._id.equals(beat._id)),
+    replaced: oldOid,
+    new_image_id: newImageMeta._id,
+    was_main: !!wasMain,
+  };
+}
+
 export async function pullBeatImage(beatIdentifier, imageId) {
   const plot = await getPlot();
   const beat = findBeat(plot, beatIdentifier);

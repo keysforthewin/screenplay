@@ -14,6 +14,8 @@ vi.mock('../src/log.js', () => ({
 
 const Files = await import('../src/mongo/files.js');
 const Characters = await import('../src/mongo/characters.js');
+const Plots = await import('../src/mongo/plots.js');
+const DirectorNotes = await import('../src/mongo/directorNotes.js');
 
 beforeEach(() => {
   fakeDb.reset();
@@ -155,9 +157,9 @@ describe('attach_library_image_to_character', () => {
     expect(updated.images).toHaveLength(1);
   });
 
-  it('throws when the image is owned by a different character', async () => {
+  it('moves the image off the prior character when reattaching to a different one', async () => {
     const cA = await seedCharacter('Bronze Leopard');
-    await seedCharacter('Silver Wolf');
+    const cB = await seedCharacter('Silver Wolf');
     const file = seedLibraryImage();
 
     await Files.attachExistingImageToCharacter({
@@ -165,30 +167,101 @@ describe('attach_library_image_to_character', () => {
       imageId: file._id,
     });
 
-    await expect(
-      Files.attachExistingImageToCharacter({
-        character: 'Silver Wolf',
-        imageId: file._id,
-      }),
-    ).rejects.toThrow(/different character/);
+    const res = await Files.attachExistingImageToCharacter({
+      character: 'Silver Wolf',
+      imageId: file._id,
+    });
 
-    const updated = await fakeDb.collection('characters').findOne({ name: 'Silver Wolf' });
-    expect(updated.images || []).toHaveLength(0);
-    void cA;
+    expect(res.character).toBe('Silver Wolf');
+    expect(res.moved_from?.prior_owner_type).toBe('character');
+    expect(res.moved_from?.prior_owner_name).toBe('Bronze Leopard');
+
+    const wolf = await fakeDb.collection('characters').findOne({ _id: cB._id });
+    expect(wolf.images).toHaveLength(1);
+    expect(wolf.main_image_id.equals(file._id)).toBe(true);
+
+    const leopard = await fakeDb.collection('characters').findOne({ _id: cA._id });
+    expect(leopard.images || []).toHaveLength(0);
+    expect(leopard.main_image_id).toBeNull();
+
+    const fileAfter = await fakeDb.collection('images.files').findOne({ _id: file._id });
+    expect(fileAfter.metadata.owner_type).toBe('character');
+    expect(fileAfter.metadata.owner_id.equals(cB._id)).toBe(true);
   });
 
-  it('throws when the image is owned by a beat or director note', async () => {
+  it('moves the image off a real beat when attaching to a character', async () => {
+    const c = await seedCharacter('Bronze Leopard');
+    const beat = await Plots.createBeat({ name: 'Diner Showdown' });
+    const file = seedLibraryImage({
+      metadata: { owner_type: 'beat', owner_id: beat._id },
+    });
+    await Plots.pushBeatImage(beat._id.toString(), {
+      _id: file._id,
+      filename: file.filename,
+      content_type: file.contentType,
+      size: file.length,
+      uploaded_at: file.uploadDate,
+    });
+
+    const res = await Files.attachExistingImageToCharacter({
+      character: 'Bronze Leopard',
+      imageId: file._id,
+    });
+
+    expect(res.moved_from?.prior_owner_type).toBe('beat');
+    expect(res.moved_from?.prior_owner_name).toBe('Diner Showdown');
+
+    const plot = await Plots.getPlot();
+    const updatedBeat = plot.beats.find((b) => b._id.equals(beat._id));
+    expect(updatedBeat.images || []).toHaveLength(0);
+
+    const updatedChar = await fakeDb.collection('characters').findOne({ _id: c._id });
+    expect(updatedChar.images).toHaveLength(1);
+  });
+
+  it('moves the image off a real director note when attaching to a character', async () => {
+    await seedCharacter('Bronze Leopard');
+    const note = await DirectorNotes.addDirectorNote({ text: 'noir tone' });
+    const file = seedLibraryImage({
+      metadata: { owner_type: 'director_note', owner_id: note._id },
+    });
+    await DirectorNotes.pushDirectorNoteImage(note._id.toString(), {
+      _id: file._id,
+      filename: file.filename,
+      content_type: file.contentType,
+      size: file.length,
+      uploaded_at: file.uploadDate,
+    });
+
+    const res = await Files.attachExistingImageToCharacter({
+      character: 'Bronze Leopard',
+      imageId: file._id,
+    });
+
+    expect(res.moved_from?.prior_owner_type).toBe('director_note');
+
+    const dn = await DirectorNotes.getDirectorNotes();
+    const updatedNote = dn.notes.find((n) => n._id.equals(note._id));
+    expect(updatedNote.images || []).toHaveLength(0);
+  });
+
+  it('succeeds when prior owner metadata points at a deleted entity', async () => {
     await seedCharacter('Bronze Leopard');
     const file = seedLibraryImage({
       metadata: { owner_type: 'beat', owner_id: new ObjectId() },
     });
 
-    await expect(
-      Files.attachExistingImageToCharacter({
-        character: 'Bronze Leopard',
-        imageId: file._id,
-      }),
-    ).rejects.toThrow(/attached to a beat/);
+    const res = await Files.attachExistingImageToCharacter({
+      character: 'Bronze Leopard',
+      imageId: file._id,
+    });
+
+    expect(res.character).toBe('Bronze Leopard');
+    expect(res.moved_from?.prior_owner_type).toBe('beat');
+    expect(res.moved_from?.prior_owner_name).toBeNull();
+
+    const fileAfter = await fakeDb.collection('images.files').findOne({ _id: file._id });
+    expect(fileAfter.metadata.owner_type).toBe('character');
   });
 
   it('throws when the image_id does not exist', async () => {
@@ -241,5 +314,28 @@ describe('attach_library_image_to_character handler', () => {
       character: 'Polly',
     });
     expect(second).toMatch(/already attached/);
+  });
+
+  it('surfaces a "(moved from beat ...)" suffix when the image was beat-owned', async () => {
+    const { HANDLERS } = await import('../src/agent/handlers.js');
+    await seedCharacter('Bronze Leopard');
+    const beat = await Plots.createBeat({ name: 'Diner Showdown' });
+    const file = seedLibraryImage({
+      metadata: { owner_type: 'beat', owner_id: beat._id },
+    });
+    await Plots.pushBeatImage(beat._id.toString(), {
+      _id: file._id,
+      filename: file.filename,
+      content_type: file.contentType,
+      size: file.length,
+      uploaded_at: file.uploadDate,
+    });
+
+    const out = await HANDLERS.attach_library_image_to_character({
+      image_id: file._id.toString(),
+      character: 'Bronze Leopard',
+    });
+    expect(out).toMatch(/Attached image to character "Bronze Leopard"/);
+    expect(out).toMatch(/moved from beat "Diner Showdown"/);
   });
 });

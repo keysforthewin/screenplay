@@ -4,9 +4,13 @@ import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getDb } from './client.js';
-import { getCharacter } from './characters.js';
-import { pushBeatAttachment, getBeat } from './plots.js';
-import { pushDirectorNoteAttachment, getDirectorNotes } from './directorNotes.js';
+import { getCharacter, pullCharacterAttachment } from './characters.js';
+import { pushBeatAttachment, pullBeatAttachment, getBeat } from './plots.js';
+import {
+  pushDirectorNoteAttachment,
+  pullDirectorNoteAttachment,
+  getDirectorNotes,
+} from './directorNotes.js';
 import {
   fetchAttachmentFromUrl,
   deriveAttachmentFilename,
@@ -292,15 +296,30 @@ export async function attachToCharacter({ character, sourceUrl, filename, captio
   return { character: c.name, ...meta };
 }
 
-function ownerConflictError(file, attachmentId, targetOwnerType, targetOwnerSameAs) {
-  const t = file.metadata?.owner_type;
-  if (!t) return null;
-  if (t === targetOwnerType && file.metadata?.owner_id && targetOwnerSameAs(file.metadata.owner_id)) {
-    return 'already_attached';
+// Detach an attachment from its current owner WITHOUT deleting the GridFS
+// file. Used by the move-on-attach paths so attach_library_attachment_to_X
+// tools can silently relocate an attachment that's already attached elsewhere.
+// Mirrors detachImageFromCurrentOwner in files.js. Swallows "not attached"/
+// "not found" errors caused by stale metadata.
+export async function detachAttachmentFromCurrentOwner(file) {
+  const ownerType = file?.metadata?.owner_type;
+  const ownerId = file?.metadata?.owner_id;
+  if (!ownerType || !ownerId) return null;
+  let priorName = null;
+  try {
+    if (ownerType === 'beat') {
+      const res = await pullBeatAttachment(ownerId, file._id);
+      priorName = res?.beat?.name || null;
+    } else if (ownerType === 'character') {
+      const res = await pullCharacterAttachment(ownerId, file._id);
+      priorName = res?.character || null;
+    } else if (ownerType === 'director_note') {
+      await pullDirectorNoteAttachment(ownerId, file._id);
+    }
+  } catch (e) {
+    if (!/not attached|not found/i.test(e?.message || '')) throw e;
   }
-  return new Error(
-    `Attachment ${attachmentId} is currently attached to a ${t}. Detach it first.`,
-  );
+  return { prior_owner_type: ownerType, prior_owner_id: ownerId, prior_owner_name: priorName };
 }
 
 function buildAttachmentMeta(file, caption) {
@@ -320,8 +339,11 @@ export async function attachExistingAttachmentToCharacter({ character, attachmen
   const file = await findAttachmentFile(attachmentId);
   if (!file) throw new Error(`Attachment not found: ${attachmentId}`);
 
-  const conflict = ownerConflictError(file, attachmentId, 'character', (id) => id.equals(c._id));
-  if (conflict === 'already_attached') {
+  if (
+    file.metadata?.owner_type === 'character' &&
+    file.metadata?.owner_id &&
+    file.metadata.owner_id.equals(c._id)
+  ) {
     return {
       already_attached: true,
       character: c.name,
@@ -329,12 +351,12 @@ export async function attachExistingAttachmentToCharacter({ character, attachmen
       filename: file.filename,
     };
   }
-  if (conflict instanceof Error) throw conflict;
 
+  const movedFrom = await detachAttachmentFromCurrentOwner(file);
   await setAttachmentOwner(attachmentId, { ownerType: 'character', ownerId: c._id });
   const meta = buildAttachmentMeta(file, caption);
   await pushCharacterAttachment(c._id, meta);
-  return { character: c.name, ...meta };
+  return { character: c.name, ...meta, moved_from: movedFrom };
 }
 
 export async function attachExistingAttachmentToBeat({ beat, attachmentId, caption }) {
@@ -344,8 +366,11 @@ export async function attachExistingAttachmentToBeat({ beat, attachmentId, capti
   const beatDoc = await getBeat(beat);
   if (!beatDoc) throw new Error(`Beat not found: ${beat}`);
 
-  const conflict = ownerConflictError(file, attachmentId, 'beat', (id) => id.equals(beatDoc._id));
-  if (conflict === 'already_attached') {
+  if (
+    file.metadata?.owner_type === 'beat' &&
+    file.metadata?.owner_id &&
+    file.metadata.owner_id.equals(beatDoc._id)
+  ) {
     return {
       already_attached: true,
       beat: { _id: beatDoc._id, name: beatDoc.name },
@@ -353,12 +378,12 @@ export async function attachExistingAttachmentToBeat({ beat, attachmentId, capti
       filename: file.filename,
     };
   }
-  if (conflict instanceof Error) throw conflict;
 
+  const movedFrom = await detachAttachmentFromCurrentOwner(file);
   await setAttachmentOwner(attachmentId, { ownerType: 'beat', ownerId: beatDoc._id });
   const meta = buildAttachmentMeta(file, caption);
   await pushBeatAttachment(beatDoc._id.toString(), meta);
-  return { beat: { _id: beatDoc._id, name: beatDoc.name }, ...meta };
+  return { beat: { _id: beatDoc._id, name: beatDoc.name }, ...meta, moved_from: movedFrom };
 }
 
 export async function attachExistingAttachmentToDirectorNote({ noteId, attachmentId, caption }) {
@@ -369,10 +394,11 @@ export async function attachExistingAttachmentToDirectorNote({ noteId, attachmen
   const target = notes.find((n) => n._id?.toString() === String(noteId));
   if (!target) throw new Error(`Director note not found: ${noteId}`);
 
-  const conflict = ownerConflictError(file, attachmentId, 'director_note', (id) =>
-    id.equals(target._id),
-  );
-  if (conflict === 'already_attached') {
+  if (
+    file.metadata?.owner_type === 'director_note' &&
+    file.metadata?.owner_id &&
+    file.metadata.owner_id.equals(target._id)
+  ) {
     return {
       already_attached: true,
       note_id: target._id,
@@ -380,12 +406,12 @@ export async function attachExistingAttachmentToDirectorNote({ noteId, attachmen
       filename: file.filename,
     };
   }
-  if (conflict instanceof Error) throw conflict;
 
+  const movedFrom = await detachAttachmentFromCurrentOwner(file);
   await setAttachmentOwner(attachmentId, { ownerType: 'director_note', ownerId: target._id });
   const meta = buildAttachmentMeta(file, caption);
   await pushDirectorNoteAttachment(target._id.toString(), meta);
-  return { note_id: target._id, ...meta };
+  return { note_id: target._id, ...meta, moved_from: movedFrom };
 }
 
 export async function listCharacterAttachments(character) {

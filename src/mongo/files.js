@@ -1,5 +1,7 @@
 import { getDb } from './client.js';
-import { getCharacter, pushCharacterImage } from './characters.js';
+import { getCharacter, pushCharacterImage, pullCharacterImage } from './characters.js';
+import { pullBeatImage } from './plots.js';
+import { pullDirectorNoteImage } from './directorNotes.js';
 import {
   uploadImageFromUrl,
   readImageBuffer,
@@ -8,6 +10,37 @@ import {
   setImageOwner,
 } from './images.js';
 import { toObjectId } from './imageBytes.js';
+
+// Detach an image from its current owner WITHOUT deleting the GridFS file.
+// Used by the move-on-attach paths so attach_library_image_to_X tools can
+// silently relocate an image that's already attached elsewhere.
+//
+// Returns:
+//   null                                                if the image is a library image (owner_type null)
+//   { prior_owner_type, prior_owner_id, prior_owner_name }  otherwise
+//
+// Swallows "not attached"/"not found" errors so stale metadata pointing at a
+// deleted beat/character/note doesn't block the new attach.
+export async function detachImageFromCurrentOwner(file) {
+  const ownerType = file?.metadata?.owner_type;
+  const ownerId = file?.metadata?.owner_id;
+  if (!ownerType || !ownerId) return null;
+  let priorName = null;
+  try {
+    if (ownerType === 'beat') {
+      const res = await pullBeatImage(ownerId, file._id);
+      priorName = res?.beat?.name || null;
+    } else if (ownerType === 'character') {
+      const res = await pullCharacterImage(ownerId, file._id);
+      priorName = res?.character || null;
+    } else if (ownerType === 'director_note') {
+      await pullDirectorNoteImage(ownerId, file._id);
+    }
+  } catch (e) {
+    if (!/not attached|not found/i.test(e?.message || '')) throw e;
+  }
+  return { prior_owner_type: ownerType, prior_owner_id: ownerId, prior_owner_name: priorName };
+}
 
 export async function attachImageToCharacter({ character, sourceUrl, filename, caption, setAsMain }) {
   const c = await getCharacter(character);
@@ -54,16 +87,8 @@ export async function attachExistingImageToCharacter({ character, imageId, capti
       size: file.length,
     };
   }
-  if (file.metadata?.owner_type === 'character') {
-    throw new Error(
-      `Image ${imageId} is currently attached to a different character. Detach it first with remove_character_image.`,
-    );
-  }
-  if (file.metadata?.owner_type && file.metadata.owner_type !== null) {
-    throw new Error(
-      `Image ${imageId} is currently attached to a ${file.metadata.owner_type}. Detach it first.`,
-    );
-  }
+
+  const movedFrom = await detachImageFromCurrentOwner(file);
 
   await setImageOwner(imageId, { ownerType: 'character', ownerId: c._id });
 
@@ -77,7 +102,7 @@ export async function attachExistingImageToCharacter({ character, imageId, capti
   };
 
   const { is_main } = await pushCharacterImage(c._id.toString(), meta, setAsMain);
-  return { character: c.name, ...meta, is_main };
+  return { character: c.name, ...meta, is_main, moved_from: movedFrom };
 }
 
 export async function listCharacterImages(character) {

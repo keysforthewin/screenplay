@@ -823,7 +823,7 @@ export class EditModeError extends Error {
 }
 
 // Regenerate a single frame (start_frame | end_frame) on an existing storyboard
-// row. Two modes:
+// row. Three modes:
 //
 // - 'full' (default): reuses the batch pipeline's reference loaders so the
 //   inputs match exactly — the beat's scene image plus each in-scene
@@ -834,6 +834,10 @@ export class EditModeError extends Error {
 // - 'edit': passes only the existing frame image plus the user's `editPrompt`
 //   to the chosen image model. Skips reference loading entirely. Use for small
 //   inline tweaks ("remove the lamp on the left") on an almost-good image.
+// - 'custom': sends the user's `customPrompt` verbatim to the image model with
+//   no reference images and no constructed scaffolding. Pure text-to-image —
+//   for hand-crafted shots, recovering from a bad plan, or experimenting with
+//   prompt phrasing. Works whether or not the slot already has an image.
 //
 // Synchronous: the SPA awaits the response. Nano banana is fast enough; the
 // gpt-image-2 path can take 60+s but still fits within HTTP timeouts.
@@ -843,9 +847,10 @@ export async function regenerateStoryboardFrame({
   imageModel = 'gemini',
   mode = 'full',
   editPrompt = null,
+  customPrompt = null,
 }) {
   if (!FRAME_ROLES.has(role)) throw new FrameRoleError(role);
-  if (!['full', 'edit'].includes(mode)) {
+  if (!['full', 'edit', 'custom'].includes(mode)) {
     throw new EditModeError(`Unknown regen mode "${mode}".`);
   }
   const sb = await getStoryboard(storyboardId);
@@ -879,6 +884,13 @@ export async function regenerateStoryboardFrame({
     prompt = editPrompt.trim();
     inputImages = [{ buffer: existing.buffer, contentType: existing.contentType }];
     dispatchMode = 'edit';
+  } else if (mode === 'custom') {
+    if (typeof customPrompt !== 'string' || !customPrompt.trim()) {
+      throw new EditModeError('Custom mode requires a non-empty customPrompt.');
+    }
+    prompt = customPrompt.trim();
+    inputImages = [];
+    dispatchMode = 'generate';
   } else {
     const beatSetImage = await loadBeatSetImage(beat);
     const charRefs = await loadFrameCharacterRefs({ beat, sb, beatSetImage });

@@ -13,6 +13,8 @@ import { FrameRegenerateDialog } from './FrameRegenerateDialog.jsx';
 import { ImageLightbox } from './ImageLightbox.jsx';
 import { AudioSlot } from './AudioSlot.jsx';
 import { DialogAudioPicker } from './DialogAudioPicker.jsx';
+import { GenerateVideoButton } from './GenerateVideoButton.jsx';
+import { StoryboardVideoPanel } from './StoryboardVideoPanel.jsx';
 import {
   SHOT_TYPES,
   durationCapFor,
@@ -166,7 +168,7 @@ function FrameSlot({
     }
   }
 
-  async function submitRegen({ mode, imageModel, editPrompt }) {
+  async function submitRegen({ mode, imageModel, editPrompt, customPrompt }) {
     setRegenOpen(false);
     setBusy(true);
     setBusyLabel(mode === 'edit' ? 'Editing…' : 'Generating…');
@@ -174,6 +176,7 @@ function FrameSlot({
     try {
       const body = { image_model: imageModel, mode };
       if (mode === 'edit') body.edit_prompt = editPrompt;
+      if (mode === 'custom') body.custom_prompt = customPrompt;
       await apiPostJson(`/storyboard/${sbId}/frame/${role}/generate`, body);
       await onRefresh?.();
     } catch (err) {
@@ -434,13 +437,27 @@ export function StoryboardItem({ sb, index, onRefresh, onDelete }) {
         recordingPrefix={`scene-${id}`}
         onRefresh={onRefresh}
         extraActions={({ busy }) => (
-          <DialogAudioPicker
-            storyboardId={id}
-            beatId={sb.beat_id?.toString?.() || sb.beat_id}
-            disabled={busy}
-            onCopied={onRefresh}
-          />
+          <>
+            <DialogAudioPicker
+              storyboardId={id}
+              beatId={sb.beat_id?.toString?.() || sb.beat_id}
+              disabled={busy}
+              onCopied={onRefresh}
+            />
+            <GenerateVideoButton
+              sb={sb}
+              storyboardId={id}
+              disabled={busy}
+              onRefresh={onRefresh}
+            />
+          </>
         )}
+      />
+
+      <StoryboardVideoPanel
+        sb={sb}
+        storyboardId={id}
+        onRefresh={onRefresh}
       />
 
       <div className="storyboard-prompt">
