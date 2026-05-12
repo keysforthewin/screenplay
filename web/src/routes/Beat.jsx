@@ -136,6 +136,9 @@ export function Beat({ session }) {
               moveToLibraryPath={(imageId) =>
                 `/beat/${beat._id}/image/${imageId}/move-to-library`
               }
+              attachPath={`/beat/${beat._id}/image/attach`}
+              generatePath={`/beat/${beat._id}/image/generate`}
+              pickerTitle="Add image to beat"
             />
           </div>
 
@@ -146,6 +149,8 @@ export function Beat({ session }) {
               onChange={onRefresh}
               uploadPath={`/beat/${beat._id}/attachment`}
               deletePath={(id) => `/beat/${beat._id}/attachment/${id}`}
+              attachPath={`/beat/${beat._id}/attachment/attach`}
+              pickerTitle="Add attachment to beat"
               fieldPrefix="attachment"
             />
           </div>

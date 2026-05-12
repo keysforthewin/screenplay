@@ -163,6 +163,9 @@ export function Character({ session }) {
               moveToLibraryPath={(imageId) =>
                 `/character/${character._id}/image/${imageId}/move-to-library`
               }
+              attachPath={`/character/${character._id}/image/attach`}
+              generatePath={`/character/${character._id}/image/generate`}
+              pickerTitle="Add image to character"
             />
           </div>
 

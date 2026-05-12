@@ -1,7 +1,8 @@
-import { useRef, useState } from 'react';
-import { apiDelete, apiPostJson, apiPostMultipart, imageUrl, thumbUrl } from '../api.js';
+import { useState } from 'react';
+import { apiDelete, apiPostJson, imageUrl, thumbUrl } from '../api.js';
 import { CollabField } from '../editor/CollabField.jsx';
 import { ImageEditDialog } from './ImageEditDialog.jsx';
+import { EntityImagePickerModal } from './EntityImagePickerModal.jsx';
 
 export function ImageGallery({
   images,
@@ -18,31 +19,20 @@ export function ImageGallery({
   // Optional. When provided, a "Move to library" button POSTs to
   // moveToLibraryPath(imageId). Use on entity-owned galleries.
   moveToLibraryPath,
+  // Optional. POST {image_id} — attach an existing library image. Enables
+  // the Library tab in the picker.
+  attachPath,
+  // Optional. POST {prompt, model} — generate a new image. Enables the
+  // Generate tab in the picker.
+  generatePath,
+  // Title used in the picker modal header.
+  pickerTitle = 'Add image',
 }) {
-  const fileInput = useRef(null);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [editingImageId, setEditingImageId] = useState(null);
   const [regenBusyId, setRegenBusyId] = useState(null);
   const [moveBusyId, setMoveBusyId] = useState(null);
-
-  async function upload(e) {
-    const file = e.target.files?.[0];
-    if (!file || !uploadPath) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const fd = new FormData();
-      fd.append('file', file);
-      await apiPostMultipart(uploadPath, fd);
-      await onChange?.();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-      if (fileInput.current) fileInput.current.value = '';
-    }
-  }
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   async function setMain(id) {
     if (!mainPath) return;
@@ -177,18 +167,10 @@ export function ImageGallery({
           <button
             type="button"
             className="primary"
-            disabled={busy}
-            onClick={() => fileInput.current?.click()}
+            onClick={() => setPickerOpen(true)}
           >
             + Add image
           </button>
-          <input
-            ref={fileInput}
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            onChange={upload}
-            hidden
-          />
         </div>
       )}
       {editPath && (
@@ -196,6 +178,17 @@ export function ImageGallery({
           open={!!editingImageId}
           onClose={() => setEditingImageId(null)}
           onSubmit={submitEdit}
+        />
+      )}
+      {uploadPath && (
+        <EntityImagePickerModal
+          open={pickerOpen}
+          onClose={() => setPickerOpen(false)}
+          title={pickerTitle}
+          uploadPath={uploadPath}
+          attachPath={attachPath || null}
+          generatePath={generatePath || null}
+          onAttached={onChange}
         />
       )}
     </div>

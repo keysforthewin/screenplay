@@ -372,7 +372,7 @@ function synthesizeCatalogModel(row) {
     if (!Number.isFinite(n) || n <= 0) return null;
     if (durationFormat === 'suffix-s') return `${Math.round(n)}s`;
     if (durationFormat === 'float') return String(n.toFixed(1));
-    return String(Math.round(n));
+    return Math.round(n);
   }
 
   // Default duration: prefer the largest enum value if the API enforces one;

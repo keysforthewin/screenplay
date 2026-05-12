@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
   apiDelete,
   apiPatchJson,
   apiPostJson,
-  apiPostMultipart,
   imageUrl,
   thumbUrl,
 } from '../api.js';
@@ -14,7 +13,6 @@ import { FrameRegenerateDialog } from './FrameRegenerateDialog.jsx';
 import { ReferencePickerModal } from './ReferencePickerModal.jsx';
 import { ImageLightbox } from './ImageLightbox.jsx';
 import { AudioSlot } from './AudioSlot.jsx';
-import { DialogAudioPicker } from './DialogAudioPicker.jsx';
 import { GenerateVideoButton } from './GenerateVideoButton.jsx';
 import { StoryboardVideoPanel } from './StoryboardVideoPanel.jsx';
 import {
@@ -124,40 +122,21 @@ function FrameSlot({
   role,
   imageId,
   sbId,
+  beatId,
+  charactersInScene,
   generatable,
   onRefresh,
   onOpenLightbox,
   prevSb,
 }) {
-  const fileInput = useRef(null);
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState(null);
   const [error, setError] = useState(null);
   const [regenOpen, setRegenOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const url = imageUrl(imageId);
   const thumbSrc = thumbUrl(imageId);
   const canGrab = role === 'start_frame' && prevSb != null;
-
-  async function upload(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setBusy(true);
-    setBusyLabel('Uploading…');
-    setError(null);
-    try {
-      const fd = new FormData();
-      fd.append('file', file);
-      fd.append('role', role);
-      await apiPostMultipart(`/storyboard/${sbId}/image`, fd);
-      await onRefresh?.();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-      setBusyLabel(null);
-      if (fileInput.current) fileInput.current.value = '';
-    }
-  }
 
   async function remove() {
     if (!confirm(`Remove ${label}?`)) return;
@@ -249,35 +228,27 @@ function FrameSlot({
           type="button"
           className="storyboard-frame-empty"
           disabled={busy}
-          onClick={() => fileInput.current?.click()}
+          onClick={() => setPickerOpen(true)}
         >
-          {busyLabel || '+ Upload'}
+          {busyLabel || '+ Add'}
         </button>
       )}
-      <input
-        ref={fileInput}
-        type="file"
-        accept="image/png,image/jpeg,image/webp"
-        style={{ display: 'none' }}
-        onChange={upload}
-      />
       <div className="storyboard-frame-actions">
-        {url && (
-          <button
-            type="button"
-            className="storyboard-frame-replace"
-            disabled={busy}
-            onClick={() => fileInput.current?.click()}
-          >
-            Replace
-          </button>
-        )}
+        <button
+          type="button"
+          className="storyboard-frame-replace"
+          disabled={busy}
+          onClick={() => setPickerOpen(true)}
+          title={url ? `Replace ${label.toLowerCase()}` : `Add ${label.toLowerCase()}`}
+        >
+          {url ? 'Replace' : 'Add'}
+        </button>
         {generatable && (
           <button
             type="button"
             className="storyboard-frame-generate"
             disabled={busy}
-            title={`Generate ${label.toLowerCase()} — opens the generate dialog`}
+            title={`Regenerate ${label.toLowerCase()} with the full pipeline (scene + characters + continuity)`}
             onClick={() => setRegenOpen(true)}
           >
             {busyLabel || (url ? 'Regenerate' : 'Generate')}
@@ -305,6 +276,15 @@ function FrameSlot({
           hasImage={Boolean(url)}
         />
       )}
+      <ReferencePickerModal
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        sbId={sbId}
+        beatId={beatId}
+        charactersInScene={charactersInScene}
+        role={role}
+        onAttached={onRefresh}
+      />
     </div>
   );
 }
@@ -440,6 +420,8 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
           role="start_frame"
           imageId={sb.start_frame_id}
           sbId={id}
+          beatId={sb.beat_id?.toString?.() || sb.beat_id}
+          charactersInScene={sb.characters_in_scene}
           generatable
           prevSb={prevSb}
           onRefresh={onRefresh}
@@ -450,6 +432,8 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
           role="end_frame"
           imageId={sb.end_frame_id}
           sbId={id}
+          beatId={sb.beat_id?.toString?.() || sb.beat_id}
+          charactersInScene={sb.characters_in_scene}
           generatable
           onRefresh={onRefresh}
           onOpenLightbox={openLightbox}
@@ -459,6 +443,8 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
           role="character_sheet"
           imageId={sb.character_sheet_image_id}
           sbId={id}
+          beatId={sb.beat_id?.toString?.() || sb.beat_id}
+          charactersInScene={sb.characters_in_scene}
           onRefresh={onRefresh}
           onOpenLightbox={openLightbox}
         />
@@ -478,22 +464,18 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
         uploadEndpoint={`/storyboard/${id}/audio`}
         deleteEndpoint={`/storyboard/${id}/audio`}
         recordingPrefix={`scene-${id}`}
+        dialogPicker={{
+          storyboardId: id,
+          beatId: sb.beat_id?.toString?.() || sb.beat_id,
+        }}
         onRefresh={onRefresh}
         extraActions={({ busy }) => (
-          <>
-            <DialogAudioPicker
-              storyboardId={id}
-              beatId={sb.beat_id?.toString?.() || sb.beat_id}
-              disabled={busy}
-              onCopied={onRefresh}
-            />
-            <GenerateVideoButton
-              sb={sb}
-              storyboardId={id}
-              disabled={busy}
-              onRefresh={onRefresh}
-            />
-          </>
+          <GenerateVideoButton
+            sb={sb}
+            storyboardId={id}
+            disabled={busy}
+            onRefresh={onRefresh}
+          />
         )}
       />
 

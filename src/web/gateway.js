@@ -92,7 +92,11 @@ import {
   reorderDialogsForBeat as mongoReorderDialogs,
   listDialogs,
 } from '../mongo/dialogs.js';
-import { setMainCharacterImage, removeCharacterImage } from '../mongo/files.js';
+import {
+  setMainCharacterImage,
+  removeCharacterImage,
+  detachImageFromCurrentOwner,
+} from '../mongo/files.js';
 import {
   setLibraryImageMeta,
   setOwnedImageMeta,
@@ -105,6 +109,9 @@ import {
   setOwnedAttachmentMeta,
   findAttachmentFile,
   copyAttachmentBuffer,
+  attachExistingAttachmentToBeat,
+  attachExistingAttachmentToCharacter,
+  attachExistingAttachmentToDirectorNote,
 } from '../mongo/attachments.js';
 import { enqueueReindex } from '../rag/queue.js';
 import { deleteEntity } from '../rag/indexer.js';
@@ -831,6 +838,249 @@ export async function replaceCharacterImageViaGateway({ character, oldImageId, n
 // Move an entity-owned image into the library: detach from the owner's
 // images[] array, clear the GridFS owner metadata, and broadcast both rooms.
 // The GridFS bytes are kept (no delete) — the file becomes a library image.
+// Broadcast a ping to whichever room owned this GridFS image before it was
+// reassigned, so users looking at the prior owner see it disappear without a
+// refetch. `movedFrom` comes from detachImageFromCurrentOwner — null means
+// the image was in the library.
+function broadcastPriorImageOwner(movedFrom) {
+  if (!movedFrom) {
+    broadcastFieldsUpdated('library', { changed: ['library_images'] });
+    return;
+  }
+  if (movedFrom.prior_owner_type === 'beat') {
+    broadcastFieldsUpdated(
+      buildRoomName('beat', String(movedFrom.prior_owner_id)),
+      { changed: ['images', 'main_image_id'] },
+    );
+  } else if (movedFrom.prior_owner_type === 'character') {
+    broadcastFieldsUpdated(
+      buildRoomName('character', String(movedFrom.prior_owner_id)),
+      { changed: ['images', 'main_image_id'] },
+    );
+  } else if (movedFrom.prior_owner_type === 'director_note') {
+    broadcastFieldsUpdated('notes', {
+      changed: [
+        `note:${movedFrom.prior_owner_id}:images`,
+        `note:${movedFrom.prior_owner_id}:main_image_id`,
+      ],
+      note_id: String(movedFrom.prior_owner_id),
+    });
+  }
+}
+
+function broadcastPriorAttachmentOwner(movedFrom) {
+  if (!movedFrom) {
+    broadcastFieldsUpdated('library', { changed: ['library_attachments'] });
+    return;
+  }
+  if (movedFrom.prior_owner_type === 'beat') {
+    broadcastFieldsUpdated(
+      buildRoomName('beat', String(movedFrom.prior_owner_id)),
+      { changed: ['attachments'] },
+    );
+  } else if (movedFrom.prior_owner_type === 'character') {
+    broadcastFieldsUpdated(
+      buildRoomName('character', String(movedFrom.prior_owner_id)),
+      { changed: ['attachments'] },
+    );
+  } else if (movedFrom.prior_owner_type === 'director_note') {
+    broadcastFieldsUpdated('notes', {
+      changed: [`note:${movedFrom.prior_owner_id}:attachments`],
+      note_id: String(movedFrom.prior_owner_id),
+    });
+  }
+}
+
+// Attach an already-uploaded GridFS image to a beat's gallery. The image's
+// current owner is detached first (library or another entity), then ownership
+// is reassigned and beat.images[] gets a new entry. Both rooms broadcast.
+export async function attachExistingImageToBeatViaGateway({
+  beatId,
+  imageId,
+  setAsMain = false,
+}) {
+  const file = await findImageFile(imageId);
+  if (!file) throw new Error(`Image not found: ${imageId}`);
+  const targetBeat = await getBeat(String(beatId));
+  if (!targetBeat) throw new Error(`Beat not found: ${beatId}`);
+  if (
+    file.metadata?.owner_type === 'beat' &&
+    file.metadata?.owner_id &&
+    file.metadata.owner_id.equals(targetBeat._id)
+  ) {
+    return { already_attached: true, beat: targetBeat };
+  }
+  const movedFrom = await detachImageFromCurrentOwner(file);
+  await setImageOwner(imageId, {
+    ownerType: 'beat',
+    ownerId: targetBeat._id,
+  });
+  const meta = {
+    _id: file._id,
+    filename: file.filename,
+    content_type: file.contentType || file.metadata?.content_type || null,
+    size: file.length,
+    source: file.metadata?.source || 'library',
+    prompt: file.metadata?.prompt || null,
+    generated_by: file.metadata?.generated_by || null,
+    uploaded_at: file.uploadDate,
+  };
+  const result = await pushBeatImage(
+    targetBeat._id.toString(),
+    meta,
+    !!setAsMain,
+  );
+  broadcastFieldsUpdated(
+    buildRoomName('beat', targetBeat._id.toString()),
+    { changed: ['images', 'main_image_id'] },
+  );
+  broadcastPriorImageOwner(movedFrom);
+  return result;
+}
+
+export async function attachExistingImageToCharacterViaGateway({
+  character,
+  imageId,
+  setAsMain = false,
+}) {
+  const c = await getCharacter(character);
+  if (!c) throw new Error(`Character not found: ${character}`);
+  const file = await findImageFile(imageId);
+  if (!file) throw new Error(`Image not found: ${imageId}`);
+  if (
+    file.metadata?.owner_type === 'character' &&
+    file.metadata?.owner_id &&
+    file.metadata.owner_id.equals(c._id)
+  ) {
+    return { already_attached: true, character: c.name };
+  }
+  const movedFrom = await detachImageFromCurrentOwner(file);
+  await setImageOwner(imageId, {
+    ownerType: 'character',
+    ownerId: c._id,
+  });
+  const meta = {
+    _id: file._id,
+    filename: file.filename,
+    content_type: file.contentType || file.metadata?.content_type || null,
+    size: file.length,
+    source: file.metadata?.source || 'library',
+    prompt: file.metadata?.prompt || null,
+    generated_by: file.metadata?.generated_by || null,
+    uploaded_at: file.uploadDate,
+  };
+  const result = await pushCharacterImage(
+    c._id.toString(),
+    meta,
+    !!setAsMain,
+  );
+  broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
+    changed: ['images', 'main_image_id'],
+  });
+  broadcastPriorImageOwner(movedFrom);
+  return result;
+}
+
+export async function attachExistingImageToDirectorNoteViaGateway({
+  noteId,
+  imageId,
+  setAsMain = false,
+}) {
+  const file = await findImageFile(imageId);
+  if (!file) throw new Error(`Image not found: ${imageId}`);
+  const { notes = [] } = (await getDirectorNotes()) || {};
+  const target = notes.find((n) => n._id?.toString() === String(noteId));
+  if (!target) throw new Error(`Director note not found: ${noteId}`);
+  if (
+    file.metadata?.owner_type === 'director_note' &&
+    file.metadata?.owner_id &&
+    file.metadata.owner_id.equals(target._id)
+  ) {
+    return { already_attached: true };
+  }
+  const movedFrom = await detachImageFromCurrentOwner(file);
+  await setImageOwner(imageId, {
+    ownerType: 'director_note',
+    ownerId: target._id,
+  });
+  const meta = {
+    _id: file._id,
+    filename: file.filename,
+    content_type: file.contentType || file.metadata?.content_type || null,
+    size: file.length,
+    source: file.metadata?.source || 'library',
+    prompt: file.metadata?.prompt || null,
+    generated_by: file.metadata?.generated_by || null,
+    uploaded_at: file.uploadDate,
+  };
+  const result = await pushDirectorNoteImage(
+    target._id.toString(),
+    meta,
+    !!setAsMain,
+  );
+  broadcastFieldsUpdated('notes', {
+    changed: [`note:${noteId}:images`, `note:${noteId}:main_image_id`],
+    note_id: String(noteId),
+  });
+  broadcastPriorImageOwner(movedFrom);
+  return result;
+}
+
+export async function attachExistingAttachmentToBeatViaGateway({
+  beatId,
+  attachmentId,
+}) {
+  const result = await attachExistingAttachmentToBeat({
+    beat: String(beatId),
+    attachmentId,
+  });
+  if (!result?.already_attached) {
+    broadcastFieldsUpdated(
+      buildRoomName('beat', String(result?.beat?._id || beatId)),
+      { changed: ['attachments'] },
+    );
+    broadcastPriorAttachmentOwner(result?.moved_from);
+  }
+  return result;
+}
+
+export async function attachExistingAttachmentToCharacterViaGateway({
+  character,
+  attachmentId,
+}) {
+  const c = await getCharacter(character);
+  if (!c) throw new Error(`Character not found: ${character}`);
+  const result = await attachExistingAttachmentToCharacter({
+    character: c._id.toString(),
+    attachmentId,
+  });
+  if (!result?.already_attached) {
+    broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
+      changed: ['attachments'],
+    });
+    broadcastPriorAttachmentOwner(result?.moved_from);
+  }
+  return result;
+}
+
+export async function attachExistingAttachmentToDirectorNoteViaGateway({
+  noteId,
+  attachmentId,
+}) {
+  const result = await attachExistingAttachmentToDirectorNote({
+    noteId: String(noteId),
+    attachmentId,
+  });
+  if (!result?.already_attached) {
+    broadcastFieldsUpdated('notes', {
+      changed: [`note:${noteId}:attachments`],
+      note_id: String(noteId),
+    });
+    broadcastPriorAttachmentOwner(result?.moved_from);
+  }
+  return result;
+}
+
 export async function moveBeatImageToLibraryViaGateway({ beatId, imageId }) {
   const result = await pullBeatImage(String(beatId), imageId);
   await setImageOwner(imageId, { ownerType: null, ownerId: null });

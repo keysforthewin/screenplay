@@ -30,6 +30,12 @@ import {
   addDirectorNoteViaGateway,
   addLibraryImageViaGateway,
   addStoryboardReferenceImageViaGateway,
+  attachExistingAttachmentToBeatViaGateway,
+  attachExistingAttachmentToCharacterViaGateway,
+  attachExistingAttachmentToDirectorNoteViaGateway,
+  attachExistingImageToBeatViaGateway,
+  attachExistingImageToCharacterViaGateway,
+  attachExistingImageToDirectorNoteViaGateway,
   copyDialogAudioToStoryboardViaGateway,
   createDialogViaGateway,
   createStoryboardViaGateway,
@@ -643,6 +649,101 @@ export function buildApiRouter() {
     }
   });
 
+  // Attach an existing GridFS image (from library or another entity) to a
+  // beat's gallery. Picker uses this for the Library tab. The image is
+  // re-parented: its prior owner loses it. Set `set_as_main: true` to also
+  // mark it as the beat's main image.
+  router.post('/beat/:id/image/attach', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const imageId = String(req.body?.image_id || '').trim();
+      if (!isOidHex(imageId)) {
+        return res.status(400).json({ error: 'image_id (24-hex) required' });
+      }
+      const setAsMain = !!req.body?.set_as_main;
+      try {
+        const result = await attachExistingImageToBeatViaGateway({
+          beatId,
+          imageId,
+          setAsMain,
+        });
+        res.json(result);
+      } catch (e) {
+        if (/not found/i.test(e?.message || '')) {
+          return res.status(404).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Generate a fresh image from a custom prompt and attach to a beat's
+  // gallery. No scene context — pure text-to-image.
+  router.post('/beat/:id/image/generate', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const prompt = String(req.body?.prompt || '').trim();
+      if (!prompt) {
+        return res.status(400).json({ error: 'prompt (non-empty) required' });
+      }
+      if (prompt.length > 2048) {
+        return res.status(400).json({ error: 'prompt must be ≤ 2048 chars' });
+      }
+      const model = String(req.body?.model || 'gemini');
+      if (!['gemini', 'openai'].includes(model)) {
+        return res.status(400).json({ error: 'model must be gemini|openai' });
+      }
+      const setAsMain = !!req.body?.set_as_main;
+      const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
+      const result = await dispatchImageReplace({
+        prompt,
+        mode: 'generate',
+        model,
+        discordUser: webDiscordUser(req),
+      });
+      const file = await uploadGeneratedImage({
+        buffer: result.buffer,
+        contentType: result.contentType,
+        prompt,
+        generatedBy: result.model || model,
+        ownerType: 'beat',
+        ownerId: beatId,
+        filename: `beat-${beatId}-gen-${Date.now()}.png`,
+      });
+      const updated = await addBeatImageViaGateway({
+        beatId,
+        imageMeta: {
+          _id: file._id,
+          filename: file.filename,
+          content_type: file.content_type,
+          size: file.size,
+          source: 'generated',
+          prompt,
+          generated_by: result.model || model,
+          uploaded_at: file.uploaded_at,
+        },
+        setAsMain,
+      });
+      res.json({
+        beat: updated.beat || updated,
+        image: { _id: file._id, content_type: file.content_type },
+      });
+      kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
+        ownerType: 'beat',
+        ownerId: beatId,
+      });
+    } catch (e) {
+      if (e?.status >= 400 && e?.status < 500) {
+        return res.status(e.status).json({ error: e.message });
+      }
+      next(e);
+    }
+  });
+
   router.post('/beat/:id/image/:imageId/move-to-library', async (req, res, next) => {
     try {
       const beatId = await resolveBeatId(req);
@@ -714,6 +815,33 @@ export function buildApiRouter() {
         attachmentId: req.params.attachId,
       });
       res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Attach an existing GridFS attachment (from library or another entity) to
+  // a beat. Picker uses this for the Library tab. Re-parents the attachment.
+  router.post('/beat/:id/attachment/attach', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const attachmentId = String(req.body?.attachment_id || '').trim();
+      if (!isOidHex(attachmentId)) {
+        return res.status(400).json({ error: 'attachment_id (24-hex) required' });
+      }
+      try {
+        const result = await attachExistingAttachmentToBeatViaGateway({
+          beatId,
+          attachmentId,
+        });
+        res.json(result);
+      } catch (e) {
+        if (/not found/i.test(e?.message || '')) {
+          return res.status(404).json({ error: e.message });
+        }
+        throw e;
+      }
     } catch (e) {
       next(e);
     }
@@ -922,6 +1050,99 @@ export function buildApiRouter() {
         ownerId: cid,
       });
     } catch (e) {
+      next(e);
+    }
+  });
+
+  // Attach an existing GridFS image (from library or another entity) to a
+  // character's gallery. Picker uses this for the Library tab.
+  router.post('/character/:id/image/attach', async (req, res, next) => {
+    try {
+      const cid = await resolveCharacterId(req);
+      if (!cid) return res.status(404).json({ error: 'character not found' });
+      const imageId = String(req.body?.image_id || '').trim();
+      if (!isOidHex(imageId)) {
+        return res.status(400).json({ error: 'image_id (24-hex) required' });
+      }
+      const setAsMain = !!req.body?.set_as_main;
+      try {
+        const result = await attachExistingImageToCharacterViaGateway({
+          character: cid,
+          imageId,
+          setAsMain,
+        });
+        res.json(result);
+      } catch (e) {
+        if (/not found/i.test(e?.message || '')) {
+          return res.status(404).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Generate a fresh image from a custom prompt and attach to a character's
+  // gallery. No references — pure text-to-image.
+  router.post('/character/:id/image/generate', async (req, res, next) => {
+    try {
+      const cid = await resolveCharacterId(req);
+      if (!cid) return res.status(404).json({ error: 'character not found' });
+      const prompt = String(req.body?.prompt || '').trim();
+      if (!prompt) {
+        return res.status(400).json({ error: 'prompt (non-empty) required' });
+      }
+      if (prompt.length > 2048) {
+        return res.status(400).json({ error: 'prompt must be ≤ 2048 chars' });
+      }
+      const model = String(req.body?.model || 'gemini');
+      if (!['gemini', 'openai'].includes(model)) {
+        return res.status(400).json({ error: 'model must be gemini|openai' });
+      }
+      const setAsMain = !!req.body?.set_as_main;
+      const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
+      const result = await dispatchImageReplace({
+        prompt,
+        mode: 'generate',
+        model,
+        discordUser: webDiscordUser(req),
+      });
+      const file = await uploadGeneratedImage({
+        buffer: result.buffer,
+        contentType: result.contentType,
+        prompt,
+        generatedBy: result.model || model,
+        ownerType: 'character',
+        ownerId: cid,
+        filename: `character-${cid}-gen-${Date.now()}.png`,
+      });
+      const updated = await addCharacterImageViaGateway({
+        character: cid,
+        imageMeta: {
+          _id: file._id,
+          filename: file.filename,
+          content_type: file.content_type,
+          size: file.size,
+          source: 'generated',
+          prompt,
+          generated_by: result.model || model,
+          uploaded_at: file.uploaded_at,
+        },
+        setAsMain,
+      });
+      res.json({
+        character: updated.character || updated,
+        image: { _id: file._id, content_type: file.content_type },
+      });
+      kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
+        ownerType: 'character',
+        ownerId: cid,
+      });
+    } catch (e) {
+      if (e?.status >= 400 && e?.status < 500) {
+        return res.status(e.status).json({ error: e.message });
+      }
       next(e);
     }
   });
@@ -1694,6 +1915,173 @@ export function buildApiRouter() {
         image: { _id: imageId, content_type: file.contentType || null },
       });
     } catch (e) {
+      next(e);
+    }
+  });
+
+  // Generate a fresh image from a custom prompt and attach as a storyboard
+  // reference. No scene context, no character sheets — pure text-to-image.
+  // The picker's Generate tab uses this when the role is 'reference'.
+  router.post('/storyboard/:id/reference/generate', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const prompt = String(req.body?.prompt || '').trim();
+      if (!prompt) {
+        return res.status(400).json({ error: 'prompt (non-empty) required' });
+      }
+      if (prompt.length > 2048) {
+        return res.status(400).json({ error: 'prompt must be ≤ 2048 chars' });
+      }
+      const model = String(req.body?.model || 'gemini');
+      if (!['gemini', 'openai'].includes(model)) {
+        return res.status(400).json({ error: 'model must be gemini|openai' });
+      }
+      const sb = await getStoryboard(sbId);
+      const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
+      const result = await dispatchImageReplace({
+        prompt,
+        mode: 'generate',
+        model,
+        discordUser: webDiscordUser(req),
+      });
+      const file = await uploadGeneratedImage({
+        buffer: result.buffer,
+        contentType: result.contentType,
+        prompt,
+        generatedBy: result.model || model,
+        ownerType: 'beat',
+        ownerId: sb.beat_id,
+        filename: `storyboard-${sbId}-ref-gen-${Date.now()}.png`,
+      });
+      const updated = await addStoryboardReferenceImageViaGateway({
+        storyboardId: sbId,
+        imageId: file._id,
+      });
+      res.json({
+        storyboard: updated,
+        image: { _id: file._id, content_type: file.content_type },
+      });
+      kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
+        ownerType: 'beat',
+        ownerId: sb.beat_id,
+        kind: 'auto',
+      });
+    } catch (e) {
+      if (e?.status >= 400 && e?.status < 500) {
+        return res.status(e.status).json({ error: e.message });
+      }
+      next(e);
+    }
+  });
+
+  // Install an already-uploaded GridFS image as start_frame / end_frame /
+  // character_sheet on a storyboard. Picker uses this for the "this beat",
+  // "characters", and "library" tabs when the user picks an existing image
+  // for one of the single-image roles. The reference-list equivalent is
+  // /storyboard/:id/reference/attach.
+  router.post('/storyboard/:id/image/from-id', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const role = String(req.body?.role || '').trim();
+      if (!['start_frame', 'end_frame', 'character_sheet'].includes(role)) {
+        return res
+          .status(400)
+          .json({ error: 'role must be start_frame|end_frame|character_sheet' });
+      }
+      const imageId = String(req.body?.image_id || '').trim();
+      if (!isOidHex(imageId)) {
+        return res.status(400).json({ error: 'image_id (24-hex) required' });
+      }
+      const file = await findImageFile(imageId);
+      if (!file) return res.status(404).json({ error: 'image not found' });
+      const result = await setStoryboardImageViaGateway({
+        storyboardId: sbId,
+        role,
+        imageId,
+      });
+      res.json({
+        storyboard: result,
+        image: { _id: imageId, content_type: file.contentType || null },
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Generate an image from a custom prompt and install it as a single-image
+  // role (start_frame / end_frame / character_sheet). No scene context, no
+  // references — pure text-to-image. Used by the picker's Generate tab for
+  // single-image roles. start/end frames are locked to 16:9 to match the
+  // storyboard pipeline; character_sheet is left free-form.
+  router.post('/storyboard/:id/image/generate', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const role = String(req.body?.role || '').trim();
+      if (!['start_frame', 'end_frame', 'character_sheet'].includes(role)) {
+        return res
+          .status(400)
+          .json({ error: 'role must be start_frame|end_frame|character_sheet' });
+      }
+      const prompt = String(req.body?.prompt || '').trim();
+      if (!prompt) {
+        return res.status(400).json({ error: 'prompt (non-empty) required' });
+      }
+      if (prompt.length > 2048) {
+        return res.status(400).json({ error: 'prompt must be ≤ 2048 chars' });
+      }
+      const model = String(req.body?.model || 'gemini');
+      if (!['gemini', 'openai'].includes(model)) {
+        return res.status(400).json({ error: 'model must be gemini|openai' });
+      }
+      const sb = await getStoryboard(sbId);
+      let result;
+      if (role === 'character_sheet') {
+        const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
+        result = await dispatchImageReplace({
+          prompt,
+          mode: 'generate',
+          model,
+          discordUser: webDiscordUser(req),
+        });
+      } else {
+        const { dispatchStoryboardImage } = await import('./storyboardImageDispatch.js');
+        result = await dispatchStoryboardImage({
+          prompt,
+          model,
+          inputImages: [],
+          mode: 'generate',
+        });
+      }
+      const file = await uploadGeneratedImage({
+        buffer: result.buffer,
+        contentType: result.contentType,
+        prompt,
+        generatedBy: result.model || model,
+        ownerType: 'beat',
+        ownerId: sb.beat_id,
+        filename: `storyboard-${sbId}-${role}-gen-${Date.now()}.png`,
+      });
+      const updated = await setStoryboardImageViaGateway({
+        storyboardId: sbId,
+        role,
+        imageId: file._id,
+      });
+      res.json({
+        storyboard: updated,
+        image: { _id: file._id, content_type: file.content_type },
+      });
+      kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
+        ownerType: 'beat',
+        ownerId: sb.beat_id,
+        kind: role === 'character_sheet' ? 'character' : 'auto',
+      });
+    } catch (e) {
+      if (e?.status >= 400 && e?.status < 500) {
+        return res.status(e.status).json({ error: e.message });
+      }
       next(e);
     }
   });

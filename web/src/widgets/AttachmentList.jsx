@@ -1,6 +1,7 @@
-import { useRef, useState } from 'react';
-import { apiDelete, apiPostMultipart, attachmentUrl } from '../api.js';
+import { useState } from 'react';
+import { apiDelete, attachmentUrl } from '../api.js';
 import { CollabField } from '../editor/CollabField.jsx';
+import { EntityAttachmentPickerModal } from './EntityAttachmentPickerModal.jsx';
 
 function formatBytes(n) {
   if (!Number.isFinite(n) || n < 0) return '';
@@ -26,29 +27,15 @@ export function AttachmentList({
   onChange,
   uploadPath,
   deletePath,
+  // Optional. POST {attachment_id} — attach an existing library attachment.
+  // Enables the Library tab in the picker.
+  attachPath,
+  // Title for the picker modal.
+  pickerTitle = 'Add attachment',
   fieldPrefix = 'attachment',
 }) {
-  const fileInput = useRef(null);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
-
-  async function upload(e) {
-    const file = e.target.files?.[0];
-    if (!file || !uploadPath) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const fd = new FormData();
-      fd.append('file', file);
-      await apiPostMultipart(uploadPath, fd);
-      await onChange?.();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-      if (fileInput.current) fileInput.current.value = '';
-    }
-  }
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   async function remove(id) {
     if (!deletePath) return;
@@ -114,13 +101,21 @@ export function AttachmentList({
           <button
             type="button"
             className="primary"
-            disabled={busy}
-            onClick={() => fileInput.current?.click()}
+            onClick={() => setPickerOpen(true)}
           >
             + Add attachment
           </button>
-          <input ref={fileInput} type="file" onChange={upload} hidden />
         </div>
+      )}
+      {uploadPath && (
+        <EntityAttachmentPickerModal
+          open={pickerOpen}
+          onClose={() => setPickerOpen(false)}
+          title={pickerTitle}
+          uploadPath={uploadPath}
+          attachPath={attachPath || null}
+          onAttached={onChange}
+        />
       )}
     </div>
   );

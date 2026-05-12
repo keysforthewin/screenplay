@@ -442,7 +442,12 @@ async function runVideoGenerationJob({
     job.error = e?.message || String(e);
     job.finished_at = new Date();
     publish(job);
-    logger.warn(`fal video gen job ${job.job_id} failed: ${e?.message || e}`);
+    logger.warn(
+      `fal video gen job ${job.job_id} failed: ${e?.message || e}` +
+        (e?.status ? ` status=${e.status}` : '') +
+        (e?.body ? ` body=${JSON.stringify(e.body).slice(0, 500)}` : '') +
+        (e?.requestId ? ` request_id=${e.requestId}` : ''),
+    );
   }
 }
 
