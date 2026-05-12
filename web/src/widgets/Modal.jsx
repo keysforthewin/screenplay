@@ -13,9 +13,17 @@ export function Modal({
   dismissible = true,
   footer = null,
   wide = false,
+  size,
   children,
 }) {
   const cardRef = useRef(null);
+
+  // size: 'default' | 'wide' | 'xl'. `wide` kept for back-compat.
+  const effectiveSize = size || (wide ? 'wide' : 'default');
+  const sizeClass =
+    effectiveSize === 'xl' ? ' is-xl'
+    : effectiveSize === 'wide' ? ' is-wide'
+    : '';
 
   useEffect(() => {
     if (!open) return;
@@ -64,7 +72,7 @@ export function Modal({
     <div className="modal-backdrop" onClick={onBackdropClick}>
       <div
         ref={cardRef}
-        className={'modal-card' + (wide ? ' is-wide' : '')}
+        className={'modal-card' + sizeClass}
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-title"

@@ -15,6 +15,18 @@ const FACETS = [
 
 const EMPTY_FACETS = Object.freeze({ lip_sync: false, start_frame: false, end_frame: false, character_sheet: false, reference_images: false });
 
+// localStorage key for the most recently generated-with video model. We persist
+// the endpoint_id (not model_id) because the picker selects rows by endpoint —
+// a single registered model can have multiple endpoint variants in the catalog.
+const LAST_MODEL_KEY = 'screenplay.video.last_model_endpoint';
+
+function readLastEndpoint() {
+  try { return localStorage.getItem(LAST_MODEL_KEY) || null; } catch { return null; }
+}
+function writeLastEndpoint(endpointId) {
+  try { if (endpointId) localStorage.setItem(LAST_MODEL_KEY, endpointId); } catch {}
+}
+
 // "Generate video…" dialog opened from the storyboard scene's AudioSlot.
 // Lets the user filter the fal.ai i2v catalog (data/fal-models.json) by the
 // input modalities the scene provides, pick a model, then POSTs the request
@@ -34,6 +46,11 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState(null);
   const [job, setJob] = useState(null);
+  // endpoint_id of the most-recently-used model from localStorage. Used both
+  // to pre-select on open and to render a "(last used)" badge in the list.
+  // Captured at open-time so the badge doesn't migrate mid-dialog after a
+  // successful submit — it migrates on the next open.
+  const [lastUsedEndpoint, setLastUsedEndpoint] = useState(null);
   const esRef = useRef(null);
 
   function closeStream() {
@@ -84,10 +101,16 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     setGenerating(false);
     setActiveFacets({ ...EMPTY_FACETS });
     setPrompt(typeof sb?.text_prompt === 'string' ? sb.text_prompt : '');
+    const storedEndpoint = readLastEndpoint();
+    setLastUsedEndpoint(storedEndpoint);
     if (registry) {
-      const defaultRow = registry.models.find(
-        (m) => m.is_registered && m.id === registry.default_model_id,
-      ) || registry.models.find((m) => m.is_registered) || null;
+      const storedRow = storedEndpoint
+        ? registry.models.find((m) => m.endpoint_id === storedEndpoint && m.is_registered) || null
+        : null;
+      const defaultRow = storedRow
+        || registry.models.find((m) => m.is_registered && m.id === registry.default_model_id)
+        || registry.models.find((m) => m.is_registered)
+        || null;
       setSelectedEndpoint(defaultRow?.endpoint_id || null);
     }
   }, [open, sb?._id, registry]);
@@ -198,6 +221,7 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
         setError('Server did not return a job id.');
         return;
       }
+      writeLastEndpoint(chosenModel.endpoint_id);
       const es = new EventSource(
         apiSseUrl(`/storyboard/${storyboardId}/video-job/${jobId}/events`),
       );
@@ -246,21 +270,11 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
       title="Generate video"
       onClose={onClose}
       dismissible
+      size="xl"
       footer={
-        <>
-          <button type="button" onClick={onClose}>
-            {generating ? 'Close' : 'Cancel'}
-          </button>
-          <button
-            type="button"
-            className="primary"
-            disabled={!ready}
-            title={submitTooltip}
-            onClick={submit}
-          >
-            {generating ? 'Generating…' : 'Generate video'}
-          </button>
-        </>
+        <button type="button" onClick={onClose}>
+          {generating ? 'Close' : 'Cancel'}
+        </button>
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -282,6 +296,7 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
           facetCounts={facetCounts}
           visibleModels={visibleModels}
           chosenModel={chosenModel}
+          lastUsedEndpoint={lastUsedEndpoint}
           onToggleFacet={toggleFacet}
           onClearFacets={() => setActiveFacets({ ...EMPTY_FACETS })}
           onMatrixRowClick={applyMatrixRow}
@@ -316,7 +331,7 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
           </span>
         </label>
 
-        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div className="video-action-row">
           {chosenModel?.durations?.length ? (
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <span className="field-label">Duration</span>
@@ -347,6 +362,18 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
               </span>
             </label>
           ) : null}
+
+          <div className="video-action-spacer" />
+
+          <button
+            type="button"
+            className="primary"
+            disabled={!ready}
+            title={submitTooltip}
+            onClick={submit}
+          >
+            {generating ? 'Generating…' : 'Generate video'}
+          </button>
         </div>
       </div>
     </Modal>
@@ -373,6 +400,7 @@ function ModelPicker({
   facetCounts,
   visibleModels,
   chosenModel,
+  lastUsedEndpoint,
   onToggleFacet,
   onClearFacets,
   onMatrixRowClick,
@@ -461,89 +489,95 @@ function ModelPicker({
         </div>
       ) : null}
 
-      {/* Capability combination matrix */}
-      <CapabilityMatrix
-        rows={matrixRows}
-        isActive={isMatrixRowActive}
-        onRowClick={onMatrixRowClick}
-        disabled={generating}
-      />
-
-      {/* Facet checkboxes */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-        {FACETS.map((f) => (
-          <label
-            key={f.key}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '4px 8px',
-              borderRadius: 4,
-              background: activeFacets[f.key] ? 'rgba(122, 166, 255, 0.15)' : 'transparent',
-              border: `1px solid ${activeFacets[f.key] ? 'var(--accent)' : 'var(--border)'}`,
-              fontSize: 12,
-              cursor: generating ? 'default' : 'pointer',
-              opacity: generating ? 0.6 : 1,
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={!!activeFacets[f.key]}
-              onChange={() => onToggleFacet(f.key)}
-              disabled={generating}
-            />
-            <span>{f.label}</span>
-            <span style={{ color: 'var(--fg-muted)' }}>({facetCounts[f.key] ?? 0})</span>
-          </label>
-        ))}
-        {Object.values(activeFacets).some(Boolean) ? (
-          <button
-            type="button"
-            onClick={onClearFacets}
+      <div className="video-picker-grid">
+        {/* Left column: Capability combination matrix */}
+        <div className="video-picker-col video-picker-col--matrix">
+          <CapabilityMatrix
+            rows={matrixRows}
+            isActive={isMatrixRowActive}
+            onRowClick={onMatrixRowClick}
             disabled={generating}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--fg-muted)',
-              cursor: 'pointer',
-              fontSize: 12,
-              textDecoration: 'underline',
-              padding: '4px 8px',
-            }}
-          >
-            clear
-          </button>
-        ) : null}
-      </div>
-
-      {/* Filtered list */}
-      <div
-        style={{
-          border: '1px solid var(--border)',
-          borderRadius: 4,
-          maxHeight: 260,
-          overflow: 'auto',
-          background: 'var(--bg)',
-        }}
-      >
-        <div style={{ padding: '6px 10px', fontSize: 11, color: 'var(--fg-muted)', position: 'sticky', top: 0, background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border)' }}>
-          {sortedModels.length} of {total} model{total === 1 ? '' : 's'}
-        </div>
-        {sortedModels.length === 0 ? (
-          <div style={{ padding: 12, color: 'var(--fg-muted)', fontSize: 13 }}>
-            No models match these facets. Clear some to widen the search.
-          </div>
-        ) : null}
-        {sortedModels.map((m) => (
-          <ModelRow
-            key={m.endpoint_id}
-            model={m}
-            selected={chosenModel?.endpoint_id === m.endpoint_id}
-            disabled={generating}
-            onClick={() => onModelClick(m)}
           />
-        ))}
+        </div>
+
+        {/* Right column: facet checkboxes + filtered model list */}
+        <div className="video-picker-col video-picker-col--list">
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+            {FACETS.map((f) => (
+              <label
+                key={f.key}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '4px 8px',
+                  borderRadius: 4,
+                  background: activeFacets[f.key] ? 'rgba(122, 166, 255, 0.15)' : 'transparent',
+                  border: `1px solid ${activeFacets[f.key] ? 'var(--accent)' : 'var(--border)'}`,
+                  fontSize: 12,
+                  cursor: generating ? 'default' : 'pointer',
+                  opacity: generating ? 0.6 : 1,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={!!activeFacets[f.key]}
+                  onChange={() => onToggleFacet(f.key)}
+                  disabled={generating}
+                />
+                <span>{f.label}</span>
+                <span style={{ color: 'var(--fg-muted)' }}>({facetCounts[f.key] ?? 0})</span>
+              </label>
+            ))}
+            {Object.values(activeFacets).some(Boolean) ? (
+              <button
+                type="button"
+                onClick={onClearFacets}
+                disabled={generating}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--fg-muted)',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  textDecoration: 'underline',
+                  padding: '4px 8px',
+                }}
+              >
+                clear
+              </button>
+            ) : null}
+          </div>
+
+          <div
+            style={{
+              border: '1px solid var(--border)',
+              borderRadius: 4,
+              maxHeight: 300,
+              overflow: 'auto',
+              background: 'var(--bg)',
+            }}
+          >
+            <div style={{ padding: '6px 10px', fontSize: 11, color: 'var(--fg-muted)', position: 'sticky', top: 0, background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border)' }}>
+              {sortedModels.length} of {total} model{total === 1 ? '' : 's'}
+            </div>
+            {sortedModels.length === 0 ? (
+              <div style={{ padding: 12, color: 'var(--fg-muted)', fontSize: 13 }}>
+                No models match these facets. Clear some to widen the search.
+              </div>
+            ) : null}
+            {sortedModels.map((m) => (
+              <ModelRow
+                key={m.endpoint_id}
+                model={m}
+                selected={chosenModel?.endpoint_id === m.endpoint_id}
+                lastUsed={lastUsedEndpoint && m.endpoint_id === lastUsedEndpoint}
+                disabled={generating}
+                onClick={() => onModelClick(m)}
+              />
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -619,7 +653,7 @@ function CapabilityMatrix({ rows, isActive, onRowClick, disabled }) {
   );
 }
 
-function ModelRow({ model, selected, disabled, onClick }) {
+function ModelRow({ model, selected, lastUsed, disabled, onClick }) {
   const ready = !!model.is_registered;
   const priceLabel = model.price_min_usd != null ? `from $${formatUsd(model.price_min_usd)}` : null;
   const maxLabel = typeof model.max_seconds === 'number' ? `max ${model.max_seconds}s` : null;
@@ -644,6 +678,7 @@ function ModelRow({ model, selected, disabled, onClick }) {
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <span style={{ fontSize: 13, fontWeight: 500, flex: 1 }}>{model.display_name || model.label}</span>
+        {lastUsed ? <span className="model-last-used">last used</span> : null}
         <span
           style={{
             fontSize: 10,

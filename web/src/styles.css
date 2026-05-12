@@ -589,8 +589,18 @@ input[type="text"], input[type="search"] {
   width: 100%;
   padding: 20px 22px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  max-height: calc(100vh - 88px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .modal-card.is-wide { max-width: 760px; }
+.modal-card.is-xl { max-width: 1080px; }
+.modal-body {
+  overflow: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+}
 .modal-tab-panel {
   min-height: 280px;
   max-height: 60vh;
@@ -643,6 +653,52 @@ input[type="text"], input[type="search"] {
   gap: 8px;
   justify-content: flex-end;
   margin-top: 16px;
+  flex: 0 0 auto;
+}
+
+/* Generate-video dialog: 2-column picker layout (matrix left, facets+list right). */
+.video-picker-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+}
+.video-picker-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.video-picker-col--matrix {
+  max-height: 360px;
+  overflow: auto;
+}
+.video-picker-col--list {
+  gap: 10px;
+}
+@media (max-width: 720px) {
+  .video-picker-grid { grid-template-columns: 1fr; }
+  .video-picker-col--matrix { max-height: 220px; }
+}
+
+/* Generate-video dialog: action row beneath the prompt. */
+.video-action-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+.video-action-row .video-action-spacer { flex: 1 1 auto; }
+
+/* "(last used)" chip shown next to a model row in the matching list. */
+.model-last-used {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(138, 143, 163, 0.15);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  white-space: nowrap;
 }
 .modal-help {
   color: var(--fg-muted);
