@@ -244,8 +244,15 @@ export function validateStoryboardInputs(model, storyboard) {
   for (const [inputKey, need] of Object.entries(model.inputs)) {
     if (need !== INPUT_NEEDS.REQUIRED) continue;
     if (inputKey === 'referenceImages') {
+      // Accept reference_image_ids OR fall back to start_frame / character_sheet
+      // — the orchestrator substitutes those when references are required but
+      // none were explicitly attached.
       const ids = storyboard?.reference_image_ids;
-      if (!Array.isArray(ids) || !ids.length) missing.push('reference images');
+      const haveExplicit = Array.isArray(ids) && ids.length > 0;
+      const haveFallback = Boolean(
+        storyboard?.start_frame_id || storyboard?.character_sheet_image_id,
+      );
+      if (!haveExplicit && !haveFallback) missing.push('reference images');
       continue;
     }
     const field = INPUT_TO_FIELD[inputKey];

@@ -606,6 +606,111 @@ input[type="text"], input[type="search"] {
   font-size: 13px;
   margin: 0 0 12px;
 }
+
+.ref-picker { min-width: 480px; }
+.ref-picker-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border, #333);
+  margin-bottom: 12px;
+}
+.ref-picker-tab {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 14px;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.ref-picker-tab:hover { color: var(--fg); }
+.ref-picker-tab.is-active {
+  color: var(--fg);
+  border-bottom-color: var(--accent, #5b8dff);
+}
+.ref-picker-body {
+  min-height: 220px;
+  max-height: 60vh;
+  overflow: auto;
+}
+.ref-picker-empty {
+  color: var(--fg-muted);
+  font-size: 13px;
+  margin: 16px 0;
+  text-align: center;
+}
+.ref-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  gap: 8px;
+}
+.ref-picker-thumb {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  padding: 0;
+  background: rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+}
+.ref-picker-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.ref-picker-thumb:hover:not(:disabled) {
+  border-color: var(--accent, #5b8dff);
+}
+.ref-picker-thumb.is-added { cursor: not-allowed; }
+.ref-picker-thumb.is-added img { opacity: 0.35; }
+.ref-picker-added {
+  position: absolute;
+  inset: auto 0 0 0;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.7);
+  color: var(--fg);
+  padding: 2px 0;
+  text-align: center;
+}
+.ref-picker-character + .ref-picker-character {
+  margin-top: 16px;
+}
+.ref-picker-character-name {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.ref-picker-search {
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 14px;
+}
+.ref-picker-drop {
+  border: 2px dashed var(--border, #333);
+  border-radius: 8px;
+  padding: 32px 16px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  min-height: 180px;
+  color: var(--fg-muted);
+}
+.ref-picker-drop.is-dragging {
+  border-color: var(--accent, #5b8dff);
+  background: rgba(91, 141, 255, 0.08);
+}
+.ref-picker-drop p { margin: 0; }
 .storyboard-edit-current {
   font-size: 13px;
   color: var(--fg-muted);

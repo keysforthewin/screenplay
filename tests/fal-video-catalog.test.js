@@ -149,4 +149,40 @@ describe('fal video catalog: generic auto-wiring', () => {
     expect(validateStoryboardInputs(model, { reference_image_ids: [] })).toEqual(['reference images']);
     expect(validateStoryboardInputs(model, { reference_image_ids: ['abc'] })).toEqual([]);
   });
+
+  it('validateStoryboardInputs accepts start_frame or character_sheet as fallback for required references', async () => {
+    const { validateStoryboardInputs } = await import('../src/fal/videoModels.js');
+    const model = {
+      inputs: {
+        startFrame: 'unused',
+        endFrame: 'unused',
+        characterSheet: 'unused',
+        characterElements: 'unused',
+        referenceImages: 'required',
+        audio: 'unused',
+      },
+    };
+    // start_frame_id present alone → fallback covers it.
+    expect(
+      validateStoryboardInputs(model, {
+        reference_image_ids: [],
+        start_frame_id: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+      }),
+    ).toEqual([]);
+    // character_sheet_image_id present alone → fallback covers it.
+    expect(
+      validateStoryboardInputs(model, {
+        reference_image_ids: [],
+        character_sheet_image_id: 'bbbbbbbbbbbbbbbbbbbbbbbb',
+      }),
+    ).toEqual([]);
+    // Neither explicit refs nor fallbacks → still missing.
+    expect(
+      validateStoryboardInputs(model, {
+        reference_image_ids: [],
+        start_frame_id: null,
+        character_sheet_image_id: null,
+      }),
+    ).toEqual(['reference images']);
+  });
 });

@@ -11,6 +11,7 @@ import {
 } from '../api.js';
 import { CollabField } from '../editor/CollabField.jsx';
 import { FrameRegenerateDialog } from './FrameRegenerateDialog.jsx';
+import { ReferencePickerModal } from './ReferencePickerModal.jsx';
 import { ImageLightbox } from './ImageLightbox.jsx';
 import { AudioSlot } from './AudioSlot.jsx';
 import { DialogAudioPicker } from './DialogAudioPicker.jsx';
@@ -308,28 +309,17 @@ function FrameSlot({
   );
 }
 
-function ReferenceImages({ ids, sbId, onRefresh, onOpenLightbox }) {
-  const fileInput = useRef(null);
+function ReferenceImages({
+  ids,
+  sbId,
+  beatId,
+  charactersInScene,
+  onRefresh,
+  onOpenLightbox,
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
-
-  async function upload(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const fd = new FormData();
-      fd.append('file', file);
-      await apiPostMultipart(`/storyboard/${sbId}/reference`, fd);
-      await onRefresh?.();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-      if (fileInput.current) fileInput.current.value = '';
-    }
-  }
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   async function remove(id) {
     if (!confirm('Remove this reference image?')) return;
@@ -374,19 +364,21 @@ function ReferenceImages({ ids, sbId, onRefresh, onOpenLightbox }) {
           type="button"
           className="storyboard-ref-add"
           disabled={busy}
-          onClick={() => fileInput.current?.click()}
+          onClick={() => setPickerOpen(true)}
         >
           {busy ? '…' : '+'}
         </button>
-        <input
-          ref={fileInput}
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          style={{ display: 'none' }}
-          onChange={upload}
-        />
       </div>
       {error && <div className="error-banner small">{error}</div>}
+      <ReferencePickerModal
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        sbId={sbId}
+        beatId={beatId}
+        charactersInScene={charactersInScene}
+        currentReferenceIds={ids}
+        onAttached={onRefresh}
+      />
     </div>
   );
 }
@@ -475,6 +467,8 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
       <ReferenceImages
         ids={sb.reference_image_ids}
         sbId={id}
+        beatId={sb.beat_id?.toString?.() || sb.beat_id}
+        charactersInScene={sb.characters_in_scene}
         onRefresh={onRefresh}
         onOpenLightbox={openLightbox}
       />

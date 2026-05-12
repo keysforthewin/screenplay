@@ -89,6 +89,7 @@ import { listCharacters, getCharacter, findAllCharacters } from '../mongo/charac
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import {
   listLibraryImages,
+  listImagesForBeat,
   imageFileToMeta,
   uploadGeneratedImage,
   findImageFile,
@@ -333,6 +334,21 @@ export function buildApiRouter() {
         });
       }
       res.json({ characters: out });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Every GridFS image owned by this beat — superset of beat.images[] because
+  // it includes storyboard frames and reference uploads (those write to GridFS
+  // with owner_type='beat' but don't mutate the embedded gallery array).
+  router.get('/beat/:id/images', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const files = await listImagesForBeat(beatId);
+      const filtered = files.filter((f) => f.metadata?.kind !== 'thumbnail');
+      res.json({ images: filtered.map(imageFileToMeta) });
     } catch (e) {
       next(e);
     }
@@ -1651,6 +1667,32 @@ export function buildApiRouter() {
         imageId: req.params.imageId,
       });
       res.json({ storyboard: result });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Attach an already-uploaded GridFS image as a storyboard reference. Used
+  // by the reference picker when the user chooses from this beat, a character,
+  // or the library instead of uploading a fresh file.
+  router.post('/storyboard/:id/reference/attach', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const imageId = String(req.body?.image_id || '').trim();
+      if (!isOidHex(imageId)) {
+        return res.status(400).json({ error: 'image_id (24-hex) required' });
+      }
+      const file = await findImageFile(imageId);
+      if (!file) return res.status(404).json({ error: 'image not found' });
+      const result = await addStoryboardReferenceImageViaGateway({
+        storyboardId: sbId,
+        imageId,
+      });
+      res.json({
+        storyboard: result,
+        image: { _id: imageId, content_type: file.contentType || null },
+      });
     } catch (e) {
       next(e);
     }

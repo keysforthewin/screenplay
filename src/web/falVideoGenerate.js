@@ -343,9 +343,26 @@ async function runVideoGenerationJob({
     const characterElements = wants('characterElements')
       ? await buildCharacterElements(storyboard.characters_in_scene)
       : [];
-    const referenceImageUrls = wants('referenceImages')
-      ? await buildReferenceImageUrls(storyboard.reference_image_ids)
-      : [];
+    let referenceImageUrls = [];
+    if (wants('referenceImages')) {
+      const explicitIds = Array.isArray(storyboard.reference_image_ids)
+        ? storyboard.reference_image_ids
+        : [];
+      if (explicitIds.length) {
+        referenceImageUrls = await buildReferenceImageUrls(explicitIds);
+      } else {
+        const fallbackIds = [
+          storyboard.start_frame_id,
+          storyboard.character_sheet_image_id,
+        ].filter(Boolean);
+        if (fallbackIds.length) {
+          logger.info(
+            `fal video gen: ${model.id} requires reference images but none attached; falling back to start_frame/character_sheet (${fallbackIds.length} image${fallbackIds.length === 1 ? '' : 's'}).`,
+          );
+        }
+        referenceImageUrls = await buildReferenceImageUrls(fallbackIds);
+      }
+    }
 
     // 2. Build the model-specific input from the unified bundle.
     const bundle = {
