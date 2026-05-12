@@ -1124,3 +1124,133 @@ describe('regenerateStoryboardFrame', () => {
     expect(stored.end_prompt).toBe('Same crane, slight reframe.');
   });
 });
+
+async function waitForFrameJob(jobId, { timeoutMs = 2000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const j = Generate.getFrameGenerationJob(jobId);
+    if (j && (j.status === 'done' || j.status === 'error')) return j;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  return Generate.getFrameGenerationJob(jobId);
+}
+
+describe('startFrameGenerationJob', () => {
+  it('runs the worker in the background and lands status=done with the new image id', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('bg-out'),
+      contentType: 'image/png',
+    }));
+
+    const jobId = await Generate.startFrameGenerationJob({
+      storyboardId: sb._id.toString(),
+      role: 'start_frame',
+    });
+    expect(typeof jobId).toBe('string');
+
+    // Status is queued or running before the worker finishes.
+    const initial = Generate.getFrameGenerationJob(jobId);
+    expect(initial).toBeTruthy();
+    expect(['queued', 'running']).toContain(initial.status);
+
+    const job = await waitForFrameJob(jobId);
+    expect(job.status).toBe('done');
+    expect(job.error).toBeNull();
+    expect(job.image_id).toBeTruthy();
+    expect(job.finished_at).toBeInstanceOf(Date);
+
+    // The storyboard row was updated through the gateway.
+    const stored = await Storyboards.getStoryboard(sb._id);
+    expect(stored.start_frame_id.toString()).toBe(job.image_id);
+  });
+
+  it('throws BeatBusyError before queueing if the beat lock is already held', async () => {
+    const { beat, sb } = await seedScenario({ characters: ['Alice'] });
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('x'),
+      contentType: 'image/png',
+    }));
+
+    let release;
+    const block = new Promise((r) => {
+      release = r;
+    });
+    const lockHeld = BeatLocks.withBeatLock(beat._id, () => block);
+
+    try {
+      await expect(
+        Generate.startFrameGenerationJob({
+          storyboardId: sb._id.toString(),
+          role: 'start_frame',
+        }),
+      ).rejects.toBeInstanceOf(Generate.BeatBusyError);
+    } finally {
+      release();
+      await lockHeld;
+    }
+  });
+
+  it('rejects bad role / mode at the gate, before a job record is created', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    await expect(
+      Generate.startFrameGenerationJob({
+        storyboardId: sb._id.toString(),
+        role: 'character_sheet',
+      }),
+    ).rejects.toBeInstanceOf(Generate.FrameRoleError);
+    await expect(
+      Generate.startFrameGenerationJob({
+        storyboardId: sb._id.toString(),
+        role: 'start_frame',
+        mode: 'bogus',
+      }),
+    ).rejects.toBeInstanceOf(Generate.EditModeError);
+  });
+
+  it('records dispatcher errors on the job with status=error', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    Generate._setImageDispatcherForTests(async () => {
+      throw new Error('upstream image API exploded');
+    });
+
+    const jobId = await Generate.startFrameGenerationJob({
+      storyboardId: sb._id.toString(),
+      role: 'start_frame',
+    });
+
+    const job = await waitForFrameJob(jobId);
+    expect(job.status).toBe('error');
+    expect(job.error).toMatch(/upstream image API exploded/);
+    expect(job.image_id).toBeNull();
+    expect(job.finished_at).toBeInstanceOf(Date);
+
+    // Storyboard row was not mutated.
+    const stored = await Storyboards.getStoryboard(sb._id);
+    expect(stored.start_frame_id).toBeNull();
+  });
+
+  it('releases the beat lock after the job finishes (so a follow-up job can be queued)', async () => {
+    const { beat, sb } = await seedScenario({ characters: ['Alice'] });
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('first'),
+      contentType: 'image/png',
+    }));
+
+    const firstId = await Generate.startFrameGenerationJob({
+      storyboardId: sb._id.toString(),
+      role: 'start_frame',
+    });
+    const first = await waitForFrameJob(firstId);
+    expect(first.status).toBe('done');
+    expect(BeatLocks.isBeatLocked(beat._id)).toBe(false);
+
+    // Second start succeeds; lock was released cleanly.
+    const secondId = await Generate.startFrameGenerationJob({
+      storyboardId: sb._id.toString(),
+      role: 'end_frame',
+    });
+    const second = await waitForFrameJob(secondId);
+    expect(second.status).toBe('done');
+  });
+});

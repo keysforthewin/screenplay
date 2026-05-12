@@ -1819,11 +1819,14 @@ export function buildApiRouter() {
         }
         customPrompt = raw;
       }
-      const { regenerateStoryboardFrame, BeatBusyError, EditModeError } = await import(
-        './storyboardGenerate.js'
-      );
+      const {
+        startFrameGenerationJob,
+        BeatBusyError,
+        EditModeError,
+        FrameRoleError,
+      } = await import('./storyboardGenerate.js');
       try {
-        const result = await regenerateStoryboardFrame({
+        const jobId = await startFrameGenerationJob({
           storyboardId: sbId,
           role,
           imageModel,
@@ -1831,17 +1834,27 @@ export function buildApiRouter() {
           editPrompt,
           customPrompt,
         });
-        const sb = await getStoryboard(sbId);
-        res.json({ storyboard: sb, image: { _id: result.image_id } });
+        res.status(202).json({ job_id: jobId, storyboard_id: sbId, role });
       } catch (e) {
         if (e instanceof BeatBusyError) {
           return res.status(409).json({ error: e.message });
         }
-        if (e instanceof EditModeError) {
+        if (e instanceof EditModeError || e instanceof FrameRoleError) {
           return res.status(400).json({ error: e.message });
         }
         throw e;
       }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/storyboard/frame-generate/job/:jobId', async (req, res, next) => {
+    try {
+      const { getFrameGenerationJob } = await import('./storyboardGenerate.js');
+      const job = getFrameGenerationJob(req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'job not found' });
+      res.json({ job });
     } catch (e) {
       next(e);
     }

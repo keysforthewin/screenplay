@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
   apiDelete,
+  apiGet,
   apiPatchJson,
   apiPostJson,
   imageUrl,
@@ -134,9 +135,22 @@ function FrameSlot({
   const [error, setError] = useState(null);
   const [regenOpen, setRegenOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const pollRef = useRef(null);
   const url = imageUrl(imageId);
   const thumbSrc = thumbUrl(imageId);
   const canGrab = role === 'start_frame' && prevSb != null;
+
+  // Stop any in-flight poll on unmount so we don't setState on a dead
+  // component. The job keeps running server-side regardless; the image still
+  // lands via the fields_updated broadcast.
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, []);
 
   async function remove() {
     if (!confirm(`Remove ${label}?`)) return;
@@ -183,6 +197,35 @@ function FrameSlot({
     }
   }
 
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }
+
+  async function pollFrameJob(jobId) {
+    try {
+      const r = await apiGet(`/storyboard/frame-generate/job/${jobId}`);
+      const job = r?.job;
+      if (!job) return;
+      if (job.status === 'done') {
+        stopPolling();
+        await onRefresh?.();
+        setBusy(false);
+        setBusyLabel(null);
+      } else if (job.status === 'error') {
+        stopPolling();
+        setError(job.error || 'Generation failed.');
+        setBusy(false);
+        setBusyLabel(null);
+      }
+    } catch {
+      // Transient errors (404 while the job is still being registered,
+      // network blips) are ignored; the next tick retries.
+    }
+  }
+
   async function submitRegen({ mode, imageModel, editPrompt, customPrompt }) {
     setRegenOpen(false);
     setBusy(true);
@@ -192,11 +235,19 @@ function FrameSlot({
       const body = { image_model: imageModel, mode };
       if (mode === 'edit') body.edit_prompt = editPrompt;
       if (mode === 'custom') body.custom_prompt = customPrompt;
-      await apiPostJson(`/storyboard/${sbId}/frame/${role}/generate`, body);
-      await onRefresh?.();
+      const r = await apiPostJson(
+        `/storyboard/${sbId}/frame/${role}/generate`,
+        body,
+      );
+      const jobId = r?.job_id;
+      if (!jobId) {
+        throw new Error('Server did not return a job id.');
+      }
+      stopPolling();
+      pollRef.current = setInterval(() => pollFrameJob(jobId), 2000);
+      pollFrameJob(jobId);
     } catch (err) {
       setError(err.message);
-    } finally {
       setBusy(false);
       setBusyLabel(null);
     }

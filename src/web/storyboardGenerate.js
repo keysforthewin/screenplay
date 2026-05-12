@@ -1552,8 +1552,11 @@ export class EditModeError extends Error {
 //   for hand-crafted shots, recovering from a bad plan, or experimenting with
 //   prompt phrasing. Works whether or not the slot already has an image.
 //
-// Synchronous: the SPA awaits the response. Nano banana is fast enough; the
-// gpt-image-2 path can take 60+s but still fits within HTTP timeouts.
+// Public entry point: validates inputs, resolves sb + beat, refuses if the
+// beat lock is held, and delegates to the internal worker. Direct callers
+// (tests, future agent tools) get the fail-fast BeatBusyError semantics. The
+// SPA-facing path goes through `startFrameGenerationJob` instead, which holds
+// the lock for the duration of the run.
 export async function regenerateStoryboardFrame({
   storyboardId,
   role,
@@ -1573,7 +1576,29 @@ export async function regenerateStoryboardFrame({
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
   }
+  return regenerateStoryboardFrameInternal({
+    sb,
+    beat,
+    role,
+    imageModel,
+    mode,
+    editPrompt,
+    customPrompt,
+  });
+}
 
+// Worker body. Caller is responsible for (a) validating role/mode and (b)
+// holding the per-beat lock — direct callers go through the public wrapper
+// above; the background job runner holds the lock via `withBeatLock`.
+async function regenerateStoryboardFrameInternal({
+  sb,
+  beat,
+  role,
+  imageModel = 'gemini',
+  mode = 'full',
+  editPrompt = null,
+  customPrompt = null,
+}) {
   let prompt;
   let inputImages;
   let dispatchMode;
@@ -1730,6 +1755,102 @@ export async function regenerateStoryboardFrame({
   }
 
   return { image_id: file._id.toString() };
+}
+
+// Background-job table for per-frame regeneration. Separate from the batch
+// `jobs` Map at the top of the file — different shape, different polling
+// endpoint, different lock semantics (each frame job runs serially inside its
+// beat's lock; the batch job already owns the lock for its whole pipeline).
+const frameJobs = new Map();
+
+export function getFrameGenerationJob(jobId) {
+  return frameJobs.get(jobId) || null;
+}
+
+// SPA entry point for "Generate" / "Regenerate" buttons. Returns a job_id
+// immediately; the SPA polls /storyboard/frame-generate/job/:jobId to see when
+// the work lands or fails. The runner holds the per-beat lock for its
+// duration so it can't race the batch pipeline.
+export async function startFrameGenerationJob({
+  storyboardId,
+  role,
+  imageModel = 'gemini',
+  mode = 'full',
+  editPrompt = null,
+  customPrompt = null,
+}) {
+  if (!FRAME_ROLES.has(role)) throw new FrameRoleError(role);
+  if (!['full', 'edit', 'custom'].includes(mode)) {
+    throw new EditModeError(`Unknown regen mode "${mode}".`);
+  }
+  const sb = await getStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const beat = await getBeat(sb.beat_id);
+  if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
+  if (isBeatLocked(beat._id)) {
+    throw new BeatBusyError(beat._id.toString());
+  }
+
+  const jobId = makeJobId();
+  const job = {
+    job_id: jobId,
+    storyboard_id: sb._id.toString(),
+    beat_id: beat._id.toString(),
+    role,
+    image_model: imageModel,
+    mode,
+    status: 'queued',
+    started_at: new Date(),
+    finished_at: null,
+    error: null,
+    image_id: null,
+  };
+  frameJobs.set(jobId, job);
+
+  withBeatLock(beat._id, () =>
+    runFrameGenerationJob({
+      job,
+      sb,
+      beat,
+      role,
+      imageModel,
+      mode,
+      editPrompt,
+      customPrompt,
+    }),
+  ).catch((e) => {
+    job.status = 'error';
+    job.error = e.message;
+    job.finished_at = new Date();
+    logger.error(`frame gen job ${jobId} crashed: ${e.message}`);
+  });
+
+  return jobId;
+}
+
+async function runFrameGenerationJob({
+  job,
+  sb,
+  beat,
+  role,
+  imageModel,
+  mode,
+  editPrompt,
+  customPrompt,
+}) {
+  job.status = 'running';
+  const { image_id } = await regenerateStoryboardFrameInternal({
+    sb,
+    beat,
+    role,
+    imageModel,
+    mode,
+    editPrompt,
+    customPrompt,
+  });
+  job.image_id = image_id;
+  job.status = 'done';
+  job.finished_at = new Date();
 }
 
 // Pull a single continuity reference image:
