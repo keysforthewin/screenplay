@@ -1819,11 +1819,32 @@ export function buildApiRouter() {
         }
         customPrompt = raw;
       }
+      let promptOverride = null;
+      if (req.body?.prompt_override != null) {
+        if (mode !== 'full') {
+          return res
+            .status(400)
+            .json({ error: 'prompt_override is only valid when mode=full' });
+        }
+        const raw = req.body.prompt_override;
+        if (typeof raw !== 'string' || !raw.trim()) {
+          return res
+            .status(400)
+            .json({ error: 'prompt_override must be a non-empty string' });
+        }
+        if (raw.length > 4096) {
+          return res
+            .status(400)
+            .json({ error: 'prompt_override must be ≤ 4096 chars' });
+        }
+        promptOverride = raw;
+      }
       const {
         startFrameGenerationJob,
         BeatBusyError,
         EditModeError,
         FrameRoleError,
+        MissingStartFrameError,
       } = await import('./storyboardGenerate.js');
       try {
         const jobId = await startFrameGenerationJob({
@@ -1833,13 +1854,18 @@ export function buildApiRouter() {
           mode,
           editPrompt,
           customPrompt,
+          promptOverride,
         });
         res.status(202).json({ job_id: jobId, storyboard_id: sbId, role });
       } catch (e) {
         if (e instanceof BeatBusyError) {
           return res.status(409).json({ error: e.message });
         }
-        if (e instanceof EditModeError || e instanceof FrameRoleError) {
+        if (
+          e instanceof EditModeError ||
+          e instanceof FrameRoleError ||
+          e instanceof MissingStartFrameError
+        ) {
           return res.status(400).json({ error: e.message });
         }
         throw e;
@@ -1848,6 +1874,48 @@ export function buildApiRouter() {
       next(e);
     }
   });
+
+  // Read-only preview of the assembled full-mode prompt for a single frame
+  // slot. The SPA's regen dialog calls this on open so the user can review
+  // and edit what would otherwise be sent silently to the image model.
+  router.post(
+    '/storyboard/:id/frame/:role/preview-prompt',
+    async (req, res, next) => {
+      try {
+        const sbId = await resolveStoryboardId(req);
+        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+        const role = String(req.params.role);
+        if (!['start_frame', 'end_frame'].includes(role)) {
+          return res
+            .status(400)
+            .json({ error: 'role must be start_frame|end_frame' });
+        }
+        const {
+          previewFrameGenerationPrompt,
+          BeatBusyError,
+          FrameRoleError,
+          MissingStartFrameError,
+        } = await import('./storyboardGenerate.js');
+        try {
+          const preview = await previewFrameGenerationPrompt({
+            storyboardId: sbId,
+            role,
+          });
+          res.json(preview);
+        } catch (e) {
+          if (e instanceof BeatBusyError) {
+            return res.status(409).json({ error: e.message });
+          }
+          if (e instanceof FrameRoleError || e instanceof MissingStartFrameError) {
+            return res.status(400).json({ error: e.message });
+          }
+          throw e;
+        }
+      } catch (e) {
+        next(e);
+      }
+    },
+  );
 
   router.get('/storyboard/frame-generate/job/:jobId', async (req, res, next) => {
     try {

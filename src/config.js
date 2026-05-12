@@ -42,8 +42,8 @@ export const config = {
   },
   backup: {
     dir: process.env.BACKUP_DIR || path.join(process.cwd(), 'backups'),
-    intervalMs: Number(process.env.BACKUP_INTERVAL_MS) || 30 * 60 * 1000,
-    retentionMs: Number(process.env.BACKUP_RETENTION_MS) || 48 * 60 * 60 * 1000,
+    intervalMs: Number(process.env.BACKUP_INTERVAL_MS) || 2 * 60 * 60 * 1000,
+    retentionMs: Number(process.env.BACKUP_RETENTION_MS) || 8 * 60 * 60 * 1000,
     startupDelayMs: Number(process.env.BACKUP_STARTUP_DELAY_MS) || 60 * 1000,
   },
   web: {

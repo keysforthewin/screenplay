@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
+import { apiPostJson } from '../api.js';
 
 const MODEL_STORAGE_KEY = 'screenplay.storyboard.model';
 const VALID_MODELS = new Set(['gemini', 'openai']);
@@ -25,8 +26,10 @@ const ROLE_LABEL = {
 // Per-frame regen modal for FrameSlot. Three modes:
 //
 // - 'full' (default): runs the full pipeline with character sheets, scene
-//   image, descriptions, and continuity refs (matches what the batch generator
-//   would produce for this row).
+//   image, descriptions, and continuity refs. Fetches a preview of the
+//   assembled prompt on open so the user can review and edit before sending.
+//   For end_frame this includes the Claude camera-motion rewrite — the
+//   rewrite is shown in the textarea, no longer applied silently.
 // - 'edit': passes only the existing frame image plus a small user prompt.
 //   Disabled when the slot is empty (nothing to edit).
 // - 'custom': sends a user-written prompt verbatim with no references or
@@ -40,19 +43,64 @@ export function FrameRegenerateDialog({
   onSubmit,
   role,
   hasImage,
+  storyboardId,
 }) {
   const [mode, setMode] = useState('full');
   const [imageModel, setImageModel] = useState(readStoredModel);
   const [editPrompt, setEditPrompt] = useState('');
   const [customPrompt, setCustomPrompt] = useState('');
+  const [previewPrompt, setPreviewPrompt] = useState('');
+  const [previewMeta, setPreviewMeta] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState(null);
+  // Tracks the most recent fetch so a stale response can't clobber a later one
+  // (user spam-toggles modes or reopens before the first response lands).
+  const previewSeqRef = useRef(0);
 
-  // Reset transient state each time the dialog opens.
+  const fetchPreview = useCallback(async () => {
+    if (!storyboardId || !role) return;
+    const seq = ++previewSeqRef.current;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    try {
+      const res = await apiPostJson(
+        `/storyboard/${storyboardId}/frame/${role}/preview-prompt`,
+        {},
+      );
+      if (seq !== previewSeqRef.current) return;
+      setPreviewPrompt(typeof res?.prompt === 'string' ? res.prompt : '');
+      setPreviewMeta({
+        reference_count: res?.reference_count ?? 0,
+        has_start_frame_ref: !!res?.has_start_frame_ref,
+        has_set_image: !!res?.has_set_image,
+        character_count: res?.character_count ?? 0,
+      });
+    } catch (e) {
+      if (seq !== previewSeqRef.current) return;
+      setPreviewError(e?.message || 'Failed to load preview prompt.');
+      setPreviewPrompt('');
+      setPreviewMeta(null);
+    } finally {
+      if (seq === previewSeqRef.current) setPreviewLoading(false);
+    }
+  }, [storyboardId, role]);
+
+  // Reset transient state each time the dialog opens, and load the preview
+  // for full mode.
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      // Invalidate any in-flight fetch when the dialog closes.
+      previewSeqRef.current++;
+      return;
+    }
     setMode('full');
     setEditPrompt('');
     setCustomPrompt('');
-  }, [open]);
+    setPreviewPrompt('');
+    setPreviewMeta(null);
+    setPreviewError(null);
+    fetchPreview();
+  }, [open, fetchPreview]);
 
   // Force mode back to full if the slot is empty (Edit option is disabled in
   // that case anyway, but defend against stale state).
@@ -70,7 +118,13 @@ export function FrameRegenerateDialog({
     mode !== 'edit' || (typeof editPrompt === 'string' && editPrompt.trim().length > 0);
   const customPromptValid =
     mode !== 'custom' || (typeof customPrompt === 'string' && customPrompt.trim().length > 0);
-  const canSubmit = editPromptValid && customPromptValid;
+  const fullPromptValid =
+    mode !== 'full' || (typeof previewPrompt === 'string' && previewPrompt.trim().length > 0);
+  const canSubmit =
+    editPromptValid &&
+    customPromptValid &&
+    fullPromptValid &&
+    !(mode === 'full' && previewLoading);
 
   function submit() {
     if (!canSubmit) return;
@@ -79,6 +133,7 @@ export function FrameRegenerateDialog({
       imageModel,
       editPrompt: mode === 'edit' ? editPrompt.trim() : null,
       customPrompt: mode === 'custom' ? customPrompt.trim() : null,
+      promptOverride: mode === 'full' ? previewPrompt.trim() : null,
     });
   }
 
@@ -88,12 +143,34 @@ export function FrameRegenerateDialog({
   else if (mode === 'custom') submitLabel = 'Generate';
   else submitLabel = hasImage ? 'Regenerate' : 'Generate';
 
+  const refSummary = previewMeta
+    ? [
+        previewMeta.has_pinned_sheet
+          ? '1 character sheet'
+          : previewMeta.character_count
+            ? `${previewMeta.character_count} character ${
+                previewMeta.character_count === 1 ? 'reference' : 'references'
+              }`
+            : null,
+        previewMeta.reference_image_count
+          ? `${previewMeta.reference_image_count} reference ${
+              previewMeta.reference_image_count === 1 ? 'image' : 'images'
+            }`
+          : null,
+        previewMeta.has_set_image ? '1 scene image' : null,
+        previewMeta.has_start_frame_ref ? '1 start frame' : null,
+      ]
+        .filter(Boolean)
+        .join(', ')
+    : '';
+
   return (
     <Modal
       open={open}
       title={`${hasImage ? 'Regenerate' : 'Generate'} ${label}`}
       onClose={onClose}
       dismissible
+      size="wide"
       footer={
         <>
           <button type="button" onClick={onClose}>Cancel</button>
@@ -128,6 +205,7 @@ export function FrameRegenerateDialog({
               <span>
                 <strong>Full {hasImage ? 'regenerate' : 'generate'}</strong> — runs the
                 full pipeline (character sheets, scene image, descriptions, continuity).
+                Preview and edit the prompt below before sending.
               </span>
             </label>
             <label
@@ -177,6 +255,54 @@ export function FrameRegenerateDialog({
             </label>
           </div>
         </div>
+
+        {mode === 'full' && (
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span
+              className="field-label"
+              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}
+            >
+              <span>Prompt sent to image model</span>
+              <button
+                type="button"
+                onClick={fetchPreview}
+                disabled={previewLoading}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--accent, #4a9eff)',
+                  cursor: previewLoading ? 'default' : 'pointer',
+                  fontSize: 12,
+                  padding: 0,
+                }}
+                title="Re-fetch the assembled prompt from the server (discards your edits)"
+              >
+                Reset to backend default
+              </button>
+            </span>
+            <textarea
+              value={previewPrompt}
+              onChange={(e) => setPreviewPrompt(e.target.value)}
+              rows={12}
+              placeholder={
+                previewLoading
+                  ? 'Building prompt…'
+                  : 'The assembled prompt will appear here.'
+              }
+              disabled={previewLoading}
+              style={{ fontFamily: 'var(--mono-font, ui-monospace, monospace)', fontSize: 12 }}
+            />
+            <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+              {previewLoading
+                ? 'Loading preview…'
+                : previewError
+                  ? `Preview error: ${previewError}. You can still type a prompt here to override.`
+                  : refSummary
+                    ? `Sent verbatim to the image model along with: ${refSummary}.`
+                    : 'Sent verbatim to the image model.'}
+            </span>
+          </label>
+        )}
 
         {mode === 'edit' && (
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>

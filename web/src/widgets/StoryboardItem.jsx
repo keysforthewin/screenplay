@@ -226,7 +226,13 @@ function FrameSlot({
     }
   }
 
-  async function submitRegen({ mode, imageModel, editPrompt, customPrompt }) {
+  async function submitRegen({
+    mode,
+    imageModel,
+    editPrompt,
+    customPrompt,
+    promptOverride,
+  }) {
     setRegenOpen(false);
     setBusy(true);
     setBusyLabel(mode === 'edit' ? 'Editing…' : 'Generating…');
@@ -235,6 +241,7 @@ function FrameSlot({
       const body = { image_model: imageModel, mode };
       if (mode === 'edit') body.edit_prompt = editPrompt;
       if (mode === 'custom') body.custom_prompt = customPrompt;
+      if (mode === 'full' && promptOverride) body.prompt_override = promptOverride;
       const r = await apiPostJson(
         `/storyboard/${sbId}/frame/${role}/generate`,
         body,
@@ -325,6 +332,7 @@ function FrameSlot({
           onSubmit={submitRegen}
           role={role}
           hasImage={Boolean(url)}
+          storyboardId={sbId}
         />
       )}
       <ReferencePickerModal

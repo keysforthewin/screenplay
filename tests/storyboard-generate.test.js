@@ -48,11 +48,10 @@ beforeEach(() => {
   // Reset two-stage planner overrides so tests don't leak into each other.
   Generate._setOutlinePlannerForTests(null);
   Generate._setFrameRefinerForTests(null);
-  // Default the describer / end-prompt derivation hooks to no-ops so tests
-  // that don't override them don't reach the real Anthropic client. Tests
-  // that DO care override these explicitly.
+  // Default the describer hook to a no-op so tests that don't override it
+  // don't reach the real Anthropic client. Tests that DO care override
+  // this explicitly.
   Generate._setDescriberForTests(async () => ({ name: '', description: '' }));
-  Generate._setEndPromptDerivationForTests(async () => null);
   // Default the image dispatcher to a benign fake so tests that don't
   // override it (e.g. the new direction/clamp/rolling-context tests) still
   // complete without trying to hit Gemini/OpenAI.
@@ -409,23 +408,16 @@ describe('storyboard auto-generation', () => {
     expect(after.map((s) => s.text_prompt)).toEqual(['keep 1', 'keep 2']);
   });
 
-  it('persists start_prompt/end_prompt on each row and runs end-prompt derivation when captioned', async () => {
+  it("bakes the planner's start_prompt and end_prompt into each row's text_prompt and does not persist them as separate fields", async () => {
     installPlannerForFixture(TWO_FRAME_PLAN.frames);
     Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('img'),
       contentType: 'image/png',
     }));
-    // Captioning returns a non-empty description so derivation fires.
     Generate._setDescriberForTests(async () => ({
       name: 'Diner',
       description: 'Pink booth, warm tungsten light, neon glow on the table.',
     }));
-    const derivedCalls = [];
-    Generate._setEndPromptDerivationForTests(async (args) => {
-      derivedCalls.push(args);
-      // Tag each derivation so we can verify it lands on the right row.
-      return `DERIVED[${args.startPrompt.slice(0, 12)}]`;
-    });
 
     const beat = await Plots.createBeat({
       name: 'D',
@@ -439,52 +431,18 @@ describe('storyboard auto-generation', () => {
     const job = await waitForJob(jobId);
     expect(job.status).toBe('done');
 
-    // Derivation ran once per frame.
-    expect(derivedCalls).toHaveLength(2);
-    expect(derivedCalls[0].startPrompt).toBe(TWO_FRAME_PLAN.frames[0].start_prompt);
-    expect(derivedCalls[0].endPrompt).toBe(TWO_FRAME_PLAN.frames[0].end_prompt);
-    expect(derivedCalls[0].shotType).toBe('cinematic_wide');
-    expect(derivedCalls[1].shotType).toBe('two_shot');
-
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(stored).toHaveLength(2);
-    // Both rows carry the planner's start_prompt verbatim.
-    expect(stored[0].start_prompt).toBe(TWO_FRAME_PLAN.frames[0].start_prompt);
-    expect(stored[1].start_prompt).toBe(TWO_FRAME_PLAN.frames[1].start_prompt);
-    // The derived end_prompt landed on each row (overwrites the planner's).
-    expect(stored[0].end_prompt).toMatch(/^DERIVED\[/);
-    expect(stored[1].end_prompt).toMatch(/^DERIVED\[/);
-    expect(stored[0].end_prompt).not.toBe(TWO_FRAME_PLAN.frames[0].end_prompt);
-  });
-
-  it('falls back to the planner end_prompt and leaves end_prompt as planner output when derivation returns null', async () => {
-    installPlannerForFixture(TWO_FRAME_PLAN.frames);
-    Generate._setImageDispatcherForTests(async () => ({
-      buffer: Buffer.from('img'),
-      contentType: 'image/png',
-    }));
-    Generate._setDescriberForTests(async () => ({
-      name: 'D',
-      description: 'something',
-    }));
-    Generate._setEndPromptDerivationForTests(async () => null);
-
-    const beat = await Plots.createBeat({
-      name: 'X',
-      desc: '',
-      body: '',
-      characters: [],
-    });
-    const jobId = await Generate.startStoryboardGenerationJob({
-      beatId: beat._id.toString(),
-    });
-    await waitForJob(jobId);
-
-    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
-    // Planner end_prompt is persisted at create-time; derivation null means
-    // we don't overwrite, so the planner's original survives.
-    expect(stored[0].end_prompt).toBe(TWO_FRAME_PLAN.frames[0].end_prompt);
-    expect(stored[1].end_prompt).toBe(TWO_FRAME_PLAN.frames[1].end_prompt);
+    // text_prompt is the single source of truth; the planner's start_prompt
+    // and end_prompt are baked into it as **Start frame:** / **End frame:**
+    // markdown sections via buildTextPrompt.
+    expect(stored[0].text_prompt).toContain(TWO_FRAME_PLAN.frames[0].start_prompt);
+    expect(stored[0].text_prompt).toContain(TWO_FRAME_PLAN.frames[0].end_prompt);
+    expect(stored[1].text_prompt).toContain(TWO_FRAME_PLAN.frames[1].start_prompt);
+    expect(stored[1].text_prompt).toContain(TWO_FRAME_PLAN.frames[1].end_prompt);
+    // The separate fields are gone — no hidden second source of truth.
+    expect(stored[0].start_prompt).toBeUndefined();
+    expect(stored[0].end_prompt).toBeUndefined();
   });
 
   it('threads imageModel="openai" through every dispatcher call', async () => {
@@ -594,7 +552,15 @@ describe('storyboard auto-generation', () => {
     ]);
 
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
-    expect(stored.map((s) => s.start_prompt)).toEqual(['start#0', 'start#1', 'start#2']);
+    // Each row's text_prompt contains the planner's start_prompt baked in
+    // via buildTextPrompt (under the **Start frame:** markdown header).
+    expect(stored.map((s) => s.text_prompt)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('start#0'),
+        expect.stringContaining('start#1'),
+        expect.stringContaining('start#2'),
+      ]),
+    );
   });
 
   it('propagates `direction` to both stages', async () => {
@@ -656,7 +622,6 @@ describe('storyboard auto-generation', () => {
       name: 'D',
       description: 'description text',
     }));
-    Generate._setEndPromptDerivationForTests(async () => 'derived');
 
     const beat = await Plots.createBeat({
       name: 'P',
@@ -690,7 +655,6 @@ describe('storyboard auto-generation', () => {
     expect(steps).toContain('frame_start');
     expect(steps).toContain('render_start_frame');
     expect(steps).toContain('caption_start_frame');
-    expect(steps).toContain('derive_end_prompt');
     expect(steps).toContain('render_end_frame');
     expect(steps).toContain('caption_end_frame');
     expect(steps).toContain('frame_done');
@@ -858,9 +822,12 @@ describe('storyboard auto-generation', () => {
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(stored).toHaveLength(1);
     // Synthesized prompts include the outline description so the renderer
-    // has something to feed the image generator.
-    expect(stored[0].start_prompt).toMatch(/Alice opens the door/);
-    expect(stored[0].end_prompt).toMatch(/Alice opens the door/);
+    // has something to feed the image generator. With the unified schema,
+    // both the synthesized start and end prompts land in text_prompt (under
+    // **Start frame:** / **End frame:** markdown headers).
+    expect(stored[0].text_prompt).toMatch(/Alice opens the door/);
+    expect(stored[0].text_prompt).toMatch(/Start frame:/);
+    expect(stored[0].text_prompt).toMatch(/End frame:/);
   });
 
   it('clamps targetCount and records the requested value on the job', async () => {

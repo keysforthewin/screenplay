@@ -1240,8 +1240,6 @@ export async function createStoryboardViaGateway({
   shotType = null,
   transitionIn = null,
   charactersInScene = [],
-  startPrompt = '',
-  endPrompt = '',
 }) {
   const sb = await mongoCreateStoryboard({
     beatId,
@@ -1251,8 +1249,6 @@ export async function createStoryboardViaGateway({
     shotType,
     transitionIn,
     charactersInScene,
-    startPrompt,
-    endPrompt,
   });
   // Seed the y-doc fragment(s) BEFORE broadcasting the ping. Otherwise the
   // SPA refetches and mounts its CollabField on an empty fragment before the
@@ -1344,24 +1340,6 @@ export async function setStoryboardStartFrameDescriptionViaGateway({
   });
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
     changed: ['start_frame_description'],
-    storyboard_id: String(storyboardId),
-  });
-  return mongoGetStoryboard(storyboardId);
-}
-
-// Persist the camera-derived end_prompt on a storyboard row. Written by the
-// generator after the start frame is captioned and Claude has rewritten the
-// planner's end_prompt to vary the camera; read back by the regen path so
-// "Regenerate end frame" reuses the derived prompt instead of the planner's
-// near-identical original.
-export async function setStoryboardEndPromptViaGateway({ storyboardId, endPrompt }) {
-  const sb = await mongoGetStoryboard(storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  await mongoUpdateStoryboard(storyboardId, {
-    end_prompt: String(endPrompt || ''),
-  });
-  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
-    changed: ['end_prompt'],
     storyboard_id: String(storyboardId),
   });
   return mongoGetStoryboard(storyboardId);

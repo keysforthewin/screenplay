@@ -68,10 +68,6 @@ beforeEach(() => {
   // about captioning don't make real Anthropic calls. Tests that DO care
   // override this with a fake that returns a known description.
   Generate._setDescriberForTests(async () => ({ name: '', description: '' }));
-  // Default the derivation hook to a no-op so tests that don't care about
-  // end-prompt rewriting don't hit Anthropic. Tests that DO care override
-  // this explicitly.
-  Generate._setEndPromptDerivationForTests(async () => null);
   // Reset two-stage planner overrides so tests don't leak into each other.
   Generate._setOutlinePlannerForTests(null);
   Generate._setFrameRefinerForTests(null);
@@ -168,8 +164,13 @@ describe('regenerateStoryboardFrame', () => {
     expect(stored.start_frame_id.toString()).not.toBe(sceneId.toString());
   });
 
-  it('uses end-moment language when role is end_frame and only updates end_frame_id', async () => {
+  it('uses transform-style language when role is end_frame and only updates end_frame_id', async () => {
     const { sb } = await seedScenario({ characters: ['Alice'] });
+    // The new minimal end-frame pipeline requires a start frame to anchor on.
+    const startId = new ObjectId();
+    fakeImageStore.set(startId.toString(), fakeRef('row-start'));
+    await Storyboards.updateStoryboard(sb._id, { start_frame_id: startId });
+
     const calls = [];
     Generate._setImageDispatcherForTests(async (args) => {
       calls.push(args);
@@ -181,10 +182,12 @@ describe('regenerateStoryboardFrame', () => {
       role: 'end_frame',
     });
 
-    expect(calls[0].prompt).toMatch(/Render the end moment/);
+    expect(calls[0].prompt).toMatch(/start frame of this shot/i);
+    expect(calls[0].prompt).toMatch(/end frame of the same continuous shot/i);
     const stored = await Storyboards.getStoryboard(sb._id);
     expect(stored.end_frame_id.toString()).toBe(result.image_id);
-    expect(stored.start_frame_id).toBeNull();
+    // start_frame_id was set in the seed, end_frame_id is what we just generated.
+    expect(stored.start_frame_id.toString()).toBe(startId.toString());
   });
 
   it('prefers the row-pinned character_sheet_image_id over the full beat character list', async () => {
@@ -286,7 +289,7 @@ describe('regenerateStoryboardFrame', () => {
     ).rejects.toThrow(/Storyboard not found/);
   });
 
-  it('appends the row\'s start_frame as a continuity ref when regenerating end_frame', async () => {
+  it('attaches ONLY the row\'s start frame (no scene, no auto-loaded characters) for end_frame', async () => {
     const { sb } = await seedScenario({ characters: ['Alice'] });
     // Pin a start_frame_id on the row and register its bytes.
     const startId = new ObjectId();
@@ -305,9 +308,12 @@ describe('regenerateStoryboardFrame', () => {
     });
 
     const refs = calls[0].inputImages.map((i) => i.buffer.toString());
-    // Sheet + scene + continuity (the row's own start frame) — continuity last.
-    expect(refs).toEqual(['fake-sheet-Alice', 'fake-scene', 'fake-row-start']);
-    expect(calls[0].prompt).toMatch(/THIS shot's start frame/);
+    // End-frame full mode is anchored on the start frame; no beat scene
+    // image, no auto-loaded character sheets (those would only come along
+    // if explicitly pinned via sb.character_sheet_image_id or
+    // sb.reference_image_ids).
+    expect(refs).toEqual(['fake-row-start']);
+    expect(calls[0].prompt).toMatch(/start frame of this shot/i);
   });
 
   it("appends the previous row's end_frame as a continuity ref when regenerating start_frame on row #2+", async () => {
@@ -380,10 +386,12 @@ describe('regenerateStoryboardFrame', () => {
     expect(calls[0].prompt).toMatch(/Shot type: CLOSE UP\./);
   });
 
-  it("injects the storyboard's start_frame_description as a verbal anchor when regenerating end_frame", async () => {
+  it("does NOT inject start_frame_description as a verbal anchor for end_frame (the start frame image itself carries the visual)", async () => {
+    // The old end-frame pipeline used buildVisualPrompt's "Reference details"
+    // block to surface start_frame_description as a verbal anchor. The new
+    // transform-focused pipeline omits all such scaffolding — the start
+    // frame is the canvas, not a verbal reference.
     const { sb } = await seedScenario({ characters: ['Alice'] });
-    // Pin a start_frame_id on the row + a denormalized description that
-    // simulates what the batch render would have written.
     const startId = new ObjectId();
     fakeImageStore.set(startId.toString(), fakeRef('row-start', 'image/png'));
     await Storyboards.updateStoryboard(sb._id, {
@@ -403,38 +411,9 @@ describe('regenerateStoryboardFrame', () => {
       role: 'end_frame',
     });
 
-    // The verbal anchor is injected under the "Reference details" header.
-    expect(calls[0].prompt).toMatch(/Reference details/);
-    expect(calls[0].prompt).toMatch(/Start frame to match: Diner interior, pink booths/);
-    // And the existing PRIMARY/secondary directive is in place.
-    expect(calls[0].prompt).toMatch(/PRIMARY reference/);
-  });
-
-  it('falls back to GridFS metadata description when start_frame_description is empty', async () => {
-    const { sb } = await seedScenario({ characters: ['Alice'] });
-    const startId = new ObjectId();
-    // Stored on the GridFS file, not on the storyboard doc.
-    fakeImageStore.set(startId.toString(), {
-      ...fakeRef('row-start', 'image/png'),
-      description: 'Stored on GridFS, not the storyboard.',
-    });
-    await Storyboards.updateStoryboard(sb._id, { start_frame_id: startId });
-    // start_frame_description left empty.
-
-    const calls = [];
-    Generate._setImageDispatcherForTests(async (args) => {
-      calls.push(args);
-      return { buffer: Buffer.from('end-out'), contentType: 'image/png' };
-    });
-
-    await Generate.regenerateStoryboardFrame({
-      storyboardId: sb._id.toString(),
-      role: 'end_frame',
-    });
-
-    expect(calls[0].prompt).toMatch(
-      /Start frame to match: Stored on GridFS, not the storyboard\./,
-    );
+    expect(calls[0].prompt).not.toMatch(/Reference details/);
+    expect(calls[0].prompt).not.toMatch(/Start frame to match:/);
+    expect(calls[0].prompt).not.toMatch(/PRIMARY reference/);
   });
 
   it('injects character and set descriptions from GridFS metadata as verbal anchors', async () => {
@@ -997,7 +976,7 @@ describe('regenerateStoryboardFrame', () => {
     expect(stored[0].character_sheet_image_id?.toString()).toBe(sheetId.toString());
   });
 
-  it('softens the continuity directive so camera moves are permitted', async () => {
+  it('permits camera moves and pose changes in the end-frame transform prompt', async () => {
     const { sb } = await seedScenario({ characters: ['Alice'] });
     const startId = new ObjectId();
     fakeImageStore.set(startId.toString(), fakeRef('row-start'));
@@ -1018,27 +997,23 @@ describe('regenerateStoryboardFrame', () => {
     // Old wording forbade camera movement — make sure it's gone.
     expect(p).not.toMatch(/Only the character's pose ?\/ ?motion changes/);
     expect(p).not.toMatch(/Reproduce the start frame's exact .* composition/);
-    // New wording explicitly allows the camera to shift.
-    expect(p).toMatch(/camera position, angle, and distance MAY shift/i);
-    expect(p).toMatch(/intentional motion progression/i);
+    // New transform-style wording allows camera reframe / pose changes.
+    expect(p).toMatch(/camera reframe, pose, expression, action/i);
+    expect(p).toMatch(/continuation, not a new scene/i);
   });
 
-  it('runs the end_prompt derivation when start_prompt and start_frame_description are set', async () => {
-    const { sb } = await seedScenario({ characters: ['Alice'] });
+  it('uses sb.text_prompt verbatim for end_frame regen (no derivation, no rewrite)', async () => {
+    // Storyboard rows have one prompt field — text_prompt. The regen
+    // pipeline reads it directly and wraps it in transform-style
+    // scaffolding for the image model.
+    const { beat, sb: seededSb } = await seedScenario({ characters: ['Alice'] });
     const startId = new ObjectId();
     fakeImageStore.set(startId.toString(), fakeRef('row-start'));
-    await Storyboards.updateStoryboard(sb._id, {
+    await Storyboards.updateStoryboard(seededSb._id, {
       start_frame_id: startId,
-      start_prompt: 'High crane shot looking down at the booth, neon glow on the tabletop.',
-      end_prompt: 'Same crane shot; coffee cup pushed forward an inch.',
-      start_frame_description: 'High overhead shot of a pink vinyl booth lit by warm neon.',
+      text_prompt: 'Same crane shot; coffee cup pushed forward an inch.',
     });
-
-    const derivedCalls = [];
-    Generate._setEndPromptDerivationForTests(async (args) => {
-      derivedCalls.push(args);
-      return 'Camera has descended to eye level across the booth; the coffee cup is now in the foreground.';
-    });
+    void beat;
 
     const dispatcherCalls = [];
     Generate._setImageDispatcherForTests(async (args) => {
@@ -1047,81 +1022,15 @@ describe('regenerateStoryboardFrame', () => {
     });
 
     await Generate.regenerateStoryboardFrame({
-      storyboardId: sb._id.toString(),
+      storyboardId: seededSb._id.toString(),
       role: 'end_frame',
     });
 
-    // Derivation was invoked with the row's prompts + caption.
-    expect(derivedCalls).toHaveLength(1);
-    expect(derivedCalls[0].startPrompt).toMatch(/High crane shot/);
-    expect(derivedCalls[0].endPrompt).toMatch(/Same crane shot/);
-    expect(derivedCalls[0].startDescription).toMatch(/High overhead shot/);
-
-    // Derived prompt landed in the dispatcher request.
-    expect(dispatcherCalls[0].prompt).toMatch(/Camera has descended to eye level/);
-    // And was persisted on the row for next time.
-    const stored = await Storyboards.getStoryboard(sb._id);
-    expect(stored.end_prompt).toMatch(/Camera has descended to eye level/);
-  });
-
-  it('skips derivation when start_prompt is empty (legacy row)', async () => {
-    const { sb } = await seedScenario({ characters: ['Alice'] });
-    const startId = new ObjectId();
-    fakeImageStore.set(startId.toString(), fakeRef('row-start'));
-    // Legacy row: no start_prompt persisted, only start_frame_description.
-    await Storyboards.updateStoryboard(sb._id, {
-      start_frame_id: startId,
-      start_frame_description: 'Some old caption.',
-    });
-
-    const derivedCalls = [];
-    Generate._setEndPromptDerivationForTests(async (args) => {
-      derivedCalls.push(args);
-      return 'derived';
-    });
-    Generate._setImageDispatcherForTests(async () => ({
-      buffer: Buffer.from('out'),
-      contentType: 'image/png',
-    }));
-
-    await Generate.regenerateStoryboardFrame({
-      storyboardId: sb._id.toString(),
-      role: 'end_frame',
-    });
-
-    expect(derivedCalls).toHaveLength(0);
-    const stored = await Storyboards.getStoryboard(sb._id);
-    expect(stored.end_prompt).toBe('');
-  });
-
-  it('falls back to original end_prompt when derivation returns null', async () => {
-    const { sb } = await seedScenario({ characters: ['Alice'] });
-    const startId = new ObjectId();
-    fakeImageStore.set(startId.toString(), fakeRef('row-start'));
-    await Storyboards.updateStoryboard(sb._id, {
-      start_frame_id: startId,
-      start_prompt: 'High crane shot.',
-      end_prompt: 'Same crane, slight reframe.',
-      start_frame_description: 'Caption.',
-    });
-
-    Generate._setEndPromptDerivationForTests(async () => null);
-    const dispatcherCalls = [];
-    Generate._setImageDispatcherForTests(async (args) => {
-      dispatcherCalls.push(args);
-      return { buffer: Buffer.from('out'), contentType: 'image/png' };
-    });
-
-    await Generate.regenerateStoryboardFrame({
-      storyboardId: sb._id.toString(),
-      role: 'end_frame',
-    });
-
-    // Falls back to the persisted end_prompt verbatim.
-    expect(dispatcherCalls[0].prompt).toMatch(/Same crane, slight reframe/);
-    const stored = await Storyboards.getStoryboard(sb._id);
-    // end_prompt remains the planner's original — derivation didn't overwrite.
-    expect(stored.end_prompt).toBe('Same crane, slight reframe.');
+    expect(dispatcherCalls[0].prompt).toContain('Same crane shot; coffee cup pushed forward an inch.');
+    expect(dispatcherCalls[0].prompt).toMatch(/start frame of this shot/i);
+    // text_prompt is NOT mutated by regen.
+    const stored = await Storyboards.getStoryboard(seededSb._id);
+    expect(stored.text_prompt).toBe('Same crane shot; coffee cup pushed forward an inch.');
   });
 });
 
@@ -1248,7 +1157,7 @@ describe('startFrameGenerationJob', () => {
     // Second start succeeds; lock was released cleanly.
     const secondId = await Generate.startFrameGenerationJob({
       storyboardId: sb._id.toString(),
-      role: 'end_frame',
+      role: 'start_frame',
     });
     const second = await waitForFrameJob(secondId);
     expect(second.status).toBe('done');
