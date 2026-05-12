@@ -12,6 +12,7 @@ export function Modal({
   onClose,
   dismissible = true,
   footer = null,
+  wide = false,
   children,
 }) {
   const cardRef = useRef(null);
@@ -63,7 +64,7 @@ export function Modal({
     <div className="modal-backdrop" onClick={onBackdropClick}>
       <div
         ref={cardRef}
-        className="modal-card"
+        className={'modal-card' + (wide ? ' is-wide' : '')}
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-title"

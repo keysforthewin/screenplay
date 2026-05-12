@@ -9,9 +9,11 @@
 //      prioritized list of N storyboard segments. Each segment specifies a
 //      visual prompt, the characters in the shot, and a brief end-frame
 //      variation cue.
-//   2. For each segment, in parallel (bounded concurrency):
+//   2. For each segment, sequentially (so each frame's start can use the
+//      previous frame's end as a continuity reference):
 //      - Collect input reference images: each character's character_sheet_image
-//        (or main image), plus the beat's main image (set/scene context).
+//        (or main image), plus the beat's main image (set/scene context), plus
+//        the previous shot's end frame on frames 2+.
 //      - Call Nano Banana once for the start frame, once for the end frame.
 //      - Persist a storyboard row via the gateway, then broadcast a ping.
 //
@@ -36,26 +38,52 @@ import {
 import { stripMarkdown } from '../util/markdown.js';
 import { dispatchStoryboardImage } from './storyboardImageDispatch.js';
 import { describeReferenceImage } from '../llm/referenceImageDescription.js';
+import { deriveEndPrompt } from '../llm/endFramePromptDerivation.js';
 import {
   createStoryboardViaGateway,
   deleteAllStoryboardsForBeatViaGateway,
   setStoryboardImageViaGateway,
   setStoryboardStartFrameDescriptionViaGateway,
+  setStoryboardEndPromptViaGateway,
 } from './gateway.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 
 const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const MAX_REFERENCE_IMAGES = 4; // cap input images per Nano Banana call
-const SEGMENT_CONCURRENCY = 2;
-const DEFAULT_TARGET_COUNT = 11;
+// Every LLM call in the storyboard pipeline runs on the top-tier model.
+// Hardcoded (not config-driven) on purpose — this surface is meant to be
+// "primo", so we don't want silent downgrades via ANTHROPIC_MODEL or similar.
+const STORYBOARD_MODEL = 'claude-opus-4-7';
+export const DEFAULT_TARGET_COUNT = 11;
+export const MIN_TARGET_COUNT = 3;
+export const MAX_TARGET_COUNT = 30;
+const MAX_DIRECTION_CHARS = 4000;
 
-const PLAN_TOOL = {
-  name: 'plan_storyboard',
+function clampTargetCount(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return DEFAULT_TARGET_COUNT;
+  return Math.min(MAX_TARGET_COUNT, Math.max(MIN_TARGET_COUNT, Math.round(v)));
+}
+
+function sanitizeDirection(s) {
+  if (typeof s !== 'string') return '';
+  const trimmed = s.trim();
+  if (!trimmed) return '';
+  return trimmed.length > MAX_DIRECTION_CHARS
+    ? trimmed.slice(0, MAX_DIRECTION_CHARS)
+    : trimmed;
+}
+
+// Stage A: outline-only tool. Produces the shot list (description, shot_type,
+// duration, transition_in, characters_in_scene) but NOT the start/end visual
+// prompts — those move to Stage B where each frame gets its own focused call.
+const OUTLINE_TOOL = {
+  name: 'plan_storyboard_outline',
   description:
-    'Break the beat into a sequence of cinematic storyboard frames. Each frame is one ' +
-    'visually distinct moment with a chosen shot type and on-screen duration. ' +
-    'Order them in narrative order. Pad with embellishment shots (establishing, insert, ' +
-    'reaction, atmospheric cutaway) to give the sequence cinematic rhythm.',
+    'Break the beat into an ordered shot list. For each frame, pick a description, ' +
+    'shot_type, on-screen duration, and (when relevant) the characters visible in ' +
+    'frame and how the cut picks up from the previous shot. Do NOT write the ' +
+    'detailed start/end visual prompts — those are produced in a separate pass.',
   input_schema: {
     type: 'object',
     properties: {
@@ -85,16 +113,6 @@ const PLAN_TOOL = {
               description:
                 'On-screen hold time. Must respect the cap implied by shot_type.',
             },
-            start_prompt: {
-              type: 'string',
-              description:
-                'Concrete visual prompt for the START frame: subject, action, framing, lighting, mood. ~2 sentences.',
-            },
-            end_prompt: {
-              type: 'string',
-              description:
-                'Concrete visual prompt for the END frame (a small variation showing motion progression from the start). ~2 sentences.',
-            },
             transition_in: {
               type: 'string',
               description:
@@ -109,13 +127,7 @@ const PLAN_TOOL = {
               items: { type: 'string' },
             },
           },
-          required: [
-            'description',
-            'shot_type',
-            'duration_seconds',
-            'start_prompt',
-            'end_prompt',
-          ],
+          required: ['description', 'shot_type', 'duration_seconds'],
           additionalProperties: false,
         },
       },
@@ -125,11 +137,77 @@ const PLAN_TOOL = {
   },
 };
 
-const SYSTEM_PROMPT = [
-  'You are a Hollywood storyboard artist breaking a screenplay beat into a cinematic shot list. Return your plan via the plan_storyboard tool.',
+// Stage B: per-frame visual prompt refinement. Called once per frame in
+// narrative order so each call sees its predecessor's refined prompts and can
+// compose match cuts / motion vectors against the actual neighbor text.
+const REFINE_TOOL = {
+  name: 'refine_storyboard_frame',
+  description:
+    'Produce the START-frame and END-frame visual prompts for ONE storyboard frame, ' +
+    'given the full outline and the previously refined frames. ' +
+    'The END frame is the same shot a beat or two later (motion progression), NOT a different shot.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      start_prompt: {
+        type: 'string',
+        description:
+          'Concrete visual prompt for the START frame: subject, action, framing, lighting, mood. ~2 sentences.',
+      },
+      end_prompt: {
+        type: 'string',
+        description:
+          'Concrete visual prompt for the END frame (a small variation showing motion progression from the start). ~2 sentences.',
+      },
+    },
+    required: ['start_prompt', 'end_prompt'],
+    additionalProperties: false,
+  },
+};
+
+// Stage A system prompt — covers shot list / coverage / rhythm / continuity.
+// Trimmed: the start/end-prompt rules move to the Stage B system prompt so
+// each call ships the smallest input it needs. Exported so the SPA's prompt
+// preview tab can render the exact text the planner will see.
+export const OUTLINE_SYSTEM_PROMPT = [
+  'You are a Hollywood storyboard artist breaking a screenplay beat into a cinematic shot list. Return your plan via the plan_storyboard_outline tool.',
+  '',
+  '# FRAME COUNT IS NON-NEGOTIABLE',
+  '- The user message specifies an EXACT target frame count. You MUST produce that many frames — not fewer, not more.',
+  '- If you think the beat could be told in fewer frames, pad with embellishment shots until you hit the count: establishing wides, set details, atmospheric cutaways, prop inserts, reaction close-ups, alternate-angle coverage of the same moment.',
+  '- A "short" beat at a 30-frame count is a stylistic choice by the director — interpret it as "give this beat extended, deliberate coverage" and deliver the full count.',
   '',
   'Each frame is one visually distinct moment with a concrete shot description (camera angle, who is in frame, what they are doing).',
   "Do not invent characters that aren't already in the beat's character list.",
+  '',
+  '# Coverage and rhythm',
+  '- Plan for cinematic rhythm, not just narrative coverage. Pad the shot list with embellishment shots:',
+  '  - Open with an establishing wide of the location.',
+  '  - Insert close-ups for objects, hands, eyes, props that carry meaning.',
+  '  - Reaction close-ups after key beats.',
+  '  - Atmospheric cutaways (rain on glass, ticking clock, empty hallway) when the beat needs breathing room.',
+  '  - Use over_the_shoulder for two-person dialogue.',
+  '- Vary framing across the sequence — wides, mediums, close-ups in rotation, not three close-ups in a row.',
+  '',
+  '# Adjacency / continuity',
+  '- Adjacent frames must hand off cleanly. The shot following another should pick up something the previous shot left — a shared subject, a matching motion vector, or a deliberate match cut.',
+  '- Use transition_in on each frame after the first to state the continuity link in one sentence.',
+  '',
+  '# Hard constraints',
+  '- Maximum 2 named characters in characters_in_scene per frame. If a beat has 4 people in a room, alternate coverage (two_shot of A+B, then two_shot of C+D, then a wide).',
+  '- shot_type drives duration_seconds:',
+  '  - establishing / cinematic_wide / insert → 1..15s',
+  '  - medium → 1..10s',
+  '  - close_up / reaction → 1..5s',
+  '  - two_shot / over_the_shoulder → 1..5s',
+  '- The director may attach free-form direction in the user message; honor it within the constraints above.',
+  '- Final reminder: emit EXACTLY the number of frames requested in the user message. Under-delivering is a bug.',
+].join('\n');
+
+// Stage B system prompt — covers start_prompt vs end_prompt rules in detail
+// so the per-frame refinement call produces tight, image-generator-ready text.
+const REFINE_SYSTEM_PROMPT = [
+  'You are a Hollywood storyboard artist writing the visual prompts for ONE frame of an already-planned shot list. Return your prompts via the refine_storyboard_frame tool.',
   '',
   'Your prompts will be passed to an image generator together with reference photographs of each named character and the set. So:',
   "- Describe action, framing, composition, and camera lighting only. Do NOT re-describe a character's face, body, or wardrobe — the reference photo carries that.",
@@ -144,29 +222,15 @@ const SYSTEM_PROMPT = [
   '  end_prompt:   "Sarah\'s hand has turned the knob a quarter-turn; her gaze has shifted forward into the room. Same wide shot, same hallway, same sconce."',
   'Example of a BAD end_prompt (do NOT do this):',
   '  end_prompt: "Sarah enters the room and looks around at the furniture."  ← too much progression; that is a different shot.',
-  'Rule of thumb: the end_prompt should describe the same scene a beat or two of action later — a hand has moved, a head has turned, a step has been taken. If you have to mention a new location, a new camera angle, or a new framing, you have written a different shot, not an end frame.',
+  'Rule of thumb: the end_prompt describes the same scene a beat or two of action later — a hand has moved, a head has turned, a step has been taken. If you have to mention a new location, a new camera angle, or a new framing, you have written a different shot, not an end frame.',
   '',
-  '# Coverage and rhythm',
-  '- Plan for cinematic rhythm, not just narrative coverage. Pad the shot list with embellishment shots:',
-  '  - Open with an establishing wide of the location.',
-  '  - Insert close-ups for objects, hands, eyes, props that carry meaning.',
-  '  - Reaction close-ups after key beats.',
-  '  - Atmospheric cutaways (rain on glass, ticking clock, empty hallway) when the beat needs breathing room.',
-  '  - Use over_the_shoulder for two-person dialogue.',
-  '- Vary framing across the sequence — wides, mediums, close-ups in rotation, not three close-ups in a row.',
+  '# Continuity with neighbors',
+  '- The user message shows the full outline and the previously refined frames so you can compose your start_prompt to pick up the prior shot\'s end_prompt (shared subject, motion vector, match cut).',
+  '- Honor the outline frame\'s description, shot_type, transition_in, and characters_in_scene. Do not contradict them.',
   '',
-  '# Adjacency / continuity',
-  '- Adjacent frames must hand off cleanly. The end_prompt of frame N should leave the eye on something the start_prompt of frame N+1 picks up — a shared subject, a matching motion vector, or a deliberate match cut.',
-  '- Use transition_in on each frame after the first to state the continuity link in one sentence.',
-  '',
-  '# Hard constraints',
-  '- Maximum 2 named characters in characters_in_scene per frame. If a beat has 4 people in a room, alternate coverage (two_shot of A+B, then two_shot of C+D, then a wide).',
-  '- shot_type drives duration_seconds:',
-  '  - establishing / cinematic_wide / insert → 1..15s',
-  '  - medium → 1..10s',
-  '  - close_up / reaction → 1..5s',
-  '  - two_shot / over_the_shoulder → 1..5s',
-  '- The user message specifies how many frames to plan; honor it.',
+  '# Constraints',
+  '- ~2 sentences per prompt. Concrete and visual. No wardrobe / face / location re-description.',
+  '- The director may attach free-form direction in the user message; honor it within the constraints above.',
 ].join('\n');
 
 let dispatcherOverride = null;
@@ -189,7 +253,31 @@ export function _setDescriberForTests(fn) {
 
 async function callDescribeReferenceImage(args) {
   if (describerOverride) return describerOverride(args);
-  return describeReferenceImage(args);
+  return describeReferenceImage({ model: STORYBOARD_MODEL, ...args });
+}
+
+let endPromptDerivationOverride = null;
+export function _setEndPromptDerivationForTests(fn) {
+  endPromptDerivationOverride = fn;
+}
+
+async function callDeriveEndPrompt(args) {
+  if (endPromptDerivationOverride) return endPromptDerivationOverride(args);
+  return deriveEndPrompt({ model: STORYBOARD_MODEL, ...args });
+}
+
+// Test hooks for the two-stage planner. Outline override returns the raw
+// outline array (objects with description/shot_type/duration_seconds/...).
+// Refiner override returns { start_prompt, end_prompt } or null. Both default
+// to the production Anthropic-backed implementations.
+let outlinePlannerOverride = null;
+export function _setOutlinePlannerForTests(fn) {
+  outlinePlannerOverride = fn;
+}
+
+let frameRefinerOverride = null;
+export function _setFrameRefinerForTests(fn) {
+  frameRefinerOverride = fn;
 }
 
 // In-memory job tracker. Sufficient for single-process runtime; status survives
@@ -198,6 +286,30 @@ const jobs = new Map();
 
 function makeJobId() {
   return new ObjectId().toString();
+}
+
+// Cap on per-job event log — generation produces ~6 events per frame plus a
+// handful of bookkeeping events, so 100 covers a max-size beat (30 frames)
+// with headroom. Oldest events are dropped when the cap is hit.
+const MAX_JOB_EVENTS = 100;
+
+// Append a progress event to the job AND update the "current step" snapshot.
+// `progress` is what the SPA renders as the single big status line; `events`
+// is the scrollable history. Also emits a structured logger.info line so the
+// backend log shows the same beat-by-beat trace. Safe to call before `job`
+// fully exists — no-ops when job is null/undefined.
+function recordProgress(job, { phase, step, frame = null, total = null, message }) {
+  if (!job) return;
+  const ts = new Date();
+  const entry = { ts, phase, step, frame, total, message };
+  job.progress = { ...entry, started_at: ts };
+  if (!Array.isArray(job.events)) job.events = [];
+  job.events.push(entry);
+  if (job.events.length > MAX_JOB_EVENTS) {
+    job.events.splice(0, job.events.length - MAX_JOB_EVENTS);
+  }
+  const framePart = frame && total ? ` [${frame}/${total}]` : '';
+  logger.info(`storyboard gen ${job.job_id} [${phase}/${step}]${framePart} ${message}`);
 }
 
 export function getStoryboardGenerationJob(jobId) {
@@ -216,12 +328,20 @@ export async function startStoryboardGenerationJob({
   targetCount,
   characterSheetOverrides = null,
   imageModel = 'gemini',
+  direction = '',
 }) {
   const beat = await getBeat(beatId);
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
   }
+  const cleanDirection = sanitizeDirection(direction);
+  const resolvedCount = clampTargetCount(targetCount);
+  // Both stages run on STORYBOARD_MODEL. Tracked as separate job fields so the
+  // SPA progress display can show which model is doing what; today they are
+  // always the same, but the structure stays in case we ever split them.
+  const outlineModel = STORYBOARD_MODEL;
+  const refineModel = STORYBOARD_MODEL;
   const jobId = makeJobId();
   const job = {
     job_id: jobId,
@@ -233,8 +353,21 @@ export async function startStoryboardGenerationJob({
     planned: 0,
     completed: 0,
     failed: 0,
+    direction: cleanDirection,
+    target_count_requested: resolvedCount,
+    outline_model: outlineModel,
+    refine_model: refineModel,
+    image_model: imageModel,
+    refine_failures: 0,
+    progress: null,
+    events: [],
   };
   jobs.set(jobId, job);
+  recordProgress(job, {
+    phase: 'queued',
+    step: 'job_queued',
+    message: `Queued — target ${resolvedCount} frames, image model ${imageModel}`,
+  });
   // Fire and forget; errors are recorded on the job. Holding the per-beat lock
   // for the duration prevents concurrent generates and edit calls from racing
   // the delete-then-recreate window.
@@ -242,14 +375,20 @@ export async function startStoryboardGenerationJob({
     runStoryboardGenerationJob({
       job,
       beat,
-      targetCount,
+      targetCount: resolvedCount,
       characterSheetOverrides,
       imageModel,
+      direction: cleanDirection,
     }),
   ).catch((e) => {
     job.status = 'error';
     job.error = e.message;
     job.finished_at = new Date();
+    recordProgress(job, {
+      phase: 'error',
+      step: 'job_crashed',
+      message: `Generation crashed: ${e.message}`,
+    });
     logger.error(`storyboard gen job ${jobId} crashed: ${e.message}`);
   });
   return jobId;
@@ -261,21 +400,38 @@ async function runStoryboardGenerationJob({
   targetCount,
   characterSheetOverrides,
   imageModel,
+  direction,
 }) {
   // Plan first. If the planner returns nothing (model failure, rate limit,
   // empty body) we preserve the user's existing storyboards rather than
   // wiping them for no result.
   job.status = 'planning';
+  recordProgress(job, {
+    phase: 'planning',
+    step: 'plan_outline_start',
+    message: `Planning shot list with ${job.outline_model}…`,
+  });
   const characterDocs = await findCharactersInBeat(beat);
   const planned = await planFrames({
     beat,
     characters: characterDocs,
     targetCount: targetCount || DEFAULT_TARGET_COUNT,
+    direction: direction || '',
+    onRefineFailure: () => {
+      job.refine_failures += 1;
+    },
+    onProgress: (fields) => recordProgress(job, fields),
+    refineModel: job.refine_model,
   });
   job.planned = planned.length;
   if (!planned.length) {
     job.status = 'done';
     job.finished_at = new Date();
+    recordProgress(job, {
+      phase: 'done',
+      step: 'job_done_empty',
+      message: 'Planner returned no frames — existing storyboards preserved.',
+    });
     logger.warn(
       `storyboard gen job ${job.job_id} produced no frames; existing items preserved`,
     );
@@ -285,33 +441,86 @@ async function runStoryboardGenerationJob({
   // SPA shows an empty list while new items stream in.
   await deleteAllStoryboardsForBeatViaGateway({ beatId: beat._id });
   job.status = 'rendering';
+  recordProgress(job, {
+    phase: 'rendering',
+    step: 'render_start',
+    total: planned.length,
+    message: `Loading character/set reference images…`,
+  });
   // Pre-load each character's reference image once so we don't re-read GridFS
   // for every frame. Map keys are stripped lowercase names.
   const charImages = await loadCharacterReferenceImages(characterDocs, characterSheetOverrides);
   const beatSetImage = await loadBeatSetImage(beat);
-  await runWithConcurrency(planned, SEGMENT_CONCURRENCY, async (frame, index) => {
+  // Sequential render: each frame's start uses the previous frame's end as a
+  // continuity reference (style/lighting/palette across the cut), so frame N+1
+  // can't start until frame N's end is done. Trades parallelism for visual
+  // consistency. prevEndFrame is reset on any failure so a missing image
+  // doesn't chain a stale ref into the next frame.
+  let prevEndFrame = null;
+  for (let index = 0; index < planned.length; index++) {
+    const frame = planned[index];
+    const order = index + 1;
+    const frameStart = Date.now();
+    recordProgress(job, {
+      phase: 'rendering',
+      step: 'frame_start',
+      frame: order,
+      total: planned.length,
+      message: `Frame ${order}/${planned.length}: starting (${frame.shot_type || 'shot'})…`,
+    });
     try {
-      await renderFrame({
+      const result = await renderFrame({
         beat,
         frame,
-        order: index + 1,
+        order,
         charImages,
         beatSetImage,
         imageModel,
+        direction: job.direction || '',
+        prevEndFrame,
+        onProgress: (fields) =>
+          recordProgress(job, {
+            phase: 'rendering',
+            frame: order,
+            total: planned.length,
+            ...fields,
+          }),
       });
       job.completed += 1;
+      prevEndFrame = result?.endFrame || null;
+      const elapsed = ((Date.now() - frameStart) / 1000).toFixed(1);
+      recordProgress(job, {
+        phase: 'rendering',
+        step: 'frame_done',
+        frame: order,
+        total: planned.length,
+        message: `Frame ${order}/${planned.length}: complete in ${elapsed}s`,
+      });
     } catch (e) {
       job.failed += 1;
+      prevEndFrame = null;
+      const elapsed = ((Date.now() - frameStart) / 1000).toFixed(1);
+      recordProgress(job, {
+        phase: 'rendering',
+        step: 'frame_failed',
+        frame: order,
+        total: planned.length,
+        message: `Frame ${order}/${planned.length}: failed after ${elapsed}s — ${e.message}`,
+      });
       logger.warn(
-        `storyboard gen frame ${index + 1}/${planned.length} failed: ${e.message}`,
+        `storyboard gen frame ${order}/${planned.length} failed: ${e.message}`,
       );
     }
-  });
+  }
   job.status = job.failed === 0 ? 'done' : 'partial';
   job.finished_at = new Date();
-  logger.info(
-    `storyboard gen job ${job.job_id} done planned=${job.planned} ok=${job.completed} fail=${job.failed}`,
-  );
+  const totalElapsed = ((job.finished_at - job.started_at) / 1000).toFixed(1);
+  recordProgress(job, {
+    phase: 'done',
+    step: 'job_done',
+    total: planned.length,
+    message: `Done — ${job.completed} rendered, ${job.failed} failed (${totalElapsed}s total)`,
+  });
 }
 
 // Resolve every character named in a beat's `characters` list to its current
@@ -340,6 +549,19 @@ function defaultSheetIdFor(c) {
   return c.character_sheet_image_id || null;
 }
 
+// Load every reference image we know how to attach for the characters in a
+// beat. For each character that has both a sheet and a main portrait we
+// return BOTH (sheet first), so the image generator sees the multi-angle
+// turnaround AND a scene-style face/skin reference. Callers downstream may
+// drop entries to fit inside the per-call reference-image budget — see
+// applyCharRefBudget below.
+//
+// Returns Map<lowerCaseName, Array<{
+//   buffer, contentType, _id, description, name,
+//   characterName, characterSheetImageId, characterMainImageId, kind
+// }>> where kind is 'sheet' | 'portrait'. Entries within a character's
+// array are ordered [sheet, portrait] so budget-trimming naturally prefers
+// the sheet.
 async function loadCharacterReferenceImages(characterDocs, overrides) {
   const overrideMap = overrides && typeof overrides === 'object' ? overrides : {};
   const map = new Map();
@@ -347,22 +569,68 @@ async function loadCharacterReferenceImages(characterDocs, overrides) {
     const cid = c._id?.toString?.();
     const overrideId = cid ? overrideMap[cid] : null;
     const sheetId = overrideId || defaultSheetIdFor(c);
-    const id =
-      sheetId ||
-      c.main_image_id ||
-      (Array.isArray(c.images) && c.images[0]?._id) ||
-      null;
-    if (!id) continue;
-    const ref = await loadImageInput(id);
-    if (!ref) continue;
-    const key = stripMarkdown(c.name || '').toLowerCase();
-    map.set(key, {
-      ...ref,
-      characterName: stripMarkdown(c.name || ''),
-      characterSheetImageId: sheetId || null,
-    });
+    const portraitId =
+      c.main_image_id || (Array.isArray(c.images) && c.images[0]?._id) || null;
+    // Skip duplicates: a legacy character may have its sole image stored as
+    // both the sheet and the main portrait. Loading it twice would burn
+    // budget slots and confuse the prompt.
+    const sheetIdStr = sheetId ? String(sheetId) : null;
+    const portraitIdStr = portraitId ? String(portraitId) : null;
+    const portraitIsDistinct = portraitIdStr && portraitIdStr !== sheetIdStr;
+
+    const refs = [];
+    const characterName = stripMarkdown(c.name || '');
+    if (sheetId) {
+      const ref = await loadImageInput(sheetId);
+      if (ref) {
+        refs.push({
+          ...ref,
+          characterName,
+          characterSheetImageId: sheetId,
+          characterMainImageId: portraitId || null,
+          kind: 'sheet',
+        });
+      }
+    }
+    if (portraitIsDistinct) {
+      const ref = await loadImageInput(portraitId);
+      if (ref) {
+        refs.push({
+          ...ref,
+          characterName,
+          characterSheetImageId: sheetId || null,
+          characterMainImageId: portraitId,
+          kind: 'portrait',
+        });
+      }
+    }
+    if (!refs.length) continue;
+    map.set(characterName.toLowerCase(), refs);
   }
   return map;
+}
+
+// Trim a flat list of character refs to fit `cap`. Preference order: every
+// sheet first (in input order), then portraits as room remains. So a 2-slot
+// budget across two characters keeps one sheet per character (sheet-A,
+// sheet-B) rather than greedily filling with character-A's sheet+portrait
+// and dropping character-B entirely.
+function applyCharRefBudget(refs, cap) {
+  if (cap <= 0) return [];
+  if (refs.length <= cap) return refs;
+  const taken = [];
+  for (const r of refs) {
+    if (r.kind !== 'sheet') continue;
+    if (taken.length >= cap) break;
+    taken.push(r);
+  }
+  if (taken.length >= cap) return taken;
+  for (const r of refs) {
+    if (r.kind === 'sheet') continue;
+    if (taken.length >= cap) break;
+    taken.push(r);
+  }
+  return taken;
 }
 
 async function loadBeatSetImage(beat) {
@@ -391,17 +659,24 @@ async function loadImageInput(imageId) {
   }
 }
 
-async function planFrames({ beat, characters, targetCount }) {
-  const characterLines = characters.length
-    ? characters
-        .map((c) => {
-          const name = stripMarkdown(c.name || '');
-          const role = c.fields?.role || c.fields?.description || '';
-          return `- ${name}${role ? ` — ${stripMarkdown(role)}` : ''}`;
-        })
-        .join('\n')
-    : '(no named characters in this beat)';
-  const userText = [
+// Format the character list the same way for every LLM call so the planner
+// and refiner see consistent context.
+function formatCharacterLines(characters) {
+  if (!characters?.length) return '(no named characters in this beat)';
+  return characters
+    .map((c) => {
+      const name = stripMarkdown(c.name || '');
+      const role = c.fields?.role || c.fields?.description || '';
+      return `- ${name}${role ? ` — ${stripMarkdown(role)}` : ''}`;
+    })
+    .join('\n');
+}
+
+// Block of beat context shared between the outline call and every refinement
+// call. Exported via the preview endpoint so the SPA can show users the same
+// text the LLM will see.
+export function buildBeatContextBlock({ beat, characters, direction }) {
+  const lines = [
     `# Beat #${beat.order}: ${stripMarkdown(beat.name || '') || 'Untitled'}`,
     '',
     'Beat description:',
@@ -411,33 +686,311 @@ async function planFrames({ beat, characters, targetCount }) {
     stripMarkdown(beat.body || '') || '(none)',
     '',
     'Characters in this beat:',
-    characterLines,
-    '',
-    `Plan ${targetCount} cinematic storyboard frames covering the whole beat in narrative order, ` +
-      'with embellishment shots (establishing/insert/reaction/atmospheric) interleaved among the narrative beats. ' +
-      'Each frame must be visually distinct from the previous one (different moment, action, or composition) ' +
-      'AND continuous with it (shared element, motion vector, or match cut). ' +
-      'Pick a shot_type and duration_seconds for every frame. Use the plan_storyboard tool.',
-  ].join('\n');
+    formatCharacterLines(characters),
+  ];
+  const cleanDirection = sanitizeDirection(direction);
+  if (cleanDirection) {
+    lines.push('');
+    lines.push("Director's direction:");
+    lines.push(cleanDirection);
+  }
+  return lines.join('\n');
+}
 
+export function buildOutlineUserText({ beat, characters, targetCount, direction }) {
+  const ctx = buildBeatContextBlock({ beat, characters, direction });
+  const count = clampTargetCount(targetCount);
+  // Lead with the count so the model can't miss it. The system prompt's
+  // FRAME COUNT IS NON-NEGOTIABLE section + this leading line + the closing
+  // reminder are deliberately redundant — Sonnet 4.6 has a tendency to
+  // under-deliver on long lists when the count instruction is buried.
+  const lead =
+    `Target frame count: EXACTLY ${count} frames. ` +
+    `Your tool call MUST contain ${count} entries in the frames array — not fewer.`;
+  const instruction =
+    `Produce ${count} cinematic storyboard frames covering the whole beat in narrative order, ` +
+    'with embellishment shots (establishing/insert/reaction/atmospheric) interleaved among the narrative beats. ' +
+    'Each frame must be visually distinct from the previous one (different moment, action, or composition) ' +
+    'AND continuous with it (shared element, motion vector, or match cut). ' +
+    'Pick a shot_type and duration_seconds for every frame. Use the plan_storyboard_outline tool. ' +
+    'Do NOT write the start_prompt / end_prompt visual prompts — those are produced in a separate per-frame pass. ' +
+    `Reminder: the frames array MUST have exactly ${count} entries.`;
+  return `${lead}\n\n${ctx}\n\n${instruction}`;
+}
+
+function formatOutlineForRefinement(outline) {
+  return outline
+    .map((f, i) => {
+      const parts = [
+        `${i + 1}. [${f.shot_type || 'shot'} · ${f.duration_seconds || '?'}s]`,
+        `   description: ${f.description || ''}`,
+      ];
+      if (f.transition_in) parts.push(`   transition_in: ${f.transition_in}`);
+      if (Array.isArray(f.characters_in_scene) && f.characters_in_scene.length) {
+        parts.push(`   characters_in_scene: ${f.characters_in_scene.join(', ')}`);
+      }
+      return parts.join('\n');
+    })
+    .join('\n');
+}
+
+function formatPreviousRefined(previousRefined) {
+  if (!previousRefined?.length) return '(this is the first frame)';
+  return previousRefined
+    .map((f, i) => {
+      return [
+        `${i + 1}. start_prompt: ${f.start_prompt || '(none)'}`,
+        `   end_prompt:   ${f.end_prompt || '(none)'}`,
+      ].join('\n');
+    })
+    .join('\n');
+}
+
+function buildRefinementUserText({
+  beat,
+  characters,
+  direction,
+  outline,
+  index,
+  previousRefined,
+}) {
+  const frame = outline[index];
+  const ctx = buildBeatContextBlock({ beat, characters, direction });
+  const outlineBlock = formatOutlineForRefinement(outline);
+  const prevBlock = formatPreviousRefined(previousRefined);
+  const target = [
+    `Refining frame ${index + 1} of ${outline.length}:`,
+    `  shot_type: ${frame.shot_type || '(none)'}`,
+    `  duration_seconds: ${frame.duration_seconds || '?'}`,
+    `  description: ${frame.description || ''}`,
+  ];
+  if (frame.transition_in) target.push(`  transition_in: ${frame.transition_in}`);
+  if (Array.isArray(frame.characters_in_scene) && frame.characters_in_scene.length) {
+    target.push(`  characters_in_scene: ${frame.characters_in_scene.join(', ')}`);
+  }
+  return [
+    ctx,
+    '',
+    '# Full outline (for continuity context):',
+    outlineBlock,
+    '',
+    '# Previously refined frames (their finished prompts, for match-cut composition):',
+    prevBlock,
+    '',
+    '# Frame to refine:',
+    target.join('\n'),
+    '',
+    'Produce the start_prompt and end_prompt for this frame via the refine_storyboard_frame tool. ' +
+      'Compose the start_prompt to pick up the prior frame\'s end_prompt where appropriate; ' +
+      'the end_prompt is the same shot a beat or two later (motion progression, not a new shot).',
+  ].join('\n');
+}
+
+async function planOutline({ beat, characters, targetCount, direction }) {
+  if (outlinePlannerOverride) {
+    return outlinePlannerOverride({ beat, characters, targetCount, direction });
+  }
+  const userText = buildOutlineUserText({ beat, characters, targetCount, direction });
+  const model = STORYBOARD_MODEL;
   const client = getAnthropic();
+  // max_tokens is sized for the upper bound of MAX_TARGET_COUNT (30) frames.
+  // Each outline frame serializes to ~120 tokens of JSON, so 30 frames is
+  // ~3.6K tokens. 16K leaves ample headroom — sized too low previously
+  // (4096) led to truncated responses for big counts.
   const resp = await client.messages.create({
-    model: config.anthropic.model,
-    max_tokens: 4096,
-    system: SYSTEM_PROMPT,
-    tools: [PLAN_TOOL],
-    tool_choice: { type: 'tool', name: 'plan_storyboard' },
+    model,
+    max_tokens: 16000,
+    system: OUTLINE_SYSTEM_PROMPT,
+    tools: [OUTLINE_TOOL],
+    tool_choice: { type: 'tool', name: 'plan_storyboard_outline' },
     messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
   });
+  if (resp.stop_reason === 'max_tokens') {
+    logger.warn(
+      `storyboard outline: hit max_tokens cap (model=${model}, target=${targetCount}); response may be truncated`,
+    );
+  }
   const toolUse = (resp.content || []).find(
-    (b) => b.type === 'tool_use' && b.name === 'plan_storyboard',
+    (b) => b.type === 'tool_use' && b.name === 'plan_storyboard_outline',
   );
   if (!toolUse) {
-    logger.warn('storyboard gen: model did not call plan_storyboard');
+    logger.warn(
+      `storyboard outline: model did not call plan_storyboard_outline (stop_reason=${resp.stop_reason})`,
+    );
     return [];
   }
   const frames = Array.isArray(toolUse.input?.frames) ? toolUse.input.frames : [];
-  return frames.flatMap(cleanPlannedFrame);
+  const want = clampTargetCount(targetCount);
+  if (frames.length < want) {
+    logger.warn(
+      `storyboard outline: model returned ${frames.length} frames; user requested ${want}. ` +
+        `(stop_reason=${resp.stop_reason}, model=${model})`,
+    );
+  }
+  return frames;
+}
+
+async function refineFramePrompts({
+  beat,
+  characters,
+  direction,
+  outline,
+  index,
+  previousRefined,
+}) {
+  if (frameRefinerOverride) {
+    return frameRefinerOverride({
+      beat,
+      characters,
+      direction,
+      outline,
+      index,
+      previousRefined,
+    });
+  }
+  const userText = buildRefinementUserText({
+    beat,
+    characters,
+    direction,
+    outline,
+    index,
+    previousRefined,
+  });
+  const model = STORYBOARD_MODEL;
+  const client = getAnthropic();
+  const resp = await client.messages.create({
+    model,
+    max_tokens: 800,
+    system: REFINE_SYSTEM_PROMPT,
+    tools: [REFINE_TOOL],
+    tool_choice: { type: 'tool', name: 'refine_storyboard_frame' },
+    messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+  });
+  const toolUse = (resp.content || []).find(
+    (b) => b.type === 'tool_use' && b.name === 'refine_storyboard_frame',
+  );
+  if (!toolUse?.input) return null;
+  const sp = typeof toolUse.input.start_prompt === 'string'
+    ? toolUse.input.start_prompt.trim()
+    : '';
+  const ep = typeof toolUse.input.end_prompt === 'string'
+    ? toolUse.input.end_prompt.trim()
+    : '';
+  if (!sp || !ep) return null;
+  return { start_prompt: sp, end_prompt: ep };
+}
+
+function synthesizeFallbackStartPrompt(frame) {
+  const base = stripMarkdown(frame.description || '').trim();
+  return base ? `Start of the moment: ${base}` : 'Start frame of the shot.';
+}
+
+function synthesizeFallbackEndPrompt(frame) {
+  const base = stripMarkdown(frame.description || '').trim();
+  return base
+    ? `Same shot moments later — the action continues: ${base}`
+    : 'Same shot moments later, motion progression.';
+}
+
+// Two-stage planner. Stage A produces the outline (Sonnet by default). Stage B
+// refines each frame's start/end prompts sequentially with rolling context
+// (Opus by default), so each refinement sees the full outline and the
+// already-refined neighbors. A failed refinement does not abort the pipeline —
+// it falls back to a synthesized prompt and increments `onRefineFailure` so
+// the job's `refine_failures` counter records it.
+async function planFrames({
+  beat,
+  characters,
+  targetCount,
+  direction = '',
+  onRefineFailure = null,
+  onProgress = null,
+  refineModel = null,
+}) {
+  const outlineRaw = await planOutline({ beat, characters, targetCount, direction });
+  if (!Array.isArray(outlineRaw) || !outlineRaw.length) {
+    onProgress?.({
+      phase: 'planning',
+      step: 'plan_outline_empty',
+      message: 'Outline planner returned no frames.',
+    });
+    return [];
+  }
+  onProgress?.({
+    phase: 'planning',
+    step: 'plan_outline_done',
+    total: outlineRaw.length,
+    message: `Outline complete: ${outlineRaw.length} frames planned.`,
+  });
+
+  // Normalize outline before refinement so downstream code (the formatted
+  // prompt, the cleaner) sees the same field types we'll persist.
+  const outline = outlineRaw.map((f) => ({
+    description: typeof f?.description === 'string' ? f.description : '',
+    shot_type: f?.shot_type ?? null,
+    duration_seconds: f?.duration_seconds ?? null,
+    transition_in: typeof f?.transition_in === 'string' ? f.transition_in : '',
+    characters_in_scene: Array.isArray(f?.characters_in_scene)
+      ? f.characters_in_scene
+      : [],
+  }));
+
+  const refined = [];
+  for (let i = 0; i < outline.length; i++) {
+    onProgress?.({
+      phase: 'refining',
+      step: 'refine_frame_start',
+      frame: i + 1,
+      total: outline.length,
+      message: `Refining visual prompts for frame ${i + 1}/${outline.length}${refineModel ? ` with ${refineModel}` : ''}…`,
+    });
+    let prompts = null;
+    try {
+      prompts = await refineFramePrompts({
+        beat,
+        characters,
+        direction,
+        outline,
+        index: i,
+        previousRefined: refined.slice(),
+      });
+    } catch (e) {
+      logger.warn(
+        `storyboard refine frame ${i + 1}/${outline.length}: ${e?.message || e}`,
+      );
+    }
+    if (!prompts) {
+      logger.warn(
+        `storyboard refine frame ${i + 1}/${outline.length}: falling back to synthesized prompts`,
+      );
+      onRefineFailure?.(i);
+      onProgress?.({
+        phase: 'refining',
+        step: 'refine_frame_fallback',
+        frame: i + 1,
+        total: outline.length,
+        message: `Frame ${i + 1}/${outline.length}: refinement failed, using synthesized fallback prompts.`,
+      });
+      prompts = {
+        start_prompt: synthesizeFallbackStartPrompt(outline[i]),
+        end_prompt: synthesizeFallbackEndPrompt(outline[i]),
+      };
+    }
+    refined.push({
+      ...outline[i],
+      start_prompt: prompts.start_prompt,
+      end_prompt: prompts.end_prompt,
+    });
+  }
+
+  onProgress?.({
+    phase: 'refining',
+    step: 'refine_done',
+    total: outline.length,
+    message: `Refinement complete (${outline.length} frames).`,
+  });
+
+  return refined.flatMap(cleanPlannedFrame);
 }
 
 // Validate, clamp, and normalize a single planner-emitted frame. Returns
@@ -486,19 +1039,28 @@ function cleanPlannedFrame(f) {
   ];
 }
 
-async function renderFrame({ beat, frame, order, charImages, beatSetImage, imageModel = 'gemini' }) {
+async function renderFrame({
+  beat,
+  frame,
+  order,
+  charImages,
+  beatSetImage,
+  imageModel = 'gemini',
+  direction = '',
+  prevEndFrame = null,
+  onProgress = null,
+}) {
+  const progress = onProgress || (() => {});
   const sceneNames = (frame.characters_in_scene || [])
     .map((n) => stripMarkdown(n || '').toLowerCase())
     .filter(Boolean);
-  // Reserve a slot for the start-frame continuity ref on the end-frame call.
-  // The start frame doesn't need that slot (no continuity ref on start in the
-  // batch path), so we cap characters by the tighter of the two budgets so
-  // the same charRefs list works for both calls.
+  // Reserve one slot for a continuity ref on each image-gen call: the previous
+  // shot's end frame on the start-frame call (when not the first frame), and
+  // this shot's start frame on the end-frame call. The same charCap applies to
+  // both so the same charRefs list can be reused across both calls.
   const charCap = Math.max(0, MAX_REFERENCE_IMAGES - (beatSetImage ? 1 : 0) - 1);
-  const charRefs = sceneNames
-    .map((n) => charImages.get(n))
-    .filter(Boolean)
-    .slice(0, charCap);
+  const charRefsAll = sceneNames.flatMap((n) => charImages.get(n) || []);
+  const charRefs = applyCharRefBudget(charRefsAll, charCap);
   // seedFragments populates the y-doc text_prompt fragment before the
   // gateway's broadcast, so the SPA's CollabField renders the prompt
   // immediately rather than appearing empty until reload.
@@ -512,6 +1074,8 @@ async function renderFrame({ beat, frame, order, charImages, beatSetImage, image
     shotType: frame.shot_type ?? null,
     transitionIn: frame.transition_in ?? null,
     charactersInScene: frame.characters_in_scene ?? [],
+    startPrompt: frame.start_prompt ?? '',
+    endPrompt: frame.end_prompt ?? '',
   });
 
   const baseInputImages = [
@@ -519,12 +1083,21 @@ async function renderFrame({ beat, frame, order, charImages, beatSetImage, image
     ...(beatSetImage ? [{ buffer: beatSetImage.buffer, contentType: beatSetImage.contentType }] : []),
   ];
 
-  // 1. Render the start frame using characters + set image as references.
-  //    Sequenced before the end frame so the end frame can use the start
-  //    frame as a continuity reference + verbal anchor (the description we
-  //    auto-generate next). This is the central fix for end-frame drift —
-  //    in the previous implementation start and end ran in parallel from
-  //    the same inputs, so the model had no way to keep them consistent.
+  // 1. Render the start frame using characters + set image as references —
+  //    plus, when this isn't the first shot in the beat, the previous shot's
+  //    end frame as a continuity reference (carries style, lighting, palette
+  //    across the cut). Lands last in inputImages so the prompt's "final image
+  //    above" sentence is unambiguous.
+  const prevContinuityRef = prevEndFrame
+    ? buildPrevShotContinuityRef({
+        buffer: prevEndFrame.buffer,
+        contentType: prevEndFrame.contentType,
+        description: prevEndFrame.description || '',
+      })
+    : null;
+  const startInputImages = prevContinuityRef
+    ? [...baseInputImages, { buffer: prevContinuityRef.buffer, contentType: prevContinuityRef.contentType }]
+    : baseInputImages;
   const startContext = buildVisualPrompt({
     framePrompt: frame.start_prompt,
     description: frame.description,
@@ -532,15 +1105,21 @@ async function renderFrame({ beat, frame, order, charImages, beatSetImage, image
     beatSetImage,
     role: 'start',
     shotType: frame.shot_type ?? null,
+    continuityRef: prevContinuityRef,
+    direction,
   });
   let startBuffer = null;
   let startContentType = null;
+  progress({
+    step: 'render_start_frame',
+    message: `Frame ${order}: rendering start frame (${imageModel})${prevContinuityRef ? ' with previous-shot continuity' : ''}…`,
+  });
   try {
     const startResult = await callGenerateImage({
       prompt: startContext,
       model: imageModel,
       mode: 'generate',
-      inputImages: baseInputImages,
+      inputImages: startInputImages,
     });
     startBuffer = startResult.buffer;
     startContentType = startResult.contentType;
@@ -552,6 +1131,10 @@ async function renderFrame({ beat, frame, order, charImages, beatSetImage, image
       orderHint: `start-${order}`,
     });
   } catch (e) {
+    progress({
+      step: 'render_start_frame_failed',
+      message: `Frame ${order}: start frame render failed — ${e?.message || e}`,
+    });
     logger.warn(`storyboard gen: start frame ${order} failed: ${e?.message || e}`);
   }
 
@@ -561,6 +1144,10 @@ async function renderFrame({ beat, frame, order, charImages, beatSetImage, image
   //    collapse to empty string — never block end-frame generation.
   let startDescription = '';
   if (startBuffer) {
+    progress({
+      step: 'caption_start_frame',
+      message: `Frame ${order}: captioning start frame for verbal anchor…`,
+    });
     try {
       const captioned = await callDescribeReferenceImage({
         buffer: startBuffer,
@@ -583,6 +1170,42 @@ async function renderFrame({ beat, frame, order, charImages, beatSetImage, image
     }
   }
 
+  // 2b. Derive a camera-varying end_prompt from the start frame's prompt +
+  //     caption. The planner's end_prompt by design only varies pose, which
+  //     produces near-identical start/end frames. Haiku rewrites it to move
+  //     the camera (crane, push in, angle shift) while keeping characters,
+  //     lighting, palette, and location locked. Falls back to the planner's
+  //     original end_prompt on any failure — derivation is best-effort, the
+  //     pipeline never blocks on a miss.
+  let derivedEndPrompt = frame.end_prompt;
+  if (startDescription) {
+    progress({
+      step: 'derive_end_prompt',
+      message: `Frame ${order}: deriving camera-varied end prompt from start frame…`,
+    });
+    try {
+      const derived = await callDeriveEndPrompt({
+        startPrompt: frame.start_prompt,
+        endPrompt: frame.end_prompt,
+        startDescription,
+        shotType: frame.shot_type ?? null,
+      });
+      if (derived) {
+        derivedEndPrompt = derived;
+        try {
+          await setStoryboardEndPromptViaGateway({
+            storyboardId: sb._id,
+            endPrompt: derivedEndPrompt,
+          });
+        } catch (e) {
+          logger.warn(`storyboard gen: persist end_prompt ${order} failed: ${e.message}`);
+        }
+      }
+    } catch (e) {
+      logger.warn(`storyboard gen: derive end_prompt ${order} failed: ${e.message}`);
+    }
+  }
+
   // 3. Render the end frame. Now uses the start frame as a continuity ref
   //    (image) and the auto-generated description (text). The continuity
   //    image lands LAST in inputImages so the prompt's "the final image
@@ -594,13 +1217,20 @@ async function renderFrame({ beat, frame, order, charImages, beatSetImage, image
     ? [...baseInputImages, { buffer: continuityRef.buffer, contentType: continuityRef.contentType }]
     : baseInputImages;
   const endContext = buildVisualPrompt({
-    framePrompt: frame.end_prompt,
+    framePrompt: derivedEndPrompt,
     description: frame.description,
     charRefs,
     beatSetImage,
     role: 'end',
     shotType: frame.shot_type ?? null,
     continuityRef,
+    direction,
+  });
+  let endBuffer = null;
+  let endContentType = null;
+  progress({
+    step: 'render_end_frame',
+    message: `Frame ${order}: rendering end frame (${imageModel}) with start-frame continuity…`,
   });
   try {
     const endResult = await callGenerateImage({
@@ -609,6 +1239,8 @@ async function renderFrame({ beat, frame, order, charImages, beatSetImage, image
       mode: 'generate',
       inputImages: endInputImages,
     });
+    endBuffer = endResult.buffer;
+    endContentType = endResult.contentType;
     await persistFrameImage({
       storyboardId: sb._id,
       role: 'end_frame',
@@ -617,22 +1249,62 @@ async function renderFrame({ beat, frame, order, charImages, beatSetImage, image
       orderHint: `end-${order}`,
     });
   } catch (e) {
+    progress({
+      step: 'render_end_frame_failed',
+      message: `Frame ${order}: end frame render failed — ${e?.message || e}`,
+    });
     logger.warn(`storyboard gen: end frame ${order} failed: ${e?.message || e}`);
+  }
+
+  // 4. Caption the rendered end frame so the NEXT shot's start-frame call has
+  //    a verbal anchor for the visual it must pick up. Kept in-memory only —
+  //    not persisted on the storyboard doc — because regen doesn't currently
+  //    need it (regen recomputes from siblings via loadContinuityReference).
+  let endDescription = '';
+  if (endBuffer) {
+    progress({
+      step: 'caption_end_frame',
+      message: `Frame ${order}: captioning end frame for next-shot continuity…`,
+    });
+    try {
+      const captioned = await callDescribeReferenceImage({
+        buffer: endBuffer,
+        contentType: endContentType,
+        kind: 'auto',
+      });
+      endDescription = captioned.description || '';
+    } catch (e) {
+      logger.warn(`storyboard gen: caption end frame ${order} failed: ${e.message}`);
+    }
   }
 
   // If the segment names a single primary character, attach that character's
   // sheet image as the storyboard's character_sheet so the SPA can show it.
-  if (charRefs.length === 1 && charRefs[0].characterSheetImageId) {
-    try {
-      await setStoryboardImageViaGateway({
-        storyboardId: sb._id,
-        role: 'character_sheet',
-        imageId: charRefs[0].characterSheetImageId,
-      });
-    } catch (e) {
-      logger.warn(`storyboard gen: attach char sheet failed: ${e.message}`);
+  // A single character may now contribute multiple refs (sheet + portrait),
+  // so check the unique-name count rather than ref count.
+  const uniqueCharNames = new Set(
+    charRefs.map((r) => (r.characterName || '').toLowerCase()).filter(Boolean),
+  );
+  if (uniqueCharNames.size === 1) {
+    const sheetRef = charRefs.find((r) => r.kind === 'sheet') || charRefs[0];
+    if (sheetRef?.characterSheetImageId) {
+      try {
+        await setStoryboardImageViaGateway({
+          storyboardId: sb._id,
+          role: 'character_sheet',
+          imageId: sheetRef.characterSheetImageId,
+        });
+      } catch (e) {
+        logger.warn(`storyboard gen: attach char sheet failed: ${e.message}`);
+      }
     }
   }
+
+  return {
+    endFrame: endBuffer
+      ? { buffer: endBuffer, contentType: endContentType, description: endDescription }
+      : null,
+  };
 }
 
 // Shared label/directive for "use the start frame as a continuity reference
@@ -648,13 +1320,36 @@ function buildStartFrameContinuityRef({ buffer, contentType, description }) {
     description: description || '',
     label:
       "PRIMARY reference: the final image above is THIS shot's start frame. " +
-      'Match it frame-for-frame. The set image and character sheets above are ' +
-      'secondary references — defer to the start frame for any conflict in ' +
-      'lighting, palette, geometry, or composition.',
+      'The set image and character sheets above are secondary references — ' +
+      'defer to the start frame for lighting, palette, character identity, ' +
+      'and set geometry.',
     directive:
-      "Reproduce the start frame's exact lighting, palette, geometry, and " +
-      "composition. Only the character's pose / motion changes, by the small " +
-      'amount described above.',
+      'Lock to the start frame: lighting palette and color temperature, ' +
+      'character identity (faces, hair, wardrobe), and set geometry (same ' +
+      'room, same dressing). The camera position, angle, and distance MAY ' +
+      'shift as described in the prompt above — that is intentional motion ' +
+      'progression within the same shot, not a different scene. Characters ' +
+      'retain identity even if pose, expression, or screen position differs ' +
+      'from the start frame.',
+  };
+}
+
+// Shared label/directive for "use the previous shot's end frame as a continuity
+// reference for THIS shot's start frame" — used by both the batch render path
+// (in-memory buffer from the prior iteration) and the single-frame regen path
+// (re-loaded from GridFS).
+function buildPrevShotContinuityRef({ buffer, contentType, description }) {
+  return {
+    buffer,
+    contentType,
+    description: description || '',
+    label:
+      "The final image above is the PREVIOUS shot's end frame. Pick up the " +
+      'visual thread from it — shared lighting, matching motion vector, or a ' +
+      'deliberate match cut.',
+    directive:
+      "Maintain continuity with the previous shot's end frame: shared " +
+      'lighting, costume/prop continuity, and a sensible cut point.',
   };
 }
 
@@ -701,21 +1396,48 @@ function buildVisualPrompt({
   role,
   shotType = null,
   continuityRef = null,
+  direction = '',
 }) {
   const lines = [];
   if (shotType) {
     lines.push(`Shot type: ${shotType.replace(/_/g, ' ').toUpperCase()}.`);
+  }
+  // Director's style direction is a top-level constraint that should color
+  // every frame, so emit it before the per-shot frame prompt. Sanitized at
+  // job-entry to <= 4000 chars; stripMarkdown is a safety belt in case a
+  // future caller passes raw markdown.
+  const cleanDirection = direction ? stripMarkdown(direction).trim() : '';
+  if (cleanDirection) {
+    lines.push(`Director's style direction: ${cleanDirection}`);
   }
   lines.push(framePrompt);
   if (description) {
     lines.push('');
     lines.push(`Context: ${stripMarkdown(description)}`);
   }
-  const refLines = [];
+  // Group refs by character so a character contributing both a sheet and a
+  // portrait gets a single "two views" anchor line rather than two
+  // confusingly-identical "canonical reference for X" lines.
+  const refsByChar = new Map();
   for (const ref of charRefs) {
-    refLines.push(
-      `- The image of ${ref.characterName} above is the canonical reference for that character.`,
-    );
+    const key = (ref.characterName || '').toLowerCase();
+    if (!refsByChar.has(key)) refsByChar.set(key, []);
+    refsByChar.get(key).push(ref);
+  }
+  const refLines = [];
+  for (const group of refsByChar.values()) {
+    const name = group[0].characterName || 'Character';
+    const hasSheet = group.some((r) => r.kind === 'sheet');
+    const hasPortrait = group.some((r) => r.kind === 'portrait');
+    if (hasSheet && hasPortrait) {
+      refLines.push(
+        `- The two images of ${name} above are canonical references — a turnaround character sheet (proportions, costume, hair) and a portrait (face, skin tone, scene-style fidelity).`,
+      );
+    } else {
+      refLines.push(
+        `- The image of ${name} above is the canonical reference for that character.`,
+      );
+    }
   }
   if (beatSetImage) {
     refLines.push(
@@ -737,11 +1459,13 @@ function buildVisualPrompt({
   // cues than image alone. Skipped silently when no reference has a
   // stored description (legacy uploads without auto-captions).
   const detailLines = [];
-  for (const ref of charRefs) {
-    if (ref.description) {
-      detailLines.push(
-        `- ${ref.characterName || 'Character'}: ${stripMarkdown(ref.description)}`,
-      );
+  for (const group of refsByChar.values()) {
+    const name = group[0].characterName || 'Character';
+    const showKind = group.length > 1;
+    for (const ref of group) {
+      if (!ref.description) continue;
+      const label = showKind ? `${name} (${ref.kind})` : name;
+      detailLines.push(`- ${label}: ${stripMarkdown(ref.description)}`);
     }
   }
   if (beatSetImage?.description) {
@@ -750,6 +1474,11 @@ function buildVisualPrompt({
   if (role === 'end' && continuityRef?.description) {
     detailLines.push(
       `- Start frame to match: ${stripMarkdown(continuityRef.description)}`,
+    );
+  }
+  if (role === 'start' && continuityRef?.description) {
+    detailLines.push(
+      `- Previous shot end frame to match: ${stripMarkdown(continuityRef.description)}`,
     );
   }
   if (detailLines.length) {
@@ -786,22 +1515,6 @@ async function persistFrameImage({ storyboardId, role, result, beatId, orderHint
     imageId: file._id,
   });
   return file;
-}
-
-async function runWithConcurrency(items, limit, fn) {
-  const results = new Array(items.length);
-  let cursor = 0;
-  async function worker() {
-    while (true) {
-      const i = cursor++;
-      if (i >= items.length) return;
-      results[i] = await fn(items[i], i);
-    }
-  }
-  await Promise.all(
-    Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, () => worker()),
-  );
-  return results;
 }
 
 const FRAME_ROLES = new Set(['start_frame', 'end_frame']);
@@ -916,8 +1629,52 @@ export async function regenerateStoryboardFrame({
         : []),
     ];
 
+    // When regenerating the end frame, prefer the persisted (derived)
+    // end_prompt over the row's combined text_prompt — the derived prompt
+    // is the camera-varied version that the batch pipeline wrote on first
+    // generation. Falls through to text_prompt for legacy rows that
+    // pre-date the start_prompt/end_prompt fields.
+    let framePrompt = sb.text_prompt || '';
+    if (role === 'end_frame') {
+      if (sb.start_prompt && (sb.start_frame_description || continuityRef?.description)) {
+        try {
+          const derived = await callDeriveEndPrompt({
+            startPrompt: sb.start_prompt,
+            endPrompt: sb.end_prompt || sb.text_prompt || '',
+            startDescription:
+              sb.start_frame_description || continuityRef?.description || '',
+            shotType: sb.shot_type || null,
+          });
+          if (derived) {
+            framePrompt = derived;
+            try {
+              await setStoryboardEndPromptViaGateway({
+                storyboardId: sb._id,
+                endPrompt: derived,
+              });
+            } catch (e) {
+              logger.warn(
+                `storyboard regen: persist end_prompt ${sb._id} failed: ${e.message}`,
+              );
+            }
+          } else if (sb.end_prompt) {
+            framePrompt = sb.end_prompt;
+          }
+        } catch (e) {
+          logger.warn(
+            `storyboard regen: derive end_prompt ${sb._id} failed: ${e.message}`,
+          );
+          if (sb.end_prompt) framePrompt = sb.end_prompt;
+        }
+      } else if (sb.end_prompt) {
+        framePrompt = sb.end_prompt;
+      }
+    } else if (role === 'start_frame' && sb.start_prompt) {
+      framePrompt = sb.start_prompt;
+    }
+
     prompt = buildVisualPrompt({
-      framePrompt: sb.text_prompt || '',
+      framePrompt,
       description: '',
       charRefs: charsToInclude,
       beatSetImage,
@@ -1007,23 +1764,21 @@ async function loadContinuityReference({ sb, role }) {
     if (!prev || !prev.end_frame_id) return null;
     const ref = await loadImageInput(prev.end_frame_id);
     if (!ref) return null;
-    return {
-      ...ref,
-      label:
-        "The final image above is the PREVIOUS shot's end frame. Pick up the visual thread from it — shared lighting, matching motion vector, or a deliberate match cut.",
-      directive:
-        "Maintain continuity with the previous shot's end frame: shared lighting, costume/prop continuity, and a sensible cut point.",
-    };
+    return buildPrevShotContinuityRef({
+      buffer: ref.buffer,
+      contentType: ref.contentType,
+      description: ref.description || '',
+    });
   }
   return null;
 }
 
-// Decide which character sheets to pass as references for a single-row regen.
+// Decide which character refs to pass for a single-row regen.
 // If the row already pins one character (set during the batch when the planner
-// names exactly one character_in_scene), use just that sheet — it's the most
-// faithful continuation of how the row was first generated. Otherwise fall
-// back to every character on the beat, capped to leave room for the scene
-// image within MAX_REFERENCE_IMAGES.
+// names exactly one character_in_scene), use that character's sheet — and its
+// portrait if it has one — so the regen matches the batch path's dual-ref
+// behavior. Otherwise fall back to every character on the beat, capped to
+// leave room for the scene image within MAX_REFERENCE_IMAGES.
 async function loadFrameCharacterRefs({ beat, sb, beatSetImage }) {
   const cap = MAX_REFERENCE_IMAGES - (beatSetImage ? 1 : 0);
   const characterDocs = await findCharactersInBeat(beat);
@@ -1043,16 +1798,34 @@ async function loadFrameCharacterRefs({ beat, sb, beatSetImage }) {
         (legacy && String(legacy) === sheetIdStr)
       );
     });
-    const ref = await loadImageInput(sb.character_sheet_image_id);
-    if (ref) {
-      return [
-        {
-          ...ref,
-          characterName: owner ? stripMarkdown(owner.name || '') : '',
-        },
-      ].slice(0, cap);
+    const characterName = owner ? stripMarkdown(owner.name || '') : '';
+    const refs = [];
+    const sheetRef = await loadImageInput(sb.character_sheet_image_id);
+    if (sheetRef) {
+      refs.push({
+        ...sheetRef,
+        characterName,
+        characterSheetImageId: sb.character_sheet_image_id,
+        characterMainImageId: owner?.main_image_id || null,
+        kind: 'sheet',
+      });
     }
+    const portraitId = owner?.main_image_id || null;
+    if (portraitId && String(portraitId) !== sheetIdStr) {
+      const portraitRef = await loadImageInput(portraitId);
+      if (portraitRef) {
+        refs.push({
+          ...portraitRef,
+          characterName,
+          characterSheetImageId: sb.character_sheet_image_id,
+          characterMainImageId: portraitId,
+          kind: 'portrait',
+        });
+      }
+    }
+    if (refs.length) return applyCharRefBudget(refs, cap);
   }
   const map = await loadCharacterReferenceImages(characterDocs, null);
-  return Array.from(map.values()).slice(0, cap);
+  const flat = Array.from(map.values()).flat();
+  return applyCharRefBudget(flat, cap);
 }

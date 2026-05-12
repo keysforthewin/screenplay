@@ -337,6 +337,11 @@ export function buildApiRouter() {
           name: stripMarkdown(c.name || ''),
           main_image_id: c.main_image_id ? c.main_image_id.toString() : null,
           sheets,
+          plays_self: c.plays_self === true,
+          hollywood_actor:
+            typeof c.hollywood_actor === 'string' ? c.hollywood_actor : null,
+          own_voice: c.own_voice === true,
+          fields: c.fields && typeof c.fields === 'object' ? c.fields : {},
         });
       }
       res.json({ characters: out });
@@ -2311,6 +2316,8 @@ export function buildApiRouter() {
           .status(400)
           .json({ error: 'image_model must be gemini|openai' });
       }
+      const direction =
+        typeof req.body?.direction === 'string' ? req.body.direction : '';
       const { startStoryboardGenerationJob, BeatBusyError } = await import(
         './storyboardGenerate.js'
       );
@@ -2320,6 +2327,7 @@ export function buildApiRouter() {
           targetCount: target,
           characterSheetOverrides,
           imageModel,
+          direction,
         });
         res.status(202).json({ job_id: jobId, beat_id: beat._id });
       } catch (e) {
@@ -2328,6 +2336,60 @@ export function buildApiRouter() {
         }
         throw e;
       }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // LLM-suggested frame count for a beat. Returns { count, reason } where
+  // count may be null on failure (missing API key, model didn't tool-call,
+  // etc.) and reason carries either the rationale or an error code.
+  router.post('/storyboards/analyze-count', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const direction =
+        typeof req.body?.direction === 'string' ? req.body.direction : '';
+      const { findCharactersInBeat } = await import('./storyboardGenerate.js');
+      const characters = await findCharactersInBeat(beat);
+      const { analyzeStoryboardCount } = await import(
+        '../llm/storyboardCountAnalyze.js'
+      );
+      const result = await analyzeStoryboardCount({ beat, characters, direction });
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Returns the exact Stage A (outline) system + user messages that would be
+  // sent to the planner with the current settings. No LLM call; powers the
+  // "Prompt Preview" tab on the storyboard generation dialog.
+  router.post('/storyboards/preview-prompt', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const direction =
+        typeof req.body?.direction === 'string' ? req.body.direction : '';
+      const count =
+        Number(req.body?.count) > 0 ? Number(req.body.count) : null;
+      const {
+        findCharactersInBeat,
+        buildOutlineUserText,
+        OUTLINE_SYSTEM_PROMPT,
+      } = await import('./storyboardGenerate.js');
+      const characters = await findCharactersInBeat(beat);
+      const user = buildOutlineUserText({
+        beat,
+        characters,
+        targetCount: count,
+        direction,
+      });
+      res.json({ system: OUTLINE_SYSTEM_PROMPT, user });
     } catch (e) {
       next(e);
     }

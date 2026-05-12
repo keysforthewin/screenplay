@@ -397,13 +397,20 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
           ⋮⋮
         </button>
         <span className="storyboard-item-order">#{index + 1}</span>
-        <button
-          type="button"
-          className="storyboard-item-delete"
-          onClick={onDelete}
-        >
-          Delete
-        </button>
+        <div className="storyboard-item-actions">
+          <GenerateVideoButton
+            sb={sb}
+            storyboardId={id}
+            onRefresh={onRefresh}
+          />
+          <button
+            type="button"
+            className="storyboard-item-delete"
+            onClick={onDelete}
+          >
+            Delete
+          </button>
+        </div>
       </div>
 
       <ShotMetaRow sb={sb} sbId={id} onRefresh={onRefresh} />
@@ -469,14 +476,6 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
           beatId: sb.beat_id?.toString?.() || sb.beat_id,
         }}
         onRefresh={onRefresh}
-        extraActions={({ busy }) => (
-          <GenerateVideoButton
-            sb={sb}
-            storyboardId={id}
-            disabled={busy}
-            onRefresh={onRefresh}
-          />
-        )}
       />
 
       <StoryboardVideoPanel

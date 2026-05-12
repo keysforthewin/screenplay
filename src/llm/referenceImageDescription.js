@@ -18,7 +18,10 @@ import { config } from '../config.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
 
-const VISION_MODEL = config.anthropic.enhancerModel || 'claude-haiku-4-5-20251001';
+// Default model for vision describe — Haiku is cheap and fast, used by the
+// library vision worker (batches of dozens of images). Callers that need
+// higher fidelity (e.g. the storyboard pipeline) pass an explicit `model`.
+const DEFAULT_VISION_MODEL = config.anthropic.enhancerModel || 'claude-haiku-4-5-20251001';
 const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const MAX_RAW = 4 * 1024 * 1024;
 
@@ -118,7 +121,7 @@ function safeParse(text) {
   }
 }
 
-export async function describeReferenceImage({ buffer, contentType, kind = 'auto' } = {}) {
+export async function describeReferenceImage({ buffer, contentType, kind = 'auto', model = null } = {}) {
   if (!config.anthropic?.apiKey) return { name: '', description: '' };
   if (!Buffer.isBuffer(buffer)) return { name: '', description: '' };
   if (!ANTHROPIC_OK.has(contentType)) {
@@ -138,7 +141,7 @@ export async function describeReferenceImage({ buffer, contentType, kind = 'auto
   try {
     const client = getAnthropic();
     const resp = await client.messages.create({
-      model: VISION_MODEL,
+      model: model || DEFAULT_VISION_MODEL,
       max_tokens: 1500,
       system: sys,
       messages: [

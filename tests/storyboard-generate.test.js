@@ -38,15 +38,33 @@ vi.mock('../src/mongo/images.js', () => ({
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Generate = await import('../src/web/storyboardGenerate.js');
-const { _setAnthropicClientForTests, _resetAnthropicClientForTests } =
+const { _resetAnthropicClientForTests } =
   await import('../src/anthropic/client.js');
 
 beforeEach(() => {
   fakeDb.reset();
   uploadCounter.n = 0;
   _resetAnthropicClientForTests();
+  // Reset two-stage planner overrides so tests don't leak into each other.
+  Generate._setOutlinePlannerForTests(null);
+  Generate._setFrameRefinerForTests(null);
+  // Default the describer / end-prompt derivation hooks to no-ops so tests
+  // that don't override them don't reach the real Anthropic client. Tests
+  // that DO care override these explicitly.
+  Generate._setDescriberForTests(async () => ({ name: '', description: '' }));
+  Generate._setEndPromptDerivationForTests(async () => null);
+  // Default the image dispatcher to a benign fake so tests that don't
+  // override it (e.g. the new direction/clamp/rolling-context tests) still
+  // complete without trying to hit Gemini/OpenAI.
+  Generate._setImageDispatcherForTests(async () => ({
+    buffer: Buffer.from('img'),
+    contentType: 'image/png',
+  }));
 });
 
+// Two-stage flow: outline returns the shot list (no start/end prompts), then
+// each frame is refined into start/end prompts. The TWO_FRAME_PLAN object
+// carries both halves so each test can drive both stages with one fixture.
 const TWO_FRAME_PLAN = {
   frames: [
     {
@@ -70,20 +88,19 @@ const TWO_FRAME_PLAN = {
   ],
 };
 
-function fakeAnthropicClient(toolInput) {
-  return {
-    messages: {
-      create: vi.fn(async () => ({
-        content: [
-          {
-            type: 'tool_use',
-            name: 'plan_storyboard',
-            input: toolInput,
-          },
-        ],
-      })),
-    },
-  };
+// Set up both-stage overrides from a frames fixture. The outline override
+// returns the frames minus the visual prompts (Stage A's contract); the
+// refiner override returns the matching start/end prompts so the final
+// pipeline output equals the fixture frames.
+function installPlannerForFixture(frames) {
+  const outline = frames.map(
+    ({ start_prompt, end_prompt, ...rest }) => ({ ...rest }),
+  );
+  Generate._setOutlinePlannerForTests(async () => outline);
+  Generate._setFrameRefinerForTests(async ({ index }) => ({
+    start_prompt: frames[index]?.start_prompt ?? '',
+    end_prompt: frames[index]?.end_prompt ?? '',
+  }));
 }
 
 async function waitForJob(jobId) {
@@ -102,7 +119,7 @@ async function waitForJob(jobId) {
 
 describe('storyboard auto-generation', () => {
   it('plans frames and renders start + end images for each one', async () => {
-    _setAnthropicClientForTests(fakeAnthropicClient(TWO_FRAME_PLAN));
+    installPlannerForFixture(TWO_FRAME_PLAN.frames);
     const generated = [];
     Generate._setImageDispatcherForTests(async ({ prompt }) => {
       generated.push(prompt);
@@ -160,7 +177,7 @@ describe('storyboard auto-generation', () => {
   });
 
   it('marks the job as partial if some frames fail', async () => {
-    _setAnthropicClientForTests(fakeAnthropicClient(TWO_FRAME_PLAN));
+    installPlannerForFixture(TWO_FRAME_PLAN.frames);
     let call = 0;
     Generate._setImageDispatcherForTests(async () => {
       call += 1;
@@ -193,7 +210,7 @@ describe('storyboard auto-generation', () => {
   });
 
   it('returns immediately with status=done when the model returns no frames', async () => {
-    _setAnthropicClientForTests(fakeAnthropicClient({ frames: [] }));
+    installPlannerForFixture([]);
     Generate._setImageDispatcherForTests(async () => {
       throw new Error('should not be called');
     });
@@ -215,7 +232,7 @@ describe('storyboard auto-generation', () => {
   });
 
   it('replaces existing storyboards when the planner produces a non-empty plan', async () => {
-    _setAnthropicClientForTests(fakeAnthropicClient(TWO_FRAME_PLAN));
+    installPlannerForFixture(TWO_FRAME_PLAN.frames);
     Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('fake'),
       contentType: 'image/png',
@@ -251,21 +268,17 @@ describe('storyboard auto-generation', () => {
   });
 
   it('clamps planner-emitted duration that exceeds the shot_type cap', async () => {
-    _setAnthropicClientForTests(
-      fakeAnthropicClient({
-        frames: [
-          {
-            description: 'Tight on Alice, eyes welling.',
-            shot_type: 'close_up',
-            duration_seconds: 12, // close_up cap is 5
-            transition_in: '',
-            start_prompt: 'Tight close-up of Alice, looking down.',
-            end_prompt: 'Tight close-up of Alice, looking up.',
-            characters_in_scene: ['Alice'],
-          },
-        ],
-      }),
-    );
+    installPlannerForFixture([
+      {
+        description: 'Tight on Alice, eyes welling.',
+        shot_type: 'close_up',
+        duration_seconds: 12, // close_up cap is 5
+        transition_in: '',
+        start_prompt: 'Tight close-up of Alice, looking down.',
+        end_prompt: 'Tight close-up of Alice, looking up.',
+        characters_in_scene: ['Alice'],
+      },
+    ]);
     Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('fake'),
       contentType: 'image/png',
@@ -289,21 +302,17 @@ describe('storyboard auto-generation', () => {
   });
 
   it('trims characters_in_scene to MAX_CHARS_PER_SHOT', async () => {
-    _setAnthropicClientForTests(
-      fakeAnthropicClient({
-        frames: [
-          {
-            description: 'Crowd shot.',
-            shot_type: 'cinematic_wide',
-            duration_seconds: 8,
-            transition_in: '',
-            start_prompt: 'Wide shot of the diner.',
-            end_prompt: 'Wide shot of the diner, slight zoom.',
-            characters_in_scene: ['Alice', 'Bob', 'Carol', 'Dave'],
-          },
-        ],
-      }),
-    );
+    installPlannerForFixture([
+      {
+        description: 'Crowd shot.',
+        shot_type: 'cinematic_wide',
+        duration_seconds: 8,
+        transition_in: '',
+        start_prompt: 'Wide shot of the diner.',
+        end_prompt: 'Wide shot of the diner, slight zoom.',
+        characters_in_scene: ['Alice', 'Bob', 'Carol', 'Dave'],
+      },
+    ]);
     Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('fake'),
       contentType: 'image/png',
@@ -325,29 +334,26 @@ describe('storyboard auto-generation', () => {
   });
 
   it('handles atmospheric/insert frames with empty characters_in_scene', async () => {
-    _setAnthropicClientForTests(
-      fakeAnthropicClient({
-        frames: [
-          {
-            description: 'Establishing wide.',
-            shot_type: 'establishing',
-            duration_seconds: 5,
-            transition_in: '',
-            start_prompt: 'Wide of the diner exterior at dusk.',
-            end_prompt: 'Same wide; neon sign flickers on.',
-            characters_in_scene: [],
-          },
-          {
-            description: 'Insert: coffee cup steaming.',
-            shot_type: 'insert',
-            duration_seconds: 3,
-            transition_in: 'Match cut from neon glow to steam.',
-            start_prompt: 'Macro shot of a coffee cup, steam rising.',
-            end_prompt: 'Macro shot of a coffee cup, ripple as a hand reaches in.',
-          },
-        ],
-      }),
-    );
+    installPlannerForFixture([
+      {
+        description: 'Establishing wide.',
+        shot_type: 'establishing',
+        duration_seconds: 5,
+        transition_in: '',
+        start_prompt: 'Wide of the diner exterior at dusk.',
+        end_prompt: 'Same wide; neon sign flickers on.',
+        characters_in_scene: [],
+      },
+      {
+        description: 'Insert: coffee cup steaming.',
+        shot_type: 'insert',
+        duration_seconds: 3,
+        transition_in: 'Match cut from neon glow to steam.',
+        start_prompt: 'Macro shot of a coffee cup, steam rising.',
+        end_prompt: 'Macro shot of a coffee cup, ripple as a hand reaches in.',
+        characters_in_scene: [],
+      },
+    ]);
     Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('fake'),
       contentType: 'image/png',
@@ -374,7 +380,7 @@ describe('storyboard auto-generation', () => {
   });
 
   it('preserves existing storyboards when the planner returns no frames', async () => {
-    _setAnthropicClientForTests(fakeAnthropicClient({ frames: [] }));
+    installPlannerForFixture([]);
     Generate._setImageDispatcherForTests(async () => {
       throw new Error('should not be called');
     });
@@ -403,8 +409,86 @@ describe('storyboard auto-generation', () => {
     expect(after.map((s) => s.text_prompt)).toEqual(['keep 1', 'keep 2']);
   });
 
+  it('persists start_prompt/end_prompt on each row and runs end-prompt derivation when captioned', async () => {
+    installPlannerForFixture(TWO_FRAME_PLAN.frames);
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('img'),
+      contentType: 'image/png',
+    }));
+    // Captioning returns a non-empty description so derivation fires.
+    Generate._setDescriberForTests(async () => ({
+      name: 'Diner',
+      description: 'Pink booth, warm tungsten light, neon glow on the table.',
+    }));
+    const derivedCalls = [];
+    Generate._setEndPromptDerivationForTests(async (args) => {
+      derivedCalls.push(args);
+      // Tag each derivation so we can verify it lands on the right row.
+      return `DERIVED[${args.startPrompt.slice(0, 12)}]`;
+    });
+
+    const beat = await Plots.createBeat({
+      name: 'D',
+      desc: 'd',
+      body: 'b',
+      characters: ['Alice', 'Bob'],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+
+    // Derivation ran once per frame.
+    expect(derivedCalls).toHaveLength(2);
+    expect(derivedCalls[0].startPrompt).toBe(TWO_FRAME_PLAN.frames[0].start_prompt);
+    expect(derivedCalls[0].endPrompt).toBe(TWO_FRAME_PLAN.frames[0].end_prompt);
+    expect(derivedCalls[0].shotType).toBe('cinematic_wide');
+    expect(derivedCalls[1].shotType).toBe('two_shot');
+
+    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
+    expect(stored).toHaveLength(2);
+    // Both rows carry the planner's start_prompt verbatim.
+    expect(stored[0].start_prompt).toBe(TWO_FRAME_PLAN.frames[0].start_prompt);
+    expect(stored[1].start_prompt).toBe(TWO_FRAME_PLAN.frames[1].start_prompt);
+    // The derived end_prompt landed on each row (overwrites the planner's).
+    expect(stored[0].end_prompt).toMatch(/^DERIVED\[/);
+    expect(stored[1].end_prompt).toMatch(/^DERIVED\[/);
+    expect(stored[0].end_prompt).not.toBe(TWO_FRAME_PLAN.frames[0].end_prompt);
+  });
+
+  it('falls back to the planner end_prompt and leaves end_prompt as planner output when derivation returns null', async () => {
+    installPlannerForFixture(TWO_FRAME_PLAN.frames);
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('img'),
+      contentType: 'image/png',
+    }));
+    Generate._setDescriberForTests(async () => ({
+      name: 'D',
+      description: 'something',
+    }));
+    Generate._setEndPromptDerivationForTests(async () => null);
+
+    const beat = await Plots.createBeat({
+      name: 'X',
+      desc: '',
+      body: '',
+      characters: [],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    await waitForJob(jobId);
+
+    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
+    // Planner end_prompt is persisted at create-time; derivation null means
+    // we don't overwrite, so the planner's original survives.
+    expect(stored[0].end_prompt).toBe(TWO_FRAME_PLAN.frames[0].end_prompt);
+    expect(stored[1].end_prompt).toBe(TWO_FRAME_PLAN.frames[1].end_prompt);
+  });
+
   it('threads imageModel="openai" through every dispatcher call', async () => {
-    _setAnthropicClientForTests(fakeAnthropicClient(TWO_FRAME_PLAN));
+    installPlannerForFixture(TWO_FRAME_PLAN.frames);
     const calls = [];
     Generate._setImageDispatcherForTests(async (args) => {
       calls.push(args);
@@ -429,6 +513,382 @@ describe('storyboard auto-generation', () => {
       expect(c.model).toBe('openai');
       expect(c.mode).toBe('generate');
     }
+  });
+
+  it('refines frames sequentially with rolling context — each call sees previously refined neighbors', async () => {
+    // Stage A returns 3 outline frames; Stage B observes the previousRefined
+    // list each call. We assert refinement #2 sees #1's prompts and #3 sees
+    // both #1 and #2.
+    const outline = [
+      {
+        description: 'Door opens.',
+        shot_type: 'cinematic_wide',
+        duration_seconds: 5,
+        transition_in: '',
+        characters_in_scene: [],
+      },
+      {
+        description: 'Push in on the protagonist.',
+        shot_type: 'medium',
+        duration_seconds: 4,
+        transition_in: 'Picks up the doorframe from #1.',
+        characters_in_scene: ['Alice'],
+      },
+      {
+        description: 'Reaction close-up.',
+        shot_type: 'reaction',
+        duration_seconds: 3,
+        transition_in: 'Match cut on the eyes.',
+        characters_in_scene: ['Alice'],
+      },
+    ];
+    Generate._setOutlinePlannerForTests(async () => outline);
+    const refineSeen = [];
+    Generate._setFrameRefinerForTests(async ({ index, previousRefined }) => {
+      // Deep-copy what we saw so later mutations can't poison the assertion.
+      refineSeen.push({
+        index,
+        previousRefined: previousRefined.map((p) => ({ ...p })),
+      });
+      return {
+        start_prompt: `start#${index}`,
+        end_prompt: `end#${index}`,
+      };
+    });
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('img'),
+      contentType: 'image/png',
+    }));
+
+    const beat = await Plots.createBeat({
+      name: 'Roll',
+      desc: 'r',
+      body: 'r',
+      characters: ['Alice'],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+    expect(job.planned).toBe(3);
+
+    // Refinement order is 0, 1, 2 with growing context. Each previousRefined
+    // entry carries the refined prompts of the prior frame(s) (alongside the
+    // outline fields so the refiner can re-read shot_type etc. if needed).
+    expect(refineSeen.map((r) => r.index)).toEqual([0, 1, 2]);
+    expect(refineSeen[0].previousRefined).toEqual([]);
+    expect(refineSeen[1].previousRefined.map((p) => p.start_prompt)).toEqual([
+      'start#0',
+    ]);
+    expect(refineSeen[1].previousRefined.map((p) => p.end_prompt)).toEqual([
+      'end#0',
+    ]);
+    expect(refineSeen[2].previousRefined.map((p) => p.start_prompt)).toEqual([
+      'start#0',
+      'start#1',
+    ]);
+    expect(refineSeen[2].previousRefined.map((p) => p.end_prompt)).toEqual([
+      'end#0',
+      'end#1',
+    ]);
+
+    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
+    expect(stored.map((s) => s.start_prompt)).toEqual(['start#0', 'start#1', 'start#2']);
+  });
+
+  it('propagates `direction` to both stages', async () => {
+    const outlineCalls = [];
+    Generate._setOutlinePlannerForTests(async (args) => {
+      outlineCalls.push(args);
+      return [
+        {
+          description: 'D',
+          shot_type: 'medium',
+          duration_seconds: 4,
+          transition_in: '',
+          characters_in_scene: [],
+        },
+      ];
+    });
+    const refineCalls = [];
+    Generate._setFrameRefinerForTests(async (args) => {
+      refineCalls.push(args);
+      return { start_prompt: 's', end_prompt: 'e' };
+    });
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('img'),
+      contentType: 'image/png',
+    }));
+
+    const beat = await Plots.createBeat({
+      name: 'Dir',
+      desc: '',
+      body: '',
+      characters: [],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+      direction: 'lean handheld and dirty over-the-shoulders',
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+    // Direction is recorded on the job.
+    expect(job.direction).toBe('lean handheld and dirty over-the-shoulders');
+
+    expect(outlineCalls).toHaveLength(1);
+    expect(outlineCalls[0].direction).toBe(
+      'lean handheld and dirty over-the-shoulders',
+    );
+    expect(refineCalls).toHaveLength(1);
+    expect(refineCalls[0].direction).toBe(
+      'lean handheld and dirty over-the-shoulders',
+    );
+  });
+
+  it('records detailed progress events for each generation step', async () => {
+    installPlannerForFixture(TWO_FRAME_PLAN.frames);
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('img'),
+      contentType: 'image/png',
+    }));
+    Generate._setDescriberForTests(async () => ({
+      name: 'D',
+      description: 'description text',
+    }));
+    Generate._setEndPromptDerivationForTests(async () => 'derived');
+
+    const beat = await Plots.createBeat({
+      name: 'P',
+      desc: 'd',
+      body: 'b',
+      characters: ['Alice'],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    const job = await waitForJob(jobId);
+
+    expect(job.status).toBe('done');
+    // Every step records a current-progress snapshot so the SPA always has
+    // something to show.
+    expect(job.progress).toBeTruthy();
+    expect(job.progress.phase).toBe('done');
+    expect(job.progress.step).toBe('job_done');
+    expect(job.progress.message).toMatch(/Done — 2 rendered/);
+
+    // The event log captures the major phases plus per-frame steps. Each entry
+    // carries an ISO timestamp, phase, step, and human-readable message.
+    expect(Array.isArray(job.events)).toBe(true);
+    const steps = job.events.map((e) => e.step);
+    expect(steps).toContain('job_queued');
+    expect(steps).toContain('plan_outline_start');
+    expect(steps).toContain('plan_outline_done');
+    expect(steps).toContain('refine_frame_start');
+    expect(steps).toContain('refine_done');
+    expect(steps).toContain('render_start');
+    expect(steps).toContain('frame_start');
+    expect(steps).toContain('render_start_frame');
+    expect(steps).toContain('caption_start_frame');
+    expect(steps).toContain('derive_end_prompt');
+    expect(steps).toContain('render_end_frame');
+    expect(steps).toContain('caption_end_frame');
+    expect(steps).toContain('frame_done');
+    expect(steps).toContain('job_done');
+
+    // Per-frame events carry the frame index + total so the SPA can render
+    // "Frame 2/2" without re-deriving it.
+    const frameStarts = job.events.filter((e) => e.step === 'frame_start');
+    expect(frameStarts.map((e) => e.frame)).toEqual([1, 2]);
+    for (const e of frameStarts) {
+      expect(e.total).toBe(2);
+    }
+
+    // Event log is capped — we don't pile up forever.
+    expect(job.events.length).toBeLessThanOrEqual(100);
+  });
+
+  it('records a job_crashed progress event when the runner throws', async () => {
+    Generate._setOutlinePlannerForTests(async () => {
+      throw new Error('outline boom');
+    });
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('img'),
+      contentType: 'image/png',
+    }));
+
+    const beat = await Plots.createBeat({
+      name: 'Crash',
+      desc: 'd',
+      body: 'b',
+      characters: [],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    const job = await waitForJob(jobId);
+
+    expect(job.status).toBe('error');
+    expect(job.progress?.phase).toBe('error');
+    expect(job.progress?.step).toBe('job_crashed');
+    expect(job.progress?.message).toMatch(/outline boom/);
+  });
+
+  it('threads `direction` into every image-gen prompt sent to the dispatcher', async () => {
+    installPlannerForFixture(TWO_FRAME_PLAN.frames);
+    const prompts = [];
+    Generate._setImageDispatcherForTests(async ({ prompt }) => {
+      prompts.push(prompt);
+      return { buffer: Buffer.from('img'), contentType: 'image/png' };
+    });
+
+    const beat = await Plots.createBeat({
+      name: 'Style',
+      desc: 'd',
+      body: 'b',
+      characters: ['Alice', 'Bob'],
+    });
+    const direction = 'shot on Super 16, heavy anamorphic flares, golden hour';
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+      direction,
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+
+    // 2 frames × (start + end) = 4 image-gen calls. Every one must carry the
+    // director's style direction so the model doesn't drift mid-sequence.
+    expect(prompts).toHaveLength(4);
+    for (const p of prompts) {
+      expect(p).toMatch(/Director's style direction: shot on Super 16/);
+    }
+  });
+
+  it("chains each frame's start call onto the previous frame's end-frame buffer", async () => {
+    installPlannerForFixture(TWO_FRAME_PLAN.frames);
+    // Hand back a unique buffer per call so we can identify which buffer
+    // landed where. Call sequence (sequential): f1-start, f1-end, f2-start,
+    // f2-end. Use a counter; tag each buffer with its index.
+    let call = 0;
+    const calls = [];
+    Generate._setImageDispatcherForTests(async (args) => {
+      const idx = call++;
+      calls.push({ idx, inputImages: args.inputImages, prompt: args.prompt });
+      return {
+        buffer: Buffer.from(`img-${idx}`),
+        contentType: 'image/png',
+      };
+    });
+    // Caption every image with a tagged description so we can verify the
+    // verbal anchor lands in the next start-frame prompt.
+    Generate._setDescriberForTests(async ({ buffer }) => ({
+      name: 'auto',
+      description: `caption-of:${buffer.toString()}`,
+    }));
+
+    const beat = await Plots.createBeat({
+      name: 'Chain',
+      desc: 'd',
+      body: 'b',
+      characters: ['Alice', 'Bob'],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+
+    // Sequential ordering: 4 calls in [f1-start, f1-end, f2-start, f2-end]
+    // order. The dispatcher is fully synchronous in this test.
+    expect(calls).toHaveLength(4);
+
+    // f1-start (call 0): no previous end frame, so no continuity ref appended.
+    // It receives only the base inputs (chars + set, both empty here since the
+    // beat has no portraits/sheets/set image attached in this test setup).
+    const f1Start = calls[0];
+    for (const img of f1Start.inputImages) {
+      expect(img.buffer.toString()).not.toMatch(/^img-/);
+    }
+
+    // f2-start (call 2): the LAST input image must be f1's end-frame buffer
+    // (call 1's return value), which is how buildVisualPrompt's "final image
+    // above" sentence refers to it.
+    const f2Start = calls[2];
+    expect(f2Start.inputImages.length).toBeGreaterThan(0);
+    const lastInput = f2Start.inputImages[f2Start.inputImages.length - 1];
+    expect(lastInput.buffer.toString()).toBe('img-1');
+    // The verbal anchor derived from f1's end-frame caption must appear in
+    // the prompt — confirms the description threaded through too.
+    expect(f2Start.prompt).toMatch(
+      /Previous shot end frame to match: caption-of:img-1/,
+    );
+    // And the previous-shot continuity label/directive landed in the prompt.
+    expect(f2Start.prompt).toMatch(/PREVIOUS shot's end frame/);
+  });
+
+  it('falls back to synthesized prompts when refinement returns null', async () => {
+    Generate._setOutlinePlannerForTests(async () => [
+      {
+        description: 'Alice opens the door.',
+        shot_type: 'medium',
+        duration_seconds: 4,
+        transition_in: '',
+        characters_in_scene: ['Alice'],
+      },
+    ]);
+    Generate._setFrameRefinerForTests(async () => null);
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('img'),
+      contentType: 'image/png',
+    }));
+
+    const beat = await Plots.createBeat({
+      name: 'F',
+      desc: '',
+      body: '',
+      characters: ['Alice'],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    const job = await waitForJob(jobId);
+    expect(['done', 'partial']).toContain(job.status);
+    expect(job.refine_failures).toBe(1);
+
+    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
+    expect(stored).toHaveLength(1);
+    // Synthesized prompts include the outline description so the renderer
+    // has something to feed the image generator.
+    expect(stored[0].start_prompt).toMatch(/Alice opens the door/);
+    expect(stored[0].end_prompt).toMatch(/Alice opens the door/);
+  });
+
+  it('clamps targetCount and records the requested value on the job', async () => {
+    let receivedTarget = null;
+    Generate._setOutlinePlannerForTests(async ({ targetCount }) => {
+      receivedTarget = targetCount;
+      return [];
+    });
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('img'),
+      contentType: 'image/png',
+    }));
+
+    const beat = await Plots.createBeat({
+      name: 'C',
+      desc: '',
+      body: '',
+      characters: [],
+    });
+    // 999 is above MAX_TARGET_COUNT (30); we expect it clamped to 30.
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+      targetCount: 999,
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+    expect(receivedTarget).toBe(30);
+    expect(job.target_count_requested).toBe(30);
   });
 });
 

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { GenerateVideoDialog } from './GenerateVideoDialog.jsx';
 
-// Button injected into the storyboard scene's AudioSlot extraActions slot.
+// Sits in the storyboard item's top header row, just before Delete.
 // Per-model input requirements are checked inside the dialog (once the user
 // has picked a model) and re-validated server-side. The button itself is
 // only disabled when an external `disabled` prop is set (e.g. job already
