@@ -1,6 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { RES_TO_DIMS, describePricing, parseCatalogPriceText } from './videoPricing.js';
+
+function resolutionToDims(resolution) {
+  if (!resolution) return null;
+  const key = String(resolution).toLowerCase();
+  return RES_TO_DIMS[key] || RES_TO_DIMS[String(resolution)] || null;
+}
+
 // Registry of fal.ai video models exposed to the SPA's "Generate video"
 // dialog. Each entry knows:
 //   - which fal model id to call
@@ -25,11 +33,6 @@ export const INPUT_NEEDS = Object.freeze({
   UNUSED: 'unused',
 });
 
-// Maximum number of character "elements" we'll pass to Kling 3 Pro. The
-// model's docs cap at a small number; we cap at 4 to match Kling's
-// reference docs and to keep prompt size sane.
-const MAX_ELEMENTS = 4;
-
 // Cap a prompt to a model's documented hard limit. fal returns a validation
 // error on long prompts; we silently truncate so a too-long text_prompt
 // never blocks a render. Kling docs mention 2000 chars; we keep 1500 as a
@@ -42,15 +45,15 @@ function capPrompt(s) {
 
 // Map our input bundle to a "video URL" payload shape that every model in
 // this registry can stitch from. The orchestrator hands every model the
-// same bundle; each model picks the fields it needs.
+// same bundle; each model picks the fields it needs. Every image URL in the
+// bundle comes from an image explicitly attached to the storyboard row —
+// nothing is auto-loaded from character documents or beat images.
 //
 // The bundle:
 //   prompt:                string (markdown stripped, fal-cap applied)
 //   startFrameUrl:         fal URL of storyboard.start_frame_id image
 //   endFrameUrl:           fal URL of storyboard.end_frame_id image (or null)
 //   characterSheetUrl:     fal URL of storyboard.character_sheet_image_id (or null)
-//   characterElements:     [{ frontalUrl, referenceUrls: [] }] built from
-//                          each character in characters_in_scene (capped)
 //   referenceImageUrls:    fal URLs for each storyboard.reference_image_ids[]
 //   audioUrl:              fal URL of storyboard.audio_file_id (or null)
 //   durationSeconds:       integer 1..15
@@ -60,10 +63,12 @@ export const VIDEO_MODELS = [
   {
     id: 'kling-3-pro',
     label: 'Kling 3 Pro',
+    pricingId: 'kling-3-pro',
     falModel: 'fal-ai/kling-video/v3/pro/image-to-video',
     description:
-      'Image-to-video with start frame, optional end frame, character elements ' +
-      '(built from characters_in_scene), and native audio synthesis from the prompt.',
+      'Image-to-video with start frame, optional end frame, optional pinned ' +
+      'character sheet (passed as a single Kling element), and native audio ' +
+      'synthesis from the prompt.',
     // Kling 3 Pro accepts integer-string durations 3..15.
     durations: ['3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15'],
     defaultDuration: '5',
@@ -71,8 +76,7 @@ export const VIDEO_MODELS = [
     inputs: {
       startFrame: INPUT_NEEDS.REQUIRED,
       endFrame: INPUT_NEEDS.OPTIONAL,
-      characterSheet: INPUT_NEEDS.UNUSED,
-      characterElements: INPUT_NEEDS.OPTIONAL,
+      characterSheet: INPUT_NEEDS.OPTIONAL,
       referenceImages: INPUT_NEEDS.UNUSED,
       audio: INPUT_NEEDS.UNUSED,
     },
@@ -84,14 +88,9 @@ export const VIDEO_MODELS = [
         generate_audio: Boolean(bundle.generateAudio),
       };
       if (bundle.endFrameUrl) input.end_image_url = bundle.endFrameUrl;
-      const elements = (bundle.characterElements || []).slice(0, MAX_ELEMENTS).map((el) => {
-        const out = { frontal_image_url: el.frontalUrl };
-        if (Array.isArray(el.referenceUrls) && el.referenceUrls.length) {
-          out.reference_image_urls = el.referenceUrls;
-        }
-        return out;
-      });
-      if (elements.length) input.elements = elements;
+      if (bundle.characterSheetUrl) {
+        input.elements = [{ frontal_image_url: bundle.characterSheetUrl }];
+      }
       return input;
     },
     extractVideoUrl(data) {
@@ -102,6 +101,7 @@ export const VIDEO_MODELS = [
   {
     id: 'veo-3-1-flf',
     label: 'Veo 3.1 (first-last-frame)',
+    pricingId: 'veo-3-1-flf',
     falModel: 'fal-ai/veo3.1/first-last-frame-to-video',
     description:
       'Best-in-class motion quality. Requires both start and end frames. ' +
@@ -113,18 +113,19 @@ export const VIDEO_MODELS = [
       startFrame: INPUT_NEEDS.REQUIRED,
       endFrame: INPUT_NEEDS.REQUIRED,
       characterSheet: INPUT_NEEDS.UNUSED,
-      characterElements: INPUT_NEEDS.UNUSED,
       referenceImages: INPUT_NEEDS.UNUSED,
       audio: INPUT_NEEDS.UNUSED,
     },
     buildInput(bundle) {
-      return {
+      const input = {
         prompt: capPrompt(bundle.prompt) || 'Cinematic shot.',
         first_frame_url: bundle.startFrameUrl,
         last_frame_url: bundle.endFrameUrl,
         duration: `${bundle.durationSeconds || 8}s`,
         generate_audio: Boolean(bundle.generateAudio),
       };
+      if (bundle.resolution) input.resolution = String(bundle.resolution);
+      return input;
     },
     extractVideoUrl(data) {
       return data?.video?.url || null;
@@ -134,6 +135,7 @@ export const VIDEO_MODELS = [
   {
     id: 'kling-avatar-v2-pro',
     label: 'Kling AI Avatar v2 Pro (lip-sync)',
+    pricingId: 'kling-avatar-v2-pro',
     falModel: 'fal-ai/kling-video/ai-avatar/v2/pro',
     description:
       'True lip-sync. Takes one anchor image plus an audio file and animates a ' +
@@ -150,7 +152,6 @@ export const VIDEO_MODELS = [
       startFrame: INPUT_NEEDS.REQUIRED,
       endFrame: INPUT_NEEDS.UNUSED,
       characterSheet: INPUT_NEEDS.OPTIONAL,
-      characterElements: INPUT_NEEDS.UNUSED,
       referenceImages: INPUT_NEEDS.UNUSED,
       audio: INPUT_NEEDS.REQUIRED,
     },
@@ -171,6 +172,7 @@ export const VIDEO_MODELS = [
   {
     id: 'flashhead',
     label: 'Flashhead',
+    pricingId: 'flashhead',
     falModel: 'fal-ai/flashhead',
     description:
       'Soul AI Lab Flashhead. Image-to-video where the prompt is delivered as the ' +
@@ -182,7 +184,6 @@ export const VIDEO_MODELS = [
       startFrame: INPUT_NEEDS.REQUIRED,
       endFrame: INPUT_NEEDS.UNUSED,
       characterSheet: INPUT_NEEDS.UNUSED,
-      characterElements: INPUT_NEEDS.UNUSED,
       referenceImages: INPUT_NEEDS.UNUSED,
       audio: INPUT_NEEDS.UNUSED,
     },
@@ -194,6 +195,70 @@ export const VIDEO_MODELS = [
     },
     extractVideoUrl(data) {
       return data?.video?.url || data?.output?.url || null;
+    },
+  },
+
+  {
+    id: 'sora-2',
+    label: 'Sora 2',
+    pricingId: 'sora-2',
+    falModel: 'fal-ai/sora-2/image-to-video',
+    description:
+      'OpenAI Sora 2 image-to-video. Strong motion and prompt adherence. ' +
+      'No native audio synthesis.',
+    durations: ['4', '8', '12', '16', '20'],
+    defaultDuration: '8',
+    supportsGenerateAudio: false,
+    inputs: {
+      startFrame: INPUT_NEEDS.REQUIRED,
+      endFrame: INPUT_NEEDS.UNUSED,
+      characterSheet: INPUT_NEEDS.UNUSED,
+      referenceImages: INPUT_NEEDS.UNUSED,
+      audio: INPUT_NEEDS.UNUSED,
+    },
+    buildInput(bundle) {
+      return {
+        prompt: capPrompt(bundle.prompt) || 'Cinematic shot.',
+        image_url: bundle.startFrameUrl,
+        duration: String(bundle.durationSeconds || 8),
+        aspect_ratio: bundle.aspectRatio ? String(bundle.aspectRatio) : 'auto',
+        resolution: bundle.resolution ? String(bundle.resolution) : 'auto',
+      };
+    },
+    extractVideoUrl(data) {
+      return data?.video?.url || null;
+    },
+  },
+
+  {
+    id: 'sora-2-pro',
+    label: 'Sora 2 Pro',
+    pricingId: 'sora-2-pro',
+    falModel: 'fal-ai/sora-2/image-to-video/pro',
+    description:
+      'OpenAI Sora 2 Pro image-to-video. Same input shape as Sora 2; adds ' +
+      '1080p / true_1080p resolutions.',
+    durations: ['4', '8', '12', '16', '20'],
+    defaultDuration: '8',
+    supportsGenerateAudio: false,
+    inputs: {
+      startFrame: INPUT_NEEDS.REQUIRED,
+      endFrame: INPUT_NEEDS.UNUSED,
+      characterSheet: INPUT_NEEDS.UNUSED,
+      referenceImages: INPUT_NEEDS.UNUSED,
+      audio: INPUT_NEEDS.UNUSED,
+    },
+    buildInput(bundle) {
+      return {
+        prompt: capPrompt(bundle.prompt) || 'Cinematic shot.',
+        image_url: bundle.startFrameUrl,
+        duration: String(bundle.durationSeconds || 8),
+        aspect_ratio: bundle.aspectRatio ? String(bundle.aspectRatio) : 'auto',
+        resolution: bundle.resolution ? String(bundle.resolution) : 'auto',
+      };
+    },
+    extractVideoUrl(data) {
+      return data?.video?.url || null;
     },
   },
 ];
@@ -217,6 +282,7 @@ export function describeVideoModel(id) {
     defaultDuration: m.defaultDuration,
     supportsGenerateAudio: m.supportsGenerateAudio,
     inputs: m.inputs,
+    pricing: m.pricingId ? describePricing(m.pricingId) : null,
   };
 }
 
@@ -239,24 +305,22 @@ const INPUT_LABEL = Object.freeze({
 
 // Validate that a storyboard has the inputs a chosen model requires.
 // Returns an array of human-readable missing labels (empty when OK).
+//
+// Reference images are required iff the user explicitly attached them — we
+// no longer substitute start_frame / character_sheet when none are pinned.
+// Images uploaded to fal come only from the storyboard's four image slots:
+// start_frame_id, end_frame_id, character_sheet_image_id, reference_image_ids.
 export function validateStoryboardInputs(model, storyboard) {
   const missing = [];
   for (const [inputKey, need] of Object.entries(model.inputs)) {
     if (need !== INPUT_NEEDS.REQUIRED) continue;
     if (inputKey === 'referenceImages') {
-      // Accept reference_image_ids OR fall back to start_frame / character_sheet
-      // — the orchestrator substitutes those when references are required but
-      // none were explicitly attached.
       const ids = storyboard?.reference_image_ids;
-      const haveExplicit = Array.isArray(ids) && ids.length > 0;
-      const haveFallback = Boolean(
-        storyboard?.start_frame_id || storyboard?.character_sheet_image_id,
-      );
-      if (!haveExplicit && !haveFallback) missing.push('reference images');
+      if (!Array.isArray(ids) || ids.length === 0) missing.push('reference images');
       continue;
     }
     const field = INPUT_TO_FIELD[inputKey];
-    if (!field) continue; // characterElements has no single storyboard field
+    if (!field) continue;
     if (!storyboard[field]) missing.push(INPUT_LABEL[inputKey] || inputKey);
   }
   return missing;
@@ -357,6 +421,11 @@ function synthesizeCatalogModel(row) {
 
   const supportsGenerateAudio = allSet.has('generate_audio');
   const hasDuration = allSet.has('duration');
+  const hasResolution = allSet.has('resolution');
+  const hasAspectRatio = allSet.has('aspect_ratio');
+  const hasFps = allSet.has('fps');
+  const hasNumFrames = allSet.has('num_frames');
+  const hasVideoSize = allSet.has('video_size');
   const durationsEnum = Array.isArray(row.durations_enum) ? row.durations_enum.map(String) : [];
 
   // Detect duration format from enum entries: '8s', '8.0', '8'.
@@ -396,6 +465,26 @@ function synthesizeCatalogModel(row) {
     if (hasDuration) {
       const formatted = formatDuration(bundle.durationSeconds);
       if (formatted != null) input.duration = formatted;
+    }
+    if (hasResolution && bundle.resolution) {
+      input.resolution = String(bundle.resolution);
+    }
+    if (hasAspectRatio && bundle.aspectRatio) {
+      input.aspect_ratio = String(bundle.aspectRatio);
+    }
+    if (hasFps && Number.isFinite(Number(bundle.fps)) && Number(bundle.fps) > 0) {
+      input.fps = Math.round(Number(bundle.fps));
+    }
+    if (hasNumFrames) {
+      const f = Number(bundle.fps);
+      const d = Number(bundle.durationSeconds);
+      if (Number.isFinite(f) && f > 0 && Number.isFinite(d) && d > 0) {
+        input.num_frames = Math.max(1, Math.round(f * d));
+      }
+    }
+    if (hasVideoSize && bundle.resolution) {
+      const dims = resolutionToDims(bundle.resolution);
+      if (dims) input.video_size = `${dims[0]}x${dims[1]}`;
     }
     if (supportsGenerateAudio) input.generate_audio = Boolean(bundle.generateAudio);
     return input;
@@ -439,6 +528,28 @@ const SYNTH_CACHE = new Map();
 // catalog manifest for endpoints in allowlisted families with generic-
 // wireable inputs. Returns null when the id is unknown OR known but not
 // auto-wireable (callers should treat both as "preview not ready").
+// Look up catalog metadata (lab/family/added_at, resolutions, …) for a
+// given fal endpoint id. Returns null when the catalog isn't generated
+// or the endpoint isn't in it. Used by the orchestrator to snapshot
+// release info onto the persisted storyboard at generation time.
+export async function getVideoModelCatalogMeta(endpointId) {
+  if (!endpointId) return null;
+  const cat = await loadCatalog();
+  const row = cat?.models?.find?.(
+    (m) => m.endpoint_id === endpointId || m.id === endpointId,
+  );
+  if (!row) return null;
+  return {
+    endpoint_id: row.endpoint_id,
+    display_name: row.display_name || null,
+    model_lab: row.model_lab || null,
+    model_family: row.model_family || null,
+    added_at: row.added_at || null,
+    resolutions: row.resolutions || [],
+    pricing: row.pricing || null,
+  };
+}
+
 export async function getVideoModelOrCatalog(id) {
   const registered = getVideoModel(id);
   if (registered) return registered;
@@ -460,7 +571,6 @@ const DEFAULT_CATALOG_INPUTS = Object.freeze({
   startFrame: INPUT_NEEDS.UNUSED,
   endFrame: INPUT_NEEDS.UNUSED,
   characterSheet: INPUT_NEEDS.UNUSED,
-  characterElements: INPUT_NEEDS.UNUSED,
   referenceImages: INPUT_NEEDS.UNUSED,
   audio: INPUT_NEEDS.UNUSED,
 });
@@ -476,6 +586,7 @@ function registryToDialogShape(m) {
     default_duration: m.defaultDuration,
     supports_generate_audio: m.supportsGenerateAudio,
     inputs: m.inputs,
+    pricing: m.pricingId ? describePricing(m.pricingId) : null,
   };
 }
 
@@ -488,6 +599,7 @@ function registryToDialogShape(m) {
 // name-sets get promoted to is_registered=true with id=endpoint_id; the
 // orchestrator resolves these via getVideoModelOrCatalog() at submit time.
 function mergeCatalogRow(catalogRow, registered) {
+  const catalogPricing = catalogPricingFor(catalogRow);
   const base = {
     endpoint_id: catalogRow.endpoint_id,
     display_name: catalogRow.display_name,
@@ -503,6 +615,7 @@ function mergeCatalogRow(catalogRow, registered) {
     supports_generate_audio: Boolean(catalogRow.supports_generate_audio),
     price_text: catalogRow.price_text || null,
     price_min_usd: catalogRow.price_min_usd ?? null,
+    pricing: catalogPricing,
     inputs: catalogRow.inputs || { ...DEFAULT_CATALOG_INPUTS },
     inputs_required: Array.isArray(catalogRow.inputs_required) ? catalogRow.inputs_required : [],
     inputs_optional: Array.isArray(catalogRow.inputs_optional) ? catalogRow.inputs_optional : [],
@@ -526,6 +639,7 @@ function mergeCatalogRow(catalogRow, registered) {
       default_duration: r.default_duration,
       supports_generate_audio: r.supports_generate_audio,
       inputs: r.inputs,
+      pricing: r.pricing || catalogPricing,
     };
   }
   if (isAllowedFamily(catalogRow.endpoint_id) && canGenericWire(catalogRow)) {
@@ -539,6 +653,82 @@ function mergeCatalogRow(catalogRow, registered) {
     };
   }
   return base;
+}
+
+// Best-effort structured pricing for a catalog row that isn't in the
+// registered PRICING table. Returns null when price_text is missing or
+// unparseable.
+function catalogPricingFor(catalogRow) {
+  if (!catalogRow?.price_text) return null;
+  const parsed = parseCatalogPriceText(catalogRow.price_text);
+  if (!parsed) return null;
+  const noteBase = `Parsed from price_text: ${parsed.basis}`;
+  // Use the catalog's first declared resolution as the default tier when
+  // the model is per-second-tiered or per-megapixel (so the SPA renders
+  // a non-empty estimate before the user touches the picker).
+  const defaultResolution =
+    Array.isArray(catalogRow.resolutions) && catalogRow.resolutions.length
+      ? catalogRow.resolutions.find((r) => r && r !== 'auto') || null
+      : null;
+  if (parsed.kind === 'per_second_tiered') {
+    return {
+      pricing_id: null,
+      kind: 'per_second_tiered',
+      rates: parsed.rates,
+      per_second_usd: null,
+      default_resolution: defaultResolution || parsed.rates[0]?.when?.resolution || null,
+      requires_audio_duration: false,
+      requires_resolution: true,
+      requires_fps: false,
+      exact: false,
+      note: noteBase,
+    };
+  }
+  if (parsed.kind === 'per_second') {
+    return {
+      pricing_id: null,
+      kind: 'per_second',
+      rates: [{ when: {}, perSecondUsd: parsed.perSecondUsd }],
+      per_second_usd: parsed.perSecondUsd,
+      default_resolution: null,
+      requires_audio_duration: false,
+      requires_resolution: false,
+      requires_fps: false,
+      exact: false,
+      note: noteBase,
+    };
+  }
+  if (parsed.kind === 'per_megapixel') {
+    return {
+      pricing_id: null,
+      kind: 'per_megapixel',
+      rates: null,
+      per_mp_usd: parsed.perMpUsd,
+      default_resolution: defaultResolution,
+      default_fps: 24,
+      requires_audio_duration: false,
+      requires_resolution: true,
+      requires_fps: true,
+      exact: false,
+      note: noteBase,
+    };
+  }
+  if (parsed.kind === 'flat_per_clip') {
+    return {
+      pricing_id: null,
+      kind: 'flat_per_clip',
+      rates: null,
+      flat_usd: parsed.flatUsd,
+      per_second_usd: null,
+      default_resolution: null,
+      requires_audio_duration: false,
+      requires_resolution: false,
+      requires_fps: false,
+      exact: false,
+      note: noteBase,
+    };
+  }
+  return null;
 }
 
 // Stub-shape catalog row for a registered model that isn't in the manifest
@@ -565,11 +755,12 @@ function registryStubRow(m) {
 
 function capabilitiesFromInputs(inputs) {
   const i = inputs || {};
+  const usesSheet = i.characterSheet === INPUT_NEEDS.REQUIRED || i.characterSheet === INPUT_NEEDS.OPTIONAL;
   return {
     start_frame: i.startFrame === INPUT_NEEDS.REQUIRED || i.startFrame === INPUT_NEEDS.OPTIONAL,
     end_frame: i.endFrame === INPUT_NEEDS.REQUIRED || i.endFrame === INPUT_NEEDS.OPTIONAL,
     reference_images: i.referenceImages === INPUT_NEEDS.REQUIRED || i.referenceImages === INPUT_NEEDS.OPTIONAL,
-    character_sheet: i.characterSheet === INPUT_NEEDS.REQUIRED || i.characterSheet === INPUT_NEEDS.OPTIONAL,
+    character_sheet: usesSheet,
     lip_sync: i.audio === INPUT_NEEDS.REQUIRED || i.audio === INPUT_NEEDS.OPTIONAL,
   };
 }

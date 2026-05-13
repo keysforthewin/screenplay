@@ -127,6 +127,13 @@ describe('previewFrameGenerationPrompt', () => {
       characters: ['Alice'],
       textPrompt: 'Alice stands at the door, hand on the handle.',
     });
+    // Row-scope: pin Alice's sheet so the preview has a character reference
+    // to summarize. Without a pin, refs are zero (no beat auto-load).
+    const characters = await fakeDb.collection('characters').find({}).toArray();
+    const aliceSheetId = characters[0].character_sheet_image_ids[0];
+    await Storyboards.updateStoryboard(sb._id, {
+      character_sheet_image_id: aliceSheetId,
+    });
 
     const preview = await Generate.previewFrameGenerationPrompt({
       storyboardId: sb._id.toString(),
@@ -136,10 +143,11 @@ describe('previewFrameGenerationPrompt', () => {
     expect(typeof preview.prompt).toBe('string');
     expect(preview.prompt).toContain('Alice stands at the door, hand on the handle.');
     expect(preview.prompt).toMatch(/Render the beginning moment/);
-    expect(preview.has_set_image).toBe(true);
+    // Beat scene image is no longer auto-loaded.
+    expect(preview.has_set_image).toBe(false);
     expect(preview.has_start_frame_ref).toBe(false);
     expect(preview.character_count).toBe(1);
-    expect(preview.reference_count).toBeGreaterThanOrEqual(2);
+    expect(preview.reference_count).toBeGreaterThanOrEqual(1);
   });
 
   it('uses sb.text_prompt verbatim for end_frame', async () => {

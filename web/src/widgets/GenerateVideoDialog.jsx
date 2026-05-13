@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
-import { apiGet, apiPostJson, apiSseUrl } from '../api.js';
+import {
+  apiGet,
+  apiPostJson,
+  apiSseUrl,
+  attachmentUrl,
+  imageUrl,
+  thumbUrl,
+} from '../api.js';
+import { computeVideoCost, formatUsd as formatUsdAmount } from '../videoCost.js';
 import { VideoProgressBar } from './VideoProgressBar.jsx';
 
 // Capability facets shown in the picker. Order is the column order in the
@@ -42,10 +50,17 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
   const [activeFacets, setActiveFacets] = useState({ ...EMPTY_FACETS });
   const [prompt, setPrompt] = useState('');
   const [duration, setDuration] = useState(null);
+  const [resolution, setResolution] = useState(null);
+  const [fps, setFps] = useState(24);
   const [generateAudio, setGenerateAudio] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState(null);
   const [job, setJob] = useState(null);
+  // Two-step submit: clicking "Preview payload" populates `preview` with the
+  // exact payload the orchestrator would ship to fal. Only after the user
+  // clicks Approve do we actually POST /video/generate.
+  const [preview, setPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   // endpoint_id of the most-recently-used model from localStorage. Used both
   // to pre-select on open and to render a "(last used)" badge in the list.
   // Captured at open-time so the badge doesn't migrate mid-dialog after a
@@ -99,6 +114,8 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     setError(null);
     setJob(null);
     setGenerating(false);
+    setPreview(null);
+    setPreviewLoading(false);
     setActiveFacets({ ...EMPTY_FACETS });
     setPrompt(typeof sb?.text_prompt === 'string' ? sb.text_prompt : '');
     const storedEndpoint = readLastEndpoint();
@@ -115,23 +132,31 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     }
   }, [open, sb?._id, registry]);
 
-  // When the chosen model changes, snap duration to that model's default
-  // (or to the storyboard's duration_seconds, clamped to allowed values).
+  // When the chosen model changes, snap duration / resolution / fps to
+  // that model's defaults (or to the storyboard's duration_seconds,
+  // clamped to allowed values). Duration falls back to a free-form 5s
+  // when the model doesn't publish a durations enum but still bills
+  // by duration (per-second / per-megapixel).
   useEffect(() => {
     if (!chosenModel) return;
     const allowed = (chosenModel.durations || []).map((d) => Number(d)).filter(Number.isFinite);
-    if (!allowed.length) {
-      setDuration(null);
-      return;
-    }
     const sbDur = Number(sb?.duration_seconds);
-    let candidate = Number.isFinite(sbDur) && sbDur > 0 ? sbDur : Number(chosenModel.default_duration);
-    if (!Number.isFinite(candidate)) candidate = allowed[0];
-    const closest = allowed.reduce(
-      (best, n) => (Math.abs(n - candidate) < Math.abs(best - candidate) ? n : best),
-      allowed[0],
-    );
-    setDuration(closest);
+    if (allowed.length) {
+      let candidate = Number.isFinite(sbDur) && sbDur > 0 ? sbDur : Number(chosenModel.default_duration);
+      if (!Number.isFinite(candidate)) candidate = allowed[0];
+      const closest = allowed.reduce(
+        (best, n) => (Math.abs(n - candidate) < Math.abs(best - candidate) ? n : best),
+        allowed[0],
+      );
+      setDuration(closest);
+    } else if (modelNeedsDuration(chosenModel)) {
+      const free = Number.isFinite(sbDur) && sbDur > 0 ? Math.min(15, Math.round(sbDur)) : 5;
+      setDuration(free);
+    } else {
+      setDuration(null);
+    }
+    setResolution(pickDefaultResolution(chosenModel));
+    setFps(pickDefaultFps(chosenModel));
   }, [chosenModel, sb?.duration_seconds]);
 
   useEffect(() => () => closeStream(), []);
@@ -159,19 +184,6 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     );
   }, [registry, activeFacets]);
 
-  // Capability-combination matrix (distinct bitmaps that actually occur). Sorted by count desc.
-  const matrixRows = useMemo(() => {
-    if (!registry?.models?.length) return [];
-    const groups = new Map();
-    for (const m of registry.models) {
-      const key = FACETS.map((f) => (m.capabilities?.[f.key] ? '1' : '0')).join('');
-      const arr = groups.get(key) || { key, flags: { ...m.capabilities }, count: 0 };
-      arr.count += 1;
-      groups.set(key, arr);
-    }
-    return [...groups.values()].sort((a, b) => b.count - a.count);
-  }, [registry]);
-
   // Live narrowed count per facet ("how many models would be visible if I
   // toggle THIS facet, holding the others as-is?"). Renders next to each
   // checkbox so the user can see where adding a constraint leads.
@@ -191,11 +203,47 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
   function toggleFacet(key) {
     setActiveFacets((s) => ({ ...s, [key]: !s[key] }));
   }
-  function applyMatrixRow(rowFlags) {
-    setActiveFacets({ ...EMPTY_FACETS, ...Object.fromEntries(FACETS.map((f) => [f.key, !!rowFlags[f.key]])) });
+
+  // Build the request body the same way for /preview and /generate so both
+  // endpoints see identical inputs — otherwise the user's "approve" doesn't
+  // actually approve what we ship.
+  function buildRequestBody() {
+    const body = {
+      model_id: chosenModel.id,
+      prompt: prompt.trim() || null,
+    };
+    if (duration != null) body.duration_seconds = duration;
+    if (chosenModel.supports_generate_audio) body.generate_audio = generateAudio;
+    if (shouldShowResolution(chosenModel) && resolution) {
+      body.resolution = resolution;
+    }
+    if (shouldShowFps(chosenModel) && Number.isFinite(fps) && fps > 0) {
+      body.fps = fps;
+    }
+    return body;
   }
-  function isMatrixRowActive(rowFlags) {
-    return FACETS.every((f) => !!rowFlags[f.key] === !!activeFacets[f.key]);
+
+  async function loadPreview() {
+    setError(null);
+    if (!chosenModel?.is_registered || !chosenModel?.id) {
+      setError('Selected model is preview-only (not yet wired up). Pick a Ready model.');
+      return;
+    }
+    setPreviewLoading(true);
+    try {
+      const body = buildRequestBody();
+      const r = await apiPostJson(`/storyboard/${storyboardId}/video/preview`, body);
+      setPreview(r);
+    } catch (e) {
+      let msg = e.message || 'Preview failed.';
+      try {
+        const parsed = JSON.parse(msg);
+        if (parsed?.error) msg = parsed.error;
+      } catch {}
+      setError(msg);
+    } finally {
+      setPreviewLoading(false);
+    }
   }
 
   async function submit() {
@@ -208,12 +256,7 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
         setError('Selected model is preview-only (not yet wired up). Pick a Ready model.');
         return;
       }
-      const body = {
-        model_id: chosenModel.id,
-        prompt: prompt.trim() || null,
-      };
-      if (duration != null) body.duration_seconds = duration;
-      if (chosenModel.supports_generate_audio) body.generate_audio = generateAudio;
+      const body = buildRequestBody();
       const r = await apiPostJson(`/storyboard/${storyboardId}/video/generate`, body);
       const jobId = r?.job_id;
       if (!jobId) {
@@ -255,7 +298,11 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     }
   }
 
-  const ready = !generating && chosenModel?.is_registered && missing.length === 0;
+  const ready =
+    !generating &&
+    !previewLoading &&
+    chosenModel?.is_registered &&
+    missing.length === 0;
   const submitTooltip = !chosenModel
     ? 'Pick a model from the list.'
     : !chosenModel.is_registered
@@ -263,6 +310,7 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     : missing.length
     ? `Need: ${missing.join(', ')}`
     : '';
+  const showPreviewPanel = Boolean(preview) && !generating && !job?.video_file_id;
 
   return (
     <Modal
@@ -292,15 +340,12 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
           registry={registry}
           generating={generating}
           activeFacets={activeFacets}
-          matrixRows={matrixRows}
           facetCounts={facetCounts}
           visibleModels={visibleModels}
           chosenModel={chosenModel}
           lastUsedEndpoint={lastUsedEndpoint}
           onToggleFacet={toggleFacet}
           onClearFacets={() => setActiveFacets({ ...EMPTY_FACETS })}
-          onMatrixRowClick={applyMatrixRow}
-          isMatrixRowActive={isMatrixRowActive}
           onModelClick={(m) => setSelectedEndpoint(m.endpoint_id)}
           onRefreshCatalog={() => {
             setRegistry(null);
@@ -347,6 +392,58 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
                 ))}
               </select>
             </label>
+          ) : chosenModel && modelNeedsDuration(chosenModel) ? (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span className="field-label">Duration</span>
+              <input
+                type="number"
+                min={1}
+                max={15}
+                step={1}
+                value={duration ?? ''}
+                disabled={generating}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  if (Number.isFinite(n) && n >= 1 && n <= 15) setDuration(n);
+                  else if (e.target.value === '') setDuration(null);
+                }}
+                style={{ width: 70 }}
+              />
+            </label>
+          ) : null}
+
+          {chosenModel && shouldShowResolution(chosenModel) ? (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span className="field-label">Resolution</span>
+              <select
+                value={resolution ?? ''}
+                disabled={generating}
+                onChange={(e) => setResolution(e.target.value || null)}
+              >
+                {resolutionOptions(chosenModel).map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+
+          {chosenModel && shouldShowFps(chosenModel) ? (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span className="field-label">FPS</span>
+              <select
+                value={fps}
+                disabled={generating}
+                onChange={(e) => setFps(Number(e.target.value))}
+              >
+                {FPS_OPTIONS.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+            </label>
           ) : null}
 
           {chosenModel?.supports_generate_audio ? (
@@ -363,6 +460,20 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
             </label>
           ) : null}
 
+          {chosenModel ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span className="field-label">Cost estimate</span>
+              <CostEstimate
+                model={chosenModel}
+                duration={duration}
+                generateAudio={generateAudio}
+                resolution={resolution}
+                fps={fps}
+                audioDuration={sb?.audio_duration_seconds || null}
+              />
+            </div>
+          ) : null}
+
           <div className="video-action-spacer" />
 
           <button
@@ -370,13 +481,275 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
             className="primary"
             disabled={!ready}
             title={submitTooltip}
-            onClick={submit}
+            onClick={loadPreview}
           >
-            {generating ? 'Generating…' : 'Generate video'}
+            {previewLoading
+              ? 'Building preview…'
+              : generating
+              ? 'Generating…'
+              : 'Preview payload…'}
           </button>
         </div>
+
+        {showPreviewPanel ? (
+          <PayloadPreviewPanel
+            preview={preview}
+            generating={generating}
+            onCancel={() => setPreview(null)}
+            onApprove={() => {
+              setPreview(null);
+              submit();
+            }}
+          />
+        ) : null}
       </div>
     </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PayloadPreviewPanel: shows the exact payload that would be POSTed to fal.
+// Renders the resolved prompt, every input file (with thumbnail) the
+// orchestrator would upload, and the JSON object fal would receive (with
+// screenplay-preview:// sentinel URLs). User must click Approve before the
+// real /video/generate request goes out.
+
+const PREVIEW_IMAGE_RE = /^screenplay-preview:\/\/image\/([a-f0-9]{24})$/i;
+const PREVIEW_ATTACHMENT_RE = /^screenplay-preview:\/\/attachment\/([a-f0-9]{24})$/i;
+
+function previewSentinelToLocal(sentinel) {
+  if (typeof sentinel !== 'string') return null;
+  const im = PREVIEW_IMAGE_RE.exec(sentinel);
+  if (im) return { kind: 'image', id: im[1] };
+  const at = PREVIEW_ATTACHMENT_RE.exec(sentinel);
+  if (at) return { kind: 'attachment', id: at[1] };
+  return null;
+}
+
+function formatBytes(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return null;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function PayloadPreviewPanel({ preview, generating, onCancel, onApprove }) {
+  const inputs = Array.isArray(preview?.inputs) ? preview.inputs : [];
+  const warnings = Array.isArray(preview?.warnings) ? preview.warnings : [];
+  const imageInputs = inputs.filter((i) => i.kind === 'image');
+  const audioInputs = inputs.filter((i) => i.kind === 'attachment');
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        padding: 12,
+        border: '2px solid var(--accent)',
+        borderRadius: 6,
+        background: 'var(--bg-elevated)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+        <div style={{ fontWeight: 600, fontSize: 14 }}>
+          Confirm fal.ai payload
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--fg-muted)', fontFamily: 'monospace' }}>
+          {preview?.model?.fal_model}
+        </div>
+      </div>
+
+      {warnings.length ? (
+        <div className="warn-banner small" style={{ fontSize: 12, color: '#ffb86b' }}>
+          {warnings.map((w, i) => (
+            <div key={i}>⚠ {w}</div>
+          ))}
+        </div>
+      ) : null}
+
+      <div>
+        <div className="field-label" style={{ marginBottom: 4 }}>
+          Resolved prompt ({(preview?.prompt || '').length} chars)
+        </div>
+        <pre
+          style={{
+            margin: 0,
+            padding: 8,
+            background: 'var(--bg)',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            fontSize: 12,
+            fontFamily: 'monospace',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            maxHeight: 240,
+            overflow: 'auto',
+          }}
+        >
+          {preview?.prompt || '(empty)'}
+        </pre>
+      </div>
+
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12 }}>
+        <div>
+          <span style={{ color: 'var(--fg-muted)' }}>Model:</span>{' '}
+          <b>{preview?.model?.label}</b>
+          {preview?.model?.lab ? (
+            <span style={{ color: 'var(--fg-muted)' }}>{` · ${preview.model.lab}`}</span>
+          ) : null}
+        </div>
+        <div>
+          <span style={{ color: 'var(--fg-muted)' }}>Duration:</span>{' '}
+          <b>{preview?.duration_seconds ?? '—'}s</b>
+        </div>
+        <div>
+          <span style={{ color: 'var(--fg-muted)' }}>Generate audio:</span>{' '}
+          <b>{preview?.generate_audio ? 'yes' : 'no'}</b>
+        </div>
+        {preview?.estimated_cost_usd != null ? (
+          <div title={preview?.pricing_basis || ''}>
+            <span style={{ color: 'var(--fg-muted)' }}>Estimated cost:</span>{' '}
+            <b>
+              {preview.pricing_exact === false ? '≈ ' : ''}
+              {formatUsdAmount(preview.estimated_cost_usd) || '—'}
+            </b>
+          </div>
+        ) : null}
+        <div>
+          <span style={{ color: 'var(--fg-muted)' }}>Inputs uploaded to fal:</span>{' '}
+          <b>{inputs.length}</b>
+        </div>
+      </div>
+
+      <div>
+        <div className="field-label" style={{ marginBottom: 6 }}>
+          Image inputs ({imageInputs.length})
+        </div>
+        {imageInputs.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+            No images will be uploaded to fal.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+            {imageInputs.map((i, idx) => (
+              <PreviewAssetCard key={`${i.slot}-${i.image_id}-${idx}`} input={i} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div className="field-label" style={{ marginBottom: 6 }}>
+          Audio inputs ({audioInputs.length})
+        </div>
+        {audioInputs.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+            No audio will be uploaded to fal.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {audioInputs.map((i, idx) => (
+              <PreviewAssetCard key={`${i.slot}-${i.attachment_id}-${idx}`} input={i} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div className="field-label" style={{ marginBottom: 4 }}>
+          Full payload (sentinel URLs in place of fal.media URLs)
+        </div>
+        <pre
+          style={{
+            margin: 0,
+            padding: 8,
+            background: 'var(--bg)',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            fontSize: 11,
+            fontFamily: 'monospace',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            maxHeight: 320,
+            overflow: 'auto',
+          }}
+        >
+          {JSON.stringify(preview?.payload ?? {}, null, 2)}
+        </pre>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button type="button" onClick={onCancel} disabled={generating}>
+          Back to edit
+        </button>
+        <button
+          type="button"
+          className="primary"
+          onClick={onApprove}
+          disabled={generating}
+          title="Send this exact payload to fal.ai. Inputs will be uploaded to fal storage immediately before submission."
+        >
+          Approve and send to fal.ai
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PreviewAssetCard({ input }) {
+  const local = previewSentinelToLocal(input.sentinel);
+  const id = local?.id || input.image_id || input.attachment_id || null;
+  const isImage = input.kind === 'image';
+  const sizeLabel = formatBytes(input.size);
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        padding: 6,
+        border: '1px solid var(--border)',
+        borderRadius: 4,
+        background: 'var(--bg)',
+        minWidth: 140,
+        maxWidth: 200,
+      }}
+    >
+      {isImage && id ? (
+        <a href={imageUrl(id)} target="_blank" rel="noreferrer">
+          <img
+            src={thumbUrl(id)}
+            alt={input.slot}
+            style={{ width: '100%', height: 96, objectFit: 'cover', borderRadius: 3 }}
+          />
+        </a>
+      ) : input.kind === 'attachment' && id ? (
+        <a
+          href={attachmentUrl(id)}
+          target="_blank"
+          rel="noreferrer"
+          style={{ fontSize: 12, color: 'var(--accent)' }}
+        >
+          ▶ open audio
+        </a>
+      ) : (
+        <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>(missing)</div>
+      )}
+      <div style={{ fontSize: 11, fontWeight: 600 }}>{input.slot}</div>
+      <div style={{ fontSize: 10, color: 'var(--fg-muted)', wordBreak: 'break-all' }}>
+        {input.filename || '(no filename)'}
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--fg-muted)' }}>
+        {input.content_type || '?'}{sizeLabel ? ` · ${sizeLabel}` : ''}
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--fg-muted)', fontFamily: 'monospace' }}>
+        {id || '—'}
+      </div>
+      {input.missing ? (
+        <div style={{ fontSize: 10, color: '#ff6b6b' }}>⚠ missing from storage</div>
+      ) : null}
+    </div>
   );
 }
 
@@ -389,22 +762,19 @@ function safeParse(text) {
 }
 
 // ---------------------------------------------------------------------------
-// ModelPicker: capability matrix + 5 facet checkboxes + filtered model list.
+// ModelPicker: 5 facet checkboxes + filtered model list, full width.
 // Stateless — the parent dialog owns selection / facets / registry state.
 
 function ModelPicker({
   registry,
   generating,
   activeFacets,
-  matrixRows,
   facetCounts,
   visibleModels,
   chosenModel,
   lastUsedEndpoint,
   onToggleFacet,
   onClearFacets,
-  onMatrixRowClick,
-  isMatrixRowActive,
   onModelClick,
   onRefreshCatalog,
 }) {
@@ -489,173 +859,88 @@ function ModelPicker({
         </div>
       ) : null}
 
-      <div className="video-picker-grid">
-        {/* Left column: Capability combination matrix */}
-        <div className="video-picker-col video-picker-col--matrix">
-          <CapabilityMatrix
-            rows={matrixRows}
-            isActive={isMatrixRowActive}
-            onRowClick={onMatrixRowClick}
-            disabled={generating}
-          />
-        </div>
-
-        {/* Right column: facet checkboxes + filtered model list */}
-        <div className="video-picker-col video-picker-col--list">
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-            {FACETS.map((f) => (
-              <label
-                key={f.key}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '4px 8px',
-                  borderRadius: 4,
-                  background: activeFacets[f.key] ? 'rgba(122, 166, 255, 0.15)' : 'transparent',
-                  border: `1px solid ${activeFacets[f.key] ? 'var(--accent)' : 'var(--border)'}`,
-                  fontSize: 12,
-                  cursor: generating ? 'default' : 'pointer',
-                  opacity: generating ? 0.6 : 1,
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={!!activeFacets[f.key]}
-                  onChange={() => onToggleFacet(f.key)}
-                  disabled={generating}
-                />
-                <span>{f.label}</span>
-                <span style={{ color: 'var(--fg-muted)' }}>({facetCounts[f.key] ?? 0})</span>
-              </label>
-            ))}
-            {Object.values(activeFacets).some(Boolean) ? (
-              <button
-                type="button"
-                onClick={onClearFacets}
-                disabled={generating}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  color: 'var(--fg-muted)',
-                  cursor: 'pointer',
-                  fontSize: 12,
-                  textDecoration: 'underline',
-                  padding: '4px 8px',
-                }}
-              >
-                clear
-              </button>
-            ) : null}
-          </div>
-
-          <div
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        {FACETS.map((f) => (
+          <label
+            key={f.key}
             style={{
-              border: '1px solid var(--border)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 8px',
               borderRadius: 4,
-              maxHeight: 300,
-              overflow: 'auto',
-              background: 'var(--bg)',
+              background: activeFacets[f.key] ? 'rgba(122, 166, 255, 0.15)' : 'transparent',
+              border: `1px solid ${activeFacets[f.key] ? 'var(--accent)' : 'var(--border)'}`,
+              fontSize: 12,
+              cursor: generating ? 'default' : 'pointer',
+              opacity: generating ? 0.6 : 1,
             }}
           >
-            <div style={{ padding: '6px 10px', fontSize: 11, color: 'var(--fg-muted)', position: 'sticky', top: 0, background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border)' }}>
-              {sortedModels.length} of {total} model{total === 1 ? '' : 's'}
-            </div>
-            {sortedModels.length === 0 ? (
-              <div style={{ padding: 12, color: 'var(--fg-muted)', fontSize: 13 }}>
-                No models match these facets. Clear some to widen the search.
-              </div>
-            ) : null}
-            {sortedModels.map((m) => (
-              <ModelRow
-                key={m.endpoint_id}
-                model={m}
-                selected={chosenModel?.endpoint_id === m.endpoint_id}
-                lastUsed={lastUsedEndpoint && m.endpoint_id === lastUsedEndpoint}
-                disabled={generating}
-                onClick={() => onModelClick(m)}
-              />
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CapabilityMatrix({ rows, isActive, onRowClick, disabled }) {
-  if (!rows.length) return null;
-  return (
-    <div
-      style={{
-        border: '1px solid var(--border)',
-        borderRadius: 4,
-        background: 'var(--bg)',
-        overflow: 'hidden',
-        fontSize: 12,
-        fontFamily: 'monospace',
-      }}
-    >
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(5, 32px) 1fr 48px',
-          alignItems: 'center',
-          padding: '6px 10px',
-          background: 'var(--bg-elevated)',
-          borderBottom: '1px solid var(--border)',
-          color: 'var(--fg-muted)',
-        }}
-      >
-        {FACETS.map((f) => (
-          <span key={f.key} style={{ textAlign: 'center' }}>{f.short}</span>
+            <input
+              type="checkbox"
+              checked={!!activeFacets[f.key]}
+              onChange={() => onToggleFacet(f.key)}
+              disabled={generating}
+            />
+            <span>{f.label}</span>
+            <span style={{ color: 'var(--fg-muted)' }}>({facetCounts[f.key] ?? 0})</span>
+          </label>
         ))}
-        <span style={{ paddingLeft: 8 }}>combo</span>
-        <span style={{ textAlign: 'right' }}>n</span>
-      </div>
-      {rows.map((row) => {
-        const active = isActive(row.flags);
-        return (
+        {Object.values(activeFacets).some(Boolean) ? (
           <button
             type="button"
-            key={row.key}
-            disabled={disabled}
-            onClick={() => onRowClick(row.flags)}
+            onClick={onClearFacets}
+            disabled={generating}
             style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(5, 32px) 1fr 48px',
-              alignItems: 'center',
-              width: '100%',
-              padding: '4px 10px',
-              background: active ? 'rgba(122, 166, 255, 0.15)' : 'transparent',
+              background: 'transparent',
               border: 'none',
-              borderBottom: '1px solid var(--border)',
-              color: 'var(--fg)',
-              cursor: disabled ? 'default' : 'pointer',
-              fontFamily: 'monospace',
+              color: 'var(--fg-muted)',
+              cursor: 'pointer',
               fontSize: 12,
-              textAlign: 'left',
+              textDecoration: 'underline',
+              padding: '4px 8px',
             }}
           >
-            {FACETS.map((f) => (
-              <span key={f.key} style={{ textAlign: 'center', color: row.flags[f.key] ? 'var(--ok)' : 'var(--fg-muted)' }}>
-                {row.flags[f.key] ? '✓' : '·'}
-              </span>
-            ))}
-            <span style={{ paddingLeft: 8, color: 'var(--fg-muted)' }}>
-              {FACETS.filter((f) => row.flags[f.key]).map((f) => f.short).join(', ') || '(none)'}
-            </span>
-            <span style={{ textAlign: 'right', color: 'var(--fg-muted)' }}>{row.count}</span>
+            clear
           </button>
-        );
-      })}
+        ) : null}
+      </div>
+
+      <div
+        style={{
+          border: '1px solid var(--border)',
+          borderRadius: 4,
+          maxHeight: 360,
+          overflow: 'auto',
+          background: 'var(--bg)',
+        }}
+      >
+        <div style={{ padding: '6px 10px', fontSize: 11, color: 'var(--fg-muted)', position: 'sticky', top: 0, background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border)' }}>
+          {sortedModels.length} of {total} model{total === 1 ? '' : 's'}
+        </div>
+        {sortedModels.length === 0 ? (
+          <div style={{ padding: 12, color: 'var(--fg-muted)', fontSize: 13 }}>
+            No models match these facets. Clear some to widen the search.
+          </div>
+        ) : null}
+        {sortedModels.map((m) => (
+          <ModelRow
+            key={m.endpoint_id}
+            model={m}
+            selected={chosenModel?.endpoint_id === m.endpoint_id}
+            lastUsed={lastUsedEndpoint && m.endpoint_id === lastUsedEndpoint}
+            disabled={generating}
+            onClick={() => onModelClick(m)}
+          />
+        ))}
+      </div>
     </div>
   );
 }
 
 function ModelRow({ model, selected, lastUsed, disabled, onClick }) {
   const ready = !!model.is_registered;
-  const priceLabel = model.price_min_usd != null ? `from $${formatUsd(model.price_min_usd)}` : null;
+  const priceLabel = model.price_min_usd != null ? `from $${formatUsdMinimum(model.price_min_usd)}` : null;
   const maxLabel = typeof model.max_seconds === 'number' ? `max ${model.max_seconds}s` : null;
   const resBadges = (model.resolutions || []).slice(0, 4);
   const addedLabel = formatAddedAt(model.added_at);
@@ -717,7 +1002,61 @@ function ModelRow({ model, selected, lastUsed, disabled, onClick }) {
   );
 }
 
-function formatUsd(n) {
+// Fallback resolution list when the catalog doesn't publish a per-model
+// `resolutions` array. Includes the same set the pricing tier table
+// supports.
+const RESOLUTION_FALLBACKS = ['480p', '720p', '1080p'];
+const FPS_OPTIONS = [16, 24, 30];
+
+function modelNeedsDuration(model) {
+  const k = model?.pricing?.kind;
+  if (!k) return false;
+  return k === 'per_second' || k === 'per_second_tiered' || k === 'per_megapixel';
+}
+
+function shouldShowResolution(model) {
+  if (!model) return false;
+  const k = model.pricing?.kind;
+  if (k === 'per_second_tiered' || k === 'per_megapixel') return true;
+  if (Array.isArray(model.resolutions) && model.resolutions.length) return true;
+  return modelDeclares(model, 'resolution') || modelDeclares(model, 'video_size');
+}
+
+function shouldShowFps(model) {
+  if (!model) return false;
+  if (model.pricing?.kind === 'per_megapixel') return true;
+  return modelDeclares(model, 'fps');
+}
+
+function modelDeclares(model, paramName) {
+  return (
+    (model.inputs_required || []).includes(paramName) ||
+    (model.inputs_optional || []).includes(paramName)
+  );
+}
+
+function resolutionOptions(model) {
+  const declared = Array.isArray(model?.resolutions) ? model.resolutions : [];
+  const filtered = declared.filter((r) => r && r !== 'auto');
+  if (filtered.length) return filtered;
+  return RESOLUTION_FALLBACKS;
+}
+
+function pickDefaultResolution(model) {
+  if (!model) return null;
+  if (model.pricing?.default_resolution) {
+    return model.pricing.default_resolution;
+  }
+  const options = resolutionOptions(model);
+  if (options.includes('720p')) return '720p';
+  return options[0] || null;
+}
+
+function pickDefaultFps(model) {
+  return model?.pricing?.default_fps || 24;
+}
+
+function formatUsdMinimum(n) {
   if (n == null) return '—';
   if (n >= 1) return n.toFixed(2);
   if (n >= 0.01) return n.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
@@ -742,4 +1081,91 @@ function versionScore(model) {
   const family = model.model_family || '';
   const match = String(family).match(/(\d+(?:\.\d+)?)/);
   return match ? parseFloat(match[1]) : 0;
+}
+
+// Cost estimate shown next to the duration picker (or stand-alone for
+// models with no user-configurable duration). Reads the structured
+// `model.pricing` returned by /api/video-models — see
+// web/src/videoCost.js and src/fal/videoPricing.js. Falls through to
+// "≈ varies" only when pricing isn't structured (rare; legacy catalog
+// rows with unparseable price_text).
+function CostEstimate({ model, duration, generateAudio, resolution, fps, audioDuration }) {
+  if (!model) return null;
+  const tooltipBase =
+    model.price_text || model.pricing?.note ||
+    'fal does not publish a structured price for this model.';
+  if (model.pricing?.kind === 'unknown' || (!model.pricing && !model.price_text)) {
+    return (
+      <span
+        title={tooltipBase}
+        style={{
+          fontSize: 12,
+          color: 'var(--fg-muted)',
+          fontFamily: 'monospace',
+          cursor: 'help',
+        }}
+      >
+        rate not published by fal
+      </span>
+    );
+  }
+  const est = computeVideoCost(model, {
+    duration,
+    generateAudio,
+    audioDuration,
+    resolution,
+    fps,
+  });
+  if (!est) {
+    return (
+      <span
+        title={tooltipBase}
+        style={{
+          fontSize: 12,
+          color: 'var(--fg-muted)',
+          fontFamily: 'monospace',
+          cursor: 'help',
+        }}
+      >
+        ≈ varies (see model price)
+      </span>
+    );
+  }
+  if (est.totalUsd == null) {
+    const missing = Array.isArray(est.missing) && est.missing.length
+      ? `pick ${est.missing.join(' + ')} to see cost`
+      : est.basis;
+    return (
+      <span
+        title={`${est.basis}\n\nfal price text:\n${tooltipBase}`}
+        style={{
+          fontSize: 12,
+          color: 'var(--fg-muted)',
+          fontFamily: 'monospace',
+          cursor: 'help',
+        }}
+      >
+        {missing.startsWith('pick') ? missing : `≈ ${missing}`}
+      </span>
+    );
+  }
+  const totalLabel = formatUsdAmount(est.totalUsd);
+  const rateLabel = est.perSecondUsd != null ? formatUsdAmount(est.perSecondUsd) : null;
+  const exactPrefix = est.exact ? '' : '≈ ';
+  return (
+    <span
+      title={`${est.basis}\n\nfal price text:\n${tooltipBase}`}
+      style={{
+        fontSize: 12,
+        color: 'var(--fg)',
+        fontFamily: 'monospace',
+        cursor: 'help',
+      }}
+    >
+      {exactPrefix}{totalLabel}{' '}
+      {rateLabel ? (
+        <span style={{ color: 'var(--fg-muted)' }}>{`(${rateLabel}/s)`}</span>
+      ) : null}
+    </span>
+  );
 }

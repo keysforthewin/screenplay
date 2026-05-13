@@ -108,11 +108,13 @@ import {
   setLibraryAttachmentMeta,
   setOwnedAttachmentMeta,
   findAttachmentFile,
+  readAttachmentBuffer,
   copyAttachmentBuffer,
   attachExistingAttachmentToBeat,
   attachExistingAttachmentToCharacter,
   attachExistingAttachmentToDirectorNote,
 } from '../mongo/attachments.js';
+import { probeAudioDurationSeconds } from '../fal/videoPricing.js';
 import { enqueueReindex } from '../rag/queue.js';
 import { deleteEntity } from '../rag/indexer.js';
 import { stripMarkdown } from '../util/markdown.js';
@@ -1416,24 +1418,58 @@ export async function removeStoryboardReferenceImageViaGateway({ storyboardId, i
 export async function setStoryboardAudioViaGateway({ storyboardId, audioFileId }) {
   const sb = await mongoGetStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  await mongoUpdateStoryboard(storyboardId, {
+  const patch = {
     audio_file_id: audioFileId == null ? null : String(audioFileId),
-  });
+  };
+  // Probe the attached audio's duration so lip-sync cost estimates can
+  // render without a round-trip to fal. Failures (corrupt headers,
+  // unsupported codec) log+null — the cost UI degrades gracefully.
+  if (audioFileId == null) {
+    patch.audio_duration_seconds = null;
+  } else {
+    try {
+      const read = await readAttachmentBuffer(audioFileId);
+      if (read?.buffer) {
+        const mime =
+          read.file?.contentType || read.file?.metadata?.content_type || null;
+        const dur = await probeAudioDurationSeconds(read.buffer, mime);
+        patch.audio_duration_seconds = dur || null;
+      } else {
+        patch.audio_duration_seconds = null;
+      }
+    } catch (e) {
+      logger.warn(`gateway: audio duration probe failed for ${audioFileId}: ${e.message}`);
+      patch.audio_duration_seconds = null;
+    }
+  }
+  await mongoUpdateStoryboard(storyboardId, patch);
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
-    changed: ['audio_file_id'],
+    changed: Object.keys(patch),
     storyboard_id: String(storyboardId),
   });
   return mongoGetStoryboard(storyboardId);
 }
 
-// Attach a generated video to a storyboard. Used by the Wan 2.7 image-to-video
+// Attach a generated video to a storyboard. Used by the fal.ai video
 // pipeline after it downloads the MP4 into our GridFS attachments bucket.
 // Pass videoFileId=null to clear the slot. durationSeconds (when known) is
-// the actual MP4 duration the inline player uses for its timeline.
+// the actual MP4 duration the inline player uses for its timeline. The
+// model metadata (id/label/lab/family/added_at/falModel), input
+// `parameters`, and `costUsd` are surfaced under the inline player so the
+// user can tell at a glance which model rendered the clip, with what
+// arguments, and at what cost.
 export async function setStoryboardVideoViaGateway({
   storyboardId,
   videoFileId,
   durationSeconds = null,
+  modelId = null,
+  modelLabel = null,
+  falModel = null,
+  modelLab = null,
+  modelFamily = null,
+  modelAddedAt = null,
+  parameters = null,
+  costUsd = null,
 }) {
   const sb = await mongoGetStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
@@ -1443,11 +1479,38 @@ export async function setStoryboardVideoViaGateway({
   if (videoFileId == null) {
     patch.video_duration_seconds = null;
     patch.video_generated_at = null;
+    patch.video_model_id = null;
+    patch.video_model_label = null;
+    patch.video_fal_model = null;
+    patch.video_model_lab = null;
+    patch.video_model_family = null;
+    patch.video_model_added_at = null;
+    patch.video_parameters = null;
+    patch.video_cost_usd = null;
   } else {
     if (durationSeconds != null && Number.isFinite(Number(durationSeconds))) {
       patch.video_duration_seconds = Number(durationSeconds);
     }
     patch.video_generated_at = new Date();
+    patch.video_model_id = modelId ? String(modelId) : null;
+    patch.video_model_label = modelLabel ? String(modelLabel) : null;
+    patch.video_fal_model = falModel ? String(falModel) : null;
+    patch.video_model_lab = modelLab ? String(modelLab) : null;
+    patch.video_model_family = modelFamily ? String(modelFamily) : null;
+    if (modelAddedAt != null) {
+      const d = modelAddedAt instanceof Date ? modelAddedAt : new Date(modelAddedAt);
+      patch.video_model_added_at = Number.isNaN(d.getTime()) ? null : d;
+    } else {
+      patch.video_model_added_at = null;
+    }
+    patch.video_parameters =
+      parameters && typeof parameters === 'object' && !Array.isArray(parameters)
+        ? parameters
+        : null;
+    patch.video_cost_usd =
+      typeof costUsd === 'number' && Number.isFinite(costUsd) && costUsd >= 0
+        ? costUsd
+        : null;
   }
   await mongoUpdateStoryboard(storyboardId, patch);
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {

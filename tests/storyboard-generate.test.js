@@ -117,11 +117,11 @@ async function waitForJob(jobId) {
 }
 
 describe('storyboard auto-generation', () => {
-  it('plans frames and renders start + end images for each one', async () => {
+  it('plans frames and creates storyboard rows without rendering frame images', async () => {
     installPlannerForFixture(TWO_FRAME_PLAN.frames);
-    const generated = [];
+    const dispatcherCalls = [];
     Generate._setImageDispatcherForTests(async ({ prompt }) => {
-      generated.push(prompt);
+      dispatcherCalls.push(prompt);
       return {
         buffer: Buffer.from('fake-png-bytes'),
         contentType: 'image/png',
@@ -145,14 +145,17 @@ describe('storyboard auto-generation', () => {
     expect(job.completed).toBe(2);
     expect(job.failed).toBe(0);
 
-    // Two frames × two images each = 4 Gemini calls.
-    expect(generated.length).toBe(4);
+    // Auto frame-image generation has been removed: the image dispatcher must
+    // not be called during the bulk-create path. Users render frames manually
+    // via the per-row regen flow.
+    expect(dispatcherCalls).toHaveLength(0);
 
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(stored).toHaveLength(2);
     for (const sb of stored) {
-      expect(sb.start_frame_id).not.toBe(null);
-      expect(sb.end_frame_id).not.toBe(null);
+      // No images yet — start/end_frame_id are null on freshly-planned rows.
+      expect(sb.start_frame_id ?? null).toBe(null);
+      expect(sb.end_frame_id ?? null).toBe(null);
       expect(typeof sb.text_prompt).toBe('string');
       expect(sb.text_prompt.length).toBeGreaterThan(0);
     }
@@ -169,43 +172,6 @@ describe('storyboard auto-generation', () => {
     expect(stored[1].duration_seconds).toBe(4);
     expect(stored[1].transition_in).toBe('Picks up Alice mid-stride from #1.');
     expect(stored[1].characters_in_scene).toEqual(['Alice', 'Bob']);
-
-    // Each prompt sent to Gemini carries the shot-type cue.
-    expect(generated.some((p) => /Shot type: CINEMATIC WIDE\./.test(p))).toBe(true);
-    expect(generated.some((p) => /Shot type: TWO SHOT\./.test(p))).toBe(true);
-  });
-
-  it('marks the job as partial if some frames fail', async () => {
-    installPlannerForFixture(TWO_FRAME_PLAN.frames);
-    let call = 0;
-    Generate._setImageDispatcherForTests(async () => {
-      call += 1;
-      // Every other call fails.
-      if (call % 2 === 0) throw new Error('gemini boom');
-      return {
-        buffer: Buffer.from('fake'),
-        contentType: 'image/png',
-      };
-    });
-
-    const beat = await Plots.createBeat({
-      name: 'B',
-      desc: 'd',
-      body: 'b',
-      characters: [],
-    });
-    const jobId = await Generate.startStoryboardGenerationJob({
-      beatId: beat._id.toString(),
-    });
-    const job = await waitForJob(jobId);
-    // Each frame produces 2 storyboard images. Some succeed, some fail; the
-    // storyboard rows still exist for both frames because creation succeeds
-    // before image rendering. The job completes successfully (frame errors
-    // are tolerated within renderFrame).
-    expect(['done', 'partial']).toContain(job.status);
-    expect(job.planned).toBe(2);
-    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
-    expect(stored).toHaveLength(2);
   });
 
   it('returns immediately with status=done when the model returns no frames', async () => {
@@ -445,34 +411,6 @@ describe('storyboard auto-generation', () => {
     expect(stored[0].end_prompt).toBeUndefined();
   });
 
-  it('threads imageModel="openai" through every dispatcher call', async () => {
-    installPlannerForFixture(TWO_FRAME_PLAN.frames);
-    const calls = [];
-    Generate._setImageDispatcherForTests(async (args) => {
-      calls.push(args);
-      return { buffer: Buffer.from('out'), contentType: 'image/png' };
-    });
-
-    const beat = await Plots.createBeat({
-      name: 'M',
-      desc: '',
-      body: '',
-      characters: [],
-    });
-    const jobId = await Generate.startStoryboardGenerationJob({
-      beatId: beat._id.toString(),
-      imageModel: 'openai',
-    });
-    const job = await waitForJob(jobId);
-    expect(job.status).toBe('done');
-    // 2 frames × (start + end) = 4 dispatcher calls, every one with model=openai.
-    expect(calls).toHaveLength(4);
-    for (const c of calls) {
-      expect(c.model).toBe('openai');
-      expect(c.mode).toBe('generate');
-    }
-  });
-
   it('refines frames sequentially with rolling context — each call sees previously refined neighbors', async () => {
     // Stage A returns 3 outline frames; Stage B observes the previousRefined
     // list each call. We assert refinement #2 sees #1's prompts and #3 sees
@@ -640,10 +578,12 @@ describe('storyboard auto-generation', () => {
     expect(job.progress).toBeTruthy();
     expect(job.progress.phase).toBe('done');
     expect(job.progress.step).toBe('job_done');
-    expect(job.progress.message).toMatch(/Done — 2 rendered/);
+    expect(job.progress.message).toMatch(/Done — 2 created/);
 
     // The event log captures the major phases plus per-frame steps. Each entry
-    // carries an ISO timestamp, phase, step, and human-readable message.
+    // carries an ISO timestamp, phase, step, and human-readable message. With
+    // auto frame-image generation removed, per-frame events shrink to
+    // frame_start / frame_done — no render_*_frame or caption_*_frame steps.
     expect(Array.isArray(job.events)).toBe(true);
     const steps = job.events.map((e) => e.step);
     expect(steps).toContain('job_queued');
@@ -653,12 +593,12 @@ describe('storyboard auto-generation', () => {
     expect(steps).toContain('refine_done');
     expect(steps).toContain('render_start');
     expect(steps).toContain('frame_start');
-    expect(steps).toContain('render_start_frame');
-    expect(steps).toContain('caption_start_frame');
-    expect(steps).toContain('render_end_frame');
-    expect(steps).toContain('caption_end_frame');
     expect(steps).toContain('frame_done');
     expect(steps).toContain('job_done');
+    expect(steps).not.toContain('render_start_frame');
+    expect(steps).not.toContain('caption_start_frame');
+    expect(steps).not.toContain('render_end_frame');
+    expect(steps).not.toContain('caption_end_frame');
 
     // Per-frame events carry the frame index + total so the SPA can render
     // "Frame 2/2" without re-deriving it.
@@ -696,98 +636,6 @@ describe('storyboard auto-generation', () => {
     expect(job.progress?.phase).toBe('error');
     expect(job.progress?.step).toBe('job_crashed');
     expect(job.progress?.message).toMatch(/outline boom/);
-  });
-
-  it('threads `direction` into every image-gen prompt sent to the dispatcher', async () => {
-    installPlannerForFixture(TWO_FRAME_PLAN.frames);
-    const prompts = [];
-    Generate._setImageDispatcherForTests(async ({ prompt }) => {
-      prompts.push(prompt);
-      return { buffer: Buffer.from('img'), contentType: 'image/png' };
-    });
-
-    const beat = await Plots.createBeat({
-      name: 'Style',
-      desc: 'd',
-      body: 'b',
-      characters: ['Alice', 'Bob'],
-    });
-    const direction = 'shot on Super 16, heavy anamorphic flares, golden hour';
-    const jobId = await Generate.startStoryboardGenerationJob({
-      beatId: beat._id.toString(),
-      direction,
-    });
-    const job = await waitForJob(jobId);
-    expect(job.status).toBe('done');
-
-    // 2 frames × (start + end) = 4 image-gen calls. Every one must carry the
-    // director's style direction so the model doesn't drift mid-sequence.
-    expect(prompts).toHaveLength(4);
-    for (const p of prompts) {
-      expect(p).toMatch(/Director's style direction: shot on Super 16/);
-    }
-  });
-
-  it("chains each frame's start call onto the previous frame's end-frame buffer", async () => {
-    installPlannerForFixture(TWO_FRAME_PLAN.frames);
-    // Hand back a unique buffer per call so we can identify which buffer
-    // landed where. Call sequence (sequential): f1-start, f1-end, f2-start,
-    // f2-end. Use a counter; tag each buffer with its index.
-    let call = 0;
-    const calls = [];
-    Generate._setImageDispatcherForTests(async (args) => {
-      const idx = call++;
-      calls.push({ idx, inputImages: args.inputImages, prompt: args.prompt });
-      return {
-        buffer: Buffer.from(`img-${idx}`),
-        contentType: 'image/png',
-      };
-    });
-    // Caption every image with a tagged description so we can verify the
-    // verbal anchor lands in the next start-frame prompt.
-    Generate._setDescriberForTests(async ({ buffer }) => ({
-      name: 'auto',
-      description: `caption-of:${buffer.toString()}`,
-    }));
-
-    const beat = await Plots.createBeat({
-      name: 'Chain',
-      desc: 'd',
-      body: 'b',
-      characters: ['Alice', 'Bob'],
-    });
-    const jobId = await Generate.startStoryboardGenerationJob({
-      beatId: beat._id.toString(),
-    });
-    const job = await waitForJob(jobId);
-    expect(job.status).toBe('done');
-
-    // Sequential ordering: 4 calls in [f1-start, f1-end, f2-start, f2-end]
-    // order. The dispatcher is fully synchronous in this test.
-    expect(calls).toHaveLength(4);
-
-    // f1-start (call 0): no previous end frame, so no continuity ref appended.
-    // It receives only the base inputs (chars + set, both empty here since the
-    // beat has no portraits/sheets/set image attached in this test setup).
-    const f1Start = calls[0];
-    for (const img of f1Start.inputImages) {
-      expect(img.buffer.toString()).not.toMatch(/^img-/);
-    }
-
-    // f2-start (call 2): the LAST input image must be f1's end-frame buffer
-    // (call 1's return value), which is how buildVisualPrompt's "final image
-    // above" sentence refers to it.
-    const f2Start = calls[2];
-    expect(f2Start.inputImages.length).toBeGreaterThan(0);
-    const lastInput = f2Start.inputImages[f2Start.inputImages.length - 1];
-    expect(lastInput.buffer.toString()).toBe('img-1');
-    // The verbal anchor derived from f1's end-frame caption must appear in
-    // the prompt — confirms the description threaded through too.
-    expect(f2Start.prompt).toMatch(
-      /Previous shot end frame to match: caption-of:img-1/,
-    );
-    // And the previous-shot continuity label/directive landed in the prompt.
-    expect(f2Start.prompt).toMatch(/PREVIOUS shot's end frame/);
   });
 
   it('falls back to synthesized prompts when refinement returns null', async () => {

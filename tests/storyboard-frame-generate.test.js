@@ -125,8 +125,8 @@ async function seedScenario({ withScene = true, characters = ['Alice', 'Bob'] } 
 }
 
 describe('regenerateStoryboardFrame', () => {
-  it('passes the scene image + every beat character sheet to gemini and persists the start frame', async () => {
-    const { beat, sb, characterDocs, sceneId } = await seedScenario();
+  it('sends no beat-derived references (no scene image, no auto-loaded characters) when the row has no pins', async () => {
+    const { sb, sceneId } = await seedScenario();
     const calls = [];
     Generate._setImageDispatcherForTests(async (args) => {
       calls.push(args);
@@ -140,27 +140,22 @@ describe('regenerateStoryboardFrame', () => {
 
     expect(calls).toHaveLength(1);
     const call = calls[0];
-    // Default model is gemini; mode is generate (not edit).
     expect(call.model).toBe('gemini');
     expect(call.mode).toBe('generate');
-    // start vs end disambiguation is in the suffix added by buildVisualPrompt.
     expect(call.prompt).toContain('Alice opens the diner door.');
     expect(call.prompt).toMatch(/Render the beginning moment/);
 
-    // Both character sheets + the scene image were attached, in that order.
-    const expectedRefs = [
-      ...characterDocs.map((c) => `fake-sheet-${c.name}`),
-      'fake-scene',
-    ];
-    expect(call.inputImages.map((i) => i.buffer.toString())).toEqual(expectedRefs);
+    // No row pins, first row, so no continuity either → empty inputImages.
+    expect(call.inputImages).toEqual([]);
+    // And no beat-derived sentences should leak into the prompt.
+    expect(call.prompt).not.toMatch(/Reference materials/);
+    expect(call.prompt).not.toMatch(/set image above/);
+    expect(call.prompt).not.toMatch(/canonical reference for that character/);
 
-    // The storyboard row's start_frame_id was set to the new upload's id.
     const stored = await Storyboards.getStoryboard(sb._id);
     expect(stored.start_frame_id).not.toBeNull();
     expect(stored.start_frame_id.toString()).toBe(result.image_id);
-    // End frame untouched.
     expect(stored.end_frame_id).toBeNull();
-    // Scene id (which we did *not* generate) didn't leak in.
     expect(stored.start_frame_id.toString()).not.toBe(sceneId.toString());
   });
 
@@ -190,7 +185,7 @@ describe('regenerateStoryboardFrame', () => {
     expect(stored.start_frame_id.toString()).toBe(startId.toString());
   });
 
-  it('prefers the row-pinned character_sheet_image_id over the full beat character list', async () => {
+  it('sends only the row-pinned character_sheet_image_id (no beat scene, no other beat characters)', async () => {
     const { sb, characterDocs } = await seedScenario();
     // Pin a sheet on the row (as the batch does for single-character segments).
     const pinned = characterDocs[0].sheetId; // Alice's sheet.
@@ -209,31 +204,40 @@ describe('regenerateStoryboardFrame', () => {
       role: 'start_frame',
     });
 
-    // Only Alice's sheet should appear (Bob's is dropped because the row
-    // pinned a single-character sheet), plus the scene image.
+    // Only the pinned sheet — no fake-scene, no fake-sheet-Bob.
     const refs = calls[0].inputImages.map((i) => i.buffer.toString());
-    expect(refs).toEqual(['fake-sheet-Alice', 'fake-scene']);
+    expect(refs).toEqual(['fake-sheet-Alice']);
     // The labeled character name should land in the prompt.
     expect(calls[0].prompt).toContain('The image of Alice above');
+    // Beat scene image must not be referenced.
+    expect(calls[0].prompt).not.toMatch(/set image above/);
   });
 
-  it('still succeeds when the beat has no scene image', async () => {
-    const { sb } = await seedScenario({ withScene: false, characters: ['Alice'] });
+  it('sends row reference_image_ids alongside any pinned sheet', async () => {
+    const { sb, characterDocs } = await seedScenario({ characters: ['Alice'] });
+    const refId = new ObjectId();
+    fakeImageStore.set(refId.toString(), {
+      ...fakeRef('row-ref', 'image/png'),
+      name: 'Booth reference',
+    });
+    await Storyboards.updateStoryboard(sb._id, {
+      character_sheet_image_id: characterDocs[0].sheetId,
+      reference_image_ids: [refId],
+    });
+
     const calls = [];
     Generate._setImageDispatcherForTests(async (args) => {
       calls.push(args);
-      return { buffer: Buffer.from('no-scene'), contentType: 'image/png' };
+      return { buffer: Buffer.from('out'), contentType: 'image/png' };
     });
 
-    const result = await Generate.regenerateStoryboardFrame({
+    await Generate.regenerateStoryboardFrame({
       storyboardId: sb._id.toString(),
       role: 'start_frame',
     });
 
-    expect(calls[0].inputImages.map((i) => i.buffer.toString())).toEqual([
-      'fake-sheet-Alice',
-    ]);
-    expect(result.image_id).toBeTruthy();
+    const refs = calls[0].inputImages.map((i) => i.buffer.toString());
+    expect(refs).toEqual(['fake-sheet-Alice', 'fake-row-ref']);
   });
 
   it('throws BeatBusyError if the beat is currently locked', async () => {
@@ -317,17 +321,21 @@ describe('regenerateStoryboardFrame', () => {
   });
 
   it("appends the previous row's end_frame as a continuity ref when regenerating start_frame on row #2+", async () => {
-    const { beat, sb: row1 } = await seedScenario({ characters: ['Alice'] });
+    const { beat, sb: row1, characterDocs } = await seedScenario({ characters: ['Alice'] });
     // Mark row1's end_frame so regen of row2's start_frame can reference it.
     const prevEndId = new ObjectId();
     fakeImageStore.set(prevEndId.toString(), fakeRef('prev-end'));
     await Storyboards.updateStoryboard(row1._id, { end_frame_id: prevEndId });
 
-    // Create row2 and pin a single character so the sheet count is small.
+    // Create row2 and pin Alice's sheet (row-scoped — beat auto-load no
+    // longer happens, so the pin is needed for the sheet to appear).
     const row2 = await Storyboards.createStoryboard({
       beatId: beat._id,
       textPrompt: 'Alice slides into the booth.',
       charactersInScene: ['Alice'],
+    });
+    await Storyboards.updateStoryboard(row2._id, {
+      character_sheet_image_id: characterDocs[0].sheetId,
     });
 
     const calls = [];
@@ -342,14 +350,50 @@ describe('regenerateStoryboardFrame', () => {
     });
 
     const refs = calls[0].inputImages.map((i) => i.buffer.toString());
-    // Sheet + scene + continuity (previous row's end frame) — continuity last.
-    expect(refs).toEqual(['fake-sheet-Alice', 'fake-scene', 'fake-prev-end']);
+    // Pinned sheet + continuity (previous row's end frame) — continuity last.
+    // No beat scene image (intentional under the row-only scope).
+    expect(refs).toEqual(['fake-sheet-Alice', 'fake-prev-end']);
     expect(calls[0].prompt).toMatch(/PREVIOUS shot's end frame/);
   });
 
+  it('honors includeContinuity=false to drop the previous shot end frame even when one exists', async () => {
+    const { beat, sb: row1, characterDocs } = await seedScenario({ characters: ['Alice'] });
+    const prevEndId = new ObjectId();
+    fakeImageStore.set(prevEndId.toString(), fakeRef('prev-end'));
+    await Storyboards.updateStoryboard(row1._id, { end_frame_id: prevEndId });
+
+    const row2 = await Storyboards.createStoryboard({
+      beatId: beat._id,
+      textPrompt: 'Alice slides into the booth.',
+      charactersInScene: ['Alice'],
+    });
+    await Storyboards.updateStoryboard(row2._id, {
+      character_sheet_image_id: characterDocs[0].sheetId,
+    });
+
+    const calls = [];
+    Generate._setImageDispatcherForTests(async (args) => {
+      calls.push(args);
+      return { buffer: Buffer.from('out'), contentType: 'image/png' };
+    });
+
+    await Generate.regenerateStoryboardFrame({
+      storyboardId: row2._id.toString(),
+      role: 'start_frame',
+      includeContinuity: false,
+    });
+
+    const refs = calls[0].inputImages.map((i) => i.buffer.toString());
+    expect(refs).toEqual(['fake-sheet-Alice']);
+    expect(calls[0].prompt).not.toMatch(/PREVIOUS shot's end frame/);
+  });
+
   it('uses no continuity ref when regenerating start_frame of the first row', async () => {
-    const { sb } = await seedScenario({ characters: ['Alice'] });
+    const { sb, characterDocs } = await seedScenario({ characters: ['Alice'] });
     expect(sb.order).toBe(1);
+    await Storyboards.updateStoryboard(sb._id, {
+      character_sheet_image_id: characterDocs[0].sheetId,
+    });
 
     const calls = [];
     Generate._setImageDispatcherForTests(async (args) => {
@@ -362,10 +406,55 @@ describe('regenerateStoryboardFrame', () => {
       role: 'start_frame',
     });
 
-    // No continuity ref attached.
+    // No previous row → no continuity ref. Only the pinned sheet.
     const refs = calls[0].inputImages.map((i) => i.buffer.toString());
-    expect(refs).toEqual(['fake-sheet-Alice', 'fake-scene']);
+    expect(refs).toEqual(['fake-sheet-Alice']);
     expect(calls[0].prompt).not.toMatch(/PREVIOUS shot's end frame/);
+  });
+
+  it('end_frame regen with includeStartFrame=false succeeds even when sb.start_frame_id is null', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    expect(sb.start_frame_id).toBeNull();
+
+    const calls = [];
+    Generate._setImageDispatcherForTests(async (args) => {
+      calls.push(args);
+      return { buffer: Buffer.from('out'), contentType: 'image/png' };
+    });
+
+    const result = await Generate.regenerateStoryboardFrame({
+      storyboardId: sb._id.toString(),
+      role: 'end_frame',
+      includeStartFrame: false,
+    });
+
+    expect(result.image_id).toBeTruthy();
+    expect(calls[0].inputImages).toEqual([]);
+    // The "final image above is the start frame" framing must not appear.
+    expect(calls[0].prompt).not.toMatch(/final image above is the start frame/i);
+    expect(calls[0].prompt).toMatch(/Generate the end frame of this shot/i);
+  });
+
+  it('end_frame regen with includeStartFrame=false drops the start frame even when one exists on the row', async () => {
+    const { sb } = await seedScenario({ characters: ['Alice'] });
+    const startId = new ObjectId();
+    fakeImageStore.set(startId.toString(), fakeRef('row-start'));
+    await Storyboards.updateStoryboard(sb._id, { start_frame_id: startId });
+
+    const calls = [];
+    Generate._setImageDispatcherForTests(async (args) => {
+      calls.push(args);
+      return { buffer: Buffer.from('out'), contentType: 'image/png' };
+    });
+
+    await Generate.regenerateStoryboardFrame({
+      storyboardId: sb._id.toString(),
+      role: 'end_frame',
+      includeStartFrame: false,
+    });
+
+    expect(calls[0].inputImages).toEqual([]);
+    expect(calls[0].prompt).not.toMatch(/final image above is the start frame/i);
   });
 
   it('emits a Shot type cue in the prompt when shot_type is set on the row', async () => {
@@ -416,8 +505,7 @@ describe('regenerateStoryboardFrame', () => {
     expect(calls[0].prompt).not.toMatch(/PRIMARY reference/);
   });
 
-  it('injects character and set descriptions from GridFS metadata as verbal anchors', async () => {
-    // Seed scenario but with descriptions on the character sheet and scene image.
+  it('injects the pinned character sheet description from GridFS metadata as a verbal anchor', async () => {
     const c = await Characters.createCharacter({ name: 'Alice' });
     const sheetId = new ObjectId();
     fakeImageStore.set(sheetId.toString(), {
@@ -437,26 +525,13 @@ describe('regenerateStoryboardFrame', () => {
       body: '',
       characters: ['Alice'],
     });
-    const sceneId = new ObjectId();
-    fakeImageStore.set(sceneId.toString(), {
-      ...fakeRef('scene', 'image/png'),
-      description:
-        'Mid-century roadside diner with checkered linoleum floor and a single neon OPEN sign in the window.',
-    });
-    await Plots.pushBeatImage(
-      beat._id,
-      {
-        _id: sceneId,
-        filename: 'scene.png',
-        content_type: 'image/png',
-        size: 1,
-        uploaded_at: new Date(),
-      },
-      true,
-    );
     const sb = await Storyboards.createStoryboard({
       beatId: beat._id,
       textPrompt: 'Alice opens the diner door.',
+    });
+    // Row-scope: must pin the sheet on the row for it to be loaded.
+    await Storyboards.updateStoryboard(sb._id, {
+      character_sheet_image_id: sheetId,
     });
 
     const calls = [];
@@ -472,11 +547,16 @@ describe('regenerateStoryboardFrame', () => {
 
     expect(calls[0].prompt).toMatch(/Reference details/);
     expect(calls[0].prompt).toMatch(/Alice: Alice has shoulder-length ash blonde hair/);
-    expect(calls[0].prompt).toMatch(/Set: Mid-century roadside diner/);
+    // Beat scene image is no longer auto-loaded under the row-scope, so the
+    // set description must not appear either.
+    expect(calls[0].prompt).not.toMatch(/Set: /);
   });
 
-  it('skips the Reference details block entirely when no reference has a description', async () => {
-    const { sb } = await seedScenario({ characters: ['Alice'] });
+  it('skips the Reference details block when the pinned reference has no description', async () => {
+    const { sb, characterDocs } = await seedScenario({ characters: ['Alice'] });
+    await Storyboards.updateStoryboard(sb._id, {
+      character_sheet_image_id: characterDocs[0].sheetId,
+    });
 
     const calls = [];
     Generate._setImageDispatcherForTests(async (args) => {
@@ -489,10 +569,10 @@ describe('regenerateStoryboardFrame', () => {
       role: 'start_frame',
     });
 
-    // No descriptions on any reference → no "Reference details" header.
+    // Sheet has no description → no "Reference details" header.
     expect(calls[0].prompt).not.toMatch(/Reference details/);
-    // Original "Reference materials" listing still works (existing test
-    // covers that explicitly; this is the negative form).
+    // The high-level "Reference materials" listing still appears because a
+    // sheet is attached.
     expect(calls[0].prompt).toMatch(/Reference materials/);
   });
 
@@ -519,7 +599,11 @@ describe('regenerateStoryboardFrame', () => {
   });
 
   it('passes imageModel="openai" through to the dispatcher on full regen', async () => {
-    const { sb } = await seedScenario({ characters: ['Alice'] });
+    const { sb, characterDocs } = await seedScenario({ characters: ['Alice'] });
+    await Storyboards.updateStoryboard(sb._id, {
+      character_sheet_image_id: characterDocs[0].sheetId,
+    });
+
     const calls = [];
     Generate._setImageDispatcherForTests(async (args) => {
       calls.push(args);
@@ -534,10 +618,9 @@ describe('regenerateStoryboardFrame', () => {
 
     expect(calls[0].model).toBe('openai');
     expect(calls[0].mode).toBe('generate');
-    // Full regen still loads sheet + scene refs.
+    // Row-scope: only the pinned sheet — no auto-loaded scene image.
     expect(calls[0].inputImages.map((i) => i.buffer.toString())).toEqual([
       'fake-sheet-Alice',
-      'fake-scene',
     ]);
   });
 
@@ -749,9 +832,9 @@ describe('regenerateStoryboardFrame', () => {
     expect(stored.start_frame_description).toBe('updated caption after edit');
   });
 
-  it('attaches BOTH the character sheet and the main portrait when both exist', async () => {
-    // Hand-build a single-character beat where Alice has a sheet AND a main
-    // portrait. The default seedScenario only sets a sheet.
+  it('attaches BOTH the character sheet and the main portrait when both exist on the pinned character', async () => {
+    // The owning character has a sheet AND a main portrait. The row pins
+    // the sheet; loadEndFramePinnedSheet also pulls the owner's portrait.
     const c = await Characters.createCharacter({ name: 'Alice' });
     const sheetId = new ObjectId();
     const portraitId = new ObjectId();
@@ -772,22 +855,12 @@ describe('regenerateStoryboardFrame', () => {
       body: '',
       characters: ['Alice'],
     });
-    const sceneId = new ObjectId();
-    fakeImageStore.set(sceneId.toString(), fakeRef('scene'));
-    await Plots.pushBeatImage(
-      beat._id,
-      {
-        _id: sceneId,
-        filename: 'scene.png',
-        content_type: 'image/png',
-        size: 1,
-        uploaded_at: new Date(),
-      },
-      true,
-    );
     const sb = await Storyboards.createStoryboard({
       beatId: beat._id,
       textPrompt: 'Alice walks in.',
+    });
+    await Storyboards.updateStoryboard(sb._id, {
+      character_sheet_image_id: sheetId,
     });
 
     const calls = [];
@@ -801,120 +874,12 @@ describe('regenerateStoryboardFrame', () => {
       role: 'start_frame',
     });
 
-    // Sheet, portrait, scene — both Alice refs land in inputImages.
+    // Sheet + portrait — both Alice refs land in inputImages. No scene.
     const refs = calls[0].inputImages.map((i) => i.buffer.toString());
-    expect(refs).toEqual(['fake-sheet-Alice', 'fake-portrait-Alice', 'fake-scene']);
+    expect(refs).toEqual(['fake-sheet-Alice', 'fake-portrait-Alice']);
     // The grouped "two images" anchor line is emitted in the prompt.
     expect(calls[0].prompt).toMatch(/two images of Alice/);
     expect(calls[0].prompt).toMatch(/turnaround character sheet/);
-  });
-
-  it('falls back to portrait alone when a character has no sheet', async () => {
-    const c = await Characters.createCharacter({ name: 'Alice' });
-    const portraitId = new ObjectId();
-    fakeImageStore.set(portraitId.toString(), fakeRef('portrait-Alice'));
-    await fakeDb
-      .collection('characters')
-      .updateOne(
-        { _id: c._id },
-        { $set: { main_image_id: portraitId } },
-      );
-    const beat = await Plots.createBeat({
-      name: 'B',
-      desc: '',
-      body: '',
-      characters: ['Alice'],
-    });
-    const sb = await Storyboards.createStoryboard({
-      beatId: beat._id,
-      textPrompt: 'Alice walks in.',
-    });
-
-    const calls = [];
-    Generate._setImageDispatcherForTests(async (args) => {
-      calls.push(args);
-      return { buffer: Buffer.from('out'), contentType: 'image/png' };
-    });
-
-    await Generate.regenerateStoryboardFrame({
-      storyboardId: sb._id.toString(),
-      role: 'start_frame',
-    });
-
-    const refs = calls[0].inputImages.map((i) => i.buffer.toString());
-    expect(refs).toEqual(['fake-portrait-Alice']);
-    // Single-image grouping → single-reference wording.
-    expect(calls[0].prompt).toMatch(/The image of Alice above/);
-    expect(calls[0].prompt).not.toMatch(/two images of Alice/);
-  });
-
-  it('prefers sheets over portraits when the budget cap would force a drop', async () => {
-    // Two characters, each with sheet+portrait, plus a scene image. Total
-    // refs = 4 character + 1 scene = 5, but MAX_REFERENCE_IMAGES = 4 means
-    // the start frame's effective char cap is 2 (4 - set - reserved cont).
-    const docs = [];
-    for (const name of ['Alice', 'Bob']) {
-      const c = await Characters.createCharacter({ name });
-      const sheetId = new ObjectId();
-      const portraitId = new ObjectId();
-      fakeImageStore.set(sheetId.toString(), fakeRef(`sheet-${name}`));
-      fakeImageStore.set(portraitId.toString(), fakeRef(`portrait-${name}`));
-      await fakeDb.collection('characters').updateOne(
-        { _id: c._id },
-        {
-          $set: {
-            character_sheet_image_ids: [sheetId],
-            main_image_id: portraitId,
-          },
-        },
-      );
-      docs.push({ name, sheetId, portraitId });
-    }
-    const beat = await Plots.createBeat({
-      name: 'B',
-      desc: '',
-      body: '',
-      characters: ['Alice', 'Bob'],
-    });
-    const sceneId = new ObjectId();
-    fakeImageStore.set(sceneId.toString(), fakeRef('scene'));
-    await Plots.pushBeatImage(
-      beat._id,
-      {
-        _id: sceneId,
-        filename: 'scene.png',
-        content_type: 'image/png',
-        size: 1,
-        uploaded_at: new Date(),
-      },
-      true,
-    );
-    const sb = await Storyboards.createStoryboard({
-      beatId: beat._id,
-      textPrompt: 'Two-shot of Alice and Bob.',
-    });
-
-    const calls = [];
-    Generate._setImageDispatcherForTests(async (args) => {
-      calls.push(args);
-      return { buffer: Buffer.from('out'), contentType: 'image/png' };
-    });
-
-    await Generate.regenerateStoryboardFrame({
-      storyboardId: sb._id.toString(),
-      role: 'start_frame',
-    });
-
-    const refs = calls[0].inputImages.map((i) => i.buffer.toString());
-    // Sheets win when budget is tight: both sheets land FIRST in priority
-    // order; portraits fill any remaining slot. The second portrait drops
-    // because the per-call cap (MAX_REFERENCE_IMAGES = 4) is full.
-    expect(refs[0]).toBe('fake-sheet-Alice');
-    expect(refs[1]).toBe('fake-sheet-Bob');
-    expect(refs).toContain('fake-scene');
-    // portrait_Bob must be dropped — not enough slots.
-    expect(refs).not.toContain('fake-portrait-Bob');
-    expect(refs).toHaveLength(4); // MAX_REFERENCE_IMAGES
   });
 
   it('still pins the character_sheet on a single-character segment even when dual refs are loaded (batch path)', async () => {

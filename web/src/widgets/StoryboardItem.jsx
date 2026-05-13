@@ -232,6 +232,8 @@ function FrameSlot({
     editPrompt,
     customPrompt,
     promptOverride,
+    includeContinuity,
+    includeStartFrame,
   }) {
     setRegenOpen(false);
     setBusy(true);
@@ -242,6 +244,10 @@ function FrameSlot({
       if (mode === 'edit') body.edit_prompt = editPrompt;
       if (mode === 'custom') body.custom_prompt = customPrompt;
       if (mode === 'full' && promptOverride) body.prompt_override = promptOverride;
+      if (mode === 'full') {
+        body.include_continuity = includeContinuity !== false;
+        body.include_start_frame = includeStartFrame !== false;
+      }
       const r = await apiPostJson(
         `/storyboard/${sbId}/frame/${role}/generate`,
         body,
@@ -306,7 +312,7 @@ function FrameSlot({
             type="button"
             className="storyboard-frame-generate"
             disabled={busy}
-            title={`Regenerate ${label.toLowerCase()} with the full pipeline (scene + characters + continuity)`}
+            title={`Regenerate ${label.toLowerCase()} using this row's pinned references`}
             onClick={() => setRegenOpen(true)}
           >
             {busyLabel || (url ? 'Regenerate' : 'Generate')}

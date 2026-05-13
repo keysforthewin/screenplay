@@ -9,40 +9,44 @@
 //   1. Validate the chosen model's required inputs are present on the row.
 //   2. Read each needed input from GridFS and upload to fal storage. fal
 //      bills for storage and accepts a lifecycle hint, so we expire inputs
-//      after config.fal.storageLifetimeDays (default 7).
-//   3. For Kling 3 Pro: assemble `elements` from storyboard.characters_in_scene
-//      by looking up each character's character_sheet_image_ids[], uploading
-//      each, and packaging (frontal + reference URLs) per element.
-//   4. fal.queue.submit → request_id.
-//   5. fal.queue.subscribeToStatus emits IN_QUEUE / IN_PROGRESS / COMPLETED
+//      after config.fal.storageLifetimeDays (default 7). Only images
+//      explicitly attached to the storyboard row (start_frame_id,
+//      end_frame_id, character_sheet_image_id, reference_image_ids[]) are
+//      ever uploaded — we never auto-pull character sheets by name or
+//      reuse one slot's image as another slot's input.
+//   3. fal.queue.submit → request_id.
+//   4. fal.queue.subscribeToStatus emits IN_QUEUE / IN_PROGRESS / COMPLETED
 //      callbacks; each callback fans out to the SSE listeners for this job
 //      AND updates the persisted-in-memory job snapshot (for reconnects).
-//   6. fal.queue.result → the model entry's extractVideoUrl picks the
+//   5. fal.queue.result → the model entry's extractVideoUrl picks the
 //      output URL.
-//   7. Download the MP4 bytes; persist into GridFS attachments bucket as a
+//   6. Download the MP4 bytes; persist into GridFS attachments bucket as a
 //      beat-owned attachment, tagged metadata.kind='video' and
 //      metadata.generated_by=<fal model id>.
-//   8. setStoryboardVideoViaGateway() — the gateway broadcasts a
+//   7. setStoryboardVideoViaGateway() — the gateway broadcasts a
 //      fields_updated ping so the connected SPA renders the new video.
 
 import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
 import { logger } from '../log.js';
-import { readImageBuffer } from '../mongo/images.js';
+import { findImageFile, readImageBuffer } from '../mongo/images.js';
 import {
+  findAttachmentFile,
   readAttachmentBuffer,
   uploadAttachmentBuffer,
 } from '../mongo/attachments.js';
 import { getStoryboard as mongoGetStoryboard } from '../mongo/storyboards.js';
-import { getCharacter } from '../mongo/characters.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { setStoryboardVideoViaGateway } from './gateway.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 import { fal, isConfigured as falIsConfigured } from '../fal/client.js';
+import { uploadFalAsset } from '../fal/upload.js';
 import {
   getVideoModelOrCatalog,
+  getVideoModelCatalogMeta,
   validateStoryboardInputs,
 } from '../fal/videoModels.js';
+import { estimateRegisteredCost, estimateCatalogCost } from '../fal/videoPricing.js';
 
 // In-memory job registry. Single-process runtime, like the old Wan
 // orchestrator. Jobs are lost on restart; the SPA's EventSource simply
@@ -111,6 +115,7 @@ export function serializeJob(job) {
     error: job.error,
     request_id: job.request_id,
     video_file_id: job.video_file_id,
+    estimated_cost_usd: job.estimated_cost_usd ?? null,
     logs: (job.logs || []).slice(-10),
   };
 }
@@ -158,6 +163,8 @@ export async function startVideoGenerationJob({
   prompt = null,
   durationSeconds = null,
   generateAudio = true,
+  resolution = null,
+  fps = null,
 } = {}) {
   if (!falIsConfigured()) {
     throw new FalNotConfiguredError();
@@ -205,6 +212,8 @@ export async function startVideoGenerationJob({
       prompt,
       durationSeconds,
       generateAudio,
+      resolution,
+      fps,
     }),
   )
     .catch((e) => {
@@ -236,17 +245,6 @@ function setStep(job, status, step) {
   publish(job);
 }
 
-// Build a File-like Blob and hand it to fal.storage.upload. fal returns a
-// public URL with the configured lifecycle. We give every upload a
-// human-friendly filename so fal's logs / dashboards stay readable.
-async function uploadFalAsset({ buffer, contentType, name }) {
-  const expiresIn = `${Math.max(1, config.fal.storageLifetimeDays)}d`;
-  const file = new File([buffer], name || `asset-${Date.now()}.bin`, {
-    type: contentType || 'application/octet-stream',
-  });
-  return fal.storage.upload(file, { lifecycle: { expiresIn } });
-}
-
 async function loadAndUploadImage(imageId, name) {
   if (!imageId) return null;
   const read = await readImageBuffer(imageId);
@@ -265,42 +263,6 @@ async function loadAndUploadAttachment(attachmentId, name) {
   return uploadFalAsset({ buffer: read.buffer, contentType: ct, name });
 }
 
-// Build the `elements` array for Kling 3 Pro from a storyboard's
-// characters_in_scene. For each named character we look up the modern
-// character_sheet_image_ids[] (with legacy single-id fallback handled by
-// getCharacter), use the first sheet as `frontal_image_url` and any
-// remaining sheets as `reference_image_urls`. Characters with no sheets are
-// skipped silently.
-async function buildCharacterElements(charactersInScene) {
-  if (!Array.isArray(charactersInScene) || !charactersInScene.length) return [];
-  const out = [];
-  for (const name of charactersInScene) {
-    if (!name) continue;
-    let character;
-    try {
-      character = await getCharacter(name);
-    } catch (e) {
-      logger.warn(`fal video gen: getCharacter("${name}") threw: ${e.message}`);
-      continue;
-    }
-    if (!character) continue;
-    const sheetIds = Array.isArray(character.character_sheet_image_ids)
-      ? character.character_sheet_image_ids
-      : [];
-    if (!sheetIds.length) continue;
-    const [first, ...rest] = sheetIds;
-    const frontalUrl = await loadAndUploadImage(first, `${name}-sheet-0.png`);
-    if (!frontalUrl) continue;
-    const referenceUrls = [];
-    for (let i = 0; i < rest.length; i++) {
-      const url = await loadAndUploadImage(rest[i], `${name}-sheet-${i + 1}.png`);
-      if (url) referenceUrls.push(url);
-    }
-    out.push({ frontalUrl, referenceUrls });
-  }
-  return out;
-}
-
 async function buildReferenceImageUrls(referenceImageIds) {
   if (!Array.isArray(referenceImageIds) || !referenceImageIds.length) return [];
   const out = [];
@@ -311,6 +273,277 @@ async function buildReferenceImageUrls(referenceImageIds) {
   return out;
 }
 
+// Sentinel URL scheme used by the preview path in place of real fal.media URLs.
+// The SPA recognises these and renders the matching image/audio thumbnail
+// inline next to the JSON payload preview, so the user can see exactly which
+// asset will go out as each input field. The scheme is intentionally not a
+// real URL — fal would reject it — so any code path that submits a preview
+// payload by mistake will fail loudly instead of silently shipping the wrong
+// thing.
+const PREVIEW_IMAGE_SCHEME = 'screenplay-preview://image/';
+const PREVIEW_ATTACHMENT_SCHEME = 'screenplay-preview://attachment/';
+
+function previewImageUrl(id) {
+  return id ? `${PREVIEW_IMAGE_SCHEME}${String(id)}` : null;
+}
+function previewAttachmentUrl(id) {
+  return id ? `${PREVIEW_ATTACHMENT_SCHEME}${String(id)}` : null;
+}
+
+async function describeImageInput({ slot, imageId, name }) {
+  if (!imageId) return null;
+  const file = await findImageFile(imageId);
+  if (!file) {
+    return {
+      slot,
+      kind: 'image',
+      image_id: String(imageId),
+      filename: null,
+      content_type: null,
+      size: null,
+      missing: true,
+      sentinel: previewImageUrl(imageId),
+      name_for_fal: name,
+    };
+  }
+  return {
+    slot,
+    kind: 'image',
+    image_id: String(file._id),
+    filename: file.filename || null,
+    content_type:
+      file.contentType || file.metadata?.content_type || null,
+    size: typeof file.length === 'number' ? file.length : null,
+    sentinel: previewImageUrl(file._id),
+    name_for_fal: name,
+  };
+}
+
+async function describeAttachmentInput({ slot, attachmentId, name }) {
+  if (!attachmentId) return null;
+  const file = await findAttachmentFile(attachmentId);
+  if (!file) {
+    return {
+      slot,
+      kind: 'attachment',
+      attachment_id: String(attachmentId),
+      filename: null,
+      content_type: null,
+      size: null,
+      missing: true,
+      sentinel: previewAttachmentUrl(attachmentId),
+      name_for_fal: name,
+    };
+  }
+  return {
+    slot,
+    kind: 'attachment',
+    attachment_id: String(file._id),
+    filename: file.filename || null,
+    content_type:
+      file.contentType || file.metadata?.content_type || null,
+    size: typeof file.length === 'number' ? file.length : null,
+    sentinel: previewAttachmentUrl(file._id),
+    name_for_fal: name,
+  };
+}
+
+// Build a preview of the exact payload the orchestrator would send to
+// fal.ai, WITHOUT uploading anything to fal storage. Every image/audio URL
+// in the payload is replaced with a screenplay-preview:// sentinel so the
+// SPA can render the matching thumbnail next to the field. The user must
+// approve this preview before startVideoGenerationJob() is called for real.
+//
+// Returns:
+//   {
+//     model: { id, label, fal_model, description, supports_generate_audio,
+//              inputs, durations, default_duration },
+//     prompt: <final prompt string after override + visual anchor + cap>,
+//     duration_seconds: <integer chosen for this submit>,
+//     generate_audio: <boolean>,
+//     inputs: [
+//       { slot, kind, image_id|attachment_id, filename, content_type, size,
+//         sentinel, name_for_fal, missing? },
+//       ...
+//     ],
+//     payload: <object that would be passed as fal.queue.submit input>,
+//     warnings: string[],
+//   }
+//
+// Throws the same FalNotConfiguredError / UnknownVideoModelError /
+// MissingInputsError the real submit path throws so the route can return
+// matching status codes.
+export async function buildVideoPayloadPreview({
+  storyboardId,
+  modelId = null,
+  prompt = null,
+  durationSeconds = null,
+  generateAudio = true,
+  resolution = null,
+  fps = null,
+} = {}) {
+  if (!falIsConfigured()) {
+    throw new FalNotConfiguredError();
+  }
+
+  const chosenId = modelId || config.fal.defaultModelId;
+  const model = await getVideoModelOrCatalog(chosenId);
+  if (!model) throw new UnknownVideoModelError(chosenId);
+
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+
+  const missing = validateStoryboardInputs(model, sb);
+  if (missing.length) throw new MissingInputsError(missing, model.label);
+
+  const needs = model.inputs;
+  const wants = (key) => needs[key] && needs[key] !== 'unused';
+
+  const warnings = [];
+  const inputs = [];
+
+  if (wants('startFrame')) {
+    const desc = await describeImageInput({
+      slot: 'startFrame',
+      imageId: sb.start_frame_id,
+      name: 'start.png',
+    });
+    if (desc) inputs.push(desc);
+  }
+  if (wants('endFrame')) {
+    const desc = await describeImageInput({
+      slot: 'endFrame',
+      imageId: sb.end_frame_id,
+      name: 'end.png',
+    });
+    if (desc) inputs.push(desc);
+  }
+  if (wants('characterSheet')) {
+    const desc = await describeImageInput({
+      slot: 'characterSheet',
+      imageId: sb.character_sheet_image_id,
+      name: 'sheet.png',
+    });
+    if (desc) inputs.push(desc);
+  }
+  if (wants('audio')) {
+    const desc = await describeAttachmentInput({
+      slot: 'audio',
+      attachmentId: sb.audio_file_id,
+      name: 'audio.bin',
+    });
+    if (desc) inputs.push(desc);
+  }
+  if (wants('referenceImages')) {
+    const ids = Array.isArray(sb.reference_image_ids) ? sb.reference_image_ids : [];
+    for (let i = 0; i < ids.length; i++) {
+      const desc = await describeImageInput({
+        slot: 'referenceImages',
+        imageId: ids[i],
+        name: `reference-${i}.png`,
+      });
+      if (desc) inputs.push(desc);
+    }
+  }
+
+  for (const i of inputs) {
+    if (i.missing) {
+      warnings.push(
+        `${i.slot} ${i.kind} ${i.image_id || i.attachment_id} is missing from storage — fal would fail when fetching it.`,
+      );
+    }
+  }
+
+  const finalPrompt = buildPrompt({ override: prompt, storyboard: sb });
+  const finalDuration = pickDurationSeconds({
+    requested: durationSeconds,
+    storyboard: sb,
+    model,
+  });
+  const finalGenerateAudio = model.supportsGenerateAudio
+    ? Boolean(generateAudio)
+    : false;
+
+  const bundle = {
+    prompt: finalPrompt,
+    startFrameUrl: previewImageUrl(sb.start_frame_id),
+    endFrameUrl: previewImageUrl(sb.end_frame_id),
+    characterSheetUrl: previewImageUrl(sb.character_sheet_image_id),
+    audioUrl: previewAttachmentUrl(sb.audio_file_id),
+    referenceImageUrls: (sb.reference_image_ids || [])
+      .map((id) => previewImageUrl(id))
+      .filter(Boolean),
+    durationSeconds: finalDuration,
+    generateAudio: finalGenerateAudio,
+    resolution: resolution || null,
+    fps: Number.isFinite(Number(fps)) && Number(fps) > 0 ? Number(fps) : null,
+    audioDurationSeconds:
+      typeof sb.audio_duration_seconds === 'number' &&
+      Number.isFinite(sb.audio_duration_seconds) &&
+      sb.audio_duration_seconds > 0
+        ? sb.audio_duration_seconds
+        : null,
+  };
+
+  // model.buildInput synthesises only from the bundle — there's no hidden
+  // I/O — so we get the EXACT object the orchestrator would submit, but
+  // with sentinel URLs in every image/audio slot.
+  let payload;
+  try {
+    payload = model.buildInput(bundle);
+  } catch (e) {
+    throw new Error(`buildInput failed for model ${model.id}: ${e.message}`);
+  }
+
+  // Look up release metadata (lab/family/added_at) plus best-effort
+  // pricing for catalog-only models. Cheap (one JSON parse) and surfaces
+  // the same data the inline panel will show after the video lands.
+  const catalogMeta = await getVideoModelCatalogMeta(model.falModel || model.id);
+  const cost = computeCost({
+    model,
+    bundle,
+    payload,
+    catalogRow: catalogMeta
+      ? {
+          price_text: catalogMeta.pricing?.note || null,
+          ...catalogMeta,
+        }
+      : null,
+  });
+  const parameters = buildPersistedParameters({
+    bundle,
+    payload,
+    audioDurationSeconds: bundle.audioDurationSeconds,
+  });
+
+  return {
+    model: {
+      id: model.id,
+      label: model.label,
+      fal_model: model.falModel,
+      description: model.description || null,
+      supports_generate_audio: Boolean(model.supportsGenerateAudio),
+      inputs: model.inputs,
+      durations: Array.isArray(model.durations) ? model.durations : [],
+      default_duration: model.defaultDuration ?? null,
+      pricing_id: model.pricingId || null,
+      lab: catalogMeta?.model_lab || null,
+      family: catalogMeta?.model_family || null,
+      added_at: catalogMeta?.added_at || null,
+    },
+    prompt: finalPrompt,
+    duration_seconds: finalDuration,
+    generate_audio: finalGenerateAudio,
+    inputs,
+    payload,
+    parameters,
+    estimated_cost_usd: cost?.totalUsd ?? null,
+    pricing_basis: cost?.basis ?? null,
+    pricing_exact: cost?.exact ?? null,
+    warnings,
+  };
+}
+
 async function runVideoGenerationJob({
   job,
   storyboard,
@@ -318,6 +551,8 @@ async function runVideoGenerationJob({
   prompt,
   durationSeconds,
   generateAudio,
+  resolution = null,
+  fps = null,
 }) {
   try {
     setStep(job, 'preparing', 'Preparing inputs');
@@ -340,29 +575,13 @@ async function runVideoGenerationJob({
       wants('audio') ? loadAndUploadAttachment(storyboard.audio_file_id, 'audio.bin') : null,
     ]);
 
-    const characterElements = wants('characterElements')
-      ? await buildCharacterElements(storyboard.characters_in_scene)
+    // Only images explicitly attached to the storyboard get uploaded. We don't
+    // chase character documents by name from characters_in_scene, and we don't
+    // fall back to start_frame / character_sheet when reference_image_ids is
+    // empty — if the user wanted those as references they'd pin them.
+    const referenceImageUrls = wants('referenceImages')
+      ? await buildReferenceImageUrls(storyboard.reference_image_ids || [])
       : [];
-    let referenceImageUrls = [];
-    if (wants('referenceImages')) {
-      const explicitIds = Array.isArray(storyboard.reference_image_ids)
-        ? storyboard.reference_image_ids
-        : [];
-      if (explicitIds.length) {
-        referenceImageUrls = await buildReferenceImageUrls(explicitIds);
-      } else {
-        const fallbackIds = [
-          storyboard.start_frame_id,
-          storyboard.character_sheet_image_id,
-        ].filter(Boolean);
-        if (fallbackIds.length) {
-          logger.info(
-            `fal video gen: ${model.id} requires reference images but none attached; falling back to start_frame/character_sheet (${fallbackIds.length} image${fallbackIds.length === 1 ? '' : 's'}).`,
-          );
-        }
-        referenceImageUrls = await buildReferenceImageUrls(fallbackIds);
-      }
-    }
 
     // 2. Build the model-specific input from the unified bundle.
     const bundle = {
@@ -371,12 +590,38 @@ async function runVideoGenerationJob({
       endFrameUrl,
       characterSheetUrl,
       audioUrl,
-      characterElements,
       referenceImageUrls,
       durationSeconds: pickDurationSeconds({ requested: durationSeconds, storyboard, model }),
       generateAudio: model.supportsGenerateAudio ? Boolean(generateAudio) : false,
+      resolution: resolution || null,
+      fps: Number.isFinite(Number(fps)) && Number(fps) > 0 ? Number(fps) : null,
+      audioDurationSeconds:
+        typeof storyboard.audio_duration_seconds === 'number' &&
+        Number.isFinite(storyboard.audio_duration_seconds) &&
+        storyboard.audio_duration_seconds > 0
+          ? storyboard.audio_duration_seconds
+          : null,
     };
     const input = model.buildInput(bundle);
+
+    // Snapshot release metadata + cost while we have the model in hand.
+    // catalogMeta may be null (no fal-models.json on disk, or this
+    // endpoint isn't in the manifest) — we degrade to model.label only.
+    const catalogMeta = await getVideoModelCatalogMeta(model.falModel || model.id);
+    const cost = computeCost({
+      model,
+      bundle,
+      payload: input,
+      catalogRow: catalogMeta
+        ? { ...catalogMeta, price_text: catalogMeta.pricing?.note || null }
+        : null,
+    });
+    job.estimated_cost_usd = cost?.totalUsd ?? null;
+    const persistedParameters = buildPersistedParameters({
+      bundle,
+      payload: input,
+      audioDurationSeconds: bundle.audioDurationSeconds,
+    });
 
     // 3. Submit to fal's queue. We use submit + subscribeToStatus rather
     //    than fal.subscribe so we can capture the request_id for telemetry
@@ -429,6 +674,14 @@ async function runVideoGenerationJob({
       storyboardId: storyboard._id,
       videoFileId: file._id,
       durationSeconds: bundle.durationSeconds,
+      modelId: model.id,
+      modelLabel: model.label,
+      falModel: model.falModel,
+      modelLab: catalogMeta?.model_lab || null,
+      modelFamily: catalogMeta?.model_family || null,
+      modelAddedAt: catalogMeta?.added_at || null,
+      parameters: persistedParameters,
+      costUsd: cost?.totalUsd ?? null,
     });
 
     job.video_file_id = file._id.toString();
@@ -507,6 +760,64 @@ function buildPrompt({ override, storyboard }) {
     lines.push('', `Visual anchor: ${startDesc}`);
   }
   return lines.join('\n');
+}
+
+// Build the `parameters` snapshot we persist on the storyboard. The
+// caller hands in the bundle (what we'd pass to model.buildInput) AND
+// the resulting payload (so resolution/aspect_ratio fields filled in by
+// buildInput are captured). URLs and sentinel strings are stripped; we
+// only keep small primitive values that describe HOW the model was
+// invoked.
+function buildPersistedParameters({ bundle, payload, audioDurationSeconds = null }) {
+  const out = {};
+  if (Number.isFinite(Number(bundle.durationSeconds))) {
+    out.duration_seconds = Number(bundle.durationSeconds);
+  }
+  if (typeof bundle.generateAudio === 'boolean') {
+    out.generate_audio = bundle.generateAudio;
+  }
+  if (payload && typeof payload === 'object') {
+    if (typeof payload.resolution === 'string') out.resolution = payload.resolution;
+    if (typeof payload.aspect_ratio === 'string') out.aspect_ratio = payload.aspect_ratio;
+    if (typeof payload.video_size === 'string') out.video_size = payload.video_size;
+    if (Number.isFinite(Number(payload.fps)) && Number(payload.fps) > 0) {
+      out.fps = Number(payload.fps);
+    }
+    if (Number.isFinite(Number(payload.num_frames)) && Number(payload.num_frames) > 0) {
+      out.num_frames = Number(payload.num_frames);
+    }
+  }
+  if (Number.isFinite(Number(audioDurationSeconds)) && Number(audioDurationSeconds) > 0) {
+    out.audio_duration_seconds = Number(audioDurationSeconds);
+  }
+  const prompt = typeof bundle.prompt === 'string' ? bundle.prompt : '';
+  out.prompt_chars = prompt.length;
+  if (prompt) {
+    out.prompt_preview = prompt.length > 160 ? `${prompt.slice(0, 157)}…` : prompt;
+  }
+  return out;
+}
+
+// Compute the canonical cost estimate for a given bundle+payload. Tries
+// the structured PRICING table first (model.pricingId), falls back to
+// the catalog's regex-parsed price_text when no structured rate exists,
+// returns null otherwise.
+function computeCost({ model, bundle, payload, catalogRow }) {
+  const lookup = {
+    durationSeconds: bundle.durationSeconds,
+    generateAudio: bundle.generateAudio,
+    audioDurationSeconds: bundle.audioDurationSeconds ?? null,
+    resolution: payload?.resolution || null,
+  };
+  if (model?.pricingId) {
+    const est = estimateRegisteredCost(model.pricingId, lookup);
+    if (est) return est;
+  }
+  if (catalogRow) {
+    const est = estimateCatalogCost(catalogRow, lookup);
+    if (est) return est;
+  }
+  return null;
 }
 
 function pickDurationSeconds({ requested, storyboard, model }) {

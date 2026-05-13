@@ -113,6 +113,69 @@ describe('fal video catalog: generic auto-wiring', () => {
     expect(row.id).toBe('flashhead');
   });
 
+  it('attaches structured pricing to registered rows', async () => {
+    const { loadCatalog } = await import('../src/fal/videoModels.js');
+    const catalog = await loadCatalog();
+    const expected = [
+      { endpoint_id: 'fal-ai/kling-video/v3/pro/image-to-video', kind: 'per_second' },
+      { endpoint_id: 'fal-ai/veo3.1/first-last-frame-to-video', kind: 'per_second_tiered' },
+      { endpoint_id: 'fal-ai/kling-video/ai-avatar/v2/pro', kind: 'per_audio_second' },
+      { endpoint_id: 'fal-ai/flashhead', kind: 'unknown' },
+      { endpoint_id: 'fal-ai/sora-2/image-to-video', kind: 'per_second' },
+      { endpoint_id: 'fal-ai/sora-2/image-to-video/pro', kind: 'per_second_tiered' },
+    ];
+    for (const want of expected) {
+      const row = catalog.models.find((m) => m.endpoint_id === want.endpoint_id);
+      expect(row, `${want.endpoint_id} present`).toBeTruthy();
+      expect(row.pricing, `${want.endpoint_id} has structured pricing`).toBeTruthy();
+      expect(row.pricing.kind).toBe(want.kind);
+    }
+  });
+
+  it('parses pricing from catalog-only rows with parseable price_text', async () => {
+    const { loadCatalog } = await import('../src/fal/videoModels.js');
+    const catalog = await loadCatalog();
+    // LTX-2 19B Distilled has per-megapixel price text.
+    const ltx = catalog.models.find(
+      (m) => m.endpoint_id === 'fal-ai/ltx-2-19b/distilled/image-to-video',
+    );
+    if (ltx) {
+      expect(ltx.pricing?.kind).toBe('per_megapixel');
+      expect(ltx.pricing?.exact).toBe(false);
+    }
+  });
+
+  it('Sora 2: buildInput emits image_url + duration + raw prompt; never adds character_ids', async () => {
+    const { getVideoModel } = await import('../src/fal/videoModels.js');
+    const model = getVideoModel('sora-2');
+    expect(model).toBeTruthy();
+    const input = model.buildInput({
+      prompt: 'Hero walks toward the camera.',
+      startFrameUrl: 'https://fal.example/start.png',
+      durationSeconds: 12,
+    });
+    expect(input.image_url).toBe('https://fal.example/start.png');
+    expect(input.duration).toBe('12');
+    expect(input.aspect_ratio).toBe('auto');
+    expect(input.resolution).toBe('auto');
+    expect(input.character_ids).toBeUndefined();
+    expect(input.prompt).toBe('Hero walks toward the camera.');
+  });
+
+  it('Sora 2 Pro is registered and shares the same input shape as Sora 2', async () => {
+    const { getVideoModel } = await import('../src/fal/videoModels.js');
+    const model = getVideoModel('sora-2-pro');
+    expect(model).toBeTruthy();
+    expect(model.falModel).toBe('fal-ai/sora-2/image-to-video/pro');
+    const input = model.buildInput({
+      prompt: 'A wide cinematic shot.',
+      startFrameUrl: 'https://fal.example/start.png',
+      durationSeconds: 16,
+    });
+    expect(input.image_url).toBe('https://fal.example/start.png');
+    expect(input.duration).toBe('16');
+  });
+
   it('exposes the Wan 2.6 Flash variant as Ready via the wan prefix', async () => {
     const { loadCatalog } = await import('../src/fal/videoModels.js');
     const catalog = await loadCatalog();
@@ -141,7 +204,6 @@ describe('fal video catalog: generic auto-wiring', () => {
         startFrame: 'unused',
         endFrame: 'unused',
         characterSheet: 'unused',
-        characterElements: 'unused',
         referenceImages: 'required',
         audio: 'unused',
       },
@@ -150,39 +212,35 @@ describe('fal video catalog: generic auto-wiring', () => {
     expect(validateStoryboardInputs(model, { reference_image_ids: ['abc'] })).toEqual([]);
   });
 
-  it('validateStoryboardInputs accepts start_frame or character_sheet as fallback for required references', async () => {
+  it('validateStoryboardInputs does NOT fall back to start_frame / character_sheet for required references', async () => {
     const { validateStoryboardInputs } = await import('../src/fal/videoModels.js');
     const model = {
       inputs: {
         startFrame: 'unused',
         endFrame: 'unused',
         characterSheet: 'unused',
-        characterElements: 'unused',
         referenceImages: 'required',
         audio: 'unused',
       },
     };
-    // start_frame_id present alone → fallback covers it.
+    // Reference images must be explicitly attached; pinned start_frame or
+    // character_sheet on the storyboard no longer substitutes.
     expect(
       validateStoryboardInputs(model, {
         reference_image_ids: [],
         start_frame_id: 'aaaaaaaaaaaaaaaaaaaaaaaa',
       }),
-    ).toEqual([]);
-    // character_sheet_image_id present alone → fallback covers it.
+    ).toEqual(['reference images']);
     expect(
       validateStoryboardInputs(model, {
         reference_image_ids: [],
         character_sheet_image_id: 'bbbbbbbbbbbbbbbbbbbbbbbb',
       }),
-    ).toEqual([]);
-    // Neither explicit refs nor fallbacks → still missing.
+    ).toEqual(['reference images']);
     expect(
       validateStoryboardInputs(model, {
-        reference_image_ids: [],
-        start_frame_id: null,
-        character_sheet_image_id: null,
+        reference_image_ids: ['cccccccccccccccccccccccc'],
       }),
-    ).toEqual(['reference images']);
+    ).toEqual([]);
   });
 });

@@ -656,31 +656,6 @@ input[type="text"], input[type="search"] {
   flex: 0 0 auto;
 }
 
-/* Generate-video dialog: 2-column picker layout (matrix left, facets+list right). */
-.video-picker-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
-  gap: 16px;
-  align-items: stretch;
-}
-.video-picker-col {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-.video-picker-col--matrix {
-  max-height: 360px;
-  overflow: auto;
-}
-.video-picker-col--list {
-  gap: 10px;
-}
-@media (max-width: 720px) {
-  .video-picker-grid { grid-template-columns: 1fr; }
-  .video-picker-col--matrix { max-height: 220px; }
-}
-
 /* Generate-video dialog: action row beneath the prompt. */
 .video-action-row {
   display: flex;

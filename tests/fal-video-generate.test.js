@@ -215,11 +215,14 @@ afterEach(() => {
 import { afterEach } from 'vitest';
 
 describe('startVideoGenerationJob', () => {
-  it('happy path for Kling 3 Pro: uploads start/end + characters_in_scene → elements → submit/subscribe/result', async () => {
+  it('happy path for Kling 3 Pro: uploads only start/end + pinned character sheet → single element → submit/subscribe/result', async () => {
+    // Seeding a character in scene must NOT cause its sheet to be uploaded —
+    // images come only from the storyboard's explicit image slots.
     await seedCharacter('Steve', { sheetCount: 2 });
     const { beat, sb } = await seedScene({
       start: true,
       end: true,
+      sheet: true,
       charactersInScene: ['Steve'],
     });
 
@@ -238,13 +241,15 @@ describe('startVideoGenerationJob', () => {
     expect(job.video_file_id).toBeTruthy();
     expect(job.request_id).toBe('req-fake-1');
 
-    // We uploaded: start, end, two character sheets (frontal + reference).
-    expect(falStubs.storageUploads).toHaveLength(4);
+    // Only the three explicitly attached images get uploaded: start, end,
+    // and the pinned character sheet. Steve's sheets in his character doc
+    // are ignored.
+    expect(falStubs.storageUploads).toHaveLength(3);
     expect(falStubs.storageUploads.map((u) => u.name).sort()).toEqual(
-      ['Steve-sheet-0.png', 'Steve-sheet-1.png', 'end.png', 'start.png'],
+      ['end.png', 'sheet.png', 'start.png'],
     );
 
-    // The submit call shape: start_image_url, end_image_url, elements array.
+    // The submit call shape: start_image_url, end_image_url, single element.
     expect(falStubs.submitCalls).toHaveLength(1);
     const submitInput = falStubs.submitCalls[0].args.input;
     expect(submitInput.start_image_url).toMatch(/^https:\/\/fal\.media\/inputs\//);
@@ -253,8 +258,8 @@ describe('startVideoGenerationJob', () => {
     expect(submitInput.generate_audio).toBe(true);
     expect(Array.isArray(submitInput.elements)).toBe(true);
     expect(submitInput.elements).toHaveLength(1);
-    expect(submitInput.elements[0]).toHaveProperty('frontal_image_url');
-    expect(submitInput.elements[0].reference_image_urls).toHaveLength(1);
+    expect(submitInput.elements[0].frontal_image_url).toMatch(/^https:\/\/fal\.media\/inputs\//);
+    expect(submitInput.elements[0].reference_image_urls).toBeUndefined();
 
     // subscribeToStatus and result were both called against the kling model.
     expect(falStubs.subscribeCalls[0].model).toBe('fal-ai/kling-video/v3/pro/image-to-video');
@@ -271,6 +276,45 @@ describe('startVideoGenerationJob', () => {
     const fresh = await Storyboards.getStoryboard(sb._id);
     expect(fresh.video_file_id?.toString()).toBe(job.video_file_id);
     expect(fresh.video_duration_seconds).toBe(7);
+    // Enriched metadata: model identification, params, and cost are all
+    // persisted so the inline panel can render them later.
+    expect(fresh.video_fal_model).toBe('fal-ai/kling-video/v3/pro/image-to-video');
+    expect(fresh.video_model_id).toBe('kling-3-pro');
+    expect(fresh.video_model_label).toBe('Kling 3 Pro');
+    expect(fresh.video_model_lab).toBe('Kling');
+    expect(fresh.video_model_family).toBe('Kling v3');
+    expect(fresh.video_model_added_at).toBeInstanceOf(Date);
+    expect(fresh.video_parameters).toMatchObject({
+      duration_seconds: 7,
+      generate_audio: true,
+    });
+    // Kling 3 Pro audio-on at 7s = 7 * $0.168 = $1.176.
+    expect(fresh.video_cost_usd).toBeCloseTo(7 * 0.168, 6);
+  });
+
+  it('Kling 3 Pro: omits the elements array when no character sheet is pinned (characters_in_scene is ignored)', async () => {
+    await seedCharacter('Steve', { sheetCount: 2 });
+    const { beat, sb } = await seedScene({
+      start: true,
+      end: true,
+      sheet: false,
+      charactersInScene: ['Steve'],
+    });
+
+    const { job_id } = await Falgen.startVideoGenerationJob({
+      storyboardId: sb._id.toString(),
+      modelId: 'kling-3-pro',
+      durationSeconds: 5,
+    });
+    await waitForBeatLock(beat._id);
+    expect(Falgen.getVideoGenerationJob(job_id).status).toBe('done');
+
+    // Only start + end uploaded — Steve's sheets are not pulled.
+    expect(falStubs.storageUploads.map((u) => u.name).sort()).toEqual(
+      ['end.png', 'start.png'],
+    );
+    const submitInput = falStubs.submitCalls[0].args.input;
+    expect(submitInput.elements).toBeUndefined();
   });
 
   it('Veo 3.1 first-last-frame requires both frames; submit input has first_frame_url + last_frame_url', async () => {
@@ -381,5 +425,61 @@ describe('startVideoGenerationJob', () => {
     const job = Falgen.getVideoGenerationJob(job_id);
     expect(job.status).toBe('error');
     expect(job.error).toMatch(/queue boom/);
+  });
+
+  it('Sora 2: does not mint character refs from characters_in_scene; just renders the start frame', async () => {
+    // Even with named characters on the storyboard, the orchestrator must
+    // not call fal-ai/sora-2/characters or upload any character sheets.
+    await seedCharacter('Alice', { sheetCount: 1 });
+    const { beat, sb } = await seedScene({
+      start: true,
+      charactersInScene: ['Alice'],
+    });
+
+    const { job_id } = await Falgen.startVideoGenerationJob({
+      storyboardId: sb._id.toString(),
+      modelId: 'sora-2',
+      durationSeconds: 8,
+    });
+    await waitForBeatLock(beat._id);
+
+    const job = Falgen.getVideoGenerationJob(job_id);
+    expect(job.status).toBe('done');
+    expect(job.error).toBeNull();
+
+    // Only the start frame gets uploaded.
+    expect(falStubs.storageUploads.map((u) => u.name)).toEqual(['start.png']);
+
+    // Single submit: image-to-video. No characters endpoint.
+    expect(falStubs.submitCalls.map((c) => c.model)).toEqual([
+      'fal-ai/sora-2/image-to-video',
+    ]);
+    const videoSubmit = falStubs.submitCalls[0].args.input;
+    expect(videoSubmit.image_url).toMatch(/^https:\/\/fal\.media\/inputs\//);
+    expect(videoSubmit.character_ids).toBeUndefined();
+    expect(videoSubmit.prompt).not.toMatch(/^With characters:/);
+    expect(videoSubmit.duration).toBe('8');
+  });
+
+  it('Sora 2 Pro: passes user-selected resolution to fal and records the tier cost', async () => {
+    const { beat, sb } = await seedScene({ start: true });
+
+    const { job_id } = await Falgen.startVideoGenerationJob({
+      storyboardId: sb._id.toString(),
+      modelId: 'sora-2-pro',
+      durationSeconds: 8,
+      resolution: '1080p',
+    });
+    await waitForBeatLock(beat._id);
+    const job = Falgen.getVideoGenerationJob(job_id);
+    expect(job.status).toBe('done');
+
+    // The payload reflects the user's resolution (not the hard-coded 'auto').
+    expect(falStubs.submitCalls[0].args.input.resolution).toBe('1080p');
+
+    // 1080p on Sora 2 Pro is $0.50/s. 8s × $0.50 = $4.00.
+    const fresh = await Storyboards.getStoryboard(sb._id);
+    expect(fresh.video_parameters?.resolution).toBe('1080p');
+    expect(fresh.video_cost_usd).toBeCloseTo(8 * 0.5, 6);
   });
 });

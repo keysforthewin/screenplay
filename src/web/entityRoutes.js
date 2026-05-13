@@ -16,6 +16,7 @@ import {
   subscribeToJob,
   unsubscribeFromJob,
   serializeJob,
+  buildVideoPayloadPreview,
   VideoBeatBusyError,
   MissingInputsError,
   FalNotConfiguredError,
@@ -120,6 +121,41 @@ import {
 } from './downloads.js';
 
 const HEX24 = /^[a-f0-9]{24}$/i;
+
+// Sentinel returned by the resolution/fps validators when they've already
+// sent a 400. Callers check `=== ERR` and bail out of the route.
+const ERR = Symbol('input-validation-error');
+
+const RESOLUTION_RE = /^[A-Za-z0-9_]{1,24}$/;
+
+// Validate a `resolution` body field on the /video/preview and
+// /video/generate routes. Returns the trimmed string, null when absent,
+// or the ERR sentinel after writing a 400 to `res`.
+function parseResolutionField(raw, res) {
+  if (raw == null || raw === '') return null;
+  if (typeof raw !== 'string') {
+    res.status(400).json({ error: 'resolution must be a string' });
+    return ERR;
+  }
+  const trimmed = raw.trim();
+  if (!RESOLUTION_RE.test(trimmed)) {
+    res.status(400).json({ error: 'resolution must be a short alphanumeric tag like "720p"' });
+    return ERR;
+  }
+  return trimmed;
+}
+
+// Validate an `fps` body field. Returns an integer in [1, 120], null
+// when absent, or ERR after a 400.
+function parseFpsField(raw, res) {
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1 || n > 120) {
+    res.status(400).json({ error: 'fps must be a number between 1 and 120' });
+    return ERR;
+  }
+  return Math.round(n);
+}
 
 function isOidHex(s) {
   return typeof s === 'string' && HEX24.test(s);
@@ -1839,6 +1875,12 @@ export function buildApiRouter() {
         }
         promptOverride = raw;
       }
+      // Row-scope flags for full mode. Defaults preserve today's behavior:
+      // start_frame still picks up the previous shot's end frame as a
+      // continuity anchor; end_frame still anchors on this row's start frame.
+      // The SPA dialog wires checkboxes to these flags so users can opt out.
+      const includeContinuity = req.body?.include_continuity !== false;
+      const includeStartFrame = req.body?.include_start_frame !== false;
       const {
         startFrameGenerationJob,
         BeatBusyError,
@@ -1855,6 +1897,8 @@ export function buildApiRouter() {
           editPrompt,
           customPrompt,
           promptOverride,
+          includeContinuity,
+          includeStartFrame,
         });
         res.status(202).json({ job_id: jobId, storyboard_id: sbId, role });
       } catch (e) {
@@ -1890,6 +1934,8 @@ export function buildApiRouter() {
             .status(400)
             .json({ error: 'role must be start_frame|end_frame' });
         }
+        const includeContinuity = req.body?.include_continuity !== false;
+        const includeStartFrame = req.body?.include_start_frame !== false;
         const {
           previewFrameGenerationPrompt,
           BeatBusyError,
@@ -1900,6 +1946,8 @@ export function buildApiRouter() {
           const preview = await previewFrameGenerationPrompt({
             storyboardId: sbId,
             role,
+            includeContinuity,
+            includeStartFrame,
           });
           res.json(preview);
         } catch (e) {
@@ -2229,6 +2277,72 @@ export function buildApiRouter() {
   // pushed status updates. `model_id` chooses which fal model — see
   // src/fal/videoModels.js for the registered list; defaults to the
   // configured default (kling-3-pro).
+  // Build a preview of the exact payload the orchestrator would send to fal.
+  // Returns the resolved prompt, duration, and per-input file metadata
+  // (image_id / attachment_id, filename, content_type, size) plus a payload
+  // object with screenplay-preview:// sentinel URLs in place of fal.media
+  // URLs. The SPA renders this so the user can confirm exactly which assets
+  // are about to leave the server before /video/generate is called for real.
+  router.post('/storyboard/:id/video/preview', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const prompt =
+        typeof req.body?.prompt === 'string' && req.body.prompt.trim()
+          ? req.body.prompt.trim()
+          : null;
+      if (prompt && prompt.length > 2000) {
+        return res.status(400).json({ error: 'prompt must be ≤ 2000 chars' });
+      }
+      const rawDuration = req.body?.duration_seconds;
+      let durationSeconds = null;
+      if (rawDuration != null && rawDuration !== '') {
+        const n = Number(rawDuration);
+        if (!Number.isFinite(n) || n < 1 || n > 15) {
+          return res
+            .status(400)
+            .json({ error: 'duration_seconds must be a number between 1 and 15' });
+        }
+        durationSeconds = n;
+      }
+      const modelId =
+        typeof req.body?.model_id === 'string' && req.body.model_id.trim()
+          ? req.body.model_id.trim()
+          : null;
+      const generateAudio =
+        req.body?.generate_audio === undefined ? true : Boolean(req.body.generate_audio);
+      const resolution = parseResolutionField(req.body?.resolution, res);
+      if (resolution === ERR) return; // response already sent
+      const fps = parseFpsField(req.body?.fps, res);
+      if (fps === ERR) return; // response already sent
+      try {
+        const preview = await buildVideoPayloadPreview({
+          storyboardId: sbId,
+          modelId,
+          prompt,
+          durationSeconds,
+          generateAudio,
+          resolution,
+          fps,
+        });
+        res.json(preview);
+      } catch (e) {
+        if (e instanceof MissingInputsError) {
+          return res.status(400).json({ error: e.message, missing: e.missing });
+        }
+        if (e instanceof FalNotConfiguredError) {
+          return res.status(503).json({ error: e.message });
+        }
+        if (e instanceof UnknownVideoModelError) {
+          return res.status(400).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
   router.post('/storyboard/:id/video/generate', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
@@ -2257,6 +2371,10 @@ export function buildApiRouter() {
           : null;
       const generateAudio =
         req.body?.generate_audio === undefined ? true : Boolean(req.body.generate_audio);
+      const resolution = parseResolutionField(req.body?.resolution, res);
+      if (resolution === ERR) return; // response already sent
+      const fps = parseFpsField(req.body?.fps, res);
+      if (fps === ERR) return; // response already sent
       try {
         const { job_id } = await startVideoGenerationJob({
           storyboardId: sbId,
@@ -2264,6 +2382,8 @@ export function buildApiRouter() {
           prompt,
           durationSeconds,
           generateAudio,
+          resolution,
+          fps,
         });
         res.status(202).json({ job_id });
       } catch (e) {

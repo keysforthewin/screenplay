@@ -90,11 +90,13 @@ export async function updateCharacter(identifier, patch) {
       k === 'specifics' ||
       k.startsWith('specifics.') ||
       k === 'character_sheet_image_id' ||
+      k === 'fal_character_id' ||
+      k === 'fal_character_image_hash' ||
       k === 'unset',
   );
   if (!hasRecognized) {
     throw new Error(
-      `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, plays_self, hollywood_actor, own_voice, specifics, specifics.<key>, character_sheet_image_id, or unset. Got keys: [${Object.keys(patch).join(', ')}].`,
+      `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, plays_self, hollywood_actor, own_voice, specifics, specifics.<key>, character_sheet_image_id, fal_character_id, fal_character_image_hash, or unset. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
   const existing = await getCharacter(identifier);
@@ -141,6 +143,20 @@ export async function updateCharacter(identifier, patch) {
       }
     } else if (['plays_self', 'hollywood_actor', 'own_voice'].includes(k)) {
       set[k] = v;
+    } else if (k === 'fal_character_id') {
+      if (v !== null && (typeof v !== 'string' || !v.trim())) {
+        throw new Error(
+          `update_character: fal_character_id must be null or a non-empty string, got ${typeof v}.`,
+        );
+      }
+      set.fal_character_id = v === null ? null : v;
+    } else if (k === 'fal_character_image_hash') {
+      if (v !== null && (typeof v !== 'string' || !v.trim())) {
+        throw new Error(
+          `update_character: fal_character_image_hash must be null or a non-empty string, got ${typeof v}.`,
+        );
+      }
+      set.fal_character_image_hash = v === null ? null : v;
     } else if (k === 'unset') {
       if (!Array.isArray(v)) {
         throw new Error(

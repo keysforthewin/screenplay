@@ -46,6 +46,7 @@
     "mathjs": "^15.2.0",
     "mongodb": "^6.21.0",
     "multer": "^2.0.1",
+    "music-metadata": "^11.12.3",
     "pdfkit": "^0.18.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
