@@ -25,9 +25,23 @@ async function check(res) {
   }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(body || `${res.status}`);
+    throw new Error(extractErrorMessage(body) || `${res.status}`);
   }
   return res;
+}
+
+function extractErrorMessage(body) {
+  if (!body) return '';
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed && typeof parsed === 'object') {
+      if (typeof parsed.error === 'string') return parsed.error;
+      if (typeof parsed.message === 'string') return parsed.message;
+    }
+  } catch {
+    // not JSON — fall through and return the raw body.
+  }
+  return body;
 }
 
 export async function apiGet(path) {

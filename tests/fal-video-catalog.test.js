@@ -208,11 +208,13 @@ describe('fal video catalog: generic auto-wiring', () => {
         audio: 'unused',
       },
     };
-    expect(validateStoryboardInputs(model, { reference_image_ids: [] })).toEqual(['reference images']);
-    expect(validateStoryboardInputs(model, { reference_image_ids: ['abc'] })).toEqual([]);
+    expect(validateStoryboardInputs(model, { start_frame_reference_ids: [] })).toEqual(['reference images']);
+    expect(
+      validateStoryboardInputs(model, { start_frame_reference_ids: ['abc'] }),
+    ).toEqual([]);
   });
 
-  it('validateStoryboardInputs does NOT fall back to start_frame / character_sheet for required references', async () => {
+  it('validateStoryboardInputs does NOT fall back to start_frame for required references', async () => {
     const { validateStoryboardInputs } = await import('../src/fal/videoModels.js');
     const model = {
       inputs: {
@@ -223,23 +225,15 @@ describe('fal video catalog: generic auto-wiring', () => {
         audio: 'unused',
       },
     };
-    // Reference images must be explicitly attached; pinned start_frame or
-    // character_sheet on the storyboard no longer substitutes.
     expect(
       validateStoryboardInputs(model, {
-        reference_image_ids: [],
+        start_frame_reference_ids: [],
         start_frame_id: 'aaaaaaaaaaaaaaaaaaaaaaaa',
       }),
     ).toEqual(['reference images']);
     expect(
       validateStoryboardInputs(model, {
-        reference_image_ids: [],
-        character_sheet_image_id: 'bbbbbbbbbbbbbbbbbbbbbbbb',
-      }),
-    ).toEqual(['reference images']);
-    expect(
-      validateStoryboardInputs(model, {
-        reference_image_ids: ['cccccccccccccccccccccccc'],
+        start_frame_reference_ids: ['cccccccccccccccccccccccc'],
       }),
     ).toEqual([]);
   });

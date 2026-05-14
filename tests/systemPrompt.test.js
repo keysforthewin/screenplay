@@ -281,18 +281,18 @@ describe('buildSystemPrompt', () => {
   it('renders casting status next to each character name in the volatile block', () => {
     const [, volatile] = buildSystemPrompt({
       characters: [
-        { name: 'Alice', plays_self: true },
-        { name: 'Bob', plays_self: false, hollywood_actor: 'Bob Saget' },
-        { name: 'Carol', plays_self: false, hollywood_actor: null },
+        { name: 'Alice', hollywood_actor: null },
+        { name: 'Bob', hollywood_actor: 'Bob Saget' },
+        { name: 'Carol' },
       ],
       characterTemplate: { fields: [] },
       plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
       plot: { synopsis: '', beats: [] },
       cache: false,
     });
-    expect(volatile.text).toContain('- Alice (plays self)');
+    expect(volatile.text).toContain('- Alice (no actor assigned)');
     expect(volatile.text).toContain('- Bob (played by Bob Saget)');
-    expect(volatile.text).toContain('- Carol (played by (unspecified))');
+    expect(volatile.text).toContain('- Carol (no actor assigned)');
   });
 
   it('instructs the model to ground attribute-existence questions in tool data', () => {

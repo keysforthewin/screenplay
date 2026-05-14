@@ -16,6 +16,7 @@ vi.mock('../src/log.js', () => ({
 
 const Plots = await import('../src/mongo/plots.js');
 const Dialogs = await import('../src/mongo/dialogs.js');
+const Characters = await import('../src/mongo/characters.js');
 const Generate = await import('../src/web/dialogGenerate.js');
 const BeatLocks = await import('../src/web/beatLocks.js');
 const { _setAnthropicClientForTests, _resetAnthropicClientForTests } =
@@ -152,6 +153,52 @@ describe('dialog auto-generation', () => {
     expect(after).toHaveLength(2);
     expect(after.map((s) => s._id.toString()).sort()).toEqual(beforeIds);
     expect(after.map((s) => s.body)).toEqual(['keep 1', 'keep 2']);
+  });
+
+  it('includes character bio fields in the prompt sent to Claude', async () => {
+    const client = fakeAnthropicClient(TWO_LINE_RESULT);
+    _setAnthropicClientForTests(client);
+
+    await Characters.createCharacter({
+      name: 'Alice',
+      fields: {
+        background_story: 'Former diner waitress turned private investigator.',
+        memes: 'Always orders black coffee. Says "well well well" before bad news.',
+        arc: 'Learns to trust her partner.',
+      },
+    });
+    await Characters.createCharacter({
+      name: 'Bob',
+      hollywood_actor: 'Sam Smith',
+      fields: { background_story: 'Recently widowed mechanic.' },
+    });
+
+    const beat = await Plots.createBeat({
+      name: 'Diner meeting',
+      desc: 'Alice confronts Bob about the missing car.',
+      body: 'They meet at the diner.',
+      characters: ['Alice', 'Bob'],
+    });
+
+    const jobId = await Generate.startDialogGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+
+    expect(client.messages.create).toHaveBeenCalledTimes(1);
+    const callArg = client.messages.create.mock.calls[0][0];
+    const userText = callArg.messages[0].content[0].text;
+    expect(userText).toContain('## Alice');
+    expect(userText).toContain('background_story: Former diner waitress');
+    expect(userText).toContain('memes: Always orders black coffee');
+    expect(userText).toContain('arc: Learns to trust');
+    expect(userText).toContain('## Bob');
+    expect(userText).toContain('hollywood_actor: Sam Smith');
+    expect(userText).toContain('background_story: Recently widowed mechanic');
+    // System prompt is the new dialogue-writing prompt, not the old extraction prompt.
+    expect(callArg.system).toMatch(/screenwriter/i);
+    expect(callArg.system).not.toMatch(/extract every line/i);
   });
 
   it('drops entries with empty body or missing character', async () => {

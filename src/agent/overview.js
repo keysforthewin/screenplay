@@ -26,9 +26,8 @@ function pickDescriptiveField(character, templateFieldNames) {
 }
 
 export function formatCasting(c) {
-  if (c.plays_self) return 'plays self';
   if (c.hollywood_actor) return `played by ${c.hollywood_actor}`;
-  return 'played by (unspecified)';
+  return 'no actor assigned';
 }
 
 function summarizeCharacter(c, templateFieldNames) {
@@ -43,7 +42,6 @@ function summarizeCharacter(c, templateFieldNames) {
     _id: c._id?.toString?.() || null,
     name: c.name,
     casting,
-    own_voice: !!c.own_voice,
     flavor,
     filled_field_count: filled.length,
     total_field_count: templateFieldNames.length,
@@ -79,7 +77,7 @@ export async function buildOverview() {
 
   const templateFieldNames = (template?.fields || [])
     .map((f) => f.name)
-    .filter((n) => !['name', 'plays_self', 'hollywood_actor', 'own_voice'].includes(n));
+    .filter((n) => !['name', 'hollywood_actor'].includes(n));
 
   const beats = [...(plot.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
   const currentBeatId = plot.current_beat_id || null;

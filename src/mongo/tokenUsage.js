@@ -6,6 +6,7 @@ export const KIND_ANTHROPIC_TEXT = 'anthropic_text';
 export const KIND_ANTHROPIC_IMAGE_INPUT = 'anthropic_image_input';
 export const KIND_GEMINI_IMAGE = 'gemini_image';
 export const KIND_OPENAI_IMAGE = 'openai_image';
+export const KIND_FAL_IMAGE = 'fal_image';
 
 function envelope({ kind, discordUser, channelId, model, tokens, meta }) {
   return {
@@ -154,11 +155,28 @@ export async function recordOpenAIImageUsage({ discordUser, channelId, model, us
   );
 }
 
+// fal.ai endpoints don't return token counts in a uniform shape. We record
+// the call (image_count = 1) as a single "unit" tagged with the endpoint
+// id so downstream cost rollups can apply per-model pricing.
+export async function recordFalImageUsage({ discordUser, channelId, model, meta = {} }) {
+  await col().insertOne(
+    envelope({
+      kind: KIND_FAL_IMAGE,
+      discordUser,
+      channelId,
+      model,
+      tokens: 0,
+      meta: { image_count: 1, ...meta },
+    }),
+  );
+}
+
 function kindBucketField(kind) {
   if (kind === KIND_ANTHROPIC_TEXT) return 'anthropic_text';
   if (kind === KIND_ANTHROPIC_IMAGE_INPUT) return 'anthropic_image_input';
   if (kind === KIND_GEMINI_IMAGE) return 'gemini_image';
   if (kind === KIND_OPENAI_IMAGE) return 'openai_image';
+  if (kind === KIND_FAL_IMAGE) return 'fal_image';
   return null;
 }
 
@@ -179,6 +197,7 @@ export async function aggregateUsage({ since = null, userQuery = null } = {}) {
         anthropic_image_input: 0,
         gemini_image: 0,
         openai_image: 0,
+        fal_image: 0,
         total: 0,
         _latest: doc.created_at,
       };

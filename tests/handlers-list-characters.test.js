@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { ObjectId } from 'mongodb';
 import { createFakeDb } from './_fakeMongo.js';
 
 const fakeDb = createFakeDb();
@@ -21,22 +20,20 @@ beforeEach(() => {
 });
 
 describe('list_characters handler — casting field', () => {
-  it('returns "plays self" when plays_self is true', async () => {
-    await Characters.createCharacter({ name: 'Alice', plays_self: true, own_voice: true });
+  it('returns "no actor assigned" when hollywood_actor is unset', async () => {
+    await Characters.createCharacter({ name: 'Alice' });
 
     const out = JSON.parse(await HANDLERS.list_characters());
 
     expect(out).toHaveLength(1);
-    expect(out[0]).toMatchObject({ name: 'Alice', casting: 'plays self' });
+    expect(out[0]).toMatchObject({ name: 'Alice', casting: 'no actor assigned' });
     expect(typeof out[0]._id).toBe('string');
   });
 
-  it('returns "played by <actor>" when plays_self is false and an actor is set', async () => {
+  it('returns "played by <actor>" when hollywood_actor is set', async () => {
     await Characters.createCharacter({
       name: 'Bob',
-      plays_self: false,
       hollywood_actor: 'Bob Saget',
-      own_voice: true,
     });
 
     const out = JSON.parse(await HANDLERS.list_characters());
@@ -45,51 +42,16 @@ describe('list_characters handler — casting field', () => {
     expect(out[0]).toMatchObject({ name: 'Bob', casting: 'played by Bob Saget' });
   });
 
-  it('returns "played by (unspecified)" when neither plays_self nor an actor is set', async () => {
-    // createCharacter coerces plays_self to !!input — passing false explicitly with no actor.
-    // The Mongo layer normally would have rejected this at the handler, but listCharacters
-    // shouldn't crash on a doc that's missing both fields. Insert directly.
-    fakeDb.collection('characters')._docs.push({
-      _id: new ObjectId(),
-      name: 'Carol',
-      name_lower: 'carol',
-      plays_self: false,
-      hollywood_actor: null,
-      own_voice: true,
-      fields: {},
-    });
+  it('returns both casting variants together, sorted by name', async () => {
+    await Characters.createCharacter({ name: 'Alice' });
+    await Characters.createCharacter({ name: 'Bob', hollywood_actor: 'Bob Saget' });
 
     const out = JSON.parse(await HANDLERS.list_characters());
 
-    expect(out).toHaveLength(1);
-    expect(out[0]).toMatchObject({ name: 'Carol', casting: 'played by (unspecified)' });
-  });
-
-  it('returns all three casting variants together, sorted by name', async () => {
-    await Characters.createCharacter({ name: 'Alice', plays_self: true, own_voice: true });
-    await Characters.createCharacter({
-      name: 'Bob',
-      plays_self: false,
-      hollywood_actor: 'Bob Saget',
-      own_voice: true,
-    });
-    fakeDb.collection('characters')._docs.push({
-      _id: new ObjectId(),
-      name: 'Carol',
-      name_lower: 'carol',
-      plays_self: false,
-      hollywood_actor: null,
-      own_voice: true,
-      fields: {},
-    });
-
-    const out = JSON.parse(await HANDLERS.list_characters());
-
-    expect(out.map((c) => c.name)).toEqual(['Alice', 'Bob', 'Carol']);
+    expect(out.map((c) => c.name)).toEqual(['Alice', 'Bob']);
     expect(out.map((c) => c.casting)).toEqual([
-      'plays self',
+      'no actor assigned',
       'played by Bob Saget',
-      'played by (unspecified)',
     ]);
   });
 });

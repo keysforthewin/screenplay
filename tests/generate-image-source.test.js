@@ -13,16 +13,28 @@ vi.mock('../src/log.js', () => ({
 }));
 
 const generateCalls = [];
-vi.mock('../src/gemini/client.js', () => ({
-  generateImage: async ({ prompt, inputImage }) => {
-    generateCalls.push({ prompt, hasInput: !!inputImage, inputBytes: inputImage?.buffer?.length });
+vi.mock('../src/fal/imageClient.js', () => ({
+  generateNanoBananaProImage: async ({ prompt, inputImages }) => {
+    const inputs = inputImages || [];
+    generateCalls.push({
+      prompt,
+      hasInput: inputs.length > 0,
+      inputBytes: inputs[0]?.buffer?.length,
+    });
     return {
       buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
       contentType: 'image/png',
-      usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+      model: inputs.length > 0 ? 'fal-ai/nano-banana-pro/edit' : 'fal-ai/nano-banana-pro',
     };
   },
-  NANO_BANANA_MODEL: 'gemini-2.5-flash-image',
+  generateFlux2ProImage: async () => ({ buffer: Buffer.from([0x89]), contentType: 'image/png', model: 'fal-ai/flux-2-pro' }),
+  generateFluxKontextImage: async () => ({ buffer: Buffer.from([0x89]), contentType: 'image/png', model: 'fal-ai/flux-pro/kontext' }),
+  NANO_BANANA_PRO_GENERATE_MODEL: 'fal-ai/nano-banana-pro',
+  FLUX_2_PRO_MODEL: 'fal-ai/flux-2-pro',
+  FLUX_KONTEXT_MODEL: 'fal-ai/flux-pro/kontext',
+}));
+vi.mock('../src/fal/client.js', () => ({
+  isConfigured: () => true,
 }));
 
 const visionSeedCalls = [];
@@ -66,6 +78,10 @@ vi.mock('../src/config.js', async () => {
     config: {
       ...real.config,
       gemini: { apiKey: 'fake-key', vertex: { project: null, location: null } },
+      fal: {
+        ...real.config.fal,
+        apiKey: 'fake-fal-key',
+      },
       discord: { ...real.config.discord, movieChannelId: 'cX' },
     },
   };

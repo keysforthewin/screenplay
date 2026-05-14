@@ -1,19 +1,19 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { apiGet, apiPatchJson } from '../api.js';
+import { apiGet } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
 import { ImageGallery } from '../widgets/ImageGallery.jsx';
 import { AttachmentList } from '../widgets/AttachmentList.jsx';
+import { ArtworkTab } from '../widgets/ArtworkTab.jsx';
 import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
-import { CharacterSpecifics } from './CharacterSpecifics.jsx';
 
-const TABS = ['details', 'specifics'];
+const TABS = ['background', 'attachments', 'artwork'];
 
 function readInitialTab() {
-  if (typeof window === 'undefined') return 'details';
+  if (typeof window === 'undefined') return 'background';
   const h = (window.location.hash || '').replace(/^#/, '');
-  return TABS.includes(h) ? h : 'details';
+  return TABS.includes(h) ? h : 'background';
 }
 
 export function Character({ session }) {
@@ -24,6 +24,8 @@ export function Character({ session }) {
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [activeTab, setActiveTab] = useState(readInitialTab);
+  const [imagePickerOpen, setImagePickerOpen] = useState(false);
+  const [filePickerOpen, setFilePickerOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,7 +57,7 @@ export function Character({ session }) {
   function selectTab(tab) {
     setActiveTab(tab);
     if (typeof window !== 'undefined') {
-      const newHash = tab === 'details' ? '' : `#${tab}`;
+      const newHash = tab === 'background' ? '' : `#${tab}`;
       if (window.location.hash !== newHash) {
         window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${newHash}`);
       }
@@ -63,14 +65,6 @@ export function Character({ session }) {
   }
 
   function onRefresh() { setRefreshKey((k) => k + 1); }
-
-  async function patchBool(field, value) {
-    try {
-      await apiPatchJson(`/character/${character._id}`, { [field]: value });
-    } catch (e) {
-      setError(e.message);
-    }
-  }
 
   if (error) return <div className="app"><div className="error-banner">{error}</div></div>;
   if (!character || !template) {
@@ -94,49 +88,24 @@ export function Character({ session }) {
       </div>
 
       <div className="tab-nav" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'details'}
-          className={`tab-button${activeTab === 'details' ? ' is-active' : ''}`}
-          onClick={() => selectTab('details')}
-        >
-          Details
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'specifics'}
-          className={`tab-button${activeTab === 'specifics' ? ' is-active' : ''}`}
-          onClick={() => selectTab('specifics')}
-        >
-          Specifics
-        </button>
+        {TABS.map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === t}
+            className={`tab-button${activeTab === t ? ' is-active' : ''}`}
+            onClick={() => selectTab(t)}
+          >
+            {tabLabel(t)}
+          </button>
+        ))}
       </div>
 
       <CollabSurface room={room} session={session} onPing={onRefresh}>
-        <div className="tab-panel" hidden={activeTab !== 'details'}>
+        <div className="tab-panel" hidden={activeTab !== 'background'}>
           <CollabField label="Name" field="name" />
           <CollabField label="Hollywood actor" field="hollywood_actor" />
-
-          <div className="field-block" style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-            <label>
-              <input
-                type="checkbox"
-                defaultChecked={!!character.plays_self}
-                onChange={(e) => patchBool('plays_self', e.target.checked)}
-              />
-              {' '}Plays self
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                defaultChecked={!!character.own_voice}
-                onChange={(e) => patchBool('own_voice', e.target.checked)}
-              />
-              {' '}Own voice
-            </label>
-          </div>
 
           {customFields.map((f) => (
             <CollabField
@@ -147,43 +116,89 @@ export function Character({ session }) {
               placeholder={f.description}
             />
           ))}
-
-          <div className="field-block">
-            <span className="field-label">Images</span>
-            <ImageGallery
-              images={character.images || []}
-              mainImageId={character.main_image_id}
-              onChange={onRefresh}
-              uploadPath={`/character/${character._id}/image`}
-              deletePath={(imageId) => `/character/${character._id}/image/${imageId}`}
-              mainPath={`/character/${character._id}/main-image`}
-              editPath={(imageId) =>
-                `/character/${character._id}/image/${imageId}/regenerate`
-              }
-              moveToLibraryPath={(imageId) =>
-                `/character/${character._id}/image/${imageId}/move-to-library`
-              }
-              attachPath={`/character/${character._id}/image/attach`}
-              generatePath={`/character/${character._id}/image/generate`}
-              pickerTitle="Add image to character"
-            />
-          </div>
-
-          <div className="field-block">
-            <span className="field-label">Attachments</span>
-            <AttachmentList
-              attachments={character.attachments || []}
-              onChange={onRefresh}
-              uploadPath={null}
-              deletePath={null}
-            />
-          </div>
         </div>
 
-        <div className="tab-panel" hidden={activeTab !== 'specifics'}>
-          <CharacterSpecifics character={character} onRefresh={onRefresh} />
+        <div className="tab-panel" hidden={activeTab !== 'attachments'}>
+          <p className="tab-intro">
+            <strong>Images</strong> are reference images used to create artwork for this character.{' '}
+            <strong>Files</strong> are reference material such as PDFs, Word documents, and audio samples.
+          </p>
+          <div className="tab-actions">
+            <button
+              type="button"
+              className="primary"
+              onClick={() => setImagePickerOpen(true)}
+            >
+              + Add image
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => setFilePickerOpen(true)}
+            >
+              + Add file
+            </button>
+          </div>
+          <ImageGallery
+            images={character.images || []}
+            mainImageId={character.main_image_id}
+            onChange={onRefresh}
+            uploadPath={`/character/${character._id}/image`}
+            deletePath={(imageId) => `/character/${character._id}/image/${imageId}`}
+            mainPath={`/character/${character._id}/main-image`}
+            editPath={(imageId) =>
+              `/character/${character._id}/image/${imageId}/regenerate`
+            }
+            moveToLibraryPath={(imageId) =>
+              `/character/${character._id}/image/${imageId}/move-to-library`
+            }
+            attachPath={`/character/${character._id}/image/attach`}
+            generatePath={`/character/${character._id}/image/generate`}
+            characterSourcesPath={`/images/by-owner/characters?exclude_id=${character._id}`}
+            beatSourcesPath={`/images/by-owner/beats`}
+            copyPath={`/character/${character._id}/image/copy`}
+            pickerTitle="Add image to character"
+            hideAddButton
+            pickerOpen={imagePickerOpen}
+            onPickerOpenChange={setImagePickerOpen}
+          />
+          <AttachmentList
+            attachments={character.attachments || []}
+            onChange={onRefresh}
+            uploadPath={`/character/${character._id}/attachment`}
+            deletePath={(id) => `/character/${character._id}/attachment/${id}`}
+            attachPath={`/character/${character._id}/attachment/attach`}
+            pickerTitle="Add file to character"
+            fieldPrefix="attachment"
+            hideAddButton
+            pickerOpen={filePickerOpen}
+            onPickerOpenChange={setFilePickerOpen}
+          />
+        </div>
+
+        <div className="tab-panel" hidden={activeTab !== 'artwork'}>
+          <ArtworkTab
+            hostType="character"
+            hostId={character._id}
+            hostLabel={character.name}
+            artworks={character.artworks || []}
+            hostImages={character.images || []}
+            hostArtworks={character.artworks || []}
+            mainImageId={character.main_image_id}
+            mainPath={`/character/${character._id}/main-image`}
+            onChange={onRefresh}
+          />
         </div>
       </CollabSurface>
     </main>
   );
+}
+
+function tabLabel(tab) {
+  switch (tab) {
+    case 'background': return 'Background';
+    case 'attachments': return 'Attachments';
+    case 'artwork': return 'Artwork';
+    default: return tab;
+  }
 }

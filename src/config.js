@@ -77,6 +77,30 @@ export const config = {
     // a pure function of config.
     apiKey: process.env.FAL_KEY || null,
     defaultModelId: process.env.FAL_DEFAULT_VIDEO_MODEL || 'kling-3-pro',
+    // Flux Pro Kontext — image-conditioned generation. Single-image endpoint
+    // requires `image_url` (singular). The image client picks this when 0 or 1
+    // reference images are passed.
+    fluxKontextModel: process.env.FAL_FLUX_KONTEXT_MODEL || 'fal-ai/flux-pro/kontext',
+    // Flux Pro Kontext multi — required when 2+ reference images are passed.
+    // Uses `image_urls` (plural). The single-image endpoint rejects requests
+    // that send `image_urls`, so the image client routes multi-ref calls here.
+    fluxKontextMultiModel:
+      process.env.FAL_FLUX_KONTEXT_MULTI_MODEL || 'fal-ai/flux-pro/kontext/multi',
+    // Nano Banana Pro (Google's Gemini 3 Pro Image hosted on fal.ai). Two
+    // endpoints: the bare model is pure text-to-image (silently drops image
+    // inputs); the /edit endpoint is image-to-image and requires `image_urls`.
+    // The image client auto-routes between them based on whether the caller
+    // passed any input images.
+    nanoBananaProGenerateModel:
+      process.env.FAL_NANO_BANANA_PRO_MODEL || 'fal-ai/nano-banana-pro',
+    nanoBananaProEditModel:
+      process.env.FAL_NANO_BANANA_PRO_EDIT_MODEL || 'fal-ai/nano-banana-pro/edit',
+    // Flux 2 Pro on fal.ai. Same generate/edit split as Nano Banana Pro: the
+    // bare model is text-to-image; /edit accepts up to 9 reference image URLs.
+    flux2ProGenerateModel:
+      process.env.FAL_FLUX_2_PRO_MODEL || 'fal-ai/flux-2-pro',
+    flux2ProEditModel:
+      process.env.FAL_FLUX_2_PRO_EDIT_MODEL || 'fal-ai/flux-2-pro/edit',
     // Input assets are uploaded into fal storage with this lifecycle. fal
     // bills for storage, so we expire inputs after a week by default.
     storageLifetimeDays: Number(process.env.FAL_STORAGE_LIFETIME_DAYS) || 7,

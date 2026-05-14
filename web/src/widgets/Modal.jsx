@@ -18,10 +18,11 @@ export function Modal({
 }) {
   const cardRef = useRef(null);
 
-  // size: 'default' | 'wide' | 'xl'. `wide` kept for back-compat.
+  // size: 'default' | 'wide' | 'xl' | 'fullscreen'. `wide` kept for back-compat.
   const effectiveSize = size || (wide ? 'wide' : 'default');
   const sizeClass =
-    effectiveSize === 'xl' ? ' is-xl'
+    effectiveSize === 'fullscreen' ? ' is-fullscreen'
+    : effectiveSize === 'xl' ? ' is-xl'
     : effectiveSize === 'wide' ? ' is-wide'
     : '';
 

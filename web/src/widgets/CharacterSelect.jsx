@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-// Combobox: pick a character from the project's roster. Free text is not
-// allowed — the user must commit a value that matches an existing character
-// (case-insensitive on the displayed plain name).
+// Combobox: pick a character from the project's roster, or type a free-text
+// speaker (e.g. "radio", "TV ANCHOR", "INTERCOM"). When the typed text matches
+// a roster character (case-insensitive on the plain name) the canonical roster
+// name is committed; otherwise the trimmed text is committed as-is.
 //
 // Props:
 //   value      — current character string (markdown or plain) from Mongo
 //   characters — [{ _id, name, plain_name }] from /api/toc
 //   disabled   — disable interaction
 //   onChange   — async (plainName) => …  Called when the user commits a
-//                valid choice. The wrapping field-block re-renders from
-//                the parent's value once the API write returns.
+//                value. The wrapping field-block re-renders from the parent's
+//                value once the API write returns.
 export function CharacterSelect({ value, characters, disabled, onChange }) {
   const options = useMemo(() => {
     return (characters || [])
@@ -66,14 +67,22 @@ export function CharacterSelect({ value, characters, disabled, onChange }) {
     setError(null);
   }
 
-  async function commit(plainName) {
-    if (!plainName) {
+  async function commit(rawName) {
+    const trimmed = String(rawName ?? '').trim();
+    if (!trimmed) {
       revertAndClose();
       return;
     }
-    if (plainName.toLowerCase() === committedPlain.toLowerCase()) {
+    // If the typed text matches a roster character (case-insensitive), commit
+    // the canonical roster spelling. Otherwise commit the trimmed text as-is
+    // (free-text speakers like "radio" or "TV ANCHOR").
+    const rosterMatch = options.find(
+      (o) => o.plain.toLowerCase() === trimmed.toLowerCase(),
+    );
+    const finalName = rosterMatch ? rosterMatch.plain : trimmed;
+    if (finalName.toLowerCase() === committedPlain.toLowerCase()) {
       // No change — just close. Don't fire onChange.
-      setQuery(plainName);
+      setQuery(finalName);
       setOpen(false);
       setError(null);
       return;
@@ -81,8 +90,8 @@ export function CharacterSelect({ value, characters, disabled, onChange }) {
     setBusy(true);
     setError(null);
     try {
-      await onChange?.(plainName);
-      setQuery(plainName);
+      await onChange?.(finalName);
+      setQuery(finalName);
       setOpen(false);
     } catch (e) {
       setError(e.message || String(e));
@@ -105,20 +114,22 @@ export function CharacterSelect({ value, characters, disabled, onChange }) {
       const pick = filtered[highlight];
       if (pick) commit(pick.plain);
       else if (filtered.length === 1) commit(filtered[0].plain);
-      else
-        setError(
-          'No matching character — pick one from the list or clear the field.',
-        );
+      else if (query.trim()) commit(query);
+      else revertAndClose();
     } else if (e.key === 'Escape') {
       e.preventDefault();
       revertAndClose();
       inputRef.current?.blur();
     } else if (e.key === 'Tab') {
       // Tab commits the highlighted match if there is exactly one filtered
-      // option and the query is non-empty; otherwise revert to last good.
+      // option; otherwise commits the typed text as-is (free-text speaker)
+      // when non-empty, or reverts when empty.
       if (filtered.length === 1 && query.trim()) {
         e.preventDefault();
         commit(filtered[0].plain);
+      } else if (query.trim()) {
+        e.preventDefault();
+        commit(query);
       } else {
         revertAndClose();
       }
@@ -135,12 +146,12 @@ export function CharacterSelect({ value, characters, disabled, onChange }) {
     ) {
       return;
     }
-    // If user typed an exact match, accept it. Otherwise revert.
-    const exact = options.find(
-      (o) => o.plain.toLowerCase() === query.trim().toLowerCase(),
-    );
-    if (exact) commit(exact.plain);
-    else revertAndClose();
+    // Commit whatever was typed. commit() handles roster matching internally
+    // and falls through to free-text storage when nothing matches.
+    const q = query.trim();
+    if (!q) revertAndClose();
+    else if (q.toLowerCase() === committedPlain.toLowerCase()) revertAndClose();
+    else commit(q);
   }
 
   const showEmpty = open && filtered.length === 0;
@@ -157,7 +168,7 @@ export function CharacterSelect({ value, characters, disabled, onChange }) {
         type="text"
         className="character-select-input"
         value={query}
-        placeholder="Pick a character…"
+        placeholder="Pick a character or type a source…"
         disabled={disabled || busy}
         onChange={(e) => {
           setQuery(e.target.value);
@@ -197,8 +208,16 @@ export function CharacterSelect({ value, characters, disabled, onChange }) {
             </li>
           ))}
           {showEmpty && (
-            <li className="character-select-empty">
-              No character matches “{query.trim()}”.
+            <li
+              className="character-select-empty character-select-freetext"
+              role="option"
+              aria-selected={false}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                commit(query);
+              }}
+            >
+              Use “{query.trim()}” as a free-text speaker
             </li>
           )}
         </ul>

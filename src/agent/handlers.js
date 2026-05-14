@@ -17,7 +17,18 @@ import { buildImagePrompt } from '../gemini/promptBuilder.js';
 import {
   checkProviderConfigured,
   generateOrEditImage,
+  ALLOWED_IMAGE_PROVIDERS,
 } from './imageProviderDispatch.js';
+
+// Normalize the agent's `provider` arg. Default to nano-banana-pro. Accepts the
+// new four-model enum verbatim; legacy values (`gemini`, `google`, `fal`) from
+// past tool_use blocks in history map to the closest current equivalent so we
+// don't break replays / cached transcripts.
+function resolveImageProvider(provider) {
+  if (!provider || provider === 'gemini' || provider === 'google') return 'nano-banana-pro';
+  if (provider === 'fal') return 'flux-pro-kontext';
+  return ALLOWED_IMAGE_PROVIDERS.includes(provider) ? provider : 'nano-banana-pro';
+}
 import * as Messages from '../mongo/messages.js';
 import { config } from '../config.js';
 import { exportToPdf } from '../pdf/export.js';
@@ -350,7 +361,6 @@ async function maybeAutoFetchActorPortrait(characterIdentifier) {
     return ` (Note: could not re-read character to auto-fetch portrait: ${e.message})`;
   }
   if (!c) return null;
-  if (c.plays_self) return null;
   if (!c.hollywood_actor) return null;
   if (c.main_image_id) return null;
 
@@ -900,13 +910,8 @@ async function resolveEditTarget({ collection, identifier, field }) {
     if (field === 'name' || field === 'desc' || field === 'body') {
       gatewayField = field;
       currentValue = String(target[field] || '');
-    } else if (typeof field === 'string' && field.startsWith('specifics.')) {
-      gatewayField = field;
-      const key = field.slice('specifics.'.length);
-      const v = target.specifics?.[key];
-      currentValue = v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v);
     } else {
-      throw new Error(`beat field must be name, desc, body, or specifics.<key>; got "${field}".`);
+      throw new Error(`beat field must be name, desc, or body; got "${field}".`);
     }
     return {
       entityType: 'beat',
@@ -932,11 +937,6 @@ async function resolveEditTarget({ collection, identifier, field }) {
       gatewayField = field;
       const key = field.slice('fields.'.length);
       const v = c.fields?.[key];
-      currentValue = v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v);
-    } else if (typeof field === 'string' && field.startsWith('specifics.')) {
-      gatewayField = field;
-      const key = field.slice('specifics.'.length);
-      const v = c.specifics?.[key];
       currentValue = v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v);
     } else if (typeof field === 'string' && field.trim()) {
       // bare custom field name → fields.<name>
@@ -1121,8 +1121,8 @@ export const HANDLERS = {
         const fresh = await Characters.getCharacter(target.entityId);
         if (fresh) summary = await appendSimilarityHeadsUp('character', fresh, summary);
       }
-      // Auto-attach a TMDB portrait when the character is plays_self=false with
-      // a hollywood_actor set and no main image.
+      // Auto-attach a TMDB portrait when the character has a hollywood_actor
+      // set and no main image.
       const note = await maybeAutoFetchActorPortrait(target.entityId);
       if (note) summary = `${summary}${note}`;
     } else if (collection === 'beat') {
@@ -1176,7 +1176,7 @@ export const HANDLERS = {
           return 'Tool error (set_field): beat.scene_sheet_image_id must be a 24-char hex string or null.';
         }
       } else {
-        return `Tool error (set_field): beat field must be one of order, characters, scene_sheet_image_id; got "${field}". For text fields (name, desc, body, specifics.*) use \`edit\` instead.`;
+        return `Tool error (set_field): beat field must be one of order, characters, scene_sheet_image_id; got "${field}". For text fields (name, desc, body) use \`edit\` instead.`;
       }
       const beat = await Gateway.updateBeatViaGateway(identifier, { [field]: value });
       const display =
@@ -1190,43 +1190,19 @@ export const HANDLERS = {
     }
 
     // collection === 'character'
-    let patch;
-    if (field === 'plays_self' || field === 'own_voice') {
-      if (typeof value !== 'boolean') {
-        return `Tool error (set_field): character.${field} must be a boolean; got ${JSON.stringify(value)}.`;
-      }
-      patch = { [field]: value };
-    } else if (field === 'unset') {
-      if (!Array.isArray(value) || value.some((s) => typeof s !== 'string')) {
-        return 'Tool error (set_field): character.unset must be an array of custom field name strings.';
-      }
-      patch = { unset: value };
-    } else {
-      return `Tool error (set_field): character field must be one of plays_self, own_voice, unset; got "${field}". For text fields (name, hollywood_actor, fields.*, specifics.*) use \`edit\` instead.`;
+    if (field !== 'unset') {
+      return `Tool error (set_field): character field must be "unset"; got "${field}". For text fields (name, hollywood_actor, fields.*) use \`edit\` instead.`;
     }
-    const c = await Gateway.updateCharacterViaGateway(identifier, patch);
-    let summary;
-    if (field === 'unset') {
-      summary = `Unset ${value.length} field(s) on ${c.name}: [${value.join(', ')}].`;
-    } else {
-      summary = `Set ${c.name}.${field} = ${value}.`;
+    if (!Array.isArray(value) || value.some((s) => typeof s !== 'string')) {
+      return 'Tool error (set_field): character.unset must be an array of custom field name strings.';
     }
-    const note = await maybeAutoFetchActorPortrait(c._id.toString());
-    if (note) summary = `${summary}${note}`;
+    const c = await Gateway.updateCharacterViaGateway(identifier, { unset: value });
+    const summary = `Unset ${value.length} field(s) on ${c.name}: [${value.join(', ')}].`;
     return withSpaLink(summary, characterUrl(c));
   },
 
   async create_character(input) {
-    const playsSelf = input.plays_self === undefined ? true : !!input.plays_self;
-    const ownVoice = input.own_voice === undefined ? true : !!input.own_voice;
-    if (!playsSelf && !input.hollywood_actor) {
-      return 'Error: when plays_self is false, hollywood_actor is required.';
-    }
-    const c = await Characters.createCharacter({
-      ...input,
-      plays_self: playsSelf,
-      own_voice: ownVoice,
-    });
+    const c = await Characters.createCharacter(input);
     const note = await maybeAutoFetchActorPortrait(c._id.toString());
     const base = `Created character ${c.name} (_id ${c._id}).${note || ''}`;
     return withSpaLink(await appendSimilarityHeadsUp('character', c, base), characterUrl(c));
@@ -1239,7 +1215,7 @@ export const HANDLERS = {
     if (!Array.isArray(updates) || updates.length === 0) {
       return 'Error: updates must be a non-empty array of {character, value} pairs.';
     }
-    const CORE_FIELDS = new Set(['name', 'plays_self', 'hollywood_actor', 'own_voice']);
+    const CORE_FIELDS = new Set(['name', 'hollywood_actor']);
     const patchKey = CORE_FIELDS.has(field_name) ? field_name : `fields.${field_name}`;
     const total = updates.length;
     const size = Math.min(25, Math.max(1, Number.isFinite(batch_size) ? batch_size : 10));
@@ -2215,7 +2191,7 @@ export const HANDLERS = {
     },
     context = null,
   ) {
-    const chosenProvider = provider === 'openai' ? 'openai' : 'gemini';
+    const chosenProvider = resolveImageProvider(provider);
     const configErr = checkProviderConfigured(chosenProvider);
     if (configErr) return configErr;
     if (!prompt && !include_beat && !include_recent_chat) {
@@ -2382,7 +2358,7 @@ export const HANDLERS = {
     },
     context = null,
   ) {
-    const chosenProvider = provider === 'openai' ? 'openai' : 'gemini';
+    const chosenProvider = resolveImageProvider(provider);
     const configErr = checkProviderConfigured(chosenProvider);
     if (configErr) return configErr;
     if (!source_image_id) return 'Error: source_image_id is required.';

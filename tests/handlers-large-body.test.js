@@ -21,9 +21,7 @@ beforeEach(async () => {
   await Prompts.setCharacterTemplate({
     fields: [
       { name: 'name', core: true },
-      { name: 'plays_self', core: true },
       { name: 'hollywood_actor', core: true },
-      { name: 'own_voice', core: true },
       { name: 'bio', core: false },
     ],
   });

@@ -124,16 +124,39 @@ describe('dialog gateway (fallback)', () => {
     expect(fresh.character).toBe('Bob');
   });
 
-  it('setDialogCharacterViaGateway rejects unknown character names', async () => {
+  it('setDialogCharacterViaGateway accepts unknown names as free-text speakers, as typed', async () => {
     const beat = await makeBeat();
     await Characters.createCharacter({ name: 'Alice' });
     const d = await Gateway.createDialogViaGateway({ beatId: beat._id });
-    await expect(
-      Gateway.setDialogCharacterViaGateway({
-        dialogId: d._id,
-        characterName: 'Nobody',
-      }),
-    ).rejects.toThrow(/No character named/);
+    const updated = await Gateway.setDialogCharacterViaGateway({
+      dialogId: d._id,
+      characterName: 'radio',
+    });
+    expect(updated.character).toBe('radio');
+    const fresh = await Dialogs.getDialog(d._id);
+    expect(fresh.character).toBe('radio');
+  });
+
+  it('setDialogCharacterViaGateway preserves the casing of free-text speakers', async () => {
+    const beat = await makeBeat();
+    const d = await Gateway.createDialogViaGateway({ beatId: beat._id });
+    await Gateway.setDialogCharacterViaGateway({
+      dialogId: d._id,
+      characterName: 'TV ANCHOR',
+    });
+    const fresh = await Dialogs.getDialog(d._id);
+    expect(fresh.character).toBe('TV ANCHOR');
+  });
+
+  it('setDialogCharacterViaGateway trims surrounding whitespace from free-text speakers', async () => {
+    const beat = await makeBeat();
+    const d = await Gateway.createDialogViaGateway({ beatId: beat._id });
+    await Gateway.setDialogCharacterViaGateway({
+      dialogId: d._id,
+      characterName: '   intercom   ',
+    });
+    const fresh = await Dialogs.getDialog(d._id);
+    expect(fresh.character).toBe('intercom');
   });
 
   it('setDialogCharacterViaGateway rejects empty/missing character', async () => {

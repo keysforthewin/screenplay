@@ -1,14 +1,14 @@
 // Provider-routing tests for generate_image / edit_image.
 //
 // Verifies that:
-//   - Default (no provider) → Gemini (Nano Banana) path, records gemini_image
-//     usage, stamps gemini-2.5-flash-image as generated_by.
+//   - Default (no provider) → nano-banana-pro path (FAL), records fal_image
+//     usage, stamps fal-ai/nano-banana-pro as generated_by.
 //   - provider: 'openai' → OpenAI gpt-image-2 path, records openai_image
 //     usage, stamps gpt-image-2 as generated_by, and routes to images.edits
 //     when a source_image_id is present.
 //   - provider: 'openai' with OPENAI_API_KEY unset → friendly error string,
 //     no model call.
-//   - The dispatch helper does NOT silently fall back: an unconfigured Gemini
+//   - The dispatch helper does NOT silently fall back: an unconfigured FAL
 //     does not get rescued by a configured OpenAI (or vice versa).
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -25,21 +25,43 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
-const geminiCalls = [];
-vi.mock('../src/gemini/client.js', () => ({
-  generateImage: async (args) => {
-    geminiCalls.push(args);
+const falNanoBananaProCalls = [];
+const falFlux2ProCalls = [];
+const falKontextCalls = [];
+vi.mock('../src/fal/imageClient.js', () => ({
+  generateNanoBananaProImage: async (args) => {
+    falNanoBananaProCalls.push(args);
+    const hasInput = (args.inputImages || []).length > 0;
     return {
       buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
       contentType: 'image/png',
-      usageMetadata: {
-        promptTokenCount: 10,
-        candidatesTokenCount: 1290,
-        totalTokenCount: 1300,
-      },
+      model: hasInput ? 'fal-ai/nano-banana-pro/edit' : 'fal-ai/nano-banana-pro',
     };
   },
-  NANO_BANANA_MODEL: 'gemini-2.5-flash-image',
+  generateFlux2ProImage: async (args) => {
+    falFlux2ProCalls.push(args);
+    return {
+      buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      contentType: 'image/png',
+      model: 'fal-ai/flux-2-pro',
+    };
+  },
+  generateFluxKontextImage: async (args) => {
+    falKontextCalls.push(args);
+    return {
+      buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      contentType: 'image/png',
+      model: 'fal-ai/flux-pro/kontext',
+    };
+  },
+  NANO_BANANA_PRO_GENERATE_MODEL: 'fal-ai/nano-banana-pro',
+  FLUX_2_PRO_MODEL: 'fal-ai/flux-2-pro',
+  FLUX_KONTEXT_MODEL: 'fal-ai/flux-pro/kontext',
+}));
+
+const falConfigured = vi.fn(() => true);
+vi.mock('../src/fal/client.js', () => ({
+  isConfigured: (...a) => falConfigured(...a),
 }));
 
 const openaiGenerateCalls = [];
@@ -111,9 +133,18 @@ vi.mock('../src/web/libraryVisionWorker.js', () => ({
 // Hold the config mock as a mutable object so individual tests can flip
 // provider keys on/off without re-mocking.
 const mockConfig = {
-  gemini: { apiKey: 'fake-gemini-key', vertex: { project: null, location: null } },
+  gemini: { apiKey: null, vertex: { project: null, location: null } },
   openai: { apiKey: 'fake-openai-key', imageTimeoutMs: 600_000 },
   discord: { movieChannelId: 'cX' },
+  fal: {
+    apiKey: 'fake-fal-key',
+    nanoBananaProGenerateModel: 'fal-ai/nano-banana-pro',
+    nanoBananaProEditModel: 'fal-ai/nano-banana-pro/edit',
+    flux2ProGenerateModel: 'fal-ai/flux-2-pro',
+    flux2ProEditModel: 'fal-ai/flux-2-pro/edit',
+    fluxKontextModel: 'fal-ai/flux-pro/kontext',
+    fluxKontextMultiModel: 'fal-ai/flux-pro/kontext/multi',
+  },
 };
 vi.mock('../src/config.js', async () => {
   const real = await vi.importActual('../src/config.js');
@@ -131,10 +162,12 @@ beforeEach(() => {
   fakeDb.reset();
   fakeBucket.clear();
   uploads.length = 0;
-  geminiCalls.length = 0;
+  falNanoBananaProCalls.length = 0;
+  falFlux2ProCalls.length = 0;
+  falKontextCalls.length = 0;
   openaiGenerateCalls.length = 0;
   openaiEditCalls.length = 0;
-  mockConfig.gemini = { apiKey: 'fake-gemini-key', vertex: { project: null, location: null } };
+  falConfigured.mockReturnValue(true);
   mockConfig.openai = { apiKey: 'fake-openai-key', imageTimeoutMs: 600_000 };
 });
 
@@ -155,20 +188,20 @@ async function seedLibraryImage() {
 }
 
 describe('generate_image provider routing', () => {
-  it('defaults to gemini when provider is omitted', async () => {
+  it('defaults to nano-banana-pro (FAL) when provider is omitted', async () => {
     const out = await HANDLERS.generate_image(
       { prompt: 'a cathedral at dusk' },
       { discordUser: { id: 'u1', displayName: 'U1' }, channelId: 'c1' },
     );
     expect(out).toMatch(/^__IMAGE_PATH__:/);
-    expect(geminiCalls).toHaveLength(1);
+    expect(falNanoBananaProCalls).toHaveLength(1);
     expect(openaiGenerateCalls).toHaveLength(0);
-    expect(uploads[0].generatedBy).toBe('gemini-2.5-flash-image');
+    expect(uploads[0].generatedBy).toBe('fal-ai/nano-banana-pro');
 
     const tokenDocs = fakeDb.collection('token_usage')._docs;
     expect(tokenDocs).toHaveLength(1);
-    expect(tokenDocs[0].kind).toBe('gemini_image');
-    expect(tokenDocs[0].model).toBe('gemini-2.5-flash-image');
+    expect(tokenDocs[0].kind).toBe('fal_image');
+    expect(tokenDocs[0].model).toBe('fal-ai/nano-banana-pro');
   });
 
   it("routes provider: 'openai' to gpt-image-2 generate endpoint", async () => {
@@ -177,11 +210,10 @@ describe('generate_image provider routing', () => {
       { discordUser: { id: 'u1', displayName: 'U1' }, channelId: 'c1' },
     );
     expect(out).toMatch(/^__IMAGE_PATH__:/);
-    expect(geminiCalls).toHaveLength(0);
+    expect(falNanoBananaProCalls).toHaveLength(0);
     expect(openaiGenerateCalls).toHaveLength(1);
     expect(openaiEditCalls).toHaveLength(0);
     expect(openaiGenerateCalls[0].prompt).toContain('cathedral at dusk');
-    // Default aspect_ratio → DEFAULT_OPENAI_SIZE in dispatch helper.
     expect(openaiGenerateCalls[0].size).toBe('1536x1024');
     expect(openaiGenerateCalls[0].quality).toBe('auto');
 
@@ -227,6 +259,26 @@ describe('generate_image provider routing', () => {
     expect(openaiGenerateCalls[0].size).toBe('1024x1024');
   });
 
+  it("routes provider: 'flux-2-pro' to the flux-2-pro client", async () => {
+    await HANDLERS.generate_image(
+      { prompt: 'misty diner', provider: 'flux-2-pro' },
+      null,
+    );
+    expect(falFlux2ProCalls).toHaveLength(1);
+    expect(falNanoBananaProCalls).toHaveLength(0);
+    expect(uploads[0].generatedBy).toBe('fal-ai/flux-2-pro');
+  });
+
+  it("routes provider: 'flux-pro-kontext' to the kontext client", async () => {
+    await HANDLERS.generate_image(
+      { prompt: 'misty diner', provider: 'flux-pro-kontext' },
+      null,
+    );
+    expect(falKontextCalls).toHaveLength(1);
+    expect(falNanoBananaProCalls).toHaveLength(0);
+    expect(uploads[0].generatedBy).toBe('fal-ai/flux-pro/kontext');
+  });
+
   it("returns a friendly error when provider: 'openai' but OPENAI_API_KEY is unset", async () => {
     mockConfig.openai = { apiKey: null, imageTimeoutMs: 600_000 };
 
@@ -237,17 +289,17 @@ describe('generate_image provider routing', () => {
     expect(out).toMatch(/OpenAI is not configured/);
     expect(openaiGenerateCalls).toHaveLength(0);
     expect(openaiEditCalls).toHaveLength(0);
-    expect(geminiCalls).toHaveLength(0); // does NOT silently fall back to Gemini
+    expect(falNanoBananaProCalls).toHaveLength(0);
     expect(uploads).toHaveLength(0);
   });
 
-  it('returns a friendly error when default provider but Gemini is unconfigured', async () => {
-    mockConfig.gemini = { apiKey: null, vertex: { project: null, location: null } };
+  it('returns a friendly error when default provider but FAL is unconfigured', async () => {
+    falConfigured.mockReturnValue(false);
 
     const out = await HANDLERS.generate_image({ prompt: 'anything' }, null);
-    expect(out).toMatch(/Gemini is not configured/);
-    expect(geminiCalls).toHaveLength(0);
-    expect(openaiGenerateCalls).toHaveLength(0); // does NOT silently fall back to OpenAI
+    expect(out).toMatch(/FAL is not configured/);
+    expect(falNanoBananaProCalls).toHaveLength(0);
+    expect(openaiGenerateCalls).toHaveLength(0);
   });
 });
 
@@ -265,7 +317,7 @@ describe('edit_image provider routing', () => {
       { discordUser: { id: 'u1', displayName: 'U1' }, channelId: 'c1' },
     );
     expect(out).toMatch(/^__IMAGE_PATH__:/);
-    expect(geminiCalls).toHaveLength(0);
+    expect(falNanoBananaProCalls).toHaveLength(0);
     expect(openaiEditCalls).toHaveLength(1);
     expect(openaiEditCalls[0].prompt).toContain('neon signage');
     expect(openaiEditCalls[0].inputImage.contentType).toBe('image/png');
@@ -279,7 +331,7 @@ describe('edit_image provider routing', () => {
     expect(tokenDocs[0].tokens).toBe(530);
   });
 
-  it('defaults to gemini when provider is omitted', async () => {
+  it('defaults to nano-banana-pro when provider is omitted', async () => {
     const sourceId = await seedLibraryImage();
 
     await HANDLERS.edit_image(
@@ -290,9 +342,11 @@ describe('edit_image provider routing', () => {
       },
       null,
     );
-    expect(geminiCalls).toHaveLength(1);
+    expect(falNanoBananaProCalls).toHaveLength(1);
     expect(openaiEditCalls).toHaveLength(0);
-    expect(uploads[0].generatedBy).toBe('gemini-2.5-flash-image');
+    // Default-edit on nano-banana-pro routes through the /edit endpoint since
+    // the source image is passed as an input.
+    expect(uploads[0].generatedBy).toBe('fal-ai/nano-banana-pro/edit');
   });
 
   it("returns a friendly error when provider: 'openai' but OPENAI_API_KEY is unset", async () => {
@@ -310,6 +364,6 @@ describe('edit_image provider routing', () => {
     );
     expect(out).toMatch(/OpenAI is not configured/);
     expect(openaiEditCalls).toHaveLength(0);
-    expect(geminiCalls).toHaveLength(0);
+    expect(falNanoBananaProCalls).toHaveLength(0);
   });
 });

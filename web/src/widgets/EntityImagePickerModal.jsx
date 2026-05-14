@@ -6,22 +6,13 @@ import {
   thumbUrl,
 } from '../api.js';
 import { Modal } from './Modal.jsx';
+import {
+  IMAGE_MODELS,
+  readStoredImageModel,
+  writeStoredImageModel,
+} from './imageModels.js';
 
 const GEN_MODEL_STORAGE_KEY = 'screenplay.picker.genModel';
-const VALID_GEN_MODELS = new Set(['gemini', 'openai']);
-const GEN_MODEL_LABEL = {
-  gemini: 'Nano Banana (Gemini)',
-  openai: 'OpenAI (gpt-image-2)',
-};
-
-function readStoredGenModel() {
-  try {
-    const v = localStorage.getItem(GEN_MODEL_STORAGE_KEY);
-    return VALID_GEN_MODELS.has(v) ? v : 'gemini';
-  } catch {
-    return 'gemini';
-  }
-}
 
 function stripMd(s) {
   return String(s || '')
@@ -33,16 +24,21 @@ function stripMd(s) {
     .trim();
 }
 
-// Picker for entity image galleries (beat, character, notes). Three tabs:
-//   library  — pick from the global library (re-parents the image)
-//   upload   — POST a file to `uploadPath`
-//   generate — text-to-image to `generatePath`, with Gemini/OpenAI choice
+// Picker for entity image galleries (beat, character, notes). Tabs:
+//   library    — pick from the global library (re-parents the image)
+//   upload     — POST a file to `uploadPath`
+//   generate   — text-to-image to `generatePath`, with Gemini/OpenAI choice
+//   characters — pick any character's image (copies, doesn't move)
+//   beats      — pick any beat's image (copies, doesn't move)
 //
 // Required props:
-//   uploadPath   — POST multipart endpoint (e.g. /beat/:id/image)
-//   attachPath   — POST {image_id} endpoint (e.g. /beat/:id/image/attach)
-//   generatePath — POST {prompt, model} endpoint
-//   onAttached   — async callback after a successful action
+//   uploadPath           — POST multipart endpoint (e.g. /beat/:id/image)
+//   attachPath           — POST {image_id} endpoint (e.g. /beat/:id/image/attach)
+//   generatePath         — POST {prompt, model} endpoint
+//   characterSourcesPath — GET endpoint for character-owned images
+//   beatSourcesPath      — GET endpoint for beat-owned images
+//   copyPath             — POST {image_id} endpoint that copies a source image
+//   onAttached           — async callback after a successful action
 export function EntityImagePickerModal({
   open,
   onClose,
@@ -50,6 +46,9 @@ export function EntityImagePickerModal({
   uploadPath,
   attachPath,
   generatePath,
+  characterSourcesPath,
+  beatSourcesPath,
+  copyPath,
   onAttached,
 }) {
   const tabs = useMemo(() => {
@@ -57,14 +56,20 @@ export function EntityImagePickerModal({
     if (attachPath) t.push({ key: 'library', label: 'Library' });
     if (uploadPath) t.push({ key: 'upload', label: 'Upload' });
     if (generatePath) t.push({ key: 'generate', label: 'Generate' });
+    if (characterSourcesPath && copyPath) t.push({ key: 'characters', label: 'Character' });
+    if (beatSourcesPath && copyPath) t.push({ key: 'beats', label: 'Beats' });
     return t;
-  }, [attachPath, uploadPath, generatePath]);
+  }, [attachPath, uploadPath, generatePath, characterSourcesPath, beatSourcesPath, copyPath]);
 
   const [tab, setTab] = useState(tabs[0]?.key || 'upload');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [libraryImages, setLibraryImages] = useState(null);
   const [libraryQuery, setLibraryQuery] = useState('');
+  const [characterImages, setCharacterImages] = useState(null);
+  const [characterQuery, setCharacterQuery] = useState('');
+  const [beatImages, setBeatImages] = useState(null);
+  const [beatQuery, setBeatQuery] = useState('');
   const fileInput = useRef(null);
 
   useEffect(() => {
@@ -73,6 +78,10 @@ export function EntityImagePickerModal({
     setError(null);
     setLibraryImages(null);
     setLibraryQuery('');
+    setCharacterImages(null);
+    setCharacterQuery('');
+    setBeatImages(null);
+    setBeatQuery('');
   }, [open, tabs]);
 
   useEffect(() => {
@@ -91,12 +100,61 @@ export function EntityImagePickerModal({
     };
   }, [open, tab, libraryImages]);
 
+  useEffect(() => {
+    if (!open || tab !== 'characters' || characterImages !== null) return;
+    if (!characterSourcesPath) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await apiGet(characterSourcesPath);
+        if (!cancelled) setCharacterImages(data.images || []);
+      } catch (e) {
+        if (!cancelled) setError(e.message);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, tab, characterImages, characterSourcesPath]);
+
+  useEffect(() => {
+    if (!open || tab !== 'beats' || beatImages !== null) return;
+    if (!beatSourcesPath) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await apiGet(beatSourcesPath);
+        if (!cancelled) setBeatImages(data.images || []);
+      } catch (e) {
+        if (!cancelled) setError(e.message);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, tab, beatImages, beatSourcesPath]);
+
   async function attach(imageId) {
     if (busy || !attachPath) return;
     setBusy(true);
     setError(null);
     try {
       await apiPostJson(attachPath, { image_id: String(imageId) });
+      await onAttached?.();
+      onClose?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copy(imageId) {
+    if (busy || !copyPath) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await apiPostJson(copyPath, { image_id: String(imageId) });
       await onAttached?.();
       onClose?.();
     } catch (e) {
@@ -150,6 +208,36 @@ export function EntityImagePickerModal({
     });
   }, [libraryImages, libraryQuery]);
 
+  const filteredCharacters = useMemo(() => {
+    if (!characterImages) return [];
+    const f = characterQuery.trim().toLowerCase();
+    if (!f) return characterImages;
+    return characterImages.filter((img) => {
+      const name = stripMd(img.name).toLowerCase();
+      const desc = String(img.description || '').toLowerCase();
+      const owner = stripMd(img.owner_name).toLowerCase();
+      return name.includes(f) || desc.includes(f) || owner.includes(f);
+    });
+  }, [characterImages, characterQuery]);
+
+  const filteredBeats = useMemo(() => {
+    if (!beatImages) return [];
+    const f = beatQuery.trim().toLowerCase();
+    if (!f) return beatImages;
+    return beatImages.filter((img) => {
+      const name = stripMd(img.name).toLowerCase();
+      const desc = String(img.description || '').toLowerCase();
+      const owner = stripMd(img.owner_name).toLowerCase();
+      const order = String(img.owner_order ?? '').toLowerCase();
+      return (
+        name.includes(f) ||
+        desc.includes(f) ||
+        owner.includes(f) ||
+        order.includes(f)
+      );
+    });
+  }, [beatImages, beatQuery]);
+
   if (!open) return null;
 
   return (
@@ -200,6 +288,38 @@ export function EntityImagePickerModal({
           {tab === 'generate' && (
             <GenerateTab onGenerate={generateFromPrompt} busy={busy} />
           )}
+          {tab === 'characters' && (
+            <SourceTab
+              images={filteredCharacters}
+              loaded={characterImages !== null}
+              query={characterQuery}
+              onQuery={setCharacterQuery}
+              onPick={copy}
+              busy={busy}
+              placeholder="Search character name or image…"
+              emptyText="No character images."
+              labelFor={(it) => stripMd(it.owner_name) || '(unknown character)'}
+            />
+          )}
+          {tab === 'beats' && (
+            <SourceTab
+              images={filteredBeats}
+              loaded={beatImages !== null}
+              query={beatQuery}
+              onQuery={setBeatQuery}
+              onPick={copy}
+              busy={busy}
+              placeholder="Search beat name, order, or image…"
+              emptyText="No beat images."
+              labelFor={(it) => {
+                const owner = stripMd(it.owner_name);
+                if (it.owner_order != null) {
+                  return `Beat ${it.owner_order}${owner ? `: ${owner}` : ''}`;
+                }
+                return owner || '(unknown beat)';
+              }}
+            />
+          )}
         </div>
       </div>
     </Modal>
@@ -238,6 +358,62 @@ function LibraryTab({ images, loaded, query, onQuery, onPick, busy }) {
                 onClick={() => onPick(id)}
               >
                 <img src={thumbUrl(id)} alt={label} loading="lazy" />
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
+function SourceTab({
+  images,
+  loaded,
+  query,
+  onQuery,
+  onPick,
+  busy,
+  placeholder,
+  emptyText,
+  labelFor,
+}) {
+  if (!loaded) {
+    return <p className="ref-picker-empty">Loading…</p>;
+  }
+  return (
+    <>
+      <input
+        type="search"
+        className="ref-picker-search"
+        placeholder={placeholder}
+        value={query}
+        onChange={(e) => onQuery(e.target.value)}
+      />
+      {images.length === 0 ? (
+        <p className="ref-picker-empty">
+          {query ? 'No matches.' : emptyText}
+        </p>
+      ) : (
+        <div className="ref-picker-grid">
+          {images.map((it) => {
+            const id = String(it._id);
+            const ownerLabel = labelFor(it);
+            const imageLabel = stripMd(it.name) || it.filename || '';
+            const title = imageLabel
+              ? `${ownerLabel} — ${imageLabel}`
+              : ownerLabel;
+            return (
+              <button
+                key={id}
+                type="button"
+                className="ref-picker-thumb ref-picker-thumb--labeled"
+                disabled={busy}
+                title={title}
+                onClick={() => onPick(id)}
+              >
+                <img src={thumbUrl(id)} alt={ownerLabel} loading="lazy" />
+                <span className="ref-picker-thumb-caption">{ownerLabel}</span>
               </button>
             );
           })}
@@ -292,12 +468,10 @@ function UploadTab({ fileInputRef, onUpload, busy }) {
 
 function GenerateTab({ onGenerate, busy }) {
   const [prompt, setPrompt] = useState('');
-  const [model, setModel] = useState(readStoredGenModel);
+  const [model, setModel] = useState(() => readStoredImageModel(GEN_MODEL_STORAGE_KEY));
 
   useEffect(() => {
-    try {
-      localStorage.setItem(GEN_MODEL_STORAGE_KEY, model);
-    } catch {}
+    writeStoredImageModel(GEN_MODEL_STORAGE_KEY, model);
   }, [model]);
 
   const trimmed = prompt.trim();
@@ -336,9 +510,9 @@ function GenerateTab({ onGenerate, busy }) {
             marginTop: 6,
           }}
         >
-          {['gemini', 'openai'].map((m) => (
+          {IMAGE_MODELS.map((m) => (
             <label
-              key={m}
+              key={m.id}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -349,12 +523,12 @@ function GenerateTab({ onGenerate, busy }) {
               <input
                 type="radio"
                 name="entity-img-picker-model"
-                value={m}
-                checked={model === m}
-                onChange={() => setModel(m)}
+                value={m.id}
+                checked={model === m.id}
+                onChange={() => setModel(m.id)}
                 disabled={busy}
               />
-              {GEN_MODEL_LABEL[m]}
+              {m.label}
             </label>
           ))}
         </div>

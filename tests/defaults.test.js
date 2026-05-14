@@ -47,9 +47,7 @@ describe('seedDefaults', () => {
       _id: 'character_template',
       fields: [
         { name: 'name', description: 'x', required: true, core: true },
-        { name: 'plays_self', description: 'x', required: false, core: true },
         { name: 'hollywood_actor', description: 'x', required: false, core: true },
-        { name: 'own_voice', description: 'x', required: false, core: true },
         { name: 'background_story', description: 'x', required: false, core: false },
       ],
       updated_at: new Date(),
@@ -62,6 +60,27 @@ describe('seedDefaults', () => {
     expect(names).toContain('alternate_names');
     expect(names).toContain('name_changes');
     expect(names).toContain('background_story'); // existing field preserved
+  });
+
+  it('strips retired plays_self / own_voice fields from an existing template', async () => {
+    await fakeDb.collection('prompts').insertOne({
+      _id: 'character_template',
+      fields: [
+        { name: 'name', description: 'x', required: true, core: true },
+        { name: 'plays_self', description: 'legacy', required: false, core: true },
+        { name: 'hollywood_actor', description: 'x', required: false, core: true },
+        { name: 'own_voice', description: 'legacy', required: false, core: true },
+      ],
+      updated_at: new Date(),
+    });
+
+    await seedDefaults();
+
+    const tpl = await getCharacterTemplate();
+    const names = tpl.fields.map((f) => f.name);
+    expect(names).not.toContain('plays_self');
+    expect(names).not.toContain('own_voice');
+    expect(names).toContain('hollywood_actor');
   });
 
   it('preserves user-added custom template fields across re-seeds', async () => {

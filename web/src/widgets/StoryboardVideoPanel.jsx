@@ -1,32 +1,16 @@
-import { useState } from 'react';
-import { apiDelete, attachmentUrl } from '../api.js';
+import { attachmentUrl } from '../api.js';
 import { formatUsd } from '../videoCost.js';
 
 // Inline video player for a storyboard scene. Renders below the Audio
 // section when sb.video_file_id is set. Falls back to nothing when there's
-// no video — the entry-point button lives in AudioSlot's extraActions.
-export function StoryboardVideoPanel({ sb, storyboardId, onRefresh }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-
+// no video — the entry-point button lives in AudioSlot's extraActions. The
+// Discard video control lives in the storyboard item footer (alongside the
+// item's Delete button) so the two destructive actions stay co-located.
+export function StoryboardVideoPanel({ sb }) {
   if (!sb?.video_file_id) return null;
 
   const id = sb.video_file_id?.toString?.() || String(sb.video_file_id);
   const src = attachmentUrl(id);
-
-  async function discard() {
-    if (!confirm('Discard this generated video? The MP4 will be deleted.')) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await apiDelete(`/storyboard/${storyboardId}/video`);
-      await onRefresh?.();
-    } catch (e) {
-      setError(e.message || 'Failed to discard video.');
-    } finally {
-      setBusy(false);
-    }
-  }
 
   const modelLabel = sb.video_model_label || sb.video_model_id || null;
   const labLine = buildLabLine({
@@ -70,12 +54,6 @@ export function StoryboardVideoPanel({ sb, storyboardId, onRefresh }) {
         ) : null}
         {paramLine ? <div>{paramLine}</div> : null}
       </div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'center' }}>
-        <button type="button" disabled={busy} onClick={discard}>
-          Discard video
-        </button>
-      </div>
-      {error && <div className="error-banner small">{error}</div>}
     </div>
   );
 }

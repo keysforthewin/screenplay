@@ -37,17 +37,18 @@ import {
 } from '../mongo/storyboards.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { dispatchStoryboardImage } from './storyboardImageDispatch.js';
-import { describeReferenceImage } from '../llm/referenceImageDescription.js';
 import {
   createStoryboardViaGateway,
   deleteAllStoryboardsForBeatViaGateway,
   setStoryboardImageViaGateway,
-  setStoryboardStartFrameDescriptionViaGateway,
+  setStoryboardFramePromptViaGateway,
+  setStoryboardFrameReferenceImagesViaGateway,
 } from './gateway.js';
+import { collectStoryboardReferenceIds } from './storyboardReferenceAggregator.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 
 const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
-const MAX_REFERENCE_IMAGES = 4; // cap input images per Nano Banana call
+const MAX_REFERENCE_IMAGES = 12; // cap input images per Nano Banana call
 // Every LLM call in the storyboard pipeline runs on the top-tier model.
 // Hardcoded (not config-driven) on purpose — this surface is meant to be
 // "primo", so we don't want silent downgrades via ANTHROPIC_MODEL or similar.
@@ -244,16 +245,6 @@ async function callGenerateImage(args) {
   return dispatchStoryboardImage(args);
 }
 
-let describerOverride = null;
-export function _setDescriberForTests(fn) {
-  describerOverride = fn;
-}
-
-async function callDescribeReferenceImage(args) {
-  if (describerOverride) return describerOverride(args);
-  return describeReferenceImage({ model: STORYBOARD_MODEL, ...args });
-}
-
 // Test hooks for the two-stage planner. Outline override returns the raw
 // outline array (objects with description/shot_type/duration_seconds/...).
 // Refiner override returns { start_prompt, end_prompt } or null. Both default
@@ -314,7 +305,6 @@ export class BeatBusyError extends Error {
 export async function startStoryboardGenerationJob({
   beatId,
   targetCount,
-  characterSheetOverrides = null,
   imageModel = 'gemini',
   direction = '',
 }) {
@@ -354,7 +344,7 @@ export async function startStoryboardGenerationJob({
   recordProgress(job, {
     phase: 'queued',
     step: 'job_queued',
-    message: `Queued — target ${resolvedCount} frames, image model ${imageModel}`,
+    message: `Queued — target ${resolvedCount} frames`,
   });
   // Fire and forget; errors are recorded on the job. Holding the per-beat lock
   // for the duration prevents concurrent generates and edit calls from racing
@@ -364,7 +354,6 @@ export async function startStoryboardGenerationJob({
       job,
       beat,
       targetCount: resolvedCount,
-      characterSheetOverrides,
       direction: cleanDirection,
     }),
   ).catch((e) => {
@@ -385,7 +374,6 @@ async function runStoryboardGenerationJob({
   job,
   beat,
   targetCount,
-  characterSheetOverrides,
   direction,
 }) {
   // Plan first. If the planner returns nothing (model failure, rate limit,
@@ -435,9 +423,9 @@ async function runStoryboardGenerationJob({
   });
   // Auto frame-image generation has been removed: this loop only persists the
   // planned shot list as storyboard rows (text_prompt, shot_type, duration,
-  // transition_in, characters_in_scene) and pins a character_sheet on
-  // single-character segments. Users render start/end frames on demand via
-  // the SPA's per-row regen flow (startFrameGenerationJob).
+  // transition_in, characters_in_scene) and seeds each frame's reference
+  // list with beat + character images. Users render start/end frames on
+  // demand via the SPA's per-row regen flow (startFrameGenerationJob).
   for (let index = 0; index < planned.length; index++) {
     const frame = planned[index];
     const order = index + 1;
@@ -454,8 +442,6 @@ async function runStoryboardGenerationJob({
         beat,
         frame,
         order,
-        characterDocs,
-        characterSheetOverrides,
       });
       job.completed += 1;
       const elapsed = ((Date.now() - frameStart) / 1000).toFixed(1);
@@ -511,107 +497,10 @@ export async function findCharactersInBeat(beat) {
   return out;
 }
 
-function defaultSheetIdFor(c) {
-  if (Array.isArray(c.character_sheet_image_ids) && c.character_sheet_image_ids.length) {
-    return c.character_sheet_image_ids[0];
-  }
-  return c.character_sheet_image_id || null;
-}
-
-// Load every reference image we know how to attach for the characters in a
-// beat. For each character that has both a sheet and a main portrait we
-// return BOTH (sheet first), so the image generator sees the multi-angle
-// turnaround AND a scene-style face/skin reference. Callers downstream may
-// drop entries to fit inside the per-call reference-image budget — see
-// applyCharRefBudget below.
-//
-// Returns Map<lowerCaseName, Array<{
-//   buffer, contentType, _id, description, name,
-//   characterName, characterSheetImageId, characterMainImageId, kind
-// }>> where kind is 'sheet' | 'portrait'. Entries within a character's
-// array are ordered [sheet, portrait] so budget-trimming naturally prefers
-// the sheet.
-async function loadCharacterReferenceImages(characterDocs, overrides) {
-  const overrideMap = overrides && typeof overrides === 'object' ? overrides : {};
-  const map = new Map();
-  for (const c of characterDocs) {
-    const cid = c._id?.toString?.();
-    const overrideId = cid ? overrideMap[cid] : null;
-    const sheetId = overrideId || defaultSheetIdFor(c);
-    const portraitId =
-      c.main_image_id || (Array.isArray(c.images) && c.images[0]?._id) || null;
-    // Skip duplicates: a legacy character may have its sole image stored as
-    // both the sheet and the main portrait. Loading it twice would burn
-    // budget slots and confuse the prompt.
-    const sheetIdStr = sheetId ? String(sheetId) : null;
-    const portraitIdStr = portraitId ? String(portraitId) : null;
-    const portraitIsDistinct = portraitIdStr && portraitIdStr !== sheetIdStr;
-
-    const refs = [];
-    const characterName = stripMarkdown(c.name || '');
-    if (sheetId) {
-      const ref = await loadImageInput(sheetId);
-      if (ref) {
-        refs.push({
-          ...ref,
-          characterName,
-          characterSheetImageId: sheetId,
-          characterMainImageId: portraitId || null,
-          kind: 'sheet',
-        });
-      }
-    }
-    if (portraitIsDistinct) {
-      const ref = await loadImageInput(portraitId);
-      if (ref) {
-        refs.push({
-          ...ref,
-          characterName,
-          characterSheetImageId: sheetId || null,
-          characterMainImageId: portraitId,
-          kind: 'portrait',
-        });
-      }
-    }
-    if (!refs.length) continue;
-    map.set(characterName.toLowerCase(), refs);
-  }
-  return map;
-}
-
-// Trim a flat list of character refs to fit `cap`. Preference order: every
-// sheet first (in input order), then portraits as room remains. So a 2-slot
-// budget across two characters keeps one sheet per character (sheet-A,
-// sheet-B) rather than greedily filling with character-A's sheet+portrait
-// and dropping character-B entirely.
-function applyCharRefBudget(refs, cap) {
-  if (cap <= 0) return [];
-  if (refs.length <= cap) return refs;
-  const taken = [];
-  for (const r of refs) {
-    if (r.kind !== 'sheet') continue;
-    if (taken.length >= cap) break;
-    taken.push(r);
-  }
-  if (taken.length >= cap) return taken;
-  for (const r of refs) {
-    if (r.kind === 'sheet') continue;
-    if (taken.length >= cap) break;
-    taken.push(r);
-  }
-  return taken;
-}
-
-async function loadBeatSetImage(beat) {
-  const id = beat.main_image_id || (beat.images || [])[0]?._id || null;
-  if (!id) return null;
-  return loadImageInput(id);
-}
-
 // Load image bytes + content type + stored description from GridFS metadata.
 // The description (when present, populated by the vision seed worker) is
-// passed into buildVisualPrompt so the model gets a concordant text+image
-// reference instead of having to infer everything from pixels alone.
+// returned alongside the bytes so callers can build concordant text+image
+// references instead of having to infer everything from pixels alone.
 async function loadImageInput(imageId) {
   try {
     const result = await readImageBuffer(imageId);
@@ -1010,106 +899,57 @@ function cleanPlannedFrame(f) {
 
 // Persist one planned frame as a storyboard row. No image generation —
 // start_frame_id and end_frame_id stay null on the new row, and users render
-// them on demand via the SPA's per-row regen flow. The pin on
-// character_sheet_image_id for single-character segments is preserved so the
-// SPA's downstream chrome still knows which sheet to display by default.
+// them on demand via the SPA's per-row regen flow. Each frame's reference
+// list is seeded from the beat + in-scene characters' images so the modal's
+// default ref grid is non-empty.
 async function createPlannedStoryboardEntry({
   beat,
   frame,
   order,
-  characterDocs,
-  characterSheetOverrides,
 }) {
-  const sceneNames = (frame.characters_in_scene || [])
-    .map((n) => stripMarkdown(n || '').toLowerCase())
-    .filter(Boolean);
-  // seedFragments populates the y-doc text_prompt fragment before the
-  // gateway's broadcast, so the SPA's CollabField renders the prompt
-  // immediately rather than appearing empty until reload.
+  // seedFragments populates the y-doc text_prompt + summary fragments before
+  // the gateway's broadcast, so the SPA's CollabFields render immediately
+  // rather than appearing empty until reload. The planner's `description` is
+  // the LLM-generated one-sentence summary of the shot (per OUTLINE_TOOL's
+  // schema), so we feed it straight into the summary field.
   const textPrompt = buildTextPrompt(frame);
+  const summary = stripMarkdown(frame.description || '').replace(/\s+/g, ' ').trim();
   const sb = await createStoryboardViaGateway({
     beatId: beat._id,
     textPrompt,
+    summary,
     order,
-    seedFragments: { text_prompt: textPrompt },
+    seedFragments: { text_prompt: textPrompt, summary },
     durationSeconds: frame.duration_seconds ?? null,
     shotType: frame.shot_type ?? null,
     transitionIn: frame.transition_in ?? null,
     charactersInScene: frame.characters_in_scene ?? [],
   });
 
-  // Single-character segments get their sheet pinned. Resolves the sheet id
-  // directly from the character doc (with override if supplied) — no image
-  // buffer load needed.
-  const uniqueSceneNames = new Set(sceneNames);
-  if (uniqueSceneNames.size === 1) {
-    const [name] = uniqueSceneNames;
-    const c = characterDocs.find(
-      (d) => stripMarkdown(d.name || '').toLowerCase() === name,
-    );
-    if (c) {
-      const cid = c._id?.toString?.();
-      const overrideId = cid ? characterSheetOverrides?.[cid] : null;
-      const sheetId = overrideId || defaultSheetIdFor(c);
-      if (sheetId) {
-        try {
-          await setStoryboardImageViaGateway({
-            storyboardId: sb._id,
-            role: 'character_sheet',
-            imageId: sheetId,
-          });
-        } catch (e) {
-          logger.warn(`storyboard gen: attach char sheet failed: ${e.message}`);
-        }
+  // Pre-populate BOTH per-frame reference lists with every image we'd
+  // reasonably want as a visual reference for this shot: the beat's set
+  // image(s) plus each in-scene character's sheets and portraits. Failures
+  // are swallowed so the row still lands — users can re-trigger via the
+  // frame's Auto-suggest button.
+  try {
+    const { ids } = await collectStoryboardReferenceIds({
+      beat,
+      charactersInScene: frame.characters_in_scene ?? [],
+      existingIds: [],
+    });
+    if (ids.length) {
+      for (const role of ['start_frame', 'end_frame']) {
+        await setStoryboardFrameReferenceImagesViaGateway({
+          storyboardId: sb._id,
+          role,
+          imageIds: ids,
+          mode: 'append',
+        });
       }
     }
+  } catch (e) {
+    logger.warn(`storyboard gen: auto-populate refs failed: ${e.message}`);
   }
-}
-
-// Shared label/directive for "use the start frame as a continuity reference
-// for the end frame" — used by both the batch render path (where we pass an
-// in-memory buffer just rendered) and the single-frame regen path (where we
-// re-load from GridFS). Demotes the set / character images to secondary
-// references; this addresses the previous problem of the model averaging
-// lighting between the start frame and the set image.
-function buildStartFrameContinuityRef({ buffer, contentType, description }) {
-  return {
-    buffer,
-    contentType,
-    description: description || '',
-    label:
-      "PRIMARY reference: the final image above is THIS shot's start frame. " +
-      'The set image and character sheets above are secondary references — ' +
-      'defer to the start frame for lighting, palette, character identity, ' +
-      'and set geometry.',
-    directive:
-      'Lock to the start frame: lighting palette and color temperature, ' +
-      'character identity (faces, hair, wardrobe), and set geometry (same ' +
-      'room, same dressing). The camera position, angle, and distance MAY ' +
-      'shift as described in the prompt above — that is intentional motion ' +
-      'progression within the same shot, not a different scene. Characters ' +
-      'retain identity even if pose, expression, or screen position differs ' +
-      'from the start frame.',
-  };
-}
-
-// Shared label/directive for "use the previous shot's end frame as a continuity
-// reference for THIS shot's start frame" — used by both the batch render path
-// (in-memory buffer from the prior iteration) and the single-frame regen path
-// (re-loaded from GridFS).
-function buildPrevShotContinuityRef({ buffer, contentType, description }) {
-  return {
-    buffer,
-    contentType,
-    description: description || '',
-    label:
-      "The final image above is the PREVIOUS shot's end frame. Pick up the " +
-      'visual thread from it — shared lighting, matching motion vector, or a ' +
-      'deliberate match cut.',
-    directive:
-      "Maintain continuity with the previous shot's end frame: shared " +
-      'lighting, costume/prop continuity, and a sensible cut point.',
-  };
 }
 
 function buildTextPrompt(frame) {
@@ -1147,114 +987,30 @@ function buildTextPrompt(frame) {
   return lines.join('\n');
 }
 
-function buildVisualPrompt({
-  framePrompt,
-  description,
-  charRefs,
-  beatSetImage,
-  role,
-  shotType = null,
-  continuityRef = null,
-  direction = '',
-}) {
+// Build the default suggested prompt for a single frame slot — used by the
+// SPA's preview-prompt endpoint when the stored frame prompt is empty so the
+// user gets a sensible starting draft they can keep or edit.
+function buildSuggestedFramePrompt({ sb, role }) {
   const lines = [];
-  if (shotType) {
-    lines.push(`Shot type: ${shotType.replace(/_/g, ' ').toUpperCase()}.`);
+  if (sb.shot_type) {
+    lines.push(`Shot type: ${sb.shot_type.replace(/_/g, ' ').toUpperCase()}.`);
   }
-  // Director's style direction is a top-level constraint that should color
-  // every frame, so emit it before the per-shot frame prompt. Sanitized at
-  // job-entry to <= 4000 chars; stripMarkdown is a safety belt in case a
-  // future caller passes raw markdown.
-  const cleanDirection = direction ? stripMarkdown(direction).trim() : '';
-  if (cleanDirection) {
-    lines.push(`Director's style direction: ${cleanDirection}`);
-  }
-  lines.push(framePrompt);
-  if (description) {
-    lines.push('');
-    lines.push(`Context: ${stripMarkdown(description)}`);
-  }
-  // Group refs by character so a character contributing both a sheet and a
-  // portrait gets a single "two views" anchor line rather than two
-  // confusingly-identical "canonical reference for X" lines.
-  const refsByChar = new Map();
-  for (const ref of charRefs) {
-    const key = (ref.characterName || '').toLowerCase();
-    if (!refsByChar.has(key)) refsByChar.set(key, []);
-    refsByChar.get(key).push(ref);
-  }
-  const refLines = [];
-  for (const group of refsByChar.values()) {
-    const name = group[0].characterName || 'Character';
-    const hasSheet = group.some((r) => r.kind === 'sheet');
-    const hasPortrait = group.some((r) => r.kind === 'portrait');
-    if (hasSheet && hasPortrait) {
-      refLines.push(
-        `- The two images of ${name} above are canonical references — a turnaround character sheet (proportions, costume, hair) and a portrait (face, skin tone, scene-style fidelity).`,
-      );
-    } else {
-      refLines.push(
-        `- The image of ${name} above is the canonical reference for that character.`,
-      );
-    }
-  }
-  if (beatSetImage) {
-    refLines.push(
-      '- The set image above is the canonical reference for the location, lighting, and mood.',
+  const body = stripMarkdown(sb.text_prompt || '').trim();
+  if (body) lines.push(body);
+  if (Array.isArray(sb.characters_in_scene) && sb.characters_in_scene.length) {
+    lines.push(
+      `Characters in scene: ${sb.characters_in_scene
+        .map((n) => stripMarkdown(n))
+        .filter(Boolean)
+        .join(', ')}.`,
     );
   }
-  if (continuityRef) {
-    refLines.push(`- ${continuityRef.label}`);
-  }
-  if (refLines.length) {
-    lines.push('');
-    lines.push('Reference materials:');
-    lines.push(...refLines);
-  }
-
-  // Verbal anchors for each reference image. Multimodal models stick
-  // closer to fine details (window arches, brick coursing, lamp color
-  // temperature, hairstyle specifics) when given concordant text + image
-  // cues than image alone. Skipped silently when no reference has a
-  // stored description (legacy uploads without auto-captions).
-  const detailLines = [];
-  for (const group of refsByChar.values()) {
-    const name = group[0].characterName || 'Character';
-    const showKind = group.length > 1;
-    for (const ref of group) {
-      if (!ref.description) continue;
-      const label = showKind ? `${name} (${ref.kind})` : name;
-      detailLines.push(`- ${label}: ${stripMarkdown(ref.description)}`);
-    }
-  }
-  if (beatSetImage?.description) {
-    detailLines.push(`- Set: ${stripMarkdown(beatSetImage.description)}`);
-  }
-  if (role === 'end' && continuityRef?.description) {
-    detailLines.push(
-      `- Start frame to match: ${stripMarkdown(continuityRef.description)}`,
-    );
-  }
-  if (role === 'start' && continuityRef?.description) {
-    detailLines.push(
-      `- Previous shot end frame to match: ${stripMarkdown(continuityRef.description)}`,
-    );
-  }
-  if (detailLines.length) {
-    lines.push('');
-    lines.push('Reference details (match these specifics, not just the visuals):');
-    lines.push(...detailLines);
-  }
-
   lines.push('');
   lines.push(
-    role === 'start'
-      ? 'Render the beginning moment of this frame as a cinematic still.'
-      : 'Render the end moment of this frame as a cinematic still — show motion progression beyond the start.',
+    role === 'start_frame'
+      ? 'Render the beginning moment of this shot as a cinematic still.'
+      : 'Render the end moment of this shot as a cinematic still — show motion progression beyond the start.',
   );
-  if (continuityRef) {
-    lines.push(continuityRef.directive);
-  }
   return lines.join('\n');
 }
 
@@ -1277,6 +1033,7 @@ async function persistFrameImage({ storyboardId, role, result, beatId, orderHint
 }
 
 const FRAME_ROLES = new Set(['start_frame', 'end_frame']);
+const MAX_FRAME_REFERENCE_IMAGES = 12;
 
 export class FrameRoleError extends Error {
   constructor(role) {
@@ -1294,54 +1051,57 @@ export class EditModeError extends Error {
   }
 }
 
-// Raised when end-frame regen is attempted before a start frame exists for
-// the row. The new transform-focused end-frame pipeline anchors on the start
-// frame, so without one there is nothing to transform.
-export class MissingStartFrameError extends Error {
-  constructor() {
-    super(
-      'Generate the start frame first — the end frame is generated as a transformation of it.',
-    );
-    this.code = 'MISSING_START_FRAME';
-    this.status = 400;
-  }
+function frameImageField(role) {
+  return role === 'start_frame' ? 'start_frame_id' : 'end_frame_id';
 }
 
-// Regenerate a single frame (start_frame | end_frame) on an existing storyboard
-// row. Three modes:
+function frameReferenceField(role) {
+  return role === 'start_frame'
+    ? 'start_frame_reference_ids'
+    : 'end_frame_reference_ids';
+}
+
+function framePromptDocField(role) {
+  return role === 'start_frame' ? 'start_frame_prompt' : 'end_frame_prompt';
+}
+
+async function loadFrameReferenceImages(sb, role) {
+  const ids = sb[frameReferenceField(role)] || [];
+  const out = [];
+  for (const id of ids.slice(0, MAX_FRAME_REFERENCE_IMAGES)) {
+    const ref = await loadImageInput(id);
+    if (ref) {
+      out.push({ buffer: ref.buffer, contentType: ref.contentType });
+    }
+  }
+  return out;
+}
+
+// Regenerate a single frame (start_frame | end_frame). Two modes:
 //
-// - 'full' (default): reuses the batch pipeline's reference loaders so the
-//   inputs match exactly — the beat's scene image plus each in-scene
-//   character's sheet (or all beat characters if the row doesn't pin a single
-//   character), plus a continuity ref (the row's own start frame for end-frame
-//   regen, or the previous row's end frame for start-frame regen on row #2+).
-//   The row's current `text_prompt` drives the visual prompt.
+// - 'generate' (default): renders the frame from the user's `prompt` plus the
+//   persisted per-frame reference list. The prompt is also saved back to the
+//   stored frame prompt field so the textarea state survives a refresh.
+//
 // - 'edit': passes only the existing frame image plus the user's `editPrompt`
 //   to the chosen image model. Skips reference loading entirely. Use for small
 //   inline tweaks ("remove the lamp on the left") on an almost-good image.
-// - 'custom': sends the user's `customPrompt` verbatim to the image model with
-//   no reference images and no constructed scaffolding. Pure text-to-image —
-//   for hand-crafted shots, recovering from a bad plan, or experimenting with
-//   prompt phrasing. Works whether or not the slot already has an image.
 //
 // Public entry point: validates inputs, resolves sb + beat, refuses if the
 // beat lock is held, and delegates to the internal worker. Direct callers
-// (tests, future agent tools) get the fail-fast BeatBusyError semantics. The
-// SPA-facing path goes through `startFrameGenerationJob` instead, which holds
-// the lock for the duration of the run.
+// (tests) get the fail-fast BeatBusyError semantics. The SPA-facing path goes
+// through `startFrameGenerationJob` instead, which holds the lock for the
+// duration of the run.
 export async function regenerateStoryboardFrame({
   storyboardId,
   role,
   imageModel = 'gemini',
-  mode = 'full',
+  mode = 'generate',
   editPrompt = null,
-  customPrompt = null,
-  promptOverride = null,
-  includeContinuity = true,
-  includeStartFrame = true,
+  prompt = null,
 }) {
   if (!FRAME_ROLES.has(role)) throw new FrameRoleError(role);
-  if (!['full', 'edit', 'custom'].includes(mode)) {
+  if (!['generate', 'edit'].includes(mode)) {
     throw new EditModeError(`Unknown regen mode "${mode}".`);
   }
   const sb = await getStoryboard(storyboardId);
@@ -1358,277 +1118,14 @@ export async function regenerateStoryboardFrame({
     imageModel,
     mode,
     editPrompt,
-    customPrompt,
-    promptOverride,
-    includeContinuity,
-    includeStartFrame,
+    prompt,
   });
 }
 
-// Worker body. Caller is responsible for (a) validating role/mode and (b)
-// holding the per-beat lock — direct callers go through the public wrapper
-// above; the background job runner holds the lock via `withBeatLock`.
-// Load and budget reference images for full-mode regen. Pure I/O — no Claude
-// calls. Scoped strictly to images that live on the storyboard row itself:
-//
-// - character_sheet_image_id: optional pinned character reference (paired
-//   with the owning character's main portrait when present).
-// - reference_image_ids: optional row-level reference attachments.
-//
-// Plus one role-specific continuity slot, opt-in via flags so the regen
-// dialog can offer a checkbox:
-//
-// - role=end_frame + includeStartFrame=true: anchor on the row's own
-//   start_frame_id as the transformation canvas. Throws
-//   MissingStartFrameError if no start frame exists. When
-//   includeStartFrame=false the end frame is generated from the prompt
-//   alone (plus any row pins) — useful for re-rolling from scratch.
-//
-// - role=start_frame + includeContinuity=true: append the PREVIOUS row's
-//   end_frame as a continuity anchor (when one exists). When
-//   includeContinuity=false the start frame is generated from the prompt
-//   alone (plus any row pins).
-//
-// Nothing on the beat (scene image, character roster) is loaded by this
-// function. The batch storyboard-generation pipeline uses its own loaders
-// (loadBeatSetImage / loadFrameCharacterRefs) and is unaffected.
-async function loadFullModeReferences({
-  sb,
-  beat,
-  role,
-  includeContinuity = true,
-  includeStartFrame = true,
-}) {
-  // Row-owned references — same for both roles.
-  const pinned = sb.character_sheet_image_id
-    ? await loadEndFramePinnedSheet({ beat, sb })
-    : [];
-
-  const referenceImages = [];
-  if (Array.isArray(sb.reference_image_ids) && sb.reference_image_ids.length) {
-    for (const id of sb.reference_image_ids) {
-      const ref = await loadImageInput(id);
-      if (ref) {
-        referenceImages.push({
-          buffer: ref.buffer,
-          contentType: ref.contentType,
-          description: ref.description || '',
-          name: ref.name || '',
-        });
-      }
-    }
-  }
-
-  let continuityRef = null;
-  if (role === 'end_frame' && includeStartFrame) {
-    if (!sb.start_frame_id) throw new MissingStartFrameError();
-    const startRef = await loadImageInput(sb.start_frame_id);
-    if (!startRef) throw new MissingStartFrameError();
-    continuityRef = buildStartFrameContinuityRef({
-      buffer: startRef.buffer,
-      contentType: startRef.contentType,
-      description: sb.start_frame_description || startRef.description || '',
-    });
-  } else if (role === 'start_frame' && includeContinuity) {
-    continuityRef = await loadContinuityReference({ sb, role });
-  }
-
-  // Budget: continuity (when present) is mandatory; trim row pins to fit.
-  // Reference images get trimmed before pinned sheets — sheets are usually
-  // more load-bearing.
-  const continuitySlots = continuityRef ? 1 : 0;
-  const extraCap = Math.max(0, MAX_REFERENCE_IMAGES - continuitySlots);
-  const sheetCount = Math.min(pinned.length, extraCap);
-  const refCount = Math.min(referenceImages.length, extraCap - sheetCount);
-  const trimmedSheets = pinned.slice(0, sheetCount);
-  const trimmedRefs = referenceImages.slice(0, refCount);
-
-  // Continuity ref last so the prompt's "the final image above…" sentence
-  // is unambiguous (applies to both roles: end_frame anchors on the start
-  // frame; start_frame on the previous shot's end frame).
-  const inputImages = [
-    ...trimmedSheets.map((r) => ({ buffer: r.buffer, contentType: r.contentType })),
-    ...trimmedRefs.map((r) => ({ buffer: r.buffer, contentType: r.contentType })),
-    ...(continuityRef
-      ? [{ buffer: continuityRef.buffer, contentType: continuityRef.contentType }]
-      : []),
-  ];
-
-  return {
-    inputImages,
-    beatSetImage: null,
-    charsToInclude: trimmedSheets,
-    continuityRef,
-    referenceImages: trimmedRefs,
-  };
-}
-
-// Load the row's pinned character sheet (and the owner's portrait, if
-// present) for end-frame regen. Mirrors the pinned-sheet branch of
-// loadFrameCharacterRefs but never falls through to "all beat characters" —
-// the end-frame pipeline relies on the start frame for character identity
-// and only adds explicit pins on top.
-async function loadEndFramePinnedSheet({ beat, sb }) {
-  const characterDocs = await findCharactersInBeat(beat);
-  const sheetIdStr = String(sb.character_sheet_image_id);
-  const owner = characterDocs.find((c) => {
-    const ids = Array.isArray(c.character_sheet_image_ids)
-      ? c.character_sheet_image_ids
-      : [];
-    const legacy = c.character_sheet_image_id;
-    return (
-      ids.some((x) => String(x) === sheetIdStr) ||
-      (legacy && String(legacy) === sheetIdStr)
-    );
-  });
-  const characterName = owner ? stripMarkdown(owner.name || '') : '';
-  const refs = [];
-  const sheetRef = await loadImageInput(sb.character_sheet_image_id);
-  if (sheetRef) {
-    refs.push({
-      ...sheetRef,
-      characterName,
-      kind: 'sheet',
-    });
-  }
-  const portraitId = owner?.main_image_id || null;
-  if (portraitId && String(portraitId) !== sheetIdStr) {
-    const portraitRef = await loadImageInput(portraitId);
-    if (portraitRef) {
-      refs.push({
-        ...portraitRef,
-        characterName,
-        kind: 'portrait',
-      });
-    }
-  }
-  return refs;
-}
-
-// Assemble the full-mode text prompt. Role-dispatched: start_frame uses the
-// rich buildVisualPrompt scaffolding (it has no anchor image so it has to
-// describe the shot from scratch). end_frame uses the minimal
-// buildEndFrameTransformPrompt that frames the prompt as a transformation
-// of the start frame, with no per-character verbal anchors or set-image
-// scaffolding — the start frame carries all of that.
-//
-// Does NOT persist anything — callers that want the user's edited override
-// to stick handle that explicitly after a successful generation.
-async function assembleFullModePrompt({
-  sb,
-  role,
-  beatSetImage,
-  charsToInclude,
-  continuityRef,
-  referenceImages = [],
-}) {
-  const framePrompt = sb.text_prompt || '';
-  if (role === 'end_frame') {
-    return buildEndFrameTransformPrompt({
-      framePrompt,
-      charsToInclude,
-      referenceImages,
-      shotType: sb.shot_type || null,
-      hasStartFrame: !!continuityRef,
-    });
-  }
-
-  return buildVisualPrompt({
-    framePrompt,
-    description: '',
-    charRefs: charsToInclude,
-    beatSetImage,
-    role: 'start',
-    shotType: sb.shot_type || null,
-    continuityRef: continuityRef
-      ? {
-          label: continuityRef.label,
-          directive: continuityRef.directive,
-          description: continuityRef.description || '',
-        }
-      : null,
-  });
-}
-
-// Minimal end-frame prompt: frame the generation as a continuation of the
-// start frame above, then state only what changes. No "Reference materials"
-// list, no per-character verbal anchors, no render directive — the opening
-// paragraph carries the lock-to-start-frame constraint, and the description
-// (sb.end_prompt) carries the transformation. Auxiliary refs (pinned sheet,
-// reference_image_ids) get a short "additional references" block only if
-// present.
-function buildEndFrameTransformPrompt({
-  framePrompt,
-  charsToInclude = [],
-  referenceImages = [],
-  shotType = null,
-  hasStartFrame = true,
-}) {
-  const lines = [];
-  if (hasStartFrame) {
-    lines.push(
-      'The final image above is the start frame of this shot. Generate the end frame of the same continuous shot: lighting palette, color temperature, character identity, set geometry, and framing stay locked unless the description below changes them. Only what the description specifies should vary (camera reframe, pose, expression, action). This is a continuation, not a new scene.',
-    );
-  } else {
-    lines.push(
-      'Generate the end frame of this shot as a cinematic still from the description below.',
-    );
-  }
-  if (shotType) {
-    lines.push('');
-    lines.push(`Shot type: ${shotType.replace(/_/g, ' ').toUpperCase()}.`);
-  }
-  lines.push('');
-  lines.push('End-frame description:');
-  lines.push(framePrompt || '(continuation of the same beat — no specific change requested)');
-
-  if (charsToInclude.length || referenceImages.length) {
-    lines.push('');
-    lines.push(
-      hasStartFrame
-        ? 'Additional reference images above the start frame:'
-        : 'Reference images above:',
-    );
-    // Group character refs by name so a sheet + portrait pair gets one line.
-    const refsByChar = new Map();
-    for (const ref of charsToInclude) {
-      const key = (ref.characterName || '').toLowerCase();
-      if (!refsByChar.has(key)) refsByChar.set(key, []);
-      refsByChar.get(key).push(ref);
-    }
-    for (const group of refsByChar.values()) {
-      const name = group[0].characterName || 'Character';
-      const hasSheet = group.some((r) => r.kind === 'sheet');
-      const hasPortrait = group.some((r) => r.kind === 'portrait');
-      if (hasSheet && hasPortrait) {
-        lines.push(
-          `- The two images of ${name} above are canonical references — a character sheet and a portrait.`,
-        );
-      } else {
-        lines.push(
-          `- The image of ${name} above is the canonical reference for that character.`,
-        );
-      }
-    }
-    for (const ref of referenceImages) {
-      const label = ref.name || ref.description || 'reference image';
-      lines.push(`- Reference image above: ${stripMarkdown(label)}`);
-    }
-  }
-
-  return lines.join('\n');
-}
-
-// Preview the prompt and reference bundle that full-mode regen would send to
-// the image model — without calling the image model. The SPA's regen dialog
-// fetches this on open so the user can review/edit the assembled prompt
-// before generating.
-export async function previewFrameGenerationPrompt({
-  storyboardId,
-  role,
-  includeContinuity = true,
-  includeStartFrame = true,
-}) {
+// Preview the suggested default prompt for a single frame slot. Called by the
+// SPA's generate modal on open so the user gets a sensible starting draft
+// when the stored prompt is empty.
+export async function previewFrameGenerationPrompt({ storyboardId, role }) {
   if (!FRAME_ROLES.has(role)) throw new FrameRoleError(role);
   const sb = await getStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
@@ -1637,43 +1134,16 @@ export async function previewFrameGenerationPrompt({
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
   }
-
-  const refs = await loadFullModeReferences({
-    sb,
-    beat,
-    role,
-    includeContinuity,
-    includeStartFrame,
-  });
-  const prompt = await assembleFullModePrompt({
-    sb,
-    role,
-    beatSetImage: refs.beatSetImage,
-    charsToInclude: refs.charsToInclude,
-    continuityRef: refs.continuityRef,
-    referenceImages: refs.referenceImages,
-  });
-
-  // Probe whether a previous-row end frame exists so the dialog can decide
-  // whether to enable the continuity checkbox even when the user has
-  // currently opted out. Cheap — listStoryboards is one Mongo read.
-  let hasPrevEndFrame = false;
-  if (role === 'start_frame' && sb.order > 1) {
-    const siblings = await listStoryboards({ beatId: sb.beat_id });
-    const prev = siblings.find((s) => Number(s.order) === Number(sb.order) - 1);
-    hasPrevEndFrame = !!prev?.end_frame_id;
-  }
-
+  const storedField = framePromptDocField(role);
+  const stored = sb[storedField] || '';
+  const suggested = buildSuggestedFramePrompt({ sb, role });
+  const refIds = sb[frameReferenceField(role)] || [];
   return {
-    prompt,
-    reference_count: refs.inputImages.length,
-    has_start_frame_ref: role === 'end_frame' && !!refs.continuityRef,
-    has_set_image: !!refs.beatSetImage,
-    character_count: refs.charsToInclude.length,
-    has_pinned_sheet: role === 'end_frame' && refs.charsToInclude.length > 0,
-    reference_image_count: refs.referenceImages?.length || 0,
-    has_prev_end_frame: hasPrevEndFrame,
-    has_row_start_frame: !!sb.start_frame_id,
+    prompt: stored.trim() ? stored : suggested,
+    suggested_prompt: suggested,
+    has_stored_prompt: !!stored.trim(),
+    reference_count: refIds.length,
+    has_existing_frame: !!sb[frameImageField(role)],
   };
 }
 
@@ -1682,25 +1152,21 @@ async function regenerateStoryboardFrameInternal({
   beat,
   role,
   imageModel = 'gemini',
-  mode = 'full',
+  mode = 'generate',
   editPrompt = null,
-  customPrompt = null,
-  promptOverride = null,
-  includeContinuity = true,
-  includeStartFrame = true,
+  prompt = null,
 }) {
-  let prompt;
+  let renderPrompt;
   let inputImages;
   let dispatchMode;
   if (mode === 'edit') {
     if (typeof editPrompt !== 'string' || !editPrompt.trim()) {
       throw new EditModeError('Edit mode requires a non-empty editPrompt.');
     }
-    const existingId =
-      role === 'start_frame' ? sb.start_frame_id : sb.end_frame_id;
+    const existingId = sb[frameImageField(role)];
     if (!existingId) {
       throw new EditModeError(
-        `No existing ${role.replace('_', ' ')} to edit. Use full regenerate instead.`,
+        `No existing ${role.replace('_', ' ')} to edit. Use generate mode instead.`,
       );
     }
     const existing = await loadImageInput(existingId);
@@ -1709,42 +1175,34 @@ async function regenerateStoryboardFrameInternal({
         `Could not read existing ${role.replace('_', ' ')} bytes for editing.`,
       );
     }
-    prompt = editPrompt.trim();
+    renderPrompt = editPrompt.trim();
     inputImages = [{ buffer: existing.buffer, contentType: existing.contentType }];
     dispatchMode = 'edit';
-  } else if (mode === 'custom') {
-    if (typeof customPrompt !== 'string' || !customPrompt.trim()) {
-      throw new EditModeError('Custom mode requires a non-empty customPrompt.');
-    }
-    prompt = customPrompt.trim();
-    inputImages = [];
-    dispatchMode = 'generate';
   } else {
-    const refs = await loadFullModeReferences({
-      sb,
-      beat,
-      role,
-      includeContinuity,
-      includeStartFrame,
-    });
-    inputImages = refs.inputImages;
-    if (typeof promptOverride === 'string' && promptOverride.trim()) {
-      prompt = promptOverride.trim();
-    } else {
-      prompt = await assembleFullModePrompt({
-        sb,
-        role,
-        beatSetImage: refs.beatSetImage,
-        charsToInclude: refs.charsToInclude,
-        continuityRef: refs.continuityRef,
-        referenceImages: refs.referenceImages,
-      });
+    if (typeof prompt !== 'string' || !prompt.trim()) {
+      throw new EditModeError('Generate mode requires a non-empty prompt.');
     }
+    renderPrompt = prompt.trim();
+    // Persist the user's customized prompt before dispatching so the textarea
+    // state survives a refresh even mid-job. Failures collapse silently — the
+    // prompt is still sent to the model, the persisted value just lags.
+    try {
+      await setStoryboardFramePromptViaGateway({
+        storyboardId: sb._id,
+        role,
+        text: renderPrompt,
+      });
+    } catch (e) {
+      logger.warn(
+        `storyboard regen: persist ${role} prompt failed: ${e.message}`,
+      );
+    }
+    inputImages = await loadFrameReferenceImages(sb, role);
     dispatchMode = 'generate';
   }
 
   const result = await callGenerateImage({
-    prompt,
+    prompt: renderPrompt,
     model: imageModel,
     mode: dispatchMode,
     inputImages,
@@ -1757,29 +1215,6 @@ async function regenerateStoryboardFrameInternal({
     beatId: beat._id,
     orderHint: `${role === 'start_frame' ? 'start' : 'end'}-${sb.order}`,
   });
-
-  // After (re)generating the start frame, recaption it so the storyboard's
-  // start_frame_description reflects the new image. Otherwise the next
-  // end-frame regen would inject a stale description that doesn't match
-  // what's actually rendered. Applies to edit mode too — even a small tweak
-  // can shift the lighting/composition the description anchors to. Failures
-  // collapse silently — the missing description just means the end frame
-  // loses its verbal anchor.
-  if (role === 'start_frame') {
-    try {
-      const captioned = await callDescribeReferenceImage({
-        buffer: result.buffer,
-        contentType: result.contentType,
-        kind: 'auto',
-      });
-      await setStoryboardStartFrameDescriptionViaGateway({
-        storyboardId: sb._id,
-        description: captioned.description || '',
-      });
-    } catch (e) {
-      logger.warn(`storyboard regen: caption start frame ${sb._id} failed: ${e.message}`);
-    }
-  }
 
   return { image_id: file._id.toString() };
 }
@@ -1802,15 +1237,12 @@ export async function startFrameGenerationJob({
   storyboardId,
   role,
   imageModel = 'gemini',
-  mode = 'full',
+  mode = 'generate',
   editPrompt = null,
-  customPrompt = null,
-  promptOverride = null,
-  includeContinuity = true,
-  includeStartFrame = true,
+  prompt = null,
 }) {
   if (!FRAME_ROLES.has(role)) throw new FrameRoleError(role);
-  if (!['full', 'edit', 'custom'].includes(mode)) {
+  if (!['generate', 'edit'].includes(mode)) {
     throw new EditModeError(`Unknown regen mode "${mode}".`);
   }
   const sb = await getStoryboard(storyboardId);
@@ -1820,17 +1252,10 @@ export async function startFrameGenerationJob({
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
   }
-  // Fail fast on end-frame full-mode without a start frame so the route can
-  // return 400 instead of a 202 followed by an error-status job poll. Only
-  // checked when the caller wants the start frame as a reference — when
-  // includeStartFrame=false the end frame is generated from prompt alone.
-  if (
-    role === 'end_frame' &&
-    mode === 'full' &&
-    includeStartFrame &&
-    !sb.start_frame_id
-  ) {
-    throw new MissingStartFrameError();
+  if (mode === 'edit' && !sb[frameImageField(role)]) {
+    throw new EditModeError(
+      `No existing ${role.replace('_', ' ')} to edit. Use generate mode instead.`,
+    );
   }
 
   const jobId = makeJobId();
@@ -1858,10 +1283,7 @@ export async function startFrameGenerationJob({
       imageModel,
       mode,
       editPrompt,
-      customPrompt,
-      promptOverride,
-      includeContinuity,
-      includeStartFrame,
+      prompt,
     }),
   ).catch((e) => {
     job.status = 'error';
@@ -1881,10 +1303,7 @@ async function runFrameGenerationJob({
   imageModel,
   mode,
   editPrompt,
-  customPrompt,
-  promptOverride,
-  includeContinuity,
-  includeStartFrame,
+  prompt,
 }) {
   job.status = 'running';
   const { image_id } = await regenerateStoryboardFrameInternal({
@@ -1894,110 +1313,9 @@ async function runFrameGenerationJob({
     imageModel,
     mode,
     editPrompt,
-    customPrompt,
-    promptOverride,
-    includeContinuity,
-    includeStartFrame,
+    prompt,
   });
   job.image_id = image_id;
   job.status = 'done';
   job.finished_at = new Date();
-}
-
-// Pull a single continuity reference image:
-// - end_frame regen: the row's own start_frame_id (so the end matches the start).
-// - start_frame regen: the previous row's end_frame_id (so the cut between
-//   shots feels continuous).
-// Returns { buffer, contentType, description, label, directive } or null.
-// The caller appends this last in inputImages so the prompt's "final image
-// above" sentence is unambiguous. Description (when present) is injected
-// into the prompt by buildVisualPrompt as a verbal anchor for what to
-// preserve.
-async function loadContinuityReference({ sb, role }) {
-  if (role === 'end_frame') {
-    if (!sb.start_frame_id) return null;
-    const ref = await loadImageInput(sb.start_frame_id);
-    if (!ref) return null;
-    // Prefer the storyboard's denormalized start_frame_description (written
-    // at generate time by the batch path). Fall back to the GridFS metadata
-    // description on the start frame file. Either is fine — they're written
-    // from the same describer call.
-    const description = sb.start_frame_description || ref.description || '';
-    return buildStartFrameContinuityRef({
-      buffer: ref.buffer,
-      contentType: ref.contentType,
-      description,
-    });
-  }
-  if (role === 'start_frame') {
-    if (sb.order <= 1) return null;
-    const siblings = await listStoryboards({ beatId: sb.beat_id });
-    const prev = siblings.find((s) => Number(s.order) === Number(sb.order) - 1);
-    if (!prev || !prev.end_frame_id) return null;
-    const ref = await loadImageInput(prev.end_frame_id);
-    if (!ref) return null;
-    return buildPrevShotContinuityRef({
-      buffer: ref.buffer,
-      contentType: ref.contentType,
-      description: ref.description || '',
-    });
-  }
-  return null;
-}
-
-// Decide which character refs to pass for a single-row regen.
-// If the row already pins one character (set during the batch when the planner
-// names exactly one character_in_scene), use that character's sheet — and its
-// portrait if it has one — so the regen matches the batch path's dual-ref
-// behavior. Otherwise fall back to every character on the beat, capped to
-// leave room for the scene image within MAX_REFERENCE_IMAGES.
-async function loadFrameCharacterRefs({ beat, sb, beatSetImage }) {
-  const cap = MAX_REFERENCE_IMAGES - (beatSetImage ? 1 : 0);
-  const characterDocs = await findCharactersInBeat(beat);
-  if (sb.character_sheet_image_id) {
-    // Find which character this sheet belongs to so the prompt can name it
-    // ("The image of <name> above is the canonical reference..."). The batch
-    // pipeline only pins character_sheet_image_id when exactly one character
-    // was in scene, so a clean lookup is expected.
-    const sheetIdStr = String(sb.character_sheet_image_id);
-    const owner = characterDocs.find((c) => {
-      const ids = Array.isArray(c.character_sheet_image_ids)
-        ? c.character_sheet_image_ids
-        : [];
-      const legacy = c.character_sheet_image_id;
-      return (
-        ids.some((x) => String(x) === sheetIdStr) ||
-        (legacy && String(legacy) === sheetIdStr)
-      );
-    });
-    const characterName = owner ? stripMarkdown(owner.name || '') : '';
-    const refs = [];
-    const sheetRef = await loadImageInput(sb.character_sheet_image_id);
-    if (sheetRef) {
-      refs.push({
-        ...sheetRef,
-        characterName,
-        characterSheetImageId: sb.character_sheet_image_id,
-        characterMainImageId: owner?.main_image_id || null,
-        kind: 'sheet',
-      });
-    }
-    const portraitId = owner?.main_image_id || null;
-    if (portraitId && String(portraitId) !== sheetIdStr) {
-      const portraitRef = await loadImageInput(portraitId);
-      if (portraitRef) {
-        refs.push({
-          ...portraitRef,
-          characterName,
-          characterSheetImageId: sb.character_sheet_image_id,
-          characterMainImageId: portraitId,
-          kind: 'portrait',
-        });
-      }
-    }
-    if (refs.length) return applyCharRefBudget(refs, cap);
-  }
-  const map = await loadCharacterReferenceImages(characterDocs, null);
-  const flat = Array.from(map.values()).flat();
-  return applyCharRefBudget(flat, cap);
 }

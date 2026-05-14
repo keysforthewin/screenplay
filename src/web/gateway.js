@@ -58,10 +58,17 @@ import {
   pushCharacterImage,
   pullCharacterImage,
   replaceCharacterImage,
-  appendCharacterSheetImage,
-  removeCharacterSheetImage,
-  reorderCharacterSheetImages,
+  pushCharacterAttachment,
+  pullCharacterAttachment,
 } from '../mongo/characters.js';
+import {
+  createPendingArtwork as mongoCreatePendingArtwork,
+  patchArtwork as mongoPatchArtwork,
+  setArtworkStatus as mongoSetArtworkStatus,
+  setArtworkResult as mongoSetArtworkResult,
+  undoArtworkEdit as mongoUndoArtworkEdit,
+  removeArtwork as mongoRemoveArtwork,
+} from '../mongo/artworks.js';
 import {
   getDirectorNotes,
   addDirectorNote as mongoAddDirectorNote,
@@ -79,8 +86,13 @@ import {
   deleteStoryboardsForBeat as mongoDeleteStoryboardsForBeat,
   getStoryboard as mongoGetStoryboard,
   reorderStoryboardsForBeat as mongoReorderStoryboards,
-  pushReferenceImage as mongoPushReferenceImage,
-  pullReferenceImage as mongoPullReferenceImage,
+  pushFrameReferenceImage as mongoPushFrameReferenceImage,
+  pullFrameReferenceImage as mongoPullFrameReferenceImage,
+  pushFrameReferenceImages as mongoPushFrameReferenceImages,
+  setFrameReferenceImages as mongoSetFrameReferenceImages,
+  frameReferenceField,
+  framePromptField,
+  FRAME_ROLES,
   listStoryboards,
 } from '../mongo/storyboards.js';
 import {
@@ -221,12 +233,6 @@ async function readEntityField({ entityType, entityId, field }) {
     if (!beat) throw new Error(`Beat not found: ${entityId}`);
     if (field === 'body') return String(beat.body || '');
     if (field === 'name') return String(beat.name || '');
-    if (field === 'desc') return String(beat.desc || '');
-    if (field.startsWith('specifics.')) {
-      const v = beat.specifics?.[field.slice('specifics.'.length)];
-      if (v == null) return '';
-      return typeof v === 'string' ? v : JSON.stringify(v);
-    }
     {
       const m = field.match(/^image:([a-f0-9]{24}):(name|description)$/);
       if (m) {
@@ -252,11 +258,6 @@ async function readEntityField({ entityType, entityId, field }) {
     if (field === 'hollywood_actor') return String(c.hollywood_actor || '');
     if (field.startsWith('fields.')) {
       const v = c.fields?.[field.slice('fields.'.length)];
-      if (v == null) return '';
-      return typeof v === 'string' ? v : JSON.stringify(v);
-    }
-    if (field.startsWith('specifics.')) {
-      const v = c.specifics?.[field.slice('specifics.'.length)];
       if (v == null) return '';
       return typeof v === 'string' ? v : JSON.stringify(v);
     }
@@ -286,11 +287,11 @@ async function readEntityField({ entityType, entityId, field }) {
     return String(note.text || '');
   }
   if (entityType === 'storyboards') {
-    const m = field.match(/^item:([a-f0-9]{24}):text_prompt$/);
+    const m = field.match(/^item:([a-f0-9]{24}):(text_prompt|summary|start_frame_prompt|end_frame_prompt)$/);
     if (!m) throw new Error(`gateway fallback: unknown storyboards field "${field}"`);
     const sb = await mongoGetStoryboard(m[1]);
     if (!sb) throw new Error(`Storyboard not found: ${m[1]}`);
-    return String(sb.text_prompt || '');
+    return String(sb[m[2]] || '');
   }
   if (entityType === 'dialogs') {
     const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
@@ -376,7 +377,7 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
     if (field === 'name' || field === 'hollywood_actor') {
       return updateCharacter(entityId, { [field]: args.markdown });
     }
-    if (field.startsWith('fields.') || field.startsWith('specifics.')) {
+    if (field.startsWith('fields.')) {
       return updateCharacter(entityId, { [field]: args.markdown });
     }
   }
@@ -386,9 +387,9 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
     return editDirectorNote({ noteId, text: args.markdown });
   }
   if (entityType === 'storyboards') {
-    const m = field.match(/^item:([a-f0-9]{24}):text_prompt$/);
+    const m = field.match(/^item:([a-f0-9]{24}):(text_prompt|summary|start_frame_prompt|end_frame_prompt)$/);
     if (!m) throw new Error(`gateway fallback: unknown storyboards field "${field}"`);
-    return mongoUpdateStoryboard(m[1], { text_prompt: args.markdown });
+    return mongoUpdateStoryboard(m[1], { [m[2]]: args.markdown });
   }
   if (entityType === 'dialogs') {
     const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
@@ -505,29 +506,24 @@ export async function appendBeatBodyViaGateway(beatId, content) {
   });
 }
 
-// updateBeat may include text fields (name/desc/body, specifics.*) and order
-// /characters/scene_sheet_image_id; route text fields through the gateway and
-// the rest through Mongo.
+// updateBeat may include text fields (name/body) and order/characters;
+// route text fields through the gateway and the rest through Mongo.
 export async function updateBeatViaGateway(identifier, patch) {
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new Error(
       `update_beat: \`patch\` must be an object like {body: "..."}, got ${
         Array.isArray(patch) ? 'array' : typeof patch
-      }. Wrap your fields in {patch: {body: "..."}} (or name/desc/order/characters).`,
+      }. Wrap your fields in {patch: {body: "..."}} (or name/order/characters).`,
     );
   }
   const isRecognizedKey = (k) =>
     k === 'name' ||
-    k === 'desc' ||
     k === 'body' ||
     k === 'order' ||
-    k === 'characters' ||
-    k === 'specifics' ||
-    k.startsWith('specifics.') ||
-    k === 'scene_sheet_image_id';
+    k === 'characters';
   if (!Object.keys(patch).some((k) => isRecognizedKey(k) && patch[k] !== undefined)) {
     throw new Error(
-      `update_beat: \`patch\` has no recognized fields. Expected one of: name, desc, body, order, characters, specifics, specifics.<key>, scene_sheet_image_id. Got keys: [${Object.keys(patch).join(', ')}].`,
+      `update_beat: \`patch\` has no recognized fields. Expected one of: name, body, order, characters. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
   const beat = await getBeat(identifier);
@@ -541,14 +537,6 @@ export async function updateBeatViaGateway(identifier, patch) {
       markdown: patch.name,
     });
   }
-  if (patch.desc !== undefined) {
-    await setEntityFieldMarkdown({
-      entityType: 'beat',
-      entityId: beatId,
-      field: 'desc',
-      markdown: patch.desc,
-    });
-  }
   if (patch.body !== undefined) {
     await setEntityFieldMarkdown({
       entityType: 'beat',
@@ -557,33 +545,10 @@ export async function updateBeatViaGateway(identifier, patch) {
       markdown: patch.body,
     });
   }
-  if (patch.specifics !== undefined && patch.specifics && typeof patch.specifics === 'object') {
-    for (const [sk, sv] of Object.entries(patch.specifics)) {
-      await setEntityFieldMarkdown({
-        entityType: 'beat',
-        entityId: beatId,
-        field: `specifics.${sk}`,
-        markdown: sv,
-      });
-    }
-  }
-  for (const k of Object.keys(patch)) {
-    if (k.startsWith('specifics.')) {
-      await setEntityFieldMarkdown({
-        entityType: 'beat',
-        entityId: beatId,
-        field: k,
-        markdown: patch[k],
-      });
-    }
-  }
-  // order, characters, and scene_sheet_image_id are non-text → hit Mongo directly.
+  // order and characters are non-text → hit Mongo directly.
   const onlyDiscrete = {};
   if (patch.order !== undefined) onlyDiscrete.order = patch.order;
   if (Array.isArray(patch.characters)) onlyDiscrete.characters = patch.characters;
-  if (Object.prototype.hasOwnProperty.call(patch, 'scene_sheet_image_id')) {
-    onlyDiscrete.scene_sheet_image_id = patch.scene_sheet_image_id;
-  }
   if (Object.keys(onlyDiscrete).length) {
     const { updateBeat: mongoUpdateBeat } = await import('../mongo/plots.js');
     await mongoUpdateBeat(beatId, onlyDiscrete);
@@ -607,25 +572,20 @@ export async function updateCharacterViaGateway(identifier, patch) {
       k === 'name' ||
       k === 'fields' ||
       k.startsWith('fields.') ||
-      k === 'specifics' ||
-      k.startsWith('specifics.') ||
-      k === 'plays_self' ||
       k === 'hollywood_actor' ||
-      k === 'own_voice' ||
       k === 'unset',
   );
   if (!recognized) {
     throw new Error(
-      `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, specifics, specifics.<key>, plays_self, hollywood_actor, own_voice, or unset. Got keys: [${Object.keys(patch).join(', ')}].`,
+      `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, hollywood_actor, or unset. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
   const c = await getCharacter(identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   const cid = c._id.toString();
-  // Split text fields (name, hollywood_actor, fields.*, specifics.*) from
-  // discrete fields (plays_self, own_voice) and `unset`.
+  // Text fields (name, hollywood_actor, fields.*) flow through the y-doc;
+  // `unset` is the only non-text patch op.
   const textOps = [];
-  const discrete = {};
   let unset;
   for (const [k, v] of Object.entries(patch || {})) {
     if (k === 'name' || k === 'hollywood_actor') {
@@ -636,14 +596,6 @@ export async function updateCharacterViaGateway(identifier, patch) {
       }
     } else if (k.startsWith('fields.')) {
       textOps.push({ field: k, markdown: v });
-    } else if (k === 'specifics' && v && typeof v === 'object') {
-      for (const [sk, sv] of Object.entries(v)) {
-        textOps.push({ field: `specifics.${sk}`, markdown: sv });
-      }
-    } else if (k.startsWith('specifics.')) {
-      textOps.push({ field: k, markdown: v });
-    } else if (k === 'plays_self' || k === 'own_voice') {
-      discrete[k] = v;
     } else if (k === 'unset') {
       unset = v;
     }
@@ -656,12 +608,10 @@ export async function updateCharacterViaGateway(identifier, patch) {
       markdown,
     });
   }
-  if (Object.keys(discrete).length || unset) {
-    const mongoPatch = { ...discrete };
-    if (unset) mongoPatch.unset = unset;
-    await mongoUpdateCharacter(cid, mongoPatch);
+  if (unset) {
+    await mongoUpdateCharacter(cid, { unset });
     broadcastFieldsUpdated(buildRoomName('character', cid), {
-      changed: [...Object.keys(discrete), ...(unset || []).map((u) => `-fields.${u}`)],
+      changed: unset.map((u) => `-fields.${u}`),
     });
   }
   return getCharacter(cid);
@@ -761,19 +711,6 @@ export async function removeBeatAttachmentViaGateway({ beatId, attachmentId }) {
   return result;
 }
 
-export async function setBeatSceneSheetImageViaGateway({ beatId, imageId }) {
-  const beat = await getBeat(String(beatId));
-  if (!beat) throw new Error(`Beat not found: ${beatId}`);
-  const id = beat._id.toString();
-  await Plots.updateBeat(id, {
-    scene_sheet_image_id: imageId == null ? null : String(imageId),
-  });
-  broadcastFieldsUpdated(buildRoomName('beat', id), {
-    changed: ['scene_sheet_image_id'],
-  });
-  return getBeat(id);
-}
-
 export async function addCharacterImageViaGateway({ character, imageMeta, setAsMain }) {
   const c = await getCharacter(character);
   if (!c) throw new Error(`Character not found: ${character}`);
@@ -800,6 +737,146 @@ export async function removeCharacterImageViaGateway({ character, imageId }) {
   const result = await removeCharacterImage({ character: c._id.toString(), imageId });
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
     changed: ['images', 'main_image_id'],
+  });
+  return result;
+}
+
+export async function addCharacterAttachmentViaGateway({ character, attachmentMeta }) {
+  const c = await getCharacter(character);
+  if (!c) throw new Error(`Character not found: ${character}`);
+  const result = await pushCharacterAttachment(c._id.toString(), attachmentMeta);
+  broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
+    changed: ['attachments'],
+  });
+  return result;
+}
+
+// ── Artwork gateway (host-agnostic: character or beat) ───────────────────
+// All helpers broadcast `fields_updated` on the host's room
+// (character:<id> or beat:<id>) with `changed: ['artworks']`. The SPA's
+// CollabSurface listens for this and re-fetches the host doc, so the
+// artwork gallery updates without polling. GridFS cleanup of orphaned
+// images (e.g. the prior result after an edit) is handled here so callers
+// don't have to think about it.
+
+function artworkRoomName(hostType, hostId) {
+  return buildRoomName(hostType, String(hostId));
+}
+
+async function tryDeleteImage(imageId, ctx) {
+  if (!imageId) return;
+  try {
+    await deleteImage(imageId);
+  } catch (e) {
+    logger.warn(`gateway: delete ${ctx} image ${imageId} failed: ${e.message}`);
+  }
+}
+
+export async function createPendingArtworkViaGateway({
+  hostType,
+  hostId,
+  prompt,
+  name = '',
+  model,
+  referenceImageIds = [],
+  jobId = null,
+}) {
+  const result = await mongoCreatePendingArtwork({
+    hostType,
+    hostId,
+    prompt,
+    name,
+    model,
+    referenceImageIds,
+    jobId,
+  });
+  broadcastFieldsUpdated(artworkRoomName(hostType, result.host_id), {
+    changed: ['artworks'],
+  });
+  return result;
+}
+
+export async function patchArtworkViaGateway({ hostType, hostId, artworkId, patch }) {
+  const result = await mongoPatchArtwork({ hostType, hostId, artworkId, patch });
+  broadcastFieldsUpdated(artworkRoomName(hostType, result.host_id), {
+    changed: ['artworks'],
+  });
+  return result;
+}
+
+export async function setArtworkStatusViaGateway({
+  hostType,
+  hostId,
+  artworkId,
+  status,
+  errorMessage = null,
+}) {
+  const result = await mongoSetArtworkStatus({
+    hostType,
+    hostId,
+    artworkId,
+    status,
+    errorMessage,
+  });
+  broadcastFieldsUpdated(artworkRoomName(hostType, result.host_id), {
+    changed: ['artworks'],
+  });
+  return result;
+}
+
+function artworkChangedFields(result) {
+  return result.mainImageIdChange?.changed
+    ? ['artworks', 'main_image_id']
+    : ['artworks'];
+}
+
+export async function setArtworkResultViaGateway({
+  hostType,
+  hostId,
+  artworkId,
+  resultImageId,
+  rotateToPrevious = false,
+}) {
+  const result = await mongoSetArtworkResult({
+    hostType,
+    hostId,
+    artworkId,
+    resultImageId,
+    rotateToPrevious,
+  });
+  await tryDeleteImage(result.orphanedImageId, 'orphaned artwork');
+  broadcastFieldsUpdated(artworkRoomName(hostType, result.host_id), {
+    changed: artworkChangedFields(result),
+  });
+  return result;
+}
+
+export async function undoArtworkEditViaGateway({ hostType, hostId, artworkId }) {
+  const result = await mongoUndoArtworkEdit({ hostType, hostId, artworkId });
+  await tryDeleteImage(result.orphanedImageId, 'undone artwork');
+  broadcastFieldsUpdated(artworkRoomName(hostType, result.host_id), {
+    changed: artworkChangedFields(result),
+  });
+  return result;
+}
+
+export async function removeArtworkViaGateway({ hostType, hostId, artworkId }) {
+  const result = await mongoRemoveArtwork({ hostType, hostId, artworkId });
+  for (const id of result.removed_image_ids) {
+    await tryDeleteImage(id, 'removed artwork');
+  }
+  broadcastFieldsUpdated(artworkRoomName(hostType, result.host_id), {
+    changed: artworkChangedFields(result),
+  });
+  return result;
+}
+
+export async function removeCharacterAttachmentViaGateway({ character, attachmentId }) {
+  const c = await getCharacter(character);
+  if (!c) throw new Error(`Character not found: ${character}`);
+  const result = await pullCharacterAttachment(c._id.toString(), attachmentId);
+  broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
+    changed: ['attachments'],
   });
   return result;
 }
@@ -1126,45 +1203,6 @@ export async function moveDirectorNoteImageToLibraryViaGateway({ noteId, imageId
   return result;
 }
 
-export async function appendCharacterSheetImageViaGateway({ character, imageId }) {
-  const c = await getCharacter(character);
-  if (!c) throw new Error(`Character not found: ${character}`);
-  const cid = c._id.toString();
-  const result = await appendCharacterSheetImage(cid, imageId);
-  broadcastFieldsUpdated(buildRoomName('character', cid), {
-    changed: ['character_sheet_image_ids'],
-  });
-  return result;
-}
-
-export async function removeCharacterSheetImageViaGateway({ character, imageId }) {
-  const c = await getCharacter(character);
-  if (!c) throw new Error(`Character not found: ${character}`);
-  const cid = c._id.toString();
-  const result = await removeCharacterSheetImage(cid, imageId);
-  // Drop the underlying GridFS bytes — the sheet is owned by this character.
-  try {
-    await deleteImage(imageId);
-  } catch (e) {
-    logger.warn(`gateway: delete sheet image ${imageId} failed: ${e.message}`);
-  }
-  broadcastFieldsUpdated(buildRoomName('character', cid), {
-    changed: ['character_sheet_image_ids'],
-  });
-  return result;
-}
-
-export async function reorderCharacterSheetImagesViaGateway({ character, orderedIds }) {
-  const c = await getCharacter(character);
-  if (!c) throw new Error(`Character not found: ${character}`);
-  const cid = c._id.toString();
-  const result = await reorderCharacterSheetImages(cid, orderedIds);
-  broadcastFieldsUpdated(buildRoomName('character', cid), {
-    changed: ['character_sheet_image_ids'],
-  });
-  return result;
-}
-
 export async function addDirectorNoteImageViaGateway({ noteId, imageMeta, setAsMain }) {
   const result = await pushDirectorNoteImage(String(noteId), imageMeta, !!setAsMain);
   broadcastFieldsUpdated('notes', {
@@ -1213,13 +1251,20 @@ export async function removeDirectorNoteAttachmentViaGateway({ noteId, attachmen
 // ─── Storyboards ──────────────────────────────────────────────────────────
 //
 // Storyboards live in their own top-level collection but share one y-doc per
-// beat (room: "storyboards:<beatId>") with a fragment per item:
-// "item:<storyboardId>:text_prompt". Mutations that change room composition
-// (create / delete / reorder) broadcast a `fields_updated` ping to the room
-// so the SPA refetches.
+// beat (room: "storyboards:<beatId>") with four fragments per item:
+// "item:<storyboardId>:text_prompt", ":summary", ":start_frame_prompt",
+// ":end_frame_prompt". Mutations that change room composition (create / delete
+// / reorder) broadcast a `fields_updated` ping to the room so the SPA refetches.
 
-function storyboardItemField(storyboardId) {
-  return `item:${storyboardId}:text_prompt`;
+const STORYBOARD_COLLAB_FIELDS = new Set([
+  'text_prompt',
+  'summary',
+  'start_frame_prompt',
+  'end_frame_prompt',
+]);
+
+function storyboardItemField(storyboardId, field) {
+  return `item:${storyboardId}:${field}`;
 }
 
 export async function setStoryboardTextPromptViaGateway({ storyboardId, text }) {
@@ -1228,7 +1273,33 @@ export async function setStoryboardTextPromptViaGateway({ storyboardId, text }) 
   return setEntityFieldMarkdown({
     entityType: 'storyboards',
     entityId: sb.beat_id.toString(),
-    field: storyboardItemField(sb._id.toString()),
+    field: storyboardItemField(sb._id.toString(), 'text_prompt'),
+    markdown: text,
+  });
+}
+
+export async function setStoryboardSummaryViaGateway({ storyboardId, text }) {
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  return setEntityFieldMarkdown({
+    entityType: 'storyboards',
+    entityId: sb.beat_id.toString(),
+    field: storyboardItemField(sb._id.toString(), 'summary'),
+    markdown: text,
+  });
+}
+
+export async function setStoryboardFramePromptViaGateway({ storyboardId, role, text }) {
+  if (!FRAME_ROLES.has(role)) {
+    throw new Error(`setStoryboardFramePromptViaGateway: invalid role ${role}`);
+  }
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const fragmentKey = framePromptField(role);
+  return setEntityFieldMarkdown({
+    entityType: 'storyboards',
+    entityId: sb.beat_id.toString(),
+    field: storyboardItemField(sb._id.toString(), fragmentKey),
     markdown: text,
   });
 }
@@ -1236,6 +1307,7 @@ export async function setStoryboardTextPromptViaGateway({ storyboardId, text }) 
 export async function createStoryboardViaGateway({
   beatId,
   textPrompt,
+  summary = '',
   order,
   seedFragments,
   durationSeconds = null,
@@ -1246,6 +1318,7 @@ export async function createStoryboardViaGateway({
   const sb = await mongoCreateStoryboard({
     beatId,
     textPrompt,
+    summary,
     order,
     durationSeconds,
     shotType,
@@ -1258,16 +1331,16 @@ export async function createStoryboardViaGateway({
   // onStoreDocument tick clobbers Mongo back to empty).
   if (seedFragments) {
     for (const [key, text] of Object.entries(seedFragments)) {
-      if (key !== 'text_prompt') continue;
+      if (!STORYBOARD_COLLAB_FIELDS.has(key)) continue;
       try {
         await setEntityFieldMarkdown({
           entityType: 'storyboards',
           entityId: String(beatId),
-          field: storyboardItemField(sb._id.toString()),
+          field: storyboardItemField(sb._id.toString(), key),
           markdown: text,
         });
       } catch (e) {
-        logger.warn(`createStoryboard: seed text_prompt failed: ${e.message}`);
+        logger.warn(`createStoryboard: seed ${key} failed: ${e.message}`);
       }
     }
   }
@@ -1313,42 +1386,16 @@ export async function deleteAllStoryboardsForBeatViaGateway({ beatId }) {
   return { ok: true, removed_count: removed.length };
 }
 
-const STORYBOARD_ROLES = new Set([
-  'start_frame',
-  'end_frame',
-  'character_sheet',
-]);
+const STORYBOARD_IMAGE_ROLES = new Set(['start_frame', 'end_frame']);
 
 function storyboardRoleField(role) {
   if (role === 'start_frame') return 'start_frame_id';
   if (role === 'end_frame') return 'end_frame_id';
-  if (role === 'character_sheet') return 'character_sheet_image_id';
   return null;
 }
 
-// Persist the auto-generated description of a storyboard's start frame.
-// Used by the storyboard generator after it captions the rendered start
-// frame, so the end-frame call can read this string back as a verbal
-// anchor for what to preserve. Backend-only; not exposed via the SPA's
-// scalar-update path.
-export async function setStoryboardStartFrameDescriptionViaGateway({
-  storyboardId,
-  description,
-}) {
-  const sb = await mongoGetStoryboard(storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  await mongoUpdateStoryboard(storyboardId, {
-    start_frame_description: String(description || ''),
-  });
-  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
-    changed: ['start_frame_description'],
-    storyboard_id: String(storyboardId),
-  });
-  return mongoGetStoryboard(storyboardId);
-}
-
 export async function setStoryboardImageViaGateway({ storyboardId, role, imageId }) {
-  if (!STORYBOARD_ROLES.has(role)) {
+  if (!STORYBOARD_IMAGE_ROLES.has(role)) {
     throw new Error(`unknown storyboard role: ${role}`);
   }
   const sb = await mongoGetStoryboard(storyboardId);
@@ -1393,23 +1440,67 @@ export async function updateStoryboardScalarsViaGateway({ storyboardId, patch })
   return result;
 }
 
-export async function addStoryboardReferenceImageViaGateway({ storyboardId, imageId }) {
+function assertFrameRole(role) {
+  if (!FRAME_ROLES.has(role)) {
+    throw new Error(`invalid frame role: ${role}`);
+  }
+}
+
+export async function addStoryboardFrameReferenceImageViaGateway({
+  storyboardId,
+  role,
+  imageId,
+}) {
+  assertFrameRole(role);
   const sb = await mongoGetStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const next = await mongoPushReferenceImage(storyboardId, imageId);
+  const next = await mongoPushFrameReferenceImage(storyboardId, role, imageId);
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
-    changed: ['reference_image_ids'],
+    changed: [frameReferenceField(role)],
     storyboard_id: String(storyboardId),
   });
   return next;
 }
 
-export async function removeStoryboardReferenceImageViaGateway({ storyboardId, imageId }) {
+export async function removeStoryboardFrameReferenceImageViaGateway({
+  storyboardId,
+  role,
+  imageId,
+}) {
+  assertFrameRole(role);
   const sb = await mongoGetStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const next = await mongoPullReferenceImage(storyboardId, imageId);
+  const next = await mongoPullFrameReferenceImage(storyboardId, role, imageId);
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
-    changed: ['reference_image_ids'],
+    changed: [frameReferenceField(role)],
+    storyboard_id: String(storyboardId),
+  });
+  return next;
+}
+
+// Batch helper for a single frame's reference list: append-many or
+// replace-the-whole-list. Exactly one fields_updated broadcast fires per call,
+// used by the auto-suggest endpoint and the multi-select picker's Apply.
+export async function setStoryboardFrameReferenceImagesViaGateway({
+  storyboardId,
+  role,
+  imageIds,
+  mode = 'replace',
+}) {
+  assertFrameRole(role);
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const ids = Array.isArray(imageIds) ? imageIds : [];
+  let next;
+  if (mode === 'append') {
+    next = await mongoPushFrameReferenceImages(storyboardId, role, ids);
+  } else if (mode === 'replace') {
+    next = await mongoSetFrameReferenceImages(storyboardId, role, ids);
+  } else {
+    throw new Error(`setStoryboardFrameReferenceImagesViaGateway: invalid mode ${mode}`);
+  }
+  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
+    changed: [frameReferenceField(role)],
     storyboard_id: String(storyboardId),
   });
   return next;
@@ -1599,10 +1690,11 @@ export async function setDialogTextFieldViaGateway({ dialogId, field, text }) {
   }
 }
 
-// Set a dialog's `character` to a specific existing character's name. The
-// name must match (case-insensitive on stripMarkdown) one of the characters
-// in the project — the SPA uses this from its autocomplete <CharacterSelect>
-// to enforce that dialog speakers are always known characters.
+// Set a dialog's `character` field. If the supplied name matches a roster
+// character (case-insensitive on stripMarkdown), the canonical roster spelling
+// is stored. Otherwise the trimmed value is stored as a free-text speaker
+// (e.g. "radio", "TV ANCHOR", "INTERCOM") — real scripts have non-character
+// sources of dialogue that aren't worth modelling as full character docs.
 export async function setDialogCharacterViaGateway({ dialogId, characterName }) {
   const d = await mongoGetDialog(dialogId);
   if (!d) throw new Error(`Dialog not found: ${dialogId}`);
@@ -1611,11 +1703,10 @@ export async function setDialogCharacterViaGateway({ dialogId, characterName }) 
     throw new Error('character is required');
   }
   const c = await getCharacter(raw);
-  if (!c) {
-    throw new Error(`No character named "${raw}". Pick from the project's character list.`);
-  }
-  const canonical = stripMarkdown(c.name || '').trim() || raw;
-  await mongoUpdateDialog(d._id.toString(), { character: canonical });
+  const finalName = c
+    ? (stripMarkdown(c.name || '').trim() || raw)
+    : raw;
+  await mongoUpdateDialog(d._id.toString(), { character: finalName });
   broadcastFieldsUpdated(buildRoomName('dialogs', d.beat_id.toString()), {
     changed: ['character'],
     dialog_id: d._id.toString(),
@@ -1774,32 +1865,6 @@ export async function setOwnedImageMetaViaGateway({
   }
   broadcastFieldsUpdated(buildRoomName(ownerType, idStr), {
     changed: ['image_meta'],
-    image_id: String(imageId),
-  });
-}
-
-// Character sheets live on c.character_sheet_image_ids[] — outside the
-// c.images[] array that the character room descriptor registers as
-// fragments. A y-doc fragment write for a sheet image therefore never
-// reaches Mongo on the store tick. Sheet names also render via plain
-// inputs (not CollabField), so going through the y-doc adds no UX value.
-// Write GridFS metadata directly, then broadcast so connected SPAs
-// refetch the sheet list.
-export async function setCharacterSheetMetaViaGateway({
-  character,
-  imageId,
-  name,
-  description,
-}) {
-  if (name === undefined && description === undefined) return;
-  const cidStr = String(character || '');
-  if (!cidStr) throw new Error('setCharacterSheetMetaViaGateway: character required');
-  await setOwnedImageMeta(String(imageId), {
-    ...(name !== undefined ? { name } : {}),
-    ...(description !== undefined ? { description } : {}),
-  });
-  broadcastFieldsUpdated(buildRoomName('character', cidStr), {
-    changed: ['character_sheet_meta'],
     image_id: String(imageId),
   });
 }

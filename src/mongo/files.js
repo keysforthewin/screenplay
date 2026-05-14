@@ -119,8 +119,13 @@ export async function setMainCharacterImage({ character, imageId }) {
   const c = await getCharacter(character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const oid = toObjectId(imageId);
-  const found = (c.images || []).some((img) => img._id.equals(oid));
-  if (!found) throw new Error(`Image ${imageId} is not attached to ${c.name}`);
+  const inImages = (c.images || []).some((img) => img._id.equals(oid));
+  const inArtworks = (c.artworks || []).some(
+    (a) => a?.status === 'done' && a?.result_image_id && oid.equals(a.result_image_id),
+  );
+  if (!inImages && !inArtworks) {
+    throw new Error(`Image ${imageId} is not attached to ${c.name}`);
+  }
   await getDb()
     .collection('characters')
     .updateOne({ _id: c._id }, { $set: { main_image_id: oid, updated_at: new Date() } });

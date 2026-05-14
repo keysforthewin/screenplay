@@ -9,6 +9,22 @@ import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
 import { logger } from '../log.js';
 import { requireSession } from './auth.js';
+import { ALLOWED_IMAGE_MODELS } from './imageReplaceDispatch.js';
+
+// Default model the SPA falls back to when the request omits `image_model`/`model`.
+// Old enum values (`gemini`, `fal`) from cached SPA bundles are normalized to the
+// closest current equivalent so we don't 400 on stale clients.
+const DEFAULT_IMAGE_MODEL = 'nano-banana-pro';
+function normalizeImageModel(raw) {
+  const v = String(raw ?? DEFAULT_IMAGE_MODEL);
+  if (v === 'gemini' || v === 'google') return 'nano-banana-pro';
+  if (v === 'fal') return 'flux-pro-kontext';
+  return v;
+}
+function isValidImageModel(v) {
+  return ALLOWED_IMAGE_MODELS.includes(v);
+}
+const IMAGE_MODEL_ERROR = `image_model must be one of: ${ALLOWED_IMAGE_MODELS.join('|')}`;
 import { getSession, touchSession } from '../mongo/auth.js';
 import {
   startVideoGenerationJob,
@@ -25,12 +41,13 @@ import {
 import {
   addBeatImageViaGateway,
   addBeatAttachmentViaGateway,
+  addCharacterAttachmentViaGateway,
   addCharacterImageViaGateway,
   addDirectorNoteAttachmentViaGateway,
   addDirectorNoteImageViaGateway,
   addDirectorNoteViaGateway,
   addLibraryImageViaGateway,
-  addStoryboardReferenceImageViaGateway,
+  addStoryboardFrameReferenceImageViaGateway,
   attachExistingAttachmentToBeatViaGateway,
   attachExistingAttachmentToCharacterViaGateway,
   attachExistingAttachmentToDirectorNoteViaGateway,
@@ -44,31 +61,30 @@ import {
   deleteStoryboardViaGateway,
   removeBeatAttachmentViaGateway,
   removeBeatImageViaGateway,
+  removeCharacterAttachmentViaGateway,
   removeCharacterImageViaGateway,
-  removeCharacterSheetImageViaGateway,
   removeDirectorNoteAttachmentViaGateway,
   removeDirectorNoteImageViaGateway,
   removeDirectorNoteViaGateway,
   removeLibraryImageViaGateway,
-  removeStoryboardReferenceImageViaGateway,
+  removeStoryboardFrameReferenceImageViaGateway,
   replaceBeatImageViaGateway,
   replaceCharacterImageViaGateway,
   moveBeatImageToLibraryViaGateway,
   moveCharacterImageToLibraryViaGateway,
-  reorderCharacterSheetImagesViaGateway,
   reorderDialogsViaGateway,
   reorderStoryboardsViaGateway,
   setBeatMainImageViaGateway,
   setCharacterMainImageViaGateway,
   setDirectorNoteMainImageViaGateway,
-  setCharacterSheetMetaViaGateway,
   setDialogAudioViaGateway,
   setOwnedImageMetaViaGateway,
   setStoryboardAudioViaGateway,
+  setStoryboardFramePromptViaGateway,
+  setStoryboardFrameReferenceImagesViaGateway,
   setStoryboardImageViaGateway,
   setStoryboardVideoViaGateway,
   updateBeatViaGateway,
-  updateCharacterViaGateway,
   updateStoryboardScalarsViaGateway,
 } from './gateway.js';
 import {
@@ -76,6 +92,14 @@ import {
   kickoffImageVisionSeed,
 } from './libraryVisionWorker.js';
 import { getPlot, listBeats, getBeat } from '../mongo/plots.js';
+import {
+  startGenerateArtworkJob,
+  startRegenerateArtworkJob,
+  startEditArtworkJob,
+  undoArtworkEdit,
+  deleteArtwork,
+} from './artworkJobs.js';
+import { patchArtworkViaGateway } from './gateway.js';
 import {
   countStoryboardsByBeat,
   getPreviousStoryboardInBeat,
@@ -95,8 +119,10 @@ import {
 import { listCharacters, getCharacter, findAllCharacters } from '../mongo/characters.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import {
+  deleteImage,
   listLibraryImages,
   listImagesForBeat,
+  listImagesByOwnerType,
   imageFileToMeta,
   uploadGeneratedImage,
   findImageFile,
@@ -112,6 +138,7 @@ import {
 } from '../mongo/attachments.js';
 import { getCharacterTemplate, getPlotTemplate } from '../mongo/prompts.js';
 import { stripMarkdown } from '../util/markdown.js';
+import { collectStoryboardReferenceIds } from './storyboardReferenceAggregator.js';
 import { buildTocResponse } from './toc.js';
 import {
   streamBeatZip,
@@ -167,10 +194,78 @@ function safeFilename(name, fallback) {
   return s.replace(/[\\/]+/g, '_').slice(0, 200);
 }
 
+// Validate + load reference images from the request body. Returns
+// { ids, images } on success; { error } when any id is malformed or missing.
+// Callers should respond with 400/404 on error and pass `images` to
+// dispatchImageReplace's referenceImages param.
+async function loadReferenceImages(rawIds) {
+  if (rawIds == null) return { ids: [], images: [], error: null };
+  if (!Array.isArray(rawIds)) {
+    return { ids: [], images: [], error: 'reference_image_ids must be an array' };
+  }
+  const ids = rawIds.map((x) => String(x || '').trim()).filter(Boolean);
+  for (const id of ids) {
+    if (!isOidHex(id)) {
+      return { ids: [], images: [], error: `reference_image_ids: ${id} is not a 24-hex string` };
+    }
+  }
+  const images = [];
+  for (const id of ids) {
+    const r = await readImageBuffer(id);
+    if (!r) {
+      return { ids: [], images: [], error: `reference image ${id} not found`, status: 404 };
+    }
+    const declared = r.file.contentType || r.file.metadata?.contentType || null;
+    images.push({ buffer: r.buffer, contentType: declared || 'image/png' });
+  }
+  return { ids, images, error: null };
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
 });
+
+// Duplicate a source GridFS image into a brand-new file owned by the target
+// entity. Used by the picker modal's "Character"/"Beats" tabs so cross-entity
+// picks don't disturb the source. Returns the embedded-gallery meta entry
+// (matches the shape the add*ImageViaGateway helpers expect).
+async function copyImageToNewOwner({ imageId, ownerType, ownerId, filenameBase }) {
+  const src = await readImageBuffer(imageId);
+  if (!src) {
+    const e = new Error(`source image not found: ${imageId}`);
+    e.status = 404;
+    throw e;
+  }
+  const { buffer, file } = src;
+  const contentType = file.contentType || file.metadata?.content_type || 'image/png';
+  const ext = (() => {
+    if (contentType.includes('jpeg')) return 'jpg';
+    if (contentType.includes('webp')) return 'webp';
+    return 'png';
+  })();
+  const newFile = await uploadGeneratedImage({
+    buffer,
+    contentType,
+    ownerType,
+    ownerId,
+    filename: `${filenameBase}-${Date.now()}.${ext}`,
+    prompt: file.metadata?.prompt || null,
+    generatedBy: file.metadata?.generated_by || null,
+    name: file.metadata?.name || '',
+    description: file.metadata?.description || '',
+  });
+  return {
+    _id: newFile._id,
+    filename: newFile.filename,
+    content_type: newFile.content_type,
+    size: newFile.size,
+    source: file.metadata?.source || 'upload',
+    prompt: newFile.metadata?.prompt || null,
+    generated_by: newFile.metadata?.generated_by || null,
+    uploaded_at: newFile.uploaded_at,
+  };
+}
 
 // Synthesize a discordUser-shaped object from the SPA session so token-usage
 // rows for web-triggered work attribute to the visitor's username (prefixed
@@ -373,14 +468,71 @@ export function buildApiRouter() {
           name: stripMarkdown(c.name || ''),
           main_image_id: c.main_image_id ? c.main_image_id.toString() : null,
           sheets,
-          plays_self: c.plays_self === true,
           hollywood_actor:
             typeof c.hollywood_actor === 'string' ? c.hollywood_actor : null,
-          own_voice: c.own_voice === true,
           fields: c.fields && typeof c.fields === 'object' ? c.fields : {},
         });
       }
       res.json({ characters: out });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // All "done" artworks reachable from this beat — used by the Storyboard
+  // start/end frame picker's Artwork tab. Combines the beat's own artworks
+  // with the artworks of every character listed in beat.characters[], so the
+  // user can pick a character portrait or beat moodboard as the frame image
+  // in a single click. Pending/error artworks are filtered out.
+  router.get('/beat/:id/scene-artworks', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const beat = await getBeat(beatId);
+      const { findCharactersInBeat } = await import('./storyboardGenerate.js');
+      const charDocs = await findCharactersInBeat(beat);
+
+      const items = [];
+      const seen = new Set(); // dedupe by result_image_id
+
+      // Beat-owned artworks first.
+      for (const a of beat.artworks || []) {
+        if (a.status !== 'done' || !a.result_image_id) continue;
+        const key = String(a.result_image_id);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        items.push({
+          _id: String(a._id),
+          result_image_id: key,
+          name: a.name || '',
+          prompt: a.prompt || '',
+          owner_kind: 'beat',
+          owner_id: String(beat._id),
+          owner_label: `Beat: ${stripMarkdown(beat.name || '')}`.trim(),
+        });
+      }
+
+      // Each in-scene character's artworks.
+      for (const c of charDocs) {
+        const cName = stripMarkdown(c.name || '').trim();
+        for (const a of c.artworks || []) {
+          if (a.status !== 'done' || !a.result_image_id) continue;
+          const key = String(a.result_image_id);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          items.push({
+            _id: String(a._id),
+            result_image_id: key,
+            name: a.name || '',
+            prompt: a.prompt || '',
+            owner_kind: 'character',
+            owner_id: String(c._id),
+            owner_label: cName ? `Character: ${cName}` : 'Character',
+          });
+        }
+      }
+
+      res.json({ artworks: items });
     } catch (e) {
       next(e);
     }
@@ -433,6 +585,90 @@ export function buildApiRouter() {
       images: images.map(imageFileToMeta),
       attachments: attachments.map(attachmentFileToMeta),
     });
+  });
+
+  // All character-owned GridFS images, joined with the owning character's
+  // name. Used by the EntityImagePickerModal's "Character" source tab so a
+  // user can copy any existing character image onto another entity. Optional
+  // ?exclude_id=<character_id> drops images owned by that character.
+  router.get('/images/by-owner/characters', async (req, res, next) => {
+    try {
+      const exclude = String(req.query?.exclude_id || '').trim();
+      const files = await listImagesByOwnerType('character');
+      const ids = [];
+      const seen = new Set();
+      for (const f of files) {
+        const oid = f.metadata?.owner_id;
+        if (!oid) continue;
+        const key = oid.toString();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        ids.push(oid);
+      }
+      const nameById = new Map();
+      if (ids.length) {
+        const all = await findAllCharacters();
+        const wantedKeys = new Set(ids.map((x) => x.toString()));
+        for (const c of all) {
+          const key = c._id.toString();
+          if (wantedKeys.has(key)) {
+            nameById.set(key, c.name || '(unnamed)');
+          }
+        }
+      }
+      const result = [];
+      for (const f of files) {
+        const ownerId = f.metadata?.owner_id?.toString?.() || null;
+        if (!ownerId) continue;
+        if (exclude && ownerId === exclude) continue;
+        result.push({
+          ...imageFileToMeta(f),
+          owner_id: ownerId,
+          owner_name: nameById.get(ownerId) || '(unknown)',
+        });
+      }
+      res.json({ images: result });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // All beat-owned GridFS images, joined with the owning beat's name/order.
+  // Used by the picker modal's "Beats" source tab. Optional ?exclude_id drops
+  // images owned by that beat.
+  router.get('/images/by-owner/beats', async (req, res, next) => {
+    try {
+      const exclude = String(req.query?.exclude_id || '').trim();
+      const [files, plot] = await Promise.all([
+        listImagesByOwnerType('beat'),
+        getPlot(),
+      ]);
+      const beatById = new Map();
+      for (const b of plot?.beats || []) {
+        if (b?._id) {
+          beatById.set(b._id.toString(), {
+            name: b.name || '',
+            order: b.order ?? null,
+          });
+        }
+      }
+      const result = [];
+      for (const f of files) {
+        const ownerId = f.metadata?.owner_id?.toString?.() || null;
+        if (!ownerId) continue;
+        if (exclude && ownerId === exclude) continue;
+        const beat = beatById.get(ownerId);
+        result.push({
+          ...imageFileToMeta(f),
+          owner_id: ownerId,
+          owner_name: beat?.name || '(unknown beat)',
+          owner_order: beat?.order ?? null,
+        });
+      }
+      res.json({ images: result });
+    } catch (e) {
+      next(e);
+    }
   });
 
   // ── bulk-download endpoints ─────────────────────────────────────────────
@@ -615,9 +851,9 @@ export function buildApiRouter() {
       if (!['edit', 'generate'].includes(mode)) {
         return res.status(400).json({ error: 'mode must be edit|generate' });
       }
-      const imageModel = String(req.body?.image_model ?? 'gemini');
-      if (!['gemini', 'openai'].includes(imageModel)) {
-        return res.status(400).json({ error: 'image_model must be gemini|openai' });
+      const imageModel = normalizeImageModel(req.body?.image_model);
+      if (!isValidImageModel(imageModel)) {
+        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
       if (!prompt) {
@@ -625,6 +861,11 @@ export function buildApiRouter() {
       }
       if (prompt.length > 4096) {
         return res.status(400).json({ error: 'prompt must be ≤ 4096 chars' });
+      }
+
+      const refs = await loadReferenceImages(req.body?.reference_image_ids);
+      if (refs.error) {
+        return res.status(refs.status || 400).json({ error: refs.error });
       }
 
       let existingImage = null;
@@ -643,6 +884,7 @@ export function buildApiRouter() {
           mode,
           model: imageModel,
           existingImage,
+          referenceImages: refs.images,
           discordUser: webDiscordUser(req),
         });
       } catch (e) {
@@ -668,6 +910,7 @@ export function buildApiRouter() {
         prompt,
         generated_by: result.model,
         uploaded_at: file.uploaded_at,
+        ...(refs.ids.length ? { reference_image_ids: refs.ids } : {}),
       };
       const replaceResult = await replaceBeatImageViaGateway({
         beatId,
@@ -721,8 +964,43 @@ export function buildApiRouter() {
     }
   });
 
+  // Copy a GridFS image into this beat's gallery as a new GridFS file. Source
+  // stays intact. Used by the picker's "Character"/"Beats" source tabs.
+  router.post('/beat/:id/image/copy', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const imageId = String(req.body?.image_id || '').trim();
+      if (!isOidHex(imageId)) {
+        return res.status(400).json({ error: 'image_id (24-hex) required' });
+      }
+      const setAsMain = !!req.body?.set_as_main;
+      try {
+        const imageMeta = await copyImageToNewOwner({
+          imageId,
+          ownerType: 'beat',
+          ownerId: beatId,
+          filenameBase: `beat-${beatId}`,
+        });
+        const result = await addBeatImageViaGateway({
+          beatId,
+          imageMeta,
+          setAsMain,
+        });
+        res.json(result);
+      } catch (e) {
+        if (e?.status === 404) return res.status(404).json({ error: e.message });
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // Generate a fresh image from a custom prompt and attach to a beat's
-  // gallery. No scene context — pure text-to-image.
+  // gallery. Optional `reference_image_ids[]` are sent to the model along
+  // with the prompt and persisted on the resulting image's metadata so the
+  // Artwork tab can prefill them when the user revisits.
   router.post('/beat/:id/image/generate', async (req, res, next) => {
     try {
       const beatId = await resolveBeatId(req);
@@ -731,12 +1009,16 @@ export function buildApiRouter() {
       if (!prompt) {
         return res.status(400).json({ error: 'prompt (non-empty) required' });
       }
-      if (prompt.length > 2048) {
-        return res.status(400).json({ error: 'prompt must be ≤ 2048 chars' });
+      if (prompt.length > 4096) {
+        return res.status(400).json({ error: 'prompt must be ≤ 4096 chars' });
       }
-      const model = String(req.body?.model || 'gemini');
-      if (!['gemini', 'openai'].includes(model)) {
-        return res.status(400).json({ error: 'model must be gemini|openai' });
+      const model = normalizeImageModel(req.body?.model);
+      if (!isValidImageModel(model)) {
+        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
+      }
+      const refs = await loadReferenceImages(req.body?.reference_image_ids);
+      if (refs.error) {
+        return res.status(refs.status || 400).json({ error: refs.error });
       }
       const setAsMain = !!req.body?.set_as_main;
       const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
@@ -744,6 +1026,7 @@ export function buildApiRouter() {
         prompt,
         mode: 'generate',
         model,
+        referenceImages: refs.images,
         discordUser: webDiscordUser(req),
       });
       const file = await uploadGeneratedImage({
@@ -766,6 +1049,7 @@ export function buildApiRouter() {
           prompt,
           generated_by: result.model || model,
           uploaded_at: file.uploaded_at,
+          ...(refs.ids.length ? { reference_image_ids: refs.ids } : {}),
         },
         setAsMain,
       });
@@ -778,7 +1062,7 @@ export function buildApiRouter() {
         ownerId: beatId,
       });
     } catch (e) {
-      if (e?.status >= 400 && e?.status < 500) {
+      if (e?.status >= 400 && e?.status < 600) {
         return res.status(e.status).json({ error: e.message });
       }
       next(e);
@@ -904,51 +1188,6 @@ export function buildApiRouter() {
     }
   });
 
-  // ── beat "specifics" tab (web-only) ──────────────────────────────────────
-  // Auto-fill empty specifics fields by asking Claude vision about the beat's
-  // body/desc/name text and any attached reference images.
-  router.post('/beat/:id/specifics/autofill', async (req, res, next) => {
-    try {
-      const beatId = await resolveBeatId(req);
-      if (!beatId) return res.status(404).json({ error: 'beat not found' });
-      const { autofillBeatSpecifics } = await import('./beatSpecificsAutofill.js');
-      const result = await autofillBeatSpecifics({ beatId });
-      res.json(result);
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Generate a UE5 production-grade scene reference sheet from beat.specifics.
-  // Caller picks the model (gemini | openai); when `omit_images` is false and
-  // the beat has a main_image_id, that image is sent as a reference.
-  router.post('/beat/:id/scene-sheet', async (req, res, next) => {
-    try {
-      const beatId = await resolveBeatId(req);
-      if (!beatId) return res.status(404).json({ error: 'beat not found' });
-      const quality = String(req.body?.quality || 'auto');
-      if (!['low', 'medium', 'high', 'auto'].includes(quality)) {
-        return res.status(400).json({ error: 'invalid quality' });
-      }
-      const model = String(req.body?.model || 'gemini');
-      if (!['gemini', 'openai'].includes(model)) {
-        return res.status(400).json({ error: 'invalid model' });
-      }
-      const omitImages = !!req.body?.omit_images;
-      const { generateSceneSheetForBeat } = await import('./beatSceneSheet.js');
-      const result = await generateSceneSheetForBeat({
-        beatId,
-        quality,
-        model,
-        omitImages,
-        discordUser: webDiscordUser(req),
-      });
-      res.json(result);
-    } catch (e) {
-      next(e);
-    }
-  });
-
   // ── character mutations (non-text) ───────────────────────────────────────
 
   async function resolveCharacterId(req) {
@@ -1020,9 +1259,9 @@ export function buildApiRouter() {
       if (!['edit', 'generate'].includes(mode)) {
         return res.status(400).json({ error: 'mode must be edit|generate' });
       }
-      const imageModel = String(req.body?.image_model ?? 'gemini');
-      if (!['gemini', 'openai'].includes(imageModel)) {
-        return res.status(400).json({ error: 'image_model must be gemini|openai' });
+      const imageModel = normalizeImageModel(req.body?.image_model);
+      if (!isValidImageModel(imageModel)) {
+        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
       if (!prompt) {
@@ -1030,6 +1269,11 @@ export function buildApiRouter() {
       }
       if (prompt.length > 4096) {
         return res.status(400).json({ error: 'prompt must be ≤ 4096 chars' });
+      }
+
+      const refs = await loadReferenceImages(req.body?.reference_image_ids);
+      if (refs.error) {
+        return res.status(refs.status || 400).json({ error: refs.error });
       }
 
       let existingImage = null;
@@ -1048,6 +1292,7 @@ export function buildApiRouter() {
           mode,
           model: imageModel,
           existingImage,
+          referenceImages: refs.images,
           discordUser: webDiscordUser(req),
         });
       } catch (e) {
@@ -1073,6 +1318,7 @@ export function buildApiRouter() {
         prompt,
         generated_by: result.model,
         uploaded_at: file.uploaded_at,
+        ...(refs.ids.length ? { reference_image_ids: refs.ids } : {}),
       };
       const replaceResult = await replaceCharacterImageViaGateway({
         character: cid,
@@ -1124,8 +1370,44 @@ export function buildApiRouter() {
     }
   });
 
+  // Copy a GridFS image (owned by any entity, or by library) into this
+  // character's gallery as a brand-new GridFS file. Source stays intact.
+  // Picker uses this for the "Character" and "Beats" source tabs.
+  router.post('/character/:id/image/copy', async (req, res, next) => {
+    try {
+      const cid = await resolveCharacterId(req);
+      if (!cid) return res.status(404).json({ error: 'character not found' });
+      const imageId = String(req.body?.image_id || '').trim();
+      if (!isOidHex(imageId)) {
+        return res.status(400).json({ error: 'image_id (24-hex) required' });
+      }
+      const setAsMain = !!req.body?.set_as_main;
+      try {
+        const imageMeta = await copyImageToNewOwner({
+          imageId,
+          ownerType: 'character',
+          ownerId: cid,
+          filenameBase: `character-${cid}`,
+        });
+        const result = await addCharacterImageViaGateway({
+          character: cid,
+          imageMeta,
+          setAsMain,
+        });
+        res.json(result);
+      } catch (e) {
+        if (e?.status === 404) return res.status(404).json({ error: e.message });
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // Generate a fresh image from a custom prompt and attach to a character's
-  // gallery. No references — pure text-to-image.
+  // gallery. Optional `reference_image_ids[]` are sent to the model along
+  // with the prompt and persisted on the image's metadata so the Artwork
+  // tab can prefill them when the user revisits.
   router.post('/character/:id/image/generate', async (req, res, next) => {
     try {
       const cid = await resolveCharacterId(req);
@@ -1134,12 +1416,16 @@ export function buildApiRouter() {
       if (!prompt) {
         return res.status(400).json({ error: 'prompt (non-empty) required' });
       }
-      if (prompt.length > 2048) {
-        return res.status(400).json({ error: 'prompt must be ≤ 2048 chars' });
+      if (prompt.length > 4096) {
+        return res.status(400).json({ error: 'prompt must be ≤ 4096 chars' });
       }
-      const model = String(req.body?.model || 'gemini');
-      if (!['gemini', 'openai'].includes(model)) {
-        return res.status(400).json({ error: 'model must be gemini|openai' });
+      const model = normalizeImageModel(req.body?.model);
+      if (!isValidImageModel(model)) {
+        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
+      }
+      const refs = await loadReferenceImages(req.body?.reference_image_ids);
+      if (refs.error) {
+        return res.status(refs.status || 400).json({ error: refs.error });
       }
       const setAsMain = !!req.body?.set_as_main;
       const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
@@ -1147,6 +1433,7 @@ export function buildApiRouter() {
         prompt,
         mode: 'generate',
         model,
+        referenceImages: refs.images,
         discordUser: webDiscordUser(req),
       });
       const file = await uploadGeneratedImage({
@@ -1169,6 +1456,7 @@ export function buildApiRouter() {
           prompt,
           generated_by: result.model || model,
           uploaded_at: file.uploaded_at,
+          ...(refs.ids.length ? { reference_image_ids: refs.ids } : {}),
         },
         setAsMain,
       });
@@ -1181,7 +1469,7 @@ export function buildApiRouter() {
         ownerId: cid,
       });
     } catch (e) {
-      if (e?.status >= 400 && e?.status < 500) {
+      if (e?.status >= 400 && e?.status < 600) {
         return res.status(e.status).json({ error: e.message });
       }
       next(e);
@@ -1224,118 +1512,68 @@ export function buildApiRouter() {
     }
   });
 
-  router.patch('/character/:id', async (req, res, next) => {
+  router.post('/character/:id/attachment', upload.single('file'), async (req, res, next) => {
     try {
       const cid = await resolveCharacterId(req);
       if (!cid) return res.status(404).json({ error: 'character not found' });
-      const { plays_self, own_voice } = req.body || {};
-      const patch = {};
-      if (typeof plays_self === 'boolean') patch.plays_self = plays_self;
-      if (typeof own_voice === 'boolean') patch.own_voice = own_voice;
-      if (!Object.keys(patch).length) return res.status(400).json({ error: 'no patch fields' });
-      const result = await updateCharacterViaGateway(cid, patch);
-      res.json({ character: result });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // ── character "specifics" tab (web-only) ────────────────────────────────
-  // Auto-fill empty specifics fields by asking Claude vision about the
-  // character's reference images. Never overwrites non-empty fields.
-  router.post('/character/:id/specifics/autofill', async (req, res, next) => {
-    try {
-      const cid = await resolveCharacterId(req);
-      if (!cid) return res.status(404).json({ error: 'character not found' });
-      const { autofillCharacterSpecifics } = await import('./specificsAutofill.js');
-      const result = await autofillCharacterSpecifics({ characterId: cid });
+      if (!req.file) return res.status(400).json({ error: 'file required' });
+      const file = await uploadAttachmentBuffer({
+        buffer: req.file.buffer,
+        filename: safeFilename(req.file.originalname, `attach-${Date.now()}.bin`),
+        contentType: req.file.mimetype,
+        ownerType: 'character',
+        ownerId: cid,
+      });
+      const result = await addCharacterAttachmentViaGateway({
+        character: cid,
+        attachmentMeta: {
+          _id: file._id,
+          filename: file.filename,
+          content_type: file.content_type,
+          size: file.size,
+          caption: req.body?.caption || null,
+          uploaded_at: file.uploaded_at,
+        },
+      });
       res.json(result);
     } catch (e) {
       next(e);
     }
   });
 
-  // Return the prompt that the sheet generator WOULD use, given the
-  // character's current specifics. The SPA shows this in the "Generate
-  // character sheet" dialog so the user can edit it before submitting.
-  router.get('/character/:id/character-sheet/preview-prompt', async (req, res, next) => {
+  router.delete('/character/:id/attachment/:attachId', async (req, res, next) => {
     try {
       const cid = await resolveCharacterId(req);
       if (!cid) return res.status(404).json({ error: 'character not found' });
-      const c = await getCharacter(cid);
-      if (!c) return res.status(404).json({ error: 'character not found' });
-      const { buildCharacterSheetPrompt } = await import('../util/specifics.js');
-      const characterName = stripMarkdown(c.name || '') || null;
-      const prompt = buildCharacterSheetPrompt(c.specifics || {}, { characterName });
-      res.json({ prompt });
+      const result = await removeCharacterAttachmentViaGateway({
+        character: cid,
+        attachmentId: req.params.attachId,
+      });
+      res.json(result);
     } catch (e) {
       next(e);
     }
   });
 
-  // Queue a character-sheet generation job. Returns 202 + { job_id } so the
-  // caller can poll /character-sheet/job/:jobId — generation can take 60+ s
-  // (gpt-image-2 with high quality + reference images), well past any
-  // sensible HTTP read timeout. Append-only: each completed job pushes a new
-  // id onto `character_sheet_image_ids[]`. Caller picks the model
-  // (gemini | openai); reference images come from `reference_image_ids` (a
-  // multi-select of the character's portrait gallery) when provided, else
-  // the character's main image. The default prompt is built from the
-  // character's specifics; pass `prompt` to override (e.g. variant/young
-  // version edits). `sheet_name` becomes the GridFS metadata.name and is
-  // surfaced in the sheet list and the storyboard sheet picker.
-  router.post('/character/:id/character-sheet', async (req, res, next) => {
+  // Attach an existing GridFS attachment (from library or another entity) to
+  // a character. Picker uses this for the Library tab.
+  router.post('/character/:id/attachment/attach', async (req, res, next) => {
     try {
       const cid = await resolveCharacterId(req);
       if (!cid) return res.status(404).json({ error: 'character not found' });
-      const quality = String(req.body?.quality || 'auto');
-      if (!['low', 'medium', 'high', 'auto'].includes(quality)) {
-        return res.status(400).json({ error: 'invalid quality' });
+      const attachmentId = String(req.body?.attachment_id || '').trim();
+      if (!isOidHex(attachmentId)) {
+        return res.status(400).json({ error: 'attachment_id (24-hex) required' });
       }
-      const model = String(req.body?.model || 'gemini');
-      if (!['gemini', 'openai'].includes(model)) {
-        return res.status(400).json({ error: 'invalid model' });
-      }
-      const omitImages = !!req.body?.omit_images;
-      const customPrompt =
-        typeof req.body?.prompt === 'string' && req.body.prompt.trim()
-          ? req.body.prompt
-          : null;
-      const sheetName =
-        typeof req.body?.sheet_name === 'string' && req.body.sheet_name.trim()
-          ? req.body.sheet_name.trim()
-          : null;
-      let referenceImageIds = null;
-      if (Array.isArray(req.body?.reference_image_ids)) {
-        referenceImageIds = req.body.reference_image_ids
-          .map((x) => String(x || ''))
-          .filter(Boolean);
-        for (const rid of referenceImageIds) {
-          if (!isOidHex(rid)) {
-            return res
-              .status(400)
-              .json({ error: `reference_image_ids: ${rid} is not a 24-hex string` });
-          }
-        }
-      }
-      const { startCharacterSheetGenerationJob, CharacterBusyError } = await import(
-        './characterSheet.js'
-      );
       try {
-        const jobId = await startCharacterSheetGenerationJob({
-          characterId: cid,
-          quality,
-          model,
-          omitImages,
-          customPrompt,
-          sheetName,
-          referenceImageIds,
-          discordUser: webDiscordUser(req),
+        const result = await attachExistingAttachmentToCharacterViaGateway({
+          character: cid,
+          attachmentId,
         });
-        res.status(202).json({ job_id: jobId, character_id: cid });
+        res.json(result);
       } catch (e) {
-        if (e instanceof CharacterBusyError) {
-          return res.status(409).json({ error: e.message });
+        if (/not found/i.test(e?.message || '')) {
+          return res.status(404).json({ error: e.message });
         }
         throw e;
       }
@@ -1344,130 +1582,244 @@ export function buildApiRouter() {
     }
   });
 
-  // Poll the status of a character-sheet generation job. Returns
-  // { job: { status, result, error, … } }. status ∈
-  // {queued, generating, done, error}. When status='done', `result` carries
-  // the same fields the synchronous call previously returned (image_id,
-  // sheet_name, model, used_input_image, latency_ms, …). 404 if the job id
-  // is unknown (server restart drops the in-memory map).
-  router.get('/character-sheet/job/:jobId', async (req, res, next) => {
-    try {
-      const { getCharacterSheetGenerationJob } = await import('./characterSheet.js');
-      const job = getCharacterSheetGenerationJob(req.params.jobId);
-      if (!job) return res.status(404).json({ error: 'job not found' });
-      res.json({ job });
-    } catch (e) {
-      next(e);
-    }
-  });
+  // ── artwork routes (character + beat) ────────────────────────────────────
+  //
+  // An "artwork" is a generated image bundled with the prompt + reference
+  // images that produced it, stored as an embedded array on the host doc
+  // (character.artworks[] or beat.artworks[]). Unlike host.images[]
+  // (reference uploads), an artwork can be reopened later, regenerated, or
+  // in-line-edited (Nano Banana Pro via FAL). The result lives in GridFS
+  // with owner_type matching the host.
+  //
+  // All generation paths are async: routes create a pending artwork doc
+  // and return it immediately (~10ms); the SPA shows a pending tile while
+  // the background job runs. Completion is pushed to connected SPAs via
+  // the existing `fields_updated` Hocuspocus broadcast on the host's room.
 
-  // Inline rename of a character sheet. Writes the new name to the GridFS
-  // metadata via the gateway (which mirrors into the y-doc when
-  // Hocuspocus is running so connected SPAs see the change live).
-  router.patch('/character/:id/character-sheet/:sheetId', async (req, res, next) => {
-    try {
-      const cid = await resolveCharacterId(req);
-      if (!cid) return res.status(404).json({ error: 'character not found' });
-      if (!isOidHex(req.params.sheetId)) {
-        return res.status(400).json({ error: 'invalid sheet id' });
+  function validateArtworkSubmitBody(req, res, { requirePrompt = true } = {}) {
+    const prompt = String(req.body?.prompt || '').trim();
+    if (requirePrompt) {
+      if (!prompt) {
+        res.status(400).json({ error: 'prompt (non-empty) required' });
+        return null;
       }
-      if (typeof req.body?.name !== 'string') {
-        return res.status(400).json({ error: 'name required' });
+      if (prompt.length > 4096) {
+        res.status(400).json({ error: 'prompt must be ≤ 4096 chars' });
+        return null;
       }
-      const c = await getCharacter(cid);
-      const sheetIds = Array.isArray(c?.character_sheet_image_ids)
-        ? c.character_sheet_image_ids.map((x) => String(x))
-        : c?.character_sheet_image_id
-          ? [String(c.character_sheet_image_id)]
-          : [];
-      if (!sheetIds.includes(String(req.params.sheetId))) {
-        return res.status(404).json({ error: 'sheet not attached to this character' });
-      }
-      await setCharacterSheetMetaViaGateway({
-        character: cid,
-        imageId: req.params.sheetId,
-        name: req.body.name,
-      });
-      res.json({ ok: true, name: req.body.name });
-    } catch (e) {
-      next(e);
     }
-  });
+    const model = normalizeImageModel(req.body?.model);
+    if (!isValidImageModel(model)) {
+      res.status(400).json({ error: IMAGE_MODEL_ERROR });
+      return null;
+    }
+    const name = String(req.body?.name || '').slice(0, 200);
+    return { prompt, model, name };
+  }
 
-  // List the character's sheets in order, with the GridFS metadata.name for
-  // each so the SPA can render labels. Returns the same shape used by the
-  // sheet picker on the storyboard page.
-  router.get('/character/:id/character-sheets', async (req, res, next) => {
-    try {
-      const cid = await resolveCharacterId(req);
-      if (!cid) return res.status(404).json({ error: 'character not found' });
-      const c = await getCharacter(cid);
-      if (!c) return res.status(404).json({ error: 'character not found' });
-      const sheetIds = Array.isArray(c.character_sheet_image_ids)
-        ? c.character_sheet_image_ids
-        : c.character_sheet_image_id
-          ? [c.character_sheet_image_id]
-          : [];
-      const sheets = [];
-      for (const sid of sheetIds) {
-        const file = await findImageFile(sid);
-        sheets.push({
-          _id: String(sid),
-          name: file?.metadata?.name || '',
-          content_type: file?.contentType || null,
+  async function validateArtworkRefs(req, res) {
+    const refs = await loadReferenceImages(req.body?.reference_image_ids);
+    if (refs.error) {
+      res.status(refs.status || 400).json({ error: refs.error });
+      return null;
+    }
+    return refs;
+  }
+
+  // Map errors thrown from the job-start path (e.g. host not found, invalid
+  // model) into the right HTTP response. Anything unrecognized bubbles to
+  // express's default error handler via `next(e)`.
+  function handleArtworkError(e, res, next) {
+    if (e?.status >= 400 && e?.status < 600) {
+      return res.status(e.status).json({ error: e.message });
+    }
+    if (/not (found|attached)/i.test(e?.message || '')) {
+      return res.status(404).json({ error: e.message });
+    }
+    return next(e);
+  }
+
+  function registerArtworkRoutes({ hostType, basePath, resolveHostId }) {
+    // POST /<host>/:id/artwork — start a new artwork generation.
+    router.post(`${basePath}/:id/artwork`, async (req, res, next) => {
+      try {
+        const hostId = await resolveHostId(req);
+        if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
+        const body = validateArtworkSubmitBody(req, res);
+        if (!body) return;
+        const refs = await validateArtworkRefs(req, res);
+        if (!refs) return;
+        const artwork = await startGenerateArtworkJob({
+          hostType,
+          hostId,
+          prompt: body.prompt,
+          name: body.name,
+          model: body.model,
+          referenceImageIds: refs.ids,
+          discordUser: webDiscordUser(req),
         });
+        res.json({ artwork });
+      } catch (e) {
+        handleArtworkError(e, res, next);
       }
-      res.json({ sheets });
-    } catch (e) {
-      next(e);
-    }
-  });
+    });
 
-  // Reorder the character_sheet_image_ids array. The first entry is treated
-  // as the default sheet during storyboard generation.
-  router.post('/character/:id/character-sheets/reorder', async (req, res, next) => {
-    try {
-      const cid = await resolveCharacterId(req);
-      if (!cid) return res.status(404).json({ error: 'character not found' });
-      if (!Array.isArray(req.body?.ordered_ids)) {
-        return res.status(400).json({ error: 'ordered_ids array required' });
+    // POST /<host>/:id/artwork/:artworkId/regenerate — fresh provider call
+    // on an existing artwork. The user can change prompt/model/refs.
+    router.post(`${basePath}/:id/artwork/:artworkId/regenerate`, async (req, res, next) => {
+      try {
+        const hostId = await resolveHostId(req);
+        if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
+        const artworkId = req.params.artworkId;
+        if (!isOidHex(artworkId)) return res.status(400).json({ error: 'invalid artwork id' });
+        const body = validateArtworkSubmitBody(req, res);
+        if (!body) return;
+        const refs = await validateArtworkRefs(req, res);
+        if (!refs) return;
+        const artwork = await startRegenerateArtworkJob({
+          hostType,
+          hostId,
+          artworkId,
+          prompt: body.prompt,
+          name: body.name,
+          model: body.model,
+          referenceImageIds: refs.ids,
+          discordUser: webDiscordUser(req),
+        });
+        res.json({ artwork });
+      } catch (e) {
+        handleArtworkError(e, res, next);
       }
-      const orderedIds = req.body.ordered_ids.map((x) => String(x || '')).filter(Boolean);
-      for (const id of orderedIds) {
-        if (!isOidHex(id)) {
-          return res.status(400).json({ error: `invalid sheet id ${id}` });
+    });
+
+    // POST /<host>/:id/artwork/:artworkId/edit — in-line edit. Takes a prompt
+    // and optional `model` (defaults to nano-banana-pro); uses the artwork's
+    // current result_image_id as the input image. The old result becomes
+    // previous_result_image_id for one-step undo.
+    router.post(`${basePath}/:id/artwork/:artworkId/edit`, async (req, res, next) => {
+      try {
+        const hostId = await resolveHostId(req);
+        if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
+        const artworkId = req.params.artworkId;
+        if (!isOidHex(artworkId)) return res.status(400).json({ error: 'invalid artwork id' });
+        const prompt = String(req.body?.prompt || '').trim();
+        if (!prompt) return res.status(400).json({ error: 'prompt (non-empty) required' });
+        if (prompt.length > 4096) {
+          return res.status(400).json({ error: 'prompt must be ≤ 4096 chars' });
         }
+        const model = normalizeImageModel(req.body?.model);
+        if (!isValidImageModel(model)) {
+          return res.status(400).json({ error: IMAGE_MODEL_ERROR });
+        }
+        const artwork = await startEditArtworkJob({
+          hostType,
+          hostId,
+          artworkId,
+          prompt,
+          model,
+          discordUser: webDiscordUser(req),
+        });
+        res.json({ artwork });
+      } catch (e) {
+        handleArtworkError(e, res, next);
       }
-      const result = await reorderCharacterSheetImagesViaGateway({
-        character: cid,
-        orderedIds,
-      });
-      res.json(result);
-    } catch (e) {
-      if (/expected \d+ ids|not in current set|duplicate id/.test(e?.message || '')) {
-        return res.status(400).json({ error: e.message });
+    });
+
+    // POST /<host>/:id/artwork/:artworkId/undo — revert the most recent
+    // edit. Synchronous; previous_result_image_id → result_image_id.
+    router.post(`${basePath}/:id/artwork/:artworkId/undo`, async (req, res, next) => {
+      try {
+        const hostId = await resolveHostId(req);
+        if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
+        const artworkId = req.params.artworkId;
+        if (!isOidHex(artworkId)) return res.status(400).json({ error: 'invalid artwork id' });
+        const artwork = await undoArtworkEdit({ hostType, hostId, artworkId });
+        res.json({ artwork });
+      } catch (e) {
+        handleArtworkError(e, res, next);
       }
-      next(e);
-    }
+    });
+
+    // PATCH /<host>/:id/artwork/:artworkId — metadata-only update (name).
+    router.patch(`${basePath}/:id/artwork/:artworkId`, async (req, res, next) => {
+      try {
+        const hostId = await resolveHostId(req);
+        if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
+        const artworkId = req.params.artworkId;
+        if (!isOidHex(artworkId)) return res.status(400).json({ error: 'invalid artwork id' });
+        const patch = {};
+        if (typeof req.body?.name === 'string') patch.name = req.body.name.slice(0, 200);
+        if (Object.keys(patch).length === 0) {
+          return res.status(400).json({ error: 'no recognized fields to patch (expected: name)' });
+        }
+        const { artwork } = await patchArtworkViaGateway({
+          hostType,
+          hostId,
+          artworkId,
+          patch,
+        });
+        res.json({ artwork });
+      } catch (e) {
+        handleArtworkError(e, res, next);
+      }
+    });
+
+    // DELETE /<host>/:id/artwork/:artworkId — remove the artwork and
+    // purge both its current and previous result images from GridFS.
+    router.delete(`${basePath}/:id/artwork/:artworkId`, async (req, res, next) => {
+      try {
+        const hostId = await resolveHostId(req);
+        if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
+        const artworkId = req.params.artworkId;
+        if (!isOidHex(artworkId)) return res.status(400).json({ error: 'invalid artwork id' });
+        await deleteArtwork({ hostType, hostId, artworkId });
+        res.json({ ok: true, removed: artworkId });
+      } catch (e) {
+        handleArtworkError(e, res, next);
+      }
+    });
+  }
+
+  registerArtworkRoutes({
+    hostType: 'character',
+    basePath: '/character',
+    resolveHostId: resolveCharacterId,
+  });
+  registerArtworkRoutes({
+    hostType: 'beat',
+    basePath: '/beat',
+    resolveHostId: resolveBeatId,
   });
 
-  // Delete a single sheet from the character. Drops the GridFS bytes.
-  router.delete('/character/:id/character-sheet/:sheetId', async (req, res, next) => {
+  // Picker support: returns every beat with its embedded images and
+  // artworks (result image ids + names). The SPA's tabbed reference picker
+  // loads this lazily when the user clicks the "Beats" tab.
+  router.get('/beats/with-artwork', async (req, res, next) => {
     try {
-      const cid = await resolveCharacterId(req);
-      if (!cid) return res.status(404).json({ error: 'character not found' });
-      if (!isOidHex(req.params.sheetId)) {
-        return res.status(400).json({ error: 'invalid sheet id' });
-      }
-      const result = await removeCharacterSheetImageViaGateway({
-        character: cid,
-        imageId: req.params.sheetId,
-      });
-      res.json(result);
+      const beats = await listBeats();
+      const out = beats.map((b) => ({
+        _id: b._id,
+        order: b.order,
+        name: b.name,
+        desc: b.desc,
+        images: (b.images || []).map((img) => ({
+          _id: img._id,
+          filename: img.filename,
+          name: img.name,
+          description: img.description,
+          content_type: img.content_type,
+        })),
+        artworks: (b.artworks || [])
+          .filter((a) => a.status === 'done' && a.result_image_id)
+          .map((a) => ({
+            _id: a._id,
+            name: a.name,
+            prompt: a.prompt,
+            result_image_id: a.result_image_id,
+          })),
+      }));
+      res.json({ beats: out });
     } catch (e) {
-      if (/not attached to/.test(e?.message || '')) {
-        return res.status(404).json({ error: e.message });
-      }
       next(e);
     }
   });
@@ -1531,6 +1883,39 @@ export function buildApiRouter() {
         imageId: req.params.imageId,
       });
       res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Copy a GridFS image into this note's gallery as a new GridFS file. Source
+  // stays intact. Used by the picker's "Character"/"Beats" source tabs.
+  router.post('/notes/:noteId/image/copy', async (req, res, next) => {
+    try {
+      const noteId = req.params.noteId;
+      if (!isOidHex(noteId)) return res.status(400).json({ error: 'invalid id' });
+      const imageId = String(req.body?.image_id || '').trim();
+      if (!isOidHex(imageId)) {
+        return res.status(400).json({ error: 'image_id (24-hex) required' });
+      }
+      const setAsMain = !!req.body?.set_as_main;
+      try {
+        const imageMeta = await copyImageToNewOwner({
+          imageId,
+          ownerType: 'director_note',
+          ownerId: noteId,
+          filenameBase: `note-${noteId}`,
+        });
+        const result = await addDirectorNoteImageViaGateway({
+          noteId,
+          imageMeta,
+          setAsMain,
+        });
+        res.json(result);
+      } catch (e) {
+        if (e?.status === 404) return res.status(404).json({ error: e.message });
+        throw e;
+      }
     } catch (e) {
       next(e);
     }
@@ -1688,6 +2073,30 @@ export function buildApiRouter() {
     }
   });
 
+  // Auto-generate a one-sentence summary of this shot from its current
+  // text_prompt. The LLM result is written to the storyboard's `summary`
+  // y-doc fragment via the gateway, so connected SPAs see the new text
+  // appear live in the CollabField. Also returned in the response body so
+  // callers can confirm the value without waiting for the y-doc round-trip.
+  router.post('/storyboard/:id/generate-summary', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const sb = await getStoryboard(sbId);
+      if (!sb) return res.status(404).json({ error: 'storyboard not found' });
+      if (!sb.text_prompt || !String(sb.text_prompt).trim()) {
+        return res.status(400).json({ error: 'text_prompt is empty; nothing to summarize' });
+      }
+      const { summarizeStoryboardPrompt } = await import('../llm/storyboardSummarize.js');
+      const summary = await summarizeStoryboardPrompt(sb.text_prompt);
+      const { setStoryboardSummaryViaGateway } = await import('./gateway.js');
+      await setStoryboardSummaryViaGateway({ storyboardId: sb._id, text: summary });
+      res.json({ summary });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // Bulk reorder for a single beat. Body: { beat_id, ordered_ids: [hex...] }
   router.post('/storyboards/reorder', async (req, res, next) => {
     try {
@@ -1709,16 +2118,16 @@ export function buildApiRouter() {
     }
   });
 
-  // Upload a frame image (start_frame|end_frame|character_sheet). The image
-  // is owned by the storyboard's beat for GridFS metadata bookkeeping.
+  // Upload a frame image (start_frame|end_frame). The image is owned by the
+  // storyboard's beat for GridFS metadata bookkeeping.
   router.post('/storyboard/:id/image', upload.single('file'), async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
       const role = String(req.body?.role || req.query.role || '').trim();
-      if (!['start_frame', 'end_frame', 'character_sheet'].includes(role)) {
-        return res.status(400).json({ error: 'role must be start_frame|end_frame|character_sheet' });
+      if (!['start_frame', 'end_frame'].includes(role)) {
+        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
       }
       const sniffed = validateImageBuffer(req.file.buffer);
       const sb = await getStoryboard(sbId);
@@ -1738,13 +2147,10 @@ export function buildApiRouter() {
         imageId: file._id,
       });
       res.json({ storyboard: result, image: { _id: file._id, content_type: file.content_type } });
-      // Caption the upload so the end-frame call (which uses descriptions as
-      // verbal anchors) has structured detail to lock onto. The vision worker
-      // dispatches to the detailed describer for owner_type='beat'.
       kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
         ownerType: 'beat',
         ownerId: sb.beat_id,
-        kind: role === 'character_sheet' ? 'character' : 'auto',
+        kind: 'auto',
       });
     } catch (e) {
       next(e);
@@ -1756,8 +2162,8 @@ export function buildApiRouter() {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
       const role = String(req.params.role);
-      if (!['start_frame', 'end_frame', 'character_sheet'].includes(role)) {
-        return res.status(400).json({ error: 'role must be start_frame|end_frame|character_sheet' });
+      if (!['start_frame', 'end_frame'].includes(role)) {
+        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
       }
       const result = await setStoryboardImageViaGateway({
         storyboardId: sbId,
@@ -1803,10 +2209,9 @@ export function buildApiRouter() {
   });
 
   // Regenerate a single start_frame or end_frame on an existing storyboard
-  // row. Runs nano banana with the beat's scene image plus character
-  // sheet(s) as references, driven by the row's current text_prompt. The
-  // character_sheet role is intentionally excluded — that slot is a
-  // reference, not a generated frame.
+  // row. The frame's persisted reference list is read server-side; the
+  // caller supplies the prompt (which is also persisted back to the frame's
+  // stored prompt field).
   router.post('/storyboard/:id/frame/:role/generate', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
@@ -1815,17 +2220,16 @@ export function buildApiRouter() {
       if (!['start_frame', 'end_frame'].includes(role)) {
         return res.status(400).json({ error: 'role must be start_frame|end_frame' });
       }
-      const imageModel = req.body?.image_model ?? 'gemini';
-      if (!['gemini', 'openai'].includes(imageModel)) {
-        return res
-          .status(400)
-          .json({ error: 'image_model must be gemini|openai' });
+      const imageModel = normalizeImageModel(req.body?.image_model);
+      if (!isValidImageModel(imageModel)) {
+        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
-      const mode = req.body?.mode ?? 'full';
-      if (!['full', 'edit', 'custom'].includes(mode)) {
-        return res.status(400).json({ error: 'mode must be full|edit|custom' });
+      const mode = req.body?.mode ?? 'generate';
+      if (!['generate', 'edit'].includes(mode)) {
+        return res.status(400).json({ error: 'mode must be generate|edit' });
       }
       let editPrompt = null;
+      let prompt = null;
       if (mode === 'edit') {
         const raw = req.body?.edit_prompt;
         if (typeof raw !== 'string' || !raw.trim()) {
@@ -1839,54 +2243,25 @@ export function buildApiRouter() {
             .json({ error: 'edit_prompt must be ≤ 1024 chars' });
         }
         editPrompt = raw;
-      }
-      let customPrompt = null;
-      if (mode === 'custom') {
-        const raw = req.body?.custom_prompt;
+      } else {
+        const raw = req.body?.prompt;
         if (typeof raw !== 'string' || !raw.trim()) {
           return res
             .status(400)
-            .json({ error: 'custom_prompt (non-empty string) required when mode=custom' });
-        }
-        if (raw.length > 2048) {
-          return res
-            .status(400)
-            .json({ error: 'custom_prompt must be ≤ 2048 chars' });
-        }
-        customPrompt = raw;
-      }
-      let promptOverride = null;
-      if (req.body?.prompt_override != null) {
-        if (mode !== 'full') {
-          return res
-            .status(400)
-            .json({ error: 'prompt_override is only valid when mode=full' });
-        }
-        const raw = req.body.prompt_override;
-        if (typeof raw !== 'string' || !raw.trim()) {
-          return res
-            .status(400)
-            .json({ error: 'prompt_override must be a non-empty string' });
+            .json({ error: 'prompt (non-empty string) required when mode=generate' });
         }
         if (raw.length > 4096) {
           return res
             .status(400)
-            .json({ error: 'prompt_override must be ≤ 4096 chars' });
+            .json({ error: 'prompt must be ≤ 4096 chars' });
         }
-        promptOverride = raw;
+        prompt = raw;
       }
-      // Row-scope flags for full mode. Defaults preserve today's behavior:
-      // start_frame still picks up the previous shot's end frame as a
-      // continuity anchor; end_frame still anchors on this row's start frame.
-      // The SPA dialog wires checkboxes to these flags so users can opt out.
-      const includeContinuity = req.body?.include_continuity !== false;
-      const includeStartFrame = req.body?.include_start_frame !== false;
       const {
         startFrameGenerationJob,
         BeatBusyError,
         EditModeError,
         FrameRoleError,
-        MissingStartFrameError,
       } = await import('./storyboardGenerate.js');
       try {
         const jobId = await startFrameGenerationJob({
@@ -1895,21 +2270,14 @@ export function buildApiRouter() {
           imageModel,
           mode,
           editPrompt,
-          customPrompt,
-          promptOverride,
-          includeContinuity,
-          includeStartFrame,
+          prompt,
         });
         res.status(202).json({ job_id: jobId, storyboard_id: sbId, role });
       } catch (e) {
         if (e instanceof BeatBusyError) {
           return res.status(409).json({ error: e.message });
         }
-        if (
-          e instanceof EditModeError ||
-          e instanceof FrameRoleError ||
-          e instanceof MissingStartFrameError
-        ) {
+        if (e instanceof EditModeError || e instanceof FrameRoleError) {
           return res.status(400).json({ error: e.message });
         }
         throw e;
@@ -1919,9 +2287,9 @@ export function buildApiRouter() {
     }
   });
 
-  // Read-only preview of the assembled full-mode prompt for a single frame
-  // slot. The SPA's regen dialog calls this on open so the user can review
-  // and edit what would otherwise be sent silently to the image model.
+  // Read-only preview of the auto-suggested prompt for a single frame slot.
+  // The SPA's generate modal calls this on open when the stored frame prompt
+  // is empty, so the user gets a sensible default they can keep or edit.
   router.post(
     '/storyboard/:id/frame/:role/preview-prompt',
     async (req, res, next) => {
@@ -1934,27 +2302,22 @@ export function buildApiRouter() {
             .status(400)
             .json({ error: 'role must be start_frame|end_frame' });
         }
-        const includeContinuity = req.body?.include_continuity !== false;
-        const includeStartFrame = req.body?.include_start_frame !== false;
         const {
           previewFrameGenerationPrompt,
           BeatBusyError,
           FrameRoleError,
-          MissingStartFrameError,
         } = await import('./storyboardGenerate.js');
         try {
           const preview = await previewFrameGenerationPrompt({
             storyboardId: sbId,
             role,
-            includeContinuity,
-            includeStartFrame,
           });
           res.json(preview);
         } catch (e) {
           if (e instanceof BeatBusyError) {
             return res.status(409).json({ error: e.message });
           }
-          if (e instanceof FrameRoleError || e instanceof MissingStartFrameError) {
+          if (e instanceof FrameRoleError) {
             return res.status(400).json({ error: e.message });
           }
           throw e;
@@ -1964,6 +2327,34 @@ export function buildApiRouter() {
       }
     },
   );
+
+  // Persist the user's customized prompt for a single frame slot. Idempotent;
+  // overwrites the prior stored value.
+  router.put('/storyboard/:id/frame/:role/prompt', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const role = String(req.params.role);
+      if (!['start_frame', 'end_frame'].includes(role)) {
+        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+      }
+      const raw = req.body?.text;
+      if (typeof raw !== 'string') {
+        return res.status(400).json({ error: 'text (string) required' });
+      }
+      if (raw.length > 8192) {
+        return res.status(400).json({ error: 'text must be ≤ 8192 chars' });
+      }
+      const storyboard = await setStoryboardFramePromptViaGateway({
+        storyboardId: sbId,
+        role,
+        text: raw,
+      });
+      res.json({ storyboard });
+    } catch (e) {
+      next(e);
+    }
+  });
 
   router.get('/storyboard/frame-generate/job/:jobId', async (req, res, next) => {
     try {
@@ -1976,153 +2367,261 @@ export function buildApiRouter() {
     }
   });
 
-  router.post('/storyboard/:id/reference', upload.single('file'), async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      if (!req.file) return res.status(400).json({ error: 'file required' });
-      const sniffed = validateImageBuffer(req.file.buffer);
-      const sb = await getStoryboard(sbId);
-      const file = await uploadGeneratedImage({
-        buffer: req.file.buffer,
-        contentType: req.file.mimetype,
-        ownerType: 'beat',
-        ownerId: sb.beat_id,
-        filename: safeFilename(
-          req.file.originalname,
-          `storyboard-${sbId}-ref-${Date.now()}.png`,
-        ),
-      });
-      const result = await addStoryboardReferenceImageViaGateway({
-        storyboardId: sbId,
-        imageId: file._id,
-      });
-      res.json({ storyboard: result, image: { _id: file._id, content_type: file.content_type } });
-      // Caption the reference so storyboard generation can read it from
-      // GridFS metadata and inject it into prompts as a verbal anchor.
-      kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
-        ownerType: 'beat',
-        ownerId: sb.beat_id,
-        kind: 'auto',
-      });
-    } catch (e) {
-      next(e);
-    }
-  });
+  function isFrameRole(role) {
+    return role === 'start_frame' || role === 'end_frame';
+  }
 
-  router.delete('/storyboard/:id/reference/:imageId', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      if (!isOidHex(req.params.imageId)) {
-        return res.status(400).json({ error: 'invalid image_id' });
+  // Upload a reference image scoped to a single frame (start_frame|end_frame).
+  router.post(
+    '/storyboard/:id/frame/:role/reference',
+    upload.single('file'),
+    async (req, res, next) => {
+      try {
+        const sbId = await resolveStoryboardId(req);
+        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+        const role = String(req.params.role);
+        if (!isFrameRole(role)) {
+          return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+        }
+        if (!req.file) return res.status(400).json({ error: 'file required' });
+        const sniffed = validateImageBuffer(req.file.buffer);
+        const sb = await getStoryboard(sbId);
+        const file = await uploadGeneratedImage({
+          buffer: req.file.buffer,
+          contentType: req.file.mimetype,
+          ownerType: 'beat',
+          ownerId: sb.beat_id,
+          filename: safeFilename(
+            req.file.originalname,
+            `storyboard-${sbId}-${role}-ref-${Date.now()}.png`,
+          ),
+        });
+        const result = await addStoryboardFrameReferenceImageViaGateway({
+          storyboardId: sbId,
+          role,
+          imageId: file._id,
+        });
+        res.json({ storyboard: result, image: { _id: file._id, content_type: file.content_type } });
+        kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
+          ownerType: 'beat',
+          ownerId: sb.beat_id,
+          kind: 'auto',
+        });
+      } catch (e) {
+        next(e);
       }
-      const result = await removeStoryboardReferenceImageViaGateway({
-        storyboardId: sbId,
-        imageId: req.params.imageId,
-      });
-      res.json({ storyboard: result });
-    } catch (e) {
-      next(e);
-    }
-  });
+    },
+  );
 
-  // Attach an already-uploaded GridFS image as a storyboard reference. Used
-  // by the reference picker when the user chooses from this beat, a character,
-  // or the library instead of uploading a fresh file.
-  router.post('/storyboard/:id/reference/attach', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const imageId = String(req.body?.image_id || '').trim();
-      if (!isOidHex(imageId)) {
-        return res.status(400).json({ error: 'image_id (24-hex) required' });
+  router.delete(
+    '/storyboard/:id/frame/:role/reference/:imageId',
+    async (req, res, next) => {
+      try {
+        const sbId = await resolveStoryboardId(req);
+        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+        const role = String(req.params.role);
+        if (!isFrameRole(role)) {
+          return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+        }
+        if (!isOidHex(req.params.imageId)) {
+          return res.status(400).json({ error: 'invalid image_id' });
+        }
+        const result = await removeStoryboardFrameReferenceImageViaGateway({
+          storyboardId: sbId,
+          role,
+          imageId: req.params.imageId,
+        });
+        res.json({ storyboard: result });
+      } catch (e) {
+        next(e);
       }
-      const file = await findImageFile(imageId);
-      if (!file) return res.status(404).json({ error: 'image not found' });
-      const result = await addStoryboardReferenceImageViaGateway({
-        storyboardId: sbId,
-        imageId,
-      });
-      res.json({
-        storyboard: result,
-        image: { _id: imageId, content_type: file.contentType || null },
-      });
-    } catch (e) {
-      next(e);
-    }
-  });
+    },
+  );
 
-  // Generate a fresh image from a custom prompt and attach as a storyboard
-  // reference. No scene context, no character sheets — pure text-to-image.
-  // The picker's Generate tab uses this when the role is 'reference'.
-  router.post('/storyboard/:id/reference/generate', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const prompt = String(req.body?.prompt || '').trim();
-      if (!prompt) {
-        return res.status(400).json({ error: 'prompt (non-empty) required' });
+  // Attach an already-uploaded GridFS image as a per-frame reference.
+  router.post(
+    '/storyboard/:id/frame/:role/reference/attach',
+    async (req, res, next) => {
+      try {
+        const sbId = await resolveStoryboardId(req);
+        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+        const role = String(req.params.role);
+        if (!isFrameRole(role)) {
+          return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+        }
+        const imageId = String(req.body?.image_id || '').trim();
+        if (!isOidHex(imageId)) {
+          return res.status(400).json({ error: 'image_id (24-hex) required' });
+        }
+        const file = await findImageFile(imageId);
+        if (!file) return res.status(404).json({ error: 'image not found' });
+        const result = await addStoryboardFrameReferenceImageViaGateway({
+          storyboardId: sbId,
+          role,
+          imageId,
+        });
+        res.json({
+          storyboard: result,
+          image: { _id: imageId, content_type: file.contentType || null },
+        });
+      } catch (e) {
+        next(e);
       }
-      if (prompt.length > 2048) {
-        return res.status(400).json({ error: 'prompt must be ≤ 2048 chars' });
-      }
-      const model = String(req.body?.model || 'gemini');
-      if (!['gemini', 'openai'].includes(model)) {
-        return res.status(400).json({ error: 'model must be gemini|openai' });
-      }
-      const sb = await getStoryboard(sbId);
-      const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
-      const result = await dispatchImageReplace({
-        prompt,
-        mode: 'generate',
-        model,
-        discordUser: webDiscordUser(req),
-      });
-      const file = await uploadGeneratedImage({
-        buffer: result.buffer,
-        contentType: result.contentType,
-        prompt,
-        generatedBy: result.model || model,
-        ownerType: 'beat',
-        ownerId: sb.beat_id,
-        filename: `storyboard-${sbId}-ref-gen-${Date.now()}.png`,
-      });
-      const updated = await addStoryboardReferenceImageViaGateway({
-        storyboardId: sbId,
-        imageId: file._id,
-      });
-      res.json({
-        storyboard: updated,
-        image: { _id: file._id, content_type: file.content_type },
-      });
-      kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
-        ownerType: 'beat',
-        ownerId: sb.beat_id,
-        kind: 'auto',
-      });
-    } catch (e) {
-      if (e?.status >= 400 && e?.status < 500) {
-        return res.status(e.status).json({ error: e.message });
-      }
-      next(e);
-    }
-  });
+    },
+  );
 
-  // Install an already-uploaded GridFS image as start_frame / end_frame /
-  // character_sheet on a storyboard. Picker uses this for the "this beat",
-  // "characters", and "library" tabs when the user picks an existing image
-  // for one of the single-image roles. The reference-list equivalent is
-  // /storyboard/:id/reference/attach.
+  // Aggregate every reasonable reference image for this storyboard's scene
+  // context (beat images + each in-scene character's sheets/portraits/extras)
+  // and append any that aren't already attached to the chosen frame.
+  router.post(
+    '/storyboard/:id/frame/:role/reference/auto-populate',
+    async (req, res, next) => {
+      try {
+        const sbId = await resolveStoryboardId(req);
+        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+        const role = String(req.params.role);
+        if (!isFrameRole(role)) {
+          return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+        }
+        const sb = await getStoryboard(sbId);
+        if (!sb) return res.status(404).json({ error: 'storyboard not found' });
+        const beat = await getBeat(String(sb.beat_id));
+        const existing =
+          role === 'start_frame'
+            ? sb.start_frame_reference_ids
+            : sb.end_frame_reference_ids;
+        const { ids, added } = await collectStoryboardReferenceIds({
+          beat,
+          charactersInScene: sb.characters_in_scene || [],
+          existingIds: existing || [],
+        });
+        const storyboard = added.length
+          ? await setStoryboardFrameReferenceImagesViaGateway({
+              storyboardId: sbId,
+              role,
+              imageIds: ids,
+              mode: 'append',
+            })
+          : sb;
+        res.json({ storyboard, added, total: ids.length });
+      } catch (e) {
+        next(e);
+      }
+    },
+  );
+
+  // Replace a frame's reference list with the exact list provided. Used by
+  // the multi-select picker's Apply button so a single round-trip commits
+  // both additions and removals.
+  router.post(
+    '/storyboard/:id/frame/:role/reference/set',
+    async (req, res, next) => {
+      try {
+        const sbId = await resolveStoryboardId(req);
+        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+        const role = String(req.params.role);
+        if (!isFrameRole(role)) {
+          return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+        }
+        const raw = req.body?.image_ids;
+        if (!Array.isArray(raw)) {
+          return res.status(400).json({ error: 'image_ids (array) required' });
+        }
+        const cleaned = [];
+        for (const v of raw) {
+          const s = String(v || '').trim();
+          if (!isOidHex(s)) {
+            return res.status(400).json({ error: `invalid image_id: ${s}` });
+          }
+          cleaned.push(s);
+        }
+        const storyboard = await setStoryboardFrameReferenceImagesViaGateway({
+          storyboardId: sbId,
+          role,
+          imageIds: cleaned,
+          mode: 'replace',
+        });
+        res.json({ storyboard });
+      } catch (e) {
+        next(e);
+      }
+    },
+  );
+
+  // Generate a fresh image from a custom prompt and attach as a per-frame
+  // reference. The picker's Generate tab uses this when role is 'reference'.
+  router.post(
+    '/storyboard/:id/frame/:role/reference/generate',
+    async (req, res, next) => {
+      try {
+        const sbId = await resolveStoryboardId(req);
+        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+        const role = String(req.params.role);
+        if (!isFrameRole(role)) {
+          return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+        }
+        const prompt = String(req.body?.prompt || '').trim();
+        if (!prompt) {
+          return res.status(400).json({ error: 'prompt (non-empty) required' });
+        }
+        if (prompt.length > 2048) {
+          return res.status(400).json({ error: 'prompt must be ≤ 2048 chars' });
+        }
+        const model = normalizeImageModel(req.body?.model);
+        if (!isValidImageModel(model)) {
+          return res.status(400).json({ error: IMAGE_MODEL_ERROR });
+        }
+        const sb = await getStoryboard(sbId);
+        const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
+        const result = await dispatchImageReplace({
+          prompt,
+          mode: 'generate',
+          model,
+          discordUser: webDiscordUser(req),
+        });
+        const file = await uploadGeneratedImage({
+          buffer: result.buffer,
+          contentType: result.contentType,
+          prompt,
+          generatedBy: result.model || model,
+          ownerType: 'beat',
+          ownerId: sb.beat_id,
+          filename: `storyboard-${sbId}-${role}-ref-gen-${Date.now()}.png`,
+        });
+        const updated = await addStoryboardFrameReferenceImageViaGateway({
+          storyboardId: sbId,
+          role,
+          imageId: file._id,
+        });
+        res.json({
+          storyboard: updated,
+          image: { _id: file._id, content_type: file.content_type },
+        });
+        kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
+          ownerType: 'beat',
+          ownerId: sb.beat_id,
+          kind: 'auto',
+        });
+      } catch (e) {
+        if (e?.status >= 400 && e?.status < 600) {
+          return res.status(e.status).json({ error: e.message });
+        }
+        next(e);
+      }
+    },
+  );
+
+  // Install an already-uploaded GridFS image as start_frame / end_frame on a
+  // storyboard. Picker uses this for the "this beat", "characters", and
+  // "library" tabs when the user picks an existing image for one of the
+  // single-image roles.
   router.post('/storyboard/:id/image/from-id', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
       const role = String(req.body?.role || '').trim();
-      if (!['start_frame', 'end_frame', 'character_sheet'].includes(role)) {
-        return res
-          .status(400)
-          .json({ error: 'role must be start_frame|end_frame|character_sheet' });
+      if (!['start_frame', 'end_frame'].includes(role)) {
+        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
       }
       const imageId = String(req.body?.image_id || '').trim();
       if (!isOidHex(imageId)) {
@@ -2144,20 +2643,15 @@ export function buildApiRouter() {
     }
   });
 
-  // Generate an image from a custom prompt and install it as a single-image
-  // role (start_frame / end_frame / character_sheet). No scene context, no
-  // references — pure text-to-image. Used by the picker's Generate tab for
-  // single-image roles. start/end frames are locked to 16:9 to match the
-  // storyboard pipeline; character_sheet is left free-form.
+  // Generate an image from a custom prompt and install it as start_frame /
+  // end_frame. No scene context, no references — pure text-to-image.
   router.post('/storyboard/:id/image/generate', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
       const role = String(req.body?.role || '').trim();
-      if (!['start_frame', 'end_frame', 'character_sheet'].includes(role)) {
-        return res
-          .status(400)
-          .json({ error: 'role must be start_frame|end_frame|character_sheet' });
+      if (!['start_frame', 'end_frame'].includes(role)) {
+        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
       }
       const prompt = String(req.body?.prompt || '').trim();
       if (!prompt) {
@@ -2166,29 +2660,18 @@ export function buildApiRouter() {
       if (prompt.length > 2048) {
         return res.status(400).json({ error: 'prompt must be ≤ 2048 chars' });
       }
-      const model = String(req.body?.model || 'gemini');
-      if (!['gemini', 'openai'].includes(model)) {
-        return res.status(400).json({ error: 'model must be gemini|openai' });
+      const model = normalizeImageModel(req.body?.model);
+      if (!isValidImageModel(model)) {
+        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const sb = await getStoryboard(sbId);
-      let result;
-      if (role === 'character_sheet') {
-        const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
-        result = await dispatchImageReplace({
-          prompt,
-          mode: 'generate',
-          model,
-          discordUser: webDiscordUser(req),
-        });
-      } else {
-        const { dispatchStoryboardImage } = await import('./storyboardImageDispatch.js');
-        result = await dispatchStoryboardImage({
-          prompt,
-          model,
-          inputImages: [],
-          mode: 'generate',
-        });
-      }
+      const { dispatchStoryboardImage } = await import('./storyboardImageDispatch.js');
+      const result = await dispatchStoryboardImage({
+        prompt,
+        model,
+        inputImages: [],
+        mode: 'generate',
+      });
       const file = await uploadGeneratedImage({
         buffer: result.buffer,
         contentType: result.contentType,
@@ -2210,10 +2693,10 @@ export function buildApiRouter() {
       kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
         ownerType: 'beat',
         ownerId: sb.beat_id,
-        kind: role === 'character_sheet' ? 'character' : 'auto',
+        kind: 'auto',
       });
     } catch (e) {
-      if (e?.status >= 400 && e?.status < 500) {
+      if (e?.status >= 400 && e?.status < 600) {
         return res.status(e.status).json({ error: e.message });
       }
       next(e);
@@ -2486,9 +2969,6 @@ export function buildApiRouter() {
   // Kick off auto-generation for a beat. Runs the generation pipeline in the
   // background so the request returns quickly; the SPA listens for stateless
   // ping broadcasts on storyboards:<beatId> and refetches as items appear.
-  // Optional `character_sheet_overrides` is { [charId]: sheetImageId } — the
-  // renderer uses the override sheet as the reference image for that
-  // character instead of falling back to the default sheet/main image.
   router.post('/storyboards/generate', async (req, res, next) => {
     try {
       const beatRef = req.body?.beat_id;
@@ -2496,26 +2976,9 @@ export function buildApiRouter() {
       const beat = await getBeat(String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const target = Number(req.body?.count) > 0 ? Number(req.body.count) : null;
-      let characterSheetOverrides = null;
-      const rawOverrides = req.body?.character_sheet_overrides;
-      if (rawOverrides && typeof rawOverrides === 'object' && !Array.isArray(rawOverrides)) {
-        characterSheetOverrides = {};
-        for (const [charId, sheetId] of Object.entries(rawOverrides)) {
-          if (sheetId === '' || sheetId == null) continue;
-          if (!isOidHex(String(charId))) {
-            return res.status(400).json({ error: `invalid character id ${charId}` });
-          }
-          if (!isOidHex(String(sheetId))) {
-            return res.status(400).json({ error: `invalid sheet id ${sheetId}` });
-          }
-          characterSheetOverrides[String(charId)] = String(sheetId);
-        }
-      }
-      const imageModel = req.body?.image_model ?? 'gemini';
-      if (!['gemini', 'openai'].includes(imageModel)) {
-        return res
-          .status(400)
-          .json({ error: 'image_model must be gemini|openai' });
+      const imageModel = normalizeImageModel(req.body?.image_model);
+      if (!isValidImageModel(imageModel)) {
+        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const direction =
         typeof req.body?.direction === 'string' ? req.body.direction : '';
@@ -2526,7 +2989,6 @@ export function buildApiRouter() {
         const jobId = await startStoryboardGenerationJob({
           beatId: beat._id.toString(),
           targetCount: target,
-          characterSheetOverrides,
           imageModel,
           direction,
         });
@@ -2724,10 +3186,9 @@ export function buildApiRouter() {
     }
   });
 
-  // Set the speaker on a dialog item to an existing character. The supplied
-  // name must match (case-insensitive on stripMarkdown) a character in the
-  // project — the SPA's <CharacterSelect> enforces this client-side, but we
-  // re-validate here so the gateway never stores an unknown speaker.
+  // Set the speaker on a dialog item. Roster character names are canonicalized
+  // to their stored spelling; anything else is saved as a free-text speaker
+  // (e.g. "radio", "TV ANCHOR"). Empty input is rejected.
   router.patch('/dialog/:id', async (req, res, next) => {
     try {
       const dId = await resolveDialogId(req);
@@ -2744,7 +3205,7 @@ export function buildApiRouter() {
         });
         res.json({ dialog });
       } catch (e) {
-        if (/^No character named|character is required/.test(e.message)) {
+        if (/character is required/.test(e.message)) {
           return res.status(400).json({ error: e.message });
         }
         throw e;

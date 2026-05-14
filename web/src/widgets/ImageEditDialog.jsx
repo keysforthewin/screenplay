@@ -1,21 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Modal } from './Modal.jsx';
+import {
+  IMAGE_MODELS,
+  readStoredImageModel,
+  writeStoredImageModel,
+} from './imageModels.js';
 
 const MODEL_STORAGE_KEY = 'screenplay.imageEdit.model';
-const VALID_MODELS = new Set(['gemini', 'openai']);
-const MODEL_LABEL = {
-  gemini: 'Nano Banana (Gemini)',
-  openai: 'OpenAI (gpt-image-2)',
-};
-
-function readStoredModel() {
-  try {
-    const v = localStorage.getItem(MODEL_STORAGE_KEY);
-    return VALID_MODELS.has(v) ? v : 'gemini';
-  } catch {
-    return 'gemini';
-  }
-}
 
 // Per-image edit/regenerate modal used by ImageGallery on beat and character
 // pages. Two modes:
@@ -27,7 +18,7 @@ function readStoredModel() {
 // the slot's position; main-image status carries over if applicable).
 export function ImageEditDialog({ open, onClose, onSubmit }) {
   const [mode, setMode] = useState('edit');
-  const [imageModel, setImageModel] = useState(readStoredModel);
+  const [imageModel, setImageModel] = useState(() => readStoredImageModel(MODEL_STORAGE_KEY));
   const [prompt, setPrompt] = useState('');
 
   useEffect(() => {
@@ -37,9 +28,7 @@ export function ImageEditDialog({ open, onClose, onSubmit }) {
   }, [open]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(MODEL_STORAGE_KEY, imageModel);
-    } catch {}
+    writeStoredImageModel(MODEL_STORAGE_KEY, imageModel);
   }, [imageModel]);
 
   const trimmed = prompt.trim();
@@ -139,19 +128,19 @@ export function ImageEditDialog({ open, onClose, onSubmit }) {
           <div
             style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}
           >
-            {['gemini', 'openai'].map((m) => (
+            {IMAGE_MODELS.map((m) => (
               <label
-                key={m}
+                key={m.id}
                 style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
               >
                 <input
                   type="radio"
                   name="image-edit-model"
-                  value={m}
-                  checked={imageModel === m}
-                  onChange={() => setImageModel(m)}
+                  value={m.id}
+                  checked={imageModel === m.id}
+                  onChange={() => setImageModel(m.id)}
                 />
-                {MODEL_LABEL[m]}
+                {m.label}
               </label>
             ))}
           </div>

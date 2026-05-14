@@ -2,7 +2,6 @@ import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../log.js';
 import { stripMarkdown } from '../util/markdown.js';
-import { isCharacterSpecificsFieldName } from '../util/specifics.js';
 
 const col = () => getDb().collection('characters');
 
@@ -12,7 +11,7 @@ function maybeId(s) {
 
 export async function listCharacters() {
   return col()
-    .find({}, { projection: { name: 1, plays_self: 1, hollywood_actor: 1, main_image_id: 1 } })
+    .find({}, { projection: { name: 1, hollywood_actor: 1, main_image_id: 1 } })
     .sort({ name: 1 })
     .toArray();
 }
@@ -54,14 +53,12 @@ export async function getCharacter(identifier) {
   return match ? backfillSheetIds(match) : null;
 }
 
-export async function createCharacter({ name, plays_self, hollywood_actor, own_voice, fields = {} }) {
+export async function createCharacter({ name, hollywood_actor, fields = {} }) {
   const now = new Date();
   const doc = {
     name,
     name_lower: stripMarkdown(name).toLowerCase(),
-    plays_self: !!plays_self,
     hollywood_actor: hollywood_actor || null,
-    own_voice: !!own_voice,
     fields,
     created_at: now,
     updated_at: now,
@@ -84,11 +81,7 @@ export async function updateCharacter(identifier, patch) {
       k === 'name' ||
       k === 'fields' ||
       k.startsWith('fields.') ||
-      k === 'plays_self' ||
       k === 'hollywood_actor' ||
-      k === 'own_voice' ||
-      k === 'specifics' ||
-      k.startsWith('specifics.') ||
       k === 'character_sheet_image_id' ||
       k === 'fal_character_id' ||
       k === 'fal_character_image_hash' ||
@@ -96,7 +89,7 @@ export async function updateCharacter(identifier, patch) {
   );
   if (!hasRecognized) {
     throw new Error(
-      `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, plays_self, hollywood_actor, own_voice, specifics, specifics.<key>, character_sheet_image_id, fal_character_id, fal_character_image_hash, or unset. Got keys: [${Object.keys(patch).join(', ')}].`,
+      `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, hollywood_actor, character_sheet_image_id, fal_character_id, fal_character_image_hash, or unset. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
   const existing = await getCharacter(identifier);
@@ -111,23 +104,6 @@ export async function updateCharacter(identifier, patch) {
       for (const [fk, fv] of Object.entries(v)) set[`fields.${fk}`] = fv;
     } else if (k.startsWith('fields.')) {
       set[k] = v;
-    } else if (k === 'specifics' && v && typeof v === 'object') {
-      for (const [sk, sv] of Object.entries(v)) {
-        if (!isCharacterSpecificsFieldName(sk)) {
-          throw new Error(
-            `update_character: unknown specifics field "${sk}".`,
-          );
-        }
-        set[`specifics.${sk}`] = sv;
-      }
-    } else if (k.startsWith('specifics.')) {
-      const sk = k.slice('specifics.'.length);
-      if (!isCharacterSpecificsFieldName(sk)) {
-        throw new Error(
-          `update_character: unknown specifics field "${sk}".`,
-        );
-      }
-      set[k] = v;
     } else if (k === 'character_sheet_image_id') {
       // Allow null (clear) or an ObjectId / 24-hex string.
       if (v === null) {
@@ -141,7 +117,7 @@ export async function updateCharacter(identifier, patch) {
           `update_character: character_sheet_image_id must be null or a 24-hex string, got ${typeof v}.`,
         );
       }
-    } else if (['plays_self', 'hollywood_actor', 'own_voice'].includes(k)) {
+    } else if (k === 'hollywood_actor') {
       set[k] = v;
     } else if (k === 'fal_character_id') {
       if (v !== null && (typeof v !== 'string' || !v.trim())) {
@@ -243,94 +219,6 @@ export async function deleteCharacter(identifier) {
   };
 }
 
-function toSheetOid(id) {
-  if (id instanceof ObjectId) return id;
-  if (typeof id === 'string' && /^[a-f0-9]{24}$/i.test(id)) return new ObjectId(id);
-  throw new Error(`character_sheet_image_ids: expected 24-hex string, got ${JSON.stringify(id)}`);
-}
-
-function currentSheetOids(doc) {
-  if (Array.isArray(doc.character_sheet_image_ids)) return doc.character_sheet_image_ids.map(toSheetOid);
-  if (doc.character_sheet_image_id) return [toSheetOid(doc.character_sheet_image_id)];
-  return [];
-}
-
-export async function appendCharacterSheetImage(identifier, fileId) {
-  const c = await getCharacter(identifier);
-  if (!c) throw new Error(`Character not found: ${identifier}`);
-  const oid = toSheetOid(fileId);
-  const current = currentSheetOids(c);
-  if (current.some((x) => x.equals(oid))) {
-    return { character: c.name, _id: c._id, character_sheet_image_ids: current };
-  }
-  const next = [...current, oid];
-  await col().updateOne(
-    { _id: c._id },
-    {
-      $set: { character_sheet_image_ids: next, updated_at: new Date() },
-      $unset: { character_sheet_image_id: '' },
-    },
-  );
-  logger.info(`mongo: character sheet append id=${c._id} file=${oid} count=${next.length}`);
-  return { character: c.name, _id: c._id, character_sheet_image_ids: next };
-}
-
-export async function removeCharacterSheetImage(identifier, fileId) {
-  const c = await getCharacter(identifier);
-  if (!c) throw new Error(`Character not found: ${identifier}`);
-  const oid = toSheetOid(fileId);
-  const current = currentSheetOids(c);
-  if (!current.some((x) => x.equals(oid))) {
-    throw new Error(`Sheet ${fileId} is not attached to ${c.name}`);
-  }
-  const next = current.filter((x) => !x.equals(oid));
-  await col().updateOne(
-    { _id: c._id },
-    {
-      $set: { character_sheet_image_ids: next, updated_at: new Date() },
-      $unset: { character_sheet_image_id: '' },
-    },
-  );
-  logger.info(`mongo: character sheet remove id=${c._id} file=${oid} count=${next.length}`);
-  return { character: c.name, _id: c._id, character_sheet_image_ids: next };
-}
-
-export async function reorderCharacterSheetImages(identifier, orderedIds) {
-  if (!Array.isArray(orderedIds)) {
-    throw new Error('reorderCharacterSheetImages: orderedIds must be an array');
-  }
-  const c = await getCharacter(identifier);
-  if (!c) throw new Error(`Character not found: ${identifier}`);
-  const current = currentSheetOids(c);
-  const incoming = orderedIds.map(toSheetOid);
-  if (incoming.length !== current.length) {
-    throw new Error(
-      `reorderCharacterSheetImages: expected ${current.length} ids, got ${incoming.length}`,
-    );
-  }
-  const currentSet = new Set(current.map((x) => x.toString()));
-  for (const oid of incoming) {
-    if (!currentSet.has(oid.toString())) {
-      throw new Error(`reorderCharacterSheetImages: id ${oid} not in current set`);
-    }
-  }
-  const seen = new Set();
-  for (const oid of incoming) {
-    const k = oid.toString();
-    if (seen.has(k)) throw new Error(`reorderCharacterSheetImages: duplicate id ${k}`);
-    seen.add(k);
-  }
-  await col().updateOne(
-    { _id: c._id },
-    {
-      $set: { character_sheet_image_ids: incoming, updated_at: new Date() },
-      $unset: { character_sheet_image_id: '' },
-    },
-  );
-  logger.info(`mongo: character sheet reorder id=${c._id} count=${incoming.length}`);
-  return { character: c.name, _id: c._id, character_sheet_image_ids: incoming };
-}
-
 export async function pushCharacterImage(identifier, imageMeta, setAsMain = false) {
   const c = await getCharacter(identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
@@ -412,8 +300,95 @@ export async function pullCharacterImage(identifier, imageId) {
   return { character: c.name, _id: c._id, removed: oid, main_image_id: newMain };
 }
 
+export async function pushCharacterAttachment(identifier, attachmentMeta) {
+  const c = await getCharacter(identifier);
+  if (!c) throw new Error(`Character not found: ${identifier}`);
+  await col().updateOne(
+    { _id: c._id },
+    {
+      $push: { attachments: attachmentMeta },
+      $set: { updated_at: new Date() },
+    },
+  );
+  logger.info(
+    `mongo: character attachment push id=${c._id} attach=${attachmentMeta?._id || '-'}`,
+  );
+  return { character: c.name, _id: c._id };
+}
+
+// ── Artwork entity helpers ─────────────────────────────────────────────────
+// An "artwork" is a generated image bundled with the prompt and reference
+// images that produced it, so the user can come back, tweak either, and
+// regenerate. Each artwork's result image lives in GridFS (owner_type=
+// 'character', owner_id=this character) and is referenced by result_image_id.
+// References come from this character's images[] array.
+
+export async function pushCharacterArtwork(identifier, artworkMeta) {
+  const c = await getCharacter(identifier);
+  if (!c) throw new Error(`Character not found: ${identifier}`);
+  await col().updateOne(
+    { _id: c._id },
+    {
+      $push: { artworks: artworkMeta },
+      $set: { updated_at: new Date() },
+    },
+  );
+  logger.info(
+    `mongo: character artwork push id=${c._id} artwork=${artworkMeta?._id || '-'}`,
+  );
+  return { character: c.name, _id: c._id, artwork_id: artworkMeta._id };
+}
+
+export async function replaceCharacterArtwork(identifier, artworkId, patch) {
+  const c = await getCharacter(identifier);
+  if (!c) throw new Error(`Character not found: ${identifier}`);
+  const oid = artworkId instanceof ObjectId ? artworkId : new ObjectId(String(artworkId));
+  const artworks = c.artworks || [];
+  const idx = artworks.findIndex((a) => a._id && a._id.equals(oid));
+  if (idx < 0) throw new Error(`Artwork ${artworkId} is not attached to ${c.name}`);
+  const next = { ...artworks[idx], ...patch, updated_at: new Date() };
+  const newArtworks = [...artworks];
+  newArtworks[idx] = next;
+  await col().updateOne(
+    { _id: c._id },
+    {
+      $set: {
+        artworks: newArtworks,
+        updated_at: new Date(),
+      },
+    },
+  );
+  logger.info(`mongo: character artwork replace id=${c._id} artwork=${oid}`);
+  return next;
+}
+
+export async function pullCharacterArtwork(identifier, artworkId) {
+  const c = await getCharacter(identifier);
+  if (!c) throw new Error(`Character not found: ${identifier}`);
+  const oid = artworkId instanceof ObjectId ? artworkId : new ObjectId(String(artworkId));
+  const artworks = c.artworks || [];
+  const found = artworks.find((a) => a._id && a._id.equals(oid));
+  if (!found) throw new Error(`Artwork ${artworkId} is not attached to ${c.name}`);
+  await col().updateOne(
+    { _id: c._id },
+    {
+      $pull: { artworks: { _id: oid } },
+      $set: { updated_at: new Date() },
+    },
+  );
+  logger.info(`mongo: character artwork pull id=${c._id} artwork=${oid}`);
+  return {
+    character: c.name,
+    _id: c._id,
+    removed: oid,
+    result_image_id: found.result_image_id || null,
+  };
+}
+
 // Remove an attachment from a character's embedded attachments[] array WITHOUT
-// deleting the GridFS file. Used by the move-on-attach path.
+// deleting the GridFS file. Used by the move-on-attach path AND by the SPA's
+// delete button (which expects the GridFS bytes to be cleaned up by the
+// gateway wrapper).
 export async function pullCharacterAttachment(identifier, attachmentId) {
   const c = await getCharacter(identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);

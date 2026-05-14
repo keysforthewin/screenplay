@@ -3,14 +3,16 @@ import { CSS } from '@dnd-kit/utilities';
 import { CollabField } from '../editor/CollabField.jsx';
 import { CharacterSelect } from './CharacterSelect.jsx';
 import { AudioSlot } from './AudioSlot.jsx';
+import { DialogItemCollapsed } from './DialogItemCollapsed.jsx';
 
 export function DialogItem({
   dialog,
-  index,
   characters,
   onDelete,
   onCharacterChange,
   onAudioChange,
+  isExpanded,
+  onExpandToggle,
 }) {
   const id = dialog._id?.toString?.() || String(dialog._id);
   const {
@@ -28,6 +30,23 @@ export function DialogItem({
     opacity: isDragging ? 0.6 : 1,
   };
 
+  if (!isExpanded) {
+    return (
+      <div
+        ref={setNodeRef}
+        style={style}
+        className="dialog-item dialog-item-collapsed-wrap"
+      >
+        <DialogItemCollapsed
+          dialog={dialog}
+          onClick={() => onExpandToggle?.(id)}
+          dragAttributes={attributes}
+          dragListeners={listeners}
+        />
+      </div>
+    );
+  }
+
   return (
     <div ref={setNodeRef} style={style} className="dialog-item">
       <div className="dialog-item-header">
@@ -40,7 +59,14 @@ export function DialogItem({
         >
           ⋮⋮
         </button>
-        <span className="dialog-item-order">#{index + 1}</span>
+        <button
+          type="button"
+          className="dialog-item-collapse"
+          onClick={() => onExpandToggle?.(id)}
+          title="Collapse this item"
+        >
+          Collapse
+        </button>
         <button
           type="button"
           className="dialog-item-delete"

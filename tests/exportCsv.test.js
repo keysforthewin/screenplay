@@ -48,25 +48,33 @@ beforeEach(() => {
 });
 
 async function seedCharacters() {
-  await Characters.createCharacter({
+  // Persist the retired top-level boolean `plays_self` directly to give the
+  // export_csv tests a stable top-level boolean field to filter/group on.
+  const a = await Characters.createCharacter({
     name: 'Alice',
-    plays_self: true,
-    own_voice: true,
     fields: { age: 30, background_story: 'Detective from Boston.' },
   });
-  await Characters.createCharacter({
+  await fakeDb.collection('characters').updateOne(
+    { _id: a._id },
+    { $set: { plays_self: true } },
+  );
+  const b = await Characters.createCharacter({
     name: 'Bob',
-    plays_self: false,
     hollywood_actor: 'Tom Hardy',
-    own_voice: false,
     fields: { age: 45, background_story: 'Reformed villain.' },
   });
-  await Characters.createCharacter({
+  await fakeDb.collection('characters').updateOne(
+    { _id: b._id },
+    { $set: { plays_self: false } },
+  );
+  const c = await Characters.createCharacter({
     name: 'Carol',
-    plays_self: true,
-    own_voice: true,
     fields: { age: 22 },
   });
+  await fakeDb.collection('characters').updateOne(
+    { _id: c._id },
+    { $set: { plays_self: true } },
+  );
 }
 
 async function seedBeats() {

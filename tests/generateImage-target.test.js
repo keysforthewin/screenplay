@@ -12,17 +12,23 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
-vi.mock('../src/gemini/client.js', () => ({
-  generateImage: async () => ({
-    buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
-    contentType: 'image/png',
-    usageMetadata: {
-      promptTokenCount: 1,
-      candidatesTokenCount: 1,
-      totalTokenCount: 2,
-    },
-  }),
-  NANO_BANANA_MODEL: 'gemini-2.5-flash-image',
+vi.mock('../src/fal/imageClient.js', () => ({
+  generateNanoBananaProImage: async (args) => {
+    const hasInput = (args.inputImages || []).length > 0;
+    return {
+      buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      contentType: 'image/png',
+      model: hasInput ? 'fal-ai/nano-banana-pro/edit' : 'fal-ai/nano-banana-pro',
+    };
+  },
+  generateFlux2ProImage: async () => ({ buffer: Buffer.from([0x89]), contentType: 'image/png', model: 'fal-ai/flux-2-pro' }),
+  generateFluxKontextImage: async () => ({ buffer: Buffer.from([0x89]), contentType: 'image/png', model: 'fal-ai/flux-pro/kontext' }),
+  NANO_BANANA_PRO_GENERATE_MODEL: 'fal-ai/nano-banana-pro',
+  FLUX_2_PRO_MODEL: 'fal-ai/flux-2-pro',
+  FLUX_KONTEXT_MODEL: 'fal-ai/flux-pro/kontext',
+}));
+vi.mock('../src/fal/client.js', () => ({
+  isConfigured: () => true,
 }));
 
 let lastUploadOwner = null;
@@ -49,6 +55,7 @@ vi.mock('../src/config.js', async () => {
     config: {
       ...real.config,
       gemini: { apiKey: 'fake-key', vertex: { project: null, location: null } },
+      fal: { ...real.config.fal, apiKey: 'fake-fal-key' },
       discord: { ...real.config.discord, movieChannelId: 'cX' },
     },
   };

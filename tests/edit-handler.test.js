@@ -133,7 +133,7 @@ describe('edit handler — beat', () => {
         field: 'order',
         edits: [{ find: '', replace: '5' }],
       }),
-    ).rejects.toThrow(/beat field must be name, desc, body, or specifics/);
+    ).rejects.toThrow(/beat field must be name, desc, or body/);
   });
 });
 

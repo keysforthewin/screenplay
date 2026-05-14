@@ -12,22 +12,36 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
-// Capture every call so tests can assert on inputImage / prompt.
+// Capture every FAL nano-banana-pro call so tests can assert on
+// inputImages / prompt. Variable name `geminiCalls` is kept for diff churn
+// minimization; it now captures FAL calls.
 const geminiCalls = [];
-vi.mock('../src/gemini/client.js', () => ({
-  generateImage: async (args) => {
+vi.mock('../src/fal/imageClient.js', () => ({
+  generateNanoBananaProImage: async (args) => {
     geminiCalls.push(args);
+    const hasInput = (args.inputImages || []).length > 0;
     return {
       buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
       contentType: 'image/png',
-      usageMetadata: {
-        promptTokenCount: 1,
-        candidatesTokenCount: 1,
-        totalTokenCount: 2,
-      },
+      model: hasInput ? 'fal-ai/nano-banana-pro/edit' : 'fal-ai/nano-banana-pro',
     };
   },
-  NANO_BANANA_MODEL: 'gemini-2.5-flash-image',
+  generateFlux2ProImage: async () => ({
+    buffer: Buffer.from([0x89]),
+    contentType: 'image/png',
+    model: 'fal-ai/flux-2-pro',
+  }),
+  generateFluxKontextImage: async () => ({
+    buffer: Buffer.from([0x89]),
+    contentType: 'image/png',
+    model: 'fal-ai/flux-pro/kontext',
+  }),
+  NANO_BANANA_PRO_GENERATE_MODEL: 'fal-ai/nano-banana-pro',
+  FLUX_2_PRO_MODEL: 'fal-ai/flux-2-pro',
+  FLUX_KONTEXT_MODEL: 'fal-ai/flux-pro/kontext',
+}));
+vi.mock('../src/fal/client.js', () => ({
+  isConfigured: () => true,
 }));
 
 // Stand-in for the GridFS bucket. Stores image metadata + bytes in memory and
@@ -186,11 +200,11 @@ describe('edit_image', () => {
     expect(out).toMatch(/^__IMAGE_PATH__:/);
     expect(out).toMatch(/Edited image/);
 
-    // Gemini saw the source image as inputImage
+    // Nano-banana-pro saw the source image in inputImages[0]
     expect(geminiCalls).toHaveLength(1);
-    expect(geminiCalls[0].inputImage).toBeDefined();
-    expect(geminiCalls[0].inputImage.contentType).toBe('image/png');
-    expect(Buffer.isBuffer(geminiCalls[0].inputImage.buffer)).toBe(true);
+    expect(geminiCalls[0].inputImages).toHaveLength(1);
+    expect(geminiCalls[0].inputImages[0].contentType).toBe('image/png');
+    expect(Buffer.isBuffer(geminiCalls[0].inputImages[0].buffer)).toBe(true);
     expect(geminiCalls[0].prompt).toContain('blonde hair');
 
     // Result was uploaded as a character-owned image

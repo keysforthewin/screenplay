@@ -5,8 +5,10 @@
 // "dialogs:<beatId>" room as each dialog item is persisted.
 //
 // Pipeline (single-stage, no rendering — text only):
-//   1. Anthropic call: scan the beat body / desc / characters and emit every
-//      spoken line via the populate_dialog tool, in story order.
+//   1. Anthropic call: given the beat (name/desc/body) plus full character
+//      docs for the speakers, WRITE the dialogue the beat needs — capturing
+//      its gist in the characters' voices rather than literally transcribing
+//      the prose. Returned via the populate_dialog tool, in story order.
 //   2. Clear the existing dialogs for the beat, then create one row per
 //      returned entry via the gateway. Each create broadcasts a ping.
 //
@@ -29,28 +31,30 @@ import { isBeatLocked, withBeatLock } from './beatLocks.js';
 const POPULATE_TOOL = {
   name: 'populate_dialog',
   description:
-    'Extract every line of spoken dialog from the beat into an ordered list. ' +
-    'Each entry is one continuous line spoken by one character. Preserve story order.',
+    'Return the dialogue you wrote for this beat as an ordered list. ' +
+    'Each entry is one continuous line spoken by one source. Preserve story order.',
   input_schema: {
     type: 'object',
     properties: {
       entries: {
         type: 'array',
         description:
-          'Ordered list of dialog entries spoken in this beat, in story order.',
+          'Ordered list of dialogue entries spoken in this beat, in story order.',
         items: {
           type: 'object',
           properties: {
             character: {
               type: 'string',
               description:
-                "The speaker's name — match an existing character name from the list when possible. " +
-                'Plain text, no quotation marks.',
+                "The speaker. Use a roster character's exact name when the speaker is one of them. " +
+                'For non-character sources (a radio, TV, intercom, off-screen voice), use a descriptive ' +
+                'uppercase label like RADIO, TV ANCHOR, INTERCOM, P.A.. Plain text, no quotation marks.',
             },
             body: {
               type: 'string',
               description:
-                'What the character says, exactly. No speaker prefix, no quotation marks, no stage direction.',
+                'What is spoken. Write it to fit the beat and the speaker\'s voice. ' +
+                'No speaker prefix, no quotation marks, no parentheticals, no stage direction.',
             },
           },
           required: ['character', 'body'],
@@ -64,18 +68,45 @@ const POPULATE_TOOL = {
 };
 
 const SYSTEM_PROMPT = [
-  'You are a screenplay editor. Extract every line of spoken dialog from the beat below, in story order.',
-  'Return your result via the populate_dialog tool.',
-  'Output only the dialog the characters speak — narration, action, and stage directions are NOT dialog.',
-  "Preserve each speaker's name as it appears; if a known character name from the project's roster matches, use that exact name.",
-  '`body` is what the character says (no quotation marks, no speaker prefix); `character` is the speaker.',
+  'You are a screenwriter writing the dialogue for a single beat of a feature film.',
+  'Return your result via the populate_dialog tool, in story order.',
   '',
-  'Edge cases:',
-  '- Parentheticals inside a line are stage direction. Strip them: "(angrily) Get out!" → body "Get out!".',
-  '- Off-screen / voice-over speech (V.O., O.S., CONT\'D, etc.) IS dialog. Drop the qualifier from the speaker name.',
-  '- A single character speaking continuously is one entry. Only split when an action beat, scene break, or another speaker interrupts.',
+  'Your job is to write the lines that make this beat land on screen.',
+  'The beat description and body are GUIDANCE, not a transcript. Write what the characters would',
+  'plausibly say to convey or surface what the beat is about — capture the gist of the beat, not',
+  'its exact wording.',
   '',
-  'If the beat contains no spoken dialog, return an empty entries array.',
+  'Voice & character:',
+  '- Each speaker gets a bio block below. Use it. Match speech patterns, education level, attitude,',
+  '  and worldview. If a character has memes / catchphrases, weave them in where they\'d plausibly',
+  '  come up — never shoehorn.',
+  '- If the beat body already quotes a specific line verbatim, preserve that line exactly and write',
+  '  the surrounding dialogue around it.',
+  '',
+  'Avoid literalism:',
+  '- Do NOT restate the beat description or action lines as dialogue. "Alice walked into the diner"',
+  '  is action, not a line for Alice to say.',
+  '- Do NOT paraphrase the narrator. Find what the characters would actually say in the scene to',
+  '  surface what\'s happening, what they want, and how they feel about it.',
+  '- Subtext is fine; let characters talk around things rather than naming them.',
+  '',
+  'Non-character speakers:',
+  '- Anyone or anything can speak. If the scene has a radio, TV, intercom, P.A. system, off-screen',
+  '  voice, etc., use a descriptive uppercase label as the speaker (RADIO, TV ANCHOR, INTERCOM).',
+  '',
+  'Length:',
+  '- Write enough lines to make the beat work on screen. Don\'t pad with filler. A quick moment may',
+  '  need two or three lines; a longer scene may need many more.',
+  '',
+  'Format:',
+  '- `body` is what is spoken — no quotation marks, no speaker prefix, no parentheticals, no stage',
+  '  direction.',
+  '- `character` is the speaker. For roster characters use the exact roster name; for non-character',
+  '  sources use a descriptive uppercase label.',
+  '- A single character speaking continuously is one entry; split only when another speaker or a',
+  '  clear pause/action interrupts.',
+  '',
+  'If the beat is pure action with no spoken content, return an empty entries array.',
 ].join('\n');
 
 // In-memory job tracker. Sufficient for single-process runtime; status survives
@@ -171,6 +202,21 @@ async function runDialogGenerationJob({ job, beat }) {
   );
 }
 
+function formatCharacterBio(c) {
+  const plainName = stripMarkdown(c?.name || '').trim();
+  if (!plainName) return '';
+  const lines = [`## ${plainName}`];
+  const actor = stripMarkdown(c.hollywood_actor || '').trim();
+  if (actor) lines.push(`hollywood_actor: ${actor}`);
+  const fields = c.fields && typeof c.fields === 'object' ? c.fields : {};
+  for (const [key, raw] of Object.entries(fields)) {
+    const value = stripMarkdown(typeof raw === 'string' ? raw : '').trim();
+    if (!value) continue;
+    lines.push(`${key}: ${value}`);
+  }
+  return lines.join('\n');
+}
+
 async function loadCharacterDocs(characterNames) {
   // Preferred order: characters listed on the beat first, then everyone else.
   const seen = new Set();
@@ -198,11 +244,8 @@ async function loadCharacterDocs(characterNames) {
 }
 
 async function extractEntries({ beat, characters }) {
-  const characterLines = characters.length
-    ? characters
-        .map((c) => `- ${stripMarkdown(c.name || '')}`)
-        .filter((s) => s.trim() !== '-')
-        .join('\n')
+  const characterBlock = characters.length
+    ? characters.map(formatCharacterBio).filter(Boolean).join('\n\n')
     : '(no named characters known yet)';
   const userText = [
     `# Beat #${beat.order}: ${stripMarkdown(beat.name || '') || 'Untitled'}`,
@@ -213,16 +256,19 @@ async function extractEntries({ beat, characters }) {
     'Beat body:',
     stripMarkdown(beat.body || '') || '(none)',
     '',
-    'Known character names (use these exactly when they match a speaker):',
-    characterLines,
+    '# Characters in this story',
+    'Use these bios to inform each speaker\'s voice. Use a character\'s exact name when they speak.',
     '',
-    'Use the populate_dialog tool to return every line of spoken dialog in story order.',
+    characterBlock,
+    '',
+    'Write the dialogue for this beat using the populate_dialog tool. Capture the gist of the beat',
+    'in the characters\' voices — don\'t be literal, don\'t restate action lines as dialogue.',
   ].join('\n');
 
   const client = getAnthropic();
   const resp = await client.messages.create({
     model: config.anthropic.model,
-    max_tokens: 4096,
+    max_tokens: 8192,
     system: SYSTEM_PROMPT,
     tools: [POPULATE_TOOL],
     tool_choice: { type: 'tool', name: 'populate_dialog' },

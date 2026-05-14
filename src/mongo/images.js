@@ -137,6 +137,16 @@ export async function listImagesForDirectorNote(noteId) {
     .toArray();
 }
 
+// All non-thumbnail GridFS images currently owned by entities of `ownerType`
+// (e.g. 'character', 'beat', 'director_note'). Used by the picker modal's
+// Character/Beats source tabs.
+export async function listImagesByOwnerType(ownerType) {
+  return filesCol()
+    .find({ 'metadata.owner_type': ownerType, 'metadata.kind': { $ne: 'thumbnail' } })
+    .sort({ uploadDate: -1 })
+    .toArray();
+}
+
 export async function setImageOwner(imageId, { ownerType, ownerId }) {
   const oid = toObjectId(imageId);
   await filesCol().updateOne(

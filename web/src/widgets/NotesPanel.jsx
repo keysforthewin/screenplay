@@ -39,6 +39,9 @@ export function NotesPanel({ notes, session, onChange }) {
               uploadPath={`/notes/${note._id}/image`}
               deletePath={(imageId) => `/notes/${note._id}/image/${imageId}`}
               mainPath={`/notes/${note._id}/main-image`}
+              characterSourcesPath={`/images/by-owner/characters`}
+              beatSourcesPath={`/images/by-owner/beats`}
+              copyPath={`/notes/${note._id}/image/copy`}
             />
           </div>
         ))}

@@ -143,7 +143,10 @@ async function waitForBeatLock(beatId) {
 async function seedScene({
   start = true,
   end = true,
-  sheet = false,
+  // `sheet` is accepted for backwards-compat with existing test calls but
+  // ignored — the storyboard no longer has a character_sheet slot. The video
+  // pipeline ignores character sheets too.
+  sheet: _sheet = false,
   audio = false,
   charactersInScene = [],
 } = {}) {
@@ -164,11 +167,6 @@ async function seedScene({
     const id = new ObjectId();
     fakeImageStore.set(id.toString(), { buffer: Buffer.from('end'), contentType: 'image/png' });
     patch.end_frame_id = id;
-  }
-  if (sheet) {
-    const id = new ObjectId();
-    fakeImageStore.set(id.toString(), { buffer: Buffer.from('sheet'), contentType: 'image/png' });
-    patch.character_sheet_image_id = id;
   }
   if (audio) {
     const id = new ObjectId();
@@ -222,7 +220,6 @@ describe('startVideoGenerationJob', () => {
     const { beat, sb } = await seedScene({
       start: true,
       end: true,
-      sheet: true,
       charactersInScene: ['Steve'],
     });
 
@@ -241,25 +238,20 @@ describe('startVideoGenerationJob', () => {
     expect(job.video_file_id).toBeTruthy();
     expect(job.request_id).toBe('req-fake-1');
 
-    // Only the three explicitly attached images get uploaded: start, end,
-    // and the pinned character sheet. Steve's sheets in his character doc
-    // are ignored.
-    expect(falStubs.storageUploads).toHaveLength(3);
+    // Only start + end get uploaded — character_sheet is no longer a slot
+    // on the storyboard, and Steve's character-doc sheets are ignored.
     expect(falStubs.storageUploads.map((u) => u.name).sort()).toEqual(
-      ['end.png', 'sheet.png', 'start.png'],
+      ['end.png', 'start.png'],
     );
 
-    // The submit call shape: start_image_url, end_image_url, single element.
+    // The submit call shape: start_image_url, end_image_url, no elements.
     expect(falStubs.submitCalls).toHaveLength(1);
     const submitInput = falStubs.submitCalls[0].args.input;
     expect(submitInput.start_image_url).toMatch(/^https:\/\/fal\.media\/inputs\//);
     expect(submitInput.end_image_url).toMatch(/^https:\/\/fal\.media\/inputs\//);
     expect(submitInput.duration).toBe('7');
     expect(submitInput.generate_audio).toBe(true);
-    expect(Array.isArray(submitInput.elements)).toBe(true);
-    expect(submitInput.elements).toHaveLength(1);
-    expect(submitInput.elements[0].frontal_image_url).toMatch(/^https:\/\/fal\.media\/inputs\//);
-    expect(submitInput.elements[0].reference_image_urls).toBeUndefined();
+    expect(submitInput.elements).toBeUndefined();
 
     // subscribeToStatus and result were both called against the kling model.
     expect(falStubs.subscribeCalls[0].model).toBe('fal-ai/kling-video/v3/pro/image-to-video');
@@ -342,8 +334,8 @@ describe('startVideoGenerationJob', () => {
     ).rejects.toBeInstanceOf(Falgen.MissingInputsError);
   });
 
-  it('Kling AI Avatar: image_url from character_sheet (preferred over start_frame); audio_url required', async () => {
-    const { beat, sb } = await seedScene({ start: true, sheet: true, audio: true });
+  it('Kling AI Avatar: image_url falls back to start_frame when character_sheet is unavailable; audio_url required', async () => {
+    const { beat, sb } = await seedScene({ start: true, audio: true });
     const { job_id } = await Falgen.startVideoGenerationJob({
       storyboardId: sb._id.toString(),
       modelId: 'kling-avatar-v2-pro',
@@ -356,17 +348,14 @@ describe('startVideoGenerationJob', () => {
     expect(input.image_url).toBeTruthy();
     expect(input.audio_url).toBeTruthy();
 
-    // Confirms anchor preference: character sheet was uploaded with name
-    // 'sheet.png', start frame was NOT uploaded (kling-avatar marks startFrame
-    // REQUIRED for input validation but only consumes characterSheet's URL
-    // when present — orchestrator still uploads startFrame since needs it
-    // for the fallback. That's fine; check the bundle picked the sheet URL).
-    const sheetUpload = falStubs.storageUploads.find((u) => u.name === 'sheet.png');
-    expect(input.image_url).toBe(sheetUpload.url);
+    // With character_sheet retired from the storyboard schema, kling-avatar
+    // uses the start_frame as the visual anchor instead.
+    const startUpload = falStubs.storageUploads.find((u) => u.name === 'start.png');
+    expect(input.image_url).toBe(startUpload.url);
   });
 
   it('Kling AI Avatar rejects with MissingInputsError when audio is absent', async () => {
-    const { sb } = await seedScene({ start: true, sheet: true, audio: false });
+    const { sb } = await seedScene({ start: true, audio: false });
     await expect(
       Falgen.startVideoGenerationJob({
         storyboardId: sb._id.toString(),

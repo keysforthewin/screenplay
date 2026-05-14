@@ -92,33 +92,4 @@ describe('gateway fallback (no Hocuspocus)', () => {
     expect(doc.notes).toHaveLength(0);
   });
 
-  // Regression: character sheets live on c.character_sheet_image_ids[],
-  // outside the c.images[] array that the character room descriptor knows
-  // about. Routing the rename through setEntityFieldMarkdown writes a y-doc
-  // fragment that the persist hook then drops on the floor (not in the
-  // registered field list), so Mongo never gets the new name. The dedicated
-  // helper writes GridFS metadata directly.
-  it('setCharacterSheetMetaViaGateway updates GridFS metadata.name on the sheet image', async () => {
-    const sheetId = new ObjectId();
-    fakeDb.collection('images.files').insertOne({
-      _id: sheetId,
-      filename: 'character-sheet-x.png',
-      contentType: 'image/png',
-      metadata: {
-        owner_type: 'character',
-        owner_id: new ObjectId(),
-        name: 'Sheet 1',
-        name_lower: 'sheet 1',
-      },
-    });
-    const c = await Characters.createCharacter({ name: 'Rae' });
-    await Gateway.setCharacterSheetMetaViaGateway({
-      character: c._id.toString(),
-      imageId: sheetId.toString(),
-      name: 'Hero Pose',
-    });
-    const fresh = await fakeDb.collection('images.files').findOne({ _id: sheetId });
-    expect(fresh.metadata.name).toBe('Hero Pose');
-    expect(fresh.metadata.name_lower).toBe('hero pose');
-  });
 });

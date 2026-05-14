@@ -36,11 +36,18 @@ export function StoryboardBeat({ session }) {
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteAllError, setDeleteAllError] = useState(null);
+  // Only one storyboard item can be expanded at a time. Collapsed by default
+  // so the heavy media (videos, frames, audio, prompt CollabField) doesn't
+  // mount until the user opens that item.
+  const [expandedId, setExpandedId] = useState(null);
 
   // beatCharacters is fetched once per beat and passed to the generation
   // dialog so the user can pick which sheet to use for each character. The
   // override mapping itself lives inside the dialog now.
   const [beatCharacters, setBeatCharacters] = useState([]);
+  // tocCharacters is the full project roster, used by the per-item character
+  // tag input. /api/toc returns plain_name for case-insensitive matching.
+  const [tocCharacters, setTocCharacters] = useState([]);
   const [showProgressLog, setShowProgressLog] = useState(true);
   const progressLogRef = useRef(null);
   // 1s tick while a generation is running so "Xs ago" labels update smoothly
@@ -87,6 +94,21 @@ export function StoryboardBeat({ session }) {
       cancelled = true;
     };
   }, [data?.beat?._id, refreshKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await apiGet(`/toc`);
+        if (!cancelled) setTocCharacters(r.characters || []);
+      } catch {
+        if (!cancelled) setTocCharacters([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
 
   const onRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
@@ -153,9 +175,11 @@ export function StoryboardBeat({ session }) {
   }
 
   async function deleteStoryboard(id) {
-    if (!confirm('Delete this storyboard?')) return;
+    if (!confirm('Delete this storyboard element?')) return;
     try {
       await apiDelete(`/storyboard/${id}`);
+      const idStr = id?.toString?.() || String(id);
+      setExpandedId((cur) => (cur === idStr ? null : cur));
       onRefresh();
     } catch (e) {
       setError(e.message);
@@ -183,16 +207,13 @@ export function StoryboardBeat({ session }) {
     }
   }
 
-  async function generate({ sheetOverrides, imageModel, count, direction }) {
+  async function generate({ count, direction }) {
     if (!data?.beat) return;
     setGenerating(true);
     setGenerationError(null);
     setGenerationStatus({ status: 'queued', completed: 0, planned: 0, failed: 0 });
     try {
-      const body = { beat_id: data.beat._id, image_model: imageModel };
-      if (sheetOverrides && Object.keys(sheetOverrides).length) {
-        body.character_sheet_overrides = sheetOverrides;
-      }
+      const body = { beat_id: data.beat._id };
       if (Number(count) > 0) body.count = Number(count);
       if (typeof direction === 'string' && direction.trim()) {
         body.direction = direction.trim();
@@ -270,14 +291,19 @@ export function StoryboardBeat({ session }) {
         </h1>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button
+            onClick={() => navigate(`/beat/${data.beat.order}`)}
+            title={`Open beat #${data.beat.order} in the editor`}
+          >
+            View beat
+          </button>
+          <button
             className="primary"
             onClick={onGenerateClick}
             disabled={generating}
             title={
-              (sortedItems.length
+              sortedItems.length
                 ? 'Replace existing storyboards with a freshly generated set'
-                : 'Auto-generate storyboards from the beat body and characters') +
-              ' · Generation may take a couple of minutes — each frame produces 2 images.'
+                : 'Auto-generate storyboards from the beat body and characters'
             }
           >
             {generating ? 'Generating…' : 'Generate'}
@@ -342,16 +368,24 @@ export function StoryboardBeat({ session }) {
                 strategy={verticalListSortingStrategy}
               >
                 <div className="storyboard-list">
-                  {sortedItems.map((sb, index) => (
-                    <StoryboardItem
-                      key={sb._id?.toString?.() || String(sb._id)}
-                      sb={sb}
-                      index={index}
-                      prevSb={sortedItems[index - 1] ?? null}
-                      onRefresh={onRefresh}
-                      onDelete={() => deleteStoryboard(sb._id)}
-                    />
-                  ))}
+                  {sortedItems.map((sb, index) => {
+                    const sbId = sb._id?.toString?.() || String(sb._id);
+                    return (
+                      <StoryboardItem
+                        key={sbId}
+                        sb={sb}
+                        index={index}
+                        prevSb={sortedItems[index - 1] ?? null}
+                        tocCharacters={tocCharacters}
+                        onRefresh={onRefresh}
+                        onDelete={() => deleteStoryboard(sb._id)}
+                        isExpanded={expandedId === sbId}
+                        onExpandToggle={(toggledId) =>
+                          setExpandedId((cur) => (cur === toggledId ? null : toggledId))
+                        }
+                      />
+                    );
+                  })}
                 </div>
               </SortableContext>
             </DndContext>

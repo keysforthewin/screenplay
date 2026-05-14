@@ -418,14 +418,6 @@ export async function buildVideoPayloadPreview({
     });
     if (desc) inputs.push(desc);
   }
-  if (wants('characterSheet')) {
-    const desc = await describeImageInput({
-      slot: 'characterSheet',
-      imageId: sb.character_sheet_image_id,
-      name: 'sheet.png',
-    });
-    if (desc) inputs.push(desc);
-  }
   if (wants('audio')) {
     const desc = await describeAttachmentInput({
       slot: 'audio',
@@ -435,7 +427,9 @@ export async function buildVideoPayloadPreview({
     if (desc) inputs.push(desc);
   }
   if (wants('referenceImages')) {
-    const ids = Array.isArray(sb.reference_image_ids) ? sb.reference_image_ids : [];
+    const ids = Array.isArray(sb.start_frame_reference_ids)
+      ? sb.start_frame_reference_ids
+      : [];
     for (let i = 0; i < ids.length; i++) {
       const desc = await describeImageInput({
         slot: 'referenceImages',
@@ -468,9 +462,9 @@ export async function buildVideoPayloadPreview({
     prompt: finalPrompt,
     startFrameUrl: previewImageUrl(sb.start_frame_id),
     endFrameUrl: previewImageUrl(sb.end_frame_id),
-    characterSheetUrl: previewImageUrl(sb.character_sheet_image_id),
+    characterSheetUrl: null,
     audioUrl: previewAttachmentUrl(sb.audio_file_id),
-    referenceImageUrls: (sb.reference_image_ids || [])
+    referenceImageUrls: (sb.start_frame_reference_ids || [])
       .map((id) => previewImageUrl(id))
       .filter(Boolean),
     durationSeconds: finalDuration,
@@ -566,21 +560,19 @@ async function runVideoGenerationJob({
     const [
       startFrameUrl,
       endFrameUrl,
-      characterSheetUrl,
       audioUrl,
     ] = await Promise.all([
       wants('startFrame') ? loadAndUploadImage(storyboard.start_frame_id, 'start.png') : null,
       wants('endFrame') ? loadAndUploadImage(storyboard.end_frame_id, 'end.png') : null,
-      wants('characterSheet') ? loadAndUploadImage(storyboard.character_sheet_image_id, 'sheet.png') : null,
       wants('audio') ? loadAndUploadAttachment(storyboard.audio_file_id, 'audio.bin') : null,
     ]);
+    const characterSheetUrl = null;
 
-    // Only images explicitly attached to the storyboard get uploaded. We don't
-    // chase character documents by name from characters_in_scene, and we don't
-    // fall back to start_frame / character_sheet when reference_image_ids is
-    // empty — if the user wanted those as references they'd pin them.
+    // Reference images for video generation come from the start frame's
+    // per-frame reference list — those are the images that anchor the
+    // opening of this shot, which is what a video model "extends".
     const referenceImageUrls = wants('referenceImages')
-      ? await buildReferenceImageUrls(storyboard.reference_image_ids || [])
+      ? await buildReferenceImageUrls(storyboard.start_frame_reference_ids || [])
       : [];
 
     // 2. Build the model-specific input from the unified bundle.
@@ -754,12 +746,7 @@ function buildPrompt({ override, storyboard }) {
     (typeof override === 'string' && override.trim()) ||
     stripMarkdown(storyboard.text_prompt || '').trim() ||
     'Cinematic shot.';
-  const startDesc = stripMarkdown(storyboard.start_frame_description || '').trim();
-  const lines = [raw];
-  if (startDesc && raw.length + startDesc.length < 1800) {
-    lines.push('', `Visual anchor: ${startDesc}`);
-  }
-  return lines.join('\n');
+  return raw;
 }
 
 // Build the `parameters` snapshot we persist on the storyboard. The

@@ -27,15 +27,19 @@ export function AttachmentList({
   onChange,
   uploadPath,
   deletePath,
-  // Optional. POST {attachment_id} — attach an existing library attachment.
-  // Enables the Library tab in the picker.
   attachPath,
-  // Title for the picker modal.
-  pickerTitle = 'Add attachment',
+  pickerTitle = 'Add file',
   fieldPrefix = 'attachment',
+  // Optional controlled-mode props. When `pickerOpen` is supplied the parent
+  // owns the open/close state; otherwise the list manages it locally.
+  pickerOpen: pickerOpenProp,
+  onPickerOpenChange,
+  hideAddButton = false,
 }) {
   const [error, setError] = useState(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [internalPickerOpen, setInternalPickerOpen] = useState(false);
+  const pickerOpen = pickerOpenProp ?? internalPickerOpen;
+  const setPickerOpen = onPickerOpenChange ?? setInternalPickerOpen;
 
   async function remove(id) {
     if (!deletePath) return;
@@ -96,14 +100,14 @@ export function AttachmentList({
           );
         })}
       </div>
-      {uploadPath && (
+      {uploadPath && !hideAddButton && (
         <div className="attachment-add">
           <button
             type="button"
             className="primary"
             onClick={() => setPickerOpen(true)}
           >
-            + Add attachment
+            + Add file
           </button>
         </div>
       )}

@@ -57,13 +57,13 @@ describe('bulk_update_character_field handler', () => {
     await seedCharacter('Alice');
 
     await HANDLERS.bulk_update_character_field({
-      field_name: 'plays_self',
-      updates: [{ character: 'Alice', value: false }],
+      field_name: 'hollywood_actor',
+      updates: [{ character: 'Alice', value: 'Idris Elba' }],
     });
 
     const a = await Characters.getCharacter('Alice');
-    expect(a.plays_self).toBe(false);
-    expect(a.fields?.plays_self).toBeUndefined();
+    expect(a.hollywood_actor).toBe('Idris Elba');
+    expect(a.fields?.hollywood_actor).toBeUndefined();
   });
 
   it('reports per-row failures without aborting the rest', async () => {

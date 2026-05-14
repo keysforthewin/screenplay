@@ -10,23 +10,30 @@ import { Modal } from './Modal.jsx';
 const TABS = [
   { key: 'beat', label: 'This beat' },
   { key: 'characters', label: 'Characters' },
+  { key: 'artwork', label: 'Artwork' },
   { key: 'library', label: 'Library' },
   { key: 'upload', label: 'Upload' },
   { key: 'generate', label: 'Generate' },
 ];
 
 const GEN_MODEL_STORAGE_KEY = 'screenplay.picker.genModel';
-const VALID_GEN_MODELS = new Set(['gemini', 'openai']);
+const VALID_GEN_MODELS = new Set(['gemini', 'openai', 'fal']);
 const GEN_MODEL_LABEL = {
   gemini: 'Nano Banana (Gemini)',
   openai: 'OpenAI (gpt-image-2)',
+  fal: 'Flux 2 Kontext (fal.ai)',
 };
+const GEN_MODEL_ORDER = ['gemini', 'openai', 'fal'];
 
 const ROLE_TITLES = {
-  reference: 'Add reference',
+  reference: 'Add references',
   start_frame: 'Set start frame',
   end_frame: 'Set end frame',
-  character_sheet: 'Set character sheet',
+};
+
+const FRAME_ROLE_TITLES = {
+  start_frame: "Add references for the start frame",
+  end_frame: "Add references for the end frame",
 };
 
 function readStoredGenModel() {
@@ -48,15 +55,26 @@ function stripMd(s) {
     .trim();
 }
 
+function setsEqual(a, b) {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
 // Universal image picker for storyboard image fields. Five tabs:
-//   beat / characters / library — pick an existing GridFS image
+//   beat / characters / library — pick existing GridFS images
 //   upload   — upload a file
-//   generate — text-to-image with model choice (Gemini / OpenAI)
+//   generate — text-to-image with model choice (Gemini / OpenAI / Flux)
 //
-// `role` is one of 'reference' (multi-image, default), 'start_frame',
-// 'end_frame', or 'character_sheet'. For single-image roles, picking installs
-// the image at that role (replaces any existing image). For the reference
-// role, picking appends to the storyboard's reference_image_ids list.
+// Modes:
+//   - `role='reference'` (default, no frameRole): legacy row-level reference
+//     editor. Multi-select diff editor; Apply commits the final list via
+//     /storyboard/:id/reference/set.
+//   - `role='start_frame'` | `role='end_frame'`: single-image installer —
+//     picking commits to that frame slot immediately.
+//   - `frameRole='start_frame'` | `frameRole='end_frame'`: per-frame
+//     multi-select reference editor (mirrors the legacy multi-select but
+//     scoped to start_frame_reference_ids or end_frame_reference_ids).
 export function ReferencePickerModal({
   open,
   onClose,
@@ -65,9 +83,16 @@ export function ReferencePickerModal({
   charactersInScene,
   currentReferenceIds,
   role = 'reference',
+  frameRole = null,
   onAttached,
 }) {
-  const isReference = role === 'reference';
+  // The picker is in multi-select / reference-list mode either via role='reference'
+  // (legacy row-level list) or via frameRole (per-frame list).
+  const isReference = role === 'reference' || !!frameRole;
+  const frameRefBase =
+    frameRole && sbId
+      ? `/storyboard/${sbId}/frame/${frameRole}/reference`
+      : null;
   const [tab, setTab] = useState('beat');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -75,22 +100,21 @@ export function ReferencePickerModal({
   // Per-tab data caches; null = not yet loaded, [] = loaded empty.
   const [beatImages, setBeatImages] = useState(null);
   const [characters, setCharacters] = useState(null);
+  const [sceneArtworks, setSceneArtworks] = useState(null);
   const [libraryImages, setLibraryImages] = useState(null);
   const [libraryQuery, setLibraryQuery] = useState('');
 
   const fileInput = useRef(null);
 
-  // Only meaningful for the reference role — single-image roles always
-  // replace, so the "already added" badge is suppressed.
-  const attachedSet = useMemo(() => {
-    if (!isReference) return new Set();
-    const out = new Set();
-    for (const id of currentReferenceIds || []) {
-      const s = id?.toString?.() || String(id);
-      out.add(s);
-    }
-    return out;
-  }, [currentReferenceIds, isReference]);
+  // Multi-select state for the reference role. Single-image roles bypass this
+  // entirely — they pick-and-commit on click.
+  //
+  // selectedIds: the working set the user is building; toggles update it.
+  // originalIdsRef: snapshot of currentReferenceIds at open time, frozen so
+  //   the diff (and the changes count on the Apply button) stays stable even
+  //   if a websocket update changes currentReferenceIds mid-session.
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const originalIdsRef = useRef(new Set());
 
   useEffect(() => {
     if (!open) return;
@@ -98,8 +122,18 @@ export function ReferencePickerModal({
     setError(null);
     setBeatImages(null);
     setCharacters(null);
+    setSceneArtworks(null);
     setLibraryImages(null);
     setLibraryQuery('');
+    const baseline = new Set(
+      (currentReferenceIds || []).map((id) => id?.toString?.() || String(id)),
+    );
+    originalIdsRef.current = baseline;
+    setSelectedIds(new Set(baseline));
+    // currentReferenceIds intentionally excluded from deps: we snapshot once
+    // at open and ignore later prop changes. Apply's replace overwrites
+    // whatever the server has on commit (last-writer-wins).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   useEffect(() => {
@@ -113,6 +147,9 @@ export function ReferencePickerModal({
         } else if (tab === 'characters' && characters === null && beatId) {
           const data = await apiGet(`/beat/${beatId}/characters`);
           if (!cancelled) setCharacters(data.characters || []);
+        } else if (tab === 'artwork' && sceneArtworks === null && beatId) {
+          const data = await apiGet(`/beat/${beatId}/scene-artworks`);
+          if (!cancelled) setSceneArtworks(data.artworks || []);
         } else if (tab === 'library' && libraryImages === null) {
           const data = await apiGet('/library');
           if (!cancelled) setLibraryImages(data.images || []);
@@ -125,24 +162,31 @@ export function ReferencePickerModal({
     return () => {
       cancelled = true;
     };
-  }, [open, tab, beatId, beatImages, characters, libraryImages]);
+  }, [open, tab, beatId, beatImages, characters, sceneArtworks, libraryImages]);
 
-  async function attach(imageId) {
+  // Toggle an id in the selection set (reference role only).
+  function toggle(imageId) {
+    const id = String(imageId);
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // Single-image roles (start_frame / end_frame / character_sheet) commit on
+  // click and close — same as before. Only the reference role uses the
+  // multi-select / Apply flow.
+  async function pickSingle(imageId) {
     if (busy) return;
-    if (isReference && attachedSet.has(String(imageId))) return;
     setBusy(true);
     setError(null);
     try {
-      if (isReference) {
-        await apiPostJson(`/storyboard/${sbId}/reference/attach`, {
-          image_id: String(imageId),
-        });
-      } else {
-        await apiPostJson(`/storyboard/${sbId}/image/from-id`, {
-          role,
-          image_id: String(imageId),
-        });
-      }
+      await apiPostJson(`/storyboard/${sbId}/image/from-id`, {
+        role,
+        image_id: String(imageId),
+      });
       await onAttached?.();
       onClose?.();
     } catch (e) {
@@ -152,21 +196,34 @@ export function ReferencePickerModal({
     }
   }
 
+  // Upload tab is immediate-action even in reference mode: it creates a new
+  // GridFS image and attaches it server-side. After success, we fold the new
+  // id into BOTH the working set AND the baseline so it's preserved when the
+  // user clicks Apply (replace mode would otherwise drop it).
   async function uploadFile(file) {
     if (!file || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const fd = new FormData();
-      fd.append('file', file);
       if (isReference) {
-        await apiPostMultipart(`/storyboard/${sbId}/reference`, fd);
+        const fd = new FormData();
+        fd.append('file', file);
+        const endpoint = frameRefBase || `/storyboard/${sbId}/reference`;
+        const resp = await apiPostMultipart(endpoint, fd);
+        const newId = resp?.image?._id ? String(resp.image._id) : null;
+        if (newId) {
+          originalIdsRef.current = new Set([...originalIdsRef.current, newId]);
+          setSelectedIds((prev) => new Set([...prev, newId]));
+        }
+        await onAttached?.();
       } else {
+        const fd = new FormData();
+        fd.append('file', file);
         fd.append('role', role);
         await apiPostMultipart(`/storyboard/${sbId}/image`, fd);
+        await onAttached?.();
+        onClose?.();
       }
-      await onAttached?.();
-      onClose?.();
     } catch (e) {
       setError(e.message);
     } finally {
@@ -175,23 +232,50 @@ export function ReferencePickerModal({
     }
   }
 
+  // Generate tab: same immediate-action pattern as upload.
   async function generateFromPrompt({ prompt, model }) {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
       if (isReference) {
-        await apiPostJson(`/storyboard/${sbId}/reference/generate`, {
-          prompt,
-          model,
-        });
+        const endpoint = frameRefBase
+          ? `${frameRefBase}/generate`
+          : `/storyboard/${sbId}/reference/generate`;
+        const resp = await apiPostJson(endpoint, { prompt, model });
+        const newId = resp?.image?._id ? String(resp.image._id) : null;
+        if (newId) {
+          originalIdsRef.current = new Set([...originalIdsRef.current, newId]);
+          setSelectedIds((prev) => new Set([...prev, newId]));
+        }
+        await onAttached?.();
       } else {
         await apiPostJson(`/storyboard/${sbId}/image/generate`, {
           role,
           prompt,
           model,
         });
+        await onAttached?.();
+        onClose?.();
       }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyChanges() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const endpoint = frameRefBase
+        ? `${frameRefBase}/set`
+        : `/storyboard/${sbId}/reference/set`;
+      await apiPostJson(endpoint, {
+        image_ids: [...selectedIds],
+      });
       await onAttached?.();
       onClose?.();
     } catch (e) {
@@ -212,17 +296,47 @@ export function ReferencePickerModal({
     });
   }, [libraryImages, libraryQuery]);
 
+  const diffCount = useMemo(() => {
+    if (!isReference) return 0;
+    let n = 0;
+    for (const id of selectedIds) if (!originalIdsRef.current.has(id)) n++;
+    for (const id of originalIdsRef.current) if (!selectedIds.has(id)) n++;
+    return n;
+  }, [selectedIds, isReference]);
+
+  const noChanges =
+    !isReference || setsEqual(selectedIds, originalIdsRef.current);
+
   if (!open) return null;
 
-  const title = ROLE_TITLES[role] || 'Add image';
+  const title = frameRole
+    ? FRAME_ROLE_TITLES[frameRole] || 'Add references'
+    : ROLE_TITLES[role] || 'Add image';
+  const onPick = isReference ? toggle : pickSingle;
+
+  const footer = isReference ? (
+    <>
+      <button onClick={onClose} disabled={busy}>
+        Cancel
+      </button>
+      <button
+        className="primary"
+        onClick={applyChanges}
+        disabled={busy || noChanges}
+      >
+        {busy
+          ? 'Saving…'
+          : noChanges
+            ? 'Apply'
+            : `Apply (${diffCount} change${diffCount === 1 ? '' : 's'})`}
+      </button>
+    </>
+  ) : (
+    <button onClick={onClose}>Cancel</button>
+  );
 
   return (
-    <Modal
-      open={open}
-      title={title}
-      onClose={onClose}
-      footer={<button onClick={onClose}>Cancel</button>}
-    >
+    <Modal open={open} title={title} onClose={onClose} footer={footer}>
       <div className="ref-picker">
         <div className="ref-picker-tabs" role="tablist">
           {TABS.map((t) => (
@@ -247,17 +361,28 @@ export function ReferencePickerModal({
           {tab === 'beat' && (
             <BeatTab
               images={beatImages}
-              attachedSet={attachedSet}
-              onPick={attach}
+              selectedIds={selectedIds}
+              onPick={onPick}
               busy={busy}
+              isReference={isReference}
             />
           )}
           {tab === 'characters' && (
             <CharactersTab
               characters={characters}
-              attachedSet={attachedSet}
-              onPick={attach}
+              selectedIds={selectedIds}
+              onPick={onPick}
               busy={busy}
+              isReference={isReference}
+            />
+          )}
+          {tab === 'artwork' && (
+            <ArtworkTab
+              artworks={sceneArtworks}
+              selectedIds={selectedIds}
+              onPick={onPick}
+              busy={busy}
+              isReference={isReference}
             />
           )}
           {tab === 'library' && (
@@ -266,9 +391,10 @@ export function ReferencePickerModal({
               loaded={libraryImages !== null}
               query={libraryQuery}
               onQuery={setLibraryQuery}
-              attachedSet={attachedSet}
-              onPick={attach}
+              selectedIds={selectedIds}
+              onPick={onPick}
               busy={busy}
+              isReference={isReference}
             />
           )}
           {tab === 'upload' && (
@@ -287,7 +413,7 @@ export function ReferencePickerModal({
   );
 }
 
-function ThumbGrid({ items, attachedSet, onPick, busy, emptyText }) {
+function ThumbGrid({ items, selectedIds, onPick, busy, emptyText, isReference }) {
   if (!items.length) {
     return <p className="ref-picker-empty">{emptyText}</p>;
   }
@@ -295,21 +421,30 @@ function ThumbGrid({ items, attachedSet, onPick, busy, emptyText }) {
     <div className="ref-picker-grid">
       {items.map((it) => {
         const id = String(it._id);
-        const added = attachedSet.has(id);
+        const selected = isReference && selectedIds.has(id);
         const label = stripMd(it.name) || it.filename || '';
+        const title = isReference
+          ? selected
+            ? `${label} — selected (click to remove)`
+            : `${label} — click to select`
+          : label;
         return (
           <button
             key={id}
             type="button"
             className={
-              'ref-picker-thumb' + (added ? ' is-added' : '')
+              'ref-picker-thumb' + (selected ? ' is-selected' : '')
             }
-            disabled={busy || added}
-            title={added ? 'Already added' : label}
+            disabled={busy}
+            title={title}
             onClick={() => onPick(id)}
           >
             <img src={thumbUrl(id)} alt={label} loading="lazy" />
-            {added && <span className="ref-picker-added">Added</span>}
+            {selected && (
+              <span className="ref-picker-selected" aria-label="Selected">
+                ✓
+              </span>
+            )}
           </button>
         );
       })}
@@ -317,22 +452,23 @@ function ThumbGrid({ items, attachedSet, onPick, busy, emptyText }) {
   );
 }
 
-function BeatTab({ images, attachedSet, onPick, busy }) {
+function BeatTab({ images, selectedIds, onPick, busy, isReference }) {
   if (images === null) {
     return <p className="ref-picker-empty">Loading…</p>;
   }
   return (
     <ThumbGrid
       items={images}
-      attachedSet={attachedSet}
+      selectedIds={selectedIds}
       onPick={onPick}
       busy={busy}
       emptyText="No images attached to this beat yet."
+      isReference={isReference}
     />
   );
 }
 
-function CharactersTab({ characters, attachedSet, onPick, busy }) {
+function CharactersTab({ characters, selectedIds, onPick, busy, isReference }) {
   if (characters === null) {
     return <p className="ref-picker-empty">Loading…</p>;
   }
@@ -371,14 +507,65 @@ function CharactersTab({ characters, attachedSet, onPick, busy }) {
             <h3 className="ref-picker-character-name">{c.name}</h3>
             <ThumbGrid
               items={items}
-              attachedSet={attachedSet}
+              selectedIds={selectedIds}
               onPick={onPick}
               busy={busy}
               emptyText=""
+              isReference={isReference}
             />
           </section>
         );
       })}
+    </div>
+  );
+}
+
+function ArtworkTab({ artworks, selectedIds, onPick, busy, isReference }) {
+  if (artworks === null) {
+    return <p className="ref-picker-empty">Loading…</p>;
+  }
+  if (!artworks.length) {
+    return (
+      <p className="ref-picker-empty">
+        No artwork yet for this beat or its characters. Generate some from the
+        Artwork tab on a character or beat first.
+      </p>
+    );
+  }
+
+  // Group by owner so the user can scan "Beat: X" vs "Character: Y" sections.
+  // Order in artworks[] (beat-first, then character-by-character) is already
+  // the order we want to render in, so we preserve it with a Map.
+  const groups = new Map(); // owner_id → { label, items[] }
+  for (const a of artworks) {
+    const key = `${a.owner_kind}:${a.owner_id}`;
+    if (!groups.has(key)) {
+      groups.set(key, { label: a.owner_label || a.owner_kind, items: [] });
+    }
+    // ThumbGrid uses item._id to pick — for artwork we want to pick the
+    // result_image_id (the actual GridFS image), not the artwork's _id.
+    const display = stripMd(a.name) || stripMd(a.prompt).slice(0, 80) || 'artwork';
+    groups.get(key).items.push({
+      _id: a.result_image_id,
+      name: display,
+    });
+  }
+
+  return (
+    <div className="ref-picker-character-list">
+      {[...groups.entries()].map(([key, g]) => (
+        <section key={key} className="ref-picker-character">
+          <h3 className="ref-picker-character-name">{g.label}</h3>
+          <ThumbGrid
+            items={g.items}
+            selectedIds={selectedIds}
+            onPick={onPick}
+            busy={busy}
+            emptyText=""
+            isReference={isReference}
+          />
+        </section>
+      ))}
     </div>
   );
 }
@@ -388,9 +575,10 @@ function LibraryTab({
   loaded,
   query,
   onQuery,
-  attachedSet,
+  selectedIds,
   onPick,
   busy,
+  isReference,
 }) {
   if (!loaded) {
     return <p className="ref-picker-empty">Loading…</p>;
@@ -406,10 +594,11 @@ function LibraryTab({
       />
       <ThumbGrid
         items={images}
-        attachedSet={attachedSet}
+        selectedIds={selectedIds}
         onPick={onPick}
         busy={busy}
         emptyText={query ? 'No matches.' : 'Library is empty.'}
+        isReference={isReference}
       />
     </>
   );
@@ -504,7 +693,7 @@ function GenerateTab({ onGenerate, busy }) {
             marginTop: 6,
           }}
         >
-          {['gemini', 'openai'].map((m) => (
+          {GEN_MODEL_ORDER.map((m) => (
             <label
               key={m}
               style={{

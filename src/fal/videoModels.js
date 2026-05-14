@@ -287,11 +287,12 @@ export function describeVideoModel(id) {
 }
 
 // Storyboard fields each input maps to; used by validateInputs and by the
-// orchestrator when assembling the bundle.
+// orchestrator when assembling the bundle. `characterSheet` no longer exists
+// on the storyboard schema — the slot is preserved here so legacy model
+// definitions don't blow up, but it always resolves to null/missing.
 const INPUT_TO_FIELD = Object.freeze({
   startFrame: 'start_frame_id',
   endFrame: 'end_frame_id',
-  characterSheet: 'character_sheet_image_id',
   audio: 'audio_file_id',
 });
 
@@ -306,17 +307,21 @@ const INPUT_LABEL = Object.freeze({
 // Validate that a storyboard has the inputs a chosen model requires.
 // Returns an array of human-readable missing labels (empty when OK).
 //
-// Reference images are required iff the user explicitly attached them — we
-// no longer substitute start_frame / character_sheet when none are pinned.
-// Images uploaded to fal come only from the storyboard's four image slots:
-// start_frame_id, end_frame_id, character_sheet_image_id, reference_image_ids.
+// Reference images come from the start-frame's per-frame reference list
+// (start_frame_reference_ids) — that's what anchors the opening of the shot
+// the video model extends. Required iff the model declares it; we don't
+// substitute start_frame when none are pinned.
 export function validateStoryboardInputs(model, storyboard) {
   const missing = [];
   for (const [inputKey, need] of Object.entries(model.inputs)) {
     if (need !== INPUT_NEEDS.REQUIRED) continue;
     if (inputKey === 'referenceImages') {
-      const ids = storyboard?.reference_image_ids;
+      const ids = storyboard?.start_frame_reference_ids;
       if (!Array.isArray(ids) || ids.length === 0) missing.push('reference images');
+      continue;
+    }
+    if (inputKey === 'characterSheet') {
+      missing.push(INPUT_LABEL.characterSheet);
       continue;
     }
     const field = INPUT_TO_FIELD[inputKey];

@@ -30,10 +30,12 @@ export function DialogBeat({ session }) {
   const [generationError, setGenerationError] = useState(null);
   const [generationStatus, setGenerationStatus] = useState(null);
   const pollRef = useRef(null);
+  const justAddedRef = useRef(false);
   const [confirmGenerate, setConfirmGenerate] = useState(false);
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteAllError, setDeleteAllError] = useState(null);
+  const [expandedId, setExpandedId] = useState(null);
 
   const [characters, setCharacters] = useState([]);
 
@@ -107,7 +109,12 @@ export function DialogBeat({ session }) {
 
   async function addDialog() {
     try {
-      await apiPostJson('/dialogs', { beat_id: data.beat._id });
+      const r = await apiPostJson('/dialogs', { beat_id: data.beat._id });
+      const newId = r?.dialog?._id
+        ? (r.dialog._id.toString?.() || String(r.dialog._id))
+        : null;
+      if (newId) setExpandedId(newId);
+      justAddedRef.current = true;
       onRefresh();
     } catch (e) {
       setError(e.message);
@@ -118,6 +125,8 @@ export function DialogBeat({ session }) {
     if (!confirm('Delete this dialog item?')) return;
     try {
       await apiDelete(`/dialog/${id}`);
+      const sid = id?.toString?.() || String(id);
+      setExpandedId((cur) => (cur === sid ? null : cur));
       onRefresh();
     } catch (e) {
       setError(e.message);
@@ -192,6 +201,17 @@ export function DialogBeat({ session }) {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!justAddedRef.current) return;
+    justAddedRef.current = false;
+    requestAnimationFrame(() => {
+      window.scrollTo({
+        top: document.documentElement.scrollHeight,
+        behavior: 'smooth',
+      });
+    });
+  }, [sortedItems.length]);
 
   const room = data?.beat?._id ? `dialogs:${data.beat._id}` : null;
 
@@ -302,17 +322,23 @@ export function DialogBeat({ session }) {
                 strategy={verticalListSortingStrategy}
               >
                 <div className="dialog-list">
-                  {sortedItems.map((d, index) => (
-                    <DialogItem
-                      key={d._id?.toString?.() || String(d._id)}
-                      dialog={d}
-                      index={index}
-                      characters={characters}
-                      onDelete={() => deleteDialog(d._id)}
-                      onCharacterChange={setDialogCharacter}
-                      onAudioChange={onRefresh}
-                    />
-                  ))}
+                  {sortedItems.map((d) => {
+                    const sid = d._id?.toString?.() || String(d._id);
+                    return (
+                      <DialogItem
+                        key={sid}
+                        dialog={d}
+                        characters={characters}
+                        onDelete={() => deleteDialog(d._id)}
+                        onCharacterChange={setDialogCharacter}
+                        onAudioChange={onRefresh}
+                        isExpanded={expandedId === sid}
+                        onExpandToggle={(toggledId) =>
+                          setExpandedId((cur) => (cur === toggledId ? null : toggledId))
+                        }
+                      />
+                    );
+                  })}
                 </div>
               </SortableContext>
             </DndContext>

@@ -25,11 +25,11 @@ function multiSectionArgs(extras = {}) {
     characters: [
       {
         _id: 'aaaaaaaaaaaaaaaaaaaaaaaa',
-        name: 'Alice', plays_self: true, hollywood_actor: null, own_voice: true, fields: {},
+        name: 'Alice', hollywood_actor: null, fields: {},
       },
       {
         _id: 'bbbbbbbbbbbbbbbbbbbbbbbb',
-        name: 'Bob', plays_self: false, hollywood_actor: 'Some Actor', own_voice: true, fields: {},
+        name: 'Bob', hollywood_actor: 'Some Actor', fields: {},
       },
     ],
     plot: {

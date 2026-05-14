@@ -22,9 +22,7 @@ async function seedTemplate() {
     _id: 'character_template',
     fields: [
       { name: 'name', description: 'name', required: true, core: true },
-      { name: 'plays_self', description: 'self', required: true, core: true },
       { name: 'hollywood_actor', description: 'actor', required: false, core: true },
-      { name: 'own_voice', description: 'voice', required: true, core: true },
       { name: 'background_story', description: 'bg', required: true, core: false },
       { name: 'arc', description: 'arc', required: true, core: false },
       { name: 'memes', description: 'memes', required: false, core: false },
@@ -58,15 +56,11 @@ describe('buildOverview', () => {
 
     await Characters.createCharacter({
       name: 'Alice',
-      plays_self: true,
-      own_voice: true,
       fields: { background_story: 'A long backstory about Alice.', arc: 'Grows.' },
     });
     await Characters.createCharacter({
       name: 'Bob',
-      plays_self: false,
       hollywood_actor: 'Cillian Murphy',
-      own_voice: false,
       fields: {},
     });
 
@@ -88,8 +82,7 @@ describe('buildOverview', () => {
     expect(o.counts.beats_with_body).toBe(1);
 
     const alice = o.characters.find((c) => c.name === 'Alice');
-    expect(alice.casting).toBe('plays self');
-    expect(alice.own_voice).toBe(true);
+    expect(alice.casting).toBe('no actor assigned');
     expect(alice.flavor.field).toBe('background_story');
     expect(alice.flavor.preview).toContain('long backstory');
     expect(alice.filled_field_count).toBe(2);
@@ -98,7 +91,6 @@ describe('buildOverview', () => {
 
     const bob = o.characters.find((c) => c.name === 'Bob');
     expect(bob.casting).toBe('played by Cillian Murphy');
-    expect(bob.own_voice).toBe(false);
     expect(bob.flavor).toBe(null);
     expect(bob.filled_field_count).toBe(0);
 
@@ -116,7 +108,7 @@ describe('buildOverview', () => {
   it('counts main images on both characters and beats', async () => {
     await seedTemplate();
     const alice = await Characters.createCharacter({
-      name: 'Alice', plays_self: true, own_voice: true, fields: {},
+      name: 'Alice', fields: {},
     });
     const beat = await Plots.createBeat({ name: 'B', desc: 'd' });
 

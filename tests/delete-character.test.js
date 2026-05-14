@@ -18,14 +18,14 @@ beforeEach(() => {
 
 describe('Characters.deleteCharacter', () => {
   it('removes the character document by name (case-insensitive)', async () => {
-    await Characters.createCharacter({ name: 'Alice', plays_self: true, own_voice: true });
+    await Characters.createCharacter({ name: 'Alice' });
     const res = await Characters.deleteCharacter('alice');
     expect(res.name).toBe('Alice');
     expect(await Characters.getCharacter('Alice')).toBe(null);
   });
 
   it('removes the character document by _id', async () => {
-    const c = await Characters.createCharacter({ name: 'Bob', plays_self: true, own_voice: true });
+    const c = await Characters.createCharacter({ name: 'Bob' });
     await Characters.deleteCharacter(c._id.toString());
     expect(await Characters.getCharacter('Bob')).toBe(null);
   });
@@ -41,8 +41,6 @@ describe('Characters.deleteCharacter', () => {
     await fakeDb.collection('characters').insertOne({
       name: 'Carol',
       name_lower: 'carol',
-      plays_self: true,
-      own_voice: true,
       hollywood_actor: null,
       fields: {},
       images: [
@@ -62,7 +60,7 @@ describe('Characters.deleteCharacter', () => {
   });
 
   it('returns empty image/attachment arrays when the character had none', async () => {
-    await Characters.createCharacter({ name: 'Dan', plays_self: true, own_voice: true });
+    await Characters.createCharacter({ name: 'Dan' });
     const res = await Characters.deleteCharacter('Dan');
     expect(res.image_ids).toEqual([]);
     expect(res.attachment_ids).toEqual([]);
@@ -100,7 +98,7 @@ describe('delete_character handler', () => {
 
   it('deletes the character and unlinks them from beats', async () => {
     const { HANDLERS } = await import('../src/agent/handlers.js');
-    await Characters.createCharacter({ name: 'Eve', plays_self: true, own_voice: true });
+    await Characters.createCharacter({ name: 'Eve' });
     await Plots.createBeat({ name: 'Scene', desc: 'd', characters: ['Eve', 'Frank'] });
 
     const result = await HANDLERS.delete_character({ identifier: 'eve' });

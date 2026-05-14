@@ -295,9 +295,9 @@ function renderCharactersSection(doc, { characters, characterImages }, ctx) {
     const charDest = ctx.subAnchor('character', c.name);
     doc.font(FONT.bold).fontSize(14).text(c.name, { destination: charDest });
     doc.font(FONT.regular).fontSize(11);
-    const role = c.plays_self ? 'Plays themselves' : `Played by ${c.hollywood_actor || '(unspecified)'}`;
-    const voice = c.own_voice ? 'own voice' : 'dubbed by actor';
-    doc.text(`${role} — ${voice}`);
+    if (c.hollywood_actor) {
+      doc.text(`Played by ${c.hollywood_actor}`);
+    }
     const charId = c._id ? c._id.toString() : null;
     const charItems = charId ? (characterImages[charId] || []) : [];
     renderImageBundle(doc, charItems, [220, 220]);

@@ -44,8 +44,6 @@ import {
 import { getDb } from '../mongo/client.js';
 import { getCharacterTemplate } from '../mongo/prompts.js';
 import { stripMarkdown } from '../util/markdown.js';
-import { SPECIFICS_FIELD_NAMES } from '../util/specifics.js';
-import { BEAT_SPECIFICS_FIELD_NAMES } from '../util/beatSpecifics.js';
 import { logger } from '../log.js';
 import { enqueueReindex } from '../rag/queue.js';
 // Side-effect import: registers the reindex runner with the queue.
@@ -217,20 +215,11 @@ async function describeBeatRoom(id) {
   const plot = await getPlot();
   const beat = (plot.beats || []).find((b) => b._id?.toString?.() === id);
   if (!beat) return null;
-  const fieldNames = [
-    ...BEAT_TOP_FIELDS,
-    ...BEAT_SPECIFICS_FIELD_NAMES.map((n) => `specifics.${n}`),
-  ];
+  const fieldNames = [...BEAT_TOP_FIELDS];
 
   function readMongoValue(fieldName) {
     if (BEAT_TOP_FIELDS.includes(fieldName)) {
       return beat[fieldName] != null ? String(beat[fieldName]) : '';
-    }
-    if (fieldName.startsWith('specifics.')) {
-      const key = fieldName.slice('specifics.'.length);
-      const v = beat.specifics?.[key];
-      if (v == null) return '';
-      return typeof v === 'string' ? v : JSON.stringify(v);
     }
     return '';
   }
@@ -255,8 +244,6 @@ async function describeBeatRoom(id) {
         if (snapshot[f] === undefined) continue;
         if (snapshot[f] === readMongoValue(f)) continue;
         if (BEAT_TOP_FIELDS.includes(f)) {
-          patch[f] = snapshot[f];
-        } else if (f.startsWith('specifics.')) {
           patch[f] = snapshot[f];
         }
       }
@@ -288,14 +275,12 @@ async function describeCharacterRoom(id) {
   if (!c) return null;
   const template = (await getCharacterTemplate())?.fields || [];
   // Editable text fields: name + hollywood_actor (top-level) + every non-core
-  // template field stored under `fields.<name>` + every specifics field stored
-  // under `specifics.<name>`.
+  // template field stored under `fields.<name>`.
   const customFieldNames = template.filter((t) => !t.core).map((t) => t.name);
   const fieldNames = [
     'name',
     'hollywood_actor',
     ...customFieldNames.map((n) => `fields.${n}`),
-    ...SPECIFICS_FIELD_NAMES.map((n) => `specifics.${n}`),
   ];
 
   function readMongoValue(fieldName) {
@@ -304,12 +289,6 @@ async function describeCharacterRoom(id) {
     if (fieldName.startsWith('fields.')) {
       const key = fieldName.slice('fields.'.length);
       const v = c.fields?.[key];
-      if (v == null) return '';
-      return typeof v === 'string' ? v : JSON.stringify(v);
-    }
-    if (fieldName.startsWith('specifics.')) {
-      const key = fieldName.slice('specifics.'.length);
-      const v = c.specifics?.[key];
       if (v == null) return '';
       return typeof v === 'string' ? v : JSON.stringify(v);
     }
@@ -340,8 +319,6 @@ async function describeCharacterRoom(id) {
         } else if (f === 'hollywood_actor') {
           patch.hollywood_actor = snapshot[f];
         } else if (f.startsWith('fields.')) {
-          patch[f] = snapshot[f];
-        } else if (f.startsWith('specifics.')) {
           patch[f] = snapshot[f];
         }
       }
@@ -426,23 +403,36 @@ async function describeNotesRoom() {
 
 // Storyboards ---------------------------------------------------------------
 //
-// One y-doc per beat (room: "storyboards:<beatId>"). Each storyboard's
-// `text_prompt` is a fragment named "item:<storyboard _id>:text_prompt". When
-// storyboards are added/removed the room composition changes; the seed reflects
-// whatever exists in Mongo at the time the room is loaded.
+// One y-doc per beat (room: "storyboards:<beatId>"). Each storyboard exposes
+// four fragments: "item:<storyboard _id>:text_prompt", ":summary",
+// ":start_frame_prompt", ":end_frame_prompt". When storyboards are added/
+// removed the room composition changes; the seed reflects whatever exists
+// in Mongo at the time the room is loaded.
 
-function storyboardFieldName(storyboardId) {
-  return `item:${storyboardId}:text_prompt`;
+const STORYBOARD_FIELD_NAMES = [
+  'text_prompt',
+  'summary',
+  'start_frame_prompt',
+  'end_frame_prompt',
+];
+
+function storyboardFieldName(storyboardId, field) {
+  return `item:${storyboardId}:${field}`;
 }
 
 async function describeStoryboardsRoom(beatId) {
   const sbs = await listStoryboards({ beatId });
-  const fields = sbs.map((s) => storyboardFieldName(s._id.toString()));
+  const fields = [];
   const seed = {};
   const sbById = new Map();
   for (const s of sbs) {
-    seed[storyboardFieldName(s._id.toString())] = s.text_prompt || '';
-    sbById.set(s._id.toString(), s);
+    const id = s._id.toString();
+    sbById.set(id, s);
+    for (const f of STORYBOARD_FIELD_NAMES) {
+      const name = storyboardFieldName(id, f);
+      fields.push(name);
+      seed[name] = s[f] || '';
+    }
   }
   return {
     type: 'storyboards',
@@ -452,17 +442,20 @@ async function describeStoryboardsRoom(beatId) {
     persistFields: async (snapshot) => {
       const changedFields = [];
       for (const [field, value] of Object.entries(snapshot)) {
-        const m = field.match(/^item:([a-f0-9]{24}):text_prompt$/);
+        const m = field.match(
+          /^item:([a-f0-9]{24}):(text_prompt|summary|start_frame_prompt|end_frame_prompt)$/,
+        );
         if (!m) continue;
         const sbId = m[1];
+        const fieldName = m[2];
         const current = sbById.get(sbId);
         if (!current) continue;
-        if (value === current.text_prompt) continue;
+        if (value === (current[fieldName] || '')) continue;
         try {
-          await updateStoryboard(sbId, { text_prompt: value });
+          await updateStoryboard(sbId, { [fieldName]: value });
           changedFields.push(field);
         } catch (e) {
-          logger.warn(`storyboards persist failed sb=${sbId}: ${e.message}`);
+          logger.warn(`storyboards persist failed sb=${sbId} field=${fieldName}: ${e.message}`);
         }
       }
       return changedFields.length

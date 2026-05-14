@@ -2,7 +2,6 @@ import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../log.js';
 import { applyMarkdownEdits } from '../util/textWindow.js';
-import { isBeatSpecificsFieldName } from '../util/beatSpecifics.js';
 
 const col = () => getDb().collection('plots');
 
@@ -52,6 +51,10 @@ async function ensureBeatIds(plot) {
     }
     if (!Array.isArray(next.attachments)) {
       next.attachments = [];
+      changed = true;
+    }
+    if (!Array.isArray(next.artworks)) {
+      next.artworks = [];
       changed = true;
     }
     if (!Array.isArray(next.characters)) {
@@ -256,6 +259,7 @@ export async function createBeat({ name, desc = '', body = '', characters = [], 
     images: [],
     main_image_id: null,
     attachments: [],
+    artworks: [],
     created_at: now,
     updated_at: now,
   };
@@ -281,33 +285,11 @@ export async function updateBeat(identifier, patch) {
     k === 'body' ||
     k === 'order' ||
     k === 'characters' ||
-    k === 'specifics' ||
-    k.startsWith('specifics.') ||
     k === 'scene_sheet_image_id';
   if (!Object.keys(patch).some((k) => isRecognizedKey(k) && patch[k] !== undefined)) {
     throw new Error(
-      `update_beat: \`patch\` has no recognized fields. Expected one of: name, desc, body, order, characters, specifics, specifics.<key>, scene_sheet_image_id. Got keys: [${Object.keys(patch).join(', ')}].`,
+      `update_beat: \`patch\` has no recognized fields. Expected one of: name, desc, body, order, characters, scene_sheet_image_id. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
-  }
-
-  // Pre-validate specifics keys before touching Mongo so errors are clean.
-  if (patch.specifics !== undefined) {
-    if (patch.specifics === null || typeof patch.specifics !== 'object' || Array.isArray(patch.specifics)) {
-      throw new Error(`update_beat: \`specifics\` must be an object.`);
-    }
-    for (const sk of Object.keys(patch.specifics)) {
-      if (!isBeatSpecificsFieldName(sk)) {
-        throw new Error(`update_beat: unknown specifics field "${sk}".`);
-      }
-    }
-  }
-  for (const k of Object.keys(patch)) {
-    if (k.startsWith('specifics.')) {
-      const sk = k.slice('specifics.'.length);
-      if (!isBeatSpecificsFieldName(sk)) {
-        throw new Error(`update_beat: unknown specifics field "${sk}".`);
-      }
-    }
   }
 
   // Normalize scene_sheet_image_id once up front.
@@ -340,24 +322,6 @@ export async function updateBeat(identifier, patch) {
     if (patch.body !== undefined) next.body = String(patch.body);
     if (patch.order !== undefined && patch.order !== null) next.order = Number(patch.order);
     if (Array.isArray(patch.characters)) next.characters = dedupeNames(patch.characters);
-
-    // Specifics: object form (replace specific keys) and dot-path form.
-    const specifics = { ...(next.specifics || {}) };
-    let specificsTouched = false;
-    if (patch.specifics !== undefined) {
-      for (const [sk, sv] of Object.entries(patch.specifics)) {
-        specifics[sk] = sv;
-        specificsTouched = true;
-      }
-    }
-    for (const k of Object.keys(patch)) {
-      if (k.startsWith('specifics.')) {
-        const sk = k.slice('specifics.'.length);
-        specifics[sk] = patch[k];
-        specificsTouched = true;
-      }
-    }
-    if (specificsTouched) next.specifics = specifics;
 
     if (sheetImageIdProvided) next.scene_sheet_image_id = sheetImageId;
 
@@ -531,7 +495,11 @@ export async function setBeatMainImage(beatIdentifier, imageId) {
   const beat = findBeat(plot, beatIdentifier);
   if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
   const oid = imageId instanceof ObjectId ? imageId : new ObjectId(String(imageId));
-  if (!(beat.images || []).some((i) => i._id.equals(oid))) {
+  const inImages = (beat.images || []).some((i) => i._id.equals(oid));
+  const inArtworks = (beat.artworks || []).some(
+    (a) => a?.status === 'done' && a?.result_image_id && oid.equals(a.result_image_id),
+  );
+  if (!inImages && !inArtworks) {
     throw new Error(`Image ${imageId} is not attached to this beat`);
   }
   const beats = (plot.beats || []).map((b) =>

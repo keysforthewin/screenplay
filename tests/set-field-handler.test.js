@@ -135,31 +135,15 @@ describe('set_field handler — beat', () => {
 
 // ─── character ───────────────────────────────────────────────────────────────
 describe('set_field handler — character', () => {
-  it('sets plays_self', async () => {
-    await Characters.createCharacter({
-      name: 'Alice',
-      plays_self: true,
-      hollywood_actor: 'Some Actor',
-    });
-    const out = await HANDLERS.set_field({
-      collection: 'character',
-      identifier: 'Alice',
-      field: 'plays_self',
-      value: false,
-    });
-    expect(out).toMatch(/Set Alice\.plays_self = false/);
-    expect((await Characters.getCharacter('Alice')).plays_self).toBe(false);
-  });
-
-  it('rejects non-boolean for plays_self', async () => {
+  it('rejects character fields other than unset', async () => {
     await Characters.createCharacter({ name: 'Alice' });
     const out = await HANDLERS.set_field({
       collection: 'character',
       identifier: 'Alice',
-      field: 'plays_self',
-      value: 'true',
+      field: 'hollywood_actor',
+      value: 'Idris Elba',
     });
-    expect(out).toMatch(/must be a boolean/);
+    expect(out).toMatch(/character field must be "unset"/);
   });
 
   it('unsets a custom field', async () => {

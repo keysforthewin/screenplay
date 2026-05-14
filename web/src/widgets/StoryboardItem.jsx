@@ -16,21 +16,20 @@ import { ImageLightbox } from './ImageLightbox.jsx';
 import { AudioSlot } from './AudioSlot.jsx';
 import { GenerateVideoButton } from './GenerateVideoButton.jsx';
 import { StoryboardVideoPanel } from './StoryboardVideoPanel.jsx';
+import { CharacterTagInput } from './CharacterTagInput.jsx';
+import { StoryboardItemCollapsed } from './StoryboardItemCollapsed.jsx';
+import { StoryboardSummaryField } from './StoryboardSummaryField.jsx';
 import {
   SHOT_TYPES,
   durationCapFor,
   shotTypeLabel,
 } from '../shotTypes.js';
 
-// Frame slot that supports replace via file picker, delete, and (for
-// generatable roles) nano-banana regeneration from the row's text_prompt.
-// `generatable` is true for start_frame / end_frame and false for
-// character_sheet (which is a manual reference, not a generated frame).
 // Editable shot metadata row shown above the frames. The shot_type select
 // drives the duration input's max attribute (and triggers a server-side
 // re-clamp on the save). Duration is debounced via local state + onBlur so
 // each keystroke isn't a PATCH.
-function ShotMetaRow({ sb, sbId, onRefresh }) {
+function ShotMetaRow({ sb, sbId, tocCharacters, onRefresh }) {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [durationLocal, setDurationLocal] = useState(
@@ -108,11 +107,13 @@ function ShotMetaRow({ sb, sbId, onRefresh }) {
         }}
       />
       <span className="storyboard-meta-suffix">s</span>
-      {sb.characters_in_scene?.length > 0 && (
-        <span className="storyboard-chars-badge">
-          {sb.characters_in_scene.join(' · ')}
-        </span>
-      )}
+      <CharacterTagInput
+        value={sb.characters_in_scene || []}
+        characters={tocCharacters}
+        maxTags={2}
+        disabled={busy}
+        onChange={(next) => patch({ characters_in_scene: next })}
+      />
       {error && <span className="error-banner small">{error}</span>}
     </div>
   );
@@ -125,7 +126,7 @@ function FrameSlot({
   sbId,
   beatId,
   charactersInScene,
-  generatable,
+  referenceIds,
   onRefresh,
   onOpenLightbox,
   prevSb,
@@ -226,15 +227,7 @@ function FrameSlot({
     }
   }
 
-  async function submitRegen({
-    mode,
-    imageModel,
-    editPrompt,
-    customPrompt,
-    promptOverride,
-    includeContinuity,
-    includeStartFrame,
-  }) {
+  async function submitRegen({ mode, imageModel, prompt, editPrompt }) {
     setRegenOpen(false);
     setBusy(true);
     setBusyLabel(mode === 'edit' ? 'Editing…' : 'Generating…');
@@ -242,12 +235,7 @@ function FrameSlot({
     try {
       const body = { image_model: imageModel, mode };
       if (mode === 'edit') body.edit_prompt = editPrompt;
-      if (mode === 'custom') body.custom_prompt = customPrompt;
-      if (mode === 'full' && promptOverride) body.prompt_override = promptOverride;
-      if (mode === 'full') {
-        body.include_continuity = includeContinuity !== false;
-        body.include_start_frame = includeStartFrame !== false;
-      }
+      if (mode === 'generate') body.prompt = prompt;
       const r = await apiPostJson(
         `/storyboard/${sbId}/frame/${role}/generate`,
         body,
@@ -307,17 +295,15 @@ function FrameSlot({
         >
           {url ? 'Replace' : 'Add'}
         </button>
-        {generatable && (
-          <button
-            type="button"
-            className="storyboard-frame-generate"
-            disabled={busy}
-            title={`Regenerate ${label.toLowerCase()} using this row's pinned references`}
-            onClick={() => setRegenOpen(true)}
-          >
-            {busyLabel || (url ? 'Regenerate' : 'Generate')}
-          </button>
-        )}
+        <button
+          type="button"
+          className="storyboard-frame-generate"
+          disabled={busy}
+          title={`Generate ${label.toLowerCase()} using this row's per-frame references`}
+          onClick={() => setRegenOpen(true)}
+        >
+          {busyLabel || (url ? 'Regenerate' : 'Generate')}
+        </button>
         {canGrab && (
           <button
             type="button"
@@ -331,16 +317,18 @@ function FrameSlot({
         )}
       </div>
       {error && <div className="error-banner small">{error}</div>}
-      {generatable && (
-        <FrameRegenerateDialog
-          open={regenOpen}
-          onClose={() => setRegenOpen(false)}
-          onSubmit={submitRegen}
-          role={role}
-          hasImage={Boolean(url)}
-          storyboardId={sbId}
-        />
-      )}
+      <FrameRegenerateDialog
+        open={regenOpen}
+        onClose={() => setRegenOpen(false)}
+        onSubmit={submitRegen}
+        role={role}
+        hasImage={Boolean(url)}
+        storyboardId={sbId}
+        beatId={beatId}
+        charactersInScene={charactersInScene}
+        referenceIds={referenceIds || []}
+        onReferencesChanged={onRefresh}
+      />
       <ReferencePickerModal
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
@@ -354,82 +342,17 @@ function FrameSlot({
   );
 }
 
-function ReferenceImages({
-  ids,
-  sbId,
-  beatId,
-  charactersInScene,
+
+export function StoryboardItem({
+  sb,
+  index,
+  prevSb,
+  tocCharacters,
   onRefresh,
-  onOpenLightbox,
+  onDelete,
+  isExpanded,
+  onExpandToggle,
 }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
-
-  async function remove(id) {
-    if (!confirm('Remove this reference image?')) return;
-    setBusy(true);
-    try {
-      await apiDelete(`/storyboard/${sbId}/reference/${id}`);
-      await onRefresh?.();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="storyboard-refs">
-      <div className="storyboard-frame-label">References</div>
-      <div className="storyboard-refs-row">
-        {(ids || []).map((id) => {
-          const key = id?.toString?.() || String(id);
-          return (
-            <div className="storyboard-ref-thumb" key={key}>
-              <img
-                src={thumbUrl(key)}
-                alt="reference"
-                loading="lazy"
-                onClick={() => onOpenLightbox?.(imageUrl(key), 'Reference')}
-              />
-              <button
-                type="button"
-                className="storyboard-frame-remove"
-                title="Remove reference"
-                disabled={busy}
-                onClick={() => remove(key)}
-              >
-                ×
-              </button>
-            </div>
-          );
-        })}
-        <button
-          type="button"
-          className="storyboard-ref-add"
-          disabled={busy}
-          onClick={() => setPickerOpen(true)}
-        >
-          {busy ? '…' : '+'}
-        </button>
-      </div>
-      {error && <div className="error-banner small">{error}</div>}
-      <ReferencePickerModal
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        sbId={sbId}
-        beatId={beatId}
-        charactersInScene={charactersInScene}
-        currentReferenceIds={ids}
-        onAttached={onRefresh}
-      />
-    </div>
-  );
-}
-
-
-export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
   const id = sb._id?.toString?.() || String(sb._id);
   const {
     attributes,
@@ -442,6 +365,22 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
 
   const [lightbox, setLightbox] = useState(null);
   const openLightbox = (src, alt) => setLightbox({ src, alt });
+  const [discardingVideo, setDiscardingVideo] = useState(false);
+  const [discardVideoError, setDiscardVideoError] = useState(null);
+
+  async function discardVideo() {
+    if (!confirm('Discard this generated video? The MP4 will be deleted.')) return;
+    setDiscardingVideo(true);
+    setDiscardVideoError(null);
+    try {
+      await apiDelete(`/storyboard/${id}/video`);
+      await onRefresh?.();
+    } catch (e) {
+      setDiscardVideoError(e.message || 'Failed to discard video.');
+    } finally {
+      setDiscardingVideo(false);
+    }
+  }
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -449,8 +388,25 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
     opacity: isDragging ? 0.6 : 1,
   };
 
+  if (!isExpanded) {
+    return (
+      <div
+        ref={setNodeRef}
+        style={style}
+        className="storyboard-item storyboard-item-collapsed-wrap"
+      >
+        <StoryboardItemCollapsed
+          sb={sb}
+          onClick={() => onExpandToggle?.(id)}
+          dragAttributes={attributes}
+          dragListeners={listeners}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div ref={setNodeRef} style={style} className="storyboard-item">
+    <div ref={setNodeRef} style={style} className="storyboard-item storyboard-item-expanded">
       <div className="storyboard-item-header">
         <button
           type="button"
@@ -461,7 +417,6 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
         >
           ⋮⋮
         </button>
-        <span className="storyboard-item-order">#{index + 1}</span>
         <div className="storyboard-item-actions">
           <GenerateVideoButton
             sb={sb}
@@ -470,15 +425,21 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
           />
           <button
             type="button"
-            className="storyboard-item-delete"
-            onClick={onDelete}
+            className="storyboard-item-collapse"
+            onClick={() => onExpandToggle?.(id)}
+            title="Collapse this item"
           >
-            Delete
+            Collapse
           </button>
         </div>
       </div>
 
-      <ShotMetaRow sb={sb} sbId={id} onRefresh={onRefresh} />
+      <ShotMetaRow
+        sb={sb}
+        sbId={id}
+        tocCharacters={tocCharacters}
+        onRefresh={onRefresh}
+      />
 
       {sb.transition_in && (
         <div className="storyboard-transition" title="Continuity note">
@@ -494,7 +455,7 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
           sbId={id}
           beatId={sb.beat_id?.toString?.() || sb.beat_id}
           charactersInScene={sb.characters_in_scene}
-          generatable
+          referenceIds={sb.start_frame_reference_ids}
           prevSb={prevSb}
           onRefresh={onRefresh}
           onOpenLightbox={openLightbox}
@@ -506,30 +467,11 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
           sbId={id}
           beatId={sb.beat_id?.toString?.() || sb.beat_id}
           charactersInScene={sb.characters_in_scene}
-          generatable
-          onRefresh={onRefresh}
-          onOpenLightbox={openLightbox}
-        />
-        <FrameSlot
-          label="Character sheet"
-          role="character_sheet"
-          imageId={sb.character_sheet_image_id}
-          sbId={id}
-          beatId={sb.beat_id?.toString?.() || sb.beat_id}
-          charactersInScene={sb.characters_in_scene}
+          referenceIds={sb.end_frame_reference_ids}
           onRefresh={onRefresh}
           onOpenLightbox={openLightbox}
         />
       </div>
-
-      <ReferenceImages
-        ids={sb.reference_image_ids}
-        sbId={id}
-        beatId={sb.beat_id?.toString?.() || sb.beat_id}
-        charactersInScene={sb.characters_in_scene}
-        onRefresh={onRefresh}
-        onOpenLightbox={openLightbox}
-      />
 
       <AudioSlot
         audioId={sb.audio_file_id}
@@ -543,11 +485,9 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
         onRefresh={onRefresh}
       />
 
-      <StoryboardVideoPanel
-        sb={sb}
-        storyboardId={id}
-        onRefresh={onRefresh}
-      />
+      <StoryboardVideoPanel sb={sb} />
+
+      <StoryboardSummaryField sbId={id} />
 
       <div className="storyboard-prompt">
         <div className="field-label">Prompt</div>
@@ -557,6 +497,29 @@ export function StoryboardItem({ sb, index, prevSb, onRefresh, onDelete }) {
           placeholder="Describe what happens in this frame…"
         />
       </div>
+
+      <div className="storyboard-item-footer">
+        {sb.video_file_id && (
+          <button
+            type="button"
+            className="storyboard-item-discard-video"
+            onClick={discardVideo}
+            disabled={discardingVideo}
+          >
+            Discard video
+          </button>
+        )}
+        <button
+          type="button"
+          className="storyboard-item-delete"
+          onClick={onDelete}
+        >
+          Delete storyboard element
+        </button>
+      </div>
+      {discardVideoError && (
+        <div className="error-banner small">{discardVideoError}</div>
+      )}
 
       <ImageLightbox
         src={lightbox?.src || null}

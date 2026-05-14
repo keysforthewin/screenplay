@@ -11,28 +11,27 @@ export function ImageGallery({
   uploadPath,
   deletePath,
   mainPath,
-  // Optional. When provided, an "Edit" button opens a dialog that POSTs to
-  // editPath(imageId) with { mode, image_model, prompt } and replaces the
-  // image in place. Use on entity-owned galleries (beat/character); skip on
-  // the library where regenerate isn't wired up.
   editPath,
-  // Optional. When provided, a "Move to library" button POSTs to
-  // moveToLibraryPath(imageId). Use on entity-owned galleries.
   moveToLibraryPath,
-  // Optional. POST {image_id} — attach an existing library image. Enables
-  // the Library tab in the picker.
   attachPath,
-  // Optional. POST {prompt, model} — generate a new image. Enables the
-  // Generate tab in the picker.
   generatePath,
-  // Title used in the picker modal header.
+  characterSourcesPath,
+  beatSourcesPath,
+  copyPath,
   pickerTitle = 'Add image',
+  // Optional controlled-mode props. When `pickerOpen` is supplied the parent
+  // owns the open/close state; otherwise the gallery manages it locally.
+  pickerOpen: pickerOpenProp,
+  onPickerOpenChange,
+  hideAddButton = false,
 }) {
   const [error, setError] = useState(null);
   const [editingImageId, setEditingImageId] = useState(null);
   const [regenBusyId, setRegenBusyId] = useState(null);
   const [moveBusyId, setMoveBusyId] = useState(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [internalPickerOpen, setInternalPickerOpen] = useState(false);
+  const pickerOpen = pickerOpenProp ?? internalPickerOpen;
+  const setPickerOpen = onPickerOpenChange ?? setInternalPickerOpen;
 
   async function setMain(id) {
     if (!mainPath) return;
@@ -162,7 +161,7 @@ export function ImageGallery({
           );
         })}
       </div>
-      {uploadPath && (
+      {uploadPath && !hideAddButton && (
         <div className="gallery-add">
           <button
             type="button"
@@ -188,6 +187,9 @@ export function ImageGallery({
           uploadPath={uploadPath}
           attachPath={attachPath || null}
           generatePath={generatePath || null}
+          characterSourcesPath={characterSourcesPath || null}
+          beatSourcesPath={beatSourcesPath || null}
+          copyPath={copyPath || null}
           onAttached={onChange}
         />
       )}

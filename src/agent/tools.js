@@ -60,7 +60,7 @@ export const TOOLS = [
       'snippet', 'partial', 'diff',
       'body', 'text', 'name', 'desc', 'synopsis', 'notes', 'title',
       'hollywood_actor', 'actor', 'bio', 'background', 'arc', 'origin',
-      'fields', 'specifics', 'custom',
+      'fields', 'custom',
       'beat', 'scene', 'character', 'person', 'plot', 'screenplay',
       'director', 'note', 'rule',
     ],
@@ -71,8 +71,8 @@ export const TOOLS = [
       '**To append:** read the tail with `read_beat_body` / `read_character_field` / `read_director_note`, then submit a normal find/replace where the `find` is the last few characters of the current value and the `replace` is the same chars followed by the new content.\n\n' +
       '**For long bodies you cannot fit in context:** locate with `outline_beat_body` or `search_in_beat_body`, window in with `read_beat_body`, then edit with the verbatim snippet from that window. The `find` is matched against the full server-side value, so editing line 5,000 of a 10,000-line beat works with only a 200-line window in your context.\n\n' +
       'Field map:\n' +
-      '- `beat`: `body`, `name`, `desc`, or `specifics.<key>` (identifier = beat _id, order, or name; omit to use the current beat).\n' +
-      '- `character`: `name`, `hollywood_actor`, `fields.<custom>`, `specifics.<key>`, or a bare custom field name (auto-prefixed with `fields.`). Identifier = character name (case-insensitive) or _id.\n' +
+      '- `beat`: `body`, `name`, or `desc` (identifier = beat _id, order, or name; omit to use the current beat).\n' +
+      '- `character`: `name`, `hollywood_actor`, `fields.<custom>`, or a bare custom field name (auto-prefixed with `fields.`). Identifier = character name (case-insensitive) or _id.\n' +
       '- `plot`: `title`, `synopsis`, `notes` (singleton; omit identifier).\n' +
       '- `director_note`: `text` (identifier = note _id from `list_director_notes`).\n\n' +
       'On error (e.g. find string not present, ambiguous, or invalid field) the tool returns `is_error: true` with a message. **Do not retry by switching to a wholesale rewrite or guessing.** Re-read the field with the appropriate read tool and retry with verbatim text, or surface the error to the user.',
@@ -92,7 +92,7 @@ export const TOOLS = [
         field: {
           type: 'string',
           description:
-            'Field name. See the description for the per-collection map. Examples: "body", "name", "desc", "synopsis", "notes", "title", "text", "hollywood_actor", "fields.bio", "specifics.location".',
+            'Field name. See the description for the per-collection map. Examples: "body", "name", "desc", "synopsis", "notes", "title", "text", "hollywood_actor", "fields.bio".',
         },
         edits: {
           type: 'array',
@@ -121,8 +121,7 @@ export const TOOLS = [
     name: 'set_field',
     keywords: [
       'set', 'field', 'value', 'update', 'patch',
-      'boolean', 'array', 'order', 'reorder', 'position',
-      'plays_self', 'own_voice', 'casting', 'voice',
+      'array', 'order', 'reorder', 'position',
       'characters', 'roster', 'cast', 'link',
       'unset', 'delete', 'remove', 'drop',
       'scene_sheet_image_id', 'image', 'metadata',
@@ -134,8 +133,6 @@ export const TOOLS = [
       '- `beat.order` (number) — beat position in the screenplay sequence.\n' +
       '- `beat.characters` (array of strings) — replace the beat\'s character roster (names, not _ids).\n' +
       '- `beat.scene_sheet_image_id` (24-hex string or null) — attach/detach the scene-sheet image.\n' +
-      '- `character.plays_self` (boolean) — character is the real person (true) vs. played by an actor (false).\n' +
-      '- `character.own_voice` (boolean) — character speaks in own voice (true) vs. dubbed/narrated (false).\n' +
       '- `character.unset` (array of strings) — meta-op to delete custom field keys (`value` is the list of keys to remove).',
     input_schema: {
       type: 'object',
@@ -164,14 +161,12 @@ export const TOOLS = [
   {
     name: 'create_character',
     keywords: ['create', 'new', 'add', 'make', 'introduce', 'character', 'person', 'role', 'cast', 'protagonist', 'antagonist', 'stub'],
-    description: 'Create a new character. Only `name` is required — call this as soon as the user names someone, even if other fields aren\'t known yet. Defaults: plays_self=true, own_voice=true. Use `edit` later to fill in details as the conversation provides them.',
+    description: 'Create a new character. Only `name` is required — call this as soon as the user names someone, even if other fields aren\'t known yet. Use `edit` later to fill in details as the conversation provides them.',
     input_schema: {
       type: 'object',
       properties: {
         name: { type: 'string' },
-        plays_self: { type: 'boolean', description: 'Defaults to true if omitted.' },
-        hollywood_actor: { type: 'string', description: 'Required when plays_self is false.' },
-        own_voice: { type: 'boolean', description: 'Defaults to true if omitted.' },
+        hollywood_actor: { type: 'string', description: 'Name of the actor playing this character. Leave empty when the character is a real person playing themselves.' },
         fields: {
           type: 'object',
           description: 'Any additional template-defined fields you have values for at creation time.',
@@ -202,14 +197,14 @@ export const TOOLS = [
     name: 'bulk_update_character_field',
     keywords: ['bulk', 'batch', 'mass', 'fill', 'populate', 'every', 'all', 'characters', 'field'],
     description:
-      'Update ONE field across many characters in a SINGLE tool call. Use this — never fan out individual `update_character` calls — when the user asks to populate, set, or fill a field for "all", "every", or many characters (e.g. "give every character a role"). Decide each value in your reasoning, then submit them all here as one call. The handler writes them in batches and logs progress. `field_name` may be a core field (`name`, `plays_self`, `hollywood_actor`, `own_voice`) or any custom template field — custom fields are stored under `fields.<name>` automatically; do NOT prefix `fields.` yourself. Returns a summary listing successes and failures.',
+      'Update ONE field across many characters in a SINGLE tool call. Use this — never fan out individual `update_character` calls — when the user asks to populate, set, or fill a field for "all", "every", or many characters (e.g. "give every character a role"). Decide each value in your reasoning, then submit them all here as one call. The handler writes them in batches and logs progress. `field_name` may be a core field (`name`, `hollywood_actor`) or any custom template field — custom fields are stored under `fields.<name>` automatically; do NOT prefix `fields.` yourself. Returns a summary listing successes and failures.',
     input_schema: {
       type: 'object',
       properties: {
         field_name: {
           type: 'string',
           description:
-            'Field to set on each character. Core fields: name, plays_self, hollywood_actor, own_voice. Otherwise the field is stored under fields.<field_name>.',
+            'Field to set on each character. Core fields: name, hollywood_actor. Otherwise the field is stored under fields.<field_name>.',
         },
         updates: {
           type: 'array',
@@ -224,7 +219,7 @@ export const TOOLS = [
               },
               value: {
                 description:
-                  'New value for the field. For boolean core fields (`plays_self`, `own_voice`) pass true/false. Otherwise pass a plain human-readable markdown string — never a JSON array or object. Lists go as comma-separated text; multi-part facts go as prose.',
+                  'New value for the field. Pass a plain human-readable markdown string — never a JSON array or object. Lists go as comma-separated text; multi-part facts go as prose.',
               },
             },
             required: ['character', 'value'],
@@ -917,14 +912,14 @@ export const TOOLS = [
   },
   {
     name: 'generate_image',
-    keywords: ['generate', 'create', 'draw', 'render', 'make', 'ai', 'nano', 'banana', 'image', 'picture', 'illustration', 'art', 'visual', 'gemini', 'openai', 'gpt-image', 'gpt-image-2', 'dalle'],
+    keywords: ['generate', 'create', 'draw', 'render', 'make', 'ai', 'nano', 'banana', 'image', 'picture', 'illustration', 'art', 'visual', 'gemini', 'flux', 'flux-2', 'kontext', 'openai', 'gpt-image', 'gpt-image-2', 'dalle'],
     description:
-      'Generate an image. Two providers are supported: Google\'s "Nano Banana" (gemini-2.5-flash-image, default) and OpenAI\'s gpt-image-2. Pass `provider: "openai"` only when the user explicitly asks for OpenAI / GPT-image / DALL-E; otherwise leave it unset and Nano Banana will be used. The bot displays the generated image in its reply. ONLY call this when the user has explicitly asked for an image (e.g., "draw this", "generate an image of...", "show me what this looks like"). Compose the prompt from one or more of: an explicit `prompt` string, the current/named beat (set `include_beat: true`), or recent conversation context (set `include_recent_chat: true`). At least one of these inputs must be provided.\n\nPass `source_image_id` to base the new image on an existing image (img2img). The source image is loaded and shipped to the chosen provider as a reference; the result is a brand-new image (the source is not modified). For "edit this image to..." style requests prefer `edit_image` instead — its semantics are clearer about whether the original survives.\n\nDestination precedence (the image is owned by exactly one entity, or none): (1) `attach_to_character` wins; (2) else `attach_to_beat` (any beat, not just current); (3) else `attach_to_current_beat` (default true when a current beat is set); (4) else the library — where it can be attached later via `attach_library_image_to_{character,beat,director_note}`. `attach_to_character` and `attach_to_beat` are mutually exclusive. `set_as_main` applies to whichever target is chosen. Returns the image_id and displays the image. Requires the chosen provider\'s API key (`GEMINI_API_KEY` / Vertex creds for the default, or `OPENAI_API_KEY` for `provider: "openai"`).',
+      'Generate an image. Four providers are supported, all returning a single PNG: `nano-banana-pro` (Google\'s Gemini 3 Pro Image on fal.ai — the default), `flux-2-pro` (Flux 2 Pro on fal.ai), `flux-pro-kontext` (Flux Pro Kontext on fal.ai), and `openai` (gpt-image-2). Leave `provider` unset to use the default Nano Banana Pro. Pass `provider: "openai"` only when the user explicitly asks for OpenAI / GPT-image / DALL-E; pass the flux variants when the user explicitly names them. The bot displays the generated image in its reply. ONLY call this when the user has explicitly asked for an image (e.g., "draw this", "generate an image of...", "show me what this looks like"). Compose the prompt from one or more of: an explicit `prompt` string, the current/named beat (set `include_beat: true`), or recent conversation context (set `include_recent_chat: true`). At least one of these inputs must be provided.\n\nPass `source_image_id` to base the new image on an existing image (img2img). The source image is loaded and shipped to the chosen provider as a reference; the result is a brand-new image (the source is not modified). For "edit this image to..." style requests prefer `edit_image` instead — its semantics are clearer about whether the original survives.\n\nDestination precedence (the image is owned by exactly one entity, or none): (1) `attach_to_character` wins; (2) else `attach_to_beat` (any beat, not just current); (3) else `attach_to_current_beat` (default true when a current beat is set); (4) else the library — where it can be attached later via `attach_library_image_to_{character,beat,director_note}`. `attach_to_character` and `attach_to_beat` are mutually exclusive. `set_as_main` applies to whichever target is chosen. Returns the image_id and displays the image. Requires the chosen provider\'s API key (`FAL_KEY` for the FAL providers, or `OPENAI_API_KEY` for `provider: "openai"`).',
     input_schema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'Free-form prompt fragment to include verbatim.' },
-        provider: { type: 'string', enum: ['gemini', 'openai'], description: 'Image model provider. Default "gemini" (Nano Banana, gemini-2.5-flash-image). Pass "openai" (gpt-image-2) only when the user explicitly asks for OpenAI, GPT-image, or DALL-E.' },
+        provider: { type: 'string', enum: ['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'openai'], description: 'Image model provider. Default "nano-banana-pro" (Google\'s Gemini 3 Pro Image on fal.ai). Pass "flux-2-pro" or "flux-pro-kontext" when the user explicitly names Flux. Pass "openai" (gpt-image-2) only when the user explicitly asks for OpenAI, GPT-image, or DALL-E.' },
         include_beat: { type: 'boolean', description: 'When true, weave the beat\'s name/desc/body/characters into the prompt.' },
         beat: { type: 'string', description: 'Identifier for the beat to draw from when include_beat is true. Defaults to the current beat. Use `attach_to_beat` to also bind the generated image to a beat.' },
         include_recent_chat: { type: 'boolean', description: 'When true, include a short summary of recent conversation in the prompt.' },
@@ -940,16 +935,16 @@ export const TOOLS = [
   },
   {
     name: 'edit_image',
-    keywords: ['edit', 'modify', 'change', 'tweak', 'update', 'alter', 'image', 'picture', 'variant', 'iterate', 'remix', 'nano', 'banana', 'gemini', 'openai', 'gpt-image', 'gpt-image-2', 'dalle'],
+    keywords: ['edit', 'modify', 'change', 'tweak', 'update', 'alter', 'image', 'picture', 'variant', 'iterate', 'remix', 'nano', 'banana', 'gemini', 'flux', 'flux-2', 'kontext', 'openai', 'gpt-image', 'gpt-image-2', 'dalle'],
     description:
-      'Edit an existing image. Two providers are supported: Google\'s "Nano Banana" (gemini-2.5-flash-image, default) and OpenAI\'s gpt-image-2. Pass `provider: "openai"` only when the user explicitly asks for OpenAI / GPT-image / DALL-E; otherwise leave it unset. Pass the source `image_id` and a `prompt` describing the change ("give him blonde hair", "make it nighttime", "remove the hat"). Result is saved as a new GridFS image owned by whatever the source belonged to (character / beat / director_note / library); when the source was that owner\'s main image, the result is automatically promoted to the new main image. Use this whenever the user asks to modify, change, tweak, or update an existing image rather than create a fresh one.\n\nYou MUST decide whether to delete the source image after editing: pass `replace_source: true` when the user wants the old version gone (e.g. "change his hair to blonde", "update the main image so..."), or `replace_source: false` when they\'re iterating, comparing, or want a variant ("try a version where...", "give me an alternate with..."). When in doubt, prefer `false` so nothing is destroyed. Optional `attach_to_character` / `attach_to_beat` / `set_as_main` overrides have the same meaning as in `generate_image` and let you redirect the result away from the source\'s owner.',
+      'Edit an existing image. Four providers are supported: `nano-banana-pro` (Google\'s Gemini 3 Pro Image on fal.ai — the default), `flux-2-pro` (Flux 2 Pro on fal.ai), `flux-pro-kontext` (Flux Pro Kontext on fal.ai), and `openai` (gpt-image-2). Leave `provider` unset to use Nano Banana Pro. Pass `provider: "openai"` only when the user explicitly asks for OpenAI / GPT-image / DALL-E; pass the flux variants when the user explicitly names them. Pass the source `image_id` and a `prompt` describing the change ("give him blonde hair", "make it nighttime", "remove the hat"). Result is saved as a new GridFS image owned by whatever the source belonged to (character / beat / director_note / library); when the source was that owner\'s main image, the result is automatically promoted to the new main image. Use this whenever the user asks to modify, change, tweak, or update an existing image rather than create a fresh one.\n\nYou MUST decide whether to delete the source image after editing: pass `replace_source: true` when the user wants the old version gone (e.g. "change his hair to blonde", "update the main image so..."), or `replace_source: false` when they\'re iterating, comparing, or want a variant ("try a version where...", "give me an alternate with..."). When in doubt, prefer `false` so nothing is destroyed. Optional `attach_to_character` / `attach_to_beat` / `set_as_main` overrides have the same meaning as in `generate_image` and let you redirect the result away from the source\'s owner.',
     input_schema: {
       type: 'object',
       properties: {
         source_image_id: { type: 'string', description: '24-char hex GridFS file id of the image to edit. Get this from list_character_images, the beat\'s images[], or director-note image listings.' },
         prompt: { type: 'string', description: 'Concise instruction describing the change to make (e.g., "give him blonde hair instead of black"). Will be sent to the chosen provider alongside the source image.' },
         replace_source: { type: 'boolean', description: 'REQUIRED. true = delete the source image after a successful edit (truly "in place"); false = keep the source alongside the new image so the user can compare or revert.' },
-        provider: { type: 'string', enum: ['gemini', 'openai'], description: 'Image model provider. Default "gemini" (Nano Banana, gemini-2.5-flash-image). Pass "openai" (gpt-image-2) only when the user explicitly asks for OpenAI, GPT-image, or DALL-E.' },
+        provider: { type: 'string', enum: ['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'openai'], description: 'Image model provider. Default "nano-banana-pro" (Google\'s Gemini 3 Pro Image on fal.ai). Pass "flux-2-pro" or "flux-pro-kontext" when the user explicitly names Flux. Pass "openai" (gpt-image-2) only when the user explicitly asks for OpenAI, GPT-image, or DALL-E.' },
         aspect_ratio: { type: 'string', enum: ['1:1', '16:9', '9:16', '4:3', '3:4'], description: 'Optional reframing. Omit to preserve the source image\'s framing. For OpenAI, this maps to the closest supported gpt-image-2 size.' },
         attach_to_character: { type: 'string', description: 'Override: attach the edited result to this character instead of the source\'s owner. Mutually exclusive with attach_to_beat.' },
         attach_to_beat: { type: 'string', description: 'Override: attach the edited result to this beat instead of the source\'s owner. Mutually exclusive with attach_to_character.' },
@@ -1008,7 +1003,7 @@ export const TOOLS = [
               field: {
                 type: 'string',
                 description:
-                  'Dot-path into the document (e.g. "name", "plays_self", "fields.background_story") OR a computed pseudo-field name.',
+                  'Dot-path into the document (e.g. "name", "hollywood_actor", "fields.background_story") OR a computed pseudo-field name.',
               },
               header: {
                 type: 'string',

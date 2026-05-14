@@ -39,7 +39,7 @@ function fakeImageMeta({ filename = TMDB_FILENAME, source = 'upload' } = {}) {
 }
 
 async function seedCharacterWithImage(name = 'Flikk') {
-  const c = await Characters.createCharacter({ name, plays_self: true, own_voice: true });
+  const c = await Characters.createCharacter({ name });
   const meta = fakeImageMeta();
   await Characters.pushCharacterImage(c._id.toString(), meta, true);
   return { character: c, imageMeta: meta };

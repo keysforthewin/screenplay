@@ -6,15 +6,15 @@ import { CollabField } from '../editor/CollabField.jsx';
 import { ImageGallery } from '../widgets/ImageGallery.jsx';
 import { AttachmentList } from '../widgets/AttachmentList.jsx';
 import { BeatCharacters } from '../widgets/BeatCharacters.jsx';
+import { ArtworkTab } from '../widgets/ArtworkTab.jsx';
 import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
-import { BeatSpecifics } from './BeatSpecifics.jsx';
 
-const TABS = ['details', 'specifics'];
+const TABS = ['characters', 'background', 'attachments', 'artwork'];
 
 function readInitialTab() {
-  if (typeof window === 'undefined') return 'details';
+  if (typeof window === 'undefined') return 'background';
   const h = (window.location.hash || '').replace(/^#/, '');
-  return TABS.includes(h) ? h : 'details';
+  return TABS.includes(h) ? h : 'background';
 }
 
 export function Beat({ session }) {
@@ -25,6 +25,8 @@ export function Beat({ session }) {
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [activeTab, setActiveTab] = useState(readInitialTab);
+  const [imagePickerOpen, setImagePickerOpen] = useState(false);
+  const [filePickerOpen, setFilePickerOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,7 +59,7 @@ export function Beat({ session }) {
   function selectTab(tab) {
     setActiveTab(tab);
     if (typeof window !== 'undefined') {
-      const newHash = tab === 'details' ? '' : `#${tab}`;
+      const newHash = tab === 'background' ? '' : `#${tab}`;
       if (window.location.hash !== newHash) {
         window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${newHash}`);
       }
@@ -97,74 +99,110 @@ export function Beat({ session }) {
       </div>
 
       <div className="tab-nav" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'details'}
-          className={`tab-button${activeTab === 'details' ? ' is-active' : ''}`}
-          onClick={() => selectTab('details')}
-        >
-          Details
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'specifics'}
-          className={`tab-button${activeTab === 'specifics' ? ' is-active' : ''}`}
-          onClick={() => selectTab('specifics')}
-        >
-          Specifics
-        </button>
+        {TABS.map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === t}
+            className={`tab-button${activeTab === t ? ' is-active' : ''}`}
+            onClick={() => selectTab(t)}
+          >
+            {tabLabel(t)}
+          </button>
+        ))}
       </div>
 
       <CollabSurface room={room} session={session} onPing={onRefresh}>
-        <div className="tab-panel" hidden={activeTab !== 'details'}>
-          <CollabField label="Name" field="name" />
-          <CollabField label="Description" field="desc" />
-          <CollabField label="Body" field="body" multiline />
-
-          <div className="field-block">
-            <span className="field-label">Images</span>
-            <ImageGallery
-              images={beat.images || []}
-              mainImageId={beat.main_image_id}
-              onChange={onRefresh}
-              uploadPath={`/beat/${beat._id}/image`}
-              deletePath={(imageId) => `/beat/${beat._id}/image/${imageId}`}
-              mainPath={`/beat/${beat._id}/main-image`}
-              editPath={(imageId) => `/beat/${beat._id}/image/${imageId}/regenerate`}
-              moveToLibraryPath={(imageId) =>
-                `/beat/${beat._id}/image/${imageId}/move-to-library`
-              }
-              attachPath={`/beat/${beat._id}/image/attach`}
-              generatePath={`/beat/${beat._id}/image/generate`}
-              pickerTitle="Add image to beat"
-            />
-          </div>
-
-          <div className="field-block">
-            <span className="field-label">Attachments</span>
-            <AttachmentList
-              attachments={beat.attachments || []}
-              onChange={onRefresh}
-              uploadPath={`/beat/${beat._id}/attachment`}
-              deletePath={(id) => `/beat/${beat._id}/attachment/${id}`}
-              attachPath={`/beat/${beat._id}/attachment/attach`}
-              pickerTitle="Add attachment to beat"
-              fieldPrefix="attachment"
-            />
-          </div>
-
-          <div className="field-block">
-            <span className="field-label">Characters</span>
-            <BeatCharacters beat={beat} toc={toc} onRefresh={onRefresh} />
-          </div>
+        <div className="tab-panel" hidden={activeTab !== 'characters'}>
+          <BeatCharacters beat={beat} toc={toc} onRefresh={onRefresh} />
         </div>
 
-        <div className="tab-panel" hidden={activeTab !== 'specifics'}>
-          <BeatSpecifics beat={beat} onRefresh={onRefresh} />
+        <div className="tab-panel" hidden={activeTab !== 'background'}>
+          <CollabField label="Name" field="name" />
+          <CollabField label="Body" field="body" multiline />
+        </div>
+
+        <div className="tab-panel" hidden={activeTab !== 'attachments'}>
+          <p className="tab-intro">
+            <strong>Images</strong> are reference images used to create artwork for this beat.{' '}
+            <strong>Files</strong> are reference material such as PDFs, Word documents, and audio samples.
+          </p>
+          <div className="tab-actions">
+            <button
+              type="button"
+              className="primary"
+              onClick={() => setImagePickerOpen(true)}
+            >
+              + Add image
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => setFilePickerOpen(true)}
+            >
+              + Add file
+            </button>
+          </div>
+          <ImageGallery
+            images={beat.images || []}
+            mainImageId={beat.main_image_id}
+            onChange={onRefresh}
+            uploadPath={`/beat/${beat._id}/image`}
+            deletePath={(imageId) => `/beat/${beat._id}/image/${imageId}`}
+            mainPath={`/beat/${beat._id}/main-image`}
+            editPath={(imageId) => `/beat/${beat._id}/image/${imageId}/regenerate`}
+            moveToLibraryPath={(imageId) =>
+              `/beat/${beat._id}/image/${imageId}/move-to-library`
+            }
+            attachPath={`/beat/${beat._id}/image/attach`}
+            generatePath={`/beat/${beat._id}/image/generate`}
+            characterSourcesPath={`/images/by-owner/characters`}
+            beatSourcesPath={`/images/by-owner/beats?exclude_id=${beat._id}`}
+            copyPath={`/beat/${beat._id}/image/copy`}
+            pickerTitle="Add image to beat"
+            hideAddButton
+            pickerOpen={imagePickerOpen}
+            onPickerOpenChange={setImagePickerOpen}
+          />
+          <AttachmentList
+            attachments={beat.attachments || []}
+            onChange={onRefresh}
+            uploadPath={`/beat/${beat._id}/attachment`}
+            deletePath={(id) => `/beat/${beat._id}/attachment/${id}`}
+            attachPath={`/beat/${beat._id}/attachment/attach`}
+            pickerTitle="Add file to beat"
+            fieldPrefix="attachment"
+            hideAddButton
+            pickerOpen={filePickerOpen}
+            onPickerOpenChange={setFilePickerOpen}
+          />
+        </div>
+
+        <div className="tab-panel" hidden={activeTab !== 'artwork'}>
+          <ArtworkTab
+            hostType="beat"
+            hostId={beat._id}
+            hostLabel={beat.name || `Beat ${beat.order}`}
+            artworks={beat.artworks || []}
+            hostImages={beat.images || []}
+            hostArtworks={beat.artworks || []}
+            mainImageId={beat.main_image_id}
+            mainPath={`/beat/${beat._id}/main-image`}
+            onChange={onRefresh}
+          />
         </div>
       </CollabSurface>
     </main>
   );
+}
+
+function tabLabel(tab) {
+  switch (tab) {
+    case 'characters': return 'Characters';
+    case 'background': return 'Background';
+    case 'attachments': return 'Attachments';
+    case 'artwork': return 'Artwork';
+    default: return tab;
+  }
 }

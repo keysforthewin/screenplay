@@ -1,36 +1,46 @@
 // storyboardImageDispatch.js
 //
-// Single decision point for storyboard frame image generation: which model
-// (Gemini Nano Banana or OpenAI gpt-image-2), and whether we're running a
-// fresh generation (text + optional reference images) or an edit pass on a
-// single existing image. Mirrors the structure of sheetImageDispatch.js but
-// fixes the size to true 16:9 for OpenAI and exposes a generate/edit flag the
-// per-frame regen path uses for inline tweaks.
+// Single decision point for storyboard frame image generation. Four logical
+// models (nano-banana-pro, flux-2-pro, flux-pro-kontext, openai) and two modes
+// (generate / edit). Fixes the size to true 16:9 for OpenAI and forwards
+// aspect_ratio='16:9' for the FAL helpers.
 
 import { config } from '../config.js';
 import { logger } from '../log.js';
-import { generateImage as geminiGenerate, NANO_BANANA_MODEL } from '../gemini/client.js';
 import {
   generateCharacterSheetImage,
   generateCharacterSheetImageEdit,
   GPT_IMAGE_MODEL,
 } from '../openai/imageClient.js';
-import { recordGeminiImageUsage, recordOpenAIImageUsage } from '../mongo/tokenUsage.js';
+import {
+  generateFluxKontextImage,
+  generateFlux2ProImage,
+  generateNanoBananaProImage,
+  FLUX_KONTEXT_MODEL,
+  FLUX_2_PRO_MODEL,
+  NANO_BANANA_PRO_GENERATE_MODEL,
+} from '../fal/imageClient.js';
+import { isConfigured as falConfigured } from '../fal/client.js';
+import { recordOpenAIImageUsage, recordFalImageUsage } from '../mongo/tokenUsage.js';
 
 // gpt-image-2's closest exact 16:9 size. Storyboard frames are framed for
-// 16:9 throughout the pipeline (Gemini gets `aspectRatio: '16:9'`), so this
-// matches.
+// 16:9 throughout the pipeline.
 const STORYBOARD_SIZE = '2048x1152';
 const ASPECT_RATIO = '16:9';
 
+export const ALLOWED_STORYBOARD_MODELS = ['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'openai'];
+const FAL_MODELS = new Set(['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext']);
+
 export async function dispatchStoryboardImage({
   prompt,
-  model = 'gemini',
+  model = 'nano-banana-pro',
   inputImages = [],
   mode = 'generate',
 }) {
-  if (!['gemini', 'openai'].includes(model)) {
-    const err = new Error(`Unknown storyboard image model "${model}".`);
+  if (!ALLOWED_STORYBOARD_MODELS.includes(model)) {
+    const err = new Error(
+      `Unknown storyboard image model "${model}". Allowed: ${ALLOWED_STORYBOARD_MODELS.join('|')}`,
+    );
     err.status = 400;
     throw err;
   }
@@ -44,10 +54,8 @@ export async function dispatchStoryboardImage({
     err.status = 400;
     throw err;
   }
-  if (model === 'gemini' && !config.gemini.apiKey && !config.gemini.vertex.project) {
-    const err = new Error(
-      'Gemini is not configured. Set GEMINI_API_KEY or GEMINI_VERTEX_PROJECT (with credentials).',
-    );
+  if (FAL_MODELS.has(model) && !falConfigured()) {
+    const err = new Error('FAL_KEY is not configured.');
     err.status = 400;
     throw err;
   }
@@ -59,33 +67,50 @@ export async function dispatchStoryboardImage({
     throw err;
   }
 
-  if (model === 'gemini') {
-    const result = await geminiGenerate({
-      prompt,
-      aspectRatio: ASPECT_RATIO,
-      inputImages: refs.length ? refs : undefined,
-    });
-    if (result.usageMetadata) {
-      try {
-        await recordGeminiImageUsage({
-          discordUser: null,
-          channelId: null,
-          model: NANO_BANANA_MODEL,
-          usageMetadata: result.usageMetadata,
-        });
-      } catch (e) {
-        logger.warn(`gemini token usage persist failed: ${e.message}`);
-      }
+  if (FAL_MODELS.has(model)) {
+    let result;
+    let fallbackModel;
+    if (model === 'nano-banana-pro') {
+      result = await generateNanoBananaProImage({
+        prompt,
+        inputImages: refs,
+        aspectRatio: ASPECT_RATIO,
+      });
+      fallbackModel = NANO_BANANA_PRO_GENERATE_MODEL;
+    } else if (model === 'flux-2-pro') {
+      result = await generateFlux2ProImage({
+        prompt,
+        inputImages: refs,
+        aspectRatio: ASPECT_RATIO,
+      });
+      fallbackModel = FLUX_2_PRO_MODEL;
+    } else {
+      result = await generateFluxKontextImage({
+        prompt,
+        inputImages: refs,
+        aspectRatio: ASPECT_RATIO,
+      });
+      fallbackModel = FLUX_KONTEXT_MODEL;
+    }
+    try {
+      await recordFalImageUsage({
+        discordUser: null,
+        channelId: null,
+        model: result.model || fallbackModel,
+        meta: { input_image_count: refs.length, mode, logical_model: model },
+      });
+    } catch (e) {
+      logger.warn(`fal token usage persist failed: ${e.message}`);
     }
     return {
       buffer: result.buffer,
       contentType: result.contentType,
-      model: NANO_BANANA_MODEL,
+      model: result.model || fallbackModel,
     };
   }
 
   // openai. images.edits when we have refs (or in edit mode), otherwise the
-  // pure text-to-image endpoint. Both come back in the same shape.
+  // pure text-to-image endpoint.
   const useEdit = mode === 'edit' || refs.length > 0;
   const r = useEdit
     ? await generateCharacterSheetImageEdit({

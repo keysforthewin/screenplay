@@ -102,26 +102,22 @@ describe('similarity post-hook on edit (character)', () => {
     expect(out).toMatch(/similar to "Marcus"/);
   });
 
-  it('skips the hook when set_field only changes casting (no text)', async () => {
+  it('skips the hook when set_field only unsets a custom field (no text)', async () => {
     await Characters.createCharacter({
       name: 'Twin1',
-      plays_self: true,
-      own_voice: true,
       fields: { background_story: 'a duplicate story shared between twins exactly' },
     });
     await Characters.createCharacter({
       name: 'Twin2',
-      plays_self: true,
-      own_voice: true,
-      fields: { background_story: 'a duplicate story shared between twins exactly' },
+      fields: { background_story: 'a duplicate story shared between twins exactly', stale_note: 'remove me' },
     });
     const out = await HANDLERS.set_field({
       collection: 'character',
       identifier: 'Twin2',
-      field: 'plays_self',
-      value: false,
+      field: 'unset',
+      value: ['stale_note'],
     });
-    expect(out).toMatch(/Twin2\.plays_self = false/);
+    expect(out).toMatch(/Unset 1 field\(s\) on Twin2/);
     expect(out).not.toMatch(/Heads up/);
   });
 });

@@ -1,14 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
-import { CharacterSheetSelector } from './CharacterSheetSelector.jsx';
-import { apiPostJson } from '../api.js';
-
-const MODEL_STORAGE_KEY = 'screenplay.storyboard.model';
-const VALID_MODELS = new Set(['gemini', 'openai']);
-const MODEL_LABEL = {
-  gemini: 'Nano Banana (Gemini)',
-  openai: 'OpenAI (gpt-image-2)',
-};
+import { apiPostJson, thumbUrl } from '../api.js';
 
 const DEFAULT_COUNT = 11;
 const MIN_COUNT = 3;
@@ -21,15 +13,6 @@ const TABS = [
   { key: 'preview', label: 'Prompt preview' },
 ];
 
-function readStoredModel() {
-  try {
-    const v = localStorage.getItem(MODEL_STORAGE_KEY);
-    return VALID_MODELS.has(v) ? v : 'gemini';
-  } catch {
-    return 'gemini';
-  }
-}
-
 function clampCount(n) {
   const v = Number(n);
   if (!Number.isFinite(v) || v <= 0) return DEFAULT_COUNT;
@@ -37,7 +20,7 @@ function clampCount(n) {
 }
 
 // Pre-generation modal for the page-level "Generate" button. Tabs:
-//   - Setup:     count + Analyze, director's direction, image model, sheet overrides
+//   - Setup:     count + Analyze, director's direction
 //   - Beat:      read-only preview of the beat text the LLM will see
 //   - Characters: read-only preview of the characters that will be supplied
 //   - Prompt preview: the exact Stage A (outline) prompt that will be sent
@@ -52,8 +35,6 @@ export function StoryboardGenerateDialog({
   existingCount = 0,
 }) {
   const [tab, setTab] = useState('setup');
-  const [imageModel, setImageModel] = useState(readStoredModel);
-  const [sheetOverrides, setSheetOverrides] = useState({});
   const [count, setCount] = useState(() =>
     existingCount > 0 ? clampCount(existingCount) : DEFAULT_COUNT,
   );
@@ -73,7 +54,6 @@ export function StoryboardGenerateDialog({
   useEffect(() => {
     if (!open) return;
     setTab('setup');
-    setSheetOverrides({});
     setCount(existingCount > 0 ? clampCount(existingCount) : DEFAULT_COUNT);
     setDirection('');
     setAnalyzeNote(null);
@@ -81,12 +61,6 @@ export function StoryboardGenerateDialog({
     setPreview(null);
     setPreviewError(null);
   }, [open, existingCount]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(MODEL_STORAGE_KEY, imageModel);
-    } catch {}
-  }, [imageModel]);
 
   const previewKey = `${clampCount(count)}|${direction.trim()}`;
 
@@ -152,20 +126,13 @@ export function StoryboardGenerateDialog({
   }
 
   function submit() {
-    const cleaned = {};
-    for (const [cid, sid] of Object.entries(sheetOverrides)) {
-      if (sid) cleaned[cid] = sid;
-    }
     onSubmit({
-      sheetOverrides: cleaned,
-      imageModel,
       count: clampCount(count),
       direction: direction.trim(),
     });
   }
 
   const beatBody = stripMd(beat?.body || '');
-  const beatDesc = stripMd(beat?.desc || '');
   const beatName = stripMd(beat?.name || '') || 'Untitled';
 
   return (
@@ -227,15 +194,10 @@ export function StoryboardGenerateDialog({
               runAnalyze={runAnalyze}
               analyzeNote={analyzeNote}
               analyzeError={analyzeError}
-              imageModel={imageModel}
-              setImageModel={setImageModel}
-              beatCharacters={beatCharacters}
-              sheetOverrides={sheetOverrides}
-              setSheetOverrides={setSheetOverrides}
             />
           )}
           {tab === 'beat' && (
-            <BeatPanel name={beatName} desc={beatDesc} body={beatBody} />
+            <BeatPanel name={beatName} body={beatBody} />
           )}
           {tab === 'characters' && (
             <CharactersPanel characters={beatCharacters} />
@@ -262,11 +224,6 @@ function SetupPanel({
   runAnalyze,
   analyzeNote,
   analyzeError,
-  imageModel,
-  setImageModel,
-  beatCharacters,
-  sheetOverrides,
-  setSheetOverrides,
 }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -310,80 +267,16 @@ function SetupPanel({
           style={{ width: '100%', marginTop: 6, fontSize: 13 }}
         />
       </div>
-
-      <div>
-        <span className="field-label">Image model</span>
-        <div
-          style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}
-        >
-          {['gemini', 'openai'].map((m) => (
-            <label
-              key={m}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
-            >
-              <input
-                type="radio"
-                name="storyboard-image-model"
-                value={m}
-                checked={imageModel === m}
-                onChange={() => setImageModel(m)}
-              />
-              {MODEL_LABEL[m]}
-            </label>
-          ))}
-        </div>
-      </div>
-
-      {beatCharacters.length > 0 && (
-        <div>
-          <span className="field-label">Character sheets</span>
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 6,
-              marginTop: 6,
-            }}
-          >
-            {beatCharacters.map((c) => (
-              <label
-                key={c._id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  fontSize: 13,
-                }}
-              >
-                <span style={{ minWidth: 100 }}>{c.name}:</span>
-                <CharacterSheetSelector
-                  character={c}
-                  value={sheetOverrides[c._id] || ''}
-                  onChange={(sheetId) =>
-                    setSheetOverrides((prev) => ({ ...prev, [c._id]: sheetId }))
-                  }
-                />
-              </label>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-function BeatPanel({ name, desc, body }) {
+function BeatPanel({ name, body }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div>
         <p className="preview-section-label">Name</p>
         <div style={{ fontSize: 14 }}>{name}</div>
-      </div>
-      <div>
-        <p className="preview-section-label">Description</p>
-        <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>
-          {desc || <span style={{ color: 'var(--fg-muted)' }}>(none)</span>}
-        </div>
       </div>
       <div>
         <p className="preview-section-label">Body</p>
@@ -402,31 +295,28 @@ function CharactersPanel({ characters }) {
     );
   }
   return (
-    <table className="char-table">
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Role / description</th>
-          <th>Plays self</th>
-          <th>Actor</th>
-          <th>Own voice</th>
-        </tr>
-      </thead>
-      <tbody>
-        {characters.map((c) => {
-          const role = c.fields?.role || c.fields?.description || '';
-          return (
-            <tr key={c._id}>
-              <td>{c.name || '—'}</td>
-              <td style={{ color: 'var(--fg-muted)' }}>{role || '—'}</td>
-              <td>{c.plays_self ? 'Yes' : 'No'}</td>
-              <td>{c.plays_self ? '—' : c.hollywood_actor || '—'}</td>
-              <td>{c.own_voice ? 'Yes' : 'No'}</td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div className="beat-character-list">
+      {characters.map((c) => {
+        const name = c.name || '—';
+        const actor = stripMd(c.hollywood_actor || '');
+        const label = actor ? `${name} (${actor})` : name;
+        const thumbId = c.main_image_id;
+        return (
+          <div key={c._id} className="beat-character-row">
+            <div className="beat-character-thumb">
+              {thumbId ? (
+                <img src={thumbUrl(thumbId)} alt={name} loading="lazy" />
+              ) : (
+                <div className="beat-character-thumb-placeholder" aria-hidden="true">
+                  👤
+                </div>
+              )}
+            </div>
+            <div className="beat-character-name">{label}</div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

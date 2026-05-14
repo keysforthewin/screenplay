@@ -48,10 +48,6 @@ beforeEach(() => {
   // Reset two-stage planner overrides so tests don't leak into each other.
   Generate._setOutlinePlannerForTests(null);
   Generate._setFrameRefinerForTests(null);
-  // Default the describer hook to a no-op so tests that don't override it
-  // don't reach the real Anthropic client. Tests that DO care override
-  // this explicitly.
-  Generate._setDescriberForTests(async () => ({ name: '', description: '' }));
   // Default the image dispatcher to a benign fake so tests that don't
   // override it (e.g. the new direction/clamp/rolling-context tests) still
   // complete without trying to hit Gemini/OpenAI.
@@ -380,10 +376,6 @@ describe('storyboard auto-generation', () => {
       buffer: Buffer.from('img'),
       contentType: 'image/png',
     }));
-    Generate._setDescriberForTests(async () => ({
-      name: 'Diner',
-      description: 'Pink booth, warm tungsten light, neon glow on the table.',
-    }));
 
     const beat = await Plots.createBeat({
       name: 'D',
@@ -556,10 +548,6 @@ describe('storyboard auto-generation', () => {
       buffer: Buffer.from('img'),
       contentType: 'image/png',
     }));
-    Generate._setDescriberForTests(async () => ({
-      name: 'D',
-      description: 'description text',
-    }));
 
     const beat = await Plots.createBeat({
       name: 'P',
@@ -704,6 +692,94 @@ describe('storyboard auto-generation', () => {
     expect(job.status).toBe('done');
     expect(receivedTarget).toBe(30);
     expect(job.target_count_requested).toBe(30);
+  });
+});
+
+describe('auto-populated reference images', () => {
+  it('attaches beat + per-character reference images to each generated row', async () => {
+    installPlannerForFixture(TWO_FRAME_PLAN.frames);
+    const Characters = await import('../src/mongo/characters.js');
+    const sheetA = new ObjectId();
+    const mainA = new ObjectId();
+    const sheetB = new ObjectId();
+    const beatImg = new ObjectId();
+
+    const a = await Characters.createCharacter({ name: 'Alice' });
+    await fakeDb.collection('characters').updateOne(
+      { _id: a._id },
+      {
+        $set: {
+          character_sheet_image_ids: [sheetA],
+          main_image_id: mainA,
+          images: [{ _id: mainA }],
+        },
+      },
+    );
+    const b = await Characters.createCharacter({ name: 'Bob' });
+    await fakeDb.collection('characters').updateOne(
+      { _id: b._id },
+      {
+        $set: {
+          character_sheet_image_ids: [sheetB],
+          main_image_id: null,
+          images: [],
+        },
+      },
+    );
+
+    const beat = await Plots.createBeat({
+      name: 'Diner',
+      desc: 'd',
+      body: 'Alice walks in. Bob is waiting.',
+      characters: ['Alice', 'Bob'],
+    });
+    await Plots.pushBeatImage(beat._id, { _id: beatImg }, true);
+
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+
+    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
+    expect(stored).toHaveLength(2);
+
+    // Each per-frame ref list should be seeded identically from the
+    // aggregator (beat image + both characters' refs in scope).
+    for (const role of ['start_frame_reference_ids', 'end_frame_reference_ids']) {
+      // Frame 1: Alice only → beat image + Alice's sheet + Alice's main.
+      const frame1Ids = stored[0][role].map((x) => x.toString());
+      expect(frame1Ids).toContain(beatImg.toString());
+      expect(frame1Ids).toContain(sheetA.toString());
+      expect(frame1Ids).toContain(mainA.toString());
+      expect(frame1Ids).not.toContain(sheetB.toString());
+
+      // Frame 2: Alice + Bob → beat image + both characters' refs.
+      const frame2Ids = stored[1][role].map((x) => x.toString());
+      expect(frame2Ids).toContain(beatImg.toString());
+      expect(frame2Ids).toContain(sheetA.toString());
+      expect(frame2Ids).toContain(sheetB.toString());
+    }
+  });
+
+  it('leaves both per-frame reference lists empty when the beat has no images and characters are unknown', async () => {
+    installPlannerForFixture(TWO_FRAME_PLAN.frames);
+    const beat = await Plots.createBeat({
+      name: 'Bare',
+      desc: 'd',
+      body: 'b',
+      characters: [],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
+    for (const sb of stored) {
+      expect(sb.start_frame_reference_ids).toEqual([]);
+      expect(sb.end_frame_reference_ids).toEqual([]);
+    }
   });
 });
 
