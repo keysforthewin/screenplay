@@ -20,7 +20,7 @@ function clampCount(n) {
 }
 
 // Pre-generation modal for the page-level "Generate" button. Tabs:
-//   - Setup:     count + Analyze, director's direction
+//   - Setup:     count + Analyze, director's commentary
 //   - Beat:      read-only preview of the beat text the LLM will see
 //   - Characters: read-only preview of the characters that will be supplied
 //   - Prompt preview: the exact Stage A (outline) prompt that will be sent
@@ -258,7 +258,7 @@ function SetupPanel({
       </div>
 
       <div>
-        <span className="field-label">Director's direction (optional)</span>
+        <span className="field-label">Director's Commentary (optional)</span>
         <textarea
           value={direction}
           onChange={(e) => setDirection(e.target.value)}

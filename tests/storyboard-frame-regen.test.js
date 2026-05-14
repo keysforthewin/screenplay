@@ -328,4 +328,54 @@ describe('startFrameGenerationJob', () => {
       }),
     ).rejects.toThrow(/Unknown regen mode/);
   });
+
+  it('rotates current → previous when rotateToPrevious=true on an edit', async () => {
+    const startId = registerImage(new ObjectId());
+    const { sb } = await setupRow({ startFrameId: startId });
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('edited'),
+      contentType: 'image/png',
+    }));
+    const jobId = await Generate.startFrameGenerationJob({
+      storyboardId: sb._id,
+      role: 'start_frame',
+      mode: 'edit',
+      editPrompt: 'add a hat',
+      rotateToPrevious: true,
+    });
+    for (let i = 0; i < 200; i++) {
+      const job = Generate.getFrameGenerationJob(jobId);
+      if (job && (job.status === 'done' || job.status === 'error')) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const job = Generate.getFrameGenerationJob(jobId);
+    expect(job.status).toBe('done');
+    const fresh = await Storyboards.getStoryboard(sb._id);
+    expect(fresh.previous_start_frame_id.toString()).toBe(startId.toString());
+    expect(fresh.start_frame_id.toString()).not.toBe(startId.toString());
+    expect(fresh.last_start_frame_edit_prompt).toBe('add a hat');
+  });
+
+  it('does NOT rotate when rotateToPrevious=false (regenerate path)', async () => {
+    const startId = registerImage(new ObjectId());
+    const { sb } = await setupRow({ startFrameId: startId });
+    Generate._setImageDispatcherForTests(async () => ({
+      buffer: Buffer.from('regen'),
+      contentType: 'image/png',
+    }));
+    const jobId = await Generate.startFrameGenerationJob({
+      storyboardId: sb._id,
+      role: 'start_frame',
+      mode: 'generate',
+      prompt: 'fresh take',
+    });
+    for (let i = 0; i < 200; i++) {
+      const job = Generate.getFrameGenerationJob(jobId);
+      if (job && (job.status === 'done' || job.status === 'error')) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const fresh = await Storyboards.getStoryboard(sb._id);
+    expect(fresh.previous_start_frame_id).toBe(null);
+    expect(fresh.last_start_frame_edit_prompt).toBe('');
+  });
 });

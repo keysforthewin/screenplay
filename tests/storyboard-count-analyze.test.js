@@ -112,7 +112,7 @@ describe('analyzeStoryboardCount', () => {
     expect(result.reason).toMatch(/rate limited/);
   });
 
-  it('includes the director direction in the user message when provided', async () => {
+  it("includes the director's commentary in the user message when provided", async () => {
     const { client, calls } = fakeClient({ count: 6, reason: 'tight' });
     _setAnthropicClientForTests(client);
 
@@ -122,7 +122,7 @@ describe('analyzeStoryboardCount', () => {
       direction: 'fast coverage, hold reactions long',
     });
     const userText = calls[0].messages[0].content[0].text;
-    expect(userText).toMatch(/Director's direction/);
+    expect(userText).toMatch(/Director's commentary/);
     expect(userText).toMatch(/fast coverage, hold reactions long/);
   });
 });

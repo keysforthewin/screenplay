@@ -16,14 +16,13 @@ const ROLE_LABEL = {
 };
 
 // Per-frame generate / regenerate modal. Renders full-screen so the reference
-// grid, prompt editor, and model selector are all visible at once. Two tabs:
+// grid, prompt editor, and model selector are all visible at once. Renders the
+// frame from the user's edited prompt plus the persisted per-frame reference
+// images. The prompt is also saved back to sb.start_frame_prompt /
+// sb.end_frame_prompt on submit so the textarea state survives across sessions.
 //
-// - 'generate' (default): renders the frame from the user's edited prompt
-//   plus the persisted per-frame reference images. The prompt is also saved
-//   back to sb.start_frame_prompt / sb.end_frame_prompt on submit so the
-//   textarea state survives across sessions.
-// - 'edit': tweak the existing frame with a short instruction. References
-//   are NOT attached — only the existing image bytes + the edit prompt.
+// Inline single-image edits live in StoryboardFrameEditDialog (the dedicated
+// Edit button on each frame) — that flow has its own thumbnail-and-undo modal.
 //
 // References live in a dedicated column on the left and are managed by the
 // existing ReferencePickerModal (multi-select Apply hits the per-frame route).
@@ -39,9 +38,7 @@ export function FrameRegenerateDialog({
   referenceIds,
   onReferencesChanged,
 }) {
-  const [mode, setMode] = useState('generate');
   const [imageModel, setImageModel] = useState(() => readStoredImageModel(MODEL_STORAGE_KEY));
-  const [editPrompt, setEditPrompt] = useState('');
   const [prompt, setPrompt] = useState('');
   const [suggestedPrompt, setSuggestedPrompt] = useState('');
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -81,18 +78,12 @@ export function FrameRegenerateDialog({
       previewSeqRef.current++;
       return;
     }
-    setMode('generate');
-    setEditPrompt('');
     setPrompt('');
     setSuggestedPrompt('');
     setPreviewError(null);
     setRefsError(null);
     fetchPreview();
   }, [open, fetchPreview]);
-
-  useEffect(() => {
-    if (!hasImage && mode === 'edit') setMode('generate');
-  }, [hasImage, mode]);
 
   useEffect(() => {
     writeStoredImageModel(MODEL_STORAGE_KEY, imageModel);
@@ -133,29 +124,22 @@ export function FrameRegenerateDialog({
     }
   }
 
-  const editPromptValid =
-    mode !== 'edit' ||
-    (typeof editPrompt === 'string' && editPrompt.trim().length > 0);
   const promptValid =
-    mode !== 'generate' ||
-    (typeof prompt === 'string' && prompt.trim().length > 0);
-  const canSubmit =
-    editPromptValid && promptValid && !(mode === 'generate' && previewLoading);
+    typeof prompt === 'string' && prompt.trim().length > 0;
+  const canSubmit = promptValid && !previewLoading;
 
   function submit() {
     if (!canSubmit) return;
     onSubmit({
-      mode,
+      mode: 'generate',
       imageModel,
-      prompt: mode === 'generate' ? prompt.trim() : null,
-      editPrompt: mode === 'edit' ? editPrompt.trim() : null,
+      prompt: prompt.trim(),
+      editPrompt: null,
     });
   }
 
   const label = ROLE_LABEL[role] || 'frame';
-  let submitLabel;
-  if (mode === 'edit') submitLabel = hasImage ? 'Apply edit' : 'Generate';
-  else submitLabel = hasImage ? 'Regenerate' : 'Generate';
+  const submitLabel = hasImage ? 'Regenerate' : 'Generate';
 
   const refList = (referenceIds || []).map(
     (id) => id?.toString?.() || String(id),
@@ -186,136 +170,95 @@ export function FrameRegenerateDialog({
         }
       >
         <div className="frame-generate-modal">
-          <div className="frame-generate-modes">
-            <button
-              type="button"
-              className={mode === 'generate' ? 'is-active' : ''}
-              onClick={() => setMode('generate')}
-            >
-              Generate
-            </button>
-            <button
-              type="button"
-              className={mode === 'edit' ? 'is-active' : ''}
-              disabled={!hasImage}
-              title={hasImage ? '' : 'No existing image to edit'}
-              onClick={() => setMode('edit')}
-            >
-              Edit
-            </button>
-          </div>
-
-          {mode === 'generate' && (
-            <div className="frame-generate-body">
-              <div className="frame-generate-refs">
-                <div className="frame-generate-section-header">
-                  <span className="field-label">References</span>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button
-                      type="button"
-                      onClick={autoSuggestReferences}
-                      disabled={autoBusy}
-                      title="Pull references from this beat and the in-scene characters"
-                    >
-                      {autoBusy ? 'Auto-suggesting…' : 'Auto-suggest'}
-                    </button>
-                    <button
-                      type="button"
-                      className="primary"
-                      onClick={() => setPickerOpen(true)}
-                    >
-                      + Add references
-                    </button>
-                  </div>
-                </div>
-                {refsError && (
-                  <div className="error-banner small">{refsError}</div>
-                )}
-                <div className="frame-generate-ref-grid">
-                  {refList.length === 0 ? (
-                    <div className="frame-generate-ref-empty">
-                      No reference images yet. Use Auto-suggest or Add
-                      references to attach images that anchor this frame's
-                      generation.
-                    </div>
-                  ) : (
-                    refList.map((id) => (
-                      <div className="frame-generate-ref-thumb" key={id}>
-                        <img
-                          src={thumbUrl(id)}
-                          alt="reference"
-                          loading="lazy"
-                          onClick={() =>
-                            window.open(imageUrl(id), '_blank', 'noopener')
-                          }
-                        />
-                        <button
-                          type="button"
-                          className="storyboard-frame-remove"
-                          title="Remove reference"
-                          onClick={() => removeReference(id)}
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <div className="frame-generate-prompt">
-                <div className="frame-generate-section-header">
-                  <span className="field-label">Prompt</span>
+          <div className="frame-generate-body">
+            <div className="frame-generate-refs">
+              <div className="frame-generate-section-header">
+                <span className="field-label">References</span>
+                <div style={{ display: 'flex', gap: 6 }}>
                   <button
                     type="button"
-                    onClick={() => setPrompt(suggestedPrompt)}
-                    disabled={previewLoading || !suggestedPrompt}
-                    title="Replace the textarea with the auto-suggested default"
+                    onClick={autoSuggestReferences}
+                    disabled={autoBusy}
+                    title="Pull references from this beat and the in-scene characters"
                   >
-                    Reset to suggested default
+                    {autoBusy ? 'Auto-suggesting…' : 'Auto-suggest'}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => setPickerOpen(true)}
+                  >
+                    + Add references
                   </button>
                 </div>
-                <textarea
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  placeholder={
-                    previewLoading
-                      ? 'Loading suggested prompt…'
-                      : 'Describe how this frame should look. Sent verbatim to the image model.'
-                  }
-                  disabled={previewLoading}
-                  className="frame-generate-textarea"
-                />
-                <span className="frame-generate-help">
-                  {previewLoading
-                    ? 'Loading…'
-                    : previewError
-                      ? `Preview error: ${previewError}.`
-                      : `Saved to this frame's stored prompt on Generate. Sent along with ${refList.length} reference ${refList.length === 1 ? 'image' : 'images'}.`}
-                </span>
+              </div>
+              {refsError && (
+                <div className="error-banner small">{refsError}</div>
+              )}
+              <div className="frame-generate-ref-grid">
+                {refList.length === 0 ? (
+                  <div className="frame-generate-ref-empty">
+                    No reference images yet. Use Auto-suggest or Add
+                    references to attach images that anchor this frame's
+                    generation.
+                  </div>
+                ) : (
+                  refList.map((id) => (
+                    <div className="frame-generate-ref-thumb" key={id}>
+                      <img
+                        src={thumbUrl(id)}
+                        alt="reference"
+                        loading="lazy"
+                        onClick={() =>
+                          window.open(imageUrl(id), '_blank', 'noopener')
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="storyboard-frame-remove"
+                        title="Remove reference"
+                        onClick={() => removeReference(id)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
-          )}
 
-          {mode === 'edit' && (
-            <div className="frame-generate-edit">
-              <label
-                style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
-              >
-                <span className="field-label">Edit prompt</span>
-                <textarea
-                  value={editPrompt}
-                  onChange={(e) => setEditPrompt(e.target.value)}
-                  rows={4}
-                  placeholder='e.g. "remove the lamp on the left"'
-                />
-                <span className="frame-generate-help">
-                  Sent verbatim to the image model along with the existing
-                  frame. Reference images are NOT attached in edit mode.
-                </span>
-              </label>
+            <div className="frame-generate-prompt">
+              <div className="frame-generate-section-header">
+                <span className="field-label">Prompt</span>
+                <button
+                  type="button"
+                  onClick={() => setPrompt(suggestedPrompt)}
+                  disabled={previewLoading || !suggestedPrompt}
+                  title="Replace the textarea with the auto-suggested default"
+                >
+                  Reset to suggested default
+                </button>
+              </div>
+              <textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder={
+                  previewLoading
+                    ? 'Loading suggested prompt…'
+                    : 'Describe how this frame should look. Sent verbatim to the image model.'
+                }
+                disabled={previewLoading}
+                className="frame-generate-textarea"
+              />
+              <span className="frame-generate-help">
+                {previewLoading
+                  ? 'Loading…'
+                  : previewError
+                    ? `Preview error: ${previewError}.`
+                    : `Saved to this frame's stored prompt on Generate. Sent along with ${refList.length} reference ${refList.length === 1 ? 'image' : 'images'}.`}
+              </span>
             </div>
-          )}
+          </div>
 
           <div className="frame-generate-model-row">
             <span className="field-label">Image model</span>

@@ -82,6 +82,11 @@ import {
 import {
   createStoryboard as mongoCreateStoryboard,
   updateStoryboard as mongoUpdateStoryboard,
+  rotateFrameImageEdit as mongoRotateFrameImageEdit,
+  undoFrameImageEdit as mongoUndoFrameImageEdit,
+  frameImageField as storyboardFrameImageField,
+  framePreviousImageField as storyboardFramePreviousImageField,
+  frameLastEditPromptField as storyboardFrameLastEditPromptField,
   deleteStoryboard as mongoDeleteStoryboard,
   deleteStoryboardsForBeat as mongoDeleteStoryboardsForBeat,
   getStoryboard as mongoGetStoryboard,
@@ -1314,6 +1319,7 @@ export async function createStoryboardViaGateway({
   shotType = null,
   transitionIn = null,
   charactersInScene = [],
+  reverseInPost = false,
 }) {
   const sb = await mongoCreateStoryboard({
     beatId,
@@ -1324,6 +1330,7 @@ export async function createStoryboardViaGateway({
     shotType,
     transitionIn,
     charactersInScene,
+    reverseInPost,
   });
   // Seed the y-doc fragment(s) BEFORE broadcasting the ping. Otherwise the
   // SPA refetches and mounts its CollabField on an empty fragment before the
@@ -1409,6 +1416,60 @@ export async function setStoryboardImageViaGateway({ storyboardId, role, imageId
     storyboard_id: String(storyboardId),
   });
   return mongoGetStoryboard(storyboardId);
+}
+
+// Edit-flow persistence: current → previous, new becomes current, the old
+// previous is deleted from GridFS. Mirrors setArtworkResultViaGateway with
+// rotateToPrevious=true. Broadcasts a fields_updated ping so connected SPAs
+// re-render with the new image and undo-availability state.
+export async function setStoryboardFrameEditResultViaGateway({
+  storyboardId,
+  role,
+  newImageId,
+  editPrompt,
+}) {
+  if (!STORYBOARD_IMAGE_ROLES.has(role)) {
+    throw new Error(`unknown storyboard role: ${role}`);
+  }
+  const result = await mongoRotateFrameImageEdit({
+    id: storyboardId,
+    role,
+    newImageId,
+    editPrompt,
+  });
+  await tryDeleteImage(result.orphanedImageId, 'orphaned storyboard frame');
+  const imageField = storyboardFrameImageField(role);
+  const prevField = storyboardFramePreviousImageField(role);
+  const promptField = storyboardFrameLastEditPromptField(role);
+  broadcastFieldsUpdated(
+    buildRoomName('storyboards', result.storyboard.beat_id.toString()),
+    {
+      changed: [imageField, prevField, promptField],
+      storyboard_id: String(storyboardId),
+    },
+  );
+  return result.storyboard;
+}
+
+// Undo the last frame edit: previous → current, clears the previous and the
+// last edit prompt. The image that was current is deleted from GridFS.
+export async function undoStoryboardFrameEditViaGateway({ storyboardId, role }) {
+  if (!STORYBOARD_IMAGE_ROLES.has(role)) {
+    throw new Error(`unknown storyboard role: ${role}`);
+  }
+  const result = await mongoUndoFrameImageEdit({ id: storyboardId, role });
+  await tryDeleteImage(result.orphanedImageId, 'undone storyboard frame');
+  const imageField = storyboardFrameImageField(role);
+  const prevField = storyboardFramePreviousImageField(role);
+  const promptField = storyboardFrameLastEditPromptField(role);
+  broadcastFieldsUpdated(
+    buildRoomName('storyboards', result.storyboard.beat_id.toString()),
+    {
+      changed: [imageField, prevField, promptField],
+      storyboard_id: String(storyboardId),
+    },
+  );
+  return result.storyboard;
 }
 
 // PATCH-style scalar update for the SPA's editable shot metadata. Validates

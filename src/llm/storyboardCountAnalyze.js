@@ -96,7 +96,7 @@ export async function analyzeStoryboardCount({
     'Characters in this beat:',
     formatCharacterLines(characters),
     ...(dir
-      ? ['', "Director's direction:", dir]
+      ? ['', "Director's commentary:", dir]
       : []),
     '',
     'Recommend a frame count via the suggest_count tool.',

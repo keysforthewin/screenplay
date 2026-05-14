@@ -260,4 +260,188 @@ describe('storyboard gateway (fallback)', () => {
     const fresh = await Storyboards.getStoryboard(sb._id);
     expect(fresh.summary).toBe('Diner exterior, dusk.');
   });
+
+  describe('frame edit/undo rotation', () => {
+    it.each(['start_frame', 'end_frame'])(
+      'setStoryboardFrameEditResultViaGateway rotates current→previous for %s',
+      async (role) => {
+        const beat = await makeBeat();
+        const sb = await Gateway.createStoryboardViaGateway({ beatId: beat._id });
+        const initial = new ObjectId();
+        await Gateway.setStoryboardImageViaGateway({
+          storyboardId: sb._id,
+          role,
+          imageId: initial,
+        });
+        const next = new ObjectId();
+        const updated = await Gateway.setStoryboardFrameEditResultViaGateway({
+          storyboardId: sb._id,
+          role,
+          newImageId: next,
+          editPrompt: 'add a red hat',
+        });
+        const imageField = role === 'start_frame' ? 'start_frame_id' : 'end_frame_id';
+        const prevField =
+          role === 'start_frame' ? 'previous_start_frame_id' : 'previous_end_frame_id';
+        const promptField =
+          role === 'start_frame'
+            ? 'last_start_frame_edit_prompt'
+            : 'last_end_frame_edit_prompt';
+        expect(updated[imageField].toString()).toBe(next.toString());
+        expect(updated[prevField].toString()).toBe(initial.toString());
+        expect(updated[promptField]).toBe('add a red hat');
+      },
+    );
+
+    it('rotating a second time orphans the prior previous image id', async () => {
+      const beat = await makeBeat();
+      const sb = await Gateway.createStoryboardViaGateway({ beatId: beat._id });
+      const a = new ObjectId();
+      const b = new ObjectId();
+      const c = new ObjectId();
+      await Gateway.setStoryboardImageViaGateway({
+        storyboardId: sb._id,
+        role: 'start_frame',
+        imageId: a,
+      });
+      // First edit: a → previous, b becomes current
+      await Gateway.setStoryboardFrameEditResultViaGateway({
+        storyboardId: sb._id,
+        role: 'start_frame',
+        newImageId: b,
+        editPrompt: 'first edit',
+      });
+      // Second edit: b → previous, c becomes current. The old previous (a)
+      // is reported as orphaned by the underlying mongo helper.
+      const result = await Storyboards.rotateFrameImageEdit({
+        id: sb._id,
+        role: 'start_frame',
+        newImageId: c,
+        editPrompt: 'second edit',
+      });
+      expect(result.orphanedImageId.toString()).toBe(a.toString());
+      expect(result.storyboard.start_frame_id.toString()).toBe(c.toString());
+      expect(result.storyboard.previous_start_frame_id.toString()).toBe(
+        b.toString(),
+      );
+    });
+
+    it('undoStoryboardFrameEditViaGateway restores the previous frame', async () => {
+      const beat = await makeBeat();
+      const sb = await Gateway.createStoryboardViaGateway({ beatId: beat._id });
+      const initial = new ObjectId();
+      const edited = new ObjectId();
+      await Gateway.setStoryboardImageViaGateway({
+        storyboardId: sb._id,
+        role: 'end_frame',
+        imageId: initial,
+      });
+      await Gateway.setStoryboardFrameEditResultViaGateway({
+        storyboardId: sb._id,
+        role: 'end_frame',
+        newImageId: edited,
+        editPrompt: 'tweak',
+      });
+      const after = await Gateway.undoStoryboardFrameEditViaGateway({
+        storyboardId: sb._id,
+        role: 'end_frame',
+      });
+      expect(after.end_frame_id.toString()).toBe(initial.toString());
+      expect(after.previous_end_frame_id).toBe(null);
+      expect(after.last_end_frame_edit_prompt).toBe('');
+    });
+
+    it('undoStoryboardFrameEditViaGateway throws when nothing to undo', async () => {
+      const beat = await makeBeat();
+      const sb = await Gateway.createStoryboardViaGateway({ beatId: beat._id });
+      const initial = new ObjectId();
+      await Gateway.setStoryboardImageViaGateway({
+        storyboardId: sb._id,
+        role: 'start_frame',
+        imageId: initial,
+      });
+      await expect(
+        Gateway.undoStoryboardFrameEditViaGateway({
+          storyboardId: sb._id,
+          role: 'start_frame',
+        }),
+      ).rejects.toThrow(/no previous image stored/);
+    });
+
+    it('setStoryboardFrameEditResultViaGateway rejects unknown roles', async () => {
+      const beat = await makeBeat();
+      const sb = await Gateway.createStoryboardViaGateway({ beatId: beat._id });
+      await expect(
+        Gateway.setStoryboardFrameEditResultViaGateway({
+          storyboardId: sb._id,
+          role: 'frame_extra',
+          newImageId: new ObjectId(),
+          editPrompt: 'x',
+        }),
+      ).rejects.toThrow(/unknown storyboard role/);
+    });
+
+    it('rotating throws when the frame has no current image', async () => {
+      const beat = await makeBeat();
+      const sb = await Gateway.createStoryboardViaGateway({ beatId: beat._id });
+      await expect(
+        Gateway.setStoryboardFrameEditResultViaGateway({
+          storyboardId: sb._id,
+          role: 'start_frame',
+          newImageId: new ObjectId(),
+          editPrompt: 'x',
+        }),
+      ).rejects.toThrow(/no current image to rotate/);
+    });
+  });
+
+  it('newly created storyboards expose the previous_*_frame_id and last_*_edit_prompt defaults', async () => {
+    const beat = await makeBeat();
+    const sb = await Gateway.createStoryboardViaGateway({ beatId: beat._id });
+    expect(sb.previous_start_frame_id).toBe(null);
+    expect(sb.previous_end_frame_id).toBe(null);
+    expect(sb.last_start_frame_edit_prompt).toBe('');
+    expect(sb.last_end_frame_edit_prompt).toBe('');
+  });
+
+  describe('reverse_in_post (reveal-shot flag)', () => {
+    it('defaults to false on a freshly created storyboard', async () => {
+      const beat = await makeBeat();
+      const sb = await Gateway.createStoryboardViaGateway({ beatId: beat._id });
+      expect(sb.reverse_in_post).toBe(false);
+    });
+
+    it('round-trips reverseInPost: true through createStoryboardViaGateway', async () => {
+      const beat = await makeBeat();
+      const sb = await Gateway.createStoryboardViaGateway({
+        beatId: beat._id,
+        reverseInPost: true,
+      });
+      expect(sb.reverse_in_post).toBe(true);
+      const fresh = await Storyboards.getStoryboard(sb._id);
+      expect(fresh.reverse_in_post).toBe(true);
+    });
+
+    it('updateStoryboard can toggle reverse_in_post on and off', async () => {
+      const beat = await makeBeat();
+      const sb = await Gateway.createStoryboardViaGateway({ beatId: beat._id });
+      let next = await Storyboards.updateStoryboard(sb._id, {
+        reverse_in_post: true,
+      });
+      expect(next.reverse_in_post).toBe(true);
+      next = await Storyboards.updateStoryboard(sb._id, {
+        reverse_in_post: false,
+      });
+      expect(next.reverse_in_post).toBe(false);
+    });
+
+    it('updateStoryboard coerces truthy/falsy reverse_in_post inputs to boolean', async () => {
+      const beat = await makeBeat();
+      const sb = await Gateway.createStoryboardViaGateway({ beatId: beat._id });
+      const next = await Storyboards.updateStoryboard(sb._id, {
+        reverse_in_post: 1,
+      });
+      expect(next.reverse_in_post).toBe(true);
+    });
+  });
 });

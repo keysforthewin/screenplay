@@ -12,6 +12,7 @@ import {
 import { CollabField } from '../editor/CollabField.jsx';
 import { FrameRegenerateDialog } from './FrameRegenerateDialog.jsx';
 import { ReferencePickerModal } from './ReferencePickerModal.jsx';
+import { StoryboardFrameEditDialog } from './StoryboardFrameEditDialog.jsx';
 import { ImageLightbox } from './ImageLightbox.jsx';
 import { AudioSlot } from './AudioSlot.jsx';
 import { GenerateVideoButton } from './GenerateVideoButton.jsx';
@@ -114,6 +115,20 @@ function ShotMetaRow({ sb, sbId, tocCharacters, onRefresh }) {
         disabled={busy}
         onChange={(next) => patch({ characters_in_scene: next })}
       />
+      <button
+        type="button"
+        className={`storyboard-reverse-toggle${sb.reverse_in_post ? ' is-active' : ''}`}
+        disabled={busy}
+        aria-pressed={Boolean(sb.reverse_in_post)}
+        title={
+          sb.reverse_in_post
+            ? 'This shot was generated for reverse playback (reveal pattern). Click to unmark.'
+            : 'Mark this as a reveal shot: generate it backwards (subject centered → camera pulls away) and reverse the clip in post.'
+        }
+        onClick={() => patch({ reverse_in_post: !sb.reverse_in_post })}
+      >
+        ↺ {sb.reverse_in_post ? 'REVERSE IN POST' : 'reverse'}
+      </button>
       {error && <span className="error-banner small">{error}</span>}
     </div>
   );
@@ -123,6 +138,7 @@ function FrameSlot({
   label,
   role,
   imageId,
+  previousImageId,
   sbId,
   beatId,
   charactersInScene,
@@ -135,6 +151,7 @@ function FrameSlot({
   const [busyLabel, setBusyLabel] = useState(null);
   const [error, setError] = useState(null);
   const [regenOpen, setRegenOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const pollRef = useRef(null);
   const url = imageUrl(imageId);
@@ -304,6 +321,17 @@ function FrameSlot({
         >
           {busyLabel || (url ? 'Regenerate' : 'Generate')}
         </button>
+        {url && (
+          <button
+            type="button"
+            className="storyboard-frame-edit"
+            disabled={busy}
+            title={`Edit ${label.toLowerCase()} with a prompt`}
+            onClick={() => setEditOpen(true)}
+          >
+            Edit
+          </button>
+        )}
         {canGrab && (
           <button
             type="button"
@@ -328,6 +356,15 @@ function FrameSlot({
         charactersInScene={charactersInScene}
         referenceIds={referenceIds || []}
         onReferencesChanged={onRefresh}
+      />
+      <StoryboardFrameEditDialog
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        onDone={onRefresh}
+        storyboardId={sbId}
+        role={role}
+        imageId={imageId}
+        hasUndo={Boolean(previousImageId)}
       />
       <ReferencePickerModal
         open={pickerOpen}
@@ -452,6 +489,7 @@ export function StoryboardItem({
           label="Start frame"
           role="start_frame"
           imageId={sb.start_frame_id}
+          previousImageId={sb.previous_start_frame_id}
           sbId={id}
           beatId={sb.beat_id?.toString?.() || sb.beat_id}
           charactersInScene={sb.characters_in_scene}
@@ -464,6 +502,7 @@ export function StoryboardItem({
           label="End frame"
           role="end_frame"
           imageId={sb.end_frame_id}
+          previousImageId={sb.previous_end_frame_id}
           sbId={id}
           beatId={sb.beat_id?.toString?.() || sb.beat_id}
           charactersInScene={sb.characters_in_scene}

@@ -279,10 +279,6 @@ export function StoryboardBeat({ session }) {
         <a href="#" onClick={(e) => { e.preventDefault(); navigate('/storyboard'); }}>
           ← Back to all storyboards
         </a>
-        {' · '}
-        <a href="#" onClick={(e) => { e.preventDefault(); navigate(`/beat/${data.beat.order}`); }}>
-          Open beat #{data.beat.order}
-        </a>
       </p>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>

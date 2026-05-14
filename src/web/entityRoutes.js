@@ -84,6 +84,7 @@ import {
   setStoryboardFrameReferenceImagesViaGateway,
   setStoryboardImageViaGateway,
   setStoryboardVideoViaGateway,
+  undoStoryboardFrameEditViaGateway,
   updateBeatViaGateway,
   updateStoryboardScalarsViaGateway,
 } from './gateway.js';
@@ -2046,14 +2047,20 @@ export function buildApiRouter() {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const { duration_seconds, shot_type, transition_in, characters_in_scene } =
-        req.body || {};
+      const {
+        duration_seconds,
+        shot_type,
+        transition_in,
+        characters_in_scene,
+        reverse_in_post,
+      } = req.body || {};
       const patch = {};
       if (duration_seconds !== undefined) patch.duration_seconds = duration_seconds;
       if (shot_type !== undefined) patch.shot_type = shot_type;
       if (transition_in !== undefined) patch.transition_in = transition_in;
       if (characters_in_scene !== undefined)
         patch.characters_in_scene = characters_in_scene;
+      if (reverse_in_post !== undefined) patch.reverse_in_post = reverse_in_post;
       if (!Object.keys(patch).length)
         return res.status(400).json({ error: 'no patch fields' });
       try {
@@ -2278,6 +2285,87 @@ export function buildApiRouter() {
           return res.status(409).json({ error: e.message });
         }
         if (e instanceof EditModeError || e instanceof FrameRoleError) {
+          return res.status(400).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Inline edit of an existing frame image. Mirrors the artwork edit flow:
+  // POST returns 202 with a job_id; the runner rotates current → previous and
+  // installs the new image. Synchronous undo lives at .../undo.
+  router.post('/storyboard/:id/frame/:role/edit', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const role = String(req.params.role);
+      if (!['start_frame', 'end_frame'].includes(role)) {
+        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+      }
+      const model = normalizeImageModel(req.body?.model);
+      if (!isValidImageModel(model)) {
+        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
+      }
+      const raw = req.body?.prompt;
+      if (typeof raw !== 'string' || !raw.trim()) {
+        return res
+          .status(400)
+          .json({ error: 'prompt (non-empty string) required' });
+      }
+      if (raw.length > 1024) {
+        return res.status(400).json({ error: 'prompt must be ≤ 1024 chars' });
+      }
+      const {
+        startFrameGenerationJob,
+        BeatBusyError,
+        EditModeError,
+        FrameRoleError,
+      } = await import('./storyboardGenerate.js');
+      try {
+        const jobId = await startFrameGenerationJob({
+          storyboardId: sbId,
+          role,
+          imageModel: model,
+          mode: 'edit',
+          editPrompt: raw,
+          rotateToPrevious: true,
+        });
+        res.status(202).json({ job_id: jobId, storyboard_id: sbId, role });
+      } catch (e) {
+        if (e instanceof BeatBusyError) {
+          return res.status(409).json({ error: e.message });
+        }
+        if (e instanceof EditModeError || e instanceof FrameRoleError) {
+          return res.status(400).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Synchronous one-step undo of the last inline edit. Swaps
+  // previous_*_frame_id → *_frame_id and deletes the displaced GridFS bytes.
+  router.post('/storyboard/:id/frame/:role/undo', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const role = String(req.params.role);
+      if (!['start_frame', 'end_frame'].includes(role)) {
+        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+      }
+      try {
+        const storyboard = await undoStoryboardFrameEditViaGateway({
+          storyboardId: sbId,
+          role,
+        });
+        res.json({ storyboard });
+      } catch (e) {
+        if (e?.status === 400) {
           return res.status(400).json({ error: e.message });
         }
         throw e;
@@ -3043,14 +3131,17 @@ export function buildApiRouter() {
       const {
         findCharactersInBeat,
         buildOutlineUserText,
+        loadDirectorNotesForPlanner,
         OUTLINE_SYSTEM_PROMPT,
       } = await import('./storyboardGenerate.js');
       const characters = await findCharactersInBeat(beat);
+      const directorNotes = await loadDirectorNotesForPlanner();
       const user = buildOutlineUserText({
         beat,
         characters,
         targetCount: count,
         direction,
+        directorNotes,
       });
       res.json({ system: OUTLINE_SYSTEM_PROMPT, user });
     } catch (e) {

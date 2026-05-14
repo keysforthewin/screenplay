@@ -96,10 +96,10 @@ describe('POST /api/storyboards/preview-prompt', () => {
     expect(json.user).toMatch(/EXACTLY 9 frames/);
     expect(json.user).toMatch(/Produce 9 cinematic storyboard frames/);
     // Without `direction` the user message must not advertise an empty block.
-    expect(json.user).not.toMatch(/Director's direction:/);
+    expect(json.user).not.toMatch(/Director's commentary:/);
   });
 
-  it('includes the director direction when provided', async () => {
+  it("includes the director's commentary when provided", async () => {
     const beat = await Plots.createBeat({
       name: 'B',
       desc: 'd',
@@ -112,7 +112,7 @@ describe('POST /api/storyboards/preview-prompt', () => {
       direction: 'lean handheld and dirty over-the-shoulders',
     });
     expect(status).toBe(200);
-    expect(json.user).toMatch(/Director's direction:/);
+    expect(json.user).toMatch(/Director's commentary:/);
     expect(json.user).toMatch(/lean handheld and dirty over-the-shoulders/);
   });
 
@@ -133,6 +133,46 @@ describe('POST /api/storyboards/preview-prompt', () => {
   it('returns 400 when beat_id is missing', async () => {
     const { status } = await postJson('/api/storyboards/preview-prompt', {});
     expect(status).toBe(400);
+  });
+
+  it("embeds every director's note in the user message when notes exist", async () => {
+    const DirectorNotes = await import('../src/mongo/directorNotes.js');
+    await DirectorNotes.addDirectorNote({
+      text: 'Visual rule: keep the palette desaturated except for the color red.',
+    });
+    await DirectorNotes.addDirectorNote({
+      text: 'Tone: dry comedy in the foreground, dread in the background.',
+    });
+    const beat = await Plots.createBeat({
+      name: 'B',
+      desc: 'd',
+      body: 'b',
+      characters: [],
+    });
+
+    const { status, json } = await postJson('/api/storyboards/preview-prompt', {
+      beat_id: beat._id.toString(),
+      count: 5,
+    });
+    expect(status).toBe(200);
+    expect(json.user).toMatch(/Director's notes \(project-wide guidance/);
+    expect(json.user).toMatch(/desaturated except for the color red/);
+    expect(json.user).toMatch(/dry comedy in the foreground, dread in the background/);
+  });
+
+  it('omits the director-notes section when no notes exist', async () => {
+    const beat = await Plots.createBeat({
+      name: 'B',
+      desc: 'd',
+      body: 'b',
+      characters: [],
+    });
+    const { status, json } = await postJson('/api/storyboards/preview-prompt', {
+      beat_id: beat._id.toString(),
+      count: 5,
+    });
+    expect(status).toBe(200);
+    expect(json.user).not.toMatch(/Director's notes/);
   });
 
   it('returns 404 when the beat does not exist', async () => {

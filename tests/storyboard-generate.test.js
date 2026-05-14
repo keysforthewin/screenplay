@@ -783,6 +783,97 @@ describe('auto-populated reference images', () => {
   });
 });
 
+describe('reverse_in_post override flow', () => {
+  // The outline planner is supposed to mark reveal shots with
+  // reverse_in_post: true, but it can miss them when the beat narrative uses
+  // forward-reveal language. The refiner is a second line of defense: it can
+  // return reverse_in_post in its tool output to override the outline's value.
+
+  async function runOne({ outlineReverse, refinerReverse }) {
+    Generate._setOutlinePlannerForTests(async () => [
+      {
+        description: 'Skyscraper looms into view as we slowly tilt up.',
+        shot_type: 'cinematic_wide',
+        duration_seconds: 5,
+        transition_in: '',
+        characters_in_scene: [],
+        reverse_in_post: outlineReverse,
+      },
+    ]);
+    Generate._setFrameRefinerForTests(async () => {
+      const out = {
+        start_prompt: 'Skyscraper fills the frame, glass facade reflecting overcast sky.',
+        end_prompt: 'Same wide low-angle; the heroes have shifted a half-step.',
+      };
+      if (refinerReverse !== undefined) out.reverse_in_post = refinerReverse;
+      return out;
+    });
+    const beat = await Plots.createBeat({
+      name: 'Reveal',
+      desc: 'd',
+      body: 'b',
+      characters: [],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
+    expect(stored).toHaveLength(1);
+    return stored[0];
+  }
+
+  it('refiner can flip reverse_in_post from false to true when outline missed a reveal', async () => {
+    const sb = await runOne({ outlineReverse: false, refinerReverse: true });
+    expect(sb.reverse_in_post).toBe(true);
+  });
+
+  it('refiner can flip reverse_in_post from true to false when it disagrees', async () => {
+    const sb = await runOne({ outlineReverse: true, refinerReverse: false });
+    expect(sb.reverse_in_post).toBe(false);
+  });
+
+  it('outline value is preserved when refiner omits reverse_in_post (true case)', async () => {
+    const sb = await runOne({ outlineReverse: true, refinerReverse: undefined });
+    expect(sb.reverse_in_post).toBe(true);
+  });
+
+  it('outline value is preserved when refiner omits reverse_in_post (false case)', async () => {
+    const sb = await runOne({ outlineReverse: false, refinerReverse: undefined });
+    expect(sb.reverse_in_post).toBe(false);
+  });
+
+  it('synthesized fallback (refiner returns null) preserves the outline value', async () => {
+    Generate._setOutlinePlannerForTests(async () => [
+      {
+        description: 'The killer is revealed in the corner booth.',
+        shot_type: 'cinematic_wide',
+        duration_seconds: 5,
+        transition_in: '',
+        characters_in_scene: [],
+        reverse_in_post: true,
+      },
+    ]);
+    Generate._setFrameRefinerForTests(async () => null);
+    const beat = await Plots.createBeat({
+      name: 'Reveal-fallback',
+      desc: 'd',
+      body: 'b',
+      characters: [],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+    expect(job.refine_failures).toBe(1);
+    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
+    expect(stored).toHaveLength(1);
+    expect(stored[0].reverse_in_post).toBe(true);
+  });
+});
+
 describe('findCharactersInBeat', () => {
   it('resolves every name in beat.characters to its current Mongo doc', async () => {
     const Characters = await import('../src/mongo/characters.js');
