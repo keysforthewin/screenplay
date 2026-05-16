@@ -240,8 +240,8 @@ describe('generate_image provider routing', () => {
     expect(out).toMatch(/^__IMAGE_PATH__:/);
     expect(openaiGenerateCalls).toHaveLength(0);
     expect(openaiEditCalls).toHaveLength(1);
-    expect(openaiEditCalls[0].inputImage).toBeDefined();
-    expect(openaiEditCalls[0].inputImage.contentType).toBe('image/png');
+    expect(openaiEditCalls[0].inputImages).toHaveLength(1);
+    expect(openaiEditCalls[0].inputImages[0].contentType).toBe('image/png');
   });
 
   it('maps aspect_ratio to the closest gpt-image-2 size', async () => {
@@ -301,6 +301,93 @@ describe('generate_image provider routing', () => {
     expect(falNanoBananaProCalls).toHaveLength(0);
     expect(openaiGenerateCalls).toHaveLength(0);
   });
+
+  it('auto-selects flux-2-pro when source_image_ids has 2+ inputs and no provider is set', async () => {
+    const a = await seedLibraryImage();
+    const b = await seedLibraryImage();
+
+    await HANDLERS.generate_image(
+      {
+        prompt: 'mix these two together',
+        source_image_ids: [a.toString(), b.toString()],
+      },
+      null,
+    );
+
+    expect(falFlux2ProCalls).toHaveLength(1);
+    expect(falNanoBananaProCalls).toHaveLength(0);
+    expect(falFlux2ProCalls[0].inputImages).toHaveLength(2);
+    expect(uploads[0].generatedBy).toBe('fal-ai/flux-2-pro');
+  });
+
+  it('keeps nano-banana-pro as default when only one source_image_id is passed', async () => {
+    const a = await seedLibraryImage();
+
+    await HANDLERS.generate_image(
+      {
+        prompt: 'remix this',
+        source_image_ids: [a.toString()],
+      },
+      null,
+    );
+
+    expect(falNanoBananaProCalls).toHaveLength(1);
+    expect(falFlux2ProCalls).toHaveLength(0);
+    expect(falNanoBananaProCalls[0].inputImages).toHaveLength(1);
+  });
+
+  it('honors an explicit provider even with multiple source_image_ids', async () => {
+    const a = await seedLibraryImage();
+    const b = await seedLibraryImage();
+
+    await HANDLERS.generate_image(
+      {
+        prompt: 'combine these',
+        provider: 'nano-banana-pro',
+        source_image_ids: [a.toString(), b.toString()],
+      },
+      null,
+    );
+
+    expect(falNanoBananaProCalls).toHaveLength(1);
+    expect(falFlux2ProCalls).toHaveLength(0);
+    expect(falNanoBananaProCalls[0].inputImages).toHaveLength(2);
+  });
+
+  it('dedupes source ids across source_image_id and source_image_ids', async () => {
+    const a = await seedLibraryImage();
+    const b = await seedLibraryImage();
+
+    await HANDLERS.generate_image(
+      {
+        prompt: 'blend',
+        source_image_id: a.toString(),
+        source_image_ids: [a.toString(), b.toString()],
+      },
+      null,
+    );
+
+    // a appears in both fields but should only feed one ref through.
+    expect(falFlux2ProCalls).toHaveLength(1);
+    expect(falFlux2ProCalls[0].inputImages).toHaveLength(2);
+  });
+
+  it('returns a friendly error when one source in the array is missing', async () => {
+    const a = await seedLibraryImage();
+    const ghost = new ObjectId().toString();
+
+    const out = await HANDLERS.generate_image(
+      {
+        prompt: 'mix',
+        source_image_ids: [a.toString(), ghost],
+      },
+      null,
+    );
+
+    expect(out).toMatch(/source image not found/);
+    expect(falFlux2ProCalls).toHaveLength(0);
+    expect(falNanoBananaProCalls).toHaveLength(0);
+  });
 });
 
 describe('edit_image provider routing', () => {
@@ -320,7 +407,8 @@ describe('edit_image provider routing', () => {
     expect(falNanoBananaProCalls).toHaveLength(0);
     expect(openaiEditCalls).toHaveLength(1);
     expect(openaiEditCalls[0].prompt).toContain('neon signage');
-    expect(openaiEditCalls[0].inputImage.contentType).toBe('image/png');
+    expect(openaiEditCalls[0].inputImages).toHaveLength(1);
+    expect(openaiEditCalls[0].inputImages[0].contentType).toBe('image/png');
 
     expect(uploads[0].generatedBy).toBe('gpt-image-2');
 
@@ -365,5 +453,65 @@ describe('edit_image provider routing', () => {
     expect(out).toMatch(/OpenAI is not configured/);
     expect(openaiEditCalls).toHaveLength(0);
     expect(falNanoBananaProCalls).toHaveLength(0);
+  });
+
+  it('auto-selects flux-2-pro when additional_source_image_ids is non-empty and no provider is set', async () => {
+    const primaryId = await seedLibraryImage();
+    const extraId = await seedLibraryImage();
+
+    await HANDLERS.edit_image(
+      {
+        source_image_id: primaryId.toString(),
+        additional_source_image_ids: [extraId.toString()],
+        prompt: 'put this outfit on him',
+        replace_source: false,
+      },
+      null,
+    );
+
+    expect(falFlux2ProCalls).toHaveLength(1);
+    expect(falNanoBananaProCalls).toHaveLength(0);
+    // primary + 1 extra = 2 inputs.
+    expect(falFlux2ProCalls[0].inputImages).toHaveLength(2);
+    expect(uploads[0].generatedBy).toBe('fal-ai/flux-2-pro');
+  });
+
+  it('dedupes additional ids that duplicate the primary source', async () => {
+    const primaryId = await seedLibraryImage();
+    const extraId = await seedLibraryImage();
+
+    await HANDLERS.edit_image(
+      {
+        source_image_id: primaryId.toString(),
+        additional_source_image_ids: [primaryId.toString(), extraId.toString()],
+        prompt: 'blend',
+        replace_source: false,
+      },
+      null,
+    );
+
+    expect(falFlux2ProCalls).toHaveLength(1);
+    // primary (counted once) + extraId = 2 distinct refs.
+    expect(falFlux2ProCalls[0].inputImages).toHaveLength(2);
+  });
+
+  it('honors an explicit provider even when additional_source_image_ids triggers multi-input', async () => {
+    const primaryId = await seedLibraryImage();
+    const extraId = await seedLibraryImage();
+
+    await HANDLERS.edit_image(
+      {
+        source_image_id: primaryId.toString(),
+        additional_source_image_ids: [extraId.toString()],
+        prompt: 'composite',
+        replace_source: false,
+        provider: 'nano-banana-pro',
+      },
+      null,
+    );
+
+    expect(falNanoBananaProCalls).toHaveLength(1);
+    expect(falFlux2ProCalls).toHaveLength(0);
+    expect(falNanoBananaProCalls[0].inputImages).toHaveLength(2);
   });
 });

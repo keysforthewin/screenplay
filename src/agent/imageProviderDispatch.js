@@ -64,13 +64,23 @@ export async function generateOrEditImage({
   prompt,
   aspectRatio,
   inputImage = null,
+  inputImages = null,
   discordUser = null,
   channelId = null,
 }) {
+  // Normalise to a single inputImages array. Accept either the singular
+  // `inputImage` (legacy single-source callers) or the plural `inputImages`
+  // (multi-source combine callers). When both are passed, prefer the array.
+  const refs = Array.isArray(inputImages) && inputImages.length
+    ? inputImages
+    : inputImage
+      ? [inputImage]
+      : [];
+
   if (provider === 'openai') {
     const size = ASPECT_TO_OPENAI_SIZE[aspectRatio] || DEFAULT_OPENAI_SIZE;
-    const r = inputImage
-      ? await openaiEdit({ prompt, inputImage, size, quality: 'auto' })
+    const r = refs.length
+      ? await openaiEdit({ prompt, inputImages: refs, size, quality: 'auto' })
       : await openaiGenerate({ prompt, size, quality: 'auto' });
     if (r.usage) {
       try {
@@ -91,29 +101,28 @@ export async function generateOrEditImage({
     };
   }
 
-  // FAL providers — wrap optional inputImage into the inputImages array shape
-  // the FAL helpers expect, and let them auto-route between generate and /edit.
-  const inputImages = inputImage ? [inputImage] : [];
+  // FAL providers — the helpers all accept an inputImages array and
+  // auto-route between generate and /edit based on whether it's empty.
   let result;
   let fallbackModel;
   if (provider === 'nano-banana-pro') {
     result = await generateNanoBananaProImage({
       prompt,
-      inputImages,
+      inputImages: refs,
       aspectRatio: aspectRatio || '16:9',
     });
     fallbackModel = NANO_BANANA_PRO_GENERATE_MODEL;
   } else if (provider === 'flux-2-pro') {
     result = await generateFlux2ProImage({
       prompt,
-      inputImages,
+      inputImages: refs,
       aspectRatio: aspectRatio || '16:9',
     });
     fallbackModel = FLUX_2_PRO_MODEL;
   } else if (provider === 'flux-pro-kontext') {
     result = await generateFluxKontextImage({
       prompt,
-      inputImages,
+      inputImages: refs,
       aspectRatio: aspectRatio || '16:9',
     });
     fallbackModel = FLUX_KONTEXT_MODEL;
@@ -125,7 +134,7 @@ export async function generateOrEditImage({
       discordUser,
       channelId,
       model: result.model || fallbackModel,
-      meta: { input_image_count: inputImages.length, logical_model: provider },
+      meta: { input_image_count: refs.length, logical_model: provider },
     });
   } catch (e) {
     logger.warn(`fal token usage persist failed: ${e.message}`);

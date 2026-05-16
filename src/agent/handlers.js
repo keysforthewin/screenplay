@@ -24,8 +24,12 @@ import {
 // new four-model enum verbatim; legacy values (`gemini`, `google`, `fal`) from
 // past tool_use blocks in history map to the closest current equivalent so we
 // don't break replays / cached transcripts.
-function resolveImageProvider(provider) {
-  if (!provider || provider === 'gemini' || provider === 'google') return 'nano-banana-pro';
+function resolveImageProvider(provider, { inputImageCount = 0 } = {}) {
+  // No explicit provider: pick by input count. Multi-image combines default
+  // to Flux 2 Pro (best at blending references); single-image / text-only
+  // stays on Nano Banana Pro.
+  if (!provider) return inputImageCount > 1 ? 'flux-2-pro' : 'nano-banana-pro';
+  if (provider === 'gemini' || provider === 'google') return 'nano-banana-pro';
   if (provider === 'fal') return 'flux-pro-kontext';
   return ALLOWED_IMAGE_PROVIDERS.includes(provider) ? provider : 'nano-banana-pro';
 }
@@ -2184,6 +2188,7 @@ export const HANDLERS = {
       include_recent_chat,
       aspect_ratio,
       source_image_id,
+      source_image_ids,
       attach_to_current_beat,
       attach_to_character,
       attach_to_beat,
@@ -2191,7 +2196,21 @@ export const HANDLERS = {
     },
     context = null,
   ) {
-    const chosenProvider = resolveImageProvider(provider);
+    // Collect source IDs from both the singular and array params; dedupe while
+    // preserving order so the agent can pass either form (or even both).
+    const requestedIds = [];
+    if (Array.isArray(source_image_ids)) {
+      for (const id of source_image_ids) {
+        if (id && !requestedIds.includes(id)) requestedIds.push(id);
+      }
+    }
+    if (source_image_id && !requestedIds.includes(source_image_id)) {
+      requestedIds.push(source_image_id);
+    }
+
+    const chosenProvider = resolveImageProvider(provider, {
+      inputImageCount: requestedIds.length,
+    });
     const configErr = checkProviderConfigured(chosenProvider);
     if (configErr) return configErr;
     if (!prompt && !include_beat && !include_recent_chat) {
@@ -2203,21 +2222,21 @@ export const HANDLERS = {
 
     const generateT0 = Date.now();
 
-    let inputImage = null;
-    if (source_image_id) {
-      const fetched = await Images.readImageBuffer(source_image_id);
-      if (!fetched) return `Error: source image not found: ${source_image_id}`;
+    const inputImages = [];
+    const SUPPORTED = new Set(['image/png', 'image/jpeg', 'image/webp']);
+    const MAX_SRC = 7 * 1024 * 1024;
+    for (const id of requestedIds) {
+      const fetched = await Images.readImageBuffer(id);
+      if (!fetched) return `Error: source image not found: ${id}`;
       const srcCt = fetched.file.contentType || fetched.file.metadata?.contentType;
-      const SUPPORTED = new Set(['image/png', 'image/jpeg', 'image/webp']);
       if (!SUPPORTED.has(srcCt)) {
-        return `Error: source image ${source_image_id} has unsupported type ${srcCt || 'unknown'}.`;
+        return `Error: source image ${id} has unsupported type ${srcCt || 'unknown'}.`;
       }
-      const MAX_SRC = 7 * 1024 * 1024;
       if (fetched.buffer.length > MAX_SRC) {
         const mb = (fetched.buffer.length / 1024 / 1024).toFixed(1);
-        return `Error: source image too large for img2img (${mb} MB). Input cap is ~7 MB.`;
+        return `Error: source image ${id} too large for img2img (${mb} MB). Input cap is ~7 MB.`;
       }
-      inputImage = { buffer: fetched.buffer, contentType: srcCt };
+      inputImages.push({ buffer: fetched.buffer, contentType: srcCt });
     }
 
     let beatDoc = null;
@@ -2258,7 +2277,7 @@ export const HANDLERS = {
       provider: chosenProvider,
       prompt: finalPrompt,
       aspectRatio: aspect_ratio,
-      inputImage,
+      inputImages,
       discordUser: context?.discordUser || null,
       channelId: context?.channelId || null,
     });
@@ -2348,6 +2367,7 @@ export const HANDLERS = {
   async edit_image(
     {
       source_image_id,
+      additional_source_image_ids,
       prompt,
       replace_source,
       provider,
@@ -2358,10 +2378,27 @@ export const HANDLERS = {
     },
     context = null,
   ) {
-    const chosenProvider = resolveImageProvider(provider);
+    if (!source_image_id) return 'Error: source_image_id is required.';
+
+    // The primary source is the image being "edited" — its owner determines
+    // where the result goes. additional_source_image_ids feed in as extra
+    // reference material for the model. Dedupe + drop duplicates of the
+    // primary so each image is only sent once.
+    const extraIds = [];
+    if (Array.isArray(additional_source_image_ids)) {
+      for (const id of additional_source_image_ids) {
+        if (id && id !== source_image_id && !extraIds.includes(id)) {
+          extraIds.push(id);
+        }
+      }
+    }
+    const totalInputCount = 1 + extraIds.length;
+
+    const chosenProvider = resolveImageProvider(provider, {
+      inputImageCount: totalInputCount,
+    });
     const configErr = checkProviderConfigured(chosenProvider);
     if (configErr) return configErr;
-    if (!source_image_id) return 'Error: source_image_id is required.';
     if (!prompt || !String(prompt).trim()) {
       return 'Error: prompt is required (describe the change to make).';
     }
@@ -2386,6 +2423,21 @@ export const HANDLERS = {
     if (srcBuffer.length > MAX_SRC) {
       const mb = (srcBuffer.length / 1024 / 1024).toFixed(1);
       return `Error: source image too large for editing (${mb} MB). Input cap is ~7 MB — choose a smaller image, or describe the edit and use generate_image.`;
+    }
+
+    const extraInputImages = [];
+    for (const id of extraIds) {
+      const extra = await Images.readImageBuffer(id);
+      if (!extra) return `Error: additional source image not found: ${id}`;
+      const extraCt = extra.file.contentType || extra.file.metadata?.contentType;
+      if (!SUPPORTED.has(extraCt)) {
+        return `Error: additional source image ${id} has unsupported type ${extraCt || 'unknown'}.`;
+      }
+      if (extra.buffer.length > MAX_SRC) {
+        const mb = (extra.buffer.length / 1024 / 1024).toFixed(1);
+        return `Error: additional source image ${id} too large for editing (${mb} MB). Input cap is ~7 MB.`;
+      }
+      extraInputImages.push({ buffer: extra.buffer, contentType: extraCt });
     }
 
     const srcOwnerType = srcFile.metadata?.owner_type || null;
@@ -2459,7 +2511,10 @@ export const HANDLERS = {
       provider: chosenProvider,
       prompt: editPrompt,
       aspectRatio: aspect_ratio,
-      inputImage: { buffer: srcBuffer, contentType: srcContentType },
+      inputImages: [
+        { buffer: srcBuffer, contentType: srcContentType },
+        ...extraInputImages,
+      ],
       discordUser: context?.discordUser || null,
       channelId: context?.channelId || null,
     });
