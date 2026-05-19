@@ -99,6 +99,7 @@ export function ReferencePickerModal({
 
   // Per-tab data caches; null = not yet loaded, [] = loaded empty.
   const [beatImages, setBeatImages] = useState(null);
+  const [framePickerData, setFramePickerData] = useState(null);
   const [characters, setCharacters] = useState(null);
   const [sceneArtworks, setSceneArtworks] = useState(null);
   const [libraryImages, setLibraryImages] = useState(null);
@@ -121,6 +122,7 @@ export function ReferencePickerModal({
     setTab('beat');
     setError(null);
     setBeatImages(null);
+    setFramePickerData(null);
     setCharacters(null);
     setSceneArtworks(null);
     setLibraryImages(null);
@@ -141,7 +143,14 @@ export function ReferencePickerModal({
     let cancelled = false;
     async function load() {
       try {
-        if (tab === 'beat' && beatImages === null && beatId) {
+        if (tab === 'beat' && frameRole && sbId) {
+          if (framePickerData === null) {
+            const data = await apiGet(
+              `/storyboard/${sbId}/frame/${frameRole}/picker-options`,
+            );
+            if (!cancelled) setFramePickerData(data);
+          }
+        } else if (tab === 'beat' && beatImages === null && beatId) {
           const data = await apiGet(`/beat/${beatId}/images`);
           if (!cancelled) setBeatImages(data.images || []);
         } else if (tab === 'characters' && characters === null && beatId) {
@@ -162,7 +171,18 @@ export function ReferencePickerModal({
     return () => {
       cancelled = true;
     };
-  }, [open, tab, beatId, beatImages, characters, sceneArtworks, libraryImages]);
+  }, [
+    open,
+    tab,
+    beatId,
+    sbId,
+    frameRole,
+    beatImages,
+    framePickerData,
+    characters,
+    sceneArtworks,
+    libraryImages,
+  ]);
 
   // Toggle an id in the selection set (reference role only).
   function toggle(imageId) {
@@ -358,7 +378,15 @@ export function ReferencePickerModal({
         {error && <div className="error-banner">{error}</div>}
 
         <div className="ref-picker-body">
-          {tab === 'beat' && (
+          {tab === 'beat' && frameRole && sbId ? (
+            <FrameBeatTab
+              data={framePickerData}
+              selectedIds={selectedIds}
+              onPick={onPick}
+              busy={busy}
+              isReference={isReference}
+            />
+          ) : tab === 'beat' ? (
             <BeatTab
               images={beatImages}
               selectedIds={selectedIds}
@@ -366,7 +394,7 @@ export function ReferencePickerModal({
               busy={busy}
               isReference={isReference}
             />
-          )}
+          ) : null}
           {tab === 'characters' && (
             <CharactersTab
               characters={characters}
@@ -440,6 +468,9 @@ function ThumbGrid({ items, selectedIds, onPick, busy, emptyText, isReference })
             onClick={() => onPick(id)}
           >
             <img src={thumbUrl(id)} alt={label} loading="lazy" />
+            {it.badge && (
+              <span className="ref-picker-thumb-badge">{it.badge}</span>
+            )}
             {selected && (
               <span className="ref-picker-selected" aria-label="Selected">
                 ✓
@@ -465,6 +496,83 @@ function BeatTab({ images, selectedIds, onPick, busy, isReference }) {
       emptyText="No images attached to this beat yet."
       isReference={isReference}
     />
+  );
+}
+
+// Per-frame variant of the Beat tab. Renders three labelled sections in
+// priority order — sibling frame, beat artwork, beat images — and dedupes
+// image ids across sections so a single image never appears twice. The
+// sibling frame thumb carries a "Start frame"/"End frame" badge so the user
+// can identify it at a glance.
+function FrameBeatTab({ data, selectedIds, onPick, busy, isReference }) {
+  if (data === null) {
+    return <p className="ref-picker-empty">Loading…</p>;
+  }
+  const seen = new Set();
+  const sections = [];
+
+  if (data.sibling_frame?.image_id) {
+    const sid = String(data.sibling_frame.image_id);
+    seen.add(sid);
+    sections.push({
+      key: 'sibling',
+      title: data.sibling_frame.label,
+      items: [
+        {
+          _id: sid,
+          name: data.sibling_frame.label,
+          badge: data.sibling_frame.label,
+        },
+      ],
+    });
+  }
+
+  const artworkItems = [];
+  for (const a of data.beat_artwork || []) {
+    const id = String(a._id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    artworkItems.push({ _id: id, name: a.name || 'artwork' });
+  }
+  if (artworkItems.length) {
+    sections.push({ key: 'artwork', title: 'Beat artwork', items: artworkItems });
+  }
+
+  const imageItems = [];
+  for (const img of data.beat_images || []) {
+    const id = String(img._id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    imageItems.push({ _id: id, name: img.name || img.filename || '' });
+  }
+  if (imageItems.length) {
+    sections.push({ key: 'images', title: 'Beat reference images', items: imageItems });
+  }
+
+  if (!sections.length) {
+    return (
+      <p className="ref-picker-empty">
+        No sibling frame, artwork, or reference images on this beat yet.
+      </p>
+    );
+  }
+
+  return (
+    <div className="ref-picker-character-list">
+      {sections.map((s) => (
+        <section key={s.key} className="ref-picker-character">
+          <h3 className="ref-picker-character-name">{s.title}</h3>
+          <ThumbGrid
+            items={s.items}
+            selectedIds={selectedIds}
+            onPick={onPick}
+            busy={busy}
+            emptyText=""
+            isReference={isReference}
+          />
+        </section>
+      ))}
+    </div>
   );
 }
 

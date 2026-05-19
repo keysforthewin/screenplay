@@ -2655,6 +2655,68 @@ export function buildApiRouter() {
     },
   );
 
+  // Reference-picker options for a single frame slot. Returns three sections
+  // the SPA's "This beat" tab renders in order:
+  //   sibling_frame — the opposite frame on this row (start when picking for
+  //                   end, vice versa), so it's a one-click reference candidate
+  //   beat_artwork  — beat.artworks[] filtered to status='done' with a
+  //                   result_image_id, so artwork shows up labelled with its
+  //                   prompt rather than as a bare GridFS thumbnail
+  //   beat_images   — every non-thumbnail GridFS image owned by the beat;
+  //                   the SPA dedupes against the two sections above so the
+  //                   sibling frame / artwork results don't appear twice
+  router.get(
+    '/storyboard/:id/frame/:role/picker-options',
+    async (req, res, next) => {
+      try {
+        const sbId = await resolveStoryboardId(req);
+        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+        const role = String(req.params.role);
+        if (!['start_frame', 'end_frame'].includes(role)) {
+          return res
+            .status(400)
+            .json({ error: 'role must be start_frame|end_frame' });
+        }
+        const sb = await getStoryboard(sbId);
+        if (!sb) return res.status(404).json({ error: 'storyboard not found' });
+        const beat = await getBeat(String(sb.beat_id));
+        if (!beat) return res.status(404).json({ error: 'beat not found' });
+
+        const siblingRole =
+          role === 'start_frame' ? 'end_frame' : 'start_frame';
+        const siblingImageId = sb[`${siblingRole}_id`] || null;
+        const siblingLabel =
+          siblingRole === 'start_frame' ? 'Start frame' : 'End frame';
+
+        const beatArtwork = (beat.artworks || [])
+          .filter((a) => a.status === 'done' && a.result_image_id)
+          .map((a) => ({
+            _id: String(a.result_image_id),
+            name:
+              a.name ||
+              (a.prompt ? String(a.prompt).slice(0, 80) : '') ||
+              'artwork',
+            artwork_id: String(a._id),
+          }));
+
+        const files = await listImagesForBeat(beat._id);
+        const beatImages = files
+          .filter((f) => f.metadata?.kind !== 'thumbnail')
+          .map(imageFileToMeta);
+
+        res.json({
+          sibling_frame: siblingImageId
+            ? { image_id: String(siblingImageId), label: siblingLabel }
+            : null,
+          beat_artwork: beatArtwork,
+          beat_images: beatImages,
+        });
+      } catch (e) {
+        next(e);
+      }
+    },
+  );
+
   // Persist the user's customized prompt for a single frame slot. Idempotent;
   // overwrites the prior stored value.
   router.put('/storyboard/:id/frame/:role/prompt', async (req, res, next) => {
