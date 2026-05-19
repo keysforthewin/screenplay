@@ -165,6 +165,7 @@ export async function startVideoGenerationJob({
   generateAudio = true,
   resolution = null,
   fps = null,
+  announceUsername = null,
 } = {}) {
   if (!falIsConfigured()) {
     throw new FalNotConfiguredError();
@@ -214,6 +215,7 @@ export async function startVideoGenerationJob({
       generateAudio,
       resolution,
       fps,
+      announceUsername,
     }),
   )
     .catch((e) => {
@@ -547,6 +549,7 @@ async function runVideoGenerationJob({
   generateAudio,
   resolution = null,
   fps = null,
+  announceUsername = null,
 }) {
   try {
     setStep(job, 'preparing', 'Preparing inputs');
@@ -682,6 +685,32 @@ async function runVideoGenerationJob({
     logger.info(
       `fal video gen job ${job.job_id} done storyboard=${storyboard._id} request_id=${submission.request_id}`,
     );
+    if (announceUsername) {
+      try {
+        const { announceMediaEvent } = await import('../discord/announcer.js');
+        const { storyboardUrl } = await import('./links.js');
+        const { stripMarkdown } = await import('../util/markdown.js');
+        const { getBeat } = await import('../mongo/plots.js');
+        const beat = await getBeat(String(storyboard.beat_id));
+        const name = beat ? stripMarkdown(beat.name || '').trim() : '';
+        const order = beat && Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
+        const beatLabel = name ? `${order}: ${name}` : order;
+        const orderHint = Number.isFinite(storyboard.order)
+          ? ` (shot ${storyboard.order + 1})`
+          : '';
+        announceMediaEvent({
+          username: announceUsername,
+          verb: 'generated video for',
+          entityLabel: `Storyboard — ${beatLabel}${orderHint}`,
+          entityUrl: beat ? storyboardUrl(beat) : null,
+          mediaFileId: file._id,
+          mediaLabel: model?.label ? `video (${model.label})` : 'video',
+          prompt,
+        }).catch(() => {});
+      } catch (e) {
+        logger.warn(`video gen announce failed: ${e?.message || e}`);
+      }
+    }
   } catch (e) {
     job.status = 'error';
     job.error = e?.message || String(e);

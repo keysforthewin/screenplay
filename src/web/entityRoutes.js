@@ -27,6 +27,14 @@ function isValidImageModel(v) {
 const IMAGE_MODEL_ERROR = `image_model must be one of: ${ALLOWED_IMAGE_MODELS.join('|')}`;
 import { getSession, touchSession } from '../mongo/auth.js';
 import {
+  announceBeatMedia,
+  announceCharacterMedia,
+  announceNoteMedia,
+  announceStoryboardMedia,
+  announceLibraryMedia,
+  announceBatchSummary,
+} from './announceHelpers.js';
+import {
   startVideoGenerationJob,
   getVideoGenerationJob,
   subscribeToJob,
@@ -727,6 +735,11 @@ export function buildApiRouter() {
       });
       await addLibraryImageViaGateway({ imageMeta: meta });
       res.json({ image: { ...meta, _id: meta._id, content_type: meta.content_type } });
+      announceLibraryMedia({
+        req,
+        verb: 'uploaded an image to',
+        imageFileId: meta._id,
+      });
       kickoffLibraryVisionSeed(meta._id, buffer, sniffed || contentType);
     } catch (e) {
       next(e);
@@ -744,6 +757,7 @@ export function buildApiRouter() {
       }
       await removeLibraryImageViaGateway({ imageId: id });
       res.json({ ok: true });
+      announceLibraryMedia({ req, verb: 'deleted a library image from' });
     } catch (e) {
       next(e);
     }
@@ -758,6 +772,12 @@ export function buildApiRouter() {
         contentType: req.file.mimetype,
       });
       res.json({ attachment: meta });
+      announceLibraryMedia({
+        req,
+        verb: 'uploaded a file to',
+        mediaFileId: meta._id,
+        mediaLabel: meta.filename || 'file',
+      });
     } catch (e) {
       next(e);
     }
@@ -774,6 +794,7 @@ export function buildApiRouter() {
       }
       await deleteAttachment(id);
       res.json({ ok: true });
+      announceLibraryMedia({ req, verb: 'deleted a library file from' });
     } catch (e) {
       next(e);
     }
@@ -815,6 +836,12 @@ export function buildApiRouter() {
         setAsMain,
       });
       res.json(result);
+      announceBeatMedia({
+        req,
+        beat: await getBeat(beatId),
+        verb: 'uploaded an image to',
+        imageFileId: file._id,
+      });
       kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
         ownerType: 'beat',
         ownerId: beatId,
@@ -830,6 +857,11 @@ export function buildApiRouter() {
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const result = await removeBeatImageViaGateway({ beatId, imageId: req.params.imageId });
       res.json(result);
+      announceBeatMedia({
+        req,
+        beat: await getBeat(beatId),
+        verb: 'deleted an image from',
+      });
     } catch (e) {
       next(e);
     }
@@ -925,6 +957,13 @@ export function buildApiRouter() {
         was_main: replaceResult.was_main,
         model: result.model,
       });
+      announceBeatMedia({
+        req,
+        beat: replaceResult.beat || (await getBeat(beatId)),
+        verb: mode === 'edit' ? 'edited an image on' : 'regenerated an image on',
+        imageFileId: file._id,
+        prompt,
+      });
       kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
         ownerType: 'beat',
         ownerId: beatId,
@@ -954,6 +993,12 @@ export function buildApiRouter() {
           setAsMain,
         });
         res.json(result);
+        announceBeatMedia({
+          req,
+          beat: result?.beat || (await getBeat(beatId)),
+          verb: 'attached an image to',
+          imageFileId: imageId,
+        });
       } catch (e) {
         if (/not found/i.test(e?.message || '')) {
           return res.status(404).json({ error: e.message });
@@ -989,6 +1034,12 @@ export function buildApiRouter() {
           setAsMain,
         });
         res.json(result);
+        announceBeatMedia({
+          req,
+          beat: result?.beat || (await getBeat(beatId)),
+          verb: 'copied an image to',
+          imageFileId: imageMeta._id,
+        });
       } catch (e) {
         if (e?.status === 404) return res.status(404).json({ error: e.message });
         throw e;
@@ -1057,6 +1108,18 @@ export function buildApiRouter() {
       res.json({
         beat: updated.beat || updated,
         image: { _id: file._id, content_type: file.content_type },
+      });
+      announceBeatMedia({
+        req,
+        beat: updated.beat || (await getBeat(beatId)),
+        verb:
+          refs.ids.length >= 2
+            ? 'composited images on'
+            : refs.ids.length === 1
+              ? 'edited an image on'
+              : 'generated an image on',
+        imageFileId: file._id,
+        prompt,
       });
       kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
         ownerType: 'beat',
@@ -1127,6 +1190,17 @@ export function buildApiRouter() {
         },
       });
       res.json(result);
+      announceBeatMedia({
+        req,
+        beat: await getBeat(beatId),
+        verb: (file.content_type || '').startsWith('audio/')
+          ? 'added audio to'
+          : (file.content_type || '').startsWith('video/')
+            ? 'added video to'
+            : 'uploaded a file to',
+        mediaFileId: file._id,
+        mediaLabel: file.filename || 'file',
+      });
     } catch (e) {
       next(e);
     }
@@ -1141,6 +1215,11 @@ export function buildApiRouter() {
         attachmentId: req.params.attachId,
       });
       res.json(result);
+      announceBeatMedia({
+        req,
+        beat: await getBeat(beatId),
+        verb: 'deleted a file from',
+      });
     } catch (e) {
       next(e);
     }
@@ -1162,6 +1241,13 @@ export function buildApiRouter() {
           attachmentId,
         });
         res.json(result);
+        announceBeatMedia({
+          req,
+          beat: await getBeat(beatId),
+          verb: 'attached a file to',
+          mediaFileId: attachmentId,
+          mediaLabel: 'file',
+        });
       } catch (e) {
         if (/not found/i.test(e?.message || '')) {
           return res.status(404).json({ error: e.message });
@@ -1225,6 +1311,12 @@ export function buildApiRouter() {
         setAsMain,
       });
       res.json(result);
+      announceCharacterMedia({
+        req,
+        character: await getCharacter(cid),
+        verb: 'uploaded an image to',
+        imageFileId: file._id,
+      });
       kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
         ownerType: 'character',
         ownerId: cid,
@@ -1243,6 +1335,11 @@ export function buildApiRouter() {
         imageId: req.params.imageId,
       });
       res.json(result);
+      announceCharacterMedia({
+        req,
+        character: await getCharacter(cid),
+        verb: 'deleted an image from',
+      });
     } catch (e) {
       next(e);
     }
@@ -1333,6 +1430,13 @@ export function buildApiRouter() {
         was_main: replaceResult.was_main,
         model: result.model,
       });
+      announceCharacterMedia({
+        req,
+        character: replaceResult.character || (await getCharacter(cid)),
+        verb: mode === 'edit' ? 'edited an image on' : 'regenerated an image on',
+        imageFileId: file._id,
+        prompt,
+      });
       kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
         ownerType: 'character',
         ownerId: cid,
@@ -1360,6 +1464,12 @@ export function buildApiRouter() {
           setAsMain,
         });
         res.json(result);
+        announceCharacterMedia({
+          req,
+          character: result?.character || (await getCharacter(cid)),
+          verb: 'attached an image to',
+          imageFileId: imageId,
+        });
       } catch (e) {
         if (/not found/i.test(e?.message || '')) {
           return res.status(404).json({ error: e.message });
@@ -1396,6 +1506,12 @@ export function buildApiRouter() {
           setAsMain,
         });
         res.json(result);
+        announceCharacterMedia({
+          req,
+          character: result?.character || (await getCharacter(cid)),
+          verb: 'copied an image to',
+          imageFileId: imageMeta._id,
+        });
       } catch (e) {
         if (e?.status === 404) return res.status(404).json({ error: e.message });
         throw e;
@@ -1464,6 +1580,18 @@ export function buildApiRouter() {
       res.json({
         character: updated.character || updated,
         image: { _id: file._id, content_type: file.content_type },
+      });
+      announceCharacterMedia({
+        req,
+        character: updated.character || (await getCharacter(cid)),
+        verb:
+          refs.ids.length >= 2
+            ? 'composited images on'
+            : refs.ids.length === 1
+              ? 'edited an image on'
+              : 'generated an image on',
+        imageFileId: file._id,
+        prompt,
       });
       kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
         ownerType: 'character',
@@ -1537,6 +1665,17 @@ export function buildApiRouter() {
         },
       });
       res.json(result);
+      announceCharacterMedia({
+        req,
+        character: await getCharacter(cid),
+        verb: (file.content_type || '').startsWith('audio/')
+          ? 'added audio to'
+          : (file.content_type || '').startsWith('video/')
+            ? 'added video to'
+            : 'uploaded a file to',
+        mediaFileId: file._id,
+        mediaLabel: file.filename || 'file',
+      });
     } catch (e) {
       next(e);
     }
@@ -1551,6 +1690,11 @@ export function buildApiRouter() {
         attachmentId: req.params.attachId,
       });
       res.json(result);
+      announceCharacterMedia({
+        req,
+        character: await getCharacter(cid),
+        verb: 'deleted a file from',
+      });
     } catch (e) {
       next(e);
     }
@@ -1572,6 +1716,13 @@ export function buildApiRouter() {
           attachmentId,
         });
         res.json(result);
+        announceCharacterMedia({
+          req,
+          character: await getCharacter(cid),
+          verb: 'attached a file to',
+          mediaFileId: attachmentId,
+          mediaLabel: 'file',
+        });
       } catch (e) {
         if (/not found/i.test(e?.message || '')) {
           return res.status(404).json({ error: e.message });
@@ -1658,6 +1809,7 @@ export function buildApiRouter() {
           model: body.model,
           referenceImageIds: refs.ids,
           discordUser: webDiscordUser(req),
+          announceUsername: req?.session?.username || null,
         });
         res.json({ artwork });
       } catch (e) {
@@ -1686,6 +1838,7 @@ export function buildApiRouter() {
           model: body.model,
           referenceImageIds: refs.ids,
           discordUser: webDiscordUser(req),
+          announceUsername: req?.session?.username || null,
         });
         res.json({ artwork });
       } catch (e) {
@@ -1719,6 +1872,7 @@ export function buildApiRouter() {
           prompt,
           model,
           discordUser: webDiscordUser(req),
+          announceUsername: req?.session?.username || null,
         });
         res.json({ artwork });
       } catch (e) {
@@ -1775,6 +1929,19 @@ export function buildApiRouter() {
         if (!isOidHex(artworkId)) return res.status(400).json({ error: 'invalid artwork id' });
         await deleteArtwork({ hostType, hostId, artworkId });
         res.json({ ok: true, removed: artworkId });
+        if (hostType === 'beat') {
+          announceBeatMedia({
+            req,
+            beat: await getBeat(hostId),
+            verb: 'deleted artwork from',
+          });
+        } else if (hostType === 'character') {
+          announceCharacterMedia({
+            req,
+            character: await getCharacter(hostId),
+            verb: 'deleted artwork from',
+          });
+        }
       } catch (e) {
         handleArtworkError(e, res, next);
       }
@@ -1827,6 +1994,16 @@ export function buildApiRouter() {
 
   // ── notes mutations (non-text) ───────────────────────────────────────────
 
+  async function fetchDirectorNote(noteId) {
+    try {
+      const doc = await getDirectorNotes();
+      const notes = doc?.notes || [];
+      return notes.find((n) => String(n._id) === String(noteId)) || null;
+    } catch {
+      return null;
+    }
+  }
+
   router.post('/notes', async (req, res, next) => {
     try {
       const text = String(req.body?.text || '').trim() || '_New note_';
@@ -1872,6 +2049,12 @@ export function buildApiRouter() {
         setAsMain,
       });
       res.json(result);
+      announceNoteMedia({
+        req,
+        note: await fetchDirectorNote(req.params.noteId),
+        verb: 'uploaded an image to',
+        imageFileId: file._id,
+      });
     } catch (e) {
       next(e);
     }
@@ -1884,6 +2067,11 @@ export function buildApiRouter() {
         imageId: req.params.imageId,
       });
       res.json(result);
+      announceNoteMedia({
+        req,
+        note: await fetchDirectorNote(req.params.noteId),
+        verb: 'deleted an image from',
+      });
     } catch (e) {
       next(e);
     }
@@ -1913,6 +2101,12 @@ export function buildApiRouter() {
           setAsMain,
         });
         res.json(result);
+        announceNoteMedia({
+          req,
+          note: await fetchDirectorNote(noteId),
+          verb: 'copied an image to',
+          imageFileId: imageMeta._id,
+        });
       } catch (e) {
         if (e?.status === 404) return res.status(404).json({ error: e.message });
         throw e;
@@ -1959,6 +2153,17 @@ export function buildApiRouter() {
         },
       });
       res.json(result);
+      announceNoteMedia({
+        req,
+        note: await fetchDirectorNote(req.params.noteId),
+        verb: (file.content_type || '').startsWith('audio/')
+          ? 'added audio to'
+          : (file.content_type || '').startsWith('video/')
+            ? 'added video to'
+            : 'uploaded a file to',
+        mediaFileId: file._id,
+        mediaLabel: file.filename || 'file',
+      });
     } catch (e) {
       next(e);
     }
@@ -1971,6 +2176,11 @@ export function buildApiRouter() {
         attachmentId: req.params.attachId,
       });
       res.json(result);
+      announceNoteMedia({
+        req,
+        note: await fetchDirectorNote(req.params.noteId),
+        verb: 'deleted a file from',
+      });
     } catch (e) {
       next(e);
     }
@@ -2154,6 +2364,13 @@ export function buildApiRouter() {
         imageId: file._id,
       });
       res.json({ storyboard: result, image: { _id: file._id, content_type: file.content_type } });
+      announceStoryboardMedia({
+        req,
+        beat: await getBeat(String(sb.beat_id)),
+        storyboard: result || sb,
+        verb: role === 'start_frame' ? 'added a start frame to' : 'added an end frame to',
+        imageFileId: file._id,
+      });
       kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
         ownerType: 'beat',
         ownerId: sb.beat_id,
@@ -2178,6 +2395,17 @@ export function buildApiRouter() {
         imageId: null,
       });
       res.json({ storyboard: result });
+      if (result?.beat_id) {
+        announceStoryboardMedia({
+          req,
+          beat: await getBeat(String(result.beat_id)),
+          storyboard: result,
+          verb:
+            role === 'start_frame'
+              ? 'deleted the start frame from'
+              : 'deleted the end frame from',
+        });
+      }
     } catch (e) {
       next(e);
     }
@@ -2201,6 +2429,15 @@ export function buildApiRouter() {
       try {
         const result = await grabStartFrameFromPrevious({ currentSbId: sbId, prev });
         res.json({ storyboard: result.storyboard, image: result.image });
+        if (result?.storyboard?.beat_id) {
+          announceStoryboardMedia({
+            req,
+            beat: await getBeat(String(result.storyboard.beat_id)),
+            storyboard: result.storyboard,
+            verb: 'grabbed the start frame from the previous shot in',
+            imageFileId: result?.image?._id,
+          });
+        }
       } catch (e) {
         if (e instanceof FfmpegMissingError) {
           return res.status(500).json({ error: e.message });
@@ -2278,6 +2515,7 @@ export function buildApiRouter() {
           mode,
           editPrompt,
           prompt,
+          announceUsername: req?.session?.username || null,
         });
         res.status(202).json({ job_id: jobId, storyboard_id: sbId, role });
       } catch (e) {
@@ -2332,6 +2570,7 @@ export function buildApiRouter() {
           mode: 'edit',
           editPrompt: raw,
           rotateToPrevious: true,
+          announceUsername: req?.session?.username || null,
         });
         res.status(202).json({ job_id: jobId, storyboard_id: sbId, role });
       } catch (e) {
@@ -2726,6 +2965,15 @@ export function buildApiRouter() {
         storyboard: result,
         image: { _id: imageId, content_type: file.contentType || null },
       });
+      if (result?.beat_id) {
+        announceStoryboardMedia({
+          req,
+          beat: await getBeat(String(result.beat_id)),
+          storyboard: result,
+          verb: role === 'start_frame' ? 'added a start frame to' : 'added an end frame to',
+          imageFileId: imageId,
+        });
+      }
     } catch (e) {
       next(e);
     }
@@ -2778,6 +3026,17 @@ export function buildApiRouter() {
         storyboard: updated,
         image: { _id: file._id, content_type: file.content_type },
       });
+      announceStoryboardMedia({
+        req,
+        beat: await getBeat(String(sb.beat_id)),
+        storyboard: updated || sb,
+        verb:
+          role === 'start_frame'
+            ? 'generated a start frame on'
+            : 'generated an end frame on',
+        imageFileId: file._id,
+        prompt,
+      });
       kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
         ownerType: 'beat',
         ownerId: sb.beat_id,
@@ -2824,6 +3083,14 @@ export function buildApiRouter() {
           size: file.size,
         },
       });
+      announceStoryboardMedia({
+        req,
+        beat: await getBeat(String(sb.beat_id)),
+        storyboard: result || sb,
+        verb: 'added audio to',
+        mediaFileId: file._id,
+        mediaLabel: file.filename || 'audio',
+      });
     } catch (e) {
       next(e);
     }
@@ -2838,6 +3105,14 @@ export function buildApiRouter() {
         audioFileId: null,
       });
       res.json({ storyboard: result });
+      if (result?.beat_id) {
+        announceStoryboardMedia({
+          req,
+          beat: await getBeat(String(result.beat_id)),
+          storyboard: result,
+          verb: 'deleted audio from',
+        });
+      }
     } catch (e) {
       next(e);
     }
@@ -2955,6 +3230,7 @@ export function buildApiRouter() {
           generateAudio,
           resolution,
           fps,
+          announceUsername: req?.session?.username || null,
         });
         res.status(202).json({ job_id });
       } catch (e) {
@@ -3019,6 +3295,14 @@ export function buildApiRouter() {
         }
       }
       res.json({ storyboard: result });
+      if (result?.beat_id) {
+        announceStoryboardMedia({
+          req,
+          beat: await getBeat(String(result.beat_id)),
+          storyboard: result,
+          verb: 'deleted video from',
+        });
+      }
     } catch (e) {
       next(e);
     }
@@ -3041,6 +3325,17 @@ export function buildApiRouter() {
           dialogId: String(dialogId),
         });
         res.json(result);
+        const sb = result?.storyboard || result;
+        if (sb?.beat_id) {
+          announceStoryboardMedia({
+            req,
+            beat: await getBeat(String(sb.beat_id)),
+            storyboard: sb,
+            verb: 'added audio (from a dialog) to',
+            mediaFileId: sb.audio_file_id || null,
+            mediaLabel: 'audio',
+          });
+        }
       } catch (e) {
         if (
           /no audio to copy|different beats|not found/i.test(e.message || '')
@@ -3079,6 +3374,7 @@ export function buildApiRouter() {
           targetCount: target,
           imageModel,
           direction,
+          announceUsername: req?.session?.username || null,
         });
         res.status(202).json({ job_id: jobId, beat_id: beat._id });
       } catch (e) {
@@ -3343,6 +3639,15 @@ export function buildApiRouter() {
           size: file.size,
         },
       });
+      if (dialog?.beat_id) {
+        announceBeatMedia({
+          req,
+          beat: await getBeat(String(dialog.beat_id)),
+          verb: 'added dialog audio in',
+          mediaFileId: file._id,
+          mediaLabel: file.filename || 'audio',
+        });
+      }
     } catch (e) {
       next(e);
     }
@@ -3357,6 +3662,13 @@ export function buildApiRouter() {
         audioFileId: null,
       });
       res.json({ dialog: result });
+      if (result?.beat_id) {
+        announceBeatMedia({
+          req,
+          beat: await getBeat(String(result.beat_id)),
+          verb: 'deleted dialog audio from',
+        });
+      }
     } catch (e) {
       next(e);
     }

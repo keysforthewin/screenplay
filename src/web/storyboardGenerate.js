@@ -498,6 +498,7 @@ export async function startStoryboardGenerationJob({
   targetCount,
   imageModel = 'gemini',
   direction = '',
+  announceUsername = null,
 }) {
   const beat = await getBeat(beatId);
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
@@ -546,6 +547,7 @@ export async function startStoryboardGenerationJob({
       beat,
       targetCount: resolvedCount,
       direction: cleanDirection,
+      announceUsername,
     }),
   ).catch((e) => {
     job.status = 'error';
@@ -566,6 +568,7 @@ async function runStoryboardGenerationJob({
   beat,
   targetCount,
   direction,
+  announceUsername = null,
 }) {
   // Plan first. If the planner returns nothing (model failure, rate limit,
   // empty body) we preserve the user's existing storyboards rather than
@@ -671,6 +674,22 @@ async function runStoryboardGenerationJob({
     total: planned.length,
     message: `Done — ${job.completed} created, ${job.failed} failed (${totalElapsed}s total)`,
   });
+  if (announceUsername && job.completed > 0) {
+    try {
+      const { announceText } = await import('../discord/announcer.js');
+      const { storyboardUrl } = await import('./links.js');
+      const url = storyboardUrl(beat);
+      const name = stripMarkdown(beat.name || '').trim();
+      const order = Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
+      const beatLabel = name ? `${order}: ${name}` : order;
+      const suffix = job.failed > 0 ? ` (${job.failed} failed)` : '';
+      announceText(
+        `🎬 ${announceUsername} generated ${job.completed} storyboard frame${job.completed === 1 ? '' : 's'} on ${beatLabel}${suffix}${url ? ` — ${url}` : ''}`,
+      ).catch(() => {});
+    } catch (e) {
+      logger.warn(`batch storyboard announce failed: ${e?.message || e}`);
+    }
+  }
 }
 
 // Resolve every character named in a beat's `characters` list to its current
@@ -1553,6 +1572,7 @@ export async function startFrameGenerationJob({
   editPrompt = null,
   prompt = null,
   rotateToPrevious = false,
+  announceUsername = null,
 }) {
   if (!FRAME_ROLES.has(role)) throw new FrameRoleError(role);
   if (!['generate', 'edit'].includes(mode)) {
@@ -1598,6 +1618,7 @@ export async function startFrameGenerationJob({
       editPrompt,
       prompt,
       rotateToPrevious,
+      announceUsername,
     }),
   ).catch((e) => {
     job.status = 'error';
@@ -1619,6 +1640,7 @@ async function runFrameGenerationJob({
   editPrompt,
   prompt,
   rotateToPrevious = false,
+  announceUsername = null,
 }) {
   job.status = 'running';
   const { image_id } = await regenerateStoryboardFrameInternal({
@@ -1634,4 +1656,33 @@ async function runFrameGenerationJob({
   job.image_id = image_id;
   job.status = 'done';
   job.finished_at = new Date();
+  if (announceUsername) {
+    try {
+      const { announceMediaEvent } = await import('../discord/announcer.js');
+      const { storyboardUrl } = await import('./links.js');
+      const { stripMarkdown } = await import('../util/markdown.js');
+      const name = stripMarkdown(beat.name || '').trim();
+      const order = Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
+      const beatLabel = name ? `${order}: ${name}` : order;
+      const orderHint = Number.isFinite(sb.order) ? ` (shot ${sb.order + 1})` : '';
+      const verb =
+        mode === 'edit'
+          ? role === 'start_frame'
+            ? 'edited the start frame on'
+            : 'edited the end frame on'
+          : role === 'start_frame'
+            ? 'generated a start frame on'
+            : 'generated an end frame on';
+      announceMediaEvent({
+        username: announceUsername,
+        verb,
+        entityLabel: `Storyboard — ${beatLabel}${orderHint}`,
+        entityUrl: storyboardUrl(beat),
+        imageFileId: image_id,
+        prompt: prompt || editPrompt || null,
+      }).catch(() => {});
+    } catch (e) {
+      logger.warn(`frame gen announce failed: ${e?.message || e}`);
+    }
+  }
 }

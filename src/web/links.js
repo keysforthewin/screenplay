@@ -29,6 +29,11 @@ export function beatUrl(beat) {
   return `${publicBase()}/beat/${beat.order}`;
 }
 
+export function storyboardUrl(beat) {
+  if (!beat || !Number.isFinite(beat.order)) return null;
+  return `${publicBase()}/storyboard/${beat.order}`;
+}
+
 export function notesUrl() {
   return `${publicBase()}/notes`;
 }

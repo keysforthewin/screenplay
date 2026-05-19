@@ -30,6 +30,45 @@ import {
   removeArtworkViaGateway,
 } from './gateway.js';
 import { ALLOWED_IMAGE_MODELS } from './imageReplaceDispatch.js';
+import { announceMediaEvent } from '../discord/announcer.js';
+import { beatUrl, characterUrl } from './links.js';
+import { getBeat } from '../mongo/plots.js';
+import { getCharacter } from '../mongo/characters.js';
+import { stripMarkdown } from '../util/markdown.js';
+
+async function announceArtwork({ hostType, hostId, username, verb, fileId, prompt }) {
+  try {
+    if (!username) return;
+    let entityLabel = null;
+    let entityUrl = null;
+    if (hostType === 'beat') {
+      const beat = await getBeat(String(hostId));
+      if (beat) {
+        const name = stripMarkdown(beat.name || '').trim();
+        const order = Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
+        entityLabel = name ? `${order}: ${name}` : order;
+        entityUrl = beatUrl(beat);
+      }
+    } else if (hostType === 'character') {
+      const character = await getCharacter(String(hostId));
+      if (character) {
+        const name = stripMarkdown(character.name || '').trim() || 'character';
+        entityLabel = `Character: ${name}`;
+        entityUrl = characterUrl(character);
+      }
+    }
+    announceMediaEvent({
+      username,
+      verb,
+      entityLabel,
+      entityUrl,
+      imageFileId: fileId,
+      prompt,
+    }).catch(() => {});
+  } catch (e) {
+    logger.warn(`announceArtwork failed: ${e?.message || e}`);
+  }
+}
 
 const ALLOWED_ARTWORK_MODELS = new Set(ALLOWED_IMAGE_MODELS);
 const DEFAULT_ARTWORK_MODEL = 'nano-banana-pro';
@@ -96,6 +135,7 @@ export async function startGenerateArtworkJob({
   referenceImageIds = [],
   discordUser = null,
   channelId = null,
+  announceUsername = null,
 }) {
   validateArtworkModel(model);
   const { artwork } = await createPendingArtworkViaGateway({
@@ -116,13 +156,26 @@ export async function startGenerateArtworkJob({
       referenceImageIds,
       discordUser,
       channelId,
+      announceUsername,
+      announceVerb: 'created artwork on',
     }).catch((e) => logCrash('artwork generate job', e));
   });
   return artwork;
 }
 
 async function runGenerate(opts) {
-  const { hostType, hostId, artworkId, prompt, model, referenceImageIds, discordUser, channelId } = opts;
+  const {
+    hostType,
+    hostId,
+    artworkId,
+    prompt,
+    model,
+    referenceImageIds,
+    discordUser,
+    channelId,
+    announceUsername,
+    announceVerb,
+  } = opts;
   try {
     const referenceImages = await loadImageBuffers(referenceImageIds);
     const result = await runProviderForGenerate({
@@ -156,6 +209,16 @@ async function runGenerate(opts) {
       resultImageId: file._id,
       rotateToPrevious: false,
     });
+    if (announceUsername) {
+      announceArtwork({
+        hostType,
+        hostId,
+        username: announceUsername,
+        verb: announceVerb || 'created artwork on',
+        fileId: file._id,
+        prompt,
+      });
+    }
   } catch (err) {
     logger.warn(`artwork generate ${hostType}:${hostId} ${artworkId} failed: ${err.message}`);
     await setArtworkStatusViaGateway({
@@ -183,6 +246,7 @@ export async function startRegenerateArtworkJob({
   referenceImageIds = [],
   discordUser = null,
   channelId = null,
+  announceUsername = null,
 }) {
   validateArtworkModel(model);
   const patch = { prompt, model, reference_image_ids: referenceImageIds };
@@ -204,6 +268,8 @@ export async function startRegenerateArtworkJob({
       referenceImageIds,
       discordUser,
       channelId,
+      announceUsername,
+      announceVerb: 'regenerated artwork on',
     }).catch((e) => logCrash('artwork regenerate job', e));
   });
   return artwork;
@@ -223,6 +289,7 @@ export async function startEditArtworkJob({
   model = DEFAULT_ARTWORK_MODEL,
   discordUser = null,
   channelId = null,
+  announceUsername = null,
 }) {
   validateArtworkModel(model);
   await patchArtworkViaGateway({
@@ -247,13 +314,24 @@ export async function startEditArtworkJob({
       currentResultImageId: artwork.result_image_id,
       discordUser,
       channelId,
+      announceUsername,
     }).catch((e) => logCrash('artwork edit job', e));
   });
   return artwork;
 }
 
 async function runEdit(opts) {
-  const { hostType, hostId, artworkId, prompt, model, currentResultImageId, discordUser, channelId } = opts;
+  const {
+    hostType,
+    hostId,
+    artworkId,
+    prompt,
+    model,
+    currentResultImageId,
+    discordUser,
+    channelId,
+    announceUsername,
+  } = opts;
   try {
     if (!currentResultImageId) {
       throw new Error('Cannot edit an artwork with no current result image.');
@@ -286,6 +364,16 @@ async function runEdit(opts) {
       resultImageId: file._id,
       rotateToPrevious: true,
     });
+    if (announceUsername) {
+      announceArtwork({
+        hostType,
+        hostId,
+        username: announceUsername,
+        verb: 'edited artwork on',
+        fileId: file._id,
+        prompt,
+      });
+    }
   } catch (err) {
     logger.warn(`artwork edit ${hostType}:${hostId} ${artworkId} failed: ${err.message}`);
     await setArtworkStatusViaGateway({

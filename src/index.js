@@ -2,6 +2,7 @@ import { connectMongo } from './mongo/client.js';
 import { ensureAuthIndexes } from './mongo/auth.js';
 import { seedDefaults } from './seed/defaults.js';
 import { createDiscordClient } from './discord/client.js';
+import { setDiscordClient } from './discord/announcer.js';
 import { installInteractionHandlers } from './discord/interactions.js';
 import { startServer } from './server/index.js';
 import { installLifecycleHandlers } from './lifecycle.js';
@@ -25,6 +26,7 @@ async function main() {
   const bot = createDiscordClient();
   installInteractionHandlers(bot.client);
   bindDiscordClient(bot.client);
+  setDiscordClient(bot.client);
   await bot.start();
   installLifecycleHandlers(bot.client);
   logger.info('screenplay bot online');
