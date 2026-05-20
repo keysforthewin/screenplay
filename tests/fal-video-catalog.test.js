@@ -75,6 +75,59 @@ describe('fal video catalog: generic auto-wiring', () => {
     expect(populated.length).toBe(1);
   });
 
+  it('LTX video_size: emits an object, never a "WxH" string', async () => {
+    // fal-ai rejects `video_size: "1280x720"` with a 422 — the schema is a
+    // union of { width, height } object OR a small enum of preset names.
+    // Regression test: lock the dict form so nobody reverts it for cosmetics.
+    const { getVideoModelOrCatalog } = await import('../src/fal/videoModels.js');
+    const model = await getVideoModelOrCatalog('fal-ai/ltx-2.3-22b/image-to-video');
+    if (!model) return; // manifest drift — covered by broader auto-wire test
+    const input = model.buildInput({
+      prompt: 'A test shot.',
+      startFrameUrl: 'https://fal.example/start.png',
+      resolution: '720p',
+      durationSeconds: 5,
+    });
+    expect(typeof input.video_size).toBe('object');
+    expect(Array.isArray(input.video_size)).toBe(false);
+    expect(input.video_size).toEqual({ width: 1280, height: 720 });
+  });
+
+  it('Veo 3.1 lite FLF: catalog declares the 8s-only duration enum', async () => {
+    // fal currently enforces `duration: '8s'` as the only legal value for
+    // fal-ai/veo3.1/lite/first-last-frame-to-video. The catalog must
+    // declare this so the dialog renders a constrained dropdown instead
+    // of a free-form input that lets users type values fal rejects.
+    const { loadCatalog } = await import('../src/fal/videoModels.js');
+    const catalog = await loadCatalog();
+    const row = catalog.models.find(
+      (m) => m.endpoint_id === 'fal-ai/veo3.1/lite/first-last-frame-to-video',
+    );
+    expect(row).toBeTruthy();
+    expect(row.durations_enum).toEqual(['8s']);
+  });
+
+  it("Suffix-'s' duration enums: built duration matches the catalog format", async () => {
+    // Regression for the bug where catalog enums like ['4s','6s','8s']
+    // hit `Number('4s')` (NaN) in the snap path and rendered as "4ss"
+    // in the dialog. The built input must be a string with the 's' suffix
+    // matching what fal expects.
+    const { getVideoModelOrCatalog } = await import('../src/fal/videoModels.js');
+    const model = await getVideoModelOrCatalog('fal-ai/veo3.1/fast/first-last-frame-to-video');
+    if (!model) return; // manifest drift
+    expect(model.durations).toEqual(['4s', '6s', '8s']);
+    const input = model.buildInput({
+      prompt: 'x',
+      startFrameUrl: 'https://fal.example/start.png',
+      endFrameUrl: 'https://fal.example/end.png',
+      durationSeconds: 6,
+      generateAudio: false,
+      resolution: '720p',
+    });
+    expect(input.duration).toBe('6s');
+    expect(typeof input.duration).toBe('string');
+  });
+
   it('refuses to auto-wire endpoints outside the allowlist', async () => {
     const { getVideoModelOrCatalog } = await import('../src/fal/videoModels.js');
     // Hunyuan Portrait is in the catalog but NOT in the allowlist; should

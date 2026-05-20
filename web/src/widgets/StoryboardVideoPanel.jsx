@@ -75,7 +75,7 @@ function buildParamLine(sb) {
       ? Number(params.duration_seconds)
       : null) ?? sb?.video_duration_seconds ?? null;
   if (dur) parts.push(`${dur}s`);
-  const res = params?.resolution;
+  const res = params?.resolution || params?.video_size;
   if (res && res !== 'auto') parts.push(String(res));
   const ar = params?.aspect_ratio;
   if (ar && ar !== 'auto') parts.push(String(ar));

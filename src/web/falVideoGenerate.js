@@ -795,7 +795,13 @@ function buildPersistedParameters({ bundle, payload, audioDurationSeconds = null
   if (payload && typeof payload === 'object') {
     if (typeof payload.resolution === 'string') out.resolution = payload.resolution;
     if (typeof payload.aspect_ratio === 'string') out.aspect_ratio = payload.aspect_ratio;
-    if (typeof payload.video_size === 'string') out.video_size = payload.video_size;
+    if (payload.video_size && typeof payload.video_size === 'object') {
+      const w = Number(payload.video_size.width);
+      const h = Number(payload.video_size.height);
+      if (Number.isFinite(w) && Number.isFinite(h)) out.video_size = `${w}x${h}`;
+    } else if (typeof payload.video_size === 'string') {
+      out.video_size = payload.video_size;
+    }
     if (Number.isFinite(Number(payload.fps)) && Number(payload.fps) > 0) {
       out.fps = Number(payload.fps);
     }
@@ -836,19 +842,29 @@ function computeCost({ model, bundle, payload, catalogRow }) {
   return null;
 }
 
+// Enum entries may be '4s' or '4' or 4 — strip a trailing 's' before
+// numeric parsing so the snap / default logic works either way.
+function parseDurationNumber(d) {
+  if (d == null) return NaN;
+  return Number(String(d).replace(/s$/i, ''));
+}
+
 function pickDurationSeconds({ requested, storyboard, model }) {
+  const defaultDur = parseDurationNumber(model.defaultDuration);
   const candidate =
     Number.isFinite(Number(requested)) && Number(requested) > 0
       ? Number(requested)
       : Number.isFinite(Number(storyboard.duration_seconds)) &&
           Number(storyboard.duration_seconds) > 0
         ? Number(storyboard.duration_seconds)
-        : Number(model.defaultDuration) || 5;
+        : Number.isFinite(defaultDur) && defaultDur > 0
+          ? defaultDur
+          : 5;
   // If the model lists allowed durations, snap to the nearest. The Kling
   // and Veo models accept string seconds in a fixed set; we normalize to
   // an integer in JS and let buildInput stringify per its conventions.
   if (Array.isArray(model.durations) && model.durations.length) {
-    const allowed = model.durations.map((d) => Number(d)).filter(Number.isFinite);
+    const allowed = model.durations.map(parseDurationNumber).filter(Number.isFinite);
     if (allowed.length) {
       let closest = allowed[0];
       let bestDelta = Math.abs(candidate - closest);

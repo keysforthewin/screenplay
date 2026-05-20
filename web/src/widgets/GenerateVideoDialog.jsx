@@ -10,6 +10,8 @@ import {
 } from '../api.js';
 import { computeVideoCost, formatUsd as formatUsdAmount } from '../videoCost.js';
 import { VideoProgressBar } from './VideoProgressBar.jsx';
+import { useCollabRoom } from '../editor/CollabSurface.jsx';
+import { readFragmentMarkdown } from '../editor/fragmentRead.js';
 
 // Capability facets shown in the picker. Order is the column order in the
 // matrix and the checkbox order below it.
@@ -44,6 +46,7 @@ function writeLastEndpoint(endpointId) {
 // video_file_id lands the inline player will appear automatically via the
 // room's fields_updated ping.
 export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh }) {
+  const { ydoc } = useCollabRoom();
   const [registry, setRegistry] = useState(null); // { default_model_id, configured, catalog_generated_at, catalog_error, models: [...] }
   const [registryError, setRegistryError] = useState(null);
   const [selectedEndpoint, setSelectedEndpoint] = useState(null); // endpoint_id of the chosen catalog row
@@ -117,7 +120,24 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     setPreview(null);
     setPreviewLoading(false);
     setActiveFacets({ ...EMPTY_FACETS });
-    setPrompt(typeof sb?.text_prompt === 'string' ? sb.text_prompt : '');
+    // Prefer the live y-doc fragment text over the (possibly stale) sb prop:
+    // sb.text_prompt comes from the last REST fetch, which lags any in-flight
+    // edits in the CollabField by ~2s of Hocuspocus debounce. The y-doc has
+    // every keystroke applied locally, so reading from it here means clicking
+    // "Generate video" right after editing the prompt picks up the new text
+    // without a page reload.
+    let initialPrompt = '';
+    if (ydoc && storyboardId) {
+      try {
+        initialPrompt = readFragmentMarkdown(ydoc, `item:${storyboardId}:text_prompt`).trim();
+      } catch {
+        // Y-doc not yet hydrated or fragment never written — fall through.
+      }
+    }
+    if (!initialPrompt) {
+      initialPrompt = typeof sb?.text_prompt === 'string' ? sb.text_prompt : '';
+    }
+    setPrompt(initialPrompt);
     const storedEndpoint = readLastEndpoint();
     setLastUsedEndpoint(storedEndpoint);
     if (registry) {
@@ -130,7 +150,7 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
         || null;
       setSelectedEndpoint(defaultRow?.endpoint_id || null);
     }
-  }, [open, sb?._id, registry]);
+  }, [open, sb?._id, registry, ydoc, storyboardId]);
 
   // When the chosen model changes, snap duration / resolution / fps to
   // that model's defaults (or to the storyboard's duration_seconds,
@@ -139,10 +159,10 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
   // by duration (per-second / per-megapixel).
   useEffect(() => {
     if (!chosenModel) return;
-    const allowed = (chosenModel.durations || []).map((d) => Number(d)).filter(Number.isFinite);
+    const allowed = (chosenModel.durations || []).map(parseDurationNumber).filter(Number.isFinite);
     const sbDur = Number(sb?.duration_seconds);
     if (allowed.length) {
-      let candidate = Number.isFinite(sbDur) && sbDur > 0 ? sbDur : Number(chosenModel.default_duration);
+      let candidate = Number.isFinite(sbDur) && sbDur > 0 ? sbDur : parseDurationNumber(chosenModel.default_duration);
       if (!Number.isFinite(candidate)) candidate = allowed[0];
       const closest = allowed.reduce(
         (best, n) => (Math.abs(n - candidate) < Math.abs(best - candidate) ? n : best),
@@ -385,11 +405,14 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
                 disabled={generating}
                 onChange={(e) => setDuration(Number(e.target.value))}
               >
-                {chosenModel.durations.map((d) => (
-                  <option key={d} value={Number(d)}>
-                    {d}s
-                  </option>
-                ))}
+                {chosenModel.durations.map((d) => {
+                  const n = parseDurationNumber(d);
+                  return (
+                    <option key={d} value={n}>
+                      {n}s
+                    </option>
+                  );
+                })}
               </select>
             </label>
           ) : chosenModel && modelNeedsDuration(chosenModel) ? (
@@ -1054,6 +1077,14 @@ function pickDefaultResolution(model) {
 
 function pickDefaultFps(model) {
   return model?.pricing?.default_fps || 24;
+}
+
+// Catalog `durations_enum` entries arrive as '4s' / '6s' / '8s' on some
+// models and bare '4' / '6' / '8' on others. Strip a trailing 's' before
+// parsing so option values stay as plain integers (not NaN) either way.
+function parseDurationNumber(d) {
+  if (d == null) return NaN;
+  return Number(String(d).replace(/s$/i, ''));
 }
 
 function formatUsdMinimum(n) {

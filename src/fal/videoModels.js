@@ -489,7 +489,7 @@ function synthesizeCatalogModel(row) {
     }
     if (hasVideoSize && bundle.resolution) {
       const dims = resolutionToDims(bundle.resolution);
-      if (dims) input.video_size = `${dims[0]}x${dims[1]}`;
+      if (dims) input.video_size = { width: dims[0], height: dims[1] };
     }
     if (supportsGenerateAudio) input.generate_audio = Boolean(bundle.generateAudio);
     return input;
