@@ -130,6 +130,13 @@ export async function listImagesForBeat(beatId) {
     .toArray();
 }
 
+export async function listImagesForCharacter(characterId) {
+  return filesCol()
+    .find({ 'metadata.owner_type': 'character', 'metadata.owner_id': toObjectId(characterId) })
+    .sort({ uploadDate: 1 })
+    .toArray();
+}
+
 export async function listImagesForDirectorNote(noteId) {
   return filesCol()
     .find({ 'metadata.owner_type': 'director_note', 'metadata.owner_id': toObjectId(noteId) })

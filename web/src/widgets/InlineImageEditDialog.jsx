@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
-import { imageUrl } from '../api.js';
+import { imageUrl, thumbUrl } from '../api.js';
 import {
   IMAGE_MODELS,
   readStoredImageModel,
@@ -34,6 +34,10 @@ import {
 //   applyEdit:       async ({prompt, model}) => void
 //   undoEdit:        async () => void
 //   modelStorageKey: localStorage key for last-used model persistence
+//   referenceIds:    optional string[] — when non-null, the "Reference images"
+//                    section renders. Passed to applyEdit as well.
+//   onPickReferences: () => void — wrapper opens its own picker
+//   onRemoveReference: (id: string) => void
 export function InlineImageEditDialog({
   open,
   onClose,
@@ -46,6 +50,9 @@ export function InlineImageEditDialog({
   applyEdit,
   undoEdit,
   modelStorageKey,
+  referenceIds = null,
+  onPickReferences = null,
+  onRemoveReference = null,
 }) {
   const [prompt, setPrompt] = useState('');
   const [error, setError] = useState(null);
@@ -96,7 +103,11 @@ export function InlineImageEditDialog({
     setError(null);
     const seq = openSeqRef.current;
     try {
-      await applyEdit({ prompt: prompt.trim(), model: imageModel });
+      await applyEdit({
+        prompt: prompt.trim(),
+        model: imageModel,
+        referenceIds: Array.isArray(referenceIds) ? referenceIds : [],
+      });
       await onDone?.();
       if (seq === openSeqRef.current) setPrompt('');
     } catch (e) {
@@ -183,6 +194,112 @@ export function InlineImageEditDialog({
               rows={4}
             />
           </label>
+          {Array.isArray(referenceIds) && onPickReferences && (
+            <div className="frame-generate-refs" style={{ marginTop: 12 }}>
+              <div className="frame-generate-section-header">
+                <span className="field-label">Reference images</span>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={onPickReferences}
+                  disabled={status === 'pending' || busy}
+                >
+                  + Add references
+                </button>
+              </div>
+              <div className="frame-generate-ref-grid">
+                {resultId && (
+                  <div
+                    className="frame-generate-ref-thumb is-locked"
+                    key={`primary:${resultId}`}
+                    title="The image being edited — always passed to the model as reference #1 and can't be removed."
+                  >
+                    <img
+                      src={thumbUrl(resultId)}
+                      alt="current image (reference #1)"
+                      loading="lazy"
+                      onClick={() =>
+                        window.open(imageUrl(resultId), '_blank', 'noopener')
+                      }
+                    />
+                    <span
+                      className="ref-index-badge"
+                      style={{
+                        position: 'absolute',
+                        top: 4,
+                        left: 4,
+                        background: 'var(--accent, #4a90e2)',
+                        color: '#fff',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        padding: '2px 6px',
+                        borderRadius: 4,
+                        pointerEvents: 'none',
+                      }}
+                    >
+                      1 · current
+                    </span>
+                  </div>
+                )}
+                {referenceIds.map((id, idx) => (
+                  <div className="frame-generate-ref-thumb" key={id}>
+                    <img
+                      src={thumbUrl(id)}
+                      alt="reference"
+                      loading="lazy"
+                      onClick={() =>
+                        window.open(imageUrl(id), '_blank', 'noopener')
+                      }
+                    />
+                    <span
+                      className="ref-index-badge"
+                      style={{
+                        position: 'absolute',
+                        top: 4,
+                        left: 4,
+                        background: 'rgba(0,0,0,0.6)',
+                        color: '#fff',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        padding: '2px 6px',
+                        borderRadius: 4,
+                        pointerEvents: 'none',
+                      }}
+                    >
+                      {idx + 2}
+                    </span>
+                    {onRemoveReference && (
+                      <button
+                        type="button"
+                        className="storyboard-frame-remove"
+                        title="Remove reference"
+                        onClick={() => onRemoveReference(id)}
+                        disabled={status === 'pending' || busy}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {!resultId && referenceIds.length === 0 && (
+                  <div className="frame-generate-ref-empty">
+                    Optional. Attach images the model can incorporate into the
+                    current image during this edit.
+                  </div>
+                )}
+              </div>
+              {resultId && (
+                <p
+                  className="frame-generate-help"
+                  style={{ marginTop: 6 }}
+                >
+                  The current image is always sent as reference #1. Any extra
+                  images you add are passed as additional references starting at
+                  #2.
+                </p>
+              )}
+            </div>
+          )}
           <div className="frame-generate-model-row">
             <span className="field-label">Image model</span>
             <div className="frame-generate-model-options">

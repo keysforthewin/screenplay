@@ -63,6 +63,7 @@ import {
 } from '../mongo/characters.js';
 import {
   createPendingArtwork as mongoCreatePendingArtwork,
+  appendDoneArtwork as mongoAppendDoneArtwork,
   patchArtwork as mongoPatchArtwork,
   setArtworkStatus as mongoSetArtworkStatus,
   setArtworkResult as mongoSetArtworkResult,
@@ -121,6 +122,7 @@ import {
   findImageFile,
   deleteImage,
 } from '../mongo/images.js';
+import { copyImageToNewOwner } from '../mongo/imageCopy.js';
 import {
   setLibraryAttachmentMeta,
   setOwnedAttachmentMeta,
@@ -794,6 +796,55 @@ export async function createPendingArtworkViaGateway({
     model,
     referenceImageIds,
     jobId,
+  });
+  broadcastFieldsUpdated(artworkRoomName(hostType, result.host_id), {
+    changed: ['artworks'],
+  });
+  return result;
+}
+
+// Import an existing GridFS image as a brand-new "done" artwork on the host.
+// If the source image is owned by a different entity (or sits in the library),
+// its bytes are copied to a fresh GridFS file owned by the host so the
+// artwork's result_image_id matches the one-owner-per-file invariant the
+// gallery / delete paths rely on. When the source is already owned by this
+// host, the existing id is reused — no copy.
+export async function createArtworkFromImageViaGateway({
+  hostType,
+  hostId,
+  imageId,
+  name = '',
+}) {
+  const src = await findImageFile(imageId);
+  if (!src) {
+    const e = new Error(`source image not found: ${imageId}`);
+    e.status = 404;
+    throw e;
+  }
+  const ownerType = src.metadata?.owner_type || null;
+  const ownerId = src.metadata?.owner_id || null;
+  const hostIdStr = String(hostId);
+  const sameOwner =
+    ownerType === hostType &&
+    ownerId &&
+    String(ownerId) === hostIdStr;
+  let resultImageId;
+  if (sameOwner) {
+    resultImageId = src._id;
+  } else {
+    const copy = await copyImageToNewOwner({
+      imageId,
+      ownerType: hostType,
+      ownerId: hostIdStr,
+      filenameBase: `${hostType}-${hostIdStr}-artwork-import`,
+    });
+    resultImageId = copy._id;
+  }
+  const result = await mongoAppendDoneArtwork({
+    hostType,
+    hostId,
+    resultImageId,
+    name,
   });
   broadcastFieldsUpdated(artworkRoomName(hostType, result.host_id), {
     changed: ['artworks'],

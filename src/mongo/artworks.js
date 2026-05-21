@@ -146,6 +146,43 @@ function findArtworkIndex(artworks, artworkId) {
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
+// Create a "done" artwork in one shot — used by the import flow where the
+// result image already exists in GridFS. No prompt, no refs, no job. The
+// `source: 'imported'` field is set so consumers can tell this apart from
+// generated artwork. `source` is set only at creation; patchArtwork's
+// PATCHABLE allowlist rejects it on updates.
+export async function appendDoneArtwork({
+  hostType,
+  hostId,
+  resultImageId,
+  name = '',
+}) {
+  const host = await loadHost(hostType, hostId);
+  const now = new Date();
+  const artwork = {
+    _id: new ObjectId(),
+    name: String(name || ''),
+    prompt: '',
+    model: '',
+    reference_image_ids: [],
+    result_image_id: toOid(resultImageId),
+    previous_result_image_id: null,
+    last_edit_prompt: '',
+    status: 'done',
+    error_message: null,
+    job_id: null,
+    source: 'imported',
+    created_at: now,
+    updated_at: now,
+  };
+  const next = [...readArtworks(host), artwork];
+  await persistArtworks(host, next);
+  logger.info(
+    `mongo: ${host.kind} artwork import id=${host._id} artwork=${artwork._id} result=${artwork.result_image_id}`,
+  );
+  return { artwork, host_id: host._id };
+}
+
 // Create a pending artwork on the host. The caller (the jobs runner)
 // kicks off the background work after this returns. The returned artwork
 // has status='pending', no result_image_id, and a fresh _id.

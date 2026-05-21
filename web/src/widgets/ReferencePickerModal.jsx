@@ -16,6 +16,13 @@ const TABS = [
   { key: 'generate', label: 'Generate' },
 ];
 
+// In ephemeral mode (when `onApply` is provided), Upload and Generate are
+// hidden — those tabs persist new images server-side, which is wrong for a
+// one-shot picker that just collects ids to hand back to the caller.
+const EPHEMERAL_TABS = TABS.filter(
+  (t) => t.key !== 'upload' && t.key !== 'generate',
+);
+
 const GEN_MODEL_STORAGE_KEY = 'screenplay.picker.genModel';
 const VALID_GEN_MODELS = new Set(['gemini', 'openai', 'fal']);
 const GEN_MODEL_LABEL = {
@@ -75,6 +82,10 @@ function setsEqual(a, b) {
 //   - `frameRole='start_frame'` | `frameRole='end_frame'`: per-frame
 //     multi-select reference editor (mirrors the legacy multi-select but
 //     scoped to start_frame_reference_ids or end_frame_reference_ids).
+//   - `onApply(ids)`: ephemeral mode — Apply calls onApply with the selected
+//     ids and closes, instead of persisting to the storyboard. Upload and
+//     Generate tabs are hidden in this mode because they'd persist new
+//     images. Used by the in-line frame edit dialog for one-shot refs.
 export function ReferencePickerModal({
   open,
   onClose,
@@ -85,7 +96,9 @@ export function ReferencePickerModal({
   role = 'reference',
   frameRole = null,
   onAttached,
+  onApply = null,
 }) {
+  const ephemeral = !!onApply;
   // The picker is in multi-select / reference-list mode either via role='reference'
   // (legacy row-level list) or via frameRole (per-frame list).
   const isReference = role === 'reference' || !!frameRole;
@@ -287,6 +300,11 @@ export function ReferencePickerModal({
 
   async function applyChanges() {
     if (busy) return;
+    if (ephemeral) {
+      onApply([...selectedIds]);
+      onClose?.();
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -334,6 +352,10 @@ export function ReferencePickerModal({
     : ROLE_TITLES[role] || 'Add image';
   const onPick = isReference ? toggle : pickSingle;
 
+  const ephemeralLabel =
+    selectedIds.size === 0
+      ? 'Apply'
+      : `Apply (${selectedIds.size} reference${selectedIds.size === 1 ? '' : 's'})`;
   const footer = isReference ? (
     <>
       <button onClick={onClose} disabled={busy}>
@@ -342,24 +364,28 @@ export function ReferencePickerModal({
       <button
         className="primary"
         onClick={applyChanges}
-        disabled={busy || noChanges}
+        disabled={busy || (!ephemeral && noChanges)}
       >
         {busy
           ? 'Saving…'
-          : noChanges
-            ? 'Apply'
-            : `Apply (${diffCount} change${diffCount === 1 ? '' : 's'})`}
+          : ephemeral
+            ? ephemeralLabel
+            : noChanges
+              ? 'Apply'
+              : `Apply (${diffCount} change${diffCount === 1 ? '' : 's'})`}
       </button>
     </>
   ) : (
     <button onClick={onClose}>Cancel</button>
   );
 
+  const visibleTabs = ephemeral ? EPHEMERAL_TABS : TABS;
+
   return (
     <Modal open={open} title={title} onClose={onClose} footer={footer}>
       <div className="ref-picker">
         <div className="ref-picker-tabs" role="tablist">
-          {TABS.map((t) => (
+          {visibleTabs.map((t) => (
             <button
               key={t.key}
               type="button"
@@ -517,6 +543,7 @@ function FrameBeatTab({ data, selectedIds, onPick, busy, isReference }) {
     sections.push({
       key: 'sibling',
       title: data.sibling_frame.label,
+      hint: `Adding the ${data.sibling_frame.label.toLowerCase()} attaches an independent snapshot — later edits to the ${data.sibling_frame.label.toLowerCase()} slot won't change this reference.`,
       items: [
         {
           _id: sid,
@@ -562,6 +589,17 @@ function FrameBeatTab({ data, selectedIds, onPick, busy, isReference }) {
       {sections.map((s) => (
         <section key={s.key} className="ref-picker-character">
           <h3 className="ref-picker-character-name">{s.title}</h3>
+          {s.hint && (
+            <p
+              style={{
+                margin: '0 0 8px',
+                fontSize: 12,
+                color: 'var(--fg-muted)',
+              }}
+            >
+              {s.hint}
+            </p>
+          )}
           <ThumbGrid
             items={s.items}
             selectedIds={selectedIds}

@@ -362,6 +362,8 @@ function FrameSlot({
         onClose={() => setEditOpen(false)}
         onDone={onRefresh}
         storyboardId={sbId}
+        beatId={beatId}
+        charactersInScene={charactersInScene}
         role={role}
         imageId={imageId}
         hasUndo={Boolean(previousImageId)}

@@ -1,5 +1,7 @@
-// Verifies dispatchImageReplace handles the new `referenceImages` parameter:
-// references are prepended to inputImages on each provider, and OpenAI routes
+// Verifies dispatchImageReplace handles the new `referenceImages` parameter.
+// In edit mode the existing image is the primary input (position 0) and the
+// user-supplied references follow as supplementary inputs — the dialog's
+// "current image = reference #1, extras start at #2" contract. OpenAI routes
 // through the edits endpoint whenever any input image is present (even in
 // 'generate' mode), which is the only safe way to feed references to that
 // provider.
@@ -61,7 +63,7 @@ const okOut = {
 };
 
 describe('dispatchImageReplace — nano-banana-pro with references', () => {
-  it('passes all references plus the existing image as inputImages in edit mode', async () => {
+  it('passes the existing image first, then references, in edit mode', async () => {
     falNanoBananaProMock.mockResolvedValue({ ...okOut, model: 'fal-ai/nano-banana-pro/edit' });
     await dispatchImageReplace({
       prompt: 'p',
@@ -73,9 +75,9 @@ describe('dispatchImageReplace — nano-banana-pro with references', () => {
     expect(falNanoBananaProMock).toHaveBeenCalledOnce();
     const arg = falNanoBananaProMock.mock.calls[0][0];
     expect(arg.inputImages).toHaveLength(3);
-    expect(arg.inputImages[0]).toBe(refA);
-    expect(arg.inputImages[1]).toBe(refB);
-    expect(arg.inputImages[2]).toBe(existing);
+    expect(arg.inputImages[0]).toBe(existing);
+    expect(arg.inputImages[1]).toBe(refA);
+    expect(arg.inputImages[2]).toBe(refB);
   });
 
   it('passes only references in generate mode (no existing image)', async () => {
@@ -103,7 +105,7 @@ describe('dispatchImageReplace — nano-banana-pro with references', () => {
 });
 
 describe('dispatchImageReplace — flux-pro-kontext with references', () => {
-  it('passes all references plus existing as inputImages', async () => {
+  it('passes existing image first, then references, as inputImages', async () => {
     falKontextMock.mockResolvedValue({ ...okOut, model: 'fal-ai/flux-pro/kontext' });
     await dispatchImageReplace({
       prompt: 'p',
@@ -115,8 +117,8 @@ describe('dispatchImageReplace — flux-pro-kontext with references', () => {
     expect(falKontextMock).toHaveBeenCalledOnce();
     const arg = falKontextMock.mock.calls[0][0];
     expect(arg.inputImages).toHaveLength(3);
-    expect(arg.inputImages[0]).toBe(refA);
-    expect(arg.inputImages[2]).toBe(existing);
+    expect(arg.inputImages[0]).toBe(existing);
+    expect(arg.inputImages[2]).toBe(refB);
   });
 });
 

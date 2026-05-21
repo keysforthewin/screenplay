@@ -108,8 +108,12 @@ import {
   undoArtworkEdit,
   deleteArtwork,
 } from './artworkJobs.js';
-import { patchArtworkViaGateway } from './gateway.js';
 import {
+  patchArtworkViaGateway,
+  createArtworkFromImageViaGateway,
+} from './gateway.js';
+import {
+  cleanupBeatImageReferences,
   countStoryboardsByBeat,
   getPreviousStoryboardInBeat,
   getStoryboard,
@@ -131,12 +135,14 @@ import {
   deleteImage,
   listLibraryImages,
   listImagesForBeat,
+  listImagesForCharacter,
   listImagesByOwnerType,
   imageFileToMeta,
   uploadGeneratedImage,
   findImageFile,
   readImageBuffer,
 } from '../mongo/images.js';
+import { copyImageToNewOwner } from '../mongo/imageCopy.js';
 import { validateImageBuffer } from '../mongo/imageBytes.js';
 import {
   listLibraryAttachments,
@@ -235,45 +241,32 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
 });
 
-// Duplicate a source GridFS image into a brand-new file owned by the target
-// entity. Used by the picker modal's "Character"/"Beats" tabs so cross-entity
-// picks don't disturb the source. Returns the embedded-gallery meta entry
-// (matches the shape the add*ImageViaGateway helpers expect).
-async function copyImageToNewOwner({ imageId, ownerType, ownerId, filenameBase }) {
-  const src = await readImageBuffer(imageId);
-  if (!src) {
-    const e = new Error(`source image not found: ${imageId}`);
-    e.status = 404;
-    throw e;
-  }
-  const { buffer, file } = src;
-  const contentType = file.contentType || file.metadata?.content_type || 'image/png';
-  const ext = (() => {
-    if (contentType.includes('jpeg')) return 'jpg';
-    if (contentType.includes('webp')) return 'webp';
-    return 'png';
-  })();
-  const newFile = await uploadGeneratedImage({
-    buffer,
-    contentType,
-    ownerType,
-    ownerId,
-    filename: `${filenameBase}-${Date.now()}.${ext}`,
-    prompt: file.metadata?.prompt || null,
-    generatedBy: file.metadata?.generated_by || null,
-    name: file.metadata?.name || '',
-    description: file.metadata?.description || '',
+// When the user adds the OPPOSITE frame slot's current image as a per-frame
+// reference for *this* frame's regen, snapshot the sibling's bytes into a
+// fresh GridFS image and store the copy's id in the reference list instead
+// of the live sibling id. Two reasons:
+//   1. The reference is decoupled from the sibling slot — later regens or
+//      removal of the sibling don't mutate or strand this reference.
+//   2. Image models can deduplicate inputs by content hash / identity, so
+//      passing a fresh copy with its own GridFS metadata makes the reference
+//      unambiguously distinct from anything else in the request.
+// Returns the original id when no copy is needed (id is not the sibling, no
+// sibling set, or the sibling was already in the existing reference list).
+async function maybeCopyFromSiblingFrame({ imageId, sb, role, existingRefs }) {
+  const siblingRole = role === 'start_frame' ? 'end_frame' : 'start_frame';
+  const siblingId = sb[`${siblingRole}_id`];
+  if (!siblingId) return imageId;
+  const idStr = String(imageId);
+  if (idStr !== String(siblingId)) return imageId;
+  if (existingRefs && existingRefs.has(idStr)) return imageId;
+  const sbIdStr = sb._id?.toString?.() || String(sb._id);
+  const copy = await copyImageToNewOwner({
+    imageId: idStr,
+    ownerType: 'beat',
+    ownerId: sb.beat_id,
+    filenameBase: `storyboard-${sbIdStr}-${role}-from-${siblingRole}`,
   });
-  return {
-    _id: newFile._id,
-    filename: newFile.filename,
-    content_type: newFile.content_type,
-    size: newFile.size,
-    source: file.metadata?.source || 'upload',
-    prompt: newFile.metadata?.prompt || null,
-    generated_by: newFile.metadata?.generated_by || null,
-    uploaded_at: newFile.uploaded_at,
-  };
+  return String(copy._id);
 }
 
 // Synthesize a discordUser-shaped object from the SPA session so token-usage
@@ -550,12 +543,54 @@ export function buildApiRouter() {
   // Every GridFS image owned by this beat — superset of beat.images[] because
   // it includes storyboard frames and reference uploads (those write to GridFS
   // with owner_type='beat' but don't mutate the embedded gallery array).
+  // Filters out thumbnails and artwork result images (the latter live on the
+  // beat's Artwork tab, so the References tab and frame picker shouldn't
+  // surface them as plain reference images).
   router.get('/beat/:id/images', async (req, res, next) => {
     try {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
-      const files = await listImagesForBeat(beatId);
-      const filtered = files.filter((f) => f.metadata?.kind !== 'thumbnail');
+      const [files, beat] = await Promise.all([
+        listImagesForBeat(beatId),
+        getBeat(beatId),
+      ]);
+      const artworkImageIds = new Set(
+        (beat?.artworks || [])
+          .flatMap((a) => [a?.result_image_id, a?.previous_result_image_id])
+          .filter(Boolean)
+          .map((id) => String(id)),
+      );
+      const filtered = files.filter(
+        (f) =>
+          f.metadata?.kind !== 'thumbnail'
+          && !artworkImageIds.has(String(f._id)),
+      );
+      res.json({ images: filtered.map(imageFileToMeta) });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Every GridFS image owned by this character — superset of character.images[]
+  // because it includes any orphan files that didn't land in the embedded
+  // gallery. Filters out thumbnails and artwork result images so the References
+  // tab stays disjoint from the Artwork tab.
+  router.get('/character/:id/images', async (req, res, next) => {
+    try {
+      const c = await getCharacter(req.params.id);
+      if (!c) return res.status(404).json({ error: 'character not found' });
+      const files = await listImagesForCharacter(c._id);
+      const artworkImageIds = new Set(
+        (c.artworks || [])
+          .flatMap((a) => [a?.result_image_id, a?.previous_result_image_id])
+          .filter(Boolean)
+          .map((aid) => String(aid)),
+      );
+      const filtered = files.filter(
+        (f) =>
+          f.metadata?.kind !== 'thumbnail'
+          && !artworkImageIds.has(String(f._id)),
+      );
       res.json({ images: filtered.map(imageFileToMeta) });
     } catch (e) {
       next(e);
@@ -857,6 +892,45 @@ export function buildApiRouter() {
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const result = await removeBeatImageViaGateway({ beatId, imageId: req.params.imageId });
       res.json(result);
+      announceBeatMedia({
+        req,
+        beat: await getBeat(beatId),
+        verb: 'deleted an image from',
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Delete a beat-owned GridFS image that is NOT in beat.images[] — i.e. a
+  // storyboard frame snapshot or per-frame reference upload. Cleans up
+  // dangling references in any storyboard rows on this beat (clears frame
+  // slots and pulls from reference lists), then removes the GridFS bytes.
+  router.delete('/beat/:id/orphan-image/:imageId', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const imageId = req.params.imageId;
+      if (!isOidHex(imageId)) return res.status(400).json({ error: 'invalid image id' });
+      const file = await findImageFile(imageId);
+      if (!file) return res.status(404).json({ error: 'image not found' });
+      const ownerType = file.metadata?.owner_type;
+      const ownerId = file.metadata?.owner_id?.toString?.();
+      if (ownerType !== 'beat' || ownerId !== String(beatId)) {
+        return res.status(409).json({ error: 'image is not owned by this beat' });
+      }
+      const beat = await getBeat(beatId);
+      const inGallery = (beat?.images || []).some(
+        (i) => (i._id?.toString?.() || String(i._id)) === String(imageId),
+      );
+      if (inGallery) {
+        return res.status(409).json({
+          error: 'image is in beat.images[] — use DELETE /beat/:id/image/:imageId',
+        });
+      }
+      await cleanupBeatImageReferences(beatId, imageId);
+      await deleteImage(imageId);
+      res.json({ ok: true });
       announceBeatMedia({
         req,
         beat: await getBeat(beatId),
@@ -1345,6 +1419,45 @@ export function buildApiRouter() {
     }
   });
 
+  // Delete a character-owned GridFS image that is NOT in character.images[] —
+  // a counterpart to the beat orphan-image route. Characters don't own
+  // storyboards, so no cross-collection cleanup is needed; we just verify
+  // ownership and drop the bytes.
+  router.delete('/character/:id/orphan-image/:imageId', async (req, res, next) => {
+    try {
+      const cid = await resolveCharacterId(req);
+      if (!cid) return res.status(404).json({ error: 'character not found' });
+      const imageId = req.params.imageId;
+      if (!isOidHex(imageId)) return res.status(400).json({ error: 'invalid image id' });
+      const file = await findImageFile(imageId);
+      if (!file) return res.status(404).json({ error: 'image not found' });
+      const ownerType = file.metadata?.owner_type;
+      const ownerId = file.metadata?.owner_id?.toString?.();
+      if (ownerType !== 'character' || ownerId !== String(cid)) {
+        return res.status(409).json({ error: 'image is not owned by this character' });
+      }
+      const character = await getCharacter(cid);
+      const inGallery = (character?.images || []).some(
+        (i) => (i._id?.toString?.() || String(i._id)) === String(imageId),
+      );
+      if (inGallery) {
+        return res.status(409).json({
+          error:
+            'image is in character.images[] — use DELETE /character/:id/image/:imageId',
+        });
+      }
+      await deleteImage(imageId);
+      res.json({ ok: true });
+      announceCharacterMedia({
+        req,
+        character: await getCharacter(cid),
+        verb: 'deleted an image from',
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // Replace a character's image with a model-generated one. See the beat-side
   // route above for the full body shape — this is the parallel endpoint.
   router.post('/character/:id/image/:imageId/regenerate', async (req, res, next) => {
@@ -1817,6 +1930,94 @@ export function buildApiRouter() {
       }
     });
 
+    // POST /<host>/:id/artwork/from-image — import an existing GridFS image
+    // as a brand-new done artwork. Used by the unified artwork picker's
+    // non-Generate tabs (existing artwork, beat refs, characters, library).
+    // Cross-owner imports snapshot the bytes; same-owner reuses the id.
+    router.post(`${basePath}/:id/artwork/from-image`, async (req, res, next) => {
+      try {
+        const hostId = await resolveHostId(req);
+        if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
+        const imageId = String(req.body?.image_id || '').trim();
+        if (!isOidHex(imageId)) {
+          return res.status(400).json({ error: 'image_id (24-hex) required' });
+        }
+        const name = String(req.body?.name || '').slice(0, 200);
+        const { artwork } = await createArtworkFromImageViaGateway({
+          hostType,
+          hostId,
+          imageId,
+          name,
+        });
+        res.json({ artwork });
+        if (hostType === 'beat') {
+          announceBeatMedia({
+            req,
+            beat: await getBeat(hostId),
+            verb: 'imported artwork to',
+          });
+        } else if (hostType === 'character') {
+          announceCharacterMedia({
+            req,
+            character: await getCharacter(hostId),
+            verb: 'imported artwork to',
+          });
+        }
+      } catch (e) {
+        handleArtworkError(e, res, next);
+      }
+    });
+
+    // POST /<host>/:id/artwork/from-upload — upload a file and import it as
+    // a done artwork in one step. Same as from-image but the source bytes
+    // come from the request body instead of an existing GridFS file.
+    router.post(
+      `${basePath}/:id/artwork/from-upload`,
+      upload.single('file'),
+      async (req, res, next) => {
+        try {
+          const hostId = await resolveHostId(req);
+          if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
+          if (!req.file) return res.status(400).json({ error: 'file required' });
+          validateImageBuffer(req.file.buffer);
+          const name = String(req.body?.name || '').slice(0, 200);
+          const file = await uploadGeneratedImage({
+            buffer: req.file.buffer,
+            contentType: req.file.mimetype,
+            ownerType: hostType,
+            ownerId: hostId,
+            filename: safeFilename(
+              req.file.originalname,
+              `${hostType}-${hostId}-artwork-upload-${Date.now()}.png`,
+            ),
+            name,
+          });
+          const { artwork } = await createArtworkFromImageViaGateway({
+            hostType,
+            hostId,
+            imageId: file._id,
+            name,
+          });
+          res.json({ artwork });
+          if (hostType === 'beat') {
+            announceBeatMedia({
+              req,
+              beat: await getBeat(hostId),
+              verb: 'imported artwork to',
+            });
+          } else if (hostType === 'character') {
+            announceCharacterMedia({
+              req,
+              character: await getCharacter(hostId),
+              verb: 'imported artwork to',
+            });
+          }
+        } catch (e) {
+          handleArtworkError(e, res, next);
+        }
+      },
+    );
+
     // POST /<host>/:id/artwork/:artworkId/regenerate — fresh provider call
     // on an existing artwork. The user can change prompt/model/refs.
     router.post(`${basePath}/:id/artwork/:artworkId/regenerate`, async (req, res, next) => {
@@ -1849,7 +2050,9 @@ export function buildApiRouter() {
     // POST /<host>/:id/artwork/:artworkId/edit — in-line edit. Takes a prompt
     // and optional `model` (defaults to nano-banana-pro); uses the artwork's
     // current result_image_id as the input image. The old result becomes
-    // previous_result_image_id for one-step undo.
+    // previous_result_image_id for one-step undo. Optional
+    // `reference_image_ids[]` are passed alongside the existing image so the
+    // model can incorporate them.
     router.post(`${basePath}/:id/artwork/:artworkId/edit`, async (req, res, next) => {
       try {
         const hostId = await resolveHostId(req);
@@ -1865,12 +2068,17 @@ export function buildApiRouter() {
         if (!isValidImageModel(model)) {
           return res.status(400).json({ error: IMAGE_MODEL_ERROR });
         }
+        const refs = await loadReferenceImages(req.body?.reference_image_ids);
+        if (refs.error) {
+          return res.status(refs.status || 400).json({ error: refs.error });
+        }
         const artwork = await startEditArtworkJob({
           hostType,
           hostId,
           artworkId,
           prompt,
           model,
+          referenceImageIds: refs.ids,
           discordUser: webDiscordUser(req),
           announceUsername: req?.session?.username || null,
         });
@@ -1986,6 +2194,56 @@ export function buildApiRouter() {
             result_image_id: a.result_image_id,
           })),
       }));
+      res.json({ beats: out });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Picker support for the Character page artwork picker — same shape as
+  // /beats/with-artwork but filtered to beats that feature the given
+  // character (resolved by name via findCharactersInBeat, mirroring the
+  // renderer's matching path).
+  router.get('/beats-featuring-character', async (req, res, next) => {
+    try {
+      const characterId = String(req.query?.character_id || '').trim();
+      if (!isOidHex(characterId)) {
+        return res.status(400).json({ error: 'character_id (24-hex) required' });
+      }
+      const target = await getCharacter(characterId);
+      if (!target) return res.status(404).json({ error: 'character not found' });
+      const targetIdStr = target._id?.toString?.() || String(target._id);
+      const { findCharactersInBeat } = await import('./storyboardGenerate.js');
+      const beats = await listBeats();
+      const out = [];
+      for (const b of beats) {
+        const chars = await findCharactersInBeat(b);
+        const features = chars.some(
+          (c) => (c._id?.toString?.() || String(c._id)) === targetIdStr,
+        );
+        if (!features) continue;
+        out.push({
+          _id: b._id,
+          order: b.order,
+          name: b.name,
+          desc: b.desc,
+          images: (b.images || []).map((img) => ({
+            _id: img._id,
+            filename: img.filename,
+            name: img.name,
+            description: img.description,
+            content_type: img.content_type,
+          })),
+          artworks: (b.artworks || [])
+            .filter((a) => a.status === 'done' && a.result_image_id)
+            .map((a) => ({
+              _id: a._id,
+              name: a.name,
+              prompt: a.prompt,
+              result_image_id: a.result_image_id,
+            })),
+        });
+      }
       res.json({ beats: out });
     } catch (e) {
       next(e);
@@ -2556,6 +2814,10 @@ export function buildApiRouter() {
       if (raw.length > 1024) {
         return res.status(400).json({ error: 'prompt must be ≤ 1024 chars' });
       }
+      const refs = await loadReferenceImages(req.body?.reference_image_ids);
+      if (refs.error) {
+        return res.status(refs.status || 400).json({ error: refs.error });
+      }
       const {
         startFrameGenerationJob,
         BeatBusyError,
@@ -2569,6 +2831,7 @@ export function buildApiRouter() {
           imageModel: model,
           mode: 'edit',
           editPrompt: raw,
+          editReferenceImageIds: refs.ids,
           rotateToPrevious: true,
           announceUsername: req?.session?.username || null,
         });
@@ -2844,14 +3107,34 @@ export function buildApiRouter() {
         }
         const file = await findImageFile(imageId);
         if (!file) return res.status(404).json({ error: 'image not found' });
+        const sb = await getStoryboard(sbId);
+        if (!sb) return res.status(404).json({ error: 'storyboard not found' });
+        const refField =
+          role === 'start_frame'
+            ? 'start_frame_reference_ids'
+            : 'end_frame_reference_ids';
+        const existingRefs = new Set(
+          (sb[refField] || []).map((x) => String(x)),
+        );
+        const finalImageId = await maybeCopyFromSiblingFrame({
+          imageId,
+          sb,
+          role,
+          existingRefs,
+        });
+        const finalFile =
+          finalImageId === imageId ? file : await findImageFile(finalImageId);
         const result = await addStoryboardFrameReferenceImageViaGateway({
           storyboardId: sbId,
           role,
-          imageId,
+          imageId: finalImageId,
         });
         res.json({
           storyboard: result,
-          image: { _id: imageId, content_type: file.contentType || null },
+          image: {
+            _id: finalImageId,
+            content_type: finalFile?.contentType || null,
+          },
         });
       } catch (e) {
         next(e);
@@ -2924,10 +3207,30 @@ export function buildApiRouter() {
           }
           cleaned.push(s);
         }
+        const sb = await getStoryboard(sbId);
+        if (!sb) return res.status(404).json({ error: 'storyboard not found' });
+        const refField =
+          role === 'start_frame'
+            ? 'start_frame_reference_ids'
+            : 'end_frame_reference_ids';
+        const existingRefs = new Set(
+          (sb[refField] || []).map((x) => String(x)),
+        );
+        const transformed = [];
+        for (const id of cleaned) {
+          transformed.push(
+            await maybeCopyFromSiblingFrame({
+              imageId: id,
+              sb,
+              role,
+              existingRefs,
+            }),
+          );
+        }
         const storyboard = await setStoryboardFrameReferenceImagesViaGateway({
           storyboardId: sbId,
           role,
-          imageIds: cleaned,
+          imageIds: transformed,
           mode: 'replace',
         });
         res.json({ storyboard });
@@ -3219,6 +3522,10 @@ export function buildApiRouter() {
           : null;
       const generateAudio =
         req.body?.generate_audio === undefined ? true : Boolean(req.body.generate_audio);
+      const includeDirectorNotes =
+        req.body?.include_director_notes === undefined
+          ? true
+          : Boolean(req.body.include_director_notes);
       const resolution = parseResolutionField(req.body?.resolution, res);
       if (resolution === ERR) return; // response already sent
       const fps = parseFpsField(req.body?.fps, res);
@@ -3232,6 +3539,7 @@ export function buildApiRouter() {
           generateAudio,
           resolution,
           fps,
+          includeDirectorNotes,
         });
         res.json(preview);
       } catch (e) {
@@ -3279,6 +3587,10 @@ export function buildApiRouter() {
           : null;
       const generateAudio =
         req.body?.generate_audio === undefined ? true : Boolean(req.body.generate_audio);
+      const includeDirectorNotes =
+        req.body?.include_director_notes === undefined
+          ? true
+          : Boolean(req.body.include_director_notes);
       const resolution = parseResolutionField(req.body?.resolution, res);
       if (resolution === ERR) return; // response already sent
       const fps = parseFpsField(req.body?.fps, res);
@@ -3292,6 +3604,7 @@ export function buildApiRouter() {
           generateAudio,
           resolution,
           fps,
+          includeDirectorNotes,
           announceUsername: req?.session?.username || null,
         });
         res.status(202).json({ job_id });

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ArtworkDialog } from './ArtworkDialog.jsx';
 import { ArtworkEditDialog } from './ArtworkEditDialog.jsx';
+import { ArtworkPickerModal } from './ArtworkPickerModal.jsx';
 import { apiDelete, apiPatchJson, apiPostJson, imageUrl, thumbUrl } from '../api.js';
 
 // Generalized artwork tab — works for both character and beat hosts.
@@ -290,12 +291,20 @@ export function ArtworkTab({
         </div>
       )}
 
+      <ArtworkPickerModal
+        open={creating}
+        onClose={() => setCreating(false)}
+        onDone={onChange}
+        hostType={hostType}
+        hostId={hostId}
+        hostLabel={hostLabel}
+        hostImages={hostImages}
+        hostArtworks={hostArtworks}
+      />
+
       <ArtworkDialog
-        open={creating || regenerating != null}
-        onClose={() => {
-          setCreating(false);
-          setRegenerating(null);
-        }}
+        open={regenerating != null}
+        onClose={() => setRegenerating(null)}
         onDone={onChange}
         hostType={hostType}
         hostId={hostId}
@@ -311,6 +320,9 @@ export function ArtworkTab({
         onDone={onChange}
         hostType={hostType}
         hostId={hostId}
+        hostLabel={hostLabel}
+        hostImages={hostImages}
+        hostArtworks={hostArtworks}
         artwork={latestArtwork(editing)}
       />
     </div>

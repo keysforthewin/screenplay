@@ -8,8 +8,9 @@ import { AttachmentList } from '../widgets/AttachmentList.jsx';
 import { BeatCharacters } from '../widgets/BeatCharacters.jsx';
 import { ArtworkTab } from '../widgets/ArtworkTab.jsx';
 import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
+import { ReferenceExtrasSection } from '../widgets/ReferenceExtrasSection.jsx';
 
-const TABS = ['characters', 'background', 'attachments', 'artwork'];
+const TABS = ['characters', 'background', 'attachments', 'references', 'artwork'];
 
 function readInitialTab() {
   if (typeof window === 'undefined') return 'background';
@@ -22,6 +23,7 @@ export function Beat({ session }) {
   const navigate = useNavigate();
   const [beat, setBeat] = useState(null);
   const [toc, setToc] = useState(null);
+  const [allBeatImages, setAllBeatImages] = useState([]);
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [activeTab, setActiveTab] = useState(readInitialTab);
@@ -36,10 +38,11 @@ export function Beat({ session }) {
           apiGet(`/beat?order=${encodeURIComponent(order)}`),
           apiGet('/toc'),
         ]);
-        if (!cancelled) {
-          setBeat(r.beat);
-          setToc(t);
-        }
+        if (cancelled) return;
+        setBeat(r.beat);
+        setToc(t);
+        const imgs = await apiGet(`/beat/${r.beat._id}/images`);
+        if (!cancelled) setAllBeatImages(imgs.images || []);
       } catch (e) {
         if (!cancelled) setError(e.message);
       }
@@ -67,6 +70,13 @@ export function Beat({ session }) {
   }
 
   const room = beat?._id ? `beat:${beat._id}` : null;
+
+  const beatImageIds = new Set(
+    (beat?.images || []).map((i) => i._id?.toString?.() || String(i._id)),
+  );
+  const extraReferenceImages = allBeatImages.filter(
+    (img) => !beatImageIds.has(img._id?.toString?.() || String(img._id)),
+  );
 
   function onRefresh() { setRefreshKey((k) => k + 1); }
 
@@ -179,6 +189,20 @@ export function Beat({ session }) {
           />
         </div>
 
+        <div className="tab-panel" hidden={activeTab !== 'references'}>
+          <p className="tab-intro">
+            Reference images attached to this beat by its storyboards — frame
+            snapshots and per-frame uploads. Manage gallery images on the
+            Attachments tab.
+          </p>
+          <ReferenceExtrasSection
+            items={extraReferenceImages}
+            deletePath={(id) => `/beat/${beat._id}/orphan-image/${id}`}
+            onChange={onRefresh}
+            emptyText="No storyboard reference images on this beat yet."
+          />
+        </div>
+
         <div className="tab-panel" hidden={activeTab !== 'artwork'}>
           <ArtworkTab
             hostType="beat"
@@ -202,6 +226,7 @@ function tabLabel(tab) {
     case 'characters': return 'Characters';
     case 'background': return 'Background';
     case 'attachments': return 'Attachments';
+    case 'references': return 'References';
     case 'artwork': return 'Artwork';
     default: return tab;
   }

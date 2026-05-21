@@ -55,7 +55,8 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
   const [duration, setDuration] = useState(null);
   const [resolution, setResolution] = useState(null);
   const [fps, setFps] = useState(24);
-  const [generateAudio, setGenerateAudio] = useState(true);
+  const [generateAudio, setGenerateAudio] = useState(false);
+  const [includeDirectorNotes, setIncludeDirectorNotes] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState(null);
   const [job, setJob] = useState(null);
@@ -119,6 +120,8 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     setGenerating(false);
     setPreview(null);
     setPreviewLoading(false);
+    setGenerateAudio(false);
+    setIncludeDirectorNotes(true);
     setActiveFacets({ ...EMPTY_FACETS });
     // Prefer the live y-doc fragment text over the (possibly stale) sb prop:
     // sb.text_prompt comes from the last REST fetch, which lags any in-flight
@@ -234,6 +237,7 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     };
     if (duration != null) body.duration_seconds = duration;
     if (chosenModel.supports_generate_audio) body.generate_audio = generateAudio;
+    body.include_director_notes = includeDirectorNotes;
     if (shouldShowResolution(chosenModel) && resolution) {
       body.resolution = resolution;
     }
@@ -482,6 +486,21 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
               </span>
             </label>
           ) : null}
+
+          <label
+            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+            title="Append the project-wide director's notes to the prompt sent to fal."
+          >
+            <input
+              type="checkbox"
+              checked={includeDirectorNotes}
+              disabled={generating}
+              onChange={(e) => setIncludeDirectorNotes(e.target.checked)}
+            />
+            <span className="field-label" style={{ margin: 0 }}>
+              Include director's notes
+            </span>
+          </label>
 
           {chosenModel ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>

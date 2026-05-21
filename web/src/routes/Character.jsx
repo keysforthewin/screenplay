@@ -7,8 +7,9 @@ import { ImageGallery } from '../widgets/ImageGallery.jsx';
 import { AttachmentList } from '../widgets/AttachmentList.jsx';
 import { ArtworkTab } from '../widgets/ArtworkTab.jsx';
 import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
+import { ReferenceExtrasSection } from '../widgets/ReferenceExtrasSection.jsx';
 
-const TABS = ['background', 'attachments', 'artwork'];
+const TABS = ['background', 'attachments', 'references', 'artwork'];
 
 function readInitialTab() {
   if (typeof window === 'undefined') return 'background';
@@ -21,6 +22,7 @@ export function Character({ session }) {
   const navigate = useNavigate();
   const [character, setCharacter] = useState(null);
   const [template, setTemplate] = useState(null);
+  const [allCharacterImages, setAllCharacterImages] = useState([]);
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [activeTab, setActiveTab] = useState(readInitialTab);
@@ -38,6 +40,8 @@ export function Character({ session }) {
         if (cancelled) return;
         setCharacter(c.character);
         setTemplate(t.character_template);
+        const imgs = await apiGet(`/character/${c.character._id}/images`);
+        if (!cancelled) setAllCharacterImages(imgs.images || []);
       } catch (e) {
         if (!cancelled) setError(e.message);
       }
@@ -73,6 +77,13 @@ export function Character({ session }) {
 
   const room = `character:${character._id}`;
   const customFields = (template.fields || []).filter((f) => !f.core);
+
+  const characterImageIds = new Set(
+    (character.images || []).map((i) => i._id?.toString?.() || String(i._id)),
+  );
+  const extraReferenceImages = allCharacterImages.filter(
+    (img) => !characterImageIds.has(img._id?.toString?.() || String(img._id)),
+  );
 
   return (
     <main className="app">
@@ -176,6 +187,20 @@ export function Character({ session }) {
           />
         </div>
 
+        <div className="tab-panel" hidden={activeTab !== 'references'}>
+          <p className="tab-intro">
+            Reference images attached to this character outside the gallery —
+            typically generated or imported orphans. Manage gallery images on
+            the Attachments tab.
+          </p>
+          <ReferenceExtrasSection
+            items={extraReferenceImages}
+            deletePath={(id) => `/character/${character._id}/orphan-image/${id}`}
+            onChange={onRefresh}
+            emptyText="No orphan reference images for this character."
+          />
+        </div>
+
         <div className="tab-panel" hidden={activeTab !== 'artwork'}>
           <ArtworkTab
             hostType="character"
@@ -198,6 +223,7 @@ function tabLabel(tab) {
   switch (tab) {
     case 'background': return 'Background';
     case 'attachments': return 'Attachments';
+    case 'references': return 'References';
     case 'artwork': return 'Artwork';
     default: return tab;
   }

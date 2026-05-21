@@ -36,6 +36,7 @@ import {
   uploadAttachmentBuffer,
 } from '../mongo/attachments.js';
 import { getStoryboard as mongoGetStoryboard } from '../mongo/storyboards.js';
+import { getDirectorNotes } from '../mongo/directorNotes.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { setStoryboardVideoViaGateway } from './gateway.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
@@ -165,6 +166,7 @@ export async function startVideoGenerationJob({
   generateAudio = true,
   resolution = null,
   fps = null,
+  includeDirectorNotes = true,
   announceUsername = null,
 } = {}) {
   if (!falIsConfigured()) {
@@ -215,6 +217,7 @@ export async function startVideoGenerationJob({
       generateAudio,
       resolution,
       fps,
+      includeDirectorNotes,
       announceUsername,
     }),
   )
@@ -383,6 +386,7 @@ export async function buildVideoPayloadPreview({
   generateAudio = true,
   resolution = null,
   fps = null,
+  includeDirectorNotes = true,
 } = {}) {
   if (!falIsConfigured()) {
     throw new FalNotConfiguredError();
@@ -450,7 +454,8 @@ export async function buildVideoPayloadPreview({
     }
   }
 
-  const finalPrompt = buildPrompt({ override: prompt, storyboard: sb });
+  const directorNotes = includeDirectorNotes ? await loadDirectorNotesForPrompt() : null;
+  const finalPrompt = buildPrompt({ override: prompt, storyboard: sb, directorNotes });
   const finalDuration = pickDurationSeconds({
     requested: durationSeconds,
     storyboard: sb,
@@ -549,6 +554,7 @@ async function runVideoGenerationJob({
   generateAudio,
   resolution = null,
   fps = null,
+  includeDirectorNotes = true,
   announceUsername = null,
 }) {
   try {
@@ -579,8 +585,9 @@ async function runVideoGenerationJob({
       : [];
 
     // 2. Build the model-specific input from the unified bundle.
+    const directorNotes = includeDirectorNotes ? await loadDirectorNotesForPrompt() : null;
     const bundle = {
-      prompt: buildPrompt({ override: prompt, storyboard }),
+      prompt: buildPrompt({ override: prompt, storyboard, directorNotes }),
       startFrameUrl,
       endFrameUrl,
       characterSheetUrl,
@@ -770,12 +777,42 @@ async function fetchVideoBytes(videoUrl) {
   return { buffer: Buffer.from(ab), contentType: ct };
 }
 
-function buildPrompt({ override, storyboard }) {
+function buildPrompt({ override, storyboard, directorNotes = null }) {
   const raw =
     (typeof override === 'string' && override.trim()) ||
     stripMarkdown(storyboard.text_prompt || '').trim() ||
     'Cinematic shot.';
-  return raw;
+  const notesBlock = formatDirectorNotesBlock(directorNotes);
+  return notesBlock ? `${raw}\n\n${notesBlock}` : raw;
+}
+
+// Pull the project-wide director's notes once per submit. Returns the bare
+// notes array (possibly empty) so buildPrompt can format it; we don't pass
+// the whole doc to avoid leaking unrelated fields.
+async function loadDirectorNotesForPrompt() {
+  try {
+    const doc = await getDirectorNotes();
+    return Array.isArray(doc?.notes) ? doc.notes : [];
+  } catch (e) {
+    logger.warn(`fal video gen: failed to load director notes: ${e.message}`);
+    return [];
+  }
+}
+
+// Same shape used by the storyboard planner — one bullet per note,
+// markdown stripped, blanks dropped. Returns null when there's nothing to
+// append so buildPrompt can skip the trailing newlines.
+function formatDirectorNotesBlock(notes) {
+  if (!Array.isArray(notes) || !notes.length) return null;
+  const items = notes
+    .map((n) => {
+      const text = stripMarkdown(typeof n?.text === 'string' ? n.text : '').trim();
+      return text || null;
+    })
+    .filter(Boolean);
+  if (!items.length) return null;
+  const bullets = items.map((t) => `- ${t}`).join('\n');
+  return `Director's notes (project-wide guidance — apply to this shot):\n${bullets}`;
 }
 
 // Build the `parameters` snapshot we persist on the storyboard. The

@@ -111,13 +111,14 @@ async function runProviderForGenerate({ prompt, model, referenceImages, discordU
   });
 }
 
-async function runProviderForEdit({ prompt, model, existingImage, discordUser, channelId }) {
+async function runProviderForEdit({ prompt, model, existingImage, referenceImages = [], discordUser, channelId }) {
   const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
   return dispatchImageReplace({
     prompt,
     mode: 'edit',
     model,
     existingImage,
+    referenceImages,
     discordUser,
     channelId,
   });
@@ -287,6 +288,7 @@ export async function startEditArtworkJob({
   artworkId,
   prompt,
   model = DEFAULT_ARTWORK_MODEL,
+  referenceImageIds = [],
   discordUser = null,
   channelId = null,
   announceUsername = null,
@@ -312,6 +314,7 @@ export async function startEditArtworkJob({
       prompt,
       model,
       currentResultImageId: artwork.result_image_id,
+      referenceImageIds,
       discordUser,
       channelId,
       announceUsername,
@@ -328,6 +331,7 @@ async function runEdit(opts) {
     prompt,
     model,
     currentResultImageId,
+    referenceImageIds = [],
     discordUser,
     channelId,
     announceUsername,
@@ -341,10 +345,12 @@ async function runEdit(opts) {
       throw new Error(`Current result image ${currentResultImageId} not found in GridFS`);
     }
     const declared = r.file.contentType || r.file.metadata?.contentType || 'image/png';
+    const referenceImages = await loadImageBuffers(referenceImageIds);
     const result = await runProviderForEdit({
       prompt,
       model,
       existingImage: { buffer: r.buffer, contentType: declared },
+      referenceImages,
       discordUser,
       channelId,
     });

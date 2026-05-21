@@ -53,8 +53,9 @@ const SIMPLE_PLAN = {
   frames: [
     {
       description: 'one',
-      start_prompt: 's1',
-      end_prompt: 'e1',
+      video_prompt: 'v1',
+      start_frame_prompt: 's1',
+      end_frame_prompt: 'e1',
       characters_in_scene: [],
     },
   ],

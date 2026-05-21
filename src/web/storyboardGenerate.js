@@ -5,20 +5,28 @@
 // "storyboards:<beatId>" room as each storyboard is persisted.
 //
 // Pipeline:
-//   1. Anthropic call: break the beat body / desc / characters into a
-//      prioritized list of N storyboard segments. Each segment specifies a
-//      visual prompt, the characters in the shot, and a brief end-frame
-//      variation cue.
-//   2. For each segment, sequentially (so each frame's start can use the
-//      previous frame's end as a continuity reference):
-//      - Collect input reference images: each character's character_sheet_image
-//        (or main image), plus the beat's main image (set/scene context), plus
-//        the previous shot's end frame on frames 2+.
-//      - Call Nano Banana once for the start frame, once for the end frame.
-//      - Persist a storyboard row via the gateway, then broadcast a ping.
+//   1. Outline pass (Anthropic): break the beat body / desc / characters into
+//      an ordered shot list. Each entry has a one-sentence description of what
+//      happens in the clip, a shot_type, duration, and the characters in
+//      frame. No detailed visual prompts yet.
+//   2. Refine pass (Anthropic), one call per frame in narrative order so each
+//      call sees its predecessors. Each call produces three outputs:
+//      - video_prompt        — the clip-gen prompt (motion / action / camera
+//                              move during the clip, assuming the start frame
+//                              image already exists). Stored as text_prompt
+//                              and sent verbatim to the video model.
+//      - start_frame_prompt  — still-image prompt for the opening composition.
+//                              Seeds the SPA's start-frame slot.
+//      - end_frame_prompt    — still-image prompt for the closing composition.
+//                              Seeds the SPA's end-frame slot (used by video
+//                              models that take end-frame conditioning).
+//   3. Persist one storyboard row per frame via the gateway. The y-doc
+//      fragments for text_prompt, start_frame_prompt, and end_frame_prompt
+//      are seeded from the refiner output. No images are generated here —
+//      the user triggers per-frame stills + video gen from the SPA.
 //
-// Errors in a single segment are swallowed (logged) so other segments still
-// land — the model can re-run "generate" and just fill in missing frames.
+// Errors in a single frame are swallowed (logged) so other frames still land —
+// the user can re-run "generate" and just fill in missing rows.
 
 import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
@@ -89,15 +97,16 @@ export async function loadDirectorNotesForPlanner() {
 }
 
 // Stage A: outline-only tool. Produces the shot list (description, shot_type,
-// duration, transition_in, characters_in_scene) but NOT the start/end visual
-// prompts — those move to Stage B where each frame gets its own focused call.
+// duration, transition_in, characters_in_scene) but NOT the detailed video /
+// still-image prompts — those move to Stage B where each frame gets its own
+// focused call.
 const OUTLINE_TOOL = {
   name: 'plan_storyboard_outline',
   description:
     'Break the beat into an ordered shot list. For each frame, pick a description, ' +
     'shot_type, on-screen duration, and (when relevant) the characters visible in ' +
     'frame and how the cut picks up from the previous shot. Do NOT write the ' +
-    'detailed start/end visual prompts — those are produced in a separate pass.',
+    'detailed video / still-image prompts — those are produced in a separate per-frame pass.',
   input_schema: {
     type: 'object',
     properties: {
@@ -146,9 +155,11 @@ const OUTLINE_TOOL = {
                 'True if this is a reveal shot whose video should be played in reverse during post. ' +
                 'AI video models cannot synthesize forward reveals coherently (a pan that lands on a previously-hidden ' +
                 'subject glitches as the model tries to spatially anchor the new element). Workaround: generate the ' +
-                'shot backwards — the description / start_prompt describe the FINAL revealed state (subject centered, ' +
-                'fully visible) and the end_prompt describes the INITIAL hidden state (camera pulled back, subject ' +
-                'small or partially obscured). The clip is then reversed in post and from the audience\'s perspective ' +
+                'shot backwards — write the `description` as the REVERSED action that the camera and subject perform ' +
+                'during generation (subject starts centered and fully visible, then exits / shrinks / is occluded ' +
+                'as the clip plays). The per-frame refiner will then invert the still-image prompts to match (start frame = ' +
+                'final revealed state, end frame = initial hidden state) and write the video prompt as the camera ' +
+                'move in generation direction. The clip is reversed in post and from the audience\'s perspective ' +
                 'the camera discovers the subject. Default false. Use sparingly, only for shots whose dramatic intent ' +
                 'is a reveal.',
             },
@@ -166,32 +177,48 @@ const OUTLINE_TOOL = {
 // Stage B: per-frame visual prompt refinement. Called once per frame in
 // narrative order so each call sees its predecessor's refined prompts and can
 // compose match cuts / motion vectors against the actual neighbor text.
+//
+// Three outputs per call:
+//   - video_prompt        — what happens in the clip. Assumes the start frame
+//                           image exists; describes camera motion + subject
+//                           action. This is what gets sent to the video model.
+//   - start_frame_prompt  — still-image prompt for the opening composition.
+//   - end_frame_prompt    — still-image prompt for the closing composition
+//                           (same shot, motion progressed) — useful for video
+//                           models that condition on a final frame.
 const REFINE_TOOL = {
   name: 'refine_storyboard_frame',
   description:
-    'Produce the START-frame and END-frame visual prompts for ONE storyboard frame, ' +
-    'given the full outline and the previously refined frames. ' +
-    'The END frame is the same shot a beat or two later (motion progression), NOT a different shot.',
+    'Produce the video-gen prompt and the start-frame / end-frame still-image prompts ' +
+    'for ONE storyboard frame, given the full outline and the previously refined frames. ' +
+    'The video_prompt describes what HAPPENS in the clip (camera + subject motion) assuming ' +
+    'the start frame already exists. The start_frame_prompt and end_frame_prompt are static ' +
+    'image descriptions for the opening and closing compositions of the same shot.',
   input_schema: {
     type: 'object',
     properties: {
-      start_prompt: {
+      video_prompt: {
         type: 'string',
         description:
-          'Concrete visual prompt for the START frame: subject, action, framing, lighting, mood. ~2 sentences.',
+          'Clip-gen prompt for the image-to-video model. Assume the start frame image already exists; describe what HAPPENS during the clip — camera motion (or hold), subject action, what changes. ~2 sentences. Do NOT re-describe the start composition (that is already locked in by the start frame image); lead with the motion. Example: "Sarah turns her head a quarter to look toward the doorway; camera holds. Hair settles, breath visible." One simple camera motion per shot, or none. No reveals, no rotations, no two-subject contact, no readable text — see the system prompt\'s video constraints.',
       },
-      end_prompt: {
+      start_frame_prompt: {
         type: 'string',
         description:
-          'Concrete visual prompt for the END frame (a small variation showing motion progression from the start). ~2 sentences.',
+          'Concrete still-image prompt for the START frame: subject, action, framing, lighting, mood. ~2 sentences. Will be passed to the image generator together with character/set reference photos — do not re-describe face/wardrobe/location.',
+      },
+      end_frame_prompt: {
+        type: 'string',
+        description:
+          'Concrete still-image prompt for the END frame (the same shot moments later, showing motion progression from the start). Same camera, same composition, slightly different pose/position. NOT a different angle, NOT a different beat. ~2 sentences.',
       },
       reverse_in_post: {
         type: 'boolean',
         description:
-          'Optional override. Set to TRUE if you detect that the outline frame requires a reveal-in-reverse but was not marked reverse_in_post by the outline planner — i.e. the end_prompt would have to contain a new subject / new element / a camera move that arrives on a subject that was not visible at the start. When you set this to true, you MUST invert the temporal direction: write the start_prompt as the FINAL revealed state (subject centered, fully visible) and the end_prompt as the INITIAL hidden state (camera pulled back / subject exited / element occluded). Set to FALSE only if you explicitly disagree with an outline that marked reverse_in_post: true. Omit (leave undefined) to inherit the outline\'s value.',
+          'Optional override. Set to TRUE if you detect that the outline frame requires a reveal-in-reverse but was not marked reverse_in_post by the outline planner — i.e. the shot would have to contain a new subject / new element / a camera move that arrives on a subject that was not visible at the start. When you set this to true, you MUST invert the temporal direction across all three outputs: write start_frame_prompt as the FINAL revealed state (subject centered, fully visible), end_frame_prompt as the INITIAL hidden state (camera pulled back / subject exited / element occluded), and video_prompt as the camera move IN GENERATION DIRECTION (push-in, subject shrinks/exits) — the clip will be reversed in post and the audience experiences the reveal. Set to FALSE only if you explicitly disagree with an outline that marked reverse_in_post: true. Omit (leave undefined) to inherit the outline\'s value.',
       },
     },
-    required: ['start_prompt', 'end_prompt'],
+    required: ['video_prompt', 'start_frame_prompt', 'end_frame_prompt'],
     additionalProperties: false,
   },
 };
@@ -335,91 +362,125 @@ export const OUTLINE_SYSTEM_PROMPT = [
   '- Final reminder: emit EXACTLY the number of frames requested in the user message. Under-delivering is a bug.',
 ].join('\n');
 
-// Stage B system prompt — covers start_prompt vs end_prompt rules in detail
-// so the per-frame refinement call produces tight, image-generator-ready text.
+// Stage B system prompt — covers the three outputs (video_prompt,
+// start_frame_prompt, end_frame_prompt) in detail so the per-frame refinement
+// call produces tight, generator-ready text.
 const REFINE_SYSTEM_PROMPT = [
-  'You are a Hollywood storyboard artist writing the visual prompts for ONE frame of an already-planned shot list. Return your prompts via the refine_storyboard_frame tool.',
+  'You are a Hollywood storyboard artist writing the prompts for ONE frame of an already-planned shot list. Return your prompts via the refine_storyboard_frame tool.',
   '',
-  'Your prompts will be passed to an image generator together with reference photographs of each named character and the set. So:',
+  'Your prompts will be passed to image / video generators together with reference photographs of each named character and the set. So:',
   "- Describe action, framing, composition, and camera lighting only. Do NOT re-describe a character's face, body, or wardrobe — the reference photo carries that.",
   '- Do NOT re-describe the location, lighting palette, or mood — the set reference carries that. You may direct camera lighting (e.g. "lit from below", "harsh key light").',
   '',
-  'start_prompt vs end_prompt for the same frame:',
-  '- start_prompt = the moment the action begins.',
-  '- end_prompt = the SAME shot moments later, showing motion progression. Same camera, same composition, slightly different pose / position. NOT a different angle, NOT a different beat.',
+  '# Three outputs per frame',
+  'You produce three pieces of text per frame; they have different jobs:',
   '',
-  'Example of a good start_prompt / end_prompt pair:',
-  '  start_prompt: "Sarah stands in the doorway, hand on the knob, glancing back over her shoulder. Wide shot, hallway behind her, dim warm practical light from a sconce."',
-  '  end_prompt:   "Sarah\'s hand has turned the knob a quarter-turn; her gaze has shifted forward into the room. Same wide shot, same hallway, same sconce."',
-  'Example of a BAD end_prompt (do NOT do this):',
-  '  end_prompt: "Sarah enters the room and looks around at the furniture."  ← too much progression; that is a different shot.',
-  'Rule of thumb: the end_prompt describes the same scene a beat or two of action later — a hand has moved, a head has turned, a step has been taken. If you have to mention a new location, a new camera angle, or a new framing, you have written a different shot, not an end frame.',
+  '1. **video_prompt** — the clip-gen prompt. This goes to an image-to-video model (Kling / Veo / Sora) together with the start frame image. The start frame image is already going to anchor the composition, so DO NOT re-describe it. Describe ONLY what HAPPENS during the clip: subject action, what changes, and the camera move (or hold). One simple camera motion per shot, or none. ~2 sentences.',
+  '   Good: "Sarah turns her head a quarter to look toward the doorway. Camera holds; her hair settles."',
+  '   Good: "Slow push-in toward Sarah; she lifts her gaze from the table to camera."',
+  '   Bad (re-describes the start frame): "Wide shot of Sarah at the kitchen table; she turns her head." ← the framing is already locked by the start frame image.',
+  '   Bad (too much motion): "Sarah turns, stands up, walks across the room and opens the door." ← that is a different shot, not one clip.',
+  '',
+  '2. **start_frame_prompt** — a still-image prompt for the opening composition. Subject, action, framing, lighting, mood. ~2 sentences. This image becomes the anchor frame the video model conditions on.',
+  '',
+  '3. **end_frame_prompt** — a still-image prompt for the SAME shot moments later, showing motion progression. Same camera, same composition, slightly different pose / position. NOT a different angle, NOT a different beat. ~2 sentences. Useful for video models that take an end-frame conditioning image.',
+  '',
+  'Example of a coherent triple for the same frame:',
+  '  start_frame_prompt: "Sarah stands in the doorway, hand on the knob, glancing back over her shoulder. Wide shot, hallway behind her, dim warm practical light from a sconce."',
+  '  end_frame_prompt:   "Sarah\'s hand has turned the knob a quarter-turn; her gaze has shifted forward into the room. Same wide shot, same hallway, same sconce."',
+  '  video_prompt:       "Sarah turns her gaze from over her shoulder forward into the room and twists the doorknob a quarter-turn. Camera holds."',
+  'Example of a BAD end_frame_prompt (do NOT do this): "Sarah enters the room and looks around at the furniture." ← too much progression; that is a different shot.',
   '',
   '# Continuity with neighbors',
-  '- The user message shows the full outline and the previously refined frames so you can compose your start_prompt to pick up the prior shot\'s end_prompt (shared subject, motion vector, match cut).',
+  '- The user message shows the full outline and the previously refined frames so you can compose your start_frame_prompt to pick up the prior shot\'s end_frame_prompt (shared subject, motion vector, match cut), and so your video_prompt motion vector lines up with the prior frame\'s motion.',
   '- Honor the outline frame\'s description, shot_type, transition_in, and characters_in_scene. Do not contradict them.',
   '',
-  '# AI video generation rules for start_prompt and end_prompt',
-  'Your prompts become both a still image AND the motion source for an image-to-video model (Kling / Veo / Sora). Compose accordingly:',
+  '# AI video generation rules for video_prompt',
+  'video_prompt is the motion source for an image-to-video model. Compose accordingly:',
   '',
-  'start_prompt — the opening still:',
+  'Camera motion — pick at most one, and prefer the top of this list:',
+  '- Locked-off / tripod static — the camera does not move; only the subject moves. Most reliable.',
+  '- Subtle handheld breath — micro-shake or small drift while the camera stays in place.',
+  '- Slow push-in along the subject axis (camera moves closer to subject).',
+  '- Slow pull-out along the subject axis. Keep it short; the model has to invent peripheral background.',
+  '- Slow lateral truck (left or right) — only when the destination space is continuous and simple.',
+  '',
+  'NEVER describe the camera doing any of these in video_prompt (they break the model):',
+  '- Turning / pivoting in place to look at something off-frame (yaw rotation) — "the camera pans to…", "we pan from Alice over to Bob". The model cannot reference off-axis space.',
+  '- Tilting up or down to reveal a new subject (pitch rotation) — "the camera tilts up the building".',
+  '- Whip pans, fast zooms, dolly-zooms (Vertigo effect), rolls, sweeps, orbits.',
+  '- Crane / jib / drone / aerial / Steadicam-following moves. Any vertical, arcing, or subject-tracking trajectory.',
+  '- Two-stage moves in one shot (push-in then tilt-down; lateral then turn).',
+  '',
+  'Subject motion — keep it constrained:',
+  '- A head turn, a gaze shift, a hand lifting, weight shifting, fabric or hair moving, smoke rising, rain falling. Ambient or single-vector motion is the model\'s strongest suit.',
+  '- Do NOT introduce new people or new props mid-clip ("Alice walks in", "she pulls out a knife"). Every subject the clip ends with must already be in the start frame.',
+  '- Do NOT describe two-character contact (handshake, hug, kiss, struggle, dance) — limbs merge and identities swap. Cover with cuts between singles instead.',
+  '- Do NOT describe subjects passing in front of each other within the shot — identity swap.',
+  '- Do NOT describe lighting changes mid-clip (a lamp turning on, headlights sweeping, a flash) — the model cannot transition lighting states.',
+  '- Do NOT describe precise hand action (writing, typing, counting bills, threading, tying) — fingers merge.',
+  '- Do NOT describe vehicle wheels spinning, gear mechanisms turning, clock hands moving fast — the model warps repeating geometry.',
+  '- Do NOT write dialogue, voice-over, or sound effects. Audio is added in post.',
+  '',
+  '# AI generation rules for start_frame_prompt and end_frame_prompt (the stills)',
+  'These become reference frames. Compose for clean image generation AND so the start-frame image gives the video model the best possible anchor:',
+  '',
+  'start_frame_prompt — the opening still:',
   '- Place the subject (or both subjects in a two-shot) centered in frame, not touching the edges. The model warps subjects that start clipped at the edge.',
   "- Subjects should be unoccluded. If there's foreground (railings, foliage, a crowd), keep it clean of the subject's silhouette.",
-  '- Specify a simple, separable background ("dark interior", "soft blurred street lights", "plain plaster wall") whenever the set reference allows it. Busy textured backgrounds dissolve under motion.',
-  '- If the shot is meant to feel handheld or moving, say so as a style note ("locked-off camera", "slow push-in") — but never describe the camera arriving on the subject from off-frame.',
+  '- Specify a simple, separable background ("dark interior", "soft blurred street lights", "plain plaster wall") whenever the set reference allows it. Busy textured backgrounds dissolve under camera motion.',
+  '- Do NOT describe the camera arriving on the subject from off-frame. The opening still is the WHOLE composition.',
   '',
-  'end_prompt — the closing still, a beat or two later:',
-  '- Every person who was in the start frame must STILL BE IN FRAME. No one leaves, no one enters, the camera does not re-frame to exclude or include anyone.',
+  'end_frame_prompt — the closing still, a beat or two later:',
+  '- Every person who was in the start_frame_prompt must STILL BE IN FRAME. No one leaves, no one enters, the camera does not re-frame to exclude or include anyone.',
   '- Do NOT introduce any new element — no new person, no new prop arriving in the hand, no new light source. Describe only what was already in the start frame, slightly evolved.',
-  '- Keep the motion small: a head turn, a gaze shift, a hand reaching, weight shifting, fabric or hair moving. If the change feels like a different shot, it is too much.',
-  '- Camera motion between start and end should be minimal. Best: locked-off / tripod static, or subtle handheld breath (micro-shake while the camera stays put). Acceptable: slow push-in or pull-out along the subject axis; a slow lateral truck left or right if the destination space is continuous and simple. NEVER describe the camera turning or pivoting in place to look at something new (yaw rotation), tilting up/down to a new subject (pitch rotation), whip-panning, fast-zooming, rolling, doing a dolly-zoom, craning/droning, Steadicam-following a walker, orbiting a subject, or any compound move. The model is not in a true 3D world — anything that requires inventing space behind or beside the camera will glitch. When in doubt, lock the camera and let the subject motion carry the shot.',
+  '- Keep the change small: a head turn, a gaze shift, a hand reaching, weight shifting, fabric or hair moved. If the change feels like a different shot, it is too much.',
+  '- The framing must match the start frame (same focal length, same camera position) unless the video_prompt explicitly involves a push-in / pull-out — in which case the end frame may show the subject larger or smaller, but never different angle / different side.',
   '',
-  'Things the model cannot animate cleanly — never describe them in either prompt:',
-  '- Crowds or background extras moving independently. Even if the set reference shows a busy street, frame the shot to keep only the named subject(s) sharp; let the background blur.',
+  'Things the model cannot draw cleanly — avoid in any still:',
+  '- Crowds or background extras moving independently. Frame to keep only the named subject(s) sharp; let the background blur.',
   '- Mirrors, water reflections, polished glass reflections of a character.',
   "- Readable text (signs, books, screens) that the audience is meant to read. If text matters, use an insert so brief the warp doesn't develop.",
-  '- Precise hand action (writing, typing, counting bills, threading, tying). Fingers merge.',
-  '- Two-character contact (handshake, hug, kiss, struggle, dance). Limbs merge.',
-  '- Subjects passing in front of each other within the shot. Identity swap.',
-  '- Lighting changes mid-shot (a lamp turning on, headlights sweeping through, a flash).',
-  '- Vehicle wheels spinning, gear mechanisms turning, clock hands moving fast.',
   '',
-  'Reverse-in-post shots:',
-  '- If the outline frame has reverse_in_post: true, INVERT the temporal direction in your prompts. Write the start_prompt as the FINAL state (subject centered, fully revealed) and the end_prompt as the INITIAL state (camera pulled back, subject small or partially hidden). The video will be played backwards in post; from the audience\'s perspective the camera "discovers" the subject.',
+  '# Reverse-in-post shots',
+  '- If the outline frame has reverse_in_post: true, you MUST INVERT the temporal direction across all three outputs. The clip will be played backwards in post; from the audience\'s perspective the camera "discovers" the subject.',
+  '  - start_frame_prompt = the FINAL revealed state (subject centered, fully visible).',
+  '  - end_frame_prompt   = the INITIAL hidden state (camera pulled back, subject small or partially out of frame).',
+  '  - video_prompt       = the camera move IN GENERATION DIRECTION (e.g. "slow pull-out from the subject; subject shrinks to lower frame", or "subject exits screen-right as camera holds"). The video model generates this; post reverses it.',
   '',
   '# You are the second line of defense for the reveal-in-reverse rule',
   'The outline planner is supposed to mark every reveal / entry shot with reverse_in_post: true. It will sometimes miss one — especially when the beat narrative uses forward-reveal language ("the building is revealed as we pull back", "Sarah enters the room", "we pan across to find the killer") and the outline took it literally.',
   '',
-  'Before you write the start_prompt and end_prompt, look at the outline frame\'s description and ask:',
-  '1. Would the end_prompt have to contain a person, object, or environment that was NOT visible in the start_prompt?',
-  '2. Would the end_prompt require the camera to have arrived on a subject that was not visible at the start?',
+  'Before you write your three outputs, look at the outline frame\'s description and ask:',
+  '1. Would the end_frame_prompt have to contain a person, object, or environment that was NOT visible in the start_frame_prompt?',
+  '2. Would the video_prompt require the camera to arrive on a subject that was not visible at the start?',
   '3. Does the description say the camera reveals / discovers / arrives on / pans-to-find / pulls-back-to-show anything?',
   '4. Does the description mention a subject entering the frame, walking in, stepping into view, emerging, materializing, rising into view?',
   '',
   'If you answer yes to ANY of these AND the outline frame has reverse_in_post: false (or unset), you MUST:',
   '  a. Set reverse_in_post: true in your tool call to override the outline.',
-  '  b. INVERT the temporal direction: start_prompt = the FINAL revealed state (subject centered, fully in frame), end_prompt = the INITIAL hidden state (camera pulled back, subject small / exited / occluded). NEVER write a forward-reveal in the start/end prompts.',
+  '  b. INVERT the temporal direction across all three outputs (per the reverse-in-post rules above). NEVER write a forward-reveal in any of the three.',
   '',
-  'If the violation is NOT spatially invertible — lighting change, irreversible physics (vase breaking, door slamming), camera-rotation reveal (yaw/pitch turn to look at something new), or audio-driven beat — leave reverse_in_post false and write CONSERVATIVE prompts that ignore the violation. Pick the most visually-complete moment of the shot as the start_prompt and let the end_prompt be a minimal motion-progression from there. Better to ship a usable static-feeling clip than a glitching forward-reveal.',
+  'If the violation is NOT spatially invertible — lighting change, irreversible physics (vase breaking, door slamming), camera-rotation reveal (yaw/pitch turn to look at something new), or audio-driven beat — leave reverse_in_post false and write CONSERVATIVE prompts that ignore the violation. Pick the most visually-complete moment of the shot as the start_frame_prompt; make end_frame_prompt a minimal motion-progression from there; make video_prompt a tiny subject motion with the camera held. Better to ship a usable static-feeling clip than a glitching forward-reveal.',
   '',
   'Worked example. Outline frame says: "The skyscraper looms into view as we slowly tilt up from the street, dwarfing the heroes." reverse_in_post: false.',
-  '  This is a rotation (tilt) reveal — NOT invertible. Leave reverse_in_post: false. Write conservative prompts:',
-  '    start_prompt: "Wide low-angle shot of the skyscraper filling the frame from base to spire, glass facade reflecting overcast sky. The two heroes stand small at frame bottom, looking up."',
-  '    end_prompt: "Same wide low-angle of the skyscraper. The heroes have shifted slightly — one has taken a half-step back, the other tilts her head a fraction more. The building and framing are unchanged."',
+  '  This is a rotation (tilt) reveal — NOT invertible. Leave reverse_in_post: false. Write conservative outputs:',
+  '    start_frame_prompt: "Wide low-angle shot of the skyscraper filling the frame from base to spire, glass facade reflecting overcast sky. The two heroes stand small at frame bottom, looking up."',
+  '    end_frame_prompt:   "Same wide low-angle of the skyscraper. The heroes have shifted slightly — one has taken a half-step back, the other tilts her head a fraction more. The building and framing are unchanged."',
+  '    video_prompt:       "Heroes at frame bottom shift weight subtly — one half-steps back, the other tilts her head up another degree. Camera holds locked-off."',
   '  The shot ends up reading as a moment of awe rather than a tilt-up — acceptable degradation.',
   '',
   'Worked example. Outline frame says: "Camera slowly pulls back from a close-up of the postcard to reveal Sarah holding it at her kitchen table." reverse_in_post: false.',
   '  This is a SPATIAL pull-out reveal — IS invertible. Override the outline:',
   '    reverse_in_post: true',
-  '    start_prompt: "Medium shot of Sarah at her kitchen table holding the postcard up to read it, soft window light from screen-left, the postcard\'s image clearly visible in her hands."',
-  '    end_prompt: "Same medium of Sarah, but the camera has slowly pushed in toward the postcard — Sarah\'s hands and the postcard now fill more of the frame, her face just visible behind."',
-  '  The audience experiences a pull-out reveal when the clip is played in reverse.',
-  '',
-  'Audio cue:',
-  '- Do not write dialogue, voice-over, or sound effects into either prompt. Audio is added in post.',
+  '    start_frame_prompt: "Medium shot of Sarah at her kitchen table holding the postcard up to read it, soft window light from screen-left, the postcard\'s image clearly visible in her hands."',
+  '    end_frame_prompt:   "Same medium of Sarah, but the camera has slowly pushed in toward the postcard — Sarah\'s hands and the postcard now fill more of the frame, her face just visible behind."',
+  '    video_prompt:       "Slow push-in toward the postcard in Sarah\'s hands; the postcard grows to fill the frame, her face recedes behind it. Sarah\'s hands stay steady."',
+  '  The video model generates this push-in; post reverses it; the audience experiences a pull-out reveal.',
   '',
   '# Constraints',
-  '- ~2 sentences per prompt. Concrete and visual. No wardrobe / face / location re-description.',
+  '- ~2 sentences per output. Concrete and visual. No wardrobe / face / location re-description.',
+  '- video_prompt is action-only (and camera move) — do not re-describe what the start frame looks like.',
   '- The director may attach free-form direction in the user message; honor it within the constraints above.',
 ].join('\n');
 
@@ -438,8 +499,9 @@ async function callGenerateImage(args) {
 
 // Test hooks for the two-stage planner. Outline override returns the raw
 // outline array (objects with description/shot_type/duration_seconds/...).
-// Refiner override returns { start_prompt, end_prompt } or null. Both default
-// to the production Anthropic-backed implementations.
+// Refiner override returns { video_prompt, start_frame_prompt,
+// end_frame_prompt, reverse_in_post } or null. Both default to the production
+// Anthropic-backed implementations.
 let outlinePlannerOverride = null;
 export function _setOutlinePlannerForTests(fn) {
   outlinePlannerOverride = fn;
@@ -815,7 +877,7 @@ export function buildOutlineUserText({
     'Pick a shot_type and duration_seconds for every frame. ' +
     'IMPORTANT: the beat body above may describe reveals, entries, camera moves, or other action that the AI video model cannot synthesize forwards. Re-interpret those into the reverse-in-post pattern (set reverse_in_post: true and write the description as the reversed action) or substitute with separate static shots — see the "These rules OVERRIDE the beat\'s literal description" and "Mandatory reveal / entry detection" sections of the system prompt. Honoring the beat narrative literally is a planning bug. ' +
     'Use the plan_storyboard_outline tool. ' +
-    'Do NOT write the start_prompt / end_prompt visual prompts — those are produced in a separate per-frame pass. ' +
+    'Do NOT write the detailed video or still-image prompts — those are produced in a separate per-frame pass. ' +
     `Reminder: the frames array MUST have exactly ${count} entries.`;
   return `${lead}\n\n${ctx}\n\n${instruction}`;
 }
@@ -842,8 +904,9 @@ function formatPreviousRefined(previousRefined) {
   return previousRefined
     .map((f, i) => {
       return [
-        `${i + 1}. start_prompt: ${f.start_prompt || '(none)'}`,
-        `   end_prompt:   ${f.end_prompt || '(none)'}`,
+        `${i + 1}. video_prompt:       ${f.video_prompt || '(none)'}`,
+        `   start_frame_prompt: ${f.start_frame_prompt || '(none)'}`,
+        `   end_frame_prompt:   ${f.end_frame_prompt || '(none)'}`,
       ].join('\n');
     })
     .join('\n');
@@ -874,7 +937,7 @@ function buildRefinementUserText({
   }
   if (frame.reverse_in_post) {
     target.push(
-      '  reverse_in_post: true — INVERT temporal direction: start_prompt = final revealed state, end_prompt = initial hidden state.',
+      '  reverse_in_post: true — INVERT temporal direction across all three outputs: start_frame_prompt = final revealed state, end_frame_prompt = initial hidden state, video_prompt = camera move in generation direction (the clip will be reversed in post).',
     );
   }
   return [
@@ -889,9 +952,10 @@ function buildRefinementUserText({
     '# Frame to refine:',
     target.join('\n'),
     '',
-    'Produce the start_prompt and end_prompt for this frame via the refine_storyboard_frame tool. ' +
-      'Compose the start_prompt to pick up the prior frame\'s end_prompt where appropriate; ' +
-      'the end_prompt is the same shot a beat or two later (motion progression, not a new shot).',
+    'Produce the video_prompt, start_frame_prompt, and end_frame_prompt for this frame via the refine_storyboard_frame tool. ' +
+      'Compose start_frame_prompt to pick up the prior frame\'s end_frame_prompt where appropriate (shared subject, motion vector, match cut); ' +
+      'end_frame_prompt is the same shot a beat or two later (motion progression, not a new shot); ' +
+      'video_prompt describes what HAPPENS during the clip (camera move + subject action) assuming the start frame image already anchors the composition — do not re-describe the start composition.',
   ].join('\n');
 }
 
@@ -1000,32 +1064,46 @@ async function refineFramePrompts({
     (b) => b.type === 'tool_use' && b.name === 'refine_storyboard_frame',
   );
   if (!toolUse?.input) return null;
-  const sp = typeof toolUse.input.start_prompt === 'string'
-    ? toolUse.input.start_prompt.trim()
+  const vp = typeof toolUse.input.video_prompt === 'string'
+    ? toolUse.input.video_prompt.trim()
     : '';
-  const ep = typeof toolUse.input.end_prompt === 'string'
-    ? toolUse.input.end_prompt.trim()
+  const sfp = typeof toolUse.input.start_frame_prompt === 'string'
+    ? toolUse.input.start_frame_prompt.trim()
     : '';
-  if (!sp || !ep) return null;
+  const efp = typeof toolUse.input.end_frame_prompt === 'string'
+    ? toolUse.input.end_frame_prompt.trim()
+    : '';
+  if (!vp || !sfp || !efp) return null;
   // reverse_in_post is an optional override. `null` (the default below) means
   // "inherit the outline's value"; only an explicit boolean overrides it.
   const rev =
     typeof toolUse.input.reverse_in_post === 'boolean'
       ? toolUse.input.reverse_in_post
       : null;
-  return { start_prompt: sp, end_prompt: ep, reverse_in_post: rev };
+  return {
+    video_prompt: vp,
+    start_frame_prompt: sfp,
+    end_frame_prompt: efp,
+    reverse_in_post: rev,
+  };
 }
 
-function synthesizeFallbackStartPrompt(frame) {
+function synthesizeFallbackPrompts(frame) {
   const base = stripMarkdown(frame.description || '').trim();
-  return base ? `Start of the moment: ${base}` : 'Start frame of the shot.';
-}
-
-function synthesizeFallbackEndPrompt(frame) {
-  const base = stripMarkdown(frame.description || '').trim();
-  return base
-    ? `Same shot moments later — the action continues: ${base}`
+  const startFramePrompt = base
+    ? `Opening composition of the shot: ${base}`
+    : 'Opening composition of the shot.';
+  const endFramePrompt = base
+    ? `Same shot moments later, motion progressed: ${base}`
     : 'Same shot moments later, motion progression.';
+  const videoPrompt = base
+    ? `The action plays out: ${base}. Camera holds.`
+    : 'Subject performs the action of the shot; camera holds.';
+  return {
+    video_prompt: videoPrompt,
+    start_frame_prompt: startFramePrompt,
+    end_frame_prompt: endFramePrompt,
+  };
 }
 
 // Two-stage planner. Stage A produces the outline (Sonnet by default). Stage B
@@ -1117,8 +1195,7 @@ async function planFrames({
         message: `Frame ${i + 1}/${outline.length}: refinement failed, using synthesized fallback prompts.`,
       });
       prompts = {
-        start_prompt: synthesizeFallbackStartPrompt(outline[i]),
-        end_prompt: synthesizeFallbackEndPrompt(outline[i]),
+        ...synthesizeFallbackPrompts(outline[i]),
         reverse_in_post: null,
       };
     }
@@ -1136,8 +1213,9 @@ async function planFrames({
     }
     refined.push({
       ...outline[i],
-      start_prompt: prompts.start_prompt,
-      end_prompt: prompts.end_prompt,
+      video_prompt: prompts.video_prompt,
+      start_frame_prompt: prompts.start_frame_prompt,
+      end_frame_prompt: prompts.end_frame_prompt,
       reverse_in_post: refinedReverse,
     });
   }
@@ -1156,7 +1234,12 @@ async function planFrames({
 // either [cleanedFrame] or [] (drop the frame). Co-located with planFrames so
 // the warn logs read in line with where the bad model output came from.
 function cleanPlannedFrame(f) {
-  if (!f || typeof f.start_prompt !== 'string' || typeof f.end_prompt !== 'string') {
+  if (
+    !f ||
+    typeof f.video_prompt !== 'string' ||
+    typeof f.start_frame_prompt !== 'string' ||
+    typeof f.end_frame_prompt !== 'string'
+  ) {
     return [];
   }
   const shotType = SHOT_TYPES.includes(f.shot_type) ? f.shot_type : null;
@@ -1216,12 +1299,19 @@ async function createPlannedStoryboardEntry({
   // schema), so we feed it straight into the summary field.
   const textPrompt = buildTextPrompt(frame);
   const summary = stripMarkdown(frame.description || '').replace(/\s+/g, ' ').trim();
+  const startFramePrompt = stripMarkdown(frame.start_frame_prompt || '').trim();
+  const endFramePrompt = stripMarkdown(frame.end_frame_prompt || '').trim();
   const sb = await createStoryboardViaGateway({
     beatId: beat._id,
     textPrompt,
     summary,
     order,
-    seedFragments: { text_prompt: textPrompt, summary },
+    seedFragments: {
+      text_prompt: textPrompt,
+      summary,
+      start_frame_prompt: startFramePrompt,
+      end_frame_prompt: endFramePrompt,
+    },
     durationSeconds: frame.duration_seconds ?? null,
     shotType: frame.shot_type ?? null,
     transitionIn: frame.transition_in ?? null,
@@ -1279,13 +1369,9 @@ function buildTextPrompt(frame) {
     lines.push('');
     lines.push(`_↳ ${stripMarkdown(frame.transition_in)}_`);
   }
-  if (frame.start_prompt) {
+  if (frame.video_prompt) {
     lines.push('');
-    lines.push(`**Start frame:** ${stripMarkdown(frame.start_prompt)}`);
-  }
-  if (frame.end_prompt) {
-    lines.push('');
-    lines.push(`**End frame:** ${stripMarkdown(frame.end_prompt)}`);
+    lines.push(stripMarkdown(frame.video_prompt));
   }
   if (frame.characters_in_scene?.length) {
     lines.push('');
@@ -1409,9 +1495,12 @@ async function loadFrameReferenceImages(sb, role) {
 //   persisted per-frame reference list. The prompt is also saved back to the
 //   stored frame prompt field so the textarea state survives a refresh.
 //
-// - 'edit': passes only the existing frame image plus the user's `editPrompt`
-//   to the chosen image model. Skips reference loading entirely. Use for small
-//   inline tweaks ("remove the lamp on the left") on an almost-good image.
+// - 'edit': passes the existing frame image plus optional one-shot
+//   `editReferenceImageIds` along with the user's `editPrompt` to the chosen
+//   image model. Skips the persisted per-frame reference list entirely — only
+//   the caller-supplied refs (if any) are sent. Use for small inline tweaks
+//   ("remove the lamp on the left") or for tweaks that need to incorporate
+//   a specific extra image ("add the hat from this reference").
 //
 // Public entry point: validates inputs, resolves sb + beat, refuses if the
 // beat lock is held, and delegates to the internal worker. Direct callers
@@ -1424,6 +1513,7 @@ export async function regenerateStoryboardFrame({
   imageModel = 'gemini',
   mode = 'generate',
   editPrompt = null,
+  editReferenceImageIds = [],
   prompt = null,
   rotateToPrevious = false,
 }) {
@@ -1445,6 +1535,7 @@ export async function regenerateStoryboardFrame({
     imageModel,
     mode,
     editPrompt,
+    editReferenceImageIds,
     prompt,
     rotateToPrevious,
   });
@@ -1482,6 +1573,7 @@ async function regenerateStoryboardFrameInternal({
   imageModel = 'gemini',
   mode = 'generate',
   editPrompt = null,
+  editReferenceImageIds = [],
   prompt = null,
   rotateToPrevious = false,
 }) {
@@ -1505,7 +1597,20 @@ async function regenerateStoryboardFrameInternal({
       );
     }
     renderPrompt = editPrompt.trim();
-    inputImages = [{ buffer: existing.buffer, contentType: existing.contentType }];
+    const extras = [];
+    for (const refId of editReferenceImageIds || []) {
+      const ref = await loadImageInput(refId);
+      if (!ref) {
+        throw new EditModeError(`Reference image ${refId} not found.`);
+      }
+      extras.push({ buffer: ref.buffer, contentType: ref.contentType });
+    }
+    // Match imageReplaceDispatch ordering: primary (existing) first, refs
+    // follow as supplementary inputs.
+    inputImages = [
+      { buffer: existing.buffer, contentType: existing.contentType },
+      ...extras,
+    ];
     dispatchMode = 'edit';
   } else {
     if (typeof prompt !== 'string' || !prompt.trim()) {
@@ -1570,6 +1675,7 @@ export async function startFrameGenerationJob({
   imageModel = 'gemini',
   mode = 'generate',
   editPrompt = null,
+  editReferenceImageIds = [],
   prompt = null,
   rotateToPrevious = false,
   announceUsername = null,
@@ -1616,6 +1722,7 @@ export async function startFrameGenerationJob({
       imageModel,
       mode,
       editPrompt,
+      editReferenceImageIds,
       prompt,
       rotateToPrevious,
       announceUsername,
@@ -1638,6 +1745,7 @@ async function runFrameGenerationJob({
   imageModel,
   mode,
   editPrompt,
+  editReferenceImageIds = [],
   prompt,
   rotateToPrevious = false,
   announceUsername = null,
@@ -1650,6 +1758,7 @@ async function runFrameGenerationJob({
     imageModel,
     mode,
     editPrompt,
+    editReferenceImageIds,
     prompt,
     rotateToPrevious,
   });

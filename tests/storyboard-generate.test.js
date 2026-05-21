@@ -57,9 +57,10 @@ beforeEach(() => {
   }));
 });
 
-// Two-stage flow: outline returns the shot list (no start/end prompts), then
-// each frame is refined into start/end prompts. The TWO_FRAME_PLAN object
-// carries both halves so each test can drive both stages with one fixture.
+// Two-stage flow: outline returns the shot list (no detailed prompts), then
+// each frame is refined into video_prompt + start_frame_prompt +
+// end_frame_prompt. The TWO_FRAME_PLAN object carries both halves so each
+// test can drive both stages with one fixture.
 const TWO_FRAME_PLAN = {
   frames: [
     {
@@ -67,8 +68,9 @@ const TWO_FRAME_PLAN = {
       shot_type: 'cinematic_wide',
       duration_seconds: 12,
       transition_in: '',
-      start_prompt: 'Wide shot of Alice entering through the diner door, dusk light.',
-      end_prompt: 'Alice halfway across the room, scanning the booths.',
+      video_prompt: 'Alice steps through the doorway and scans the room. Camera holds.',
+      start_frame_prompt: 'Wide shot of Alice entering through the diner door, dusk light.',
+      end_frame_prompt: 'Alice halfway across the room, scanning the booths.',
       characters_in_scene: ['Alice'],
     },
     {
@@ -76,25 +78,29 @@ const TWO_FRAME_PLAN = {
       shot_type: 'two_shot',
       duration_seconds: 4,
       transition_in: 'Picks up Alice mid-stride from #1.',
-      start_prompt: 'Two-shot of Alice approaching the booth.',
-      end_prompt: 'Alice seated, Bob looking up.',
+      video_prompt: 'Alice slides into the booth opposite Bob; Bob lifts his gaze. Camera holds.',
+      start_frame_prompt: 'Two-shot of Alice approaching the booth.',
+      end_frame_prompt: 'Alice seated, Bob looking up.',
       characters_in_scene: ['Alice', 'Bob'],
     },
   ],
 };
 
 // Set up both-stage overrides from a frames fixture. The outline override
-// returns the frames minus the visual prompts (Stage A's contract); the
-// refiner override returns the matching start/end prompts so the final
+// returns the frames minus the detailed prompts (Stage A's contract); the
+// refiner override returns the matching video / still prompts so the final
 // pipeline output equals the fixture frames.
 function installPlannerForFixture(frames) {
   const outline = frames.map(
-    ({ start_prompt, end_prompt, ...rest }) => ({ ...rest }),
+    ({ video_prompt, start_frame_prompt, end_frame_prompt, ...rest }) => ({
+      ...rest,
+    }),
   );
   Generate._setOutlinePlannerForTests(async () => outline);
   Generate._setFrameRefinerForTests(async ({ index }) => ({
-    start_prompt: frames[index]?.start_prompt ?? '',
-    end_prompt: frames[index]?.end_prompt ?? '',
+    video_prompt: frames[index]?.video_prompt ?? '',
+    start_frame_prompt: frames[index]?.start_frame_prompt ?? '',
+    end_frame_prompt: frames[index]?.end_frame_prompt ?? '',
   }));
 }
 
@@ -235,8 +241,9 @@ describe('storyboard auto-generation', () => {
         shot_type: 'close_up',
         duration_seconds: 12, // close_up cap is 5
         transition_in: '',
-        start_prompt: 'Tight close-up of Alice, looking down.',
-        end_prompt: 'Tight close-up of Alice, looking up.',
+        video_prompt: 'Alice lifts her gaze; eyes well. Camera holds.',
+        start_frame_prompt: 'Tight close-up of Alice, looking down.',
+        end_frame_prompt: 'Tight close-up of Alice, looking up.',
         characters_in_scene: ['Alice'],
       },
     ]);
@@ -269,8 +276,9 @@ describe('storyboard auto-generation', () => {
         shot_type: 'cinematic_wide',
         duration_seconds: 8,
         transition_in: '',
-        start_prompt: 'Wide shot of the diner.',
-        end_prompt: 'Wide shot of the diner, slight zoom.',
+        video_prompt: 'Subtle handheld breath on the wide; background figures drift slightly.',
+        start_frame_prompt: 'Wide shot of the diner.',
+        end_frame_prompt: 'Wide shot of the diner, slight zoom.',
         characters_in_scene: ['Alice', 'Bob', 'Carol', 'Dave'],
       },
     ]);
@@ -301,8 +309,9 @@ describe('storyboard auto-generation', () => {
         shot_type: 'establishing',
         duration_seconds: 5,
         transition_in: '',
-        start_prompt: 'Wide of the diner exterior at dusk.',
-        end_prompt: 'Same wide; neon sign flickers on.',
+        video_prompt: 'Camera holds locked-off on the diner exterior; light drains from the sky.',
+        start_frame_prompt: 'Wide of the diner exterior at dusk.',
+        end_frame_prompt: 'Same wide; neon sign flickers on.',
         characters_in_scene: [],
       },
       {
@@ -310,8 +319,9 @@ describe('storyboard auto-generation', () => {
         shot_type: 'insert',
         duration_seconds: 3,
         transition_in: 'Match cut from neon glow to steam.',
-        start_prompt: 'Macro shot of a coffee cup, steam rising.',
-        end_prompt: 'Macro shot of a coffee cup, ripple as a hand reaches in.',
+        video_prompt: 'Steam rises from the coffee cup in a slow curl. Camera holds.',
+        start_frame_prompt: 'Macro shot of a coffee cup, steam rising.',
+        end_frame_prompt: 'Macro shot of a coffee cup, ripple as a hand reaches in.',
         characters_in_scene: [],
       },
     ]);
@@ -370,7 +380,7 @@ describe('storyboard auto-generation', () => {
     expect(after.map((s) => s.text_prompt)).toEqual(['keep 1', 'keep 2']);
   });
 
-  it("bakes the planner's start_prompt and end_prompt into each row's text_prompt and does not persist them as separate fields", async () => {
+  it("stores the planner's video_prompt in text_prompt and pre-fills the per-frame still prompts", async () => {
     installPlannerForFixture(TWO_FRAME_PLAN.frames);
     Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('img'),
@@ -391,16 +401,26 @@ describe('storyboard auto-generation', () => {
 
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(stored).toHaveLength(2);
-    // text_prompt is the single source of truth; the planner's start_prompt
-    // and end_prompt are baked into it as **Start frame:** / **End frame:**
-    // markdown sections via buildTextPrompt.
-    expect(stored[0].text_prompt).toContain(TWO_FRAME_PLAN.frames[0].start_prompt);
-    expect(stored[0].text_prompt).toContain(TWO_FRAME_PLAN.frames[0].end_prompt);
-    expect(stored[1].text_prompt).toContain(TWO_FRAME_PLAN.frames[1].start_prompt);
-    expect(stored[1].text_prompt).toContain(TWO_FRAME_PLAN.frames[1].end_prompt);
-    // The separate fields are gone — no hidden second source of truth.
-    expect(stored[0].start_prompt).toBeUndefined();
-    expect(stored[0].end_prompt).toBeUndefined();
+    // text_prompt is the clip-gen prompt — the planner's video_prompt verbatim
+    // (no Start frame / End frame baking). No legacy markers should appear.
+    expect(stored[0].text_prompt).toContain(TWO_FRAME_PLAN.frames[0].video_prompt);
+    expect(stored[1].text_prompt).toContain(TWO_FRAME_PLAN.frames[1].video_prompt);
+    expect(stored[0].text_prompt).not.toMatch(/\*\*Start frame:\*\*/);
+    expect(stored[0].text_prompt).not.toMatch(/\*\*End frame:\*\*/);
+    // The per-frame still prompts are pre-filled on each row so the SPA's
+    // frame-slot CollabFields render with the planner's suggestions.
+    expect(stored[0].start_frame_prompt).toBe(
+      TWO_FRAME_PLAN.frames[0].start_frame_prompt,
+    );
+    expect(stored[0].end_frame_prompt).toBe(
+      TWO_FRAME_PLAN.frames[0].end_frame_prompt,
+    );
+    expect(stored[1].start_frame_prompt).toBe(
+      TWO_FRAME_PLAN.frames[1].start_frame_prompt,
+    );
+    expect(stored[1].end_frame_prompt).toBe(
+      TWO_FRAME_PLAN.frames[1].end_frame_prompt,
+    );
   });
 
   it('refines frames sequentially with rolling context — each call sees previously refined neighbors', async () => {
@@ -439,8 +459,9 @@ describe('storyboard auto-generation', () => {
         previousRefined: previousRefined.map((p) => ({ ...p })),
       });
       return {
-        start_prompt: `start#${index}`,
-        end_prompt: `end#${index}`,
+        video_prompt: `video#${index}`,
+        start_frame_prompt: `start#${index}`,
+        end_frame_prompt: `end#${index}`,
       };
     });
     Generate._setImageDispatcherForTests(async () => ({
@@ -466,30 +487,43 @@ describe('storyboard auto-generation', () => {
     // outline fields so the refiner can re-read shot_type etc. if needed).
     expect(refineSeen.map((r) => r.index)).toEqual([0, 1, 2]);
     expect(refineSeen[0].previousRefined).toEqual([]);
-    expect(refineSeen[1].previousRefined.map((p) => p.start_prompt)).toEqual([
+    expect(refineSeen[1].previousRefined.map((p) => p.video_prompt)).toEqual([
+      'video#0',
+    ]);
+    expect(refineSeen[1].previousRefined.map((p) => p.start_frame_prompt)).toEqual([
       'start#0',
     ]);
-    expect(refineSeen[1].previousRefined.map((p) => p.end_prompt)).toEqual([
+    expect(refineSeen[1].previousRefined.map((p) => p.end_frame_prompt)).toEqual([
       'end#0',
     ]);
-    expect(refineSeen[2].previousRefined.map((p) => p.start_prompt)).toEqual([
+    expect(refineSeen[2].previousRefined.map((p) => p.video_prompt)).toEqual([
+      'video#0',
+      'video#1',
+    ]);
+    expect(refineSeen[2].previousRefined.map((p) => p.start_frame_prompt)).toEqual([
       'start#0',
       'start#1',
     ]);
-    expect(refineSeen[2].previousRefined.map((p) => p.end_prompt)).toEqual([
+    expect(refineSeen[2].previousRefined.map((p) => p.end_frame_prompt)).toEqual([
       'end#0',
       'end#1',
     ]);
 
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
-    // Each row's text_prompt contains the planner's start_prompt baked in
-    // via buildTextPrompt (under the **Start frame:** markdown header).
+    // Each row's text_prompt carries the planner's video_prompt verbatim.
     expect(stored.map((s) => s.text_prompt)).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('start#0'),
-        expect.stringContaining('start#1'),
-        expect.stringContaining('start#2'),
+        expect.stringContaining('video#0'),
+        expect.stringContaining('video#1'),
+        expect.stringContaining('video#2'),
       ]),
+    );
+    // start_frame_prompt and end_frame_prompt are pre-filled on each row.
+    expect(stored.map((s) => s.start_frame_prompt)).toEqual(
+      expect.arrayContaining(['start#0', 'start#1', 'start#2']),
+    );
+    expect(stored.map((s) => s.end_frame_prompt)).toEqual(
+      expect.arrayContaining(['end#0', 'end#1', 'end#2']),
     );
   });
 
@@ -510,7 +544,7 @@ describe('storyboard auto-generation', () => {
     const refineCalls = [];
     Generate._setFrameRefinerForTests(async (args) => {
       refineCalls.push(args);
-      return { start_prompt: 's', end_prompt: 'e' };
+      return { video_prompt: 'v', start_frame_prompt: 's', end_frame_prompt: 'e' };
     });
     Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('img'),
@@ -657,13 +691,14 @@ describe('storyboard auto-generation', () => {
 
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(stored).toHaveLength(1);
-    // Synthesized prompts include the outline description so the renderer
-    // has something to feed the image generator. With the unified schema,
-    // both the synthesized start and end prompts land in text_prompt (under
-    // **Start frame:** / **End frame:** markdown headers).
+    // Synthesized prompts include the outline description so the row has
+    // usable text. The video_prompt lands in text_prompt; the still prompts
+    // are pre-filled on the row's collab fragments.
     expect(stored[0].text_prompt).toMatch(/Alice opens the door/);
-    expect(stored[0].text_prompt).toMatch(/Start frame:/);
-    expect(stored[0].text_prompt).toMatch(/End frame:/);
+    expect(stored[0].text_prompt).not.toMatch(/\*\*Start frame:\*\*/);
+    expect(stored[0].text_prompt).not.toMatch(/\*\*End frame:\*\*/);
+    expect(stored[0].start_frame_prompt).toMatch(/Alice opens the door/);
+    expect(stored[0].end_frame_prompt).toMatch(/Alice opens the door/);
   });
 
   it('clamps targetCount and records the requested value on the job', async () => {
@@ -802,8 +837,9 @@ describe('reverse_in_post override flow', () => {
     ]);
     Generate._setFrameRefinerForTests(async () => {
       const out = {
-        start_prompt: 'Skyscraper fills the frame, glass facade reflecting overcast sky.',
-        end_prompt: 'Same wide low-angle; the heroes have shifted a half-step.',
+        video_prompt: 'Heroes shift weight subtly at frame bottom; camera holds locked-off.',
+        start_frame_prompt: 'Skyscraper fills the frame, glass facade reflecting overcast sky.',
+        end_frame_prompt: 'Same wide low-angle; the heroes have shifted a half-step.',
       };
       if (refinerReverse !== undefined) out.reverse_in_post = refinerReverse;
       return out;

@@ -13,8 +13,9 @@
 // the inputImages array.
 //
 // Two modes:
-//   - 'edit':     pass the existing image bytes + user prompt to the model.
-//                 Optional referenceImages are prepended.
+//   - 'edit':     pass the existing image bytes first (as the primary image
+//                 the model anchors edits on) + the user prompt. Optional
+//                 referenceImages are appended as supplementary inputs.
 //   - 'generate': pure text-to-image when no references; if references are
 //                 present, route through the provider's edit endpoint with the
 //                 references as inputs (no separate "existing" image).
@@ -95,10 +96,13 @@ export async function dispatchImageReplace({
       throw err;
     }
   }
-  const inputImages = [
-    ...refs,
-    ...(mode === 'edit' && existingImage ? [existingImage] : []),
-  ];
+  // Edit mode: existing image is the primary input (position 0) so the
+  // model anchors on it; user-supplied references follow as supplementary
+  // inputs. Generate mode has no existing image — references stand alone.
+  const inputImages =
+    mode === 'edit' && existingImage
+      ? [existingImage, ...refs]
+      : [...refs];
 
   if (FAL_MODELS.has(model)) {
     let result;
