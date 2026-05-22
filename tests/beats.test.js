@@ -500,9 +500,9 @@ describe('updateBeat input validation', () => {
     expect(reread.body).toBe(newBody);
   });
 
-  it('persistBeats throws when the plot doc is missing', async () => {
+  it('updateBeat throws when the atomic write does not match', async () => {
     // Arrange: simulate a torn-down plot by spying on updateOne to return matchedCount=0,
-    // since the fake mongo always re-seeds via getPlot before reaching persistBeats.
+    // since the fake mongo always re-seeds via getPlot before reaching the atomic update.
     const beat = await Plots.createBeat({ name: 'Open', desc: 'Opening' });
     const col = fakeDb.collection('plots');
     const original = col.updateOne.bind(col);
@@ -510,10 +510,9 @@ describe('updateBeat input validation', () => {
     try {
       await expect(
         Plots.updateBeat(beat._id.toString(), { body: 'new body' }),
-      ).rejects.toThrow(/persistBeats: plot doc.*not found/);
+      ).rejects.toThrow(/updateBeatFields:.*not found in plot doc/);
     } finally {
       spy.mockRestore();
-      // Ensure the mock cleanup left the collection method intact.
       col.updateOne = original;
     }
   });

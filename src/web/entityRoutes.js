@@ -870,7 +870,7 @@ export function buildApiRouter() {
         },
         setAsMain,
       });
-      res.json(result);
+      res.json({ ...result, image_id: String(file._id) });
       announceBeatMedia({
         req,
         beat: await getBeat(beatId),
@@ -1384,7 +1384,7 @@ export function buildApiRouter() {
         },
         setAsMain,
       });
-      res.json(result);
+      res.json({ ...result, image_id: String(file._id) });
       announceCharacterMedia({
         req,
         character: await getCharacter(cid),

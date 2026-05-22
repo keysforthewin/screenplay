@@ -223,13 +223,44 @@ export async function searchBeats(query) {
   return matches;
 }
 
-async function persistBeats(beats, extraSet = {}) {
+// ── Atomic update helpers ──────────────────────────────────────────────────
+// Every beat-targeted write goes through these so two concurrent operations
+// on the same plots doc can't trample each other (the old whole-array $set
+// pattern was a lost-update minefield — see plot-concurrency.test.js).
+
+async function updateBeatFields(beatOid, set = {}, opts = {}) {
+  const now = new Date();
+  const $set = { ...set, 'beats.$.updated_at': now, updated_at: now };
+  const update = { $set };
+  if (opts.$push) update.$push = opts.$push;
+  if (opts.$pull) update.$pull = opts.$pull;
+  const result = await col().updateOne(
+    { _id: 'main', 'beats._id': beatOid },
+    update,
+  );
+  if (!result || result.matchedCount === 0) {
+    throw new Error(`updateBeatFields: beat ${beatOid} not found in plot doc`);
+  }
+  return result;
+}
+
+async function fetchBeat(beatOid) {
+  const plot = await getPlot();
+  return (plot.beats || []).find((b) => b._id && b._id.equals(beatOid)) || null;
+}
+
+async function persistBeatsFullArray(beats, extraSet = {}) {
+  // Used only for plot-level operations that genuinely need to rewrite the
+  // whole array: createBeat (insertion + sort), deleteBeat (removal),
+  // reorder. These are rare relative to per-beat field edits and the lost-
+  // update risk is bounded by their natural exclusivity (you don't delete a
+  // beat while editing its body).
   const result = await col().updateOne(
     { _id: 'main' },
     { $set: { beats, updated_at: new Date(), ...extraSet } },
   );
   if (!result || result.matchedCount === 0) {
-    const msg = 'persistBeats: plot doc {_id: "main"} not found — write did not apply.';
+    const msg = 'persistBeatsFullArray: plot doc {_id: "main"} not found — write did not apply.';
     logger.error(msg);
     throw new Error(msg);
   }
@@ -243,10 +274,10 @@ export async function createBeat({ name, desc = '', body = '', characters = [], 
     throw new Error('Beat requires a `desc` or an explicit `name`.');
   }
   const plot = await getPlot();
-  const beats = [...(plot.beats || [])];
+  const existing = plot.beats || [];
   let nextOrder = order;
   if (nextOrder === undefined || nextOrder === null) {
-    nextOrder = beats.length ? Math.max(...beats.map((b) => b.order || 0)) + 1 : 1;
+    nextOrder = existing.length ? Math.max(...existing.map((b) => b.order || 0)) + 1 : 1;
   }
   const now = new Date();
   const beat = {
@@ -263,10 +294,9 @@ export async function createBeat({ name, desc = '', body = '', characters = [], 
     created_at: now,
     updated_at: now,
   };
-  beats.push(beat);
-  beats.sort((a, b) => (a.order || 0) - (b.order || 0));
+  const beats = [...existing, beat].sort((a, b) => (a.order || 0) - (b.order || 0));
   const extra = plot.current_beat_id ? {} : { current_beat_id: beat._id };
-  await persistBeats(beats, extra);
+  await persistBeatsFullArray(beats, extra);
   logger.info(`mongo: beat create id=${beat._id} order=${beat.order} name="${beat.name}"`);
   return beat;
 }
@@ -292,7 +322,6 @@ export async function updateBeat(identifier, patch) {
     );
   }
 
-  // Normalize scene_sheet_image_id once up front.
   let sheetImageId;
   let sheetImageIdProvided = false;
   if (Object.prototype.hasOwnProperty.call(patch, 'scene_sheet_image_id')) {
@@ -314,25 +343,33 @@ export async function updateBeat(identifier, patch) {
   const plot = await getPlot();
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
-  const beats = (plot.beats || []).map((b) => {
-    if (!b._id || !b._id.equals(beat._id)) return b;
-    const next = { ...b };
-    if (patch.name !== undefined) next.name = String(patch.name);
-    if (patch.desc !== undefined) next.desc = String(patch.desc);
-    if (patch.body !== undefined) next.body = String(patch.body);
-    if (patch.order !== undefined && patch.order !== null) next.order = Number(patch.order);
-    if (Array.isArray(patch.characters)) next.characters = dedupeNames(patch.characters);
 
-    if (sheetImageIdProvided) next.scene_sheet_image_id = sheetImageId;
+  const set = {};
+  if (patch.name !== undefined) set['beats.$.name'] = String(patch.name);
+  if (patch.desc !== undefined) set['beats.$.desc'] = String(patch.desc);
+  if (patch.body !== undefined) set['beats.$.body'] = String(patch.body);
+  if (patch.characters !== undefined && Array.isArray(patch.characters)) {
+    set['beats.$.characters'] = dedupeNames(patch.characters);
+  }
+  if (sheetImageIdProvided) set['beats.$.scene_sheet_image_id'] = sheetImageId;
 
-    next.updated_at = new Date();
-    return next;
-  });
-  beats.sort((a, b) => (a.order || 0) - (b.order || 0));
-  await persistBeats(beats);
+  const orderChanging = patch.order !== undefined && patch.order !== null;
+  if (orderChanging) set['beats.$.order'] = Number(patch.order);
+
+  await updateBeatFields(beat._id, set);
   const patchFields = Object.keys(patch || {});
   logger.info(`mongo: beat update id=${beat._id} fields=[${patchFields.join(',')}]`);
-  return beats.find((b) => b._id && b._id.equals(beat._id));
+
+  if (orderChanging) {
+    // Re-sort the array. The atomic update can't reorder; do it as a
+    // dedicated full-array write. By construction, reordering doesn't race
+    // with field edits because sort is order-only.
+    const fresh = await getPlot();
+    const sorted = [...(fresh.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+    await persistBeatsFullArray(sorted);
+    return sorted.find((b) => b._id && b._id.equals(beat._id));
+  }
+  return fetchBeat(beat._id);
 }
 
 export async function setBeatBody(identifier, body) {
@@ -342,12 +379,9 @@ export async function setBeatBody(identifier, body) {
   const plot = await getPlot();
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
-  const beats = (plot.beats || []).map((b) =>
-    b._id && b._id.equals(beat._id) ? { ...b, body, updated_at: new Date() } : b,
-  );
-  await persistBeats(beats);
+  await updateBeatFields(beat._id, { 'beats.$.body': body });
   logger.info(`mongo: beat set_body id=${beat._id} chars=${body.length}`);
-  return beats.find((b) => b._id && b._id.equals(beat._id));
+  return fetchBeat(beat._id);
 }
 
 export async function editBeatBody(identifier, edits) {
@@ -359,11 +393,8 @@ export async function editBeatBody(identifier, edits) {
     edits,
     'edit_beat_body',
   );
-  const beats = (plot.beats || []).map((b) =>
-    b._id && b._id.equals(beat._id) ? { ...b, body, updated_at: new Date() } : b,
-  );
-  await persistBeats(beats);
-  const updated = beats.find((b) => b._id && b._id.equals(beat._id));
+  await updateBeatFields(beat._id, { 'beats.$.body': body });
+  const updated = await fetchBeat(beat._id);
   logger.info(
     `mongo: beat edit_body id=${beat._id} edits=${edits.length} before=${beforeLen} after=${afterLen}`,
   );
@@ -403,26 +434,25 @@ export async function appendBeatBody(identifier, content) {
   const existing = String(beat.body || '');
   const separator = existing.trim() ? '\n\n' : '';
   const newBody = `${existing}${separator}${addition}`;
-  const beats = (plot.beats || []).map((b) =>
-    b._id && b._id.equals(beat._id) ? { ...b, body: newBody, updated_at: new Date() } : b,
-  );
-  await persistBeats(beats);
+  await updateBeatFields(beat._id, { 'beats.$.body': newBody });
   logger.info(
     `mongo: beat append_body id=${beat._id} added_chars=${addition.length}`,
   );
-  return beats.find((b) => b._id && b._id.equals(beat._id));
+  return fetchBeat(beat._id);
 }
 
 export async function deleteBeat(identifier) {
   const plot = await getPlot();
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
-  const beats = (plot.beats || []).filter((b) => !(b._id && b._id.equals(beat._id)));
-  const extra =
-    plot.current_beat_id && plot.current_beat_id.equals(beat._id)
-      ? { current_beat_id: null }
-      : {};
-  await persistBeats(beats, extra);
+  const wasCurrent =
+    plot.current_beat_id && plot.current_beat_id.equals(beat._id);
+  const update = { $pull: { beats: { _id: beat._id } }, $set: { updated_at: new Date() } };
+  if (wasCurrent) update.$set.current_beat_id = null;
+  const result = await col().updateOne({ _id: 'main' }, update);
+  if (!result || result.matchedCount === 0) {
+    throw new Error('deleteBeat: plot doc {_id: "main"} not found — write did not apply.');
+  }
   logger.info(`mongo: beat delete id=${beat._id} name="${beat.name}"`);
   return {
     _id: beat._id,
@@ -436,7 +466,8 @@ export async function linkCharacterToBeat(identifier, characterName) {
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   const characters = dedupeNames([...(beat.characters || []), characterName]);
-  return updateBeat(beat._id.toString(), { characters });
+  await updateBeatFields(beat._id, { 'beats.$.characters': characters });
+  return fetchBeat(beat._id);
 }
 
 export async function unlinkCharacterFromBeat(identifier, characterName) {
@@ -445,22 +476,21 @@ export async function unlinkCharacterFromBeat(identifier, characterName) {
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   const lower = String(characterName).toLowerCase();
   const characters = (beat.characters || []).filter((c) => String(c).toLowerCase() !== lower);
-  return updateBeat(beat._id.toString(), { characters });
+  await updateBeatFields(beat._id, { 'beats.$.characters': characters });
+  return fetchBeat(beat._id);
 }
 
 export async function unlinkCharacterFromAllBeats(characterName) {
   const plot = await getPlot();
   const lower = String(characterName).toLowerCase();
-  const now = new Date();
   let touched = 0;
-  const beats = (plot.beats || []).map((b) => {
+  for (const b of plot.beats || []) {
     const filtered = (b.characters || []).filter((c) => String(c).toLowerCase() !== lower);
-    if (filtered.length === (b.characters || []).length) return b;
+    if (filtered.length === (b.characters || []).length) continue;
     touched += 1;
-    return { ...b, characters: filtered, updated_at: now };
-  });
+    await updateBeatFields(b._id, { 'beats.$.characters': filtered });
+  }
   if (touched > 0) {
-    await persistBeats(beats);
     logger.info(`mongo: unlink "${characterName}" from ${touched} beat(s)`);
   }
   return { unlinked_from: touched };
@@ -470,19 +500,13 @@ export async function pushBeatImage(beatIdentifier, imageMeta, setAsMain = false
   const plot = await getPlot();
   const beat = findBeat(plot, beatIdentifier);
   if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
-  const beats = (plot.beats || []).map((b) => {
-    if (!b._id || !b._id.equals(beat._id)) return b;
-    const images = [...(b.images || []), imageMeta];
-    const promote = !!setAsMain || !b.main_image_id;
-    return {
-      ...b,
-      images,
-      main_image_id: promote ? imageMeta._id : b.main_image_id,
-      updated_at: new Date(),
-    };
+  const promote = !!setAsMain || !beat.main_image_id;
+  const set = {};
+  if (promote) set['beats.$.main_image_id'] = imageMeta._id;
+  await updateBeatFields(beat._id, set, {
+    $push: { 'beats.$.images': imageMeta },
   });
-  await persistBeats(beats);
-  const updated = beats.find((b) => b._id && b._id.equals(beat._id));
+  const updated = await fetchBeat(beat._id);
   const isMain = !!(updated.main_image_id && updated.main_image_id.equals(imageMeta._id));
   logger.info(
     `mongo: beat image push id=${beat._id} image=${imageMeta._id}${isMain ? ' (main)' : ''}`,
@@ -502,40 +526,44 @@ export async function setBeatMainImage(beatIdentifier, imageId) {
   if (!inImages && !inArtworks) {
     throw new Error(`Image ${imageId} is not attached to this beat`);
   }
-  const beats = (plot.beats || []).map((b) =>
-    b._id && b._id.equals(beat._id) ? { ...b, main_image_id: oid, updated_at: new Date() } : b,
-  );
-  await persistBeats(beats);
+  await updateBeatFields(beat._id, { 'beats.$.main_image_id': oid });
   logger.info(`mongo: beat main_image set id=${beat._id} image=${oid}`);
-  return beats.find((b) => b._id && b._id.equals(beat._id));
+  return fetchBeat(beat._id);
 }
 
-// Replace one image meta in the beat's images[] array, preserving the slot
-// position. If the replaced image was the main image, the new image becomes
-// the main image. Throws if the old image isn't attached to the beat. Does
-// NOT touch GridFS — the caller is responsible for deleting old bytes.
+// Replace one image meta in the beat's images[] array, preserving slot
+// position. Uses arrayFilters so the swap is one atomic write; the optional
+// main_image_id pivot is included in the same update when the replaced
+// image was the main image.
 export async function replaceBeatImage(beatIdentifier, oldImageId, newImageMeta) {
   const plot = await getPlot();
   const beat = findBeat(plot, beatIdentifier);
   if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
   const oldOid = oldImageId instanceof ObjectId ? oldImageId : new ObjectId(String(oldImageId));
-  const idx = (beat.images || []).findIndex((i) => i._id.equals(oldOid));
-  if (idx < 0) throw new Error(`Image ${oldImageId} is not attached to this beat`);
-  const images = [...beat.images];
-  images[idx] = newImageMeta;
+  if (!(beat.images || []).some((i) => i._id.equals(oldOid))) {
+    throw new Error(`Image ${oldImageId} is not attached to this beat`);
+  }
   const wasMain = beat.main_image_id && beat.main_image_id.equals(oldOid);
-  const newMain = wasMain ? newImageMeta._id : beat.main_image_id || null;
-  const beats = (plot.beats || []).map((b) =>
-    b._id && b._id.equals(beat._id)
-      ? { ...b, images, main_image_id: newMain, updated_at: new Date() }
-      : b,
+  const now = new Date();
+  const $set = {
+    'beats.$[b].images.$[i]': newImageMeta,
+    'beats.$[b].updated_at': now,
+    updated_at: now,
+  };
+  if (wasMain) $set['beats.$[b].main_image_id'] = newImageMeta._id;
+  const result = await col().updateOne(
+    { _id: 'main' },
+    { $set },
+    { arrayFilters: [{ 'b._id': beat._id }, { 'i._id': oldOid }] },
   );
-  await persistBeats(beats);
+  if (!result || result.matchedCount === 0) {
+    throw new Error(`replaceBeatImage: write did not match beat ${beat._id}`);
+  }
   logger.info(
     `mongo: beat image replace id=${beat._id} old=${oldOid} new=${newImageMeta._id}${wasMain ? ' (main)' : ''}`,
   );
   return {
-    beat: beats.find((b) => b._id && b._id.equals(beat._id)),
+    beat: await fetchBeat(beat._id),
     replaced: oldOid,
     new_image_id: newImageMeta._id,
     was_main: !!wasMain,
@@ -547,34 +575,33 @@ export async function pullBeatImage(beatIdentifier, imageId) {
   const beat = findBeat(plot, beatIdentifier);
   if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
   const oid = imageId instanceof ObjectId ? imageId : new ObjectId(String(imageId));
-  const images = (beat.images || []).filter((i) => !i._id.equals(oid));
-  if (images.length === (beat.images || []).length) {
+  if (!(beat.images || []).some((i) => i._id.equals(oid))) {
     throw new Error(`Image ${imageId} is not attached to this beat`);
   }
   const wasMain = beat.main_image_id && beat.main_image_id.equals(oid);
-  const newMain = wasMain ? images[0]?._id || null : beat.main_image_id || null;
-  const beats = (plot.beats || []).map((b) =>
-    b._id && b._id.equals(beat._id) ? { ...b, images, main_image_id: newMain, updated_at: new Date() } : b,
-  );
-  await persistBeats(beats);
+  const set = {};
+  if (wasMain) {
+    const fallback = (beat.images || []).find((i) => !i._id.equals(oid));
+    set['beats.$.main_image_id'] = fallback?._id || null;
+  }
+  await updateBeatFields(beat._id, set, {
+    $pull: { 'beats.$.images': { _id: oid } },
+  });
   logger.info(`mongo: beat image pull id=${beat._id} image=${oid}`);
-  return { beat: beats.find((b) => b._id && b._id.equals(beat._id)), removed: oid };
+  return { beat: await fetchBeat(beat._id), removed: oid };
 }
 
 export async function pushBeatAttachment(beatIdentifier, attachmentMeta) {
   const plot = await getPlot();
   const beat = findBeat(plot, beatIdentifier);
   if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
-  const beats = (plot.beats || []).map((b) => {
-    if (!b._id || !b._id.equals(beat._id)) return b;
-    const attachments = [...(b.attachments || []), attachmentMeta];
-    return { ...b, attachments, updated_at: new Date() };
+  await updateBeatFields(beat._id, {}, {
+    $push: { 'beats.$.attachments': attachmentMeta },
   });
-  await persistBeats(beats);
   logger.info(
     `mongo: beat attachment push id=${beat._id} attach=${attachmentMeta?._id || '-'}`,
   );
-  return beats.find((b) => b._id && b._id.equals(beat._id));
+  return fetchBeat(beat._id);
 }
 
 export async function pullBeatAttachment(beatIdentifier, attachmentId) {
@@ -582,16 +609,14 @@ export async function pullBeatAttachment(beatIdentifier, attachmentId) {
   const beat = findBeat(plot, beatIdentifier);
   if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
   const oid = attachmentId instanceof ObjectId ? attachmentId : new ObjectId(String(attachmentId));
-  const attachments = (beat.attachments || []).filter((a) => !a._id.equals(oid));
-  if (attachments.length === (beat.attachments || []).length) {
+  if (!(beat.attachments || []).some((a) => a._id.equals(oid))) {
     throw new Error(`Attachment ${attachmentId} is not attached to this beat`);
   }
-  const beats = (plot.beats || []).map((b) =>
-    b._id && b._id.equals(beat._id) ? { ...b, attachments, updated_at: new Date() } : b,
-  );
-  await persistBeats(beats);
+  await updateBeatFields(beat._id, {}, {
+    $pull: { 'beats.$.attachments': { _id: oid } },
+  });
   logger.info(`mongo: beat attachment pull id=${beat._id} attach=${oid}`);
-  return { beat: beats.find((b) => b._id && b._id.equals(beat._id)), removed: oid };
+  return { beat: await fetchBeat(beat._id), removed: oid };
 }
 
 export async function setCurrentBeat(identifier) {
