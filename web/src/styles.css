@@ -1819,6 +1819,63 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.storyboard-frames-count {
+  text-transform: none;
+  letter-spacing: 0;
+  opacity: 0.8;
+}
+.storyboard-frame-reorder {
+  display: inline-flex;
+  gap: 2px;
+}
+.storyboard-frame-reorder button {
+  font-size: 10px;
+  line-height: 1;
+  padding: 1px 4px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.storyboard-frame-reorder button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.storyboard-frame-prompt {
+  margin-top: 2px;
+}
+.storyboard-frame-prompt .collab-field,
+.storyboard-frame-prompt textarea {
+  font-size: 11px;
+  min-height: 40px;
+}
+.storyboard-frame-remove-btn {
+  font-size: 11px;
+  background: transparent;
+  color: var(--fg-muted);
+  border: none;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.storyboard-frame-remove-btn:hover { color: #ff6b6b; }
+.storyboard-frames-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.storyboard-frames-max-note {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.storyboard-frames-add {
+  min-height: 140px;
 }
 .storyboard-frame-img-wrap {
   position: relative;
@@ -1994,6 +2051,33 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 @keyframes storyboard-record-pulse {
   50% { opacity: 0.3; }
+}
+.storyboard-video-upload {
+  margin-bottom: 12px;
+}
+.storyboard-video-upload-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 4px;
+}
+.storyboard-video-upload-el {
+  /* min-width:0 lets the flex item shrink below the video's intrinsic
+     width — without it a large clip forces the row wider than the content
+     area. max-width/max-height then keep it fully inside the panel. */
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  max-height: 360px;
+  background: #000;
+  border-radius: 4px;
+  display: block;
+}
+.storyboard-video-upload-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
 }
 
 /* Image lightbox — full-screen viewer for frames and reference images */

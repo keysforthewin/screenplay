@@ -131,13 +131,13 @@ describe('getPreviousStoryboardInBeat', () => {
   });
 });
 
-describe('POST /storyboard/:id/grab-start-frame-from-previous', () => {
+describe('POST /storyboard/:id/grab-frame-from-previous', () => {
   const beatId = new ObjectId();
 
   it('returns 400 when there is no previous shot', async () => {
     const only = await Storyboards.createStoryboard({ beatId, order: 1 });
     const { status, json } = await post(
-      `/storyboard/${only._id}/grab-start-frame-from-previous`,
+      `/storyboard/${only._id}/grab-frame-from-previous`,
     );
     expect(status).toBe(400);
     expect(json.error).toMatch(/no previous storyboard/);
@@ -145,16 +145,16 @@ describe('POST /storyboard/:id/grab-start-frame-from-previous', () => {
 
   it('returns 400 when the previous shot has no generated video', async () => {
     const prev = await Storyboards.createStoryboard({ beatId, order: 1 });
-    expect(prev.video_file_id).toBe(null); // sanity
+    expect(prev.frames).toEqual([]); // sanity
     const cur = await Storyboards.createStoryboard({ beatId, order: 2 });
     const { status, json } = await post(
-      `/storyboard/${cur._id}/grab-start-frame-from-previous`,
+      `/storyboard/${cur._id}/grab-frame-from-previous`,
     );
     expect(status).toBe(400);
     expect(json.error).toMatch(/no generated video/);
   });
 
-  it('sets the current shot start_frame_id to a newly uploaded frame on success', async () => {
+  it('adds a new frame holding the grabbed image on success', async () => {
     const prevVideoId = new ObjectId();
     const prev = await Storyboards.createStoryboard({ beatId, order: 1 });
     await Storyboards.updateStoryboard(prev._id, {
@@ -163,15 +163,18 @@ describe('POST /storyboard/:id/grab-start-frame-from-previous', () => {
     const cur = await Storyboards.createStoryboard({ beatId, order: 2 });
 
     const { status, json } = await post(
-      `/storyboard/${cur._id}/grab-start-frame-from-previous`,
+      `/storyboard/${cur._id}/grab-frame-from-previous`,
     );
     expect(status).toBe(200);
     expect(json.image._id).toBeDefined();
     expect(json.image.content_type).toBe('image/jpeg');
+    expect(json.frame_id).toBeDefined();
 
-    // The gateway should have written start_frame_id back to the storyboard.
+    // The gateway should have added a frame holding the grabbed image.
     const fresh = await Storyboards.getStoryboard(cur._id);
-    expect(fresh.start_frame_id?.toString()).toBe(json.image._id.toString());
+    expect(fresh.frames).toHaveLength(1);
+    expect(fresh.frames[0].image_id.toString()).toBe(json.image._id.toString());
+    expect(fresh.frames[0]._id.toString()).toBe(json.frame_id);
 
     // And we should have one upload, owned by the beat.
     expect(uploadedImages).toHaveLength(1);
@@ -189,7 +192,7 @@ describe('POST /storyboard/:id/grab-start-frame-from-previous', () => {
     await Storyboards.updateStoryboard(prev._id, { video_file_id: prevVideoId });
     const cur = await Storyboards.createStoryboard({ beatId, order: 2 });
     const { status, json } = await post(
-      `/storyboard/${cur._id}/grab-start-frame-from-previous`,
+      `/storyboard/${cur._id}/grab-frame-from-previous`,
     );
     expect(status).toBe(500);
     expect(json.error).toMatch(/ffmpeg failed/i);

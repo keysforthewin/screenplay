@@ -85,6 +85,31 @@ async function fetchOpenApi(endpointId) {
   return falFetch(url);
 }
 
+// Best plain-text description we can extract for a model. Priority order:
+//   1. fal discovery item's `shortDescription` (one-sentence summary fal shows
+//      on its catalog page).
+//   2. fal discovery item's `description` (longer marketing blurb).
+//   3. OpenAPI spec's `info.description` (sometimes the only thing populated).
+// Returns a trimmed string capped at 800 chars, or null if nothing usable
+// shows up. The cap keeps the manifest from ballooning when fal pastes a
+// multi-page README into the spec.
+const DESCRIPTION_CAP = 800;
+function trimDescription(s) {
+  if (typeof s !== 'string') return null;
+  const t = s.replace(/\s+/g, ' ').trim();
+  if (!t) return null;
+  if (t.length <= DESCRIPTION_CAP) return t;
+  return `${t.slice(0, DESCRIPTION_CAP - 1).trimEnd()}…`;
+}
+function pickDescription(item, spec) {
+  return (
+    trimDescription(item?.shortDescription) ||
+    trimDescription(item?.description) ||
+    trimDescription(spec?.info?.description) ||
+    null
+  );
+}
+
 function resolveRef(spec, ref) {
   if (!ref || typeof ref !== 'string' || !ref.startsWith('#/')) return null;
   const parts = ref.slice(2).split('/');
@@ -174,6 +199,7 @@ function toCsv(rows) {
     'model_family',
     'license_type',
     'deprecated',
+    'description',
     'required_params',
     'optional_params',
     'output_shape',
@@ -190,6 +216,7 @@ function toCsv(rows) {
       csvCell(r.modelFamily),
       csvCell(r.licenseType),
       csvCell(r.deprecated),
+      csvCell(r.description),
       csvCell(r.requiredParams),
       csvCell(r.optionalParams),
       csvCell(r.output),
@@ -222,6 +249,7 @@ async function main() {
         modelFamily: m.modelFamily,
         licenseType: m.licenseType,
         deprecated: m.deprecated,
+        description: pickDescription(m, spec),
         requiredParams: io.requiredParams,
         optionalParams: io.optionalParams,
         output: io.output,
@@ -239,6 +267,7 @@ async function main() {
         modelFamily: m.modelFamily,
         licenseType: m.licenseType,
         deprecated: m.deprecated,
+        description: pickDescription(m, null),
         requiredParams: { __error: err.message },
         optionalParams: {},
         output: {},

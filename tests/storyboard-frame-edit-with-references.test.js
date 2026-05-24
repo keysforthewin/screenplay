@@ -52,7 +52,7 @@ function registerImage(id, label = null) {
   return oid;
 }
 
-async function setupRow({ startFrameId = null } = {}) {
+async function setupRow({ imageId = null } = {}) {
   const beat = await Plots.createBeat({ name: 'Diner', desc: 'd', body: 'b' });
   const sb = await Storyboards.createStoryboard({
     beatId: beat._id,
@@ -60,10 +60,8 @@ async function setupRow({ startFrameId = null } = {}) {
     shotType: 'cinematic_wide',
     charactersInScene: ['Alice'],
   });
-  if (startFrameId) {
-    await Storyboards.updateStoryboard(sb._id, { start_frame_id: startFrameId });
-  }
-  return { beat, sb: await Storyboards.getStoryboard(sb._id) };
+  const { frameId } = await Storyboards.addFrame(sb._id, { imageId });
+  return { beat, sb: await Storyboards.getStoryboard(sb._id), frameId };
 }
 
 describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
@@ -71,7 +69,7 @@ describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
     const startId = registerImage(new ObjectId(), 'EXISTING');
     const ref1 = registerImage(new ObjectId(), 'REF-1');
     const ref2 = registerImage(new ObjectId(), 'REF-2');
-    const { sb } = await setupRow({ startFrameId: startId });
+    const { sb, frameId } = await setupRow({ imageId: startId });
 
     let captured;
     Generate._setImageDispatcherForTests(async (args) => {
@@ -81,7 +79,7 @@ describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
 
     await Generate.regenerateStoryboardFrame({
       storyboardId: sb._id,
-      role: 'start_frame',
+      frameId,
       mode: 'edit',
       editPrompt: 'add the hat from the reference',
       editReferenceImageIds: [ref1, ref2],
@@ -97,7 +95,7 @@ describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
 
   it('defaults to single-image edit when no refs are supplied', async () => {
     const startId = registerImage(new ObjectId(), 'EXISTING');
-    const { sb } = await setupRow({ startFrameId: startId });
+    const { sb, frameId } = await setupRow({ imageId: startId });
 
     let captured;
     Generate._setImageDispatcherForTests(async (args) => {
@@ -107,7 +105,7 @@ describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
 
     await Generate.regenerateStoryboardFrame({
       storyboardId: sb._id,
-      role: 'start_frame',
+      frameId,
       mode: 'edit',
       editPrompt: 'tweak the lighting',
     });
@@ -118,7 +116,7 @@ describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
 
   it('throws when a reference id is missing from GridFS', async () => {
     const startId = registerImage(new ObjectId(), 'EXISTING');
-    const { sb } = await setupRow({ startFrameId: startId });
+    const { sb, frameId } = await setupRow({ imageId: startId });
     Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('img'),
       contentType: 'image/png',
@@ -128,7 +126,7 @@ describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
     await expect(
       Generate.regenerateStoryboardFrame({
         storyboardId: sb._id,
-        role: 'start_frame',
+        frameId,
         mode: 'edit',
         editPrompt: 'tweak',
         editReferenceImageIds: [missing],
@@ -139,7 +137,7 @@ describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
   it('does NOT touch the persisted per-frame reference list', async () => {
     const startId = registerImage(new ObjectId(), 'EXISTING');
     const ref1 = registerImage(new ObjectId(), 'REF-1');
-    const { sb } = await setupRow({ startFrameId: startId });
+    const { sb, frameId } = await setupRow({ imageId: startId });
     Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('img'),
       contentType: 'image/png',
@@ -147,13 +145,14 @@ describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
 
     await Generate.regenerateStoryboardFrame({
       storyboardId: sb._id,
-      role: 'start_frame',
+      frameId,
       mode: 'edit',
       editPrompt: 'tweak',
       editReferenceImageIds: [ref1],
     });
 
     const fresh = await Storyboards.getStoryboard(sb._id);
-    expect(fresh.start_frame_reference_ids || []).toEqual([]);
+    const frame = fresh.frames.find((f) => f._id.toString() === String(frameId));
+    expect(frame.reference_ids || []).toEqual([]);
   });
 });

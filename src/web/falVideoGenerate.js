@@ -42,11 +42,15 @@ import { setStoryboardVideoViaGateway } from './gateway.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 import { fal, isConfigured as falIsConfigured } from '../fal/client.js';
 import { uploadFalAsset } from '../fal/upload.js';
+import { prepareImageForFal, renameForContentType } from '../fal/prepareImage.js';
 import {
   getVideoModelOrCatalog,
   getVideoModelCatalogMeta,
-  validateStoryboardInputs,
+  getMaxAudioSeconds,
+  resolveFrameAssignment,
+  validateAssignment,
 } from '../fal/videoModels.js';
+import { trimToSeconds } from './audioTranscode.js';
 import { estimateRegisteredCost, estimateCatalogCost } from '../fal/videoPricing.js';
 
 // In-memory job registry. Single-process runtime, like the old Wan
@@ -167,6 +171,7 @@ export async function startVideoGenerationJob({
   resolution = null,
   fps = null,
   includeDirectorNotes = true,
+  frameAssignment = null,
   announceUsername = null,
 } = {}) {
   if (!falIsConfigured()) {
@@ -180,7 +185,8 @@ export async function startVideoGenerationJob({
   const sb = await mongoGetStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
 
-  const missing = validateStoryboardInputs(model, sb);
+  const assignment = resolveFrameAssignment(model, sb, frameAssignment);
+  const missing = validateAssignment(model, assignment, sb);
   if (missing.length) throw new MissingInputsError(missing, model.label);
 
   if (isBeatLocked(sb.beat_id)) {
@@ -218,6 +224,7 @@ export async function startVideoGenerationJob({
       resolution,
       fps,
       includeDirectorNotes,
+      assignment,
       announceUsername,
     }),
   )
@@ -256,7 +263,16 @@ async function loadAndUploadImage(imageId, name) {
   if (!read) throw new Error(`Failed to read image ${imageId} from storage.`);
   const ct =
     read.file?.contentType || read.file?.metadata?.content_type || 'image/png';
-  return uploadFalAsset({ buffer: read.buffer, contentType: ct, name });
+  // Storyboard frames are often 4K PNGs (~14 MB). fal rejects inputs over
+  // 10 MB and bytedance/omnihuman refuses oversized images with a generic
+  // file_download_error, so downscale/re-encode before upload. In-limit
+  // images pass through untouched.
+  const prepared = await prepareImageForFal({ buffer: read.buffer, contentType: ct });
+  return uploadFalAsset({
+    buffer: prepared.buffer,
+    contentType: prepared.contentType,
+    name: renameForContentType(name, prepared.contentType),
+  });
 }
 
 async function loadAndUploadAttachment(attachmentId, name) {
@@ -266,6 +282,30 @@ async function loadAndUploadAttachment(attachmentId, name) {
   const ct =
     read.file?.contentType || read.file?.metadata?.content_type || 'application/octet-stream';
   return uploadFalAsset({ buffer: read.buffer, contentType: ct, name });
+}
+
+// Load the scene audio and upload it to fal storage. When the chosen model
+// declares an audio duration cap (e.g. seedance r2v = 15s, omnihuman v1.5 =
+// 60s@720p / 30s@1080p) and the clip is over it — or its duration is unknown —
+// the bytes are trimmed (and re-encoded to MP3) before upload. The cap can be
+// resolution-dependent, so the selected output resolution is passed in.
+// Otherwise the stored bytes go up unchanged, matching the generic uploader.
+async function loadAndUploadAudio({ attachmentId, model, storyboard, resolution = null }) {
+  if (!attachmentId) return null;
+  const read = await readAttachmentBuffer(attachmentId);
+  if (!read) throw new Error(`Failed to read attachment ${attachmentId} from storage.`);
+  const storedCt =
+    read.file?.contentType || read.file?.metadata?.content_type || 'application/octet-stream';
+  const cap = getMaxAudioSeconds(model.falModel, resolution);
+  if (cap) {
+    const dur = Number(storyboard.audio_duration_seconds);
+    const overOrUnknown = !Number.isFinite(dur) || dur <= 0 || dur > cap;
+    if (overOrUnknown) {
+      const trimmed = await trimToSeconds(read.buffer, cap);
+      return uploadFalAsset({ buffer: trimmed, contentType: 'audio/mpeg', name: 'audio.mp3' });
+    }
+  }
+  return uploadFalAsset({ buffer: read.buffer, contentType: storedCt, name: 'audio.bin' });
 }
 
 async function buildReferenceImageUrls(referenceImageIds) {
@@ -387,6 +427,7 @@ export async function buildVideoPayloadPreview({
   resolution = null,
   fps = null,
   includeDirectorNotes = true,
+  frameAssignment = null,
 } = {}) {
   if (!falIsConfigured()) {
     throw new FalNotConfiguredError();
@@ -399,7 +440,8 @@ export async function buildVideoPayloadPreview({
   const sb = await mongoGetStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
 
-  const missing = validateStoryboardInputs(model, sb);
+  const assignment = resolveFrameAssignment(model, sb, frameAssignment);
+  const missing = validateAssignment(model, assignment, sb);
   if (missing.length) throw new MissingInputsError(missing, model.label);
 
   const needs = model.inputs;
@@ -411,7 +453,7 @@ export async function buildVideoPayloadPreview({
   if (wants('startFrame')) {
     const desc = await describeImageInput({
       slot: 'startFrame',
-      imageId: sb.start_frame_id,
+      imageId: assignment.startFrameId,
       name: 'start.png',
     });
     if (desc) inputs.push(desc);
@@ -419,7 +461,7 @@ export async function buildVideoPayloadPreview({
   if (wants('endFrame')) {
     const desc = await describeImageInput({
       slot: 'endFrame',
-      imageId: sb.end_frame_id,
+      imageId: assignment.endFrameId,
       name: 'end.png',
     });
     if (desc) inputs.push(desc);
@@ -432,10 +474,16 @@ export async function buildVideoPayloadPreview({
     });
     if (desc) inputs.push(desc);
   }
+  if (wants('videoInput')) {
+    const desc = await describeAttachmentInput({
+      slot: 'videoInput',
+      attachmentId: sb.video_upload_file_id,
+      name: 'source.mp4',
+    });
+    if (desc) inputs.push(desc);
+  }
   if (wants('referenceImages')) {
-    const ids = Array.isArray(sb.start_frame_reference_ids)
-      ? sb.start_frame_reference_ids
-      : [];
+    const ids = assignment.referenceImageIds;
     for (let i = 0; i < ids.length; i++) {
       const desc = await describeImageInput({
         slot: 'referenceImages',
@@ -454,6 +502,14 @@ export async function buildVideoPayloadPreview({
     }
   }
 
+  const audioCap = getMaxAudioSeconds(model.falModel, resolution);
+  if (audioCap && wants('audio') && sb.audio_file_id) {
+    const dur = Number(sb.audio_duration_seconds);
+    if (!Number.isFinite(dur) || dur <= 0 || dur > audioCap) {
+      warnings.push(`Audio will be trimmed to ${audioCap}s for this model.`);
+    }
+  }
+
   const directorNotes = includeDirectorNotes ? await loadDirectorNotesForPrompt() : null;
   const finalPrompt = buildPrompt({ override: prompt, storyboard: sb, directorNotes });
   const finalDuration = pickDurationSeconds({
@@ -467,11 +523,12 @@ export async function buildVideoPayloadPreview({
 
   const bundle = {
     prompt: finalPrompt,
-    startFrameUrl: previewImageUrl(sb.start_frame_id),
-    endFrameUrl: previewImageUrl(sb.end_frame_id),
+    startFrameUrl: previewImageUrl(assignment.startFrameId),
+    endFrameUrl: previewImageUrl(assignment.endFrameId),
     characterSheetUrl: null,
     audioUrl: previewAttachmentUrl(sb.audio_file_id),
-    referenceImageUrls: (sb.start_frame_reference_ids || [])
+    videoUrl: previewAttachmentUrl(sb.video_upload_file_id),
+    referenceImageUrls: assignment.referenceImageIds
       .map((id) => previewImageUrl(id))
       .filter(Boolean),
     durationSeconds: finalDuration,
@@ -524,6 +581,7 @@ export async function buildVideoPayloadPreview({
       fal_model: model.falModel,
       description: model.description || null,
       supports_generate_audio: Boolean(model.supportsGenerateAudio),
+      audio_max_seconds: audioCap,
       inputs: model.inputs,
       durations: Array.isArray(model.durations) ? model.durations : [],
       default_duration: model.defaultDuration ?? null,
@@ -555,6 +613,7 @@ async function runVideoGenerationJob({
   resolution = null,
   fps = null,
   includeDirectorNotes = true,
+  assignment = null,
   announceUsername = null,
 }) {
   try {
@@ -565,23 +624,36 @@ async function runVideoGenerationJob({
     const needs = model.inputs;
     const wants = (key) => needs[key] && needs[key] !== 'unused';
 
+    // The frame assignment maps the storyboard's frame-pool images onto the
+    // model's start/end/reference slots (resolved + validated at job start).
+    const frameAssignment =
+      assignment || resolveFrameAssignment(model, storyboard, null);
+
     setStep(job, 'uploading', 'Uploading inputs to fal storage');
     const [
       startFrameUrl,
       endFrameUrl,
       audioUrl,
+      videoUrl,
     ] = await Promise.all([
-      wants('startFrame') ? loadAndUploadImage(storyboard.start_frame_id, 'start.png') : null,
-      wants('endFrame') ? loadAndUploadImage(storyboard.end_frame_id, 'end.png') : null,
-      wants('audio') ? loadAndUploadAttachment(storyboard.audio_file_id, 'audio.bin') : null,
+      wants('startFrame') ? loadAndUploadImage(frameAssignment.startFrameId, 'start.png') : null,
+      wants('endFrame') ? loadAndUploadImage(frameAssignment.endFrameId, 'end.png') : null,
+      wants('audio')
+        ? loadAndUploadAudio({
+            attachmentId: storyboard.audio_file_id,
+            model,
+            storyboard,
+            resolution,
+          })
+        : null,
+      wants('videoInput')
+        ? loadAndUploadAttachment(storyboard.video_upload_file_id, 'source.mp4')
+        : null,
     ]);
     const characterSheetUrl = null;
 
-    // Reference images for video generation come from the start frame's
-    // per-frame reference list — those are the images that anchor the
-    // opening of this shot, which is what a video model "extends".
     const referenceImageUrls = wants('referenceImages')
-      ? await buildReferenceImageUrls(storyboard.start_frame_reference_ids || [])
+      ? await buildReferenceImageUrls(frameAssignment.referenceImageIds)
       : [];
 
     // 2. Build the model-specific input from the unified bundle.
@@ -592,6 +664,7 @@ async function runVideoGenerationJob({
       endFrameUrl,
       characterSheetUrl,
       audioUrl,
+      videoUrl,
       referenceImageUrls,
       durationSeconds: pickDurationSeconds({ requested: durationSeconds, storyboard, model }),
       generateAudio: model.supportsGenerateAudio ? Boolean(generateAudio) : false,
@@ -653,14 +726,14 @@ async function runVideoGenerationJob({
       requestId: submission.request_id,
     });
     const data = result?.data || result;
-    const videoUrl = model.extractVideoUrl(data);
-    if (!videoUrl) {
+    const renderedVideoUrl = model.extractVideoUrl(data);
+    if (!renderedVideoUrl) {
       throw new Error(
         `fal returned no video URL in result.data: ${JSON.stringify(data).slice(0, 500)}`,
       );
     }
 
-    const { buffer, contentType } = await fetchVideoBytes(videoUrl);
+    const { buffer, contentType } = await fetchVideoBytes(renderedVideoUrl);
 
     // 6. Persist into GridFS attachments as a beat-owned video.
     setStep(job, 'persisting', 'Saving video');

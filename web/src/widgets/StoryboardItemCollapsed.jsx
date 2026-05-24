@@ -9,10 +9,19 @@ export function StoryboardItemCollapsed({
   const previewText = (sb.summary || '').trim()
     || stripMd(sb.text_prompt || '').slice(0, 160);
 
-  const videoId = sb?.video_file_id
+  // Precedence: generated video first (the "final" artifact), then the
+  // user's uploaded source video (only material thing on the row), then a
+  // strip of frame-pool thumbs. We never show both videos — the generated one
+  // always wins when present.
+  const frames = Array.isArray(sb?.frames) ? sb.frames : [];
+  const generatedVideoId = sb?.video_file_id
     ? (sb.video_file_id.toString?.() || String(sb.video_file_id))
     : null;
-  const hasVideo = !!videoId;
+  const uploadedVideoId = sb?.video_upload_file_id
+    ? (sb.video_upload_file_id.toString?.() || String(sb.video_upload_file_id))
+    : null;
+  const previewVideoId = generatedVideoId || uploadedVideoId;
+  const hasVideo = !!previewVideoId;
 
   return (
     <div
@@ -40,13 +49,16 @@ export function StoryboardItemCollapsed({
 
       {hasVideo ? (
         <div
-          className="storyboard-collapsed-video"
+          className={
+            'storyboard-collapsed-video' +
+            (generatedVideoId ? ' is-generated' : ' is-uploaded')
+          }
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => e.stopPropagation()}
         >
           <video
             className="storyboard-collapsed-video-el"
-            src={attachmentUrl(videoId)}
+            src={attachmentUrl(previewVideoId)}
             controls
             preload="metadata"
             playsInline
@@ -54,9 +66,17 @@ export function StoryboardItemCollapsed({
         </div>
       ) : (
         <div className="storyboard-collapsed-frames">
-          <FramePreview id={sb.start_frame_id} label="Start frame" />
-          <span className="storyboard-collapsed-frames-arrow" aria-hidden="true">→</span>
-          <FramePreview id={sb.end_frame_id} label="End frame" />
+          {frames.length ? (
+            frames.map((f, i) => (
+              <FramePreview
+                key={f._id?.toString?.() || i}
+                id={f.image_id}
+                label={`Frame ${i + 1}`}
+              />
+            ))
+          ) : (
+            <FramePreview id={null} label="No frames" />
+          )}
         </div>
       )}
 

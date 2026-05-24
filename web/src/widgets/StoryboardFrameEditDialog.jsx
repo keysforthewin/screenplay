@@ -23,9 +23,9 @@ const POLL_INTERVAL_MS = 2000;
 //   storyboardId          24-hex string
 //   beatId                24-hex string (for the picker's tabs)
 //   charactersInScene     forwarded to the picker
-//   role                  'start_frame' | 'end_frame'
+//   frameId               24-hex string — the frame in the pool to edit
 //   imageId               current frame image GridFS id (or null)
-//   hasUndo               whether previous_*_frame_id is set
+//   hasUndo               whether the frame has a previous_image_id
 export function StoryboardFrameEditDialog({
   open,
   onClose,
@@ -33,7 +33,7 @@ export function StoryboardFrameEditDialog({
   storyboardId,
   beatId,
   charactersInScene,
-  role,
+  frameId,
   imageId,
   hasUndo,
 }) {
@@ -95,7 +95,7 @@ export function StoryboardFrameEditDialog({
   async function applyEdit({ prompt, model, referenceIds: refs }) {
     setJobError(null);
     const r = await apiPostJson(
-      `/storyboard/${storyboardId}/frame/${role}/edit`,
+      `/storyboard/${storyboardId}/frame/${frameId}/edit`,
       {
         prompt,
         model,
@@ -113,7 +113,7 @@ export function StoryboardFrameEditDialog({
 
   async function undoEdit() {
     await apiPostJson(
-      `/storyboard/${storyboardId}/frame/${role}/undo`,
+      `/storyboard/${storyboardId}/frame/${frameId}/undo`,
       {},
     );
   }
@@ -123,7 +123,7 @@ export function StoryboardFrameEditDialog({
   }
 
   const status = jobError ? 'error' : jobId ? 'pending' : 'done';
-  const label = role === 'start_frame' ? 'start frame' : 'end frame';
+  const label = 'frame';
 
   return (
     <>
@@ -150,7 +150,7 @@ export function StoryboardFrameEditDialog({
         beatId={beatId}
         charactersInScene={charactersInScene}
         currentReferenceIds={referenceIds}
-        role="reference"
+        frameId={frameId}
         onApply={(ids) => setReferenceIds(ids)}
       />
     </>

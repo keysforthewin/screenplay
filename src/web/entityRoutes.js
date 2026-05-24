@@ -8,6 +8,8 @@ import multer from 'multer';
 import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
 import { logger } from '../log.js';
+import { contentTypeFromFilename } from '../util/contentType.js';
+import { convertToMp3 } from './audioTranscode.js';
 import { requireSession } from './auth.js';
 import { ALLOWED_IMAGE_MODELS } from './imageReplaceDispatch.js';
 
@@ -62,6 +64,7 @@ import {
   attachExistingImageToBeatViaGateway,
   attachExistingImageToCharacterViaGateway,
   attachExistingImageToDirectorNoteViaGateway,
+  copyAttachmentToStoryboardMediaViaGateway,
   copyDialogAudioToStoryboardViaGateway,
   createDialogViaGateway,
   createStoryboardViaGateway,
@@ -90,7 +93,11 @@ import {
   setStoryboardAudioViaGateway,
   setStoryboardFramePromptViaGateway,
   setStoryboardFrameReferenceImagesViaGateway,
-  setStoryboardImageViaGateway,
+  addStoryboardFrameViaGateway,
+  removeStoryboardFrameViaGateway,
+  reorderStoryboardFramesViaGateway,
+  setStoryboardFrameImageViaGateway,
+  setStoryboardUploadedVideoViaGateway,
   setStoryboardVideoViaGateway,
   undoStoryboardFrameEditViaGateway,
   updateBeatViaGateway,
@@ -120,7 +127,7 @@ import {
   listStoryboards,
 } from '../mongo/storyboards.js';
 import {
-  grabStartFrameFromPrevious,
+  grabFrameFromPrevious,
   FfmpegMissingError,
   FfmpegFailedError,
 } from './storyboardGrabFrame.js';
@@ -209,6 +216,40 @@ function safeFilename(name, fallback) {
   return s.replace(/[\\/]+/g, '_').slice(0, 200);
 }
 
+// Swap any extension for `.mp3` (fallback names end in `.bin`; recordings in
+// `.webm`/`.m4a`).
+function mp3Filename(name) {
+  return String(name).replace(/\.[^.\/]*$/, '') + '.mp3';
+}
+
+// Normalize a freshly uploaded audio file to MP3 so every fal model — notably
+// seedance r2v, which only accepts MP3 — can ingest it. Already-MP3 uploads
+// pass through untouched. Throws FfmpegMissingError / AudioTranscodeError;
+// callers map those to HTTP statuses (the upload routes fail loudly rather
+// than silently storing a format fal will reject later).
+async function normalizeUploadedAudioToMp3({ file, contentType, fallbackName }) {
+  const bareCt = String(contentType || '').split(';')[0].trim().toLowerCase();
+  const filename = safeFilename(file.originalname, fallbackName);
+  if (bareCt === 'audio/mpeg') {
+    return { buffer: file.buffer, contentType: 'audio/mpeg', filename };
+  }
+  const buffer = await convertToMp3(file.buffer);
+  return { buffer, contentType: 'audio/mpeg', filename: mp3Filename(filename) };
+}
+
+// Shared error→status mapping for the audio upload routes.
+function sendAudioTranscodeError(res, e) {
+  // Match on the stable `code` rather than `instanceof` — the latter is
+  // unreliable across module-instance boundaries (e.g. test harness imports).
+  if (e?.code === 'FFMPEG_MISSING') {
+    return res.status(503).json({ error: 'audio upload requires ffmpeg on the server' });
+  }
+  if (e?.code === 'AUDIO_TRANSCODE_FAILED') {
+    return res.status(422).json({ error: 'could not convert audio to MP3' });
+  }
+  return null;
+}
+
 // Validate + load reference images from the request body. Returns
 // { ids, images } on success; { error } when any id is malformed or missing.
 // Callers should respond with 400/404 on error and pass `images` to
@@ -241,32 +282,25 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
 });
 
-// When the user adds the OPPOSITE frame slot's current image as a per-frame
-// reference for *this* frame's regen, snapshot the sibling's bytes into a
-// fresh GridFS image and store the copy's id in the reference list instead
-// of the live sibling id. Two reasons:
-//   1. The reference is decoupled from the sibling slot — later regens or
-//      removal of the sibling don't mutate or strand this reference.
-//   2. Image models can deduplicate inputs by content hash / identity, so
-//      passing a fresh copy with its own GridFS metadata makes the reference
-//      unambiguously distinct from anything else in the request.
-// Returns the original id when no copy is needed (id is not the sibling, no
-// sibling set, or the sibling was already in the existing reference list).
-async function maybeCopyFromSiblingFrame({ imageId, sb, role, existingRefs }) {
-  const siblingRole = role === 'start_frame' ? 'end_frame' : 'start_frame';
-  const siblingId = sb[`${siblingRole}_id`];
-  if (!siblingId) return imageId;
-  const idStr = String(imageId);
-  if (idStr !== String(siblingId)) return imageId;
-  if (existingRefs && existingRefs.has(idStr)) return imageId;
-  const sbIdStr = sb._id?.toString?.() || String(sb._id);
-  const copy = await copyImageToNewOwner({
-    imageId: idStr,
-    ownerType: 'beat',
-    ownerId: sb.beat_id,
-    filenameBase: `storyboard-${sbIdStr}-${role}-from-${siblingRole}`,
-  });
-  return String(copy._id);
+// Parse the optional `frame_assignment` from a video request body into the
+// { start_frame, end_frame, ref } shape resolveFrameAssignment expects. Unknown
+// ids are dropped downstream; here we only coerce shape (hex strings / arrays).
+// Returns null when nothing usable is present (backend then auto-defaults).
+function parseFrameAssignment(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out = {};
+  if ('start_frame' in raw) {
+    out.start_frame = typeof raw.start_frame === 'string' ? raw.start_frame : null;
+  }
+  if ('end_frame' in raw) {
+    out.end_frame = typeof raw.end_frame === 'string' ? raw.end_frame : null;
+  }
+  if ('ref' in raw) {
+    out.ref = Array.isArray(raw.ref)
+      ? raw.ref.filter((x) => typeof x === 'string')
+      : [];
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 // Synthesize a discordUser-shaped object from the SPA session so token-usage
@@ -2593,17 +2627,13 @@ export function buildApiRouter() {
     }
   });
 
-  // Upload a frame image (start_frame|end_frame). The image is owned by the
-  // storyboard's beat for GridFS metadata bookkeeping.
-  router.post('/storyboard/:id/image', upload.single('file'), async (req, res, next) => {
+  // Upload an image and append it as a new frame in the storyboard's pool.
+  // The image is owned by the storyboard's beat for GridFS bookkeeping.
+  router.post('/storyboard/:id/frame/upload', upload.single('file'), async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      const role = String(req.body?.role || req.query.role || '').trim();
-      if (!['start_frame', 'end_frame'].includes(role)) {
-        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
-      }
       const sniffed = validateImageBuffer(req.file.buffer);
       const sb = await getStoryboard(sbId);
       const file = await uploadGeneratedImage({
@@ -2613,20 +2643,30 @@ export function buildApiRouter() {
         ownerId: sb.beat_id,
         filename: safeFilename(
           req.file.originalname,
-          `storyboard-${sbId}-${role}-${Date.now()}.png`,
+          `storyboard-${sbId}-frame-${Date.now()}.png`,
         ),
       });
-      const result = await setStoryboardImageViaGateway({
-        storyboardId: sbId,
-        role,
-        imageId: file._id,
+      let result;
+      let frameId;
+      try {
+        ({ storyboard: result, frameId } = await addStoryboardFrameViaGateway({
+          storyboardId: sbId,
+          imageId: file._id,
+        }));
+      } catch (e) {
+        if (/maximum/i.test(e.message)) return res.status(409).json({ error: e.message });
+        throw e;
+      }
+      res.json({
+        storyboard: result,
+        frame_id: frameId.toString(),
+        image: { _id: file._id, content_type: file.content_type },
       });
-      res.json({ storyboard: result, image: { _id: file._id, content_type: file.content_type } });
       announceStoryboardMedia({
         req,
         beat: await getBeat(String(sb.beat_id)),
         storyboard: result || sb,
-        verb: role === 'start_frame' ? 'added a start frame to' : 'added an end frame to',
+        verb: 'added a frame to',
         imageFileId: file._id,
       });
       kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
@@ -2639,29 +2679,31 @@ export function buildApiRouter() {
     }
   });
 
-  router.delete('/storyboard/:id/image/:role', async (req, res, next) => {
+  // Remove a frame from the pool.
+  router.delete('/storyboard/:id/frame/:frameId', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const role = String(req.params.role);
-      if (!['start_frame', 'end_frame'].includes(role)) {
-        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+      const frameId = String(req.params.frameId);
+      if (!isOidHex(frameId)) {
+        return res.status(400).json({ error: 'invalid frame id' });
       }
-      const result = await setStoryboardImageViaGateway({
-        storyboardId: sbId,
-        role,
-        imageId: null,
-      });
+      let result;
+      try {
+        result = await removeStoryboardFrameViaGateway({ storyboardId: sbId, frameId });
+      } catch (e) {
+        if (/frame not found/i.test(e.message)) {
+          return res.status(404).json({ error: e.message });
+        }
+        throw e;
+      }
       res.json({ storyboard: result });
       if (result?.beat_id) {
         announceStoryboardMedia({
           req,
           beat: await getBeat(String(result.beat_id)),
           storyboard: result,
-          verb:
-            role === 'start_frame'
-              ? 'deleted the start frame from'
-              : 'deleted the end frame from',
+          verb: 'removed a frame from',
         });
       }
     } catch (e) {
@@ -2669,10 +2711,43 @@ export function buildApiRouter() {
     }
   });
 
-  // Grab the last frame of the previous storyboard's generated video and
-  // install it as this storyboard's start_frame. Used for seamless joining
-  // between successive shots (Kling 3 Pro, Veo 3.1 first-last-frame).
-  router.post('/storyboard/:id/grab-start-frame-from-previous', async (req, res, next) => {
+  // Reorder the frame pool. Body: { ordered_frame_ids: [hex, …] } — must be
+  // exactly the storyboard's current frame ids.
+  router.post('/storyboard/:id/frames/reorder', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const raw = req.body?.ordered_frame_ids;
+      if (!Array.isArray(raw)) {
+        return res.status(400).json({ error: 'ordered_frame_ids (array) required' });
+      }
+      const cleaned = [];
+      for (const v of raw) {
+        const s = String(v || '').trim();
+        if (!isOidHex(s)) return res.status(400).json({ error: `invalid frame id: ${s}` });
+        cleaned.push(s);
+      }
+      try {
+        const storyboard = await reorderStoryboardFramesViaGateway({
+          storyboardId: sbId,
+          orderedFrameIds: cleaned,
+        });
+        res.json({ storyboard });
+      } catch (e) {
+        if (/reorderFrames|frame|expected/i.test(e.message)) {
+          return res.status(400).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Grab the last frame of the previous storyboard's generated video and add it
+  // as a new frame in this storyboard's pool. Used for seamless joining between
+  // successive shots (Kling 3 Pro, Veo 3.1 first-last-frame).
+  router.post('/storyboard/:id/grab-frame-from-previous', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
@@ -2685,14 +2760,18 @@ export function buildApiRouter() {
         return res.status(400).json({ error: 'previous shot has no generated video' });
       }
       try {
-        const result = await grabStartFrameFromPrevious({ currentSbId: sbId, prev });
-        res.json({ storyboard: result.storyboard, image: result.image });
+        const result = await grabFrameFromPrevious({ currentSbId: sbId, prev });
+        res.json({
+          storyboard: result.storyboard,
+          frame_id: result.frame_id,
+          image: result.image,
+        });
         if (result?.storyboard?.beat_id) {
           announceStoryboardMedia({
             req,
             beat: await getBeat(String(result.storyboard.beat_id)),
             storyboard: result.storyboard,
-            verb: 'grabbed the start frame from the previous shot in',
+            verb: 'grabbed a frame from the previous shot in',
             imageFileId: result?.image?._id,
           });
         }
@@ -2703,6 +2782,9 @@ export function buildApiRouter() {
         if (e instanceof FfmpegFailedError) {
           return res.status(500).json({ error: e.message });
         }
+        if (/maximum/i.test(e.message)) {
+          return res.status(409).json({ error: e.message });
+        }
         throw e;
       }
     } catch (e) {
@@ -2710,17 +2792,16 @@ export function buildApiRouter() {
     }
   });
 
-  // Regenerate a single start_frame or end_frame on an existing storyboard
-  // row. The frame's persisted reference list is read server-side; the
-  // caller supplies the prompt (which is also persisted back to the frame's
-  // stored prompt field).
-  router.post('/storyboard/:id/frame/:role/generate', async (req, res, next) => {
+  // Regenerate a single frame in place. The frame's persisted reference list
+  // is read server-side; the caller supplies the prompt (also persisted back
+  // to the frame's stored prompt).
+  router.post('/storyboard/:id/frame/:frameId/generate', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const role = String(req.params.role);
-      if (!['start_frame', 'end_frame'].includes(role)) {
-        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+      const frameId = String(req.params.frameId);
+      if (!isOidHex(frameId)) {
+        return res.status(400).json({ error: 'invalid frame id' });
       }
       const imageModel = normalizeImageModel(req.body?.image_model);
       if (!isValidImageModel(imageModel)) {
@@ -2763,24 +2844,27 @@ export function buildApiRouter() {
         startFrameGenerationJob,
         BeatBusyError,
         EditModeError,
-        FrameRoleError,
+        FrameNotFoundError,
       } = await import('./storyboardGenerate.js');
       try {
         const jobId = await startFrameGenerationJob({
           storyboardId: sbId,
-          role,
+          frameId,
           imageModel,
           mode,
           editPrompt,
           prompt,
           announceUsername: req?.session?.username || null,
         });
-        res.status(202).json({ job_id: jobId, storyboard_id: sbId, role });
+        res.status(202).json({ job_id: jobId, storyboard_id: sbId, frame_id: frameId });
       } catch (e) {
         if (e instanceof BeatBusyError) {
           return res.status(409).json({ error: e.message });
         }
-        if (e instanceof EditModeError || e instanceof FrameRoleError) {
+        if (e instanceof FrameNotFoundError) {
+          return res.status(404).json({ error: e.message });
+        }
+        if (e instanceof EditModeError) {
           return res.status(400).json({ error: e.message });
         }
         throw e;
@@ -2793,13 +2877,13 @@ export function buildApiRouter() {
   // Inline edit of an existing frame image. Mirrors the artwork edit flow:
   // POST returns 202 with a job_id; the runner rotates current → previous and
   // installs the new image. Synchronous undo lives at .../undo.
-  router.post('/storyboard/:id/frame/:role/edit', async (req, res, next) => {
+  router.post('/storyboard/:id/frame/:frameId/edit', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const role = String(req.params.role);
-      if (!['start_frame', 'end_frame'].includes(role)) {
-        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+      const frameId = String(req.params.frameId);
+      if (!isOidHex(frameId)) {
+        return res.status(400).json({ error: 'invalid frame id' });
       }
       const model = normalizeImageModel(req.body?.model);
       if (!isValidImageModel(model)) {
@@ -2822,12 +2906,12 @@ export function buildApiRouter() {
         startFrameGenerationJob,
         BeatBusyError,
         EditModeError,
-        FrameRoleError,
+        FrameNotFoundError,
       } = await import('./storyboardGenerate.js');
       try {
         const jobId = await startFrameGenerationJob({
           storyboardId: sbId,
-          role,
+          frameId,
           imageModel: model,
           mode: 'edit',
           editPrompt: raw,
@@ -2835,12 +2919,15 @@ export function buildApiRouter() {
           rotateToPrevious: true,
           announceUsername: req?.session?.username || null,
         });
-        res.status(202).json({ job_id: jobId, storyboard_id: sbId, role });
+        res.status(202).json({ job_id: jobId, storyboard_id: sbId, frame_id: frameId });
       } catch (e) {
         if (e instanceof BeatBusyError) {
           return res.status(409).json({ error: e.message });
         }
-        if (e instanceof EditModeError || e instanceof FrameRoleError) {
+        if (e instanceof FrameNotFoundError) {
+          return res.status(404).json({ error: e.message });
+        }
+        if (e instanceof EditModeError) {
           return res.status(400).json({ error: e.message });
         }
         throw e;
@@ -2850,26 +2937,29 @@ export function buildApiRouter() {
     }
   });
 
-  // Synchronous one-step undo of the last inline edit. Swaps
-  // previous_*_frame_id → *_frame_id and deletes the displaced GridFS bytes.
-  router.post('/storyboard/:id/frame/:role/undo', async (req, res, next) => {
+  // Synchronous one-step undo of the last inline edit. Swaps a frame's
+  // previous_image_id → image_id and deletes the displaced GridFS bytes.
+  router.post('/storyboard/:id/frame/:frameId/undo', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const role = String(req.params.role);
-      if (!['start_frame', 'end_frame'].includes(role)) {
-        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+      const frameId = String(req.params.frameId);
+      if (!isOidHex(frameId)) {
+        return res.status(400).json({ error: 'invalid frame id' });
       }
       try {
         const storyboard = await undoStoryboardFrameEditViaGateway({
           storyboardId: sbId,
-          role,
+          frameId,
         });
         res.json({ storyboard });
       } catch (e) {
         if (e?.status === 400) {
           return res.status(400).json({ error: e.message });
         }
+        if (/frame not found/i.test(e.message)) {
+          return res.status(404).json({ error: e.message });
+        }
         throw e;
       }
     } catch (e) {
@@ -2877,38 +2967,36 @@ export function buildApiRouter() {
     }
   });
 
-  // Read-only preview of the auto-suggested prompt for a single frame slot.
-  // The SPA's generate modal calls this on open when the stored frame prompt
-  // is empty, so the user gets a sensible default they can keep or edit.
+  // Read-only preview of the auto-suggested prompt for a frame. The SPA's
+  // generate modal calls this on open when the stored frame prompt is empty,
+  // so the user gets a sensible default they can keep or edit.
   router.post(
-    '/storyboard/:id/frame/:role/preview-prompt',
+    '/storyboard/:id/frame/:frameId/preview-prompt',
     async (req, res, next) => {
       try {
         const sbId = await resolveStoryboardId(req);
         if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const role = String(req.params.role);
-        if (!['start_frame', 'end_frame'].includes(role)) {
-          return res
-            .status(400)
-            .json({ error: 'role must be start_frame|end_frame' });
+        const frameId = String(req.params.frameId);
+        if (!isOidHex(frameId)) {
+          return res.status(400).json({ error: 'invalid frame id' });
         }
         const {
           previewFrameGenerationPrompt,
           BeatBusyError,
-          FrameRoleError,
+          FrameNotFoundError,
         } = await import('./storyboardGenerate.js');
         try {
           const preview = await previewFrameGenerationPrompt({
             storyboardId: sbId,
-            role,
+            frameId,
           });
           res.json(preview);
         } catch (e) {
           if (e instanceof BeatBusyError) {
             return res.status(409).json({ error: e.message });
           }
-          if (e instanceof FrameRoleError) {
-            return res.status(400).json({ error: e.message });
+          if (e instanceof FrameNotFoundError) {
+            return res.status(404).json({ error: e.message });
           }
           throw e;
         }
@@ -2918,38 +3006,125 @@ export function buildApiRouter() {
     },
   );
 
-  // Reference-picker options for a single frame slot. Returns three sections
-  // the SPA's "This beat" tab renders in order:
-  //   sibling_frame — the opposite frame on this row (start when picking for
-  //                   end, vice versa), so it's a one-click reference candidate
-  //   beat_artwork  — beat.artworks[] filtered to status='done' with a
-  //                   result_image_id, so artwork shows up labelled with its
-  //                   prompt rather than as a bare GridFS thumbnail
-  //   beat_images   — every non-thumbnail GridFS image owned by the beat;
-  //                   the SPA dedupes against the two sections above so the
-  //                   sibling frame / artwork results don't appear twice
-  router.get(
-    '/storyboard/:id/frame/:role/picker-options',
+  // Replace an existing frame's current image with an already-uploaded GridFS
+  // image (no rotation/undo). The frame tile's "Replace" action uses this for
+  // the Beat / Characters / Artwork / Library tabs.
+  router.post('/storyboard/:id/frame/:frameId/image/from-id', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const frameId = String(req.params.frameId);
+      if (!isOidHex(frameId)) {
+        return res.status(400).json({ error: 'invalid frame id' });
+      }
+      const imageId = String(req.body?.image_id || '').trim();
+      if (!isOidHex(imageId)) {
+        return res.status(400).json({ error: 'image_id (24-hex) required' });
+      }
+      const file = await findImageFile(imageId);
+      if (!file) return res.status(404).json({ error: 'image not found' });
+      let result;
+      try {
+        result = await setStoryboardFrameImageViaGateway({
+          storyboardId: sbId,
+          frameId,
+          imageId,
+        });
+      } catch (e) {
+        if (/frame not found/i.test(e.message)) {
+          return res.status(404).json({ error: e.message });
+        }
+        throw e;
+      }
+      res.json({
+        storyboard: result,
+        image: { _id: imageId, content_type: file.contentType || null },
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Replace an existing frame's image by uploading a new file.
+  router.post(
+    '/storyboard/:id/frame/:frameId/image/upload',
+    upload.single('file'),
     async (req, res, next) => {
       try {
         const sbId = await resolveStoryboardId(req);
         if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const role = String(req.params.role);
-        if (!['start_frame', 'end_frame'].includes(role)) {
-          return res
-            .status(400)
-            .json({ error: 'role must be start_frame|end_frame' });
+        const frameId = String(req.params.frameId);
+        if (!isOidHex(frameId)) {
+          return res.status(400).json({ error: 'invalid frame id' });
+        }
+        if (!req.file) return res.status(400).json({ error: 'file required' });
+        const sniffed = validateImageBuffer(req.file.buffer);
+        const sb = await getStoryboard(sbId);
+        const file = await uploadGeneratedImage({
+          buffer: req.file.buffer,
+          contentType: req.file.mimetype,
+          ownerType: 'beat',
+          ownerId: sb.beat_id,
+          filename: safeFilename(
+            req.file.originalname,
+            `storyboard-${sbId}-frame-${Date.now()}.png`,
+          ),
+        });
+        let result;
+        try {
+          result = await setStoryboardFrameImageViaGateway({
+            storyboardId: sbId,
+            frameId,
+            imageId: file._id,
+          });
+        } catch (e) {
+          if (/frame not found/i.test(e.message)) {
+            return res.status(404).json({ error: e.message });
+          }
+          throw e;
+        }
+        res.json({ storyboard: result, image: { _id: file._id, content_type: file.content_type } });
+        kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
+          ownerType: 'beat',
+          ownerId: sb.beat_id,
+          kind: 'auto',
+        });
+      } catch (e) {
+        next(e);
+      }
+    },
+  );
+
+  // Reference-picker options for a frame. Returns three sections the SPA's
+  // "This beat" tab renders in order:
+  //   other_frames — the OTHER frames in this storyboard that have an image,
+  //                  each a one-click reference candidate labelled "Frame N"
+  //   beat_artwork — beat.artworks[] filtered to status='done' with a
+  //                  result_image_id, labelled with its prompt
+  //   beat_images  — every non-thumbnail GridFS image owned by the beat; the
+  //                  SPA dedupes against the two sections above
+  router.get(
+    '/storyboard/:id/frame/:frameId/picker-options',
+    async (req, res, next) => {
+      try {
+        const sbId = await resolveStoryboardId(req);
+        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+        const frameId = String(req.params.frameId);
+        if (!isOidHex(frameId)) {
+          return res.status(400).json({ error: 'invalid frame id' });
         }
         const sb = await getStoryboard(sbId);
         if (!sb) return res.status(404).json({ error: 'storyboard not found' });
         const beat = await getBeat(String(sb.beat_id));
         if (!beat) return res.status(404).json({ error: 'beat not found' });
 
-        const siblingRole =
-          role === 'start_frame' ? 'end_frame' : 'start_frame';
-        const siblingImageId = sb[`${siblingRole}_id`] || null;
-        const siblingLabel =
-          siblingRole === 'start_frame' ? 'Start frame' : 'End frame';
+        const otherFrames = (sb.frames || [])
+          .map((f, i) => ({ f, i }))
+          .filter(({ f }) => f._id.toString() !== frameId && f.image_id)
+          .map(({ f, i }) => ({
+            image_id: String(f.image_id),
+            label: `Frame ${i + 1}`,
+          }));
 
         const beatArtwork = (beat.artworks || [])
           .filter((a) => a.status === 'done' && a.result_image_id)
@@ -2968,9 +3143,7 @@ export function buildApiRouter() {
           .map(imageFileToMeta);
 
         res.json({
-          sibling_frame: siblingImageId
-            ? { image_id: String(siblingImageId), label: siblingLabel }
-            : null,
+          other_frames: otherFrames,
           beat_artwork: beatArtwork,
           beat_images: beatImages,
         });
@@ -2980,15 +3153,15 @@ export function buildApiRouter() {
     },
   );
 
-  // Persist the user's customized prompt for a single frame slot. Idempotent;
-  // overwrites the prior stored value.
-  router.put('/storyboard/:id/frame/:role/prompt', async (req, res, next) => {
+  // Persist the user's customized prompt for a frame. Idempotent; overwrites
+  // the prior stored value.
+  router.put('/storyboard/:id/frame/:frameId/prompt', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const role = String(req.params.role);
-      if (!['start_frame', 'end_frame'].includes(role)) {
-        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+      const frameId = String(req.params.frameId);
+      if (!isOidHex(frameId)) {
+        return res.status(400).json({ error: 'invalid frame id' });
       }
       const raw = req.body?.text;
       if (typeof raw !== 'string') {
@@ -2997,12 +3170,19 @@ export function buildApiRouter() {
       if (raw.length > 8192) {
         return res.status(400).json({ error: 'text must be ≤ 8192 chars' });
       }
-      const storyboard = await setStoryboardFramePromptViaGateway({
-        storyboardId: sbId,
-        role,
-        text: raw,
-      });
-      res.json({ storyboard });
+      try {
+        const storyboard = await setStoryboardFramePromptViaGateway({
+          storyboardId: sbId,
+          frameId,
+          text: raw,
+        });
+        res.json({ storyboard });
+      } catch (e) {
+        if (/frame not found/i.test(e.message)) {
+          return res.status(404).json({ error: e.message });
+        }
+        throw e;
+      }
     } catch (e) {
       next(e);
     }
@@ -3019,21 +3199,17 @@ export function buildApiRouter() {
     }
   });
 
-  function isFrameRole(role) {
-    return role === 'start_frame' || role === 'end_frame';
-  }
-
-  // Upload a reference image scoped to a single frame (start_frame|end_frame).
+  // Upload a reference image scoped to a single frame.
   router.post(
-    '/storyboard/:id/frame/:role/reference',
+    '/storyboard/:id/frame/:frameId/reference',
     upload.single('file'),
     async (req, res, next) => {
       try {
         const sbId = await resolveStoryboardId(req);
         if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const role = String(req.params.role);
-        if (!isFrameRole(role)) {
-          return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+        const frameId = String(req.params.frameId);
+        if (!isOidHex(frameId)) {
+          return res.status(400).json({ error: 'invalid frame id' });
         }
         if (!req.file) return res.status(400).json({ error: 'file required' });
         const sniffed = validateImageBuffer(req.file.buffer);
@@ -3045,14 +3221,22 @@ export function buildApiRouter() {
           ownerId: sb.beat_id,
           filename: safeFilename(
             req.file.originalname,
-            `storyboard-${sbId}-${role}-ref-${Date.now()}.png`,
+            `storyboard-${sbId}-frame-ref-${Date.now()}.png`,
           ),
         });
-        const result = await addStoryboardFrameReferenceImageViaGateway({
-          storyboardId: sbId,
-          role,
-          imageId: file._id,
-        });
+        let result;
+        try {
+          result = await addStoryboardFrameReferenceImageViaGateway({
+            storyboardId: sbId,
+            frameId,
+            imageId: file._id,
+          });
+        } catch (e) {
+          if (/frame not found/i.test(e.message)) {
+            return res.status(404).json({ error: e.message });
+          }
+          throw e;
+        }
         res.json({ storyboard: result, image: { _id: file._id, content_type: file.content_type } });
         kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
           ownerType: 'beat',
@@ -3066,25 +3250,28 @@ export function buildApiRouter() {
   );
 
   router.delete(
-    '/storyboard/:id/frame/:role/reference/:imageId',
+    '/storyboard/:id/frame/:frameId/reference/:imageId',
     async (req, res, next) => {
       try {
         const sbId = await resolveStoryboardId(req);
         if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const role = String(req.params.role);
-        if (!isFrameRole(role)) {
-          return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+        const frameId = String(req.params.frameId);
+        if (!isOidHex(frameId)) {
+          return res.status(400).json({ error: 'invalid frame id' });
         }
         if (!isOidHex(req.params.imageId)) {
           return res.status(400).json({ error: 'invalid image_id' });
         }
         const result = await removeStoryboardFrameReferenceImageViaGateway({
           storyboardId: sbId,
-          role,
+          frameId,
           imageId: req.params.imageId,
         });
         res.json({ storyboard: result });
       } catch (e) {
+        if (/frame not found/i.test(e.message)) {
+          return res.status(404).json({ error: e.message });
+        }
         next(e);
       }
     },
@@ -3092,14 +3279,14 @@ export function buildApiRouter() {
 
   // Attach an already-uploaded GridFS image as a per-frame reference.
   router.post(
-    '/storyboard/:id/frame/:role/reference/attach',
+    '/storyboard/:id/frame/:frameId/reference/attach',
     async (req, res, next) => {
       try {
         const sbId = await resolveStoryboardId(req);
         if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const role = String(req.params.role);
-        if (!isFrameRole(role)) {
-          return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+        const frameId = String(req.params.frameId);
+        if (!isOidHex(frameId)) {
+          return res.status(400).json({ error: 'invalid frame id' });
         }
         const imageId = String(req.body?.image_id || '').trim();
         if (!isOidHex(imageId)) {
@@ -3107,34 +3294,22 @@ export function buildApiRouter() {
         }
         const file = await findImageFile(imageId);
         if (!file) return res.status(404).json({ error: 'image not found' });
-        const sb = await getStoryboard(sbId);
-        if (!sb) return res.status(404).json({ error: 'storyboard not found' });
-        const refField =
-          role === 'start_frame'
-            ? 'start_frame_reference_ids'
-            : 'end_frame_reference_ids';
-        const existingRefs = new Set(
-          (sb[refField] || []).map((x) => String(x)),
-        );
-        const finalImageId = await maybeCopyFromSiblingFrame({
-          imageId,
-          sb,
-          role,
-          existingRefs,
-        });
-        const finalFile =
-          finalImageId === imageId ? file : await findImageFile(finalImageId);
-        const result = await addStoryboardFrameReferenceImageViaGateway({
-          storyboardId: sbId,
-          role,
-          imageId: finalImageId,
-        });
+        let result;
+        try {
+          result = await addStoryboardFrameReferenceImageViaGateway({
+            storyboardId: sbId,
+            frameId,
+            imageId,
+          });
+        } catch (e) {
+          if (/frame not found/i.test(e.message)) {
+            return res.status(404).json({ error: e.message });
+          }
+          throw e;
+        }
         res.json({
           storyboard: result,
-          image: {
-            _id: finalImageId,
-            content_type: finalFile?.contentType || null,
-          },
+          image: { _id: imageId, content_type: file?.contentType || null },
         });
       } catch (e) {
         next(e);
@@ -3146,31 +3321,29 @@ export function buildApiRouter() {
   // context (beat images + each in-scene character's sheets/portraits/extras)
   // and append any that aren't already attached to the chosen frame.
   router.post(
-    '/storyboard/:id/frame/:role/reference/auto-populate',
+    '/storyboard/:id/frame/:frameId/reference/auto-populate',
     async (req, res, next) => {
       try {
         const sbId = await resolveStoryboardId(req);
         if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const role = String(req.params.role);
-        if (!isFrameRole(role)) {
-          return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+        const frameId = String(req.params.frameId);
+        if (!isOidHex(frameId)) {
+          return res.status(400).json({ error: 'invalid frame id' });
         }
         const sb = await getStoryboard(sbId);
         if (!sb) return res.status(404).json({ error: 'storyboard not found' });
+        const frame = (sb.frames || []).find((f) => f._id.toString() === frameId);
+        if (!frame) return res.status(404).json({ error: 'frame not found' });
         const beat = await getBeat(String(sb.beat_id));
-        const existing =
-          role === 'start_frame'
-            ? sb.start_frame_reference_ids
-            : sb.end_frame_reference_ids;
         const { ids, added } = await collectStoryboardReferenceIds({
           beat,
           charactersInScene: sb.characters_in_scene || [],
-          existingIds: existing || [],
+          existingIds: frame.reference_ids || [],
         });
         const storyboard = added.length
           ? await setStoryboardFrameReferenceImagesViaGateway({
               storyboardId: sbId,
-              role,
+              frameId,
               imageIds: ids,
               mode: 'append',
             })
@@ -3186,14 +3359,14 @@ export function buildApiRouter() {
   // the multi-select picker's Apply button so a single round-trip commits
   // both additions and removals.
   router.post(
-    '/storyboard/:id/frame/:role/reference/set',
+    '/storyboard/:id/frame/:frameId/reference/set',
     async (req, res, next) => {
       try {
         const sbId = await resolveStoryboardId(req);
         if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const role = String(req.params.role);
-        if (!isFrameRole(role)) {
-          return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+        const frameId = String(req.params.frameId);
+        if (!isOidHex(frameId)) {
+          return res.status(400).json({ error: 'invalid frame id' });
         }
         const raw = req.body?.image_ids;
         if (!Array.isArray(raw)) {
@@ -3207,32 +3380,20 @@ export function buildApiRouter() {
           }
           cleaned.push(s);
         }
-        const sb = await getStoryboard(sbId);
-        if (!sb) return res.status(404).json({ error: 'storyboard not found' });
-        const refField =
-          role === 'start_frame'
-            ? 'start_frame_reference_ids'
-            : 'end_frame_reference_ids';
-        const existingRefs = new Set(
-          (sb[refField] || []).map((x) => String(x)),
-        );
-        const transformed = [];
-        for (const id of cleaned) {
-          transformed.push(
-            await maybeCopyFromSiblingFrame({
-              imageId: id,
-              sb,
-              role,
-              existingRefs,
-            }),
-          );
+        let storyboard;
+        try {
+          storyboard = await setStoryboardFrameReferenceImagesViaGateway({
+            storyboardId: sbId,
+            frameId,
+            imageIds: cleaned,
+            mode: 'replace',
+          });
+        } catch (e) {
+          if (/frame not found/i.test(e.message)) {
+            return res.status(404).json({ error: e.message });
+          }
+          throw e;
         }
-        const storyboard = await setStoryboardFrameReferenceImagesViaGateway({
-          storyboardId: sbId,
-          role,
-          imageIds: transformed,
-          mode: 'replace',
-        });
         res.json({ storyboard });
       } catch (e) {
         next(e);
@@ -3241,16 +3402,16 @@ export function buildApiRouter() {
   );
 
   // Generate a fresh image from a custom prompt and attach as a per-frame
-  // reference. The picker's Generate tab uses this when role is 'reference'.
+  // reference. The picker's Generate tab uses this from the reference editor.
   router.post(
-    '/storyboard/:id/frame/:role/reference/generate',
+    '/storyboard/:id/frame/:frameId/reference/generate',
     async (req, res, next) => {
       try {
         const sbId = await resolveStoryboardId(req);
         if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const role = String(req.params.role);
-        if (!isFrameRole(role)) {
-          return res.status(400).json({ error: 'role must be start_frame|end_frame' });
+        const frameId = String(req.params.frameId);
+        if (!isOidHex(frameId)) {
+          return res.status(400).json({ error: 'invalid frame id' });
         }
         const prompt = String(req.body?.prompt || '').trim();
         if (!prompt) {
@@ -3278,13 +3439,21 @@ export function buildApiRouter() {
           generatedBy: result.model || model,
           ownerType: 'beat',
           ownerId: sb.beat_id,
-          filename: `storyboard-${sbId}-${role}-ref-gen-${Date.now()}.png`,
+          filename: `storyboard-${sbId}-frame-ref-gen-${Date.now()}.png`,
         });
-        const updated = await addStoryboardFrameReferenceImageViaGateway({
-          storyboardId: sbId,
-          role,
-          imageId: file._id,
-        });
+        let updated;
+        try {
+          updated = await addStoryboardFrameReferenceImageViaGateway({
+            storyboardId: sbId,
+            frameId,
+            imageId: file._id,
+          });
+        } catch (e) {
+          if (/frame not found/i.test(e.message)) {
+            return res.status(404).json({ error: e.message });
+          }
+          throw e;
+        }
         res.json({
           storyboard: updated,
           image: { _id: file._id, content_type: file.content_type },
@@ -3303,31 +3472,33 @@ export function buildApiRouter() {
     },
   );
 
-  // Install an already-uploaded GridFS image as start_frame / end_frame on a
-  // storyboard. Picker uses this for the "this beat", "characters", and
-  // "library" tabs when the user picks an existing image for one of the
-  // single-image roles.
-  router.post('/storyboard/:id/image/from-id', async (req, res, next) => {
+  // Add an already-uploaded GridFS image to the frame pool as a new frame.
+  // The Add Frame picker uses this for the Beat / Characters / Artwork /
+  // Library tabs when the user picks an existing image.
+  router.post('/storyboard/:id/frame/from-id', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const role = String(req.body?.role || '').trim();
-      if (!['start_frame', 'end_frame'].includes(role)) {
-        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
-      }
       const imageId = String(req.body?.image_id || '').trim();
       if (!isOidHex(imageId)) {
         return res.status(400).json({ error: 'image_id (24-hex) required' });
       }
       const file = await findImageFile(imageId);
       if (!file) return res.status(404).json({ error: 'image not found' });
-      const result = await setStoryboardImageViaGateway({
-        storyboardId: sbId,
-        role,
-        imageId,
-      });
+      let result;
+      let frameId;
+      try {
+        ({ storyboard: result, frameId } = await addStoryboardFrameViaGateway({
+          storyboardId: sbId,
+          imageId,
+        }));
+      } catch (e) {
+        if (/maximum/i.test(e.message)) return res.status(409).json({ error: e.message });
+        throw e;
+      }
       res.json({
         storyboard: result,
+        frame_id: frameId.toString(),
         image: { _id: imageId, content_type: file.contentType || null },
       });
       if (result?.beat_id) {
@@ -3335,7 +3506,7 @@ export function buildApiRouter() {
           req,
           beat: await getBeat(String(result.beat_id)),
           storyboard: result,
-          verb: role === 'start_frame' ? 'added a start frame to' : 'added an end frame to',
+          verb: 'added a frame to',
           imageFileId: imageId,
         });
       }
@@ -3344,16 +3515,13 @@ export function buildApiRouter() {
     }
   });
 
-  // Generate an image from a custom prompt and install it as start_frame /
-  // end_frame. No scene context, no references — pure text-to-image.
-  router.post('/storyboard/:id/image/generate', async (req, res, next) => {
+  // Generate an image from a custom prompt and add it as a new frame. No scene
+  // context, no references — pure text-to-image. The Add Frame picker's
+  // Generate tab uses this.
+  router.post('/storyboard/:id/frame/generate', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const role = String(req.body?.role || '').trim();
-      if (!['start_frame', 'end_frame'].includes(role)) {
-        return res.status(400).json({ error: 'role must be start_frame|end_frame' });
-      }
       const prompt = String(req.body?.prompt || '').trim();
       if (!prompt) {
         return res.status(400).json({ error: 'prompt (non-empty) required' });
@@ -3380,25 +3548,30 @@ export function buildApiRouter() {
         generatedBy: result.model || model,
         ownerType: 'beat',
         ownerId: sb.beat_id,
-        filename: `storyboard-${sbId}-${role}-gen-${Date.now()}.png`,
+        filename: `storyboard-${sbId}-frame-gen-${Date.now()}.png`,
       });
-      const updated = await setStoryboardImageViaGateway({
-        storyboardId: sbId,
-        role,
-        imageId: file._id,
-      });
+      let updated;
+      let frameId;
+      try {
+        ({ storyboard: updated, frameId } = await addStoryboardFrameViaGateway({
+          storyboardId: sbId,
+          imageId: file._id,
+          prompt,
+        }));
+      } catch (e) {
+        if (/maximum/i.test(e.message)) return res.status(409).json({ error: e.message });
+        throw e;
+      }
       res.json({
         storyboard: updated,
+        frame_id: frameId.toString(),
         image: { _id: file._id, content_type: file.content_type },
       });
       announceStoryboardMedia({
         req,
         beat: await getBeat(String(sb.beat_id)),
         storyboard: updated || sb,
-        verb:
-          role === 'start_frame'
-            ? 'generated a start frame on'
-            : 'generated an end frame on',
+        verb: 'generated a frame on',
         imageFileId: file._id,
         prompt,
       });
@@ -3420,18 +3593,31 @@ export function buildApiRouter() {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      const ct = req.file.mimetype || 'audio/mpeg';
+      let ct = req.file.mimetype || 'audio/mpeg';
       if (!ct.startsWith('audio/')) {
-        return res.status(400).json({ error: 'file must be audio/*' });
+        // Recover a codec-qualified type the multipart parser couldn't read
+        // (see the video-upload route) from the filename extension.
+        const inferred = contentTypeFromFilename(req.file.originalname);
+        if (inferred?.startsWith('audio/')) ct = inferred;
+        else return res.status(400).json({ error: 'file must be audio/*' });
       }
       const sb = await getStoryboard(sbId);
+      let audio;
+      try {
+        audio = await normalizeUploadedAudioToMp3({
+          file: req.file,
+          contentType: ct,
+          fallbackName: `storyboard-${sbId}-audio-${Date.now()}.bin`,
+        });
+      } catch (e) {
+        const handled = sendAudioTranscodeError(res, e);
+        if (handled) return handled;
+        throw e;
+      }
       const file = await uploadAttachmentBuffer({
-        buffer: req.file.buffer,
-        filename: safeFilename(
-          req.file.originalname,
-          `storyboard-${sbId}-audio-${Date.now()}.bin`,
-        ),
-        contentType: ct,
+        buffer: audio.buffer,
+        filename: audio.filename,
+        contentType: audio.contentType,
         ownerType: 'beat',
         ownerId: sb.beat_id,
       });
@@ -3477,6 +3663,310 @@ export function buildApiRouter() {
           storyboard: result,
           verb: 'deleted audio from',
         });
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Source video upload for video-to-video models. Distinct from the
+  // /video/generate flow: this saves the bytes the user wants to transform,
+  // and a later /video/generate call passes them to fal as the v2v input.
+  // The generated MP4 (if any) still lives under sb.video_file_id and is
+  // managed by DELETE /storyboard/:id/video.
+  router.post('/storyboard/:id/video-upload', upload.single('file'), async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      if (!req.file) return res.status(400).json({ error: 'file required' });
+      let ct = req.file.mimetype || 'video/mp4';
+      if (!ct.startsWith('video/')) {
+        // Some browsers send a codec-qualified type (e.g.
+        // `video/webm;codecs=vp9,opus`) whose unquoted comma defeats the
+        // multipart parser, leaving us with `text/plain`. Recover from the
+        // filename extension before rejecting.
+        const inferred = contentTypeFromFilename(req.file.originalname);
+        if (inferred?.startsWith('video/')) ct = inferred;
+        else return res.status(400).json({ error: 'file must be video/*' });
+      }
+      const sb = await getStoryboard(sbId);
+      const file = await uploadAttachmentBuffer({
+        buffer: req.file.buffer,
+        filename: safeFilename(
+          req.file.originalname,
+          `storyboard-${sbId}-video-${Date.now()}.bin`,
+        ),
+        contentType: ct,
+        ownerType: 'beat',
+        ownerId: sb.beat_id,
+      });
+      const result = await setStoryboardUploadedVideoViaGateway({
+        storyboardId: sbId,
+        videoFileId: file._id,
+      });
+      res.json({
+        storyboard: result,
+        video: {
+          _id: file._id,
+          filename: file.filename,
+          content_type: file.content_type,
+          size: file.size,
+        },
+      });
+      announceStoryboardMedia({
+        req,
+        beat: await getBeat(String(sb.beat_id)),
+        storyboard: result || sb,
+        verb: 'uploaded source video to',
+        mediaFileId: file._id,
+        mediaLabel: file.filename || 'video',
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete('/storyboard/:id/video-upload', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const result = await setStoryboardUploadedVideoViaGateway({
+        storyboardId: sbId,
+        videoFileId: null,
+      });
+      res.json({ storyboard: result });
+      if (result?.beat_id) {
+        announceStoryboardMedia({
+          req,
+          beat: await getBeat(String(result.beat_id)),
+          storyboard: result,
+          verb: 'removed uploaded source video from',
+        });
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // List every audio- or video-typed attachment owned by a beat or character
+  // in this project. Powers the "Reference" tab in the storyboard
+  // Add Audio / Add Video dialogs: pick something already uploaded
+  // elsewhere instead of re-uploading. The storyboard's currently-attached
+  // file (audio_file_id / video_upload_file_id) is excluded so it doesn't
+  // show up as a reference of itself.
+  router.get('/storyboard/:id/media-references', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const sb = await getStoryboard(sbId);
+      const type = String(req.query?.type || '').toLowerCase();
+      if (type !== 'audio' && type !== 'video') {
+        return res.status(400).json({ error: 'type must be "audio" or "video"' });
+      }
+      const currentFileId =
+        type === 'audio' ? sb.audio_file_id : sb.video_upload_file_id;
+      const excludeStr = currentFileId ? String(currentFileId) : null;
+      const prefix = `${type}/`;
+
+      const plot = await getPlot();
+      const characters = await listCharacters();
+      const refs = [];
+
+      for (const beat of plot?.beats || []) {
+        const beatName =
+          stripMarkdown(beat.name || '').trim() ||
+          (beat.order != null ? `Beat ${beat.order}` : '(unnamed beat)');
+        for (const att of beat.attachments || []) {
+          if (!att?._id) continue;
+          if (excludeStr && String(att._id) === excludeStr) continue;
+          const ct = String(att.content_type || '');
+          if (!ct.startsWith(prefix)) continue;
+          refs.push({
+            attachment_id: att._id,
+            filename: att.filename || '',
+            content_type: ct,
+            size: att.size || 0,
+            owner_type: 'beat',
+            owner_id: beat._id,
+            owner_name: beatName,
+            owner_order: beat.order ?? null,
+            uploaded_at: att.uploaded_at || null,
+          });
+        }
+      }
+
+      for (const c of characters || []) {
+        const charName =
+          stripMarkdown(c.name || '').trim() || '(unnamed character)';
+        for (const att of c.attachments || []) {
+          if (!att?._id) continue;
+          if (excludeStr && String(att._id) === excludeStr) continue;
+          const ct = String(att.content_type || '');
+          if (!ct.startsWith(prefix)) continue;
+          refs.push({
+            attachment_id: att._id,
+            filename: att.filename || '',
+            content_type: ct,
+            size: att.size || 0,
+            owner_type: 'character',
+            owner_id: c._id,
+            owner_name: charName,
+            owner_order: null,
+            uploaded_at: att.uploaded_at || null,
+          });
+        }
+      }
+
+      refs.sort((a, b) => {
+        const ta = a.uploaded_at ? new Date(a.uploaded_at).getTime() : 0;
+        const tb = b.uploaded_at ? new Date(b.uploaded_at).getTime() : 0;
+        return tb - ta;
+      });
+
+      res.json({ references: refs });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // List every other storyboard in the project that has a generated video
+  // (sb.video_file_id set). The "Storyboard" tab in the Add Video dialog
+  // uses this so the user can reuse a generated clip as the source for
+  // video-to-video on another shot. Excludes the current storyboard.
+  router.get('/storyboard/:id/video-source-storyboards', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+
+      const plot = await getPlot();
+      const beatMetaById = new Map();
+      for (const b of plot?.beats || []) {
+        if (b._id) {
+          beatMetaById.set(b._id.toString(), {
+            name:
+              stripMarkdown(b.name || '').trim() ||
+              (b.order != null ? `Beat ${b.order}` : '(unnamed beat)'),
+            order: b.order ?? null,
+          });
+        }
+      }
+
+      const all = await listStoryboards();
+      const sources = [];
+      for (const sb of all) {
+        if (!sb.video_file_id) continue;
+        if (sb._id.toString() === sbId) continue;
+        const beatKey = sb.beat_id?.toString?.() || '';
+        const beatMeta = beatMetaById.get(beatKey) || {
+          name: '(unknown beat)',
+          order: null,
+        };
+        sources.push({
+          storyboard_id: sb._id,
+          storyboard_order: sb.order ?? null,
+          beat_id: sb.beat_id,
+          beat_name: beatMeta.name,
+          beat_order: beatMeta.order,
+          video_file_id: sb.video_file_id,
+          video_duration_seconds: sb.video_duration_seconds ?? null,
+          video_model_label: sb.video_model_label || null,
+          video_generated_at: sb.video_generated_at || null,
+          // First/last frame of the pool as thumbnail hints for the source picker.
+          start_frame_id: sb.frames?.[0]?.image_id || null,
+          end_frame_id: sb.frames?.length
+            ? sb.frames[sb.frames.length - 1].image_id || null
+            : null,
+          summary: stripMarkdown(sb.summary || '').trim(),
+        });
+      }
+
+      sources.sort((a, b) => {
+        const ba = a.beat_order ?? Infinity;
+        const bb = b.beat_order ?? Infinity;
+        if (ba !== bb) return ba - bb;
+        const sa = a.storyboard_order ?? Infinity;
+        const sb_ = b.storyboard_order ?? Infinity;
+        return sa - sb_;
+      });
+
+      res.json({ sources });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Copy an existing beat-/character-owned attachment onto this storyboard
+  // as an independent audio file. Mirrors /audio/from-dialog: deleting the
+  // source attachment will not affect the storyboard's copy.
+  router.post('/storyboard/:id/audio/from-attachment', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const attachmentId = req.body?.attachment_id;
+      if (!isOidHex(String(attachmentId || ''))) {
+        return res.status(400).json({ error: 'attachment_id required' });
+      }
+      try {
+        const result = await copyAttachmentToStoryboardMediaViaGateway({
+          storyboardId: sbId,
+          attachmentId: String(attachmentId),
+          kind: 'audio',
+        });
+        res.json(result);
+        const sb = result?.storyboard || null;
+        if (sb?.beat_id) {
+          announceStoryboardMedia({
+            req,
+            beat: await getBeat(String(sb.beat_id)),
+            storyboard: sb,
+            verb: 'added audio (from a reference) to',
+            mediaFileId: sb.audio_file_id || null,
+            mediaLabel: result?.audio?.filename || 'audio',
+          });
+        }
+      } catch (e) {
+        if (/not found|content type|not audio/i.test(e.message || '')) {
+          return res.status(400).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Same idea for source video uploads.
+  router.post('/storyboard/:id/video-upload/from-attachment', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const attachmentId = req.body?.attachment_id;
+      if (!isOidHex(String(attachmentId || ''))) {
+        return res.status(400).json({ error: 'attachment_id required' });
+      }
+      try {
+        const result = await copyAttachmentToStoryboardMediaViaGateway({
+          storyboardId: sbId,
+          attachmentId: String(attachmentId),
+          kind: 'video',
+        });
+        res.json(result);
+        const sb = result?.storyboard || null;
+        if (sb?.beat_id) {
+          announceStoryboardMedia({
+            req,
+            beat: await getBeat(String(sb.beat_id)),
+            storyboard: sb,
+            verb: 'added source video (from a reference) to',
+            mediaFileId: sb.video_upload_file_id || null,
+            mediaLabel: result?.video?.filename || 'video',
+          });
+        }
+      } catch (e) {
+        if (/not found|content type|not video/i.test(e.message || '')) {
+          return res.status(400).json({ error: e.message });
+        }
+        throw e;
       }
     } catch (e) {
       next(e);
@@ -3540,6 +4030,7 @@ export function buildApiRouter() {
           resolution,
           fps,
           includeDirectorNotes,
+          frameAssignment: parseFrameAssignment(req.body?.frame_assignment),
         });
         res.json(preview);
       } catch (e) {
@@ -3605,6 +4096,7 @@ export function buildApiRouter() {
           resolution,
           fps,
           includeDirectorNotes,
+          frameAssignment: parseFrameAssignment(req.body?.frame_assignment),
           announceUsername: req?.session?.username || null,
         });
         res.status(202).json({ job_id });
@@ -3986,18 +4478,31 @@ export function buildApiRouter() {
       const dId = await resolveDialogId(req);
       if (!dId) return res.status(404).json({ error: 'dialog not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      const ct = req.file.mimetype || 'audio/mpeg';
+      let ct = req.file.mimetype || 'audio/mpeg';
       if (!ct.startsWith('audio/')) {
-        return res.status(400).json({ error: 'file must be audio/*' });
+        // Recover a codec-qualified type the multipart parser couldn't read
+        // (see the video-upload route) from the filename extension.
+        const inferred = contentTypeFromFilename(req.file.originalname);
+        if (inferred?.startsWith('audio/')) ct = inferred;
+        else return res.status(400).json({ error: 'file must be audio/*' });
       }
       const dialog = await getDialog(dId);
+      let audio;
+      try {
+        audio = await normalizeUploadedAudioToMp3({
+          file: req.file,
+          contentType: ct,
+          fallbackName: `dialog-${dId}-audio-${Date.now()}.bin`,
+        });
+      } catch (e) {
+        const handled = sendAudioTranscodeError(res, e);
+        if (handled) return handled;
+        throw e;
+      }
       const file = await uploadAttachmentBuffer({
-        buffer: req.file.buffer,
-        filename: safeFilename(
-          req.file.originalname,
-          `dialog-${dId}-audio-${Date.now()}.bin`,
-        ),
-        contentType: ct,
+        buffer: audio.buffer,
+        filename: audio.filename,
+        contentType: audio.contentType,
         ownerType: 'dialog',
         ownerId: dialog._id,
       });

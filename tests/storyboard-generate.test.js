@@ -155,9 +155,9 @@ describe('storyboard auto-generation', () => {
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(stored).toHaveLength(2);
     for (const sb of stored) {
-      // No images yet — start/end_frame_id are null on freshly-planned rows.
-      expect(sb.start_frame_id ?? null).toBe(null);
-      expect(sb.end_frame_id ?? null).toBe(null);
+      // The planner seeds two frames (start + end prompt), neither rendered yet.
+      expect(sb.frames).toHaveLength(2);
+      for (const f of sb.frames) expect(f.image_id).toBe(null);
       expect(typeof sb.text_prompt).toBe('string');
       expect(sb.text_prompt.length).toBeGreaterThan(0);
     }
@@ -407,20 +407,17 @@ describe('storyboard auto-generation', () => {
     expect(stored[1].text_prompt).toContain(TWO_FRAME_PLAN.frames[1].video_prompt);
     expect(stored[0].text_prompt).not.toMatch(/\*\*Start frame:\*\*/);
     expect(stored[0].text_prompt).not.toMatch(/\*\*End frame:\*\*/);
-    // The per-frame still prompts are pre-filled on each row so the SPA's
-    // frame-slot CollabFields render with the planner's suggestions.
-    expect(stored[0].start_frame_prompt).toBe(
+    // The planner's opening/closing still prompts are seeded as the first two
+    // frames of each row's pool so the SPA's frame CollabFields render with the
+    // planner's suggestions.
+    expect(stored[0].frames.map((f) => f.prompt)).toEqual([
       TWO_FRAME_PLAN.frames[0].start_frame_prompt,
-    );
-    expect(stored[0].end_frame_prompt).toBe(
       TWO_FRAME_PLAN.frames[0].end_frame_prompt,
-    );
-    expect(stored[1].start_frame_prompt).toBe(
+    ]);
+    expect(stored[1].frames.map((f) => f.prompt)).toEqual([
       TWO_FRAME_PLAN.frames[1].start_frame_prompt,
-    );
-    expect(stored[1].end_frame_prompt).toBe(
       TWO_FRAME_PLAN.frames[1].end_frame_prompt,
-    );
+    ]);
   });
 
   it('refines frames sequentially with rolling context — each call sees previously refined neighbors', async () => {
@@ -518,11 +515,11 @@ describe('storyboard auto-generation', () => {
         expect.stringContaining('video#2'),
       ]),
     );
-    // start_frame_prompt and end_frame_prompt are pre-filled on each row.
-    expect(stored.map((s) => s.start_frame_prompt)).toEqual(
+    // The opening/closing still prompts are seeded as each row's two frames.
+    expect(stored.map((s) => s.frames[0]?.prompt)).toEqual(
       expect.arrayContaining(['start#0', 'start#1', 'start#2']),
     );
-    expect(stored.map((s) => s.end_frame_prompt)).toEqual(
+    expect(stored.map((s) => s.frames[1]?.prompt)).toEqual(
       expect.arrayContaining(['end#0', 'end#1', 'end#2']),
     );
   });
@@ -697,8 +694,9 @@ describe('storyboard auto-generation', () => {
     expect(stored[0].text_prompt).toMatch(/Alice opens the door/);
     expect(stored[0].text_prompt).not.toMatch(/\*\*Start frame:\*\*/);
     expect(stored[0].text_prompt).not.toMatch(/\*\*End frame:\*\*/);
-    expect(stored[0].start_frame_prompt).toMatch(/Alice opens the door/);
-    expect(stored[0].end_frame_prompt).toMatch(/Alice opens the door/);
+    expect(stored[0].frames).toHaveLength(2);
+    expect(stored[0].frames[0].prompt).toMatch(/Alice opens the door/);
+    expect(stored[0].frames[1].prompt).toMatch(/Alice opens the door/);
   });
 
   it('clamps targetCount and records the requested value on the job', async () => {
@@ -779,25 +777,27 @@ describe('auto-populated reference images', () => {
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(stored).toHaveLength(2);
 
-    // Each per-frame ref list should be seeded identically from the
-    // aggregator (beat image + both characters' refs in scope).
-    for (const role of ['start_frame_reference_ids', 'end_frame_reference_ids']) {
-      // Frame 1: Alice only → beat image + Alice's sheet + Alice's main.
-      const frame1Ids = stored[0][role].map((x) => x.toString());
-      expect(frame1Ids).toContain(beatImg.toString());
-      expect(frame1Ids).toContain(sheetA.toString());
-      expect(frame1Ids).toContain(mainA.toString());
-      expect(frame1Ids).not.toContain(sheetB.toString());
-
-      // Frame 2: Alice + Bob → beat image + both characters' refs.
-      const frame2Ids = stored[1][role].map((x) => x.toString());
-      expect(frame2Ids).toContain(beatImg.toString());
-      expect(frame2Ids).toContain(sheetA.toString());
-      expect(frame2Ids).toContain(sheetB.toString());
+    // Each planned row gets two frames (start + end prompt); every frame's
+    // reference list is seeded identically from the aggregator (beat image +
+    // the in-scene characters' refs).
+    // Shot 1: Alice only → beat image + Alice's sheet + Alice's main.
+    for (const frame of stored[0].frames) {
+      const ids = frame.reference_ids.map((x) => x.toString());
+      expect(ids).toContain(beatImg.toString());
+      expect(ids).toContain(sheetA.toString());
+      expect(ids).toContain(mainA.toString());
+      expect(ids).not.toContain(sheetB.toString());
+    }
+    // Shot 2: Alice + Bob → beat image + both characters' refs.
+    for (const frame of stored[1].frames) {
+      const ids = frame.reference_ids.map((x) => x.toString());
+      expect(ids).toContain(beatImg.toString());
+      expect(ids).toContain(sheetA.toString());
+      expect(ids).toContain(sheetB.toString());
     }
   });
 
-  it('leaves both per-frame reference lists empty when the beat has no images and characters are unknown', async () => {
+  it('leaves every frame reference list empty when the beat has no images and characters are unknown', async () => {
     installPlannerForFixture(TWO_FRAME_PLAN.frames);
     const beat = await Plots.createBeat({
       name: 'Bare',
@@ -812,8 +812,9 @@ describe('auto-populated reference images', () => {
     expect(job.status).toBe('done');
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     for (const sb of stored) {
-      expect(sb.start_frame_reference_ids).toEqual([]);
-      expect(sb.end_frame_reference_ids).toEqual([]);
+      for (const frame of sb.frames) {
+        expect(frame.reference_ids).toEqual([]);
+      }
     }
   });
 });

@@ -1,9 +1,9 @@
-// Tests for GET /api/storyboard/:id/frame/:role/picker-options — the
-// frame-aware reference-picker feed that powers the "This beat" tab when
-// the user is generating a start/end frame. Three labelled sections:
-//   sibling_frame  — opposite frame on this row
-//   beat_artwork   — done beat.artworks[]
-//   beat_images    — every non-thumbnail GridFS image owned by the beat
+// Tests for GET /api/storyboard/:id/frame/:frameId/picker-options — the
+// frame-aware reference-picker feed that powers the "This beat" tab. Three
+// labelled sections:
+//   other_frames  — the OTHER frames in the pool that have an image
+//   beat_artwork  — done beat.artworks[]
+//   beat_images   — every non-thumbnail GridFS image owned by the beat
 // Dedup across sections lives in the SPA (the endpoint emits the raw
 // per-section lists). We assert shape + filtering here.
 
@@ -98,18 +98,23 @@ async function newDoneArtwork(beatId, { resultImageId, name, prompt }) {
   return artwork;
 }
 
-describe('GET /api/storyboard/:id/frame/:role/picker-options', () => {
-  it('returns the opposite frame as sibling_frame, beat artwork, and beat images', async () => {
+async function addFrame(sbId, imageId) {
+  const { frameId } = await Storyboards.addFrame(sbId, { imageId });
+  return frameId;
+}
+
+describe('GET /api/storyboard/:id/frame/:frameId/picker-options', () => {
+  it('returns the other frames, beat artwork, and beat images', async () => {
     const beat = await Plots.createBeat({ name: 'Diner', desc: 'd', body: 'b' });
-    const startId = new ObjectId();
-    const endId = new ObjectId();
+    const img1 = new ObjectId();
+    const img2 = new ObjectId();
     const sb = await Storyboards.createStoryboard({
       beatId: beat._id,
       textPrompt: 'A wide shot.',
       shotType: 'cinematic_wide',
     });
-    await Storyboards.updateStoryboard(sb._id, { start_frame_id: startId });
-    await Storyboards.updateStoryboard(sb._id, { end_frame_id: endId });
+    const f1 = await addFrame(sb._id, img1);
+    const f2 = await addFrame(sb._id, img2);
 
     const artworkResultId = new ObjectId();
     seedImageFile({ ownerId: beat._id, name: 'upload' });
@@ -120,48 +125,44 @@ describe('GET /api/storyboard/:id/frame/:role/picker-options', () => {
       prompt: 'neon alley',
     });
 
-    // Generating end_frame → sibling should be start_frame.
-    const r1 = await get(`/api/storyboard/${sb._id}/frame/end_frame/picker-options`);
+    // Picking refs for frame 2 → other_frames should list frame 1.
+    const r1 = await get(`/api/storyboard/${sb._id}/frame/${f2}/picker-options`);
     expect(r1.status).toBe(200);
-    expect(r1.json.sibling_frame).toEqual({
-      image_id: String(startId),
-      label: 'Start frame',
-    });
+    expect(r1.json.other_frames).toEqual([
+      { image_id: String(img1), label: 'Frame 1' },
+    ]);
     expect(r1.json.beat_artwork).toHaveLength(1);
     expect(r1.json.beat_artwork[0]).toMatchObject({
       _id: String(artworkResultId),
       name: 'mood',
     });
     expect(r1.json.beat_artwork[0]).toHaveProperty('artwork_id');
-    // beat_images includes every non-thumbnail GridFS image for the beat.
-    // The SPA dedupes the sibling frame / artwork-result out client-side.
     expect(r1.json.beat_images.length).toBeGreaterThanOrEqual(2);
 
-    // Generating start_frame → sibling should be end_frame.
-    const r2 = await get(`/api/storyboard/${sb._id}/frame/start_frame/picker-options`);
+    // Picking refs for frame 1 → other_frames should list frame 2.
+    const r2 = await get(`/api/storyboard/${sb._id}/frame/${f1}/picker-options`);
     expect(r2.status).toBe(200);
-    expect(r2.json.sibling_frame).toEqual({
-      image_id: String(endId),
-      label: 'End frame',
-    });
+    expect(r2.json.other_frames).toEqual([
+      { image_id: String(img2), label: 'Frame 2' },
+    ]);
   });
 
-  it('returns sibling_frame: null when the opposite frame has no image yet', async () => {
+  it('omits frames without an image from other_frames', async () => {
     const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: 'b' });
     const sb = await Storyboards.createStoryboard({
       beatId: beat._id,
       textPrompt: 'x',
       shotType: 'medium',
     });
-    await Storyboards.updateStoryboard(sb._id, {
-      start_frame_id: new ObjectId(),
-    });
+    const f1 = await addFrame(sb._id, null); // no image
+    const f2 = await addFrame(sb._id, null);
 
     const { status, json } = await get(
-      `/api/storyboard/${sb._id}/frame/start_frame/picker-options`,
+      `/api/storyboard/${sb._id}/frame/${f2}/picker-options`,
     );
     expect(status).toBe(200);
-    expect(json.sibling_frame).toBeNull();
+    expect(json.other_frames).toEqual([]);
+    void f1;
   });
 
   it('filters out pending and errored artworks', async () => {
@@ -171,10 +172,10 @@ describe('GET /api/storyboard/:id/frame/:role/picker-options', () => {
       textPrompt: 'x',
       shotType: 'medium',
     });
+    const f = await addFrame(sb._id, null);
 
     const doneId = new ObjectId();
     await newDoneArtwork(beat._id, { resultImageId: doneId, name: 'kept' });
-    // A pending artwork (no result_image_id) — must not appear.
     await Artworks.createPendingArtwork({
       hostType: 'beat',
       hostId: beat._id,
@@ -183,7 +184,7 @@ describe('GET /api/storyboard/:id/frame/:role/picker-options', () => {
     });
 
     const { status, json } = await get(
-      `/api/storyboard/${sb._id}/frame/end_frame/picker-options`,
+      `/api/storyboard/${sb._id}/frame/${f}/picker-options`,
     );
     expect(status).toBe(200);
     expect(json.beat_artwork).toHaveLength(1);
@@ -197,11 +198,12 @@ describe('GET /api/storyboard/:id/frame/:role/picker-options', () => {
       textPrompt: 'x',
       shotType: 'medium',
     });
+    const f = await addFrame(sb._id, null);
     const real = seedImageFile({ ownerId: beat._id, name: 'real' });
     seedImageFile({ ownerId: beat._id, kind: 'thumbnail', name: 'thumb' });
 
     const { status, json } = await get(
-      `/api/storyboard/${sb._id}/frame/end_frame/picker-options`,
+      `/api/storyboard/${sb._id}/frame/${f}/picker-options`,
     );
     expect(status).toBe(200);
     const ids = json.beat_images.map((i) => String(i._id));
@@ -209,7 +211,7 @@ describe('GET /api/storyboard/:id/frame/:role/picker-options', () => {
     expect(ids.length).toBe(1);
   });
 
-  it('returns 400 for an invalid role', async () => {
+  it('returns 400 for an invalid frame id', async () => {
     const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: 'b' });
     const sb = await Storyboards.createStoryboard({
       beatId: beat._id,
@@ -217,14 +219,14 @@ describe('GET /api/storyboard/:id/frame/:role/picker-options', () => {
       shotType: 'medium',
     });
     const { status } = await get(
-      `/api/storyboard/${sb._id}/frame/middle_frame/picker-options`,
+      `/api/storyboard/${sb._id}/frame/not-a-hex/picker-options`,
     );
     expect(status).toBe(400);
   });
 
   it('returns 404 for an unknown storyboard id', async () => {
     const { status } = await get(
-      `/api/storyboard/0000aaaa0000aaaa0000aaaa/frame/end_frame/picker-options`,
+      `/api/storyboard/0000aaaa0000aaaa0000aaaa/frame/0000aaaa0000aaaa0000aaaa/picker-options`,
     );
     expect(status).toBe(404);
   });

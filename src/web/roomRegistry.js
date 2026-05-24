@@ -24,6 +24,7 @@ import { getDirectorNotes } from '../mongo/directorNotes.js';
 import {
   listStoryboards,
   updateStoryboard,
+  setFramePrompt,
 } from '../mongo/storyboards.js';
 import {
   listDialogs,
@@ -404,20 +405,20 @@ async function describeNotesRoom() {
 // Storyboards ---------------------------------------------------------------
 //
 // One y-doc per beat (room: "storyboards:<beatId>"). Each storyboard exposes
-// four fragments: "item:<storyboard _id>:text_prompt", ":summary",
-// ":start_frame_prompt", ":end_frame_prompt". When storyboards are added/
-// removed the room composition changes; the seed reflects whatever exists
+// scalar text fragments — "item:<storyboard _id>:text_prompt" and ":summary" —
+// plus one fragment per frame in its pool:
+// "item:<storyboard _id>:frame:<frameId>:prompt". When storyboards or frames are
+// added/removed the room composition changes; the seed reflects whatever exists
 // in Mongo at the time the room is loaded.
 
-const STORYBOARD_FIELD_NAMES = [
-  'text_prompt',
-  'summary',
-  'start_frame_prompt',
-  'end_frame_prompt',
-];
+const STORYBOARD_FIELD_NAMES = ['text_prompt', 'summary'];
 
 function storyboardFieldName(storyboardId, field) {
   return `item:${storyboardId}:${field}`;
+}
+
+function frameFragmentName(storyboardId, frameId) {
+  return `item:${storyboardId}:frame:${frameId}:prompt`;
 }
 
 async function describeStoryboardsRoom(beatId) {
@@ -433,6 +434,11 @@ async function describeStoryboardsRoom(beatId) {
       fields.push(name);
       seed[name] = s[f] || '';
     }
+    for (const frame of s.frames || []) {
+      const name = frameFragmentName(id, frame._id.toString());
+      fields.push(name);
+      seed[name] = frame.prompt || '';
+    }
   }
   return {
     type: 'storyboards',
@@ -442,9 +448,26 @@ async function describeStoryboardsRoom(beatId) {
     persistFields: async (snapshot) => {
       const changedFields = [];
       for (const [field, value] of Object.entries(snapshot)) {
-        const m = field.match(
-          /^item:([a-f0-9]{24}):(text_prompt|summary|start_frame_prompt|end_frame_prompt)$/,
-        );
+        // Per-frame prompt fragment.
+        const fm = field.match(/^item:([a-f0-9]{24}):frame:([a-f0-9]{24}):prompt$/);
+        if (fm) {
+          const [, sbId, frameId] = fm;
+          const current = sbById.get(sbId);
+          const frame = current?.frames?.find((x) => x._id.toString() === frameId);
+          if (!frame) continue;
+          if (value === (frame.prompt || '')) continue;
+          try {
+            await setFramePrompt(sbId, frameId, value);
+            changedFields.push(field);
+          } catch (e) {
+            logger.warn(
+              `storyboards persist failed sb=${sbId} frame=${frameId}: ${e.message}`,
+            );
+          }
+          continue;
+        }
+        // Scalar text fragments.
+        const m = field.match(/^item:([a-f0-9]{24}):(text_prompt|summary)$/);
         if (!m) continue;
         const sbId = m[1];
         const fieldName = m[2];

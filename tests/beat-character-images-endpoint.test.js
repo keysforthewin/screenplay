@@ -206,13 +206,15 @@ describe('DELETE /api/beat/:id/orphan-image/:imageId', () => {
   it('deletes a beat-owned GridFS image that is not in beat.images[] and clears storyboard refs', async () => {
     const beat = await Plots.createBeat({ name: 'Diner' });
     const orphan = seedImage({ ownerType: 'beat', ownerId: beat._id, name: 'orphan' });
-    // Storyboard with the orphan in both a frame slot and a reference list.
+    // Storyboard with the orphan as a frame's current image, and also in
+    // another frame's reference list.
     const sb = await Storyboards.createStoryboard({
       beatId: beat._id,
       textPrompt: 'Wide shot',
     });
-    await Storyboards.updateStoryboard(sb._id, { end_frame_id: orphan._id });
-    await Storyboards.pushFrameReferenceImage(sb._id, 'start_frame', orphan._id);
+    const imgFrame = (await Storyboards.addFrame(sb._id, { imageId: orphan._id })).frameId;
+    const refFrame = (await Storyboards.addFrame(sb._id, {})).frameId;
+    await Storyboards.pushFrameReferenceImage(sb._id, refFrame, orphan._id);
 
     const { status, json } = await del(
       `/api/beat/${beat._id}/orphan-image/${orphan._id}`,
@@ -221,10 +223,10 @@ describe('DELETE /api/beat/:id/orphan-image/:imageId', () => {
     expect(json.ok).toBe(true);
     expect(deletedImageIds).toContain(String(orphan._id));
     const fresh = await Storyboards.getStoryboard(sb._id);
-    expect(fresh.end_frame_id).toBe(null);
-    expect((fresh.start_frame_reference_ids || []).map(String)).not.toContain(
-      String(orphan._id),
-    );
+    const img = fresh.frames.find((f) => f._id.toString() === String(imgFrame));
+    const ref = fresh.frames.find((f) => f._id.toString() === String(refFrame));
+    expect(img.image_id).toBe(null);
+    expect(ref.reference_ids.map(String)).not.toContain(String(orphan._id));
   });
 
   it('refuses to delete an image that lives in beat.images[]', async () => {

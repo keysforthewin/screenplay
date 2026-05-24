@@ -128,6 +128,47 @@ describe('fal video catalog: generic auto-wiring', () => {
     expect(typeof input.duration).toBe('string');
   });
 
+  it('Integer/empty duration enums: built duration is a string, never a JSON number', async () => {
+    // Regression: fal's Kling o3 endpoints type `duration` as a STRING literal
+    // enum ('3'..'15'). The catalog row for this endpoint lists `duration` as an
+    // optional input but carries an EMPTY durations_enum, so the synthetic
+    // builder had no format hint, defaulted to 'int', and emitted a bare JS
+    // number — fal rejected it with a 422 literal_error (input 7 not in '3'..'15').
+    // Every registered model stringifies duration; the synth builder must too.
+    const { getVideoModelOrCatalog } = await import('../src/fal/videoModels.js');
+    const model = await getVideoModelOrCatalog(
+      'fal-ai/kling-video/o3/pro/video-to-video/reference',
+    );
+    if (!model) return; // manifest drift — endpoint not auto-wireable
+    const input = model.buildInput({
+      prompt: 'Restyle the clip.',
+      videoUrl: 'https://fal.example/clip.mp4',
+      durationSeconds: 7,
+    });
+    expect(typeof input.duration).toBe('string');
+    expect(input.duration).toBe('7');
+  });
+
+  it('Plural param names (audio_urls): single source URL ships as a one-element array', async () => {
+    // Regression: fal types plural-named params (audio_urls, video_urls,
+    // image_urls) as lists. The synth builder wrapped reference images in an
+    // array but always assigned audio/video as a bare string, so a model
+    // exposing `audio_urls` (bytedance/seedance-2.0/reference-to-video) failed
+    // with a 422 list_type error ("Input should be a valid list").
+    const { getVideoModelOrCatalog } = await import('../src/fal/videoModels.js');
+    const model = await getVideoModelOrCatalog('bytedance/seedance-2.0/reference-to-video');
+    if (!model) return; // manifest drift — endpoint not auto-wireable
+    const input = model.buildInput({
+      prompt: 'A test shot.',
+      audioUrl: 'https://fal.example/audio.bin',
+      referenceImageUrls: ['https://fal.example/ref.png'],
+    });
+    expect(Array.isArray(input.audio_urls)).toBe(true);
+    expect(input.audio_urls).toEqual(['https://fal.example/audio.bin']);
+    // Reference images stay an array too (unchanged behavior).
+    expect(Array.isArray(input.image_urls)).toBe(true);
+  });
+
   it('refuses to auto-wire endpoints outside the allowlist', async () => {
     const { getVideoModelOrCatalog } = await import('../src/fal/videoModels.js');
     // Hunyuan Portrait is in the catalog but NOT in the allowlist; should
@@ -250,8 +291,10 @@ describe('fal video catalog: generic auto-wiring', () => {
     expect(model.extractVideoUrl({})).toBeNull();
   });
 
-  it('validateStoryboardInputs flags missing reference images', async () => {
-    const { validateStoryboardInputs } = await import('../src/fal/videoModels.js');
+  it('validateAssignment flags missing reference images', async () => {
+    const { resolveFrameAssignment, validateAssignment } = await import(
+      '../src/fal/videoModels.js'
+    );
     const model = {
       inputs: {
         startFrame: 'unused',
@@ -261,15 +304,21 @@ describe('fal video catalog: generic auto-wiring', () => {
         audio: 'unused',
       },
     };
-    expect(validateStoryboardInputs(model, { start_frame_reference_ids: [] })).toEqual(['reference images']);
+    const sbEmpty = { frames: [] };
+    const sbOne = { frames: [{ image_id: 'abc' }] };
     expect(
-      validateStoryboardInputs(model, { start_frame_reference_ids: ['abc'] }),
+      validateAssignment(model, resolveFrameAssignment(model, sbEmpty), sbEmpty),
+    ).toEqual(['reference images']);
+    expect(
+      validateAssignment(model, resolveFrameAssignment(model, sbOne), sbOne),
     ).toEqual([]);
   });
 
-  it('validateStoryboardInputs does NOT fall back to start_frame for required references', async () => {
-    const { validateStoryboardInputs } = await import('../src/fal/videoModels.js');
-    const model = {
+  it('a slot-less reference model uses every frame, so one frame satisfies it', async () => {
+    const { resolveFrameAssignment, validateAssignment } = await import(
+      '../src/fal/videoModels.js'
+    );
+    const slotless = {
       inputs: {
         startFrame: 'unused',
         endFrame: 'unused',
@@ -278,16 +327,99 @@ describe('fal video catalog: generic auto-wiring', () => {
         audio: 'unused',
       },
     };
+    const sbOne = { frames: [{ image_id: 'aaaaaaaaaaaaaaaaaaaaaaaa' }] };
     expect(
-      validateStoryboardInputs(model, {
-        start_frame_reference_ids: [],
-        start_frame_id: 'aaaaaaaaaaaaaaaaaaaaaaaa',
-      }),
-    ).toEqual(['reference images']);
-    expect(
-      validateStoryboardInputs(model, {
-        start_frame_reference_ids: ['cccccccccccccccccccccccc'],
-      }),
+      validateAssignment(slotless, resolveFrameAssignment(slotless, sbOne), sbOne),
     ).toEqual([]);
+    const sbNone = { frames: [] };
+    expect(
+      validateAssignment(slotless, resolveFrameAssignment(slotless, sbNone), sbNone),
+    ).toEqual(['reference images']);
+
+    // A model that DOES expose a start-frame slot consumes the single frame as
+    // the start frame, leaving required references unsatisfied.
+    const withStartSlot = {
+      inputs: {
+        startFrame: 'optional',
+        endFrame: 'unused',
+        characterSheet: 'unused',
+        referenceImages: 'required',
+        audio: 'unused',
+      },
+    };
+    expect(
+      validateAssignment(
+        withStartSlot,
+        resolveFrameAssignment(withStartSlot, sbOne),
+        sbOne,
+      ),
+    ).toEqual(['reference images']);
+  });
+});
+
+describe('resolveFrameAssignment', () => {
+  const sb = (...ids) => ({ frames: ids.map((image_id) => ({ image_id })) });
+  const slotless = (referenceImages = 'optional') => ({
+    inputs: { startFrame: 'unused', endFrame: 'unused', referenceImages, audio: 'unused', videoInput: 'unused' },
+  });
+
+  it('returns no reference images when the model does not accept them', async () => {
+    const { resolveFrameAssignment } = await import('../src/fal/videoModels.js');
+    const model = { inputs: { startFrame: 'required', endFrame: 'unused', referenceImages: 'unused' } };
+    const out = resolveFrameAssignment(model, sb('a', 'b', 'c'));
+    expect(out.referenceImageIds).toEqual([]);
+    expect(out.startFrameId).toBe('a');
+  });
+
+  it('a slot-less model folds every frame into the reference list, in order', async () => {
+    const { resolveFrameAssignment } = await import('../src/fal/videoModels.js');
+    const out = resolveFrameAssignment(slotless(), sb('start', 'end', 'ref1', 'ref2'));
+    expect(out.referenceImageIds).toEqual(['start', 'end', 'ref1', 'ref2']);
+    expect(out.startFrameId).toBe(null);
+    expect(out.endFrameId).toBe(null);
+  });
+
+  it('uses the first frame as start, leaving the rest as references', async () => {
+    const { resolveFrameAssignment } = await import('../src/fal/videoModels.js');
+    const model = {
+      inputs: { startFrame: 'optional', endFrame: 'unused', referenceImages: 'optional' },
+    };
+    const out = resolveFrameAssignment(model, sb('start', 'end', 'ref1'));
+    expect(out.startFrameId).toBe('start');
+    expect(out.referenceImageIds).toEqual(['end', 'ref1']);
+  });
+
+  it('defaults start→frame 1, end→frame 2, rest→references', async () => {
+    const { resolveFrameAssignment } = await import('../src/fal/videoModels.js');
+    const model = {
+      inputs: { startFrame: 'required', endFrame: 'optional', referenceImages: 'optional' },
+    };
+    const out = resolveFrameAssignment(model, sb('f0', 'f1', 'f2'));
+    expect(out.startFrameId).toBe('f0');
+    expect(out.endFrameId).toBe('f1');
+    expect(out.referenceImageIds).toEqual(['f2']);
+  });
+
+  it('honors an explicit requested assignment and drops unknown ids', async () => {
+    const { resolveFrameAssignment } = await import('../src/fal/videoModels.js');
+    const model = {
+      inputs: { startFrame: 'required', endFrame: 'optional', referenceImages: 'optional' },
+    };
+    const out = resolveFrameAssignment(model, sb('f0', 'f1', 'f2'), {
+      start_frame: 'f2',
+      end_frame: 'f0',
+      ref: ['f1', 'nope', 'f1'],
+    });
+    expect(out.startFrameId).toBe('f2');
+    expect(out.endFrameId).toBe('f0');
+    expect(out.referenceImageIds).toEqual(['f1']); // unknown dropped, deduped
+  });
+
+  it('handles empty/missing frames gracefully', async () => {
+    const { resolveFrameAssignment } = await import('../src/fal/videoModels.js');
+    expect(resolveFrameAssignment(slotless(), {}).referenceImageIds).toEqual([]);
+    expect(
+      resolveFrameAssignment(slotless(), sb('start')).referenceImageIds,
+    ).toEqual(['start']);
   });
 });

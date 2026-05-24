@@ -15,6 +15,7 @@ import { ReferencePickerModal } from './ReferencePickerModal.jsx';
 import { StoryboardFrameEditDialog } from './StoryboardFrameEditDialog.jsx';
 import { ImageLightbox } from './ImageLightbox.jsx';
 import { AudioSlot } from './AudioSlot.jsx';
+import { VideoUploadSlot } from './VideoUploadSlot.jsx';
 import { GenerateVideoButton } from './GenerateVideoButton.jsx';
 import { StoryboardVideoPanel } from './StoryboardVideoPanel.jsx';
 import { CharacterTagInput } from './CharacterTagInput.jsx';
@@ -134,19 +135,30 @@ function ShotMetaRow({ sb, sbId, tocCharacters, onRefresh }) {
   );
 }
 
-function FrameSlot({
-  label,
-  role,
-  imageId,
-  previousImageId,
+// One tile in the storyboard's frame pool. Owns its image (view / replace /
+// regenerate / inline-edit / remove), its collaborative prompt, and reorder
+// controls. Addressed by the frame's stable `_id`.
+function FrameTile({
+  frame,
+  index,
+  total,
   sbId,
   beatId,
   charactersInScene,
-  referenceIds,
   onRefresh,
   onOpenLightbox,
-  prevSb,
+  onMove,
+  reorderBusy,
 }) {
+  const frameId = frame._id?.toString?.() || String(frame._id);
+  const imageId = frame.image_id ? frame.image_id.toString?.() || String(frame.image_id) : null;
+  const previousImageId = frame.previous_image_id
+    ? frame.previous_image_id.toString?.() || String(frame.previous_image_id)
+    : null;
+  const referenceIds = (frame.reference_ids || []).map(
+    (x) => x?.toString?.() || String(x),
+  );
+  const label = `Frame ${index + 1}`;
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState(null);
   const [error, setError] = useState(null);
@@ -154,13 +166,9 @@ function FrameSlot({
   const [editOpen, setEditOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const pollRef = useRef(null);
-  const url = imageUrl(imageId);
-  const thumbSrc = thumbUrl(imageId);
-  const canGrab = role === 'start_frame' && prevSb != null;
+  const url = imageId ? imageUrl(imageId) : null;
+  const thumbSrc = imageId ? thumbUrl(imageId) : null;
 
-  // Stop any in-flight poll on unmount so we don't setState on a dead
-  // component. The job keeps running server-side regardless; the image still
-  // lands via the fields_updated broadcast.
   useEffect(() => {
     return () => {
       if (pollRef.current) {
@@ -175,43 +183,12 @@ function FrameSlot({
     setBusy(true);
     setError(null);
     try {
-      await apiDelete(`/storyboard/${sbId}/image/${role}`);
+      await apiDelete(`/storyboard/${sbId}/frame/${frameId}`);
       await onRefresh?.();
     } catch (err) {
       setError(err.message);
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function grabFromPrevious() {
-    if (!canGrab) return;
-    setBusy(true);
-    setBusyLabel('Grabbing…');
-    setError(null);
-    try {
-      await apiPostJson(`/storyboard/${sbId}/grab-start-frame-from-previous`, {});
-      await onRefresh?.();
-    } catch (err) {
-      // Server bodies are JSON `{ error: '...' }`. The api helper rethrows the
-      // raw body string, so parse it to pick out the friendly explanation.
-      let serverMsg = err.message || '';
-      try {
-        const parsed = JSON.parse(serverMsg);
-        if (parsed && typeof parsed.error === 'string') serverMsg = parsed.error;
-      } catch {
-        // not JSON; leave as-is.
-      }
-      if (serverMsg === 'previous shot has no generated video') {
-        setError(
-          'The previous storyboard item must have a generated video before you can grab its last frame.',
-        );
-      } else {
-        setError(serverMsg || 'Grab failed.');
-      }
-    } finally {
-      setBusy(false);
-      setBusyLabel(null);
     }
   }
 
@@ -254,7 +231,7 @@ function FrameSlot({
       if (mode === 'edit') body.edit_prompt = editPrompt;
       if (mode === 'generate') body.prompt = prompt;
       const r = await apiPostJson(
-        `/storyboard/${sbId}/frame/${role}/generate`,
+        `/storyboard/${sbId}/frame/${frameId}/generate`,
         body,
       );
       const jobId = r?.job_id;
@@ -273,7 +250,27 @@ function FrameSlot({
 
   return (
     <div className="storyboard-frame">
-      <div className="storyboard-frame-label">{label}</div>
+      <div className="storyboard-frame-label">
+        <span>{label}</span>
+        <span className="storyboard-frame-reorder">
+          <button
+            type="button"
+            title="Move earlier"
+            disabled={reorderBusy || index === 0}
+            onClick={() => onMove(index, -1)}
+          >
+            ◀
+          </button>
+          <button
+            type="button"
+            title="Move later"
+            disabled={reorderBusy || index === total - 1}
+            onClick={() => onMove(index, 1)}
+          >
+            ▶
+          </button>
+        </span>
+      </div>
       {url ? (
         <div className="storyboard-frame-img-wrap">
           <img
@@ -297,9 +294,10 @@ function FrameSlot({
           type="button"
           className="storyboard-frame-empty"
           disabled={busy}
-          onClick={() => setPickerOpen(true)}
+          onClick={() => setRegenOpen(true)}
+          title="Generate this frame's image"
         >
-          {busyLabel || '+ Add'}
+          {busyLabel || '+ Generate'}
         </button>
       )}
       <div className="storyboard-frame-actions">
@@ -308,15 +306,15 @@ function FrameSlot({
           className="storyboard-frame-replace"
           disabled={busy}
           onClick={() => setPickerOpen(true)}
-          title={url ? `Replace ${label.toLowerCase()}` : `Add ${label.toLowerCase()}`}
+          title={url ? 'Replace this frame image' : 'Pick an image for this frame'}
         >
-          {url ? 'Replace' : 'Add'}
+          {url ? 'Replace' : 'Pick'}
         </button>
         <button
           type="button"
           className="storyboard-frame-generate"
           disabled={busy}
-          title={`Generate ${label.toLowerCase()} using this row's per-frame references`}
+          title="Generate this frame using its prompt + per-frame references"
           onClick={() => setRegenOpen(true)}
         >
           {busyLabel || (url ? 'Regenerate' : 'Generate')}
@@ -326,35 +324,42 @@ function FrameSlot({
             type="button"
             className="storyboard-frame-edit"
             disabled={busy}
-            title={`Edit ${label.toLowerCase()} with a prompt`}
+            title="Edit this frame with a prompt"
             onClick={() => setEditOpen(true)}
           >
             Edit
           </button>
         )}
-        {canGrab && (
+        {url && (
           <button
             type="button"
-            className="storyboard-frame-grab"
+            className="storyboard-frame-remove-btn"
             disabled={busy}
-            title="Use the last frame of the previous shot's generated video as this start frame."
-            onClick={grabFromPrevious}
+            title={`Remove ${label}`}
+            onClick={remove}
           >
-            {busyLabel === 'Grabbing…' ? 'Grabbing…' : 'Grab from previous'}
+            Remove
           </button>
         )}
+      </div>
+      <div className="storyboard-frame-prompt">
+        <CollabField
+          field={`item:${sbId}:frame:${frameId}:prompt`}
+          multiline
+          placeholder="Frame prompt…"
+        />
       </div>
       {error && <div className="error-banner small">{error}</div>}
       <FrameRegenerateDialog
         open={regenOpen}
         onClose={() => setRegenOpen(false)}
         onSubmit={submitRegen}
-        role={role}
+        frameId={frameId}
         hasImage={Boolean(url)}
         storyboardId={sbId}
         beatId={beatId}
         charactersInScene={charactersInScene}
-        referenceIds={referenceIds || []}
+        referenceIds={referenceIds}
         onReferencesChanged={onRefresh}
       />
       <StoryboardFrameEditDialog
@@ -364,7 +369,7 @@ function FrameSlot({
         storyboardId={sbId}
         beatId={beatId}
         charactersInScene={charactersInScene}
-        role={role}
+        frameId={frameId}
         imageId={imageId}
         hasUndo={Boolean(previousImageId)}
       />
@@ -374,7 +379,130 @@ function FrameSlot({
         sbId={sbId}
         beatId={beatId}
         charactersInScene={charactersInScene}
-        role={role}
+        mode="frame_image"
+        frameId={frameId}
+        onAttached={onRefresh}
+      />
+    </div>
+  );
+}
+
+const MAX_FRAMES = 6;
+
+// The whole frame pool for a storyboard row: a strip of frame tiles, a
+// "+ Add frame" button (disabled at MAX_FRAMES), and the pool-level
+// "Grab from previous" action.
+function FramesSection({ sb, sbId, beatId, prevSb, onRefresh, onOpenLightbox }) {
+  const frames = sb.frames || [];
+  const [addOpen, setAddOpen] = useState(false);
+  const [reorderBusy, setReorderBusy] = useState(false);
+  const [grabBusy, setGrabBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const atMax = frames.length >= MAX_FRAMES;
+  const canGrab = prevSb != null && !atMax;
+
+  async function move(index, dir) {
+    const j = index + dir;
+    if (j < 0 || j >= frames.length) return;
+    const ids = frames.map((f) => f._id?.toString?.() || String(f._id));
+    [ids[index], ids[j]] = [ids[j], ids[index]];
+    setReorderBusy(true);
+    setError(null);
+    try {
+      await apiPostJson(`/storyboard/${sbId}/frames/reorder`, {
+        ordered_frame_ids: ids,
+      });
+      await onRefresh?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setReorderBusy(false);
+    }
+  }
+
+  async function grabFromPrevious() {
+    if (!canGrab || grabBusy) return;
+    setGrabBusy(true);
+    setError(null);
+    try {
+      await apiPostJson(`/storyboard/${sbId}/grab-frame-from-previous`, {});
+      await onRefresh?.();
+    } catch (err) {
+      let serverMsg = err.message || '';
+      try {
+        const parsed = JSON.parse(serverMsg);
+        if (parsed && typeof parsed.error === 'string') serverMsg = parsed.error;
+      } catch {
+        // not JSON
+      }
+      setError(
+        serverMsg === 'previous shot has no generated video'
+          ? 'The previous storyboard item must have a generated video before you can grab its last frame.'
+          : serverMsg || 'Grab failed.',
+      );
+    } finally {
+      setGrabBusy(false);
+    }
+  }
+
+  return (
+    <div className="storyboard-frames">
+      <div className="storyboard-frame-label">
+        Frames <span className="storyboard-frames-count">({frames.length}/{MAX_FRAMES})</span>
+      </div>
+      <div className="storyboard-frames-row">
+        {frames.map((f, i) => (
+          <FrameTile
+            key={f._id?.toString?.() || String(f._id)}
+            frame={f}
+            index={i}
+            total={frames.length}
+            sbId={sbId}
+            beatId={beatId}
+            charactersInScene={sb.characters_in_scene}
+            onRefresh={onRefresh}
+            onOpenLightbox={onOpenLightbox}
+            onMove={move}
+            reorderBusy={reorderBusy}
+          />
+        ))}
+        {!atMax && (
+          <button
+            type="button"
+            className="storyboard-frame-empty storyboard-frames-add"
+            onClick={() => setAddOpen(true)}
+          >
+            + Add frame
+          </button>
+        )}
+      </div>
+      <div className="storyboard-frames-actions">
+        {canGrab && (
+          <button
+            type="button"
+            className="storyboard-frame-grab"
+            disabled={grabBusy}
+            title="Add the last frame of the previous shot's generated video as a new frame."
+            onClick={grabFromPrevious}
+          >
+            {grabBusy ? 'Grabbing…' : 'Grab from previous'}
+          </button>
+        )}
+        {atMax && (
+          <span className="storyboard-frames-max-note">
+            Maximum {MAX_FRAMES} frames — remove one to add another.
+          </span>
+        )}
+      </div>
+      {error && <div className="error-banner small">{error}</div>}
+      <ReferencePickerModal
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        sbId={sbId}
+        beatId={beatId}
+        charactersInScene={sb.characters_in_scene}
+        mode="add_frame"
+        frameCount={frames.length}
         onAttached={onRefresh}
       />
     </div>
@@ -486,39 +614,29 @@ export function StoryboardItem({
         </div>
       )}
 
-      <div className="storyboard-frames-row">
-        <FrameSlot
-          label="Start frame"
-          role="start_frame"
-          imageId={sb.start_frame_id}
-          previousImageId={sb.previous_start_frame_id}
-          sbId={id}
-          beatId={sb.beat_id?.toString?.() || sb.beat_id}
-          charactersInScene={sb.characters_in_scene}
-          referenceIds={sb.start_frame_reference_ids}
-          prevSb={prevSb}
-          onRefresh={onRefresh}
-          onOpenLightbox={openLightbox}
-        />
-        <FrameSlot
-          label="End frame"
-          role="end_frame"
-          imageId={sb.end_frame_id}
-          previousImageId={sb.previous_end_frame_id}
-          sbId={id}
-          beatId={sb.beat_id?.toString?.() || sb.beat_id}
-          charactersInScene={sb.characters_in_scene}
-          referenceIds={sb.end_frame_reference_ids}
-          onRefresh={onRefresh}
-          onOpenLightbox={openLightbox}
-        />
-      </div>
+      <FramesSection
+        sb={sb}
+        sbId={id}
+        beatId={sb.beat_id?.toString?.() || sb.beat_id}
+        prevSb={prevSb}
+        onRefresh={onRefresh}
+        onOpenLightbox={openLightbox}
+      />
+
+      <VideoUploadSlot
+        videoId={sb.video_upload_file_id}
+        uploadEndpoint={`/storyboard/${id}/video-upload`}
+        deleteEndpoint={`/storyboard/${id}/video-upload`}
+        storyboardId={id}
+        onRefresh={onRefresh}
+      />
 
       <AudioSlot
         audioId={sb.audio_file_id}
         uploadEndpoint={`/storyboard/${id}/audio`}
         deleteEndpoint={`/storyboard/${id}/audio`}
         recordingPrefix={`scene-${id}`}
+        storyboardId={id}
         dialogPicker={{
           storyboardId: id,
           beatId: sb.beat_id?.toString?.() || sb.beat_id,

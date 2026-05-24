@@ -49,10 +49,10 @@ import { dispatchStoryboardImage } from './storyboardImageDispatch.js';
 import {
   createStoryboardViaGateway,
   deleteAllStoryboardsForBeatViaGateway,
-  setStoryboardImageViaGateway,
+  addStoryboardFrameViaGateway,
+  setStoryboardFrameImageViaGateway,
   setStoryboardFrameEditResultViaGateway,
   setStoryboardFramePromptViaGateway,
-  setStoryboardFrameReferenceImagesViaGateway,
 } from './gateway.js';
 import { collectStoryboardReferenceIds } from './storyboardReferenceAggregator.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
@@ -1309,8 +1309,6 @@ async function createPlannedStoryboardEntry({
     seedFragments: {
       text_prompt: textPrompt,
       summary,
-      start_frame_prompt: startFramePrompt,
-      end_frame_prompt: endFramePrompt,
     },
     durationSeconds: frame.duration_seconds ?? null,
     shotType: frame.shot_type ?? null,
@@ -1319,29 +1317,36 @@ async function createPlannedStoryboardEntry({
     reverseInPost: Boolean(frame.reverse_in_post),
   });
 
-  // Pre-populate BOTH per-frame reference lists with every image we'd
-  // reasonably want as a visual reference for this shot: the beat's set
-  // image(s) plus each in-scene character's sheets and portraits. Failures
-  // are swallowed so the row still lands — users can re-trigger via the
-  // frame's Auto-suggest button.
+  // Collect the visual references for this shot once (beat set image(s) plus
+  // each in-scene character's sheets and portraits) and seed every planned
+  // frame's reference list with them so the modal's default ref grid is
+  // non-empty. Failures are swallowed so the row still lands.
+  let referenceIds = [];
   try {
-    const { ids } = await collectStoryboardReferenceIds({
+    const collected = await collectStoryboardReferenceIds({
       beat,
       charactersInScene: frame.characters_in_scene ?? [],
       existingIds: [],
     });
-    if (ids.length) {
-      for (const role of ['start_frame', 'end_frame']) {
-        await setStoryboardFrameReferenceImagesViaGateway({
-          storyboardId: sb._id,
-          role,
-          imageIds: ids,
-          mode: 'append',
-        });
-      }
-    }
+    referenceIds = collected.ids || [];
   } catch (e) {
-    logger.warn(`storyboard gen: auto-populate refs failed: ${e.message}`);
+    logger.warn(`storyboard gen: collect refs failed: ${e.message}`);
+  }
+
+  // The planner produces an opening and a closing still prompt; seed them as
+  // the first two frames of the pool. Frames with no prompt are skipped so a
+  // sparse planner output doesn't create empty frames.
+  for (const prompt of [startFramePrompt, endFramePrompt]) {
+    if (!prompt) continue;
+    try {
+      await addStoryboardFrameViaGateway({
+        storyboardId: sb._id,
+        prompt,
+        referenceIds,
+      });
+    } catch (e) {
+      logger.warn(`storyboard gen: add planned frame failed: ${e.message}`);
+    }
   }
 }
 
@@ -1382,10 +1387,10 @@ function buildTextPrompt(frame) {
   return lines.join('\n');
 }
 
-// Build the default suggested prompt for a single frame slot — used by the
-// SPA's preview-prompt endpoint when the stored frame prompt is empty so the
-// user gets a sensible starting draft they can keep or edit.
-function buildSuggestedFramePrompt({ sb, role }) {
+// Build the default suggested prompt for a frame — used by the SPA's
+// preview-prompt endpoint when the stored frame prompt is empty so the user
+// gets a sensible starting draft they can keep or edit.
+function buildSuggestedFramePrompt({ sb }) {
   const lines = [];
   if (sb.shot_type) {
     lines.push(`Shot type: ${sb.shot_type.replace(/_/g, ' ').toUpperCase()}.`);
@@ -1401,17 +1406,13 @@ function buildSuggestedFramePrompt({ sb, role }) {
     );
   }
   lines.push('');
-  lines.push(
-    role === 'start_frame'
-      ? 'Render the beginning moment of this shot as a cinematic still.'
-      : 'Render the end moment of this shot as a cinematic still — show motion progression beyond the start.',
-  );
+  lines.push('Render this moment of the shot as a cinematic still.');
   return lines.join('\n');
 }
 
 async function persistFrameImage({
   storyboardId,
-  role,
+  frameId,
   result,
   beatId,
   orderHint,
@@ -1430,28 +1431,27 @@ async function persistFrameImage({
   if (rotateToPrevious) {
     await setStoryboardFrameEditResultViaGateway({
       storyboardId,
-      role,
+      frameId,
       newImageId: file._id,
       editPrompt: editPrompt || '',
     });
   } else {
-    await setStoryboardImageViaGateway({
+    await setStoryboardFrameImageViaGateway({
       storyboardId,
-      role,
+      frameId,
       imageId: file._id,
     });
   }
   return file;
 }
 
-const FRAME_ROLES = new Set(['start_frame', 'end_frame']);
 const MAX_FRAME_REFERENCE_IMAGES = 12;
 
-export class FrameRoleError extends Error {
-  constructor(role) {
-    super(`unsupported frame role: ${role}`);
-    this.code = 'BAD_FRAME_ROLE';
-    this.status = 400;
+export class FrameNotFoundError extends Error {
+  constructor(frameId) {
+    super(`frame not found: ${frameId}`);
+    this.code = 'FRAME_NOT_FOUND';
+    this.status = 404;
   }
 }
 
@@ -1463,22 +1463,13 @@ export class EditModeError extends Error {
   }
 }
 
-function frameImageField(role) {
-  return role === 'start_frame' ? 'start_frame_id' : 'end_frame_id';
+// Locate a frame within a backfilled storyboard by its stable id.
+function getFrame(sb, frameId) {
+  return (sb.frames || []).find((f) => f._id.toString() === String(frameId)) || null;
 }
 
-function frameReferenceField(role) {
-  return role === 'start_frame'
-    ? 'start_frame_reference_ids'
-    : 'end_frame_reference_ids';
-}
-
-function framePromptDocField(role) {
-  return role === 'start_frame' ? 'start_frame_prompt' : 'end_frame_prompt';
-}
-
-async function loadFrameReferenceImages(sb, role) {
-  const ids = sb[frameReferenceField(role)] || [];
+async function loadFrameReferenceImages(frame) {
+  const ids = frame?.reference_ids || [];
   const out = [];
   for (const id of ids.slice(0, MAX_FRAME_REFERENCE_IMAGES)) {
     const ref = await loadImageInput(id);
@@ -1509,7 +1500,7 @@ async function loadFrameReferenceImages(sb, role) {
 // duration of the run.
 export async function regenerateStoryboardFrame({
   storyboardId,
-  role,
+  frameId,
   imageModel = 'gemini',
   mode = 'generate',
   editPrompt = null,
@@ -1517,12 +1508,13 @@ export async function regenerateStoryboardFrame({
   prompt = null,
   rotateToPrevious = false,
 }) {
-  if (!FRAME_ROLES.has(role)) throw new FrameRoleError(role);
   if (!['generate', 'edit'].includes(mode)) {
     throw new EditModeError(`Unknown regen mode "${mode}".`);
   }
   const sb = await getStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const frame = getFrame(sb, frameId);
+  if (!frame) throw new FrameNotFoundError(frameId);
   const beat = await getBeat(sb.beat_id);
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
   if (isBeatLocked(beat._id)) {
@@ -1531,7 +1523,7 @@ export async function regenerateStoryboardFrame({
   return regenerateStoryboardFrameInternal({
     sb,
     beat,
-    role,
+    frame,
     imageModel,
     mode,
     editPrompt,
@@ -1541,35 +1533,34 @@ export async function regenerateStoryboardFrame({
   });
 }
 
-// Preview the suggested default prompt for a single frame slot. Called by the
-// SPA's generate modal on open so the user gets a sensible starting draft
-// when the stored prompt is empty.
-export async function previewFrameGenerationPrompt({ storyboardId, role }) {
-  if (!FRAME_ROLES.has(role)) throw new FrameRoleError(role);
+// Preview the suggested default prompt for a frame. Called by the SPA's
+// generate modal on open so the user gets a sensible starting draft when the
+// stored prompt is empty.
+export async function previewFrameGenerationPrompt({ storyboardId, frameId }) {
   const sb = await getStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const frame = getFrame(sb, frameId);
+  if (!frame) throw new FrameNotFoundError(frameId);
   const beat = await getBeat(sb.beat_id);
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
   }
-  const storedField = framePromptDocField(role);
-  const stored = sb[storedField] || '';
-  const suggested = buildSuggestedFramePrompt({ sb, role });
-  const refIds = sb[frameReferenceField(role)] || [];
+  const stored = frame.prompt || '';
+  const suggested = buildSuggestedFramePrompt({ sb });
   return {
     prompt: stored.trim() ? stored : suggested,
     suggested_prompt: suggested,
     has_stored_prompt: !!stored.trim(),
-    reference_count: refIds.length,
-    has_existing_frame: !!sb[frameImageField(role)],
+    reference_count: (frame.reference_ids || []).length,
+    has_existing_frame: !!frame.image_id,
   };
 }
 
 async function regenerateStoryboardFrameInternal({
   sb,
   beat,
-  role,
+  frame,
   imageModel = 'gemini',
   mode = 'generate',
   editPrompt = null,
@@ -1577,6 +1568,7 @@ async function regenerateStoryboardFrameInternal({
   prompt = null,
   rotateToPrevious = false,
 }) {
+  const frameId = frame._id;
   let renderPrompt;
   let inputImages;
   let dispatchMode;
@@ -1584,17 +1576,13 @@ async function regenerateStoryboardFrameInternal({
     if (typeof editPrompt !== 'string' || !editPrompt.trim()) {
       throw new EditModeError('Edit mode requires a non-empty editPrompt.');
     }
-    const existingId = sb[frameImageField(role)];
+    const existingId = frame.image_id;
     if (!existingId) {
-      throw new EditModeError(
-        `No existing ${role.replace('_', ' ')} to edit. Use generate mode instead.`,
-      );
+      throw new EditModeError('No existing frame image to edit. Use generate mode instead.');
     }
     const existing = await loadImageInput(existingId);
     if (!existing) {
-      throw new EditModeError(
-        `Could not read existing ${role.replace('_', ' ')} bytes for editing.`,
-      );
+      throw new EditModeError('Could not read existing frame bytes for editing.');
     }
     renderPrompt = editPrompt.trim();
     const extras = [];
@@ -1623,15 +1611,13 @@ async function regenerateStoryboardFrameInternal({
     try {
       await setStoryboardFramePromptViaGateway({
         storyboardId: sb._id,
-        role,
+        frameId,
         text: renderPrompt,
       });
     } catch (e) {
-      logger.warn(
-        `storyboard regen: persist ${role} prompt failed: ${e.message}`,
-      );
+      logger.warn(`storyboard regen: persist frame prompt failed: ${e.message}`);
     }
-    inputImages = await loadFrameReferenceImages(sb, role);
+    inputImages = await loadFrameReferenceImages(frame);
     dispatchMode = 'generate';
   }
 
@@ -1644,10 +1630,10 @@ async function regenerateStoryboardFrameInternal({
 
   const file = await persistFrameImage({
     storyboardId: sb._id,
-    role,
+    frameId,
     result,
     beatId: beat._id,
-    orderHint: `${role === 'start_frame' ? 'start' : 'end'}-${sb.order}`,
+    orderHint: `frame-${frameId}`,
     rotateToPrevious: rotateToPrevious && mode === 'edit',
     editPrompt: mode === 'edit' ? renderPrompt : null,
   });
@@ -1671,7 +1657,7 @@ export function getFrameGenerationJob(jobId) {
 // duration so it can't race the batch pipeline.
 export async function startFrameGenerationJob({
   storyboardId,
-  role,
+  frameId,
   imageModel = 'gemini',
   mode = 'generate',
   editPrompt = null,
@@ -1680,21 +1666,20 @@ export async function startFrameGenerationJob({
   rotateToPrevious = false,
   announceUsername = null,
 }) {
-  if (!FRAME_ROLES.has(role)) throw new FrameRoleError(role);
   if (!['generate', 'edit'].includes(mode)) {
     throw new EditModeError(`Unknown regen mode "${mode}".`);
   }
   const sb = await getStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const frame = getFrame(sb, frameId);
+  if (!frame) throw new FrameNotFoundError(frameId);
   const beat = await getBeat(sb.beat_id);
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
   }
-  if (mode === 'edit' && !sb[frameImageField(role)]) {
-    throw new EditModeError(
-      `No existing ${role.replace('_', ' ')} to edit. Use generate mode instead.`,
-    );
+  if (mode === 'edit' && !frame.image_id) {
+    throw new EditModeError('No existing frame image to edit. Use generate mode instead.');
   }
 
   const jobId = makeJobId();
@@ -1702,7 +1687,7 @@ export async function startFrameGenerationJob({
     job_id: jobId,
     storyboard_id: sb._id.toString(),
     beat_id: beat._id.toString(),
-    role,
+    frame_id: frame._id.toString(),
     image_model: imageModel,
     mode,
     status: 'queued',
@@ -1718,7 +1703,7 @@ export async function startFrameGenerationJob({
       job,
       sb,
       beat,
-      role,
+      frame,
       imageModel,
       mode,
       editPrompt,
@@ -1741,7 +1726,7 @@ async function runFrameGenerationJob({
   job,
   sb,
   beat,
-  role,
+  frame,
   imageModel,
   mode,
   editPrompt,
@@ -1754,7 +1739,7 @@ async function runFrameGenerationJob({
   const { image_id } = await regenerateStoryboardFrameInternal({
     sb,
     beat,
-    role,
+    frame,
     imageModel,
     mode,
     editPrompt,
@@ -1774,14 +1759,7 @@ async function runFrameGenerationJob({
       const order = Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
       const beatLabel = name ? `${order}: ${name}` : order;
       const orderHint = Number.isFinite(sb.order) ? ` (shot ${sb.order + 1})` : '';
-      const verb =
-        mode === 'edit'
-          ? role === 'start_frame'
-            ? 'edited the start frame on'
-            : 'edited the end frame on'
-          : role === 'start_frame'
-            ? 'generated a start frame on'
-            : 'generated an end frame on';
+      const verb = mode === 'edit' ? 'edited a frame on' : 'generated a frame on';
       announceMediaEvent({
         username: announceUsername,
         verb,

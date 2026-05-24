@@ -1,8 +1,7 @@
-// Extracts the last frame of a previous storyboard's generated MP4 and
-// installs it as the current storyboard's start_frame. Used by the
-// "Grab from previous" button on the storyboard page to support seamless
-// joining between shots for video models that accept both start and end
-// frames (Kling 3 Pro, Veo 3.1 first-last-frame).
+// Extracts the last frame of a previous storyboard's generated MP4 and adds it
+// as a new frame in the current storyboard's frame pool. Used by the "Grab from
+// previous" button on the storyboard page to support seamless joining between
+// shots for video models that accept a start frame (Kling 3 Pro, Veo 3.1, etc.).
 
 import { spawn } from 'child_process';
 import fs from 'fs';
@@ -13,7 +12,7 @@ import { logger } from '../log.js';
 import { streamAttachmentToTmp } from '../mongo/attachments.js';
 import { uploadGeneratedImage } from '../mongo/images.js';
 import { validateImageBuffer } from '../mongo/imageBytes.js';
-import { setStoryboardImageViaGateway } from './gateway.js';
+import { addStoryboardFrameViaGateway } from './gateway.js';
 
 export class FfmpegMissingError extends Error {
   constructor() {
@@ -94,7 +93,7 @@ async function safeUnlink(p) {
 //   currentSbId : ObjectId/hex of the storyboard receiving the start frame
 //   prev        : full prev storyboard doc; we read prev.video_file_id and
 //                 prev.beat_id (== currentSb.beat_id) for ownership metadata.
-export async function grabStartFrameFromPrevious({ currentSbId, prev }) {
+export async function grabFrameFromPrevious({ currentSbId, prev }) {
   if (!currentSbId) throw new Error('currentSbId required');
   if (!prev || !prev.video_file_id) {
     throw new Error('prev storyboard with video_file_id required');
@@ -135,21 +134,24 @@ export async function grabStartFrameFromPrevious({ currentSbId, prev }) {
       contentType: 'image/jpeg',
       ownerType: 'beat',
       ownerId: prev.beat_id,
-      filename: `storyboard-${currentSbId}-start-frame-grab-${stamp}.jpg`,
+      filename: `storyboard-${currentSbId}-frame-grab-${stamp}.jpg`,
       generatedBy: 'video-frame-grab',
     });
 
-    const storyboard = await setStoryboardImageViaGateway({
+    const { storyboard, frameId } = await addStoryboardFrameViaGateway({
       storyboardId: currentSbId,
-      role: 'start_frame',
       imageId: file._id,
     });
 
     logger.info(
-      `storyboard grab-frame: sb=${currentSbId} prev_video=${prev.video_file_id} -> image=${file._id}`,
+      `storyboard grab-frame: sb=${currentSbId} prev_video=${prev.video_file_id} -> image=${file._id} frame=${frameId}`,
     );
 
-    return { storyboard, image: { _id: file._id, content_type: 'image/jpeg' } };
+    return {
+      storyboard,
+      frame_id: frameId.toString(),
+      image: { _id: file._id, content_type: 'image/jpeg' },
+    };
   } finally {
     await safeUnlink(tmpVideoPath);
     await safeUnlink(outPath);

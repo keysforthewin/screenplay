@@ -56,6 +56,7 @@ function capPrompt(s) {
 //   characterSheetUrl:     fal URL of storyboard.character_sheet_image_id (or null)
 //   referenceImageUrls:    fal URLs for each storyboard.reference_image_ids[]
 //   audioUrl:              fal URL of storyboard.audio_file_id (or null)
+//   videoUrl:              fal URL of storyboard.video_upload_file_id (or null)
 //   durationSeconds:       integer 1..15
 //   generateAudio:         boolean (only honored by models that support it)
 
@@ -79,6 +80,7 @@ export const VIDEO_MODELS = [
       characterSheet: INPUT_NEEDS.OPTIONAL,
       referenceImages: INPUT_NEEDS.UNUSED,
       audio: INPUT_NEEDS.UNUSED,
+      videoInput: INPUT_NEEDS.UNUSED,
     },
     buildInput(bundle) {
       const input = {
@@ -115,6 +117,7 @@ export const VIDEO_MODELS = [
       characterSheet: INPUT_NEEDS.UNUSED,
       referenceImages: INPUT_NEEDS.UNUSED,
       audio: INPUT_NEEDS.UNUSED,
+      videoInput: INPUT_NEEDS.UNUSED,
     },
     buildInput(bundle) {
       const input = {
@@ -154,6 +157,7 @@ export const VIDEO_MODELS = [
       characterSheet: INPUT_NEEDS.OPTIONAL,
       referenceImages: INPUT_NEEDS.UNUSED,
       audio: INPUT_NEEDS.REQUIRED,
+      videoInput: INPUT_NEEDS.UNUSED,
     },
     buildInput(bundle) {
       const input = {
@@ -186,6 +190,7 @@ export const VIDEO_MODELS = [
       characterSheet: INPUT_NEEDS.UNUSED,
       referenceImages: INPUT_NEEDS.UNUSED,
       audio: INPUT_NEEDS.UNUSED,
+      videoInput: INPUT_NEEDS.UNUSED,
     },
     buildInput(bundle) {
       return {
@@ -215,6 +220,7 @@ export const VIDEO_MODELS = [
       characterSheet: INPUT_NEEDS.UNUSED,
       referenceImages: INPUT_NEEDS.UNUSED,
       audio: INPUT_NEEDS.UNUSED,
+      videoInput: INPUT_NEEDS.UNUSED,
     },
     buildInput(bundle) {
       return {
@@ -223,6 +229,138 @@ export const VIDEO_MODELS = [
         duration: String(bundle.durationSeconds || 8),
         aspect_ratio: bundle.aspectRatio ? String(bundle.aspectRatio) : 'auto',
         resolution: bundle.resolution ? String(bundle.resolution) : 'auto',
+      };
+    },
+    extractVideoUrl(data) {
+      return data?.video?.url || null;
+    },
+  },
+
+  {
+    id: 'sora-2-v2v-remix',
+    label: 'Sora 2 — Video Remix',
+    pricingId: 'sora-2-v2v-remix',
+    falModel: 'fal-ai/sora-2/video-to-video/remix',
+    description:
+      'OpenAI Sora 2 video-to-video remix. Takes an existing Sora-generated ' +
+      'video and a prompt and rerenders the clip in a new style. NOTE: the ' +
+      'fal endpoint requires a Sora `video_id` from a previous Sora ' +
+      'generation, not an arbitrary uploaded clip — the call will be ' +
+      'rejected if the uploaded source was not produced by Sora.',
+    durations: [],
+    defaultDuration: null,
+    supportsGenerateAudio: false,
+    inputs: {
+      startFrame: INPUT_NEEDS.UNUSED,
+      endFrame: INPUT_NEEDS.UNUSED,
+      characterSheet: INPUT_NEEDS.UNUSED,
+      referenceImages: INPUT_NEEDS.UNUSED,
+      audio: INPUT_NEEDS.UNUSED,
+      videoInput: INPUT_NEEDS.REQUIRED,
+    },
+    buildInput(bundle) {
+      return {
+        prompt: capPrompt(bundle.prompt) || 'Restyle the video.',
+        // fal expects a Sora-side video_id; we pass the uploaded URL so the
+        // server-side validator returns a meaningful error if it isn't one.
+        video_id: bundle.videoUrl,
+      };
+    },
+    extractVideoUrl(data) {
+      return data?.video?.url || null;
+    },
+  },
+
+  {
+    id: 'luma-ray-2-modify',
+    label: 'Luma Ray 2 — Modify',
+    pricingId: 'luma-ray-2-modify',
+    falModel: 'fal-ai/luma-dream-machine/ray-2/modify',
+    description:
+      'Luma Dream Machine Ray 2 video-to-video restyle. Modifies an uploaded ' +
+      'clip via prompt and optional first-frame reference image. Strong ' +
+      'flagship for general v2v transforms.',
+    durations: [],
+    defaultDuration: null,
+    supportsGenerateAudio: false,
+    inputs: {
+      startFrame: INPUT_NEEDS.OPTIONAL,
+      endFrame: INPUT_NEEDS.UNUSED,
+      characterSheet: INPUT_NEEDS.UNUSED,
+      referenceImages: INPUT_NEEDS.UNUSED,
+      audio: INPUT_NEEDS.UNUSED,
+      videoInput: INPUT_NEEDS.REQUIRED,
+    },
+    buildInput(bundle) {
+      const input = {
+        video_url: bundle.videoUrl,
+      };
+      const prompt = capPrompt(bundle.prompt);
+      if (prompt) input.prompt = prompt;
+      // Optional reference image: the start frame, when present, anchors the
+      // first frame of the modified video.
+      if (bundle.startFrameUrl) input.image_url = bundle.startFrameUrl;
+      return input;
+    },
+    extractVideoUrl(data) {
+      return data?.video?.url || null;
+    },
+  },
+
+  {
+    id: 'sync-lipsync-v2',
+    label: 'Sync Lipsync v2',
+    pricingId: 'sync-lipsync-v2',
+    falModel: 'fal-ai/sync-lipsync/v2',
+    description:
+      'Industry-standard lip-sync. Takes a video of a talking subject plus ' +
+      'an audio track and re-syncs the mouth movements to the new audio. ' +
+      'Reuses the storyboard audio_file_id as the driving audio.',
+    durations: [],
+    defaultDuration: null,
+    supportsGenerateAudio: false,
+    inputs: {
+      startFrame: INPUT_NEEDS.UNUSED,
+      endFrame: INPUT_NEEDS.UNUSED,
+      characterSheet: INPUT_NEEDS.UNUSED,
+      referenceImages: INPUT_NEEDS.UNUSED,
+      audio: INPUT_NEEDS.REQUIRED,
+      videoInput: INPUT_NEEDS.REQUIRED,
+    },
+    buildInput(bundle) {
+      return {
+        video_url: bundle.videoUrl,
+        audio_url: bundle.audioUrl,
+      };
+    },
+    extractVideoUrl(data) {
+      return data?.video?.url || null;
+    },
+  },
+
+  {
+    id: 'decart-lucy-edit-pro',
+    label: 'Decart Lucy Edit Pro',
+    pricingId: 'decart-lucy-edit-pro',
+    falModel: 'decart/lucy-edit/pro',
+    description:
+      'Decart Lucy Edit Pro video-to-video. Fast restyle/edit driven by a ' +
+      'text prompt — good budget alternative for general v2v transforms.',
+    durations: [],
+    defaultDuration: null,
+    supportsGenerateAudio: false,
+    inputs: {
+      startFrame: INPUT_NEEDS.UNUSED,
+      endFrame: INPUT_NEEDS.UNUSED,
+      characterSheet: INPUT_NEEDS.UNUSED,
+      referenceImages: INPUT_NEEDS.UNUSED,
+      audio: INPUT_NEEDS.UNUSED,
+      videoInput: INPUT_NEEDS.REQUIRED,
+    },
+    buildInput(bundle) {
+      return {
+        video_url: bundle.videoUrl,
+        prompt: capPrompt(bundle.prompt) || 'Restyle the video.',
       };
     },
     extractVideoUrl(data) {
@@ -247,6 +385,7 @@ export const VIDEO_MODELS = [
       characterSheet: INPUT_NEEDS.UNUSED,
       referenceImages: INPUT_NEEDS.UNUSED,
       audio: INPUT_NEEDS.UNUSED,
+      videoInput: INPUT_NEEDS.UNUSED,
     },
     buildInput(bundle) {
       return {
@@ -286,47 +425,109 @@ export function describeVideoModel(id) {
   };
 }
 
-// Storyboard fields each input maps to; used by validateInputs and by the
-// orchestrator when assembling the bundle. `characterSheet` no longer exists
-// on the storyboard schema — the slot is preserved here so legacy model
-// definitions don't blow up, but it always resolves to null/missing.
-const INPUT_TO_FIELD = Object.freeze({
-  startFrame: 'start_frame_id',
-  endFrame: 'end_frame_id',
-  audio: 'audio_file_id',
-});
-
 // Human-readable label for missing-input errors.
 const INPUT_LABEL = Object.freeze({
   startFrame: 'start frame',
   endFrame: 'end frame',
   characterSheet: 'character sheet',
   audio: 'audio',
+  videoInput: 'uploaded video',
 });
 
-// Validate that a storyboard has the inputs a chosen model requires.
-// Returns an array of human-readable missing labels (empty when OK).
+function dedupeIds(ids) {
+  const seen = new Set();
+  const out = [];
+  for (const id of ids) {
+    if (id == null) continue;
+    const key = String(id);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(id);
+  }
+  return out;
+}
+
+// Resolve which of a storyboard's frame-pool images fill the chosen model's
+// image slots (start_frame / end_frame / reference list).
 //
-// Reference images come from the start-frame's per-frame reference list
-// (start_frame_reference_ids) — that's what anchors the opening of the shot
-// the video model extends. Required iff the model declares it; we don't
-// substitute start_frame when none are pinned.
-export function validateStoryboardInputs(model, storyboard) {
+// The start/end distinction is no longer stored — it is decided here, at
+// generation time. `requested` is the optional per-generation override the SPA
+// sends as `frame_assignment` ({ start_frame, end_frame, ref }); any id it
+// names must be one of the pool's frame images (unknown ids are dropped). For
+// any model-accepted slot the request omits, we fall back to an order-based
+// default:
+//   - startFrame → the first frame image
+//   - endFrame   → the first frame image not already used as startFrame
+//   - reference  → every frame image not used as start/end (for a model with no
+//                  start/end slot of its own, that is ALL frames, in order),
+//                  preserving the old fold-frames-into-refs behavior.
+//
+// Returns { startFrameId, endFrameId, referenceImageIds } with original id
+// values (ObjectId or string) so downstream GridFS lookups still accept them.
+export function resolveFrameAssignment(model, storyboard, requested = {}) {
+  const needs = model?.inputs || {};
+  const accepts = (key) => needs[key] && needs[key] !== INPUT_NEEDS.UNUSED;
+  const frames = Array.isArray(storyboard?.frames) ? storyboard.frames : [];
+  const frameImageIds = frames.map((f) => f?.image_id).filter(Boolean);
+  const validKeys = new Set(frameImageIds.map((x) => String(x)));
+  const resolveId = (id) =>
+    id != null && validKeys.has(String(id))
+      ? frameImageIds.find((x) => String(x) === String(id))
+      : null;
+  const req = requested && typeof requested === 'object' ? requested : {};
+
+  let startFrameId = null;
+  let endFrameId = null;
+  let referenceImageIds = [];
+
+  if (accepts('startFrame')) {
+    startFrameId =
+      req.start_frame !== undefined
+        ? resolveId(req.start_frame)
+        : frameImageIds[0] || null;
+  }
+  if (accepts('endFrame')) {
+    endFrameId =
+      req.end_frame !== undefined
+        ? resolveId(req.end_frame)
+        : frameImageIds.find((x) => String(x) !== String(startFrameId)) || null;
+  }
+  if (accepts('referenceImages')) {
+    if (req.ref !== undefined) {
+      const list = Array.isArray(req.ref) ? req.ref : [];
+      referenceImageIds = dedupeIds(list.map(resolveId).filter(Boolean));
+    } else {
+      const used = new Set([startFrameId, endFrameId].filter(Boolean).map(String));
+      referenceImageIds = dedupeIds(
+        frameImageIds.filter((x) => !used.has(String(x))),
+      );
+    }
+  }
+  return { startFrameId, endFrameId, referenceImageIds };
+}
+
+// Validate that a resolved frame assignment (plus the storyboard's media)
+// satisfies the inputs the chosen model requires. Returns an array of
+// human-readable missing labels (empty when OK). `assignment` is the output of
+// resolveFrameAssignment; `storyboard` supplies audio / uploaded-video media.
+export function validateAssignment(model, assignment, storyboard = {}) {
   const missing = [];
+  const a = assignment || {};
   for (const [inputKey, need] of Object.entries(model.inputs)) {
     if (need !== INPUT_NEEDS.REQUIRED) continue;
-    if (inputKey === 'referenceImages') {
-      const ids = storyboard?.start_frame_reference_ids;
-      if (!Array.isArray(ids) || ids.length === 0) missing.push('reference images');
-      continue;
-    }
-    if (inputKey === 'characterSheet') {
+    if (inputKey === 'startFrame') {
+      if (!a.startFrameId) missing.push(INPUT_LABEL.startFrame);
+    } else if (inputKey === 'endFrame') {
+      if (!a.endFrameId) missing.push(INPUT_LABEL.endFrame);
+    } else if (inputKey === 'referenceImages') {
+      if (!(a.referenceImageIds || []).length) missing.push('reference images');
+    } else if (inputKey === 'characterSheet') {
       missing.push(INPUT_LABEL.characterSheet);
-      continue;
+    } else if (inputKey === 'audio') {
+      if (!storyboard.audio_file_id) missing.push(INPUT_LABEL.audio);
+    } else if (inputKey === 'videoInput') {
+      if (!storyboard.video_upload_file_id) missing.push(INPUT_LABEL.videoInput);
     }
-    const field = INPUT_TO_FIELD[inputKey];
-    if (!field) continue;
-    if (!storyboard[field]) missing.push(INPUT_LABEL[inputKey] || inputKey);
   }
   return missing;
 }
@@ -367,6 +568,10 @@ const AUDIO_NAMES = new Set([
   'voice_url', 'speech_url', 'first_audio_url', 'reference_audio_url',
   'second_audio_url', 'audio_file',
 ]);
+const VIDEO_INPUT_NAMES = new Set([
+  'video_url', 'source_video_url', 'mask_video_url', 'videos', 'video',
+  'driving_video_url', 'reference_pose_video_url',
+]);
 
 // Family allowlist. An endpoint is in an allowed family if any path segment
 // of its id equals (or starts with `<prefix>-` / `<prefix>/`) one of these.
@@ -374,6 +579,8 @@ const AUDIO_NAMES = new Set([
 const CATALOG_READY_PREFIXES = [
   'ltx', 'grok-imagine', 'bytedance', 'wan', 'vidu',
   'veo3.1', 'kling', 'happy-horse', 'pixverse', 'pika', 'longcat', 'minimax',
+  // Video-to-video families
+  'decart', 'luma-dream-machine', 'sync', 'topaz', 'rife', 'sora-2',
 ];
 
 function isAllowedFamily(endpointId) {
@@ -394,6 +601,7 @@ const ALL_MAPPED = new Set([
   ...REFERENCE_NAMES,
   ...CHARACTER_NAMES,
   ...AUDIO_NAMES,
+  ...VIDEO_INPUT_NAMES,
 ]);
 
 function canGenericWire(row) {
@@ -405,6 +613,15 @@ function canGenericWire(row) {
 function pickFirstParam(nameSet, allParams) {
   for (const name of allParams) if (nameSet.has(name)) return name;
   return null;
+}
+
+// fal types plural-named params ('audio_urls', 'image_urls', 'video_urls',
+// 'videos') as lists and singular ones ('audio_url', 'video_url') as scalars.
+// A trailing 's' reliably separates the two across our START/END/REFERENCE/
+// AUDIO/VIDEO name-sets, so we wrap a single source URL into a one-element
+// array for list params (otherwise fal rejects the scalar with a 422 list_type).
+function isListParam(name) {
+  return typeof name === 'string' && /s$/.test(name);
 }
 
 // Build a registry-shape model from a catalog row. The returned object has
@@ -423,6 +640,7 @@ function synthesizeCatalogModel(row) {
   const refParam = pickFirstParam(REFERENCE_NAMES, allParams);
   const charParam = pickFirstParam(CHARACTER_NAMES, allParams);
   const audioParam = pickFirstParam(AUDIO_NAMES, allParams);
+  const videoParam = pickFirstParam(VIDEO_INPUT_NAMES, allParams);
 
   const supportsGenerateAudio = allSet.has('generate_audio');
   const hasDuration = allSet.has('duration');
@@ -446,7 +664,12 @@ function synthesizeCatalogModel(row) {
     if (!Number.isFinite(n) || n <= 0) return null;
     if (durationFormat === 'suffix-s') return `${Math.round(n)}s`;
     if (durationFormat === 'float') return String(n.toFixed(1));
-    return Math.round(n);
+    // Integer-valued durations still ship as a STRING: fal types `duration` as
+    // a string literal enum on Kling/Sora/etc. ('3'..'15'), and Pydantic's lax
+    // mode coerces "7"->7 for the rare int-typed field. A bare JS number, by
+    // contrast, fails the string-literal models with a 422. This matches every
+    // hand-registered model, all of which stringify duration.
+    return String(Math.round(n));
   }
 
   // Default duration: prefer the largest enum value if the API enforces one;
@@ -458,14 +681,17 @@ function synthesizeCatalogModel(row) {
     if (startParam && bundle.startFrameUrl) input[startParam] = bundle.startFrameUrl;
     if (endParam && bundle.endFrameUrl) input[endParam] = bundle.endFrameUrl;
     if (charParam && bundle.characterSheetUrl) input[charParam] = bundle.characterSheetUrl;
-    if (audioParam && bundle.audioUrl) input[audioParam] = bundle.audioUrl;
+    if (audioParam && bundle.audioUrl) {
+      input[audioParam] = isListParam(audioParam) ? [bundle.audioUrl] : bundle.audioUrl;
+    }
+    if (videoParam && bundle.videoUrl) {
+      input[videoParam] = isListParam(videoParam) ? [bundle.videoUrl] : bundle.videoUrl;
+    }
     if (refParam && Array.isArray(bundle.referenceImageUrls) && bundle.referenceImageUrls.length) {
-      // Array-typed params end in `s`/`urls`; singular ones take one URL.
-      if (refParam.endsWith('urls') || refParam.endsWith('_urls') || refParam.endsWith('s')) {
-        input[refParam] = bundle.referenceImageUrls;
-      } else {
-        input[refParam] = bundle.referenceImageUrls[0];
-      }
+      // Array-typed params (plural names) take the whole list; singular ones one URL.
+      input[refParam] = isListParam(refParam)
+        ? bundle.referenceImageUrls
+        : bundle.referenceImageUrls[0];
     }
     if (hasDuration) {
       const formatted = formatDuration(bundle.durationSeconds);
@@ -555,6 +781,47 @@ export async function getVideoModelCatalogMeta(endpointId) {
   };
 }
 
+// Per-endpoint audio input constraints that the generic catalog wiring can't
+// infer from OpenAPI. Keyed by fal endpoint id. `maxAudioSeconds` drives the
+// submit-time trim (src/web/falVideoGenerate.js) and the Generate Video dialog
+// notice; `format` documents the required container (enforced globally by the
+// upload routes, which normalize all audio to MP3). Explicit — never derived
+// from the model's video `max_seconds` — so we don't trim audio for an
+// unrelated model whose video duration cap happens to be short.
+const AUDIO_CONSTRAINTS = {
+  'bytedance/seedance-2.0/reference-to-video': { format: 'mp3', maxAudioSeconds: 15 },
+  'bytedance/seedance-2.0/fast/reference-to-video': { format: 'mp3', maxAudioSeconds: 15 },
+  // omnihuman v1.5 caps audio length by the chosen output resolution: 60s at
+  // 720p, 30s at 1080p. `maxAudioSeconds` is the conservative fallback used
+  // when the resolution is unknown; getMaxAudioSeconds() prefers the
+  // per-resolution value. (Note the full `fal-ai/` prefix — unlike seedance,
+  // omnihuman's catalog endpoint id carries it, and the trim path keys off
+  // model.falModel.)
+  'fal-ai/bytedance/omnihuman/v1.5': {
+    format: 'mp3',
+    maxAudioSeconds: 30,
+    maxAudioSecondsByResolution: { '720p': 60, '1080p': 30 },
+  },
+};
+
+export function getAudioConstraints(endpointId) {
+  return (endpointId && AUDIO_CONSTRAINTS[endpointId]) || null;
+}
+
+// Effective audio-length cap for an endpoint at a given output resolution.
+// Returns the per-resolution value when the constraint declares one and the
+// resolution matches, else the constraint's flat maxAudioSeconds, else null.
+export function getMaxAudioSeconds(endpointId, resolution = null) {
+  const c = getAudioConstraints(endpointId);
+  if (!c) return null;
+  const byRes = c.maxAudioSecondsByResolution;
+  if (byRes && resolution != null) {
+    const key = String(resolution).toLowerCase();
+    if (byRes[key] != null) return byRes[key];
+  }
+  return c.maxAudioSeconds ?? null;
+}
+
 export async function getVideoModelOrCatalog(id) {
   const registered = getVideoModel(id);
   if (registered) return registered;
@@ -578,6 +845,7 @@ const DEFAULT_CATALOG_INPUTS = Object.freeze({
   characterSheet: INPUT_NEEDS.UNUSED,
   referenceImages: INPUT_NEEDS.UNUSED,
   audio: INPUT_NEEDS.UNUSED,
+  videoInput: INPUT_NEEDS.UNUSED,
 });
 
 // Map a registered VIDEO_MODELS entry into the SPA-facing dialog shape (no
@@ -605,6 +873,13 @@ function registryToDialogShape(m) {
 // orchestrator resolves these via getVideoModelOrCatalog() at submit time.
 function mergeCatalogRow(catalogRow, registered) {
   const catalogPricing = catalogPricingFor(catalogRow);
+  // Plain-text description harvested from fal at refresh time. Auto-wired and
+  // preview rows surface this so the picker isn't a wall of unlabeled ids;
+  // hand-registered entries override below.
+  const catalogDescription =
+    typeof catalogRow.description === 'string' && catalogRow.description.trim()
+      ? catalogRow.description.trim()
+      : null;
   const base = {
     endpoint_id: catalogRow.endpoint_id,
     display_name: catalogRow.display_name,
@@ -618,6 +893,7 @@ function mergeCatalogRow(catalogRow, registered) {
     max_seconds_source: catalogRow.max_seconds_source,
     durations_enum: catalogRow.durations_enum || [],
     supports_generate_audio: Boolean(catalogRow.supports_generate_audio),
+    audio_max_seconds: getAudioConstraints(catalogRow.endpoint_id)?.maxAudioSeconds ?? null,
     price_text: catalogRow.price_text || null,
     price_min_usd: catalogRow.price_min_usd ?? null,
     pricing: catalogPricing,
@@ -628,7 +904,7 @@ function mergeCatalogRow(catalogRow, registered) {
     is_registered: false,
     id: null,
     label: catalogRow.display_name,
-    description: null,
+    description: catalogDescription,
     durations: catalogRow.durations_enum || [],
     default_duration: null,
   };
@@ -639,7 +915,9 @@ function mergeCatalogRow(catalogRow, registered) {
       is_registered: true,
       id: r.id,
       label: r.label,
-      description: r.description,
+      // Hand-written description in src/fal/videoModels.js wins over the
+      // catalog blurb (more useful — explains intent, not just lab/family).
+      description: r.description || catalogDescription,
       durations: r.durations,
       default_duration: r.default_duration,
       supports_generate_audio: r.supports_generate_audio,
@@ -653,6 +931,7 @@ function mergeCatalogRow(catalogRow, registered) {
       is_registered: true,
       id: catalogRow.endpoint_id,
       description:
+        catalogDescription ||
         [catalogRow.model_lab, catalogRow.model_family].filter(Boolean).join(' · ') ||
         'Auto-wired from catalog.',
     };
@@ -761,12 +1040,18 @@ function registryStubRow(m) {
 function capabilitiesFromInputs(inputs) {
   const i = inputs || {};
   const usesSheet = i.characterSheet === INPUT_NEEDS.REQUIRED || i.characterSheet === INPUT_NEEDS.OPTIONAL;
+  const usesAudio = i.audio === INPUT_NEEDS.REQUIRED || i.audio === INPUT_NEEDS.OPTIONAL;
+  const usesVideoInput = i.videoInput === INPUT_NEEDS.REQUIRED || i.videoInput === INPUT_NEEDS.OPTIONAL;
   return {
     start_frame: i.startFrame === INPUT_NEEDS.REQUIRED || i.startFrame === INPUT_NEEDS.OPTIONAL,
     end_frame: i.endFrame === INPUT_NEEDS.REQUIRED || i.endFrame === INPUT_NEEDS.OPTIONAL,
     reference_images: i.referenceImages === INPUT_NEEDS.REQUIRED || i.referenceImages === INPUT_NEEDS.OPTIONAL,
     character_sheet: usesSheet,
-    lip_sync: i.audio === INPUT_NEEDS.REQUIRED || i.audio === INPUT_NEEDS.OPTIONAL,
+    // lip_sync = audio input but NOT also a source video. Models that take
+    // both video + audio (e.g. sync-lipsync v2) surface via the dedicated
+    // video_input facet so they don't muddle the avatar-style picker.
+    lip_sync: usesAudio && !usesVideoInput,
+    video_input: usesVideoInput,
   };
 }
 

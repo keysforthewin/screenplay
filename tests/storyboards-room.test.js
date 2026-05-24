@@ -24,7 +24,7 @@ beforeEach(() => {
 const beatA = new ObjectId();
 
 describe('storyboards room', () => {
-  it('emits text_prompt, summary, and per-frame prompt fragments per storyboard', async () => {
+  it('emits text_prompt, summary, and a prompt fragment per frame', async () => {
     const a = await Storyboards.createStoryboard({
       beatId: beatA,
       textPrompt: 'Wide on the diner.',
@@ -35,9 +35,11 @@ describe('storyboards room', () => {
       textPrompt: 'Close on Alice.',
       summary: 'Alice notices the stranger.',
     });
-    await Storyboards.updateStoryboard(a._id, {
-      start_frame_prompt: 'Wide on the doorway.',
-      end_frame_prompt: 'Wide on the booth.',
+    const { frameId: f1 } = await Storyboards.addFrame(a._id, {
+      prompt: 'Wide on the doorway.',
+    });
+    const { frameId: f2 } = await Storyboards.addFrame(a._id, {
+      prompt: 'Wide on the booth.',
     });
 
     const desc = await resolveRoom(buildRoomName('storyboards', beatA.toString()));
@@ -48,45 +50,46 @@ describe('storyboards room', () => {
       expect.arrayContaining([
         `item:${aId}:text_prompt`,
         `item:${aId}:summary`,
-        `item:${aId}:start_frame_prompt`,
-        `item:${aId}:end_frame_prompt`,
+        `item:${aId}:frame:${f1}:prompt`,
+        `item:${aId}:frame:${f2}:prompt`,
         `item:${bId}:text_prompt`,
         `item:${bId}:summary`,
-        `item:${bId}:start_frame_prompt`,
-        `item:${bId}:end_frame_prompt`,
       ]),
     );
-    expect(desc.seed[`item:${aId}:start_frame_prompt`]).toBe('Wide on the doorway.');
-    expect(desc.seed[`item:${aId}:end_frame_prompt`]).toBe('Wide on the booth.');
-    expect(desc.seed[`item:${bId}:start_frame_prompt`]).toBe('');
+    expect(desc.seed[`item:${aId}:frame:${f1}:prompt`]).toBe('Wide on the doorway.');
+    expect(desc.seed[`item:${aId}:frame:${f2}:prompt`]).toBe('Wide on the booth.');
+    // A storyboard with no frames contributes no frame fragments.
+    expect(
+      desc.fields.some((f) => f.startsWith(`item:${bId}:frame:`)),
+    ).toBe(false);
   });
 
   it('persistFields writes text_prompt, summary, and frame prompts back to Mongo', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const { frameId } = await Storyboards.addFrame(sb._id, {});
     const id = sb._id.toString();
 
     const desc = await resolveRoom(buildRoomName('storyboards', beatA.toString()));
     const result = await desc.persistFields({
       [`item:${id}:text_prompt`]: 'New prompt body.',
       [`item:${id}:summary`]: 'New one-liner.',
-      [`item:${id}:start_frame_prompt`]: 'New start prompt.',
-      [`item:${id}:end_frame_prompt`]: 'New end prompt.',
+      [`item:${id}:frame:${frameId}:prompt`]: 'New frame prompt.',
     });
     expect(result.changed).toBe(true);
     expect(result.fields).toEqual(
       expect.arrayContaining([
         `item:${id}:text_prompt`,
         `item:${id}:summary`,
-        `item:${id}:start_frame_prompt`,
-        `item:${id}:end_frame_prompt`,
+        `item:${id}:frame:${frameId}:prompt`,
       ]),
     );
 
     const fresh = await Storyboards.getStoryboard(sb._id);
     expect(fresh.text_prompt).toBe('New prompt body.');
     expect(fresh.summary).toBe('New one-liner.');
-    expect(fresh.start_frame_prompt).toBe('New start prompt.');
-    expect(fresh.end_frame_prompt).toBe('New end prompt.');
+    expect(fresh.frames.find((f) => f._id.equals(frameId)).prompt).toBe(
+      'New frame prompt.',
+    );
   });
 
   it('persistFields no-ops when nothing changed', async () => {

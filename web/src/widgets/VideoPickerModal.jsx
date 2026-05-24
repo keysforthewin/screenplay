@@ -1,47 +1,32 @@
 import { useEffect, useRef, useState } from 'react';
-import { apiGet, apiPostJson, apiPostMultipart } from '../api.js';
+import { apiPostJson, apiPostMultipart } from '../api.js';
 import { baseContentType } from '../recordingMime.js';
 import { MediaReferenceTab } from './MediaReferenceTab.jsx';
 import { Modal } from './Modal.jsx';
+import { StoryboardSourceTab } from './StoryboardSourceTab.jsx';
 
 const BASE_TABS = [
   { key: 'upload', label: 'Upload' },
   { key: 'record', label: 'Record' },
 ];
 const REFERENCE_TAB = { key: 'reference', label: 'Reference' };
-const DIALOG_TAB = { key: 'dialog', label: 'From dialog' };
+const STORYBOARD_TAB = { key: 'storyboard', label: 'Storyboard' };
 
-function stripMd(s) {
-  return String(s || '')
-    .replace(/[*_`~]/g, '')
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/gm, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-// Modal that consolidates the ways to attach audio to a storyboard scene:
-// upload, record from the mic, pick an existing audio attachment from any
-// beat/character ("Reference"), or copy from a dialog item in the same beat
-// ("From dialog"). The Reference tab is shown when `storyboardId` is
-// provided; the From-dialog tab is shown when `dialogPicker` is provided.
-// The dialog widget (which reuses this modal but isn't tied to a storyboard)
-// passes neither and sees just upload/record.
-export function AudioPickerModal({
+// Modal that consolidates the ways to attach a source video to a storyboard
+// scene: upload from disk, record with the webcam, or pick an existing
+// video attachment already uploaded to a beat or character. The Reference
+// tab is shown when `storyboardId` is provided (the standard case).
+export function VideoPickerModal({
   open,
   onClose,
   uploadEndpoint,
-  recordingPrefix = 'recording',
   storyboardId = null,
-  dialogPicker = null,
+  recordingPrefix = 'recording',
   onAttached,
 }) {
-  const tabs = [
-    ...BASE_TABS,
-    ...(storyboardId ? [REFERENCE_TAB] : []),
-    ...(dialogPicker ? [DIALOG_TAB] : []),
-  ];
+  const tabs = storyboardId
+    ? [...BASE_TABS, REFERENCE_TAB, STORYBOARD_TAB]
+    : BASE_TABS;
   const [tab, setTab] = useState('upload');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -70,31 +55,13 @@ export function AudioPickerModal({
     }
   }
 
-  async function pickFromDialog(dialogId) {
-    if (!dialogPicker || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await apiPostJson(
-        `/storyboard/${dialogPicker.storyboardId}/audio/from-dialog`,
-        { dialog_id: dialogId },
-      );
-      await onAttached?.();
-      onClose?.();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function pickFromReference(attachmentId) {
     if (!storyboardId || busy) return;
     setBusy(true);
     setError(null);
     try {
       await apiPostJson(
-        `/storyboard/${storyboardId}/audio/from-attachment`,
+        `/storyboard/${storyboardId}/video-upload/from-attachment`,
         { attachment_id: attachmentId },
       );
       await onAttached?.();
@@ -111,7 +78,7 @@ export function AudioPickerModal({
   return (
     <Modal
       open={open}
-      title="Add audio"
+      title="Add video"
       onClose={onClose}
       footer={<button onClick={onClose}>Cancel</button>}
     >
@@ -137,10 +104,10 @@ export function AudioPickerModal({
 
         <div className="ref-picker-body">
           {tab === 'upload' && (
-            <UploadAudioTab onUpload={uploadFile} busy={busy} />
+            <UploadVideoTab onUpload={uploadFile} busy={busy} />
           )}
           {tab === 'record' && (
-            <RecordAudioTab
+            <RecordVideoTab
               onRecorded={uploadFile}
               recordingPrefix={recordingPrefix}
               busy={busy}
@@ -150,16 +117,16 @@ export function AudioPickerModal({
           {tab === 'reference' && storyboardId && (
             <MediaReferenceTab
               storyboardId={storyboardId}
-              mediaType="audio"
+              mediaType="video"
               busy={busy}
               onPick={pickFromReference}
             />
           )}
-          {tab === 'dialog' && dialogPicker && (
-            <FromDialogTab
-              beatId={dialogPicker.beatId}
+          {tab === 'storyboard' && storyboardId && (
+            <StoryboardSourceTab
+              storyboardId={storyboardId}
               busy={busy}
-              onPick={pickFromDialog}
+              onPick={pickFromReference}
             />
           )}
         </div>
@@ -168,7 +135,7 @@ export function AudioPickerModal({
   );
 }
 
-function UploadAudioTab({ onUpload, busy }) {
+function UploadVideoTab({ onUpload, busy }) {
   const fileInputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
 
@@ -189,7 +156,7 @@ function UploadAudioTab({ onUpload, busy }) {
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
     >
-      <p>Drop an audio file here, or</p>
+      <p>Drop a video file here, or</p>
       <button
         type="button"
         className="primary"
@@ -201,7 +168,7 @@ function UploadAudioTab({ onUpload, busy }) {
       <input
         ref={fileInputRef}
         type="file"
-        accept="audio/*"
+        accept="video/*"
         style={{ display: 'none' }}
         onChange={(e) => {
           const file = e.target.files?.[0];
@@ -212,9 +179,19 @@ function UploadAudioTab({ onUpload, busy }) {
   );
 }
 
-function RecordAudioTab({ onRecorded, recordingPrefix, busy, onError }) {
+const VIDEO_MIME_CANDIDATES = [
+  'video/webm;codecs=vp9,opus',
+  'video/webm;codecs=vp8,opus',
+  'video/webm',
+  'video/mp4',
+  '',
+];
+
+function RecordVideoTab({ onRecorded, recordingPrefix, busy, onError }) {
   const [recording, setRecording] = useState(false);
   const [recordingMs, setRecordingMs] = useState(0);
+  const [previewReady, setPreviewReady] = useState(false);
+  const previewRef = useRef(null);
   const recorderRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
@@ -239,17 +216,20 @@ function RecordAudioTab({ onRecorded, recordingPrefix, busy, onError }) {
       !navigator.mediaDevices?.getUserMedia ||
       typeof MediaRecorder === 'undefined'
     ) {
-      onError?.('Browser microphone recording is not supported here.');
+      onError?.('Browser camera recording is not supported here.');
       return;
     }
     let stream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true,
+      });
     } catch (_err) {
-      onError?.('Microphone access denied or unavailable.');
+      onError?.('Camera/microphone access denied or unavailable.');
       return;
     }
-    const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', ''].find(
+    const mime = VIDEO_MIME_CANDIDATES.find(
       (t) => !t || MediaRecorder.isTypeSupported(t),
     );
     const recorder = new MediaRecorder(
@@ -261,15 +241,16 @@ function RecordAudioTab({ onRecorded, recordingPrefix, busy, onError }) {
       if (e.data?.size) chunksRef.current.push(e.data);
     };
     recorder.onstop = () => {
-      // Strip any `;codecs=...` params before upload (see recordingMime.js).
-      const contentType = baseContentType(recorder.mimeType || mime, 'audio/webm');
+      // Strip any `;codecs=...` params: an unquoted comma (e.g. vp9,opus) makes
+      // the server's multipart parser reject the upload. See recordingMime.js.
+      const contentType = baseContentType(recorder.mimeType || mime, 'video/webm');
       const blob = new Blob(chunksRef.current, { type: contentType });
       chunksRef.current = [];
       if (!blob.size) {
         onError?.('Recording was empty.');
         return;
       }
-      const ext = contentType.includes('mp4') ? 'm4a' : 'webm';
+      const ext = contentType.includes('mp4') ? 'mp4' : 'webm';
       const file = new File(
         [blob],
         `${recordingPrefix}-${Date.now()}.${ext}`,
@@ -280,6 +261,10 @@ function RecordAudioTab({ onRecorded, recordingPrefix, busy, onError }) {
     recorder.start();
     recorderRef.current = recorder;
     streamRef.current = stream;
+    if (previewRef.current) {
+      previewRef.current.srcObject = stream;
+      setPreviewReady(true);
+    }
     setRecording(true);
     setRecordingMs(0);
     const startedAt = Date.now();
@@ -299,6 +284,10 @@ function RecordAudioTab({ onRecorded, recordingPrefix, busy, onError }) {
     tickRef.current = null;
     recorderRef.current = null;
     streamRef.current = null;
+    if (previewRef.current) {
+      previewRef.current.srcObject = null;
+    }
+    setPreviewReady(false);
     setRecording(false);
   }
 
@@ -313,9 +302,23 @@ function RecordAudioTab({ onRecorded, recordingPrefix, busy, onError }) {
         flexDirection: 'column',
         alignItems: 'center',
         gap: 12,
-        padding: '24px 12px',
+        padding: '16px 12px',
       }}
     >
+      <video
+        ref={previewRef}
+        autoPlay
+        muted
+        playsInline
+        style={{
+          width: '100%',
+          maxWidth: 480,
+          aspectRatio: '16 / 9',
+          background: '#000',
+          borderRadius: 4,
+          display: previewReady ? 'block' : 'none',
+        }}
+      />
       {recording ? (
         <>
           <div style={{ fontSize: 32, fontFamily: 'monospace' }}>
@@ -333,7 +336,7 @@ function RecordAudioTab({ onRecorded, recordingPrefix, busy, onError }) {
       ) : (
         <>
           <p style={{ color: 'var(--fg-muted)', margin: 0 }}>
-            Click to start recording from your microphone.
+            Click to start recording from your camera and microphone.
           </p>
           <button
             type="button"
@@ -345,68 +348,6 @@ function RecordAudioTab({ onRecorded, recordingPrefix, busy, onError }) {
           </button>
         </>
       )}
-    </div>
-  );
-}
-
-function FromDialogTab({ beatId, busy, onPick }) {
-  const [items, setItems] = useState(null);
-  const [loadError, setLoadError] = useState(null);
-
-  useEffect(() => {
-    if (!beatId) return undefined;
-    let cancelled = false;
-    setLoadError(null);
-    (async () => {
-      try {
-        const r = await apiGet(`/dialogs?beat_id=${encodeURIComponent(beatId)}`);
-        if (!cancelled) setItems(r?.dialogs || []);
-      } catch (e) {
-        if (!cancelled) setLoadError(e.message);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [beatId]);
-
-  if (loadError) {
-    return <div className="error-banner small">{loadError}</div>;
-  }
-  if (items === null) {
-    return <p className="ref-picker-empty">Loading…</p>;
-  }
-  const withAudio = items.filter((d) => d.audio_file_id);
-  if (!withAudio.length) {
-    return (
-      <p className="ref-picker-empty">
-        No dialog items in this beat have audio yet.
-      </p>
-    );
-  }
-  return (
-    <div className="ref-picker-dialog-list">
-      {withAudio.map((d) => {
-        const id = d._id?.toString?.() || String(d._id);
-        const speaker = stripMd(d.character) || '(no speaker)';
-        const excerpt = stripMd(d.body).slice(0, 120) || '(empty)';
-        return (
-          <button
-            key={id}
-            type="button"
-            className="ref-picker-dialog-item"
-            disabled={busy}
-            onClick={() => onPick(id)}
-          >
-            <div style={{ fontWeight: 600 }}>
-              #{d.order} · {speaker}
-            </div>
-            <div style={{ color: 'var(--fg-muted)', fontSize: '0.9em' }}>
-              {excerpt}
-            </div>
-          </button>
-        );
-      })}
     </div>
   );
 }

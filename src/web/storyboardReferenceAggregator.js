@@ -5,7 +5,7 @@
 //      BOTH per-frame reference lists (start_frame_reference_ids and
 //      end_frame_reference_ids) so the freshly-rendered row's reference
 //      grids in the SPA aren't empty.
-//   2. The POST /storyboard/:id/frame/:role/reference/auto-populate
+//   2. The POST /storyboard/:id/frame/:frameId/reference/auto-populate
 //      endpoint, which the SPA's per-frame "Auto-suggest" button calls when
 //      the user wants to re-pull references after editing the row's
 //      characters_in_scene.

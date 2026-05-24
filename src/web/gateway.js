@@ -83,11 +83,13 @@ import {
 import {
   createStoryboard as mongoCreateStoryboard,
   updateStoryboard as mongoUpdateStoryboard,
+  addFrame as mongoAddFrame,
+  removeFrame as mongoRemoveFrame,
+  reorderFrames as mongoReorderFrames,
+  setFrameImage as mongoSetFrameImage,
+  setFramePrompt as mongoSetFramePrompt,
   rotateFrameImageEdit as mongoRotateFrameImageEdit,
   undoFrameImageEdit as mongoUndoFrameImageEdit,
-  frameImageField as storyboardFrameImageField,
-  framePreviousImageField as storyboardFramePreviousImageField,
-  frameLastEditPromptField as storyboardFrameLastEditPromptField,
   deleteStoryboard as mongoDeleteStoryboard,
   deleteStoryboardsForBeat as mongoDeleteStoryboardsForBeat,
   getStoryboard as mongoGetStoryboard,
@@ -96,9 +98,6 @@ import {
   pullFrameReferenceImage as mongoPullFrameReferenceImage,
   pushFrameReferenceImages as mongoPushFrameReferenceImages,
   setFrameReferenceImages as mongoSetFrameReferenceImages,
-  frameReferenceField,
-  framePromptField,
-  FRAME_ROLES,
   listStoryboards,
 } from '../mongo/storyboards.js';
 import {
@@ -294,7 +293,14 @@ async function readEntityField({ entityType, entityId, field }) {
     return String(note.text || '');
   }
   if (entityType === 'storyboards') {
-    const m = field.match(/^item:([a-f0-9]{24}):(text_prompt|summary|start_frame_prompt|end_frame_prompt)$/);
+    const fm = field.match(/^item:([a-f0-9]{24}):frame:([a-f0-9]{24}):prompt$/);
+    if (fm) {
+      const sb = await mongoGetStoryboard(fm[1]);
+      if (!sb) throw new Error(`Storyboard not found: ${fm[1]}`);
+      const frame = (sb.frames || []).find((f) => f._id.toString() === fm[2]);
+      return String(frame?.prompt || '');
+    }
+    const m = field.match(/^item:([a-f0-9]{24}):(text_prompt|summary)$/);
     if (!m) throw new Error(`gateway fallback: unknown storyboards field "${field}"`);
     const sb = await mongoGetStoryboard(m[1]);
     if (!sb) throw new Error(`Storyboard not found: ${m[1]}`);
@@ -394,7 +400,9 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
     return editDirectorNote({ noteId, text: args.markdown });
   }
   if (entityType === 'storyboards') {
-    const m = field.match(/^item:([a-f0-9]{24}):(text_prompt|summary|start_frame_prompt|end_frame_prompt)$/);
+    const fm = field.match(/^item:([a-f0-9]{24}):frame:([a-f0-9]{24}):prompt$/);
+    if (fm) return mongoSetFramePrompt(fm[1], fm[2], args.markdown);
+    const m = field.match(/^item:([a-f0-9]{24}):(text_prompt|summary)$/);
     if (!m) throw new Error(`gateway fallback: unknown storyboards field "${field}"`);
     return mongoUpdateStoryboard(m[1], { [m[2]]: args.markdown });
   }
@@ -1307,20 +1315,20 @@ export async function removeDirectorNoteAttachmentViaGateway({ noteId, attachmen
 // ─── Storyboards ──────────────────────────────────────────────────────────
 //
 // Storyboards live in their own top-level collection but share one y-doc per
-// beat (room: "storyboards:<beatId>") with four fragments per item:
-// "item:<storyboardId>:text_prompt", ":summary", ":start_frame_prompt",
-// ":end_frame_prompt". Mutations that change room composition (create / delete
-// / reorder) broadcast a `fields_updated` ping to the room so the SPA refetches.
+// beat (room: "storyboards:<beatId>"). Scalar text fragments per item:
+// "item:<storyboardId>:text_prompt" and ":summary"; plus one fragment per frame
+// in the pool: "item:<storyboardId>:frame:<frameId>:prompt". Mutations that
+// change room composition (create / delete / reorder storyboards, add / remove
+// frames) broadcast a `fields_updated` ping so the SPA refetches and recomposes.
 
-const STORYBOARD_COLLAB_FIELDS = new Set([
-  'text_prompt',
-  'summary',
-  'start_frame_prompt',
-  'end_frame_prompt',
-]);
+const STORYBOARD_COLLAB_FIELDS = new Set(['text_prompt', 'summary']);
 
 function storyboardItemField(storyboardId, field) {
   return `item:${storyboardId}:${field}`;
+}
+
+function framePromptFragment(storyboardId, frameId) {
+  return `item:${storyboardId}:frame:${frameId}:prompt`;
 }
 
 export async function setStoryboardTextPromptViaGateway({ storyboardId, text }) {
@@ -1345,17 +1353,16 @@ export async function setStoryboardSummaryViaGateway({ storyboardId, text }) {
   });
 }
 
-export async function setStoryboardFramePromptViaGateway({ storyboardId, role, text }) {
-  if (!FRAME_ROLES.has(role)) {
-    throw new Error(`setStoryboardFramePromptViaGateway: invalid role ${role}`);
-  }
+export async function setStoryboardFramePromptViaGateway({ storyboardId, frameId, text }) {
   const sb = await mongoGetStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const fragmentKey = framePromptField(role);
+  if (!(sb.frames || []).some((f) => f._id.toString() === String(frameId))) {
+    throw new Error(`frame not found: ${frameId}`);
+  }
   return setEntityFieldMarkdown({
     entityType: 'storyboards',
     entityId: sb.beat_id.toString(),
-    field: storyboardItemField(sb._id.toString(), fragmentKey),
+    field: framePromptFragment(sb._id.toString(), String(frameId)),
     markdown: text,
   });
 }
@@ -1444,29 +1451,76 @@ export async function deleteAllStoryboardsForBeatViaGateway({ beatId }) {
   return { ok: true, removed_count: removed.length };
 }
 
-const STORYBOARD_IMAGE_ROLES = new Set(['start_frame', 'end_frame']);
-
-function storyboardRoleField(role) {
-  if (role === 'start_frame') return 'start_frame_id';
-  if (role === 'end_frame') return 'end_frame_id';
-  return null;
+// Broadcast helper: every frame mutation re-renders the whole frame strip on
+// connected SPAs, so we ping `frames` rather than enumerating fields.
+function broadcastFrames(beatId, storyboardId, extra = {}) {
+  broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
+    changed: ['frames'],
+    storyboard_id: String(storyboardId),
+    ...extra,
+  });
 }
 
-export async function setStoryboardImageViaGateway({ storyboardId, role, imageId }) {
-  if (!STORYBOARD_IMAGE_ROLES.has(role)) {
-    throw new Error(`unknown storyboard role: ${role}`);
-  }
+// Append an image to the frame pool. When the new frame carries a prompt, seed
+// its collaborative y-doc fragment BEFORE broadcasting (mirrors
+// createStoryboardViaGateway) so the SPA mounts its editor on seeded content.
+export async function addStoryboardFrameViaGateway({
+  storyboardId,
+  imageId = null,
+  prompt = '',
+  referenceIds = [],
+}) {
   const sb = await mongoGetStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const field = storyboardRoleField(role);
-  await mongoUpdateStoryboard(storyboardId, {
-    [field]: imageId == null ? null : String(imageId),
+  const { storyboard, frameId } = await mongoAddFrame(storyboardId, {
+    imageId,
+    prompt,
+    referenceIds,
   });
-  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
-    changed: [field],
-    storyboard_id: String(storyboardId),
-  });
-  return mongoGetStoryboard(storyboardId);
+  if (prompt) {
+    try {
+      await setEntityFieldMarkdown({
+        entityType: 'storyboards',
+        entityId: sb.beat_id.toString(),
+        field: framePromptFragment(sb._id.toString(), frameId.toString()),
+        markdown: prompt,
+      });
+    } catch (e) {
+      logger.warn(`addStoryboardFrame: seed prompt failed: ${e.message}`);
+    }
+  }
+  broadcastFrames(sb.beat_id, storyboardId, { added_frame_id: frameId.toString() });
+  return { storyboard, frameId };
+}
+
+// Remove a frame from the pool, deleting any displaced internal undo image.
+export async function removeStoryboardFrameViaGateway({ storyboardId, frameId }) {
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const { storyboard, orphanedImageIds } = await mongoRemoveFrame(storyboardId, frameId);
+  for (const oid of orphanedImageIds || []) {
+    await tryDeleteImage(oid, 'removed storyboard frame');
+  }
+  broadcastFrames(sb.beat_id, storyboardId, { removed_frame_id: String(frameId) });
+  return storyboard;
+}
+
+export async function reorderStoryboardFramesViaGateway({ storyboardId, orderedFrameIds }) {
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const next = await mongoReorderFrames(storyboardId, orderedFrameIds);
+  broadcastFrames(sb.beat_id, storyboardId);
+  return next;
+}
+
+// Install (or clear) the current image of an existing frame — used by the
+// "Replace" action and single-image install from the Add Frame picker.
+export async function setStoryboardFrameImageViaGateway({ storyboardId, frameId, imageId }) {
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const next = await mongoSetFrameImage(storyboardId, frameId, imageId);
+  broadcastFrames(sb.beat_id, storyboardId, { frame_id: String(frameId) });
+  return next;
 }
 
 // Edit-flow persistence: current → previous, new becomes current, the old
@@ -1475,51 +1529,27 @@ export async function setStoryboardImageViaGateway({ storyboardId, role, imageId
 // re-render with the new image and undo-availability state.
 export async function setStoryboardFrameEditResultViaGateway({
   storyboardId,
-  role,
+  frameId,
   newImageId,
   editPrompt,
 }) {
-  if (!STORYBOARD_IMAGE_ROLES.has(role)) {
-    throw new Error(`unknown storyboard role: ${role}`);
-  }
   const result = await mongoRotateFrameImageEdit({
     id: storyboardId,
-    role,
+    frameId,
     newImageId,
     editPrompt,
   });
   await tryDeleteImage(result.orphanedImageId, 'orphaned storyboard frame');
-  const imageField = storyboardFrameImageField(role);
-  const prevField = storyboardFramePreviousImageField(role);
-  const promptField = storyboardFrameLastEditPromptField(role);
-  broadcastFieldsUpdated(
-    buildRoomName('storyboards', result.storyboard.beat_id.toString()),
-    {
-      changed: [imageField, prevField, promptField],
-      storyboard_id: String(storyboardId),
-    },
-  );
+  broadcastFrames(result.storyboard.beat_id, storyboardId, { frame_id: String(frameId) });
   return result.storyboard;
 }
 
 // Undo the last frame edit: previous → current, clears the previous and the
 // last edit prompt. The image that was current is deleted from GridFS.
-export async function undoStoryboardFrameEditViaGateway({ storyboardId, role }) {
-  if (!STORYBOARD_IMAGE_ROLES.has(role)) {
-    throw new Error(`unknown storyboard role: ${role}`);
-  }
-  const result = await mongoUndoFrameImageEdit({ id: storyboardId, role });
+export async function undoStoryboardFrameEditViaGateway({ storyboardId, frameId }) {
+  const result = await mongoUndoFrameImageEdit({ id: storyboardId, frameId });
   await tryDeleteImage(result.orphanedImageId, 'undone storyboard frame');
-  const imageField = storyboardFrameImageField(role);
-  const prevField = storyboardFramePreviousImageField(role);
-  const promptField = storyboardFrameLastEditPromptField(role);
-  broadcastFieldsUpdated(
-    buildRoomName('storyboards', result.storyboard.beat_id.toString()),
-    {
-      changed: [imageField, prevField, promptField],
-      storyboard_id: String(storyboardId),
-    },
-  );
+  broadcastFrames(result.storyboard.beat_id, storyboardId, { frame_id: String(frameId) });
   return result.storyboard;
 }
 
@@ -1552,41 +1582,27 @@ export async function updateStoryboardScalarsViaGateway({ storyboardId, patch })
   return result;
 }
 
-function assertFrameRole(role) {
-  if (!FRAME_ROLES.has(role)) {
-    throw new Error(`invalid frame role: ${role}`);
-  }
-}
-
 export async function addStoryboardFrameReferenceImageViaGateway({
   storyboardId,
-  role,
+  frameId,
   imageId,
 }) {
-  assertFrameRole(role);
   const sb = await mongoGetStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const next = await mongoPushFrameReferenceImage(storyboardId, role, imageId);
-  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
-    changed: [frameReferenceField(role)],
-    storyboard_id: String(storyboardId),
-  });
+  const next = await mongoPushFrameReferenceImage(storyboardId, frameId, imageId);
+  broadcastFrames(sb.beat_id, storyboardId, { frame_id: String(frameId) });
   return next;
 }
 
 export async function removeStoryboardFrameReferenceImageViaGateway({
   storyboardId,
-  role,
+  frameId,
   imageId,
 }) {
-  assertFrameRole(role);
   const sb = await mongoGetStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const next = await mongoPullFrameReferenceImage(storyboardId, role, imageId);
-  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
-    changed: [frameReferenceField(role)],
-    storyboard_id: String(storyboardId),
-  });
+  const next = await mongoPullFrameReferenceImage(storyboardId, frameId, imageId);
+  broadcastFrames(sb.beat_id, storyboardId, { frame_id: String(frameId) });
   return next;
 }
 
@@ -1595,26 +1611,22 @@ export async function removeStoryboardFrameReferenceImageViaGateway({
 // used by the auto-suggest endpoint and the multi-select picker's Apply.
 export async function setStoryboardFrameReferenceImagesViaGateway({
   storyboardId,
-  role,
+  frameId,
   imageIds,
   mode = 'replace',
 }) {
-  assertFrameRole(role);
   const sb = await mongoGetStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const ids = Array.isArray(imageIds) ? imageIds : [];
   let next;
   if (mode === 'append') {
-    next = await mongoPushFrameReferenceImages(storyboardId, role, ids);
+    next = await mongoPushFrameReferenceImages(storyboardId, frameId, ids);
   } else if (mode === 'replace') {
-    next = await mongoSetFrameReferenceImages(storyboardId, role, ids);
+    next = await mongoSetFrameReferenceImages(storyboardId, frameId, ids);
   } else {
     throw new Error(`setStoryboardFrameReferenceImagesViaGateway: invalid mode ${mode}`);
   }
-  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
-    changed: [frameReferenceField(role)],
-    storyboard_id: String(storyboardId),
-  });
+  broadcastFrames(sb.beat_id, storyboardId, { frame_id: String(frameId) });
   return next;
 }
 
@@ -1643,6 +1655,48 @@ export async function setStoryboardAudioViaGateway({ storyboardId, audioFileId }
     } catch (e) {
       logger.warn(`gateway: audio duration probe failed for ${audioFileId}: ${e.message}`);
       patch.audio_duration_seconds = null;
+    }
+  }
+  await mongoUpdateStoryboard(storyboardId, patch);
+  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
+    changed: Object.keys(patch),
+    storyboard_id: String(storyboardId),
+  });
+  return mongoGetStoryboard(storyboardId);
+}
+
+// Attach a user-uploaded source video to a storyboard. This is the input
+// side of video-to-video models — distinct from `video_file_id`, which is
+// reserved for the MP4 generated by fal. Pass videoFileId=null to clear.
+// Duration is probed via the same music-metadata helper that handles audio
+// (works for MP4 containers); failures fall back to null.
+export async function setStoryboardUploadedVideoViaGateway({
+  storyboardId,
+  videoFileId,
+}) {
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const patch = {
+    video_upload_file_id: videoFileId == null ? null : String(videoFileId),
+  };
+  if (videoFileId == null) {
+    patch.video_upload_duration_seconds = null;
+  } else {
+    try {
+      const read = await readAttachmentBuffer(videoFileId);
+      if (read?.buffer) {
+        const mime =
+          read.file?.contentType || read.file?.metadata?.content_type || null;
+        const dur = await probeAudioDurationSeconds(read.buffer, mime);
+        patch.video_upload_duration_seconds = dur || null;
+      } else {
+        patch.video_upload_duration_seconds = null;
+      }
+    } catch (e) {
+      logger.warn(
+        `gateway: uploaded video duration probe failed for ${videoFileId}: ${e.message}`,
+      );
+      patch.video_upload_duration_seconds = null;
     }
   }
   await mongoUpdateStoryboard(storyboardId, patch);
@@ -1721,6 +1775,59 @@ export async function setStoryboardVideoViaGateway({
     storyboard_id: String(storyboardId),
   });
   return mongoGetStoryboard(storyboardId);
+}
+
+// Copy an existing GridFS attachment (e.g. one attached to a beat or
+// character) into a fresh file owned by the storyboard's beat, then point the
+// storyboard's audio_file_id or video_upload_file_id at the new file. Source
+// and destination end up holding independent copies — deleting or replacing
+// one does not affect the other. `kind` is 'audio' or 'video'; the source
+// attachment's content_type must match the kind.
+export async function copyAttachmentToStoryboardMediaViaGateway({
+  storyboardId,
+  attachmentId,
+  kind,
+}) {
+  if (kind !== 'audio' && kind !== 'video') {
+    throw new Error(`copyAttachmentToStoryboardMediaViaGateway: invalid kind ${kind}`);
+  }
+  const sb = await mongoGetStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const source = await findAttachmentFile(attachmentId);
+  if (!source) throw new Error(`Attachment not found: ${attachmentId}`);
+  const sourceCt =
+    source.contentType || source.metadata?.content_type || '';
+  const expectedPrefix = kind === 'audio' ? 'audio/' : 'video/';
+  if (!sourceCt.startsWith(expectedPrefix)) {
+    throw new Error(
+      `Attachment ${attachmentId} content type "${sourceCt}" is not ${expectedPrefix}*`,
+    );
+  }
+  const newFile = await copyAttachmentBuffer({
+    sourceFileId: attachmentId,
+    filename: source.filename || `scene-${storyboardId}-${kind}-${Date.now()}`,
+    ownerType: 'beat',
+    ownerId: sb.beat_id,
+  });
+  const storyboard =
+    kind === 'audio'
+      ? await setStoryboardAudioViaGateway({
+          storyboardId,
+          audioFileId: newFile._id,
+        })
+      : await setStoryboardUploadedVideoViaGateway({
+          storyboardId,
+          videoFileId: newFile._id,
+        });
+  return {
+    storyboard,
+    [kind]: {
+      _id: newFile._id,
+      filename: newFile.filename,
+      content_type: newFile.content_type,
+      size: newFile.size,
+    },
+  };
 }
 
 // Copy a dialog item's audio bytes into a fresh GridFS file owned by the

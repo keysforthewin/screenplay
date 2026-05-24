@@ -31,6 +31,20 @@ vi.mock('../src/mongo/images.js', () => ({
       file: { _id: id, contentType: entry.contentType, metadata: {} },
     };
   }),
+  // Used by the payload-preview path (describeImageInput) to render asset
+  // metadata next to the JSON preview without uploading to fal.
+  findImageFile: vi.fn(async (id) => {
+    const key = id?.toString?.() || String(id);
+    const entry = fakeImageStore.get(key);
+    if (!entry) return null;
+    return {
+      _id: new ObjectId(key),
+      filename: `${key}.png`,
+      contentType: entry.contentType,
+      length: entry.buffer.length,
+      metadata: { content_type: entry.contentType },
+    };
+  }),
 }));
 
 const uploadedAttachments = [];
@@ -157,23 +171,23 @@ async function seedScene({
     durationSeconds: 5,
     charactersInScene,
   });
-  const patch = {};
+  // Seed the frame pool in order: a start frame first, then an end frame, so
+  // the default assignment maps frame 1 → start and frame 2 → end.
   if (start) {
     const id = new ObjectId();
     fakeImageStore.set(id.toString(), { buffer: Buffer.from('start'), contentType: 'image/png' });
-    patch.start_frame_id = id;
+    await Storyboards.addFrame(sb._id, { imageId: id });
   }
   if (end) {
     const id = new ObjectId();
     fakeImageStore.set(id.toString(), { buffer: Buffer.from('end'), contentType: 'image/png' });
-    patch.end_frame_id = id;
+    await Storyboards.addFrame(sb._id, { imageId: id });
   }
   if (audio) {
     const id = new ObjectId();
     fakeAttachmentStore.set(id.toString(), { buffer: Buffer.from('audio'), contentType: 'audio/mpeg' });
-    patch.audio_file_id = id;
+    await Storyboards.updateStoryboard(sb._id, { audio_file_id: id });
   }
-  if (Object.keys(patch).length) await Storyboards.updateStoryboard(sb._id, patch);
   return { beat, sb: await Storyboards.getStoryboard(sb._id) };
 }
 
@@ -470,5 +484,108 @@ describe('startVideoGenerationJob', () => {
     const fresh = await Storyboards.getStoryboard(sb._id);
     expect(fresh.video_parameters?.resolution).toBe('1080p');
     expect(fresh.video_cost_usd).toBeCloseTo(8 * 0.5, 6);
+  });
+});
+
+// A model that accepts reference images but exposes no start/end-frame slot
+// (e.g. a reference-to-video or video-to-video endpoint) folds the whole frame
+// pool into the reference list, in order. resolveFrameAssignment owns the
+// logic; these tests pin the end-to-end payload (real submit + preview) so the
+// frames actually reach fal and show up in the preview the user approves.
+describe('frame-pool → reference-image mapping for slot-less models', () => {
+  // reference-to-video: maps reference images to `image_urls`, no frame slots.
+  const REF_MODEL = 'fal-ai/veo3.1/fast/reference-to-video';
+  // video-to-video: the user's literal case — needs an uploaded video AND
+  // accepts reference images; also maps them to `image_urls`.
+  const V2V_MODEL = 'fal-ai/wan-vace-apps/video-edit';
+
+  // Add an extra frame to the pool holding the given bytes; returns its image id.
+  async function addFrame(sbId, bytes) {
+    const id = new ObjectId();
+    fakeImageStore.set(id.toString(), { buffer: Buffer.from(bytes), contentType: 'image/png' });
+    await Storyboards.addFrame(sbId, { imageId: id });
+    return id;
+  }
+
+  it('generate: uploads every frame as a reference image, in pool order', async () => {
+    const VideoModels = await import('../src/fal/videoModels.js');
+    const model = await VideoModels.getVideoModelOrCatalog(REF_MODEL);
+    if (!model) return; // manifest drift — resolveFrameAssignment unit tests still cover it
+    expect(model.inputs.referenceImages).not.toBe('unused');
+    expect(model.inputs.startFrame).toBe('unused');
+    expect(model.inputs.endFrame).toBe('unused');
+
+    // Echo each uploaded file's bytes back in its URL so we can assert order.
+    falStubs.storageImpl = async (file) =>
+      `https://fal.media/inputs/${Buffer.from(await file.arrayBuffer()).toString()}`;
+
+    // seedScene adds frames [start, end]; add a third.
+    const { beat, sb } = await seedScene({ start: true, end: true });
+    await addFrame(sb._id, 'thirdframe');
+
+    const { job_id } = await Falgen.startVideoGenerationJob({
+      storyboardId: sb._id.toString(),
+      modelId: REF_MODEL,
+    });
+    await waitForBeatLock(beat._id);
+    expect(Falgen.getVideoGenerationJob(job_id).status).toBe('done');
+
+    const input = falStubs.submitCalls[0].args.input;
+    expect(input.image_urls).toEqual([
+      'https://fal.media/inputs/start',
+      'https://fal.media/inputs/end',
+      'https://fal.media/inputs/thirdframe',
+    ]);
+  });
+
+  it('preview: surfaces every frame as referenceImages in inputs and payload', async () => {
+    const VideoModels = await import('../src/fal/videoModels.js');
+    const model = await VideoModels.getVideoModelOrCatalog(REF_MODEL);
+    if (!model) return;
+
+    const { sb } = await seedScene({ start: true, end: true });
+    await addFrame(sb._id, 'thirdframe');
+    const fresh = await Storyboards.getStoryboard(sb._id);
+    const frameImageIds = fresh.frames.map((f) => f.image_id.toString());
+
+    const preview = await Falgen.buildVideoPayloadPreview({
+      storyboardId: sb._id.toString(),
+      modelId: REF_MODEL,
+    });
+
+    const refInputs = preview.inputs.filter((i) => i.slot === 'referenceImages');
+    expect(refInputs.map((i) => i.image_id)).toEqual(frameImageIds);
+    expect(preview.payload.image_urls).toEqual(
+      frameImageIds.map((id) => `screenplay-preview://image/${id}`),
+    );
+  });
+
+  it('video-to-video: folds frames into image_urls alongside the source video', async () => {
+    const VideoModels = await import('../src/fal/videoModels.js');
+    const model = await VideoModels.getVideoModelOrCatalog(V2V_MODEL);
+    if (!model) return;
+    expect(model.inputs.videoInput).not.toBe('unused');
+    expect(model.inputs.referenceImages).not.toBe('unused');
+
+    falStubs.storageImpl = async (file) =>
+      `https://fal.media/inputs/${Buffer.from(await file.arrayBuffer()).toString()}`;
+
+    // One frame only, plus the required uploaded video.
+    const { beat, sb } = await seedScene({ start: true, end: false });
+    const videoId = new ObjectId();
+    fakeAttachmentStore.set(videoId.toString(), { buffer: Buffer.from('srcvideo'), contentType: 'video/mp4' });
+    await Storyboards.updateStoryboard(sb._id, { video_upload_file_id: videoId });
+
+    const { job_id } = await Falgen.startVideoGenerationJob({
+      storyboardId: sb._id.toString(),
+      modelId: V2V_MODEL,
+    });
+    await waitForBeatLock(beat._id);
+    expect(Falgen.getVideoGenerationJob(job_id).status).toBe('done');
+
+    const input = falStubs.submitCalls[0].args.input;
+    expect(input.video_url).toBe('https://fal.media/inputs/srcvideo');
+    // Just the single frame.
+    expect(input.image_urls).toEqual(['https://fal.media/inputs/start']);
   });
 });

@@ -25,8 +25,8 @@ const OUT_CSV = 'scripts/output/fal-video-clusters.csv';
 const OUT_MD = 'scripts/output/fal-video-clusters.md';
 const OUT_JSON = 'data/fal-models.json';
 
-const CAP_KEYS = ['start_frame', 'end_frame', 'reference_images', 'character_sheet', 'lip_sync'];
-const CAP_LABELS = { start_frame: 'start', end_frame: 'end', reference_images: 'ref', character_sheet: 'char', lip_sync: 'lip' };
+const CAP_KEYS = ['start_frame', 'end_frame', 'reference_images', 'character_sheet', 'lip_sync', 'video_input'];
+const CAP_LABELS = { start_frame: 'start', end_frame: 'end', reference_images: 'ref', character_sheet: 'char', lip_sync: 'lip', video_input: 'video' };
 
 // ---------- CSV parsing ----------
 
@@ -121,6 +121,7 @@ function detectCapabilities(row, params) {
     reference_images: hasRef,
     character_sheet: hasChar,
     lip_sync: hasAudio && !hasVideoInput, // avatar-only
+    video_input: hasVideoInput,
   };
 }
 
@@ -186,7 +187,15 @@ function extractAspectRatios(params) {
 
 function extractDurationsEnum(params) {
   const d = params.duration;
-  if (d && Array.isArray(d.enum)) return d.enum.map(String);
+  if (!d) return [];
+  if (Array.isArray(d.enum)) return d.enum.map(String);
+  // Some endpoints declare `duration` as a plain string with a single
+  // documented default (e.g. Veo 3.1 lite FLF only accepts "8s"). Surface
+  // that as a one-element enum so the dialog renders a constrained
+  // dropdown instead of a free-form input — fal rejects anything else.
+  if (typeof d.default === 'string' && /^\d+(?:\.\d+)?s$/.test(d.default)) {
+    return [d.default];
+  }
   return [];
 }
 
@@ -231,23 +240,16 @@ function computeInputs(required_obj, optional_obj) {
     endFrame: classify(END_NAMES),
     referenceImages: classify(REFERENCE_NAMES),
     characterSheet: classify(CHARACTER_NAMES),
-    // We only call something "audio" capable when the model has an audio
-    // param AND no video input (== lip_sync flag). Mirror that here.
-    audio: AUDIO_NAMES_IF_LIPSYNC(required_obj, optional_obj),
+    // The plain `audio` slot still gets populated even when the model
+    // also takes a video input (e.g. sync-lipsync v2 wants both). The
+    // separation that matters for the picker — avatar vs. video-lipsync —
+    // is the `lip_sync` capability flag computed in detectCapabilities.
+    audio: classify(AUDIO_NAMES),
+    videoInput: classify(VIDEO_INPUT_NAMES),
     // characterElements is a Kling-specific concept — never present in the
     // generic OpenAPI param set. Registered models override this.
     characterElements: 'unused',
   };
-}
-
-function AUDIO_NAMES_IF_LIPSYNC(required_obj, optional_obj) {
-  const reqNames = new Set(Object.keys(required_obj || {}));
-  const optNames = new Set(Object.keys(optional_obj || {}));
-  const hasVideo = [...VIDEO_INPUT_NAMES].some(n => reqNames.has(n) || optNames.has(n));
-  if (hasVideo) return 'unused'; // pure video-lipsync, not avatar
-  for (const n of AUDIO_NAMES) if (reqNames.has(n)) return 'required';
-  for (const n of AUDIO_NAMES) if (optNames.has(n)) return 'optional';
-  return 'unused';
 }
 
 // ---------- clustering / output ----------
@@ -324,17 +326,17 @@ function writeClustersMarkdown(enriched) {
   }
 
   const lines = [];
-  lines.push('# fal.ai Image-to-Video Model Capability Clusters');
+  lines.push('# fal.ai Video Model Capability Clusters');
   lines.push('');
-  lines.push(`Generated from ${enriched.length} image-to-video models in \`scripts/output/fal-video-models.csv\`.`);
+  lines.push(`Generated from ${enriched.length} image-to-video and video-to-video models in \`scripts/output/fal-video-models.csv\`.`);
   lines.push('');
-  lines.push(`Capabilities: \`${CAP_KEYS.join('\`, \`')}\`. Lip-sync = avatar (image+audio → video) only.`);
+  lines.push(`Capabilities: \`${CAP_KEYS.join('\`, \`')}\`. Lip-sync = avatar (image+audio → video). Video input = v2v (video + prompt/audio → video).`);
   lines.push('');
   lines.push('## Tier summary');
   lines.push('');
   lines.push('| score | models |');
   lines.push('|------:|-------:|');
-  for (let s = 5; s >= 0; s--) {
+  for (let s = CAP_KEYS.length; s >= 0; s--) {
     lines.push(`|     ${s} | ${String(tierCounts.get(s) || 0).padStart(6)} |`);
   }
   lines.push('');
@@ -370,8 +372,14 @@ function writeClustersMarkdown(enriched) {
 async function main() {
   const text = await readFile(IN_PATH, 'utf8');
   const allRows = parseCsv(text);
-  const rows = allRows.filter(r => r.category === 'image-to-video');
-  console.error(`Loaded ${allRows.length} rows from ${IN_PATH}; kept ${rows.length} image-to-video.`);
+  const ALLOWED_CATEGORIES = new Set(['image-to-video', 'video-to-video']);
+  const rows = allRows.filter(r => ALLOWED_CATEGORIES.has(r.category));
+  const i2vCount = rows.filter(r => r.category === 'image-to-video').length;
+  const v2vCount = rows.filter(r => r.category === 'video-to-video').length;
+  console.error(
+    `Loaded ${allRows.length} rows from ${IN_PATH}; kept ${rows.length} ` +
+    `(${i2vCount} image-to-video, ${v2vCount} video-to-video).`,
+  );
 
   const enrichedAll = rows.map(row => {
     const params = allParams(row);
@@ -402,6 +410,7 @@ async function main() {
       inputs: computeInputs(required_params_obj, optional_params_obj),
       price_min_usd: extractPriceMinUsd(row.price),
       added_at: row.added_at || null,
+      description: row.description ? String(row.description).trim() : null,
     };
   });
 
@@ -421,7 +430,7 @@ async function main() {
   const tierCounts = new Map();
   for (const r of enriched) tierCounts.set(r.score, (tierCounts.get(r.score) || 0) + 1);
   console.error('Tier counts (score → models):');
-  for (let s = 5; s >= 1; s--) console.error(`  ${s}/5: ${tierCounts.get(s) || 0}`);
+  for (let s = CAP_KEYS.length; s >= 1; s--) console.error(`  ${s}/${CAP_KEYS.length}: ${tierCounts.get(s) || 0}`);
   console.error(`Dropped ${droppedZero} models with no recognized capability params.`);
   console.error(`Wrote ${OUT_CSV}`);
   console.error(`Wrote ${OUT_MD}`);
@@ -435,6 +444,7 @@ function writeCatalogJson(enriched) {
     .map(r => ({
       endpoint_id: r.endpoint_id,
       display_name: r.display_name,
+      category: r.category || null,
       model_lab: r.model_lab || null,
       model_family: r.model_family || null,
       capabilities: r.caps,
@@ -451,6 +461,7 @@ function writeCatalogJson(enriched) {
       inputs_required: r.inputs_required,
       inputs_optional: r.inputs_optional,
       added_at: r.added_at,
+      description: r.description || null,
     }))
     .sort((a, b) => {
       const ap = a.price_min_usd;
@@ -464,7 +475,7 @@ function writeCatalogJson(enriched) {
   const payload = {
     generated_at: new Date().toISOString(),
     source: 'scripts/cluster-fal-video-models.js',
-    category: 'image-to-video',
+    category: 'video-generation',
     model_count: models.length,
     models,
   };

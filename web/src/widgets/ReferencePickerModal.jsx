@@ -16,13 +16,6 @@ const TABS = [
   { key: 'generate', label: 'Generate' },
 ];
 
-// In ephemeral mode (when `onApply` is provided), Upload and Generate are
-// hidden — those tabs persist new images server-side, which is wrong for a
-// one-shot picker that just collects ids to hand back to the caller.
-const EPHEMERAL_TABS = TABS.filter(
-  (t) => t.key !== 'upload' && t.key !== 'generate',
-);
-
 const GEN_MODEL_STORAGE_KEY = 'screenplay.picker.genModel';
 const VALID_GEN_MODELS = new Set(['gemini', 'openai', 'fal']);
 const GEN_MODEL_LABEL = {
@@ -32,15 +25,10 @@ const GEN_MODEL_LABEL = {
 };
 const GEN_MODEL_ORDER = ['gemini', 'openai', 'fal'];
 
-const ROLE_TITLES = {
-  reference: 'Add references',
-  start_frame: 'Set start frame',
-  end_frame: 'Set end frame',
-};
-
-const FRAME_ROLE_TITLES = {
-  start_frame: "Add references for the start frame",
-  end_frame: "Add references for the end frame",
+const MODE_TITLES = {
+  add_frame: 'Add frame',
+  frame_image: 'Replace frame image',
+  frame_reference: 'Add references for this frame',
 };
 
 function readStoredGenModel() {
@@ -68,24 +56,19 @@ function setsEqual(a, b) {
   return true;
 }
 
-// Universal image picker for storyboard image fields. Five tabs:
-//   beat / characters / library — pick existing GridFS images
-//   upload   — upload a file
-//   generate — text-to-image with model choice (Gemini / OpenAI / Flux)
-//
-// Modes:
-//   - `role='reference'` (default, no frameRole): legacy row-level reference
-//     editor. Multi-select diff editor; Apply commits the final list via
-//     /storyboard/:id/reference/set.
-//   - `role='start_frame'` | `role='end_frame'`: single-image installer —
-//     picking commits to that frame slot immediately.
-//   - `frameRole='start_frame'` | `frameRole='end_frame'`: per-frame
-//     multi-select reference editor (mirrors the legacy multi-select but
-//     scoped to start_frame_reference_ids or end_frame_reference_ids).
-//   - `onApply(ids)`: ephemeral mode — Apply calls onApply with the selected
-//     ids and closes, instead of persisting to the storyboard. Upload and
-//     Generate tabs are hidden in this mode because they'd persist new
-//     images. Used by the in-line frame edit dialog for one-shot refs.
+// Universal image picker for the storyboard frame pool. Modes:
+//   - `mode='add_frame'`: append a new frame to the pool. Single-pick; pick /
+//     upload / generate each create a frame and close. Hits
+//     /storyboard/:id/frame/{from-id,upload,generate}.
+//   - `mode='frame_image'` (+ frameId): replace an existing frame's image.
+//     Single-pick; hits /storyboard/:id/frame/:frameId/image/{from-id,upload}.
+//     No Generate tab — use the frame's Regenerate action for that.
+//   - `mode='frame_reference'` (+ frameId): multi-select editor for that
+//     frame's image-gen reference list. Apply commits via
+//     /storyboard/:id/frame/:frameId/reference/set.
+//   - `onApply(ids)`: ephemeral multi-select — Apply hands the ids back to the
+//     caller instead of persisting. Upload/Generate hidden. Used by the inline
+//     frame edit dialog for one-shot refs.
 export function ReferencePickerModal({
   open,
   onClose,
@@ -93,24 +76,24 @@ export function ReferencePickerModal({
   beatId,
   charactersInScene,
   currentReferenceIds,
-  role = 'reference',
-  frameRole = null,
+  mode = 'add_frame',
+  frameId = null,
+  frameCount = null,
   onAttached,
   onApply = null,
 }) {
   const ephemeral = !!onApply;
-  // The picker is in multi-select / reference-list mode either via role='reference'
-  // (legacy row-level list) or via frameRole (per-frame list).
-  const isReference = role === 'reference' || !!frameRole;
+  const isReference = ephemeral || mode === 'frame_reference';
+  // The per-frame "This beat" tab uses the frame picker-options feed; the
+  // pool-level (add_frame / frame_image) tab uses the plain beat-images feed.
+  const useFramePickerOptions = !!frameId && (isReference || ephemeral);
   const frameRefBase =
-    frameRole && sbId
-      ? `/storyboard/${sbId}/frame/${frameRole}/reference`
-      : null;
+    frameId && sbId ? `/storyboard/${sbId}/frame/${frameId}/reference` : null;
+
   const [tab, setTab] = useState('beat');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
-  // Per-tab data caches; null = not yet loaded, [] = loaded empty.
   const [beatImages, setBeatImages] = useState(null);
   const [framePickerData, setFramePickerData] = useState(null);
   const [characters, setCharacters] = useState(null);
@@ -120,13 +103,6 @@ export function ReferencePickerModal({
 
   const fileInput = useRef(null);
 
-  // Multi-select state for the reference role. Single-image roles bypass this
-  // entirely — they pick-and-commit on click.
-  //
-  // selectedIds: the working set the user is building; toggles update it.
-  // originalIdsRef: snapshot of currentReferenceIds at open time, frozen so
-  //   the diff (and the changes count on the Apply button) stays stable even
-  //   if a websocket update changes currentReferenceIds mid-session.
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const originalIdsRef = useRef(new Set());
 
@@ -145,9 +121,6 @@ export function ReferencePickerModal({
     );
     originalIdsRef.current = baseline;
     setSelectedIds(new Set(baseline));
-    // currentReferenceIds intentionally excluded from deps: we snapshot once
-    // at open and ignore later prop changes. Apply's replace overwrites
-    // whatever the server has on commit (last-writer-wins).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -156,10 +129,10 @@ export function ReferencePickerModal({
     let cancelled = false;
     async function load() {
       try {
-        if (tab === 'beat' && frameRole && sbId) {
+        if (tab === 'beat' && useFramePickerOptions && sbId && frameId) {
           if (framePickerData === null) {
             const data = await apiGet(
-              `/storyboard/${sbId}/frame/${frameRole}/picker-options`,
+              `/storyboard/${sbId}/frame/${frameId}/picker-options`,
             );
             if (!cancelled) setFramePickerData(data);
           }
@@ -189,7 +162,8 @@ export function ReferencePickerModal({
     tab,
     beatId,
     sbId,
-    frameRole,
+    frameId,
+    useFramePickerOptions,
     beatImages,
     framePickerData,
     characters,
@@ -197,7 +171,6 @@ export function ReferencePickerModal({
     libraryImages,
   ]);
 
-  // Toggle an id in the selection set (reference role only).
   function toggle(imageId) {
     const id = String(imageId);
     setSelectedIds((prev) => {
@@ -208,18 +181,21 @@ export function ReferencePickerModal({
     });
   }
 
-  // Single-image roles (start_frame / end_frame / character_sheet) commit on
-  // click and close — same as before. Only the reference role uses the
-  // multi-select / Apply flow.
+  // Single-pick modes (add_frame / frame_image) commit on click and close.
   async function pickSingle(imageId) {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      await apiPostJson(`/storyboard/${sbId}/image/from-id`, {
-        role,
-        image_id: String(imageId),
-      });
+      if (mode === 'frame_image') {
+        await apiPostJson(`/storyboard/${sbId}/frame/${frameId}/image/from-id`, {
+          image_id: String(imageId),
+        });
+      } else {
+        await apiPostJson(`/storyboard/${sbId}/frame/from-id`, {
+          image_id: String(imageId),
+        });
+      }
       await onAttached?.();
       onClose?.();
     } catch (e) {
@@ -229,19 +205,15 @@ export function ReferencePickerModal({
     }
   }
 
-  // Upload tab is immediate-action even in reference mode: it creates a new
-  // GridFS image and attaches it server-side. After success, we fold the new
-  // id into BOTH the working set AND the baseline so it's preserved when the
-  // user clicks Apply (replace mode would otherwise drop it).
   async function uploadFile(file) {
     if (!file || busy) return;
     setBusy(true);
     setError(null);
     try {
+      const fd = new FormData();
+      fd.append('file', file);
       if (isReference) {
-        const fd = new FormData();
-        fd.append('file', file);
-        const endpoint = frameRefBase || `/storyboard/${sbId}/reference`;
+        const endpoint = frameRefBase;
         const resp = await apiPostMultipart(endpoint, fd);
         const newId = resp?.image?._id ? String(resp.image._id) : null;
         if (newId) {
@@ -249,11 +221,12 @@ export function ReferencePickerModal({
           setSelectedIds((prev) => new Set([...prev, newId]));
         }
         await onAttached?.();
+      } else if (mode === 'frame_image') {
+        await apiPostMultipart(`/storyboard/${sbId}/frame/${frameId}/image/upload`, fd);
+        await onAttached?.();
+        onClose?.();
       } else {
-        const fd = new FormData();
-        fd.append('file', file);
-        fd.append('role', role);
-        await apiPostMultipart(`/storyboard/${sbId}/image`, fd);
+        await apiPostMultipart(`/storyboard/${sbId}/frame/upload`, fd);
         await onAttached?.();
         onClose?.();
       }
@@ -265,17 +238,13 @@ export function ReferencePickerModal({
     }
   }
 
-  // Generate tab: same immediate-action pattern as upload.
   async function generateFromPrompt({ prompt, model }) {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
       if (isReference) {
-        const endpoint = frameRefBase
-          ? `${frameRefBase}/generate`
-          : `/storyboard/${sbId}/reference/generate`;
-        const resp = await apiPostJson(endpoint, { prompt, model });
+        const resp = await apiPostJson(`${frameRefBase}/generate`, { prompt, model });
         const newId = resp?.image?._id ? String(resp.image._id) : null;
         if (newId) {
           originalIdsRef.current = new Set([...originalIdsRef.current, newId]);
@@ -283,11 +252,7 @@ export function ReferencePickerModal({
         }
         await onAttached?.();
       } else {
-        await apiPostJson(`/storyboard/${sbId}/image/generate`, {
-          role,
-          prompt,
-          model,
-        });
+        await apiPostJson(`/storyboard/${sbId}/frame/generate`, { prompt, model });
         await onAttached?.();
         onClose?.();
       }
@@ -308,12 +273,7 @@ export function ReferencePickerModal({
     setBusy(true);
     setError(null);
     try {
-      const endpoint = frameRefBase
-        ? `${frameRefBase}/set`
-        : `/storyboard/${sbId}/reference/set`;
-      await apiPostJson(endpoint, {
-        image_ids: [...selectedIds],
-      });
+      await apiPostJson(`${frameRefBase}/set`, { image_ids: [...selectedIds] });
       await onAttached?.();
       onClose?.();
     } catch (e) {
@@ -345,11 +305,12 @@ export function ReferencePickerModal({
   const noChanges =
     !isReference || setsEqual(selectedIds, originalIdsRef.current);
 
+  const poolFull =
+    mode === 'add_frame' && typeof frameCount === 'number' && frameCount >= 6;
+
   if (!open) return null;
 
-  const title = frameRole
-    ? FRAME_ROLE_TITLES[frameRole] || 'Add references'
-    : ROLE_TITLES[role] || 'Add image';
+  const title = MODE_TITLES[mode] || 'Add image';
   const onPick = isReference ? toggle : pickSingle;
 
   const ephemeralLabel =
@@ -379,7 +340,14 @@ export function ReferencePickerModal({
     <button onClick={onClose}>Cancel</button>
   );
 
-  const visibleTabs = ephemeral ? EPHEMERAL_TABS : TABS;
+  // Visible tabs per mode. frame_image has no Generate (use Regenerate);
+  // ephemeral hides Upload + Generate (one-shot, no server persistence).
+  let visibleTabs = TABS;
+  if (ephemeral) {
+    visibleTabs = TABS.filter((t) => t.key !== 'upload' && t.key !== 'generate');
+  } else if (mode === 'frame_image') {
+    visibleTabs = TABS.filter((t) => t.key !== 'generate');
+  }
 
   return (
     <Modal open={open} title={title} onClose={onClose} footer={footer}>
@@ -402,14 +370,20 @@ export function ReferencePickerModal({
         </div>
 
         {error && <div className="error-banner">{error}</div>}
+        {poolFull && (
+          <div className="error-banner">
+            This storyboard already has the maximum of 6 frames. Remove one
+            before adding another.
+          </div>
+        )}
 
         <div className="ref-picker-body">
-          {tab === 'beat' && frameRole && sbId ? (
+          {tab === 'beat' && useFramePickerOptions ? (
             <FrameBeatTab
               data={framePickerData}
               selectedIds={selectedIds}
               onPick={onPick}
-              busy={busy}
+              busy={busy || poolFull}
               isReference={isReference}
             />
           ) : tab === 'beat' ? (
@@ -417,7 +391,7 @@ export function ReferencePickerModal({
               images={beatImages}
               selectedIds={selectedIds}
               onPick={onPick}
-              busy={busy}
+              busy={busy || poolFull}
               isReference={isReference}
             />
           ) : null}
@@ -426,7 +400,7 @@ export function ReferencePickerModal({
               characters={characters}
               selectedIds={selectedIds}
               onPick={onPick}
-              busy={busy}
+              busy={busy || poolFull}
               isReference={isReference}
             />
           )}
@@ -435,7 +409,7 @@ export function ReferencePickerModal({
               artworks={sceneArtworks}
               selectedIds={selectedIds}
               onPick={onPick}
-              busy={busy}
+              busy={busy || poolFull}
               isReference={isReference}
             />
           )}
@@ -447,7 +421,7 @@ export function ReferencePickerModal({
               onQuery={setLibraryQuery}
               selectedIds={selectedIds}
               onPick={onPick}
-              busy={busy}
+              busy={busy || poolFull}
               isReference={isReference}
             />
           )}
@@ -455,11 +429,11 @@ export function ReferencePickerModal({
             <UploadTab
               fileInputRef={fileInput}
               onUpload={uploadFile}
-              busy={busy}
+              busy={busy || poolFull}
             />
           )}
           {tab === 'generate' && (
-            <GenerateTab onGenerate={generateFromPrompt} busy={busy} />
+            <GenerateTab onGenerate={generateFromPrompt} busy={busy || poolFull} />
           )}
         </div>
       </div>
@@ -526,10 +500,8 @@ function BeatTab({ images, selectedIds, onPick, busy, isReference }) {
 }
 
 // Per-frame variant of the Beat tab. Renders three labelled sections in
-// priority order — sibling frame, beat artwork, beat images — and dedupes
-// image ids across sections so a single image never appears twice. The
-// sibling frame thumb carries a "Start frame"/"End frame" badge so the user
-// can identify it at a glance.
+// priority order — the storyboard's OTHER frames, beat artwork, beat images —
+// deduping image ids across sections so an image never appears twice.
 function FrameBeatTab({ data, selectedIds, onPick, busy, isReference }) {
   if (data === null) {
     return <p className="ref-picker-empty">Loading…</p>;
@@ -537,21 +509,15 @@ function FrameBeatTab({ data, selectedIds, onPick, busy, isReference }) {
   const seen = new Set();
   const sections = [];
 
-  if (data.sibling_frame?.image_id) {
-    const sid = String(data.sibling_frame.image_id);
-    seen.add(sid);
-    sections.push({
-      key: 'sibling',
-      title: data.sibling_frame.label,
-      hint: `Adding the ${data.sibling_frame.label.toLowerCase()} attaches an independent snapshot — later edits to the ${data.sibling_frame.label.toLowerCase()} slot won't change this reference.`,
-      items: [
-        {
-          _id: sid,
-          name: data.sibling_frame.label,
-          badge: data.sibling_frame.label,
-        },
-      ],
-    });
+  const otherFrameItems = [];
+  for (const f of data.other_frames || []) {
+    const id = String(f.image_id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    otherFrameItems.push({ _id: id, name: f.label, badge: f.label });
+  }
+  if (otherFrameItems.length) {
+    sections.push({ key: 'frames', title: 'Other frames', items: otherFrameItems });
   }
 
   const artworkItems = [];
@@ -579,7 +545,7 @@ function FrameBeatTab({ data, selectedIds, onPick, busy, isReference }) {
   if (!sections.length) {
     return (
       <p className="ref-picker-empty">
-        No sibling frame, artwork, or reference images on this beat yet.
+        No other frames, artwork, or reference images on this beat yet.
       </p>
     );
   }
@@ -589,17 +555,6 @@ function FrameBeatTab({ data, selectedIds, onPick, busy, isReference }) {
       {sections.map((s) => (
         <section key={s.key} className="ref-picker-character">
           <h3 className="ref-picker-character-name">{s.title}</h3>
-          {s.hint && (
-            <p
-              style={{
-                margin: '0 0 8px',
-                fontSize: 12,
-                color: 'var(--fg-muted)',
-              }}
-            >
-              {s.hint}
-            </p>
-          )}
           <ThumbGrid
             items={s.items}
             selectedIds={selectedIds}
@@ -626,9 +581,6 @@ function CharactersTab({ characters, selectedIds, onPick, busy, isReference }) {
     );
   }
 
-  // Each character entry from /beat/:id/characters carries main_image_id and
-  // sheets[{ _id, name, content_type }]. We render every sheet as a pickable
-  // thumb; main_image_id is shown first when present and not already in sheets.
   return (
     <div className="ref-picker-character-list">
       {characters.map((c) => {
@@ -679,22 +631,15 @@ function ArtworkTab({ artworks, selectedIds, onPick, busy, isReference }) {
     );
   }
 
-  // Group by owner so the user can scan "Beat: X" vs "Character: Y" sections.
-  // Order in artworks[] (beat-first, then character-by-character) is already
-  // the order we want to render in, so we preserve it with a Map.
-  const groups = new Map(); // owner_id → { label, items[] }
+  // Group by owner ("Beat: X" vs "Character: Y"), preserving artworks[] order.
+  const groups = new Map();
   for (const a of artworks) {
     const key = `${a.owner_kind}:${a.owner_id}`;
     if (!groups.has(key)) {
       groups.set(key, { label: a.owner_label || a.owner_kind, items: [] });
     }
-    // ThumbGrid uses item._id to pick — for artwork we want to pick the
-    // result_image_id (the actual GridFS image), not the artwork's _id.
     const display = stripMd(a.name) || stripMd(a.prompt).slice(0, 80) || 'artwork';
-    groups.get(key).items.push({
-      _id: a.result_image_id,
-      name: display,
-    });
+    groups.get(key).items.push({ _id: a.result_image_id, name: display });
   }
 
   return (

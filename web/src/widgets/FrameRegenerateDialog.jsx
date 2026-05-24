@@ -10,16 +10,11 @@ import {
 
 const MODEL_STORAGE_KEY = 'screenplay.storyboard.model';
 
-const ROLE_LABEL = {
-  start_frame: 'start frame',
-  end_frame: 'end frame',
-};
-
 // Per-frame generate / regenerate modal. Renders full-screen so the reference
 // grid, prompt editor, and model selector are all visible at once. Renders the
 // frame from the user's edited prompt plus the persisted per-frame reference
-// images. The prompt is also saved back to sb.start_frame_prompt /
-// sb.end_frame_prompt on submit so the textarea state survives across sessions.
+// images. The prompt is also saved back to the frame's stored prompt on submit
+// so the textarea state survives across sessions.
 //
 // Inline single-image edits live in StoryboardFrameEditDialog (the dedicated
 // Edit button on each frame) — that flow has its own thumbnail-and-undo modal.
@@ -30,7 +25,7 @@ export function FrameRegenerateDialog({
   open,
   onClose,
   onSubmit,
-  role,
+  frameId,
   hasImage,
   storyboardId,
   beatId,
@@ -50,13 +45,13 @@ export function FrameRegenerateDialog({
   const previewSeqRef = useRef(0);
 
   const fetchPreview = useCallback(async () => {
-    if (!storyboardId || !role) return;
+    if (!storyboardId || !frameId) return;
     const seq = ++previewSeqRef.current;
     setPreviewLoading(true);
     setPreviewError(null);
     try {
       const res = await apiPostJson(
-        `/storyboard/${storyboardId}/frame/${role}/preview-prompt`,
+        `/storyboard/${storyboardId}/frame/${frameId}/preview-prompt`,
         {},
       );
       if (seq !== previewSeqRef.current) return;
@@ -71,7 +66,7 @@ export function FrameRegenerateDialog({
     } finally {
       if (seq === previewSeqRef.current) setPreviewLoading(false);
     }
-  }, [storyboardId, role]);
+  }, [storyboardId, frameId]);
 
   useEffect(() => {
     if (!open) {
@@ -95,7 +90,7 @@ export function FrameRegenerateDialog({
     setRefsError(null);
     try {
       await apiPostJson(
-        `/storyboard/${storyboardId}/frame/${role}/reference/auto-populate`,
+        `/storyboard/${storyboardId}/frame/${frameId}/reference/auto-populate`,
         {},
       );
       await onReferencesChanged?.();
@@ -111,7 +106,7 @@ export function FrameRegenerateDialog({
     setRefsError(null);
     try {
       await apiPostJson(
-        `/storyboard/${storyboardId}/frame/${role}/reference/set`,
+        `/storyboard/${storyboardId}/frame/${frameId}/reference/set`,
         {
           image_ids: (referenceIds || [])
             .map((x) => x?.toString?.() || String(x))
@@ -138,7 +133,7 @@ export function FrameRegenerateDialog({
     });
   }
 
-  const label = ROLE_LABEL[role] || 'frame';
+  const label = 'frame';
   const submitLabel = hasImage ? 'Regenerate' : 'Generate';
 
   const refList = (referenceIds || []).map(
@@ -286,7 +281,8 @@ export function FrameRegenerateDialog({
         beatId={beatId}
         charactersInScene={charactersInScene}
         currentReferenceIds={refList}
-        frameRole={role}
+        mode="frame_reference"
+        frameId={frameId}
         onAttached={onReferencesChanged}
       />
     </>

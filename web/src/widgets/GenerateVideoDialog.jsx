@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
 import {
+  apiDelete,
   apiGet,
   apiPostJson,
   apiSseUrl,
@@ -10,8 +11,38 @@ import {
 } from '../api.js';
 import { computeVideoCost, formatUsd as formatUsdAmount } from '../videoCost.js';
 import { VideoProgressBar } from './VideoProgressBar.jsx';
+import { ReferencePickerModal } from './ReferencePickerModal.jsx';
 import { useCollabRoom } from '../editor/CollabSurface.jsx';
 import { readFragmentMarkdown } from '../editor/fragmentRead.js';
+
+// The image-id strings of a storyboard's frame pool, in order, skipping frames
+// with no rendered image yet.
+function frameImageIds(sb) {
+  return (sb?.frames || [])
+    .map((f) => (f?.image_id ? f.image_id.toString?.() || String(f.image_id) : null))
+    .filter(Boolean);
+}
+
+function modelAccepts(model, key) {
+  const need = model?.inputs || {};
+  return need[key] && need[key] !== 'unused';
+}
+
+// Default frame→slot assignment derived from pool order — mirrors the backend's
+// resolveFrameAssignment so an untouched dialog ships the same mapping.
+function defaultAssignment(model, sb) {
+  const ids = frameImageIds(sb);
+  const a = { start_frame: null, end_frame: null, ref: [] };
+  if (modelAccepts(model, 'startFrame')) a.start_frame = ids[0] || null;
+  if (modelAccepts(model, 'endFrame')) {
+    a.end_frame = ids.find((x) => x !== a.start_frame) || null;
+  }
+  if (modelAccepts(model, 'referenceImages')) {
+    const used = new Set([a.start_frame, a.end_frame].filter(Boolean));
+    a.ref = ids.filter((x) => !used.has(x));
+  }
+  return a;
+}
 
 // Capability facets shown in the picker. Order is the column order in the
 // matrix and the checkbox order below it.
@@ -21,9 +52,17 @@ const FACETS = [
   { key: 'end_frame', short: 'end', label: 'End frame' },
   { key: 'character_sheet', short: 'char', label: 'Character sheet' },
   { key: 'reference_images', short: 'ref', label: 'Reference images' },
+  { key: 'video_input', short: 'video', label: 'Video input (v2v)' },
 ];
 
-const EMPTY_FACETS = Object.freeze({ lip_sync: false, start_frame: false, end_frame: false, character_sheet: false, reference_images: false });
+const EMPTY_FACETS = Object.freeze({
+  lip_sync: false,
+  start_frame: false,
+  end_frame: false,
+  character_sheet: false,
+  reference_images: false,
+  video_input: false,
+});
 
 // localStorage key for the most recently generated-with video model. We persist
 // the endpoint_id (not model_id) because the picker selects rows by endpoint —
@@ -70,6 +109,10 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
   // Captured at open-time so the badge doesn't migrate mid-dialog after a
   // successful submit — it migrates on the next open.
   const [lastUsedEndpoint, setLastUsedEndpoint] = useState(null);
+  // Per-generation mapping of the storyboard's frame-pool images onto the
+  // chosen model's slots: { start_frame, end_frame, ref: [] } (image-id
+  // strings). Defaulted by frame order; the user can override. Not persisted.
+  const [assignment, setAssignment] = useState({ start_frame: null, end_frame: null, ref: [] });
   const esRef = useRef(null);
 
   function closeStream() {
@@ -187,16 +230,30 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
   // Pre-flight: which inputs does the chosen model need that aren't on this
   // storyboard yet? Server validates the same thing on submit; this lets us
   // disable the button and show a tooltip without a round-trip.
+  // Reset the assignment to order-based defaults whenever the chosen model or
+  // the frame pool changes. User edits below override until the next reset.
+  const framesSig = useMemo(() => frameImageIds(sb).join(','), [sb]);
+  useEffect(() => {
+    setAssignment(defaultAssignment(chosenModel, sb));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chosenModel?.id, framesSig]);
+
+  // Pre-flight: which required inputs are unassigned? The server validates the
+  // same thing on submit; this lets us disable the button without a round-trip.
   const missing = useMemo(() => {
     if (!chosenModel) return [];
     const out = [];
     const need = chosenModel.inputs || {};
-    if (need.startFrame === 'required' && !sb?.start_frame_id) out.push('start frame');
-    if (need.endFrame === 'required' && !sb?.end_frame_id) out.push('end frame');
-    if (need.characterSheet === 'required' && !sb?.character_sheet_image_id) out.push('character sheet');
+    if (need.startFrame === 'required' && !assignment.start_frame) out.push('start frame');
+    if (need.endFrame === 'required' && !assignment.end_frame) out.push('end frame');
+    if (need.characterSheet === 'required') out.push('character sheet');
+    if (need.referenceImages === 'required' && !(assignment.ref || []).length) {
+      out.push('reference images');
+    }
     if (need.audio === 'required' && !sb?.audio_file_id) out.push('audio');
+    if (need.videoInput === 'required' && !sb?.video_upload_file_id) out.push('uploaded video');
     return out;
-  }, [chosenModel, sb]);
+  }, [chosenModel, sb, assignment]);
 
   // Models that pass the current facet filter (AND across checked facets).
   const visibleModels = useMemo(() => {
@@ -244,6 +301,13 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     if (shouldShowFps(chosenModel) && Number.isFinite(fps) && fps > 0) {
       body.fps = fps;
     }
+    // Map the frame pool onto the model's image slots. Only send what the model
+    // accepts so the server doesn't have to second-guess the shape.
+    const fa = {};
+    if (modelAccepts(chosenModel, 'startFrame')) fa.start_frame = assignment.start_frame || null;
+    if (modelAccepts(chosenModel, 'endFrame')) fa.end_frame = assignment.end_frame || null;
+    if (modelAccepts(chosenModel, 'referenceImages')) fa.ref = assignment.ref || [];
+    if (Object.keys(fa).length) body.frame_assignment = fa;
     return body;
   }
 
@@ -385,6 +449,16 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
 
         {generating || job ? <VideoProgressBar job={job} /> : null}
 
+        <FrameAssignmentRow
+          sb={sb}
+          storyboardId={storyboardId}
+          chosenModel={chosenModel}
+          assignment={assignment}
+          onAssignmentChange={setAssignment}
+          generating={generating}
+          onRefresh={onRefresh}
+        />
+
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <span className="field-label">Prompt (override)</span>
           <textarea
@@ -487,6 +561,16 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
             </label>
           ) : null}
 
+          {chosenModel?.audio_max_seconds ? (
+            <div
+              className="video-audio-cap-notice"
+              style={{ fontSize: 12, color: 'var(--fg-muted)' }}
+            >
+              This model limits audio to {chosenModel.audio_max_seconds}s — longer
+              clips are trimmed.
+            </div>
+          ) : null}
+
           <label
             style={{ display: 'flex', alignItems: 'center', gap: 6 }}
             title="Append the project-wide director's notes to the prompt sent to fal."
@@ -545,7 +629,196 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
           />
         ) : null}
       </div>
+
     </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// FrameAssignmentRow: shows the storyboard's frame pool and lets the user map
+// frames onto the chosen model's image slots (start_frame / end_frame / an
+// ordered reference list). Defaults are computed by frame order; this widget
+// only edits the per-generation override. A "+ Add frame" button opens the
+// shared picker in add_frame mode so users can grow the pool without leaving.
+
+function frameLabelFor(sb, imageId) {
+  const ids = frameImageIds(sb);
+  const idx = ids.indexOf(String(imageId));
+  return idx >= 0 ? `Frame ${idx + 1}` : '—';
+}
+
+function FrameAssignmentRow({
+  sb,
+  storyboardId,
+  chosenModel,
+  assignment,
+  onAssignmentChange,
+  generating,
+  onRefresh,
+}) {
+  const [addOpen, setAddOpen] = useState(false);
+  const ids = frameImageIds(sb);
+  const frames = sb?.frames || [];
+  const wantsStart = modelAccepts(chosenModel, 'startFrame');
+  const wantsEnd = modelAccepts(chosenModel, 'endFrame');
+  const wantsRef = modelAccepts(chosenModel, 'referenceImages');
+  const anySlot = wantsStart || wantsEnd || wantsRef;
+
+  function setSlot(key, value) {
+    onAssignmentChange({ ...assignment, [key]: value });
+  }
+  function toggleRef(imageId) {
+    const id = String(imageId);
+    const cur = assignment.ref || [];
+    // Toggle while preserving pool order so the ref list stays deterministic.
+    const has = cur.includes(id);
+    const nextSet = new Set(has ? cur.filter((x) => x !== id) : [...cur, id]);
+    onAssignmentChange({ ...assignment, ref: ids.filter((x) => nextSet.has(x)) });
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span className="field-label">Frames ({ids.length})</span>
+        {frames.length < 6 && (
+          <button
+            type="button"
+            disabled={generating}
+            onClick={() => setAddOpen(true)}
+          >
+            + Add frame
+          </button>
+        )}
+      </div>
+
+      {/* Pool strip — read-only thumbnails labelled Frame 1..N. */}
+      {ids.length ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {frames.map((f, i) => {
+            const imgId = f.image_id ? f.image_id.toString?.() || String(f.image_id) : null;
+            return (
+              <div key={f._id?.toString?.() || i} style={{ textAlign: 'center' }}>
+                <div
+                  style={{
+                    width: 84,
+                    height: 56,
+                    border: '1px solid var(--border)',
+                    borderRadius: 4,
+                    overflow: 'hidden',
+                    background: 'var(--bg-elevated)',
+                  }}
+                >
+                  {imgId ? (
+                    <img
+                      src={thumbUrl(imgId)}
+                      alt={`Frame ${i + 1}`}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                  ) : (
+                    <span style={{ fontSize: 10, color: 'var(--fg-muted)' }}>no image</span>
+                  )}
+                </div>
+                <span style={{ fontSize: 10, color: 'var(--fg-muted)' }}>Frame {i + 1}</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: 0 }}>
+          No frames yet. Add at least one for image-conditioned models.
+        </p>
+      )}
+
+      {/* Per-slot assignment controls, only for the slots this model accepts. */}
+      {anySlot && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+          {wantsStart && (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+              <span className="field-label">
+                Start frame{chosenModel.inputs.startFrame === 'required' ? ' *' : ''}
+              </span>
+              <select
+                value={assignment.start_frame || ''}
+                disabled={generating}
+                onChange={(e) => setSlot('start_frame', e.target.value || null)}
+              >
+                <option value="">— none —</option>
+                {ids.map((id, i) => (
+                  <option key={id} value={id}>{`Frame ${i + 1}`}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          {wantsEnd && (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+              <span className="field-label">
+                End frame{chosenModel.inputs.endFrame === 'required' ? ' *' : ''}
+              </span>
+              <select
+                value={assignment.end_frame || ''}
+                disabled={generating}
+                onChange={(e) => setSlot('end_frame', e.target.value || null)}
+              >
+                <option value="">— none —</option>
+                {ids.map((id, i) => (
+                  <option key={id} value={id}>{`Frame ${i + 1}`}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          {wantsRef && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+              <span className="field-label">
+                Reference images{chosenModel.inputs.referenceImages === 'required' ? ' *' : ''}
+              </span>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {ids.length === 0 ? (
+                  <span style={{ color: 'var(--fg-muted)' }}>add frames to use as references</span>
+                ) : (
+                  ids.map((id, i) => {
+                    const checked = (assignment.ref || []).includes(id);
+                    return (
+                      <label
+                        key={id}
+                        style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                        title={`Frame ${i + 1}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={generating}
+                          onChange={() => toggleRef(id)}
+                        />
+                        {`Frame ${i + 1}`}
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+              {(assignment.ref || []).length > 0 && (
+                <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+                  Order: {(assignment.ref || []).map((id) => frameLabelFor(sb, id)).join(' → ')}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      <ReferencePickerModal
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        sbId={storyboardId}
+        beatId={sb?.beat_id ? String(sb.beat_id) : null}
+        charactersInScene={sb?.characters_in_scene}
+        mode="add_frame"
+        frameCount={frames.length}
+        onAttached={async () => {
+          setAddOpen(false);
+          await onRefresh?.();
+        }}
+      />
+    </div>
   );
 }
 
@@ -579,7 +852,14 @@ function PayloadPreviewPanel({ preview, generating, onCancel, onApprove }) {
   const inputs = Array.isArray(preview?.inputs) ? preview.inputs : [];
   const warnings = Array.isArray(preview?.warnings) ? preview.warnings : [];
   const imageInputs = inputs.filter((i) => i.kind === 'image');
-  const audioInputs = inputs.filter((i) => i.kind === 'attachment');
+  // Video-input attachments are surfaced separately so users see exactly
+  // which uploaded clip is going to fal alongside any driving audio.
+  const videoInputs = inputs.filter(
+    (i) => i.kind === 'attachment' && i.slot === 'videoInput',
+  );
+  const audioInputs = inputs.filter(
+    (i) => i.kind === 'attachment' && i.slot !== 'videoInput',
+  );
   return (
     <div
       style={{
@@ -692,6 +972,23 @@ function PayloadPreviewPanel({ preview, generating, onCancel, onApprove }) {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {audioInputs.map((i, idx) => (
+              <PreviewAssetCard key={`${i.slot}-${i.attachment_id}-${idx}`} input={i} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div className="field-label" style={{ marginBottom: 6 }}>
+          Video inputs ({videoInputs.length})
+        </div>
+        {videoInputs.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+            No source video will be uploaded to fal.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {videoInputs.map((i, idx) => (
               <PreviewAssetCard key={`${i.slot}-${i.attachment_id}-${idx}`} input={i} />
             ))}
           </div>
@@ -986,6 +1283,10 @@ function ModelRow({ model, selected, lastUsed, disabled, onClick }) {
   const maxLabel = typeof model.max_seconds === 'number' ? `max ${model.max_seconds}s` : null;
   const resBadges = (model.resolutions || []).slice(0, 4);
   const addedLabel = formatAddedAt(model.added_at);
+  const description = (model.description || '').trim();
+  // Collapsed rows show a one-line snippet; selected expands to full text.
+  const shortDescription =
+    description.length > 140 ? `${description.slice(0, 140).trimEnd()}…` : description;
   return (
     <button
       type="button"
@@ -1030,9 +1331,18 @@ function ModelRow({ model, selected, lastUsed, disabled, onClick }) {
         ) : null}
         {addedLabel ? <span title={model.added_at}>{addedLabel}</span> : null}
       </div>
-      {selected && model.description ? (
-        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--fg-muted)', whiteSpace: 'pre-wrap' }}>
-          {model.description}
+      <CapabilityPills model={model} />
+      {description ? (
+        <div
+          style={{
+            marginTop: 6,
+            fontSize: 12,
+            color: 'var(--fg-muted)',
+            whiteSpace: selected ? 'pre-wrap' : 'normal',
+            lineHeight: 1.4,
+          }}
+        >
+          {selected ? description : shortDescription}
         </div>
       ) : null}
       {selected ? (
@@ -1041,6 +1351,78 @@ function ModelRow({ model, selected, lastUsed, disabled, onClick }) {
         </div>
       ) : null}
     </button>
+  );
+}
+
+// One pill per accepted input modality. Required vs optional gets a solid vs
+// outlined treatment so the user can tell at a glance whether attaching e.g.
+// an end frame is mandatory or just supported. Reads from model.inputs (the
+// registry/catalog-shape map) and model.supports_generate_audio.
+const PILL_DEFS = [
+  { key: 'startFrame', short: 'start', title: 'Start frame' },
+  { key: 'endFrame', short: 'end', title: 'End frame' },
+  { key: 'referenceImages', short: 'refs', title: 'Reference images' },
+  { key: 'characterSheet', short: 'char sheet', title: 'Character sheet' },
+  { key: 'audio', short: 'audio in', title: 'Audio input' },
+  { key: 'videoInput', short: 'video in', title: 'Video input (v2v)' },
+];
+
+function CapabilityPills({ model }) {
+  const inputs = model?.inputs || {};
+  const present = PILL_DEFS.map((def) => {
+    const need = inputs[def.key];
+    if (need !== 'required' && need !== 'optional') return null;
+    return { ...def, need };
+  }).filter(Boolean);
+  const supportsAudioGen = !!model?.supports_generate_audio;
+  if (!present.length && !supportsAudioGen) {
+    // No declared inputs — render a single "text-only" hint so empty-pill rows
+    // don't look broken.
+    return (
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+        <Pill title="Text-to-video only" solid={false}>text only</Pill>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+      {present.map((p) => (
+        <Pill
+          key={p.key}
+          title={`${p.title} — ${p.need}`}
+          solid={p.need === 'required'}
+        >
+          {p.short}
+          {p.need === 'required' ? '*' : ''}
+        </Pill>
+      ))}
+      {supportsAudioGen ? (
+        <Pill title="Model can synthesize audio from the prompt" solid={false} accent>
+          audio gen
+        </Pill>
+      ) : null}
+    </div>
+  );
+}
+
+function Pill({ children, title, solid, accent }) {
+  const baseColor = accent ? 'var(--accent)' : 'var(--fg-muted)';
+  return (
+    <span
+      title={title}
+      style={{
+        fontSize: 10,
+        padding: '1px 6px',
+        borderRadius: 3,
+        background: solid ? 'rgba(122, 166, 255, 0.15)' : 'transparent',
+        color: solid ? 'var(--accent)' : baseColor,
+        border: `1px solid ${solid ? 'var(--accent)' : 'var(--border)'}`,
+        letterSpacing: 0.2,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {children}
+    </span>
   );
 }
 

@@ -18,6 +18,34 @@ beforeEach(() => {
 const beatA = new ObjectId();
 const beatB = new ObjectId();
 
+// Insert a legacy-shaped storyboard doc (pre-frames model) straight into the
+// fake collection so we can exercise the lazy backfill path.
+async function insertLegacy(fields = {}) {
+  const now = new Date();
+  const doc = {
+    _id: new ObjectId(),
+    beat_id: beatA,
+    order: 1,
+    text_prompt: '',
+    summary: '',
+    start_frame_id: null,
+    start_frame_prompt: '',
+    start_frame_reference_ids: [],
+    previous_start_frame_id: null,
+    last_start_frame_edit_prompt: '',
+    end_frame_id: null,
+    end_frame_prompt: '',
+    end_frame_reference_ids: [],
+    previous_end_frame_id: null,
+    last_end_frame_edit_prompt: '',
+    created_at: now,
+    updated_at: now,
+    ...fields,
+  };
+  await fakeDb.collection('storyboards').insertOne(doc);
+  return doc;
+}
+
 describe('storyboards mongo helpers', () => {
   it('creates a storyboard with auto-incrementing order per beat', async () => {
     const a1 = await Storyboards.createStoryboard({ beatId: beatA });
@@ -29,22 +57,20 @@ describe('storyboards mongo helpers', () => {
     expect(a1.beat_id.toString()).toBe(beatA.toString());
   });
 
-  it('seeds defaults: empty text, no images, no audio', async () => {
+  it('seeds defaults: empty text, empty frames, no audio', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
     expect(sb.text_prompt).toBe('');
-    expect(sb.start_frame_id).toBe(null);
-    expect(sb.start_frame_prompt).toBe('');
-    expect(sb.start_frame_reference_ids).toEqual([]);
-    expect(sb.end_frame_id).toBe(null);
-    expect(sb.end_frame_prompt).toBe('');
-    expect(sb.end_frame_reference_ids).toEqual([]);
+    expect(sb.frames).toEqual([]);
     expect(sb.audio_file_id).toBe(null);
   });
 
-  it('does not carry the removed character_sheet_image_id or reference_image_ids fields', async () => {
+  it('does not carry the retired start/end frame top-level fields', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    expect(sb.start_frame_id).toBeUndefined();
+    expect(sb.end_frame_id).toBeUndefined();
+    expect(sb.start_frame_prompt).toBeUndefined();
+    expect(sb.start_frame_reference_ids).toBeUndefined();
     expect(sb.character_sheet_image_id).toBeUndefined();
-    expect(sb.reference_image_ids).toBeUndefined();
   });
 
   it('listStoryboards filters by beat and sorts by order', async () => {
@@ -66,15 +92,21 @@ describe('storyboards mongo helpers', () => {
     expect(counts.get(beatB.toString())).toBe(1);
   });
 
-  it('updateStoryboard accepts text_prompt and image role fields', async () => {
+  it('updateStoryboard accepts text_prompt and summary', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    const imgId = new ObjectId();
     const updated = await Storyboards.updateStoryboard(sb._id, {
       text_prompt: 'A wide shot of the diner at dusk.',
-      start_frame_id: imgId.toString(),
+      summary: 'Diner, dusk.',
     });
     expect(updated.text_prompt).toBe('A wide shot of the diner at dusk.');
-    expect(updated.start_frame_id.toString()).toBe(imgId.toString());
+    expect(updated.summary).toBe('Diner, dusk.');
+  });
+
+  it('updateStoryboard rejects the retired start_frame_id field', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    await expect(
+      Storyboards.updateStoryboard(sb._id, { start_frame_id: new ObjectId() }),
+    ).rejects.toThrow(/unknown field/);
   });
 
   it('updateStoryboard rejects unknown fields', async () => {
@@ -82,105 +114,6 @@ describe('storyboards mongo helpers', () => {
     await expect(
       Storyboards.updateStoryboard(sb._id, { random_field: 'nope' }),
     ).rejects.toThrow(/unknown field/);
-  });
-
-  it('updateStoryboard accepts null to clear an image role', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    const imgId = new ObjectId();
-    await Storyboards.updateStoryboard(sb._id, { end_frame_id: imgId });
-    const cleared = await Storyboards.updateStoryboard(sb._id, {
-      end_frame_id: null,
-    });
-    expect(cleared.end_frame_id).toBe(null);
-  });
-
-  it.each(['start_frame', 'end_frame'])(
-    'pushFrameReferenceImage and pullFrameReferenceImage manage %s refs',
-    async (role) => {
-      const field =
-        role === 'start_frame'
-          ? 'start_frame_reference_ids'
-          : 'end_frame_reference_ids';
-      const sb = await Storyboards.createStoryboard({ beatId: beatA });
-      const r1 = new ObjectId();
-      const r2 = new ObjectId();
-      let next = await Storyboards.pushFrameReferenceImage(sb._id, role, r1);
-      next = await Storyboards.pushFrameReferenceImage(sb._id, role, r2);
-      expect(next[field]).toHaveLength(2);
-      next = await Storyboards.pullFrameReferenceImage(sb._id, role, r1);
-      expect(next[field]).toHaveLength(1);
-      expect(next[field][0].toString()).toBe(r2.toString());
-    },
-  );
-
-  it('pushFrameReferenceImage is idempotent for duplicate ids', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    const r1 = new ObjectId();
-    await Storyboards.pushFrameReferenceImage(sb._id, 'start_frame', r1);
-    const next = await Storyboards.pushFrameReferenceImage(sb._id, 'start_frame', r1);
-    expect(next.start_frame_reference_ids).toHaveLength(1);
-  });
-
-  it('start_frame refs and end_frame refs are independent', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    const r1 = new ObjectId();
-    const r2 = new ObjectId();
-    await Storyboards.pushFrameReferenceImage(sb._id, 'start_frame', r1);
-    const after = await Storyboards.pushFrameReferenceImage(sb._id, 'end_frame', r2);
-    expect(after.start_frame_reference_ids.map((x) => x.toString())).toEqual([
-      r1.toString(),
-    ]);
-    expect(after.end_frame_reference_ids.map((x) => x.toString())).toEqual([
-      r2.toString(),
-    ]);
-  });
-
-  it('pushFrameReferenceImages appends many ids while deduping vs existing', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    const r1 = new ObjectId();
-    const r2 = new ObjectId();
-    const r3 = new ObjectId();
-    await Storyboards.pushFrameReferenceImage(sb._id, 'start_frame', r1);
-    const next = await Storyboards.pushFrameReferenceImages(sb._id, 'start_frame', [
-      r1.toString(),
-      r2.toString(),
-      r3.toString(),
-      r2.toString(),
-    ]);
-    const ids = next.start_frame_reference_ids.map((x) => x.toString());
-    expect(ids).toEqual([r1.toString(), r2.toString(), r3.toString()]);
-  });
-
-  it('setFrameReferenceImages replaces the list, preserving order and deduping', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    const r1 = new ObjectId();
-    const r2 = new ObjectId();
-    const r3 = new ObjectId();
-    await Storyboards.pushFrameReferenceImage(sb._id, 'end_frame', r1);
-    await Storyboards.pushFrameReferenceImage(sb._id, 'end_frame', r2);
-    const next = await Storyboards.setFrameReferenceImages(sb._id, 'end_frame', [
-      r3.toString(),
-      r1.toString(),
-      r3.toString(),
-    ]);
-    expect(next.end_frame_reference_ids.map((x) => x.toString())).toEqual([
-      r3.toString(),
-      r1.toString(),
-    ]);
-  });
-
-  it('setFrameReferenceImages clears the list when given an empty array', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    await Storyboards.pushFrameReferenceImage(sb._id, 'start_frame', new ObjectId());
-    const next = await Storyboards.setFrameReferenceImages(sb._id, 'start_frame', []);
-    expect(next.start_frame_reference_ids).toEqual([]);
-  });
-
-  it('frame ref helpers reject unknown roles', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    await expect(
-      Storyboards.pushFrameReferenceImage(sb._id, 'character_sheet', new ObjectId()),
-    ).rejects.toThrow(/invalid frame role/);
   });
 
   it('reorderStoryboardsForBeat rewrites the order field', async () => {
@@ -227,6 +160,360 @@ describe('storyboards mongo helpers', () => {
     const b = await Storyboards.listStoryboards({ beatId: beatB });
     expect(a).toHaveLength(0);
     expect(b).toHaveLength(1);
+  });
+});
+
+describe('frames pool', () => {
+  it('addFrame appends an empty frame with a stable id and default fields', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const { storyboard, frameId } = await Storyboards.addFrame(sb._id, {});
+    expect(storyboard.frames).toHaveLength(1);
+    const f = storyboard.frames[0];
+    expect(f._id.toString()).toBe(frameId.toString());
+    expect(f.image_id).toBe(null);
+    expect(f.prompt).toBe('');
+    expect(f.previous_image_id).toBe(null);
+    expect(f.last_edit_prompt).toBe('');
+    expect(f.reference_ids).toEqual([]);
+  });
+
+  it('addFrame stores a supplied image, prompt and references', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const img = new ObjectId();
+    const ref = new ObjectId();
+    const { storyboard } = await Storyboards.addFrame(sb._id, {
+      imageId: img.toString(),
+      prompt: 'Wide on the doorway.',
+      referenceIds: [ref.toString()],
+    });
+    const f = storyboard.frames[0];
+    expect(f.image_id.toString()).toBe(img.toString());
+    expect(f.prompt).toBe('Wide on the doorway.');
+    expect(f.reference_ids.map((x) => x.toString())).toEqual([ref.toString()]);
+  });
+
+  it('addFrame rejects a 7th frame (MAX_FRAMES = 6)', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    expect(Storyboards.MAX_FRAMES).toBe(6);
+    for (let i = 0; i < 6; i++) await Storyboards.addFrame(sb._id, {});
+    await expect(Storyboards.addFrame(sb._id, {})).rejects.toThrow(/6/);
+  });
+
+  it('removeFrame drops the entry and reports the undo image as orphaned', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const cur = new ObjectId();
+    const prev = new ObjectId();
+    const { frameId } = await Storyboards.addFrame(sb._id, { imageId: cur });
+    // Simulate an edit so the frame has a previous (undo) image.
+    await Storyboards.rotateFrameImageEdit({
+      id: sb._id,
+      frameId,
+      newImageId: new ObjectId(),
+      editPrompt: 'tweak',
+    });
+    // Re-read to get the real previous id, then remove.
+    const reloaded = await Storyboards.getStoryboard(sb._id);
+    const before = reloaded.frames.find((f) => f._id.equals(frameId));
+    const prevId = before.previous_image_id;
+    const { storyboard, orphanedImageIds } = await Storyboards.removeFrame(
+      sb._id,
+      frameId,
+    );
+    expect(storyboard.frames).toHaveLength(0);
+    expect(orphanedImageIds.map((x) => String(x))).toContain(String(prevId));
+    void cur;
+    void prev;
+  });
+
+  it('removeFrame rejects an unknown frame id', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    await expect(
+      Storyboards.removeFrame(sb._id, new ObjectId()),
+    ).rejects.toThrow(/frame/i);
+  });
+
+  it('reorderFrames reorders the array by frame id', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const a = (await Storyboards.addFrame(sb._id, { prompt: 'a' })).frameId;
+    const b = (await Storyboards.addFrame(sb._id, { prompt: 'b' })).frameId;
+    const c = (await Storyboards.addFrame(sb._id, { prompt: 'c' })).frameId;
+    const out = await Storyboards.reorderFrames(sb._id, [
+      c.toString(),
+      a.toString(),
+      b.toString(),
+    ]);
+    expect(out.frames.map((f) => f.prompt)).toEqual(['c', 'a', 'b']);
+  });
+
+  it('reorderFrames rejects a set that does not match exactly', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const a = (await Storyboards.addFrame(sb._id, {})).frameId;
+    await Storyboards.addFrame(sb._id, {});
+    await expect(
+      Storyboards.reorderFrames(sb._id, [a.toString()]),
+    ).rejects.toThrow();
+  });
+
+  it('setFrameImage sets a frame current image', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const { frameId } = await Storyboards.addFrame(sb._id, {});
+    const img = new ObjectId();
+    const out = await Storyboards.setFrameImage(sb._id, frameId, img);
+    expect(out.frames[0].image_id.toString()).toBe(img.toString());
+  });
+});
+
+describe('per-frame edit + undo', () => {
+  it('rotateFrameImageEdit moves current→previous and installs the new image', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const cur = new ObjectId();
+    const next = new ObjectId();
+    const { frameId } = await Storyboards.addFrame(sb._id, { imageId: cur });
+    const { storyboard, orphanedImageId } = await Storyboards.rotateFrameImageEdit({
+      id: sb._id,
+      frameId,
+      newImageId: next,
+      editPrompt: 'make it night',
+    });
+    const f = storyboard.frames.find((x) => x._id.equals(frameId));
+    expect(f.image_id.toString()).toBe(next.toString());
+    expect(f.previous_image_id.toString()).toBe(cur.toString());
+    expect(f.last_edit_prompt).toBe('make it night');
+    expect(orphanedImageId).toBe(null);
+  });
+
+  it('rotateFrameImageEdit reports the displaced previous image as an orphan', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const cur = new ObjectId();
+    const { frameId } = await Storyboards.addFrame(sb._id, { imageId: cur });
+    await Storyboards.rotateFrameImageEdit({
+      id: sb._id,
+      frameId,
+      newImageId: new ObjectId(),
+      editPrompt: 'a',
+    });
+    const firstPrev = cur;
+    const { orphanedImageId } = await Storyboards.rotateFrameImageEdit({
+      id: sb._id,
+      frameId,
+      newImageId: new ObjectId(),
+      editPrompt: 'b',
+    });
+    expect(String(orphanedImageId)).toBe(String(firstPrev));
+  });
+
+  it('rotateFrameImageEdit throws when the frame has no current image', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const { frameId } = await Storyboards.addFrame(sb._id, {});
+    await expect(
+      Storyboards.rotateFrameImageEdit({
+        id: sb._id,
+        frameId,
+        newImageId: new ObjectId(),
+        editPrompt: 'x',
+      }),
+    ).rejects.toThrow(/no current image/);
+  });
+
+  it('undoFrameImageEdit restores the previous image and clears undo state', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const cur = new ObjectId();
+    const next = new ObjectId();
+    const { frameId } = await Storyboards.addFrame(sb._id, { imageId: cur });
+    await Storyboards.rotateFrameImageEdit({
+      id: sb._id,
+      frameId,
+      newImageId: next,
+      editPrompt: 'edit',
+    });
+    const { storyboard, orphanedImageId } = await Storyboards.undoFrameImageEdit({
+      id: sb._id,
+      frameId,
+    });
+    const f = storyboard.frames.find((x) => x._id.equals(frameId));
+    expect(f.image_id.toString()).toBe(cur.toString());
+    expect(f.previous_image_id).toBe(null);
+    expect(f.last_edit_prompt).toBe('');
+    expect(String(orphanedImageId)).toBe(String(next));
+  });
+
+  it('undoFrameImageEdit throws when there is nothing to undo', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const { frameId } = await Storyboards.addFrame(sb._id, { imageId: new ObjectId() });
+    await expect(
+      Storyboards.undoFrameImageEdit({ id: sb._id, frameId }),
+    ).rejects.toThrow(/nothing to undo/i);
+  });
+});
+
+describe('per-frame references', () => {
+  it('pushFrameReferenceImage and pullFrameReferenceImage manage a frame ref list', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const { frameId } = await Storyboards.addFrame(sb._id, {});
+    const r1 = new ObjectId();
+    const r2 = new ObjectId();
+    await Storyboards.pushFrameReferenceImage(sb._id, frameId, r1);
+    let out = await Storyboards.pushFrameReferenceImage(sb._id, frameId, r2);
+    expect(out.frames[0].reference_ids).toHaveLength(2);
+    out = await Storyboards.pullFrameReferenceImage(sb._id, frameId, r1);
+    expect(out.frames[0].reference_ids).toHaveLength(1);
+    expect(out.frames[0].reference_ids[0].toString()).toBe(r2.toString());
+  });
+
+  it('pushFrameReferenceImage is idempotent for duplicate ids', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const { frameId } = await Storyboards.addFrame(sb._id, {});
+    const r1 = new ObjectId();
+    await Storyboards.pushFrameReferenceImage(sb._id, frameId, r1);
+    const out = await Storyboards.pushFrameReferenceImage(sb._id, frameId, r1);
+    expect(out.frames[0].reference_ids).toHaveLength(1);
+  });
+
+  it('reference lists are independent per frame', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const f1 = (await Storyboards.addFrame(sb._id, {})).frameId;
+    const f2 = (await Storyboards.addFrame(sb._id, {})).frameId;
+    const r1 = new ObjectId();
+    const r2 = new ObjectId();
+    await Storyboards.pushFrameReferenceImage(sb._id, f1, r1);
+    const out = await Storyboards.pushFrameReferenceImage(sb._id, f2, r2);
+    expect(out.frames[0].reference_ids.map((x) => x.toString())).toEqual([
+      r1.toString(),
+    ]);
+    expect(out.frames[1].reference_ids.map((x) => x.toString())).toEqual([
+      r2.toString(),
+    ]);
+  });
+
+  it('pushFrameReferenceImages appends many ids while deduping', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const { frameId } = await Storyboards.addFrame(sb._id, {});
+    const r1 = new ObjectId();
+    const r2 = new ObjectId();
+    const r3 = new ObjectId();
+    await Storyboards.pushFrameReferenceImage(sb._id, frameId, r1);
+    const out = await Storyboards.pushFrameReferenceImages(sb._id, frameId, [
+      r1.toString(),
+      r2.toString(),
+      r3.toString(),
+      r2.toString(),
+    ]);
+    expect(out.frames[0].reference_ids.map((x) => x.toString())).toEqual([
+      r1.toString(),
+      r2.toString(),
+      r3.toString(),
+    ]);
+  });
+
+  it('setFrameReferenceImages replaces preserving order and deduping', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const { frameId } = await Storyboards.addFrame(sb._id, {});
+    const r1 = new ObjectId();
+    const r2 = new ObjectId();
+    const r3 = new ObjectId();
+    await Storyboards.pushFrameReferenceImage(sb._id, frameId, r1);
+    await Storyboards.pushFrameReferenceImage(sb._id, frameId, r2);
+    const out = await Storyboards.setFrameReferenceImages(sb._id, frameId, [
+      r3.toString(),
+      r1.toString(),
+      r3.toString(),
+    ]);
+    expect(out.frames[0].reference_ids.map((x) => x.toString())).toEqual([
+      r3.toString(),
+      r1.toString(),
+    ]);
+  });
+
+  it('setFrameReferenceImages clears the list when given an empty array', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const { frameId } = await Storyboards.addFrame(sb._id, {});
+    await Storyboards.pushFrameReferenceImage(sb._id, frameId, new ObjectId());
+    const out = await Storyboards.setFrameReferenceImages(sb._id, frameId, []);
+    expect(out.frames[0].reference_ids).toEqual([]);
+  });
+
+  it('frame helpers reject an unknown frame id', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    await expect(
+      Storyboards.pushFrameReferenceImage(sb._id, new ObjectId(), new ObjectId()),
+    ).rejects.toThrow(/frame/i);
+  });
+});
+
+describe('per-frame prompt', () => {
+  it('setFramePrompt round-trips a frame prompt', async () => {
+    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const { frameId } = await Storyboards.addFrame(sb._id, {});
+    const out = await Storyboards.setFramePrompt(sb._id, frameId, 'Door swings open.');
+    expect(out.frames[0].prompt).toBe('Door swings open.');
+  });
+});
+
+describe('cleanupBeatImageReferences over frames', () => {
+  it('nulls matching frame images and pulls the id from reference lists across the beat', async () => {
+    const target = new ObjectId();
+    const sb1 = await Storyboards.createStoryboard({ beatId: beatA });
+    const sb2 = await Storyboards.createStoryboard({ beatId: beatA });
+    const f1 = (await Storyboards.addFrame(sb1._id, { imageId: target })).frameId;
+    const f2 = (await Storyboards.addFrame(sb2._id, {})).frameId;
+    await Storyboards.pushFrameReferenceImage(sb2._id, f2, target);
+
+    const touched = await Storyboards.cleanupBeatImageReferences(beatA, target);
+    expect(touched).toBe(2);
+
+    const r1 = await Storyboards.getStoryboard(sb1._id);
+    const r2 = await Storyboards.getStoryboard(sb2._id);
+    expect(r1.frames.find((f) => f._id.equals(f1)).image_id).toBe(null);
+    expect(r2.frames.find((f) => f._id.equals(f2)).reference_ids).toEqual([]);
+  });
+});
+
+describe('legacy backfill → frames', () => {
+  it('synthesizes frames from legacy start/end frame fields', async () => {
+    const startImg = new ObjectId();
+    const endImg = new ObjectId();
+    const ref = new ObjectId();
+    const doc = await insertLegacy({
+      start_frame_id: startImg,
+      start_frame_prompt: 'Wide.',
+      start_frame_reference_ids: [ref],
+      end_frame_id: endImg,
+      end_frame_prompt: 'Close.',
+    });
+    const sb = await Storyboards.getStoryboard(doc._id);
+    expect(sb.frames).toHaveLength(2);
+    expect(sb.frames[0].image_id.toString()).toBe(startImg.toString());
+    expect(sb.frames[0].prompt).toBe('Wide.');
+    expect(sb.frames[0].reference_ids.map((x) => x.toString())).toEqual([
+      ref.toString(),
+    ]);
+    expect(sb.frames[1].image_id.toString()).toBe(endImg.toString());
+    expect(sb.frames[1].prompt).toBe('Close.');
+  });
+
+  it('maps an empty legacy doc to an empty frames array', async () => {
+    const doc = await insertLegacy({});
+    const sb = await Storyboards.getStoryboard(doc._id);
+    expect(sb.frames).toEqual([]);
+  });
+
+  it('synthesizes a single frame when only the end frame existed', async () => {
+    const endImg = new ObjectId();
+    const doc = await insertLegacy({ end_frame_id: endImg });
+    const sb = await Storyboards.getStoryboard(doc._id);
+    expect(sb.frames).toHaveLength(1);
+    expect(sb.frames[0].image_id.toString()).toBe(endImg.toString());
+  });
+
+  it('persists synthesized frames so frame ids are stable across reloads', async () => {
+    const startImg = new ObjectId();
+    const doc = await insertLegacy({ start_frame_id: startImg });
+    const first = await Storyboards.getStoryboard(doc._id);
+    const second = await Storyboards.getStoryboard(doc._id);
+    expect(first.frames[0]._id.toString()).toBe(second.frames[0]._id.toString());
+    // The raw doc now carries a frames array.
+    const raw = await fakeDb.collection('storyboards').findOne({ _id: doc._id });
+    expect(Array.isArray(raw.frames)).toBe(true);
   });
 });
 
@@ -294,7 +581,6 @@ describe('storyboard scalar metadata', () => {
       duration_seconds: 12,
     });
     expect(updated.shot_type).toBe('close_up');
-    // close_up cap is 5
     expect(updated.duration_seconds).toBe(5);
   });
 
@@ -306,7 +592,6 @@ describe('storyboard scalar metadata', () => {
     const updated = await Storyboards.updateStoryboard(sb._id, {
       duration_seconds: 30,
     });
-    // two_shot cap is 5
     expect(updated.duration_seconds).toBe(5);
   });
 
@@ -388,35 +673,6 @@ describe('storyboard scalar metadata', () => {
   });
 });
 
-describe('storyboard frame prompts', () => {
-  it('seeds start_frame_prompt and end_frame_prompt as empty strings', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    expect(sb.start_frame_prompt).toBe('');
-    expect(sb.end_frame_prompt).toBe('');
-  });
-
-  it('updateStoryboard round-trips frame prompt fields', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    const updated = await Storyboards.updateStoryboard(sb._id, {
-      start_frame_prompt: 'Wide on the diner doorway.',
-      end_frame_prompt: 'Door swings open; light spills out.',
-    });
-    expect(updated.start_frame_prompt).toBe('Wide on the diner doorway.');
-    expect(updated.end_frame_prompt).toBe('Door swings open; light spills out.');
-  });
-
-  it('backfill synthesizes empty frame prompts on legacy docs', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    await fakeDb.collection('storyboards').updateOne(
-      { _id: sb._id },
-      { $unset: { start_frame_prompt: '', end_frame_prompt: '' } },
-    );
-    const reloaded = await Storyboards.getStoryboard(sb._id);
-    expect(reloaded.start_frame_prompt).toBe('');
-    expect(reloaded.end_frame_prompt).toBe('');
-  });
-});
-
 describe('storyboard summary field', () => {
   it('seeds summary as empty string and accepts it at create time', async () => {
     const empty = await Storyboards.createStoryboard({ beatId: beatA });
@@ -430,13 +686,12 @@ describe('storyboard summary field', () => {
   });
 
   it('backfill synthesizes an empty summary on legacy docs', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    // Simulate a legacy doc that pre-dates the summary field.
+    const doc = await insertLegacy({});
     await fakeDb.collection('storyboards').updateOne(
-      { _id: sb._id },
+      { _id: doc._id },
       { $unset: { summary: '' } },
     );
-    const reloaded = await Storyboards.getStoryboard(sb._id);
+    const reloaded = await Storyboards.getStoryboard(doc._id);
     expect(reloaded.summary).toBe('');
   });
 

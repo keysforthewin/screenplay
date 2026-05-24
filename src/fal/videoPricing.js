@@ -101,6 +101,38 @@ export const PRICING = Object.freeze({
     rates: [{ when: {}, perSecondUsd: 0.10 }],
     note: 'Sora 2: $0.10/s flat.',
   },
+  // Video-to-video models. Pricing for these endpoints isn't always
+  // structured the way fal exposes it for i2v — we use 'unknown' when in
+  // doubt and let the catalog's `price_text` carry the human-readable rate.
+  'sora-2-v2v-remix': {
+    kind: 'unknown',
+    note:
+      'Sora 2 Video Remix: priced like Sora 2 i2v (~$0.10/s) but billed per ' +
+      "remix request — fal's structured pricing isn't published. See the " +
+      'catalog price_text for the live string.',
+  },
+  'luma-ray-2-modify': {
+    kind: 'unknown',
+    note:
+      'Luma Ray 2 Modify: fal does not publish a structured per-second rate ' +
+      'for the modify endpoint; the catalog price_text carries the live ' +
+      'string.',
+  },
+  'sync-lipsync-v2': {
+    kind: 'per_audio_second',
+    // Sync Lipsync bills by the duration of the input audio; rate varies
+    // by `model` (lipsync-2 vs lipsync-2-pro). We default to lipsync-2.
+    perSecondUsd: null,
+    note:
+      'Sync Lipsync v2: priced per second of input audio. lipsync-2-pro ' +
+      'costs ~1.67× lipsync-2; see catalog price_text for current numbers.',
+  },
+  'decart-lucy-edit-pro': {
+    kind: 'unknown',
+    note:
+      'Decart Lucy Edit Pro: fal does not publish a structured per-second ' +
+      'rate; the catalog price_text carries the live string.',
+  },
   'sora-2-pro': {
     kind: 'per_second_tiered',
     // Sora 2 Pro is resolution-tiered. We send `resolution: 'auto'`; on
