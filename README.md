@@ -1,7 +1,7 @@
 # screenplay
 
 screenplay is a collaborative writers'-room and pre-vis workspace that lives in two places at once: a Discord channel where you talk to an agent like a colleague, and a browser-based editor where you and your collaborators edit the same screenplay state in real time. Introduce characters, sketch plot beats, attach reference images, generate concept art across four image providers, blend references into composites, lay out a per-beat shot list with start/end frames, generate video clips (Kling, Veo, Sora 2, lip-sync), drop in audio, look up real movies and actors, scan your draft for repetition or pacing issues, and export the whole thing as a PDF when you're done.
-wd
+
 ## Features
 
 ### Writing

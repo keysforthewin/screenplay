@@ -3829,14 +3829,22 @@ export function buildApiRouter() {
     }
   });
 
-  // List every other storyboard in the project that has a generated video
-  // (sb.video_file_id set). The "Storyboard" tab in the Add Video dialog
-  // uses this so the user can reuse a generated clip as the source for
-  // video-to-video on another shot. Excludes the current storyboard.
+  // Every reusable source video in the project, for the "Storyboard" tab in
+  // the Add Video dialog. Two kinds, merged into one list so the user can pick
+  // any of them as the video-to-video source for this shot:
+  //   kind:'generated'  — a rendered clip on any shot (sb.video_file_id),
+  //                       INCLUDING the current shot (feed its own output back
+  //                       in for v2v iteration; flagged is_current_shot).
+  //   kind:'reference'  — a video attachment uploaded to any beat or character
+  //                       (the same superset as the Reference tab).
+  // Every item carries `video_file_id`, an attachments-bucket GridFS id used
+  // both to render a <video> thumbnail (/attachment/:id) and to pick it
+  // (/video-upload/from-attachment copies the bytes by id regardless of kind).
   router.get('/storyboard/:id/video-source-storyboards', async (req, res, next) => {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const currentSb = await getStoryboard(sbId);
 
       const plot = await getPlot();
       const beatMetaById = new Map();
@@ -3851,19 +3859,21 @@ export function buildApiRouter() {
         }
       }
 
+      // 1. Generated videos on every shot, including the current one.
       const all = await listStoryboards();
-      const sources = [];
+      const generated = [];
       for (const sb of all) {
         if (!sb.video_file_id) continue;
-        if (sb._id.toString() === sbId) continue;
         const beatKey = sb.beat_id?.toString?.() || '';
         const beatMeta = beatMetaById.get(beatKey) || {
           name: '(unknown beat)',
           order: null,
         };
-        sources.push({
+        generated.push({
+          kind: 'generated',
           storyboard_id: sb._id,
           storyboard_order: sb.order ?? null,
+          is_current_shot: sb._id.toString() === sbId,
           beat_id: sb.beat_id,
           beat_name: beatMeta.name,
           beat_order: beatMeta.order,
@@ -3871,7 +3881,8 @@ export function buildApiRouter() {
           video_duration_seconds: sb.video_duration_seconds ?? null,
           video_model_label: sb.video_model_label || null,
           video_generated_at: sb.video_generated_at || null,
-          // First/last frame of the pool as thumbnail hints for the source picker.
+          // First/last frame of the pool: an instant poster while the <video>
+          // element loads its own frame.
           start_frame_id: sb.frames?.[0]?.image_id || null,
           end_frame_id: sb.frames?.length
             ? sb.frames[sb.frames.length - 1].image_id || null
@@ -3879,8 +3890,7 @@ export function buildApiRouter() {
           summary: stripMarkdown(sb.summary || '').trim(),
         });
       }
-
-      sources.sort((a, b) => {
+      generated.sort((a, b) => {
         const ba = a.beat_order ?? Infinity;
         const bb = b.beat_order ?? Infinity;
         if (ba !== bb) return ba - bb;
@@ -3889,7 +3899,66 @@ export function buildApiRouter() {
         return sa - sb_;
       });
 
-      res.json({ sources });
+      // 2. Uploaded video references on any beat or character. Exclude the
+      //    current shot's own attached source so it isn't a reference of itself.
+      const excludeStr = currentSb?.video_upload_file_id
+        ? String(currentSb.video_upload_file_id)
+        : null;
+      const characters = await listCharacters();
+      const references = [];
+      for (const beat of plot?.beats || []) {
+        const beatName =
+          stripMarkdown(beat.name || '').trim() ||
+          (beat.order != null ? `Beat ${beat.order}` : '(unnamed beat)');
+        for (const att of beat.attachments || []) {
+          if (!att?._id) continue;
+          if (excludeStr && String(att._id) === excludeStr) continue;
+          const ct = String(att.content_type || '');
+          if (!ct.startsWith('video/')) continue;
+          references.push({
+            kind: 'reference',
+            video_file_id: att._id,
+            filename: att.filename || '',
+            content_type: ct,
+            size: att.size || 0,
+            owner_type: 'beat',
+            owner_id: beat._id,
+            owner_name: beatName,
+            owner_order: beat.order ?? null,
+            uploaded_at: att.uploaded_at || null,
+          });
+        }
+      }
+      for (const c of characters || []) {
+        const charName =
+          stripMarkdown(c.name || '').trim() || '(unnamed character)';
+        for (const att of c.attachments || []) {
+          if (!att?._id) continue;
+          if (excludeStr && String(att._id) === excludeStr) continue;
+          const ct = String(att.content_type || '');
+          if (!ct.startsWith('video/')) continue;
+          references.push({
+            kind: 'reference',
+            video_file_id: att._id,
+            filename: att.filename || '',
+            content_type: ct,
+            size: att.size || 0,
+            owner_type: 'character',
+            owner_id: c._id,
+            owner_name: charName,
+            owner_order: null,
+            uploaded_at: att.uploaded_at || null,
+          });
+        }
+      }
+      references.sort((a, b) => {
+        const ta = a.uploaded_at ? new Date(a.uploaded_at).getTime() : 0;
+        const tb = b.uploaded_at ? new Date(b.uploaded_at).getTime() : 0;
+        return tb - ta;
+      });
+
+      // Generated clips first (by beat/shot), then uploaded references.
+      res.json({ sources: [...generated, ...references] });
     } catch (e) {
       next(e);
     }
