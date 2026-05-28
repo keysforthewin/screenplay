@@ -2316,3 +2316,41 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   color: var(--danger);
   font-size: 12px;
 }
+
+.beat-pager {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.beat-pager-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 45%;
+  padding: 8px 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 14px;
+}
+.beat-pager-link:hover {
+  border-color: var(--accent);
+}
+.beat-pager-link.is-next {
+  margin-left: auto;
+}
+.beat-pager-arrow {
+  color: var(--fg-muted);
+  font-size: 16px;
+  line-height: 1;
+}
+.beat-pager-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

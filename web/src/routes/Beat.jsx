@@ -9,6 +9,7 @@ import { BeatCharacters } from '../widgets/BeatCharacters.jsx';
 import { ArtworkTab } from '../widgets/ArtworkTab.jsx';
 import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
 import { ReferenceExtrasSection } from '../widgets/ReferenceExtrasSection.jsx';
+import { BeatPager } from '../widgets/BeatPager.jsx';
 
 const TABS = ['characters', 'background', 'attachments', 'references', 'artwork'];
 
@@ -217,6 +218,8 @@ export function Beat({ session }) {
           />
         </div>
       </CollabSurface>
+
+      <BeatPager beats={toc?.beats} currentId={beat._id} basePath="/beat" />
     </main>
   );
 }

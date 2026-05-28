@@ -21,6 +21,7 @@ import { ConfirmDialog } from '../widgets/Modal.jsx';
 import { StoryboardEditDialog } from '../widgets/StoryboardEditDialog.jsx';
 import { StoryboardGenerateDialog } from '../widgets/StoryboardGenerateDialog.jsx';
 import { formatRuntime } from '../shotTypes.js';
+import { BeatPager } from '../widgets/BeatPager.jsx';
 
 export function StoryboardBeat({ session }) {
   const { order } = useParams();
@@ -48,6 +49,7 @@ export function StoryboardBeat({ session }) {
   // tocCharacters is the full project roster, used by the per-item character
   // tag input. /api/toc returns plain_name for case-insensitive matching.
   const [tocCharacters, setTocCharacters] = useState([]);
+  const [tocBeats, setTocBeats] = useState([]);
   const [showProgressLog, setShowProgressLog] = useState(true);
   const progressLogRef = useRef(null);
   // 1s tick while a generation is running so "Xs ago" labels update smoothly
@@ -100,9 +102,15 @@ export function StoryboardBeat({ session }) {
     (async () => {
       try {
         const r = await apiGet(`/toc`);
-        if (!cancelled) setTocCharacters(r.characters || []);
+        if (!cancelled) {
+          setTocCharacters(r.characters || []);
+          setTocBeats(r.beats || []);
+        }
       } catch {
-        if (!cancelled) setTocCharacters([]);
+        if (!cancelled) {
+          setTocCharacters([]);
+          setTocBeats([]);
+        }
       }
     })();
     return () => {
@@ -418,6 +426,8 @@ export function StoryboardBeat({ session }) {
         onClose={() => setEditOpen(false)}
         onApplied={() => { setEditOpen(false); onRefresh(); }}
       />
+
+      <BeatPager beats={tocBeats} currentId={data?.beat?._id} basePath="/storyboard" />
     </main>
   );
 }
