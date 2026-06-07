@@ -93,6 +93,7 @@ export function Beat({ session }) {
       <p>
         <a href="#" onClick={(e) => { e.preventDefault(); navigate('/'); }}>← Back to TOC</a>
       </p>
+      <BeatPager beats={toc?.beats} currentId={beat._id} basePath="/beat" />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
         <h1 style={{ marginTop: 0 }}>Beat #{beat.order}</h1>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
