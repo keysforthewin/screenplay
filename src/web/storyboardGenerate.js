@@ -830,7 +830,7 @@ function formatSkeletonForExpand(outline) {
     .join('\n');
 }
 
-export function buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes = [] }) {
+export function buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes = [], revisionNotes = '' }) {
   const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes });
   const bibleBlock = renderSceneBibleBlock(sceneBible);
   const lines = [ctx];
@@ -841,6 +841,11 @@ export function buildShotExpandUserText({ beat, characters, sceneBible, outline,
     '',
     '# Full shot skeleton:',
     formatSkeletonForExpand(outline),
+  );
+  if (typeof revisionNotes === 'string' && revisionNotes.trim()) {
+    lines.push('', '# Revision notes to address (from a critique of the previous version — fix these):', revisionNotes.trim());
+  }
+  lines.push(
     '',
     `Write start_frame_prompt + video_prompt for ALL ${outline.length} shots via the expand_shots tool, one entry per shot with its 1-based shot_index.`,
   );
@@ -859,11 +864,11 @@ function synthesizeFallbackShot(frame) {
 // Pass 2. One call expands the whole skeleton. Returns an array aligned to the
 // skeleton (index i -> shot i+1); omitted entries are filled with a synthesized
 // fallback so downstream persistence always gets a usable prompt.
-async function expandShots({ beat, characters, sceneBible, outline, direction, directorNotes = [] }) {
+async function expandShots({ beat, characters, sceneBible, outline, direction, directorNotes = [], revisionNotes = '' }) {
   if (shotExpanderOverride) {
-    return shotExpanderOverride({ beat, characters, sceneBible, outline, direction, directorNotes });
+    return shotExpanderOverride({ beat, characters, sceneBible, outline, direction, directorNotes, revisionNotes });
   }
-  const userText = buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes });
+  const userText = buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes, revisionNotes });
   const client = getAnthropic();
   const resp = await client.messages.create({
     model: STORYBOARD_MODEL,
