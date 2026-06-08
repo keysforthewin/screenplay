@@ -1,9 +1,18 @@
-// Integration test for the storyboard auto-generation pipeline.
+// Integration test for the storyboard auto-generation pipeline (two-pass).
 //
-// Mocks Anthropic (returns a fixed 2-frame plan), Gemini (returns fake image
-// bytes), and the GridFS image upload helper (returns fake metadata). Then
-// drives the job from start to finish and verifies the storyboards land in
-// Mongo with the expected fields.
+// Drives the background job via the NEW pipeline overrides:
+//   - _setScenePlannerForTests : returns { sceneBible, outline } (Pass 1)
+//   - _setShotExpanderForTests : returns one
+//       { start_frame_prompt, video_prompt, reverse_in_post } per skeleton shot
+//       (Pass 2)
+// Then verifies the storyboards land in Mongo with the expected fields. No
+// images are rendered during generation — the image dispatcher must stay idle.
+//
+// (The narrower Pass-1 / Pass-2 / planFramesV2 unit tests live in
+// tests/storyboardSceneGeneration.test.js; this file covers the end-to-end job:
+// target-count handling, row metadata persistence, multi-row creation, the
+// empty-planner-preserves-existing path, reference seeding, the reverse_in_post
+// override, progress events, and crash recording.)
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ObjectId } from 'mongodb';
@@ -20,88 +29,80 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-const uploadCounter = { n: 0 };
 vi.mock('../src/mongo/images.js', () => ({
   readImageBuffer: vi.fn(async () => null),
-  uploadGeneratedImage: vi.fn(async ({ filename, contentType }) => {
-    uploadCounter.n += 1;
-    return {
-      _id: new ObjectId(),
-      filename,
-      content_type: contentType || 'image/png',
-      size: 1024,
-      uploaded_at: new Date(),
-    };
-  }),
+  uploadGeneratedImage: vi.fn(async ({ filename, contentType }) => ({
+    _id: new ObjectId(),
+    filename,
+    content_type: contentType || 'image/png',
+    size: 1024,
+    uploaded_at: new Date(),
+  })),
 }));
 
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Generate = await import('../src/web/storyboardGenerate.js');
-const { _resetAnthropicClientForTests } =
-  await import('../src/anthropic/client.js');
 
 beforeEach(() => {
   fakeDb.reset();
-  uploadCounter.n = 0;
-  _resetAnthropicClientForTests();
-  // Reset two-stage planner overrides so tests don't leak into each other.
-  Generate._setOutlinePlannerForTests(null);
-  Generate._setFrameRefinerForTests(null);
-  // Default the image dispatcher to a benign fake so tests that don't
-  // override it (e.g. the new direction/clamp/rolling-context tests) still
-  // complete without trying to hit Gemini/OpenAI.
-  Generate._setImageDispatcherForTests(async () => ({
-    buffer: Buffer.from('img'),
-    contentType: 'image/png',
-  }));
+  // Reset two-pass planner overrides so tests don't leak into each other.
+  Generate._setScenePlannerForTests(null);
+  Generate._setShotExpanderForTests(null);
+  // The image dispatcher must never fire during generation; make it throw so
+  // an accidental call surfaces loudly.
+  Generate._setImageDispatcherForTests(() => {
+    throw new Error('image dispatcher must not be called during generation');
+  });
 });
 
-// Two-stage flow: outline returns the shot list (no detailed prompts), then
-// each frame is refined into video_prompt + start_frame_prompt +
-// end_frame_prompt. The TWO_FRAME_PLAN object carries both halves so each
-// test can drive both stages with one fixture.
-const TWO_FRAME_PLAN = {
-  frames: [
+// A two-shot plan. The skeleton fields (description/shot_type/duration/...) are
+// what Pass 1 emits; the expand fields (start_frame_prompt/video_prompt) are
+// what Pass 2 emits. installPlanner wires both overrides from this shape.
+const TWO_SHOT_PLAN = {
+  sceneBible: { location: 'Diner', time_of_day: 'dusk', lighting_key: 'warm practicals' },
+  shots: [
     {
       description: 'Alice walks into the diner.',
       shot_type: 'cinematic_wide',
       duration_seconds: 12,
       transition_in: '',
-      video_prompt: 'Alice steps through the doorway and scans the room. Camera holds.',
-      start_frame_prompt: 'Wide shot of Alice entering through the diner door, dusk light.',
-      end_frame_prompt: 'Alice halfway across the room, scanning the booths.',
       characters_in_scene: ['Alice'],
+      reverse_in_post: false,
+      start_frame_prompt: 'Wide shot of Alice entering through the diner door, dusk light.',
+      video_prompt: 'Alice steps through the doorway and scans the room. Camera holds.',
     },
     {
       description: 'Alice sits down across from Bob.',
       shot_type: 'two_shot',
       duration_seconds: 4,
       transition_in: 'Picks up Alice mid-stride from #1.',
-      video_prompt: 'Alice slides into the booth opposite Bob; Bob lifts his gaze. Camera holds.',
-      start_frame_prompt: 'Two-shot of Alice approaching the booth.',
-      end_frame_prompt: 'Alice seated, Bob looking up.',
       characters_in_scene: ['Alice', 'Bob'],
+      reverse_in_post: false,
+      start_frame_prompt: 'Two-shot of Alice approaching the booth.',
+      video_prompt: 'Alice slides into the booth opposite Bob; Bob lifts his gaze. Camera holds.',
     },
   ],
 };
 
-// Set up both-stage overrides from a frames fixture. The outline override
-// returns the frames minus the detailed prompts (Stage A's contract); the
-// refiner override returns the matching video / still prompts so the final
-// pipeline output equals the fixture frames.
-function installPlannerForFixture(frames) {
-  const outline = frames.map(
-    ({ video_prompt, start_frame_prompt, end_frame_prompt, ...rest }) => ({
-      ...rest,
-    }),
+// Wire the scene planner + shot expander overrides from a plan fixture. The
+// scene planner returns the skeleton (description/shot_type/... only); the shot
+// expander returns the matching { start_frame_prompt, video_prompt } per shot.
+function installPlanner(plan) {
+  const outline = plan.shots.map(
+    ({ start_frame_prompt, video_prompt, ...skeleton }) => ({ ...skeleton }),
   );
-  Generate._setOutlinePlannerForTests(async () => outline);
-  Generate._setFrameRefinerForTests(async ({ index }) => ({
-    video_prompt: frames[index]?.video_prompt ?? '',
-    start_frame_prompt: frames[index]?.start_frame_prompt ?? '',
-    end_frame_prompt: frames[index]?.end_frame_prompt ?? '',
+  Generate._setScenePlannerForTests(async () => ({
+    sceneBible: plan.sceneBible ?? null,
+    outline,
   }));
+  Generate._setShotExpanderForTests(async ({ outline: ol }) =>
+    ol.map((f, i) => ({
+      start_frame_prompt: plan.shots[i]?.start_frame_prompt ?? '',
+      video_prompt: plan.shots[i]?.video_prompt ?? '',
+      reverse_in_post: Boolean(plan.shots[i]?.reverse_in_post),
+    })),
+  );
 }
 
 async function waitForJob(jobId) {
@@ -118,17 +119,9 @@ async function waitForJob(jobId) {
   throw new Error('job never completed');
 }
 
-describe('storyboard auto-generation', () => {
-  it('plans frames and creates storyboard rows without rendering frame images', async () => {
-    installPlannerForFixture(TWO_FRAME_PLAN.frames);
-    const dispatcherCalls = [];
-    Generate._setImageDispatcherForTests(async ({ prompt }) => {
-      dispatcherCalls.push(prompt);
-      return {
-        buffer: Buffer.from('fake-png-bytes'),
-        contentType: 'image/png',
-      };
-    });
+describe('storyboard auto-generation (two-pass)', () => {
+  it('plans shots and creates storyboard rows without rendering frame images', async () => {
+    installPlanner(TWO_SHOT_PLAN);
 
     const beat = await Plots.createBeat({
       name: 'Diner reunion',
@@ -147,16 +140,11 @@ describe('storyboard auto-generation', () => {
     expect(job.completed).toBe(2);
     expect(job.failed).toBe(0);
 
-    // Auto frame-image generation has been removed: the image dispatcher must
-    // not be called during the bulk-create path. Users render frames manually
-    // via the per-row regen flow.
-    expect(dispatcherCalls).toHaveLength(0);
-
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(stored).toHaveLength(2);
     for (const sb of stored) {
-      // The planner seeds two frames (start + end prompt), neither rendered yet.
-      expect(sb.frames).toHaveLength(2);
+      // Only the start-frame prompt is seeded (one frame, not start+end).
+      expect(sb.frames).toHaveLength(1);
       for (const f of sb.frames) expect(f.image_id).toBe(null);
       expect(typeof sb.text_prompt).toBe('string');
       expect(sb.text_prompt.length).toBeGreaterThan(0);
@@ -176,11 +164,8 @@ describe('storyboard auto-generation', () => {
     expect(stored[1].characters_in_scene).toEqual(['Alice', 'Bob']);
   });
 
-  it('returns immediately with status=done when the model returns no frames', async () => {
-    installPlannerForFixture([]);
-    Generate._setImageDispatcherForTests(async () => {
-      throw new Error('should not be called');
-    });
+  it('returns status=done and persists nothing when the planner returns no shots', async () => {
+    Generate._setScenePlannerForTests(async () => ({ sceneBible: null, outline: [] }));
 
     const beat = await Plots.createBeat({
       name: 'E',
@@ -199,11 +184,7 @@ describe('storyboard auto-generation', () => {
   });
 
   it('replaces existing storyboards when the planner produces a non-empty plan', async () => {
-    installPlannerForFixture(TWO_FRAME_PLAN.frames);
-    Generate._setImageDispatcherForTests(async () => ({
-      buffer: Buffer.from('fake'),
-      contentType: 'image/png',
-    }));
+    installPlanner(TWO_SHOT_PLAN);
 
     const beat = await Plots.createBeat({
       name: 'R',
@@ -235,22 +216,21 @@ describe('storyboard auto-generation', () => {
   });
 
   it('clamps planner-emitted duration that exceeds the shot_type cap', async () => {
-    installPlannerForFixture([
-      {
-        description: 'Tight on Alice, eyes welling.',
-        shot_type: 'close_up',
-        duration_seconds: 12, // close_up cap is 5
-        transition_in: '',
-        video_prompt: 'Alice lifts her gaze; eyes well. Camera holds.',
-        start_frame_prompt: 'Tight close-up of Alice, looking down.',
-        end_frame_prompt: 'Tight close-up of Alice, looking up.',
-        characters_in_scene: ['Alice'],
-      },
-    ]);
-    Generate._setImageDispatcherForTests(async () => ({
-      buffer: Buffer.from('fake'),
-      contentType: 'image/png',
-    }));
+    installPlanner({
+      sceneBible: { location: 'Room' },
+      shots: [
+        {
+          description: 'Tight on Alice, eyes welling.',
+          shot_type: 'close_up',
+          duration_seconds: 12, // close_up cap is 5
+          transition_in: '',
+          characters_in_scene: ['Alice'],
+          reverse_in_post: false,
+          start_frame_prompt: 'Tight close-up of Alice, looking down.',
+          video_prompt: 'Alice lifts her gaze; eyes well. Camera holds.',
+        },
+      ],
+    });
 
     const beat = await Plots.createBeat({
       name: 'Clamp',
@@ -270,22 +250,21 @@ describe('storyboard auto-generation', () => {
   });
 
   it('trims characters_in_scene to MAX_CHARS_PER_SHOT', async () => {
-    installPlannerForFixture([
-      {
-        description: 'Crowd shot.',
-        shot_type: 'cinematic_wide',
-        duration_seconds: 8,
-        transition_in: '',
-        video_prompt: 'Subtle handheld breath on the wide; background figures drift slightly.',
-        start_frame_prompt: 'Wide shot of the diner.',
-        end_frame_prompt: 'Wide shot of the diner, slight zoom.',
-        characters_in_scene: ['Alice', 'Bob', 'Carol', 'Dave'],
-      },
-    ]);
-    Generate._setImageDispatcherForTests(async () => ({
-      buffer: Buffer.from('fake'),
-      contentType: 'image/png',
-    }));
+    installPlanner({
+      sceneBible: { location: 'Diner' },
+      shots: [
+        {
+          description: 'Crowd shot.',
+          shot_type: 'cinematic_wide',
+          duration_seconds: 8,
+          transition_in: '',
+          characters_in_scene: ['Alice', 'Bob', 'Carol', 'Dave'],
+          reverse_in_post: false,
+          start_frame_prompt: 'Wide shot of the diner.',
+          video_prompt: 'Subtle handheld breath on the wide; background figures drift slightly.',
+        },
+      ],
+    });
 
     const beat = await Plots.createBeat({
       name: 'Crowd',
@@ -302,33 +281,32 @@ describe('storyboard auto-generation', () => {
     expect(stored[0].characters_in_scene).toEqual(['Alice', 'Bob']);
   });
 
-  it('handles atmospheric/insert frames with empty characters_in_scene', async () => {
-    installPlannerForFixture([
-      {
-        description: 'Establishing wide.',
-        shot_type: 'establishing',
-        duration_seconds: 5,
-        transition_in: '',
-        video_prompt: 'Camera holds locked-off on the diner exterior; light drains from the sky.',
-        start_frame_prompt: 'Wide of the diner exterior at dusk.',
-        end_frame_prompt: 'Same wide; neon sign flickers on.',
-        characters_in_scene: [],
-      },
-      {
-        description: 'Insert: coffee cup steaming.',
-        shot_type: 'insert',
-        duration_seconds: 3,
-        transition_in: 'Match cut from neon glow to steam.',
-        video_prompt: 'Steam rises from the coffee cup in a slow curl. Camera holds.',
-        start_frame_prompt: 'Macro shot of a coffee cup, steam rising.',
-        end_frame_prompt: 'Macro shot of a coffee cup, ripple as a hand reaches in.',
-        characters_in_scene: [],
-      },
-    ]);
-    Generate._setImageDispatcherForTests(async () => ({
-      buffer: Buffer.from('fake'),
-      contentType: 'image/png',
-    }));
+  it('handles atmospheric/insert shots with empty characters_in_scene', async () => {
+    installPlanner({
+      sceneBible: { location: 'Diner exterior' },
+      shots: [
+        {
+          description: 'Establishing wide.',
+          shot_type: 'establishing',
+          duration_seconds: 5,
+          transition_in: '',
+          characters_in_scene: [],
+          reverse_in_post: false,
+          start_frame_prompt: 'Wide of the diner exterior at dusk.',
+          video_prompt: 'Camera holds locked-off on the diner exterior; light drains from the sky.',
+        },
+        {
+          description: 'Insert: coffee cup steaming.',
+          shot_type: 'insert',
+          duration_seconds: 3,
+          transition_in: 'Match cut from neon glow to steam.',
+          characters_in_scene: [],
+          reverse_in_post: false,
+          start_frame_prompt: 'Macro shot of a coffee cup, steam rising.',
+          video_prompt: 'Steam rises from the coffee cup in a slow curl. Camera holds.',
+        },
+      ],
+    });
 
     const beat = await Plots.createBeat({
       name: 'Atmos',
@@ -350,11 +328,8 @@ describe('storyboard auto-generation', () => {
     expect(stored[1].transition_in).toBe('Match cut from neon glow to steam.');
   });
 
-  it('preserves existing storyboards when the planner returns no frames', async () => {
-    installPlannerForFixture([]);
-    Generate._setImageDispatcherForTests(async () => {
-      throw new Error('should not be called');
-    });
+  it('preserves existing storyboards when the planner returns no shots', async () => {
+    Generate._setScenePlannerForTests(async () => ({ sceneBible: null, outline: [] }));
 
     const beat = await Plots.createBeat({
       name: 'P',
@@ -380,12 +355,8 @@ describe('storyboard auto-generation', () => {
     expect(after.map((s) => s.text_prompt)).toEqual(['keep 1', 'keep 2']);
   });
 
-  it("stores the planner's video_prompt in text_prompt and pre-fills the per-frame still prompts", async () => {
-    installPlannerForFixture(TWO_FRAME_PLAN.frames);
-    Generate._setImageDispatcherForTests(async () => ({
-      buffer: Buffer.from('img'),
-      contentType: 'image/png',
-    }));
+  it("stores the expander's video_prompt in text_prompt and seeds the start-frame still prompt", async () => {
+    installPlanner(TWO_SHOT_PLAN);
 
     const beat = await Plots.createBeat({
       name: 'D',
@@ -401,152 +372,47 @@ describe('storyboard auto-generation', () => {
 
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(stored).toHaveLength(2);
-    // text_prompt is the clip-gen prompt — the planner's video_prompt verbatim
-    // (no Start frame / End frame baking). No legacy markers should appear.
-    expect(stored[0].text_prompt).toContain(TWO_FRAME_PLAN.frames[0].video_prompt);
-    expect(stored[1].text_prompt).toContain(TWO_FRAME_PLAN.frames[1].video_prompt);
+    // text_prompt carries the expander's video_prompt verbatim (no Start
+    // frame / End frame baking). No legacy markers should appear.
+    expect(stored[0].text_prompt).toContain(TWO_SHOT_PLAN.shots[0].video_prompt);
+    expect(stored[1].text_prompt).toContain(TWO_SHOT_PLAN.shots[1].video_prompt);
     expect(stored[0].text_prompt).not.toMatch(/\*\*Start frame:\*\*/);
     expect(stored[0].text_prompt).not.toMatch(/\*\*End frame:\*\*/);
-    // The planner's opening/closing still prompts are seeded as the first two
-    // frames of each row's pool so the SPA's frame CollabFields render with the
-    // planner's suggestions.
+    // Only the opening still prompt is seeded — exactly one frame per row.
     expect(stored[0].frames.map((f) => f.prompt)).toEqual([
-      TWO_FRAME_PLAN.frames[0].start_frame_prompt,
-      TWO_FRAME_PLAN.frames[0].end_frame_prompt,
+      TWO_SHOT_PLAN.shots[0].start_frame_prompt,
     ]);
     expect(stored[1].frames.map((f) => f.prompt)).toEqual([
-      TWO_FRAME_PLAN.frames[1].start_frame_prompt,
-      TWO_FRAME_PLAN.frames[1].end_frame_prompt,
+      TWO_SHOT_PLAN.shots[1].start_frame_prompt,
     ]);
   });
 
-  it('refines frames sequentially with rolling context — each call sees previously refined neighbors', async () => {
-    // Stage A returns 3 outline frames; Stage B observes the previousRefined
-    // list each call. We assert refinement #2 sees #1's prompts and #3 sees
-    // both #1 and #2.
-    const outline = [
-      {
-        description: 'Door opens.',
-        shot_type: 'cinematic_wide',
-        duration_seconds: 5,
-        transition_in: '',
-        characters_in_scene: [],
-      },
-      {
-        description: 'Push in on the protagonist.',
-        shot_type: 'medium',
-        duration_seconds: 4,
-        transition_in: 'Picks up the doorframe from #1.',
-        characters_in_scene: ['Alice'],
-      },
-      {
-        description: 'Reaction close-up.',
-        shot_type: 'reaction',
-        duration_seconds: 3,
-        transition_in: 'Match cut on the eyes.',
-        characters_in_scene: ['Alice'],
-      },
-    ];
-    Generate._setOutlinePlannerForTests(async () => outline);
-    const refineSeen = [];
-    Generate._setFrameRefinerForTests(async ({ index, previousRefined }) => {
-      // Deep-copy what we saw so later mutations can't poison the assertion.
-      refineSeen.push({
-        index,
-        previousRefined: previousRefined.map((p) => ({ ...p })),
-      });
+  it('propagates `direction` to both passes', async () => {
+    const sceneCalls = [];
+    Generate._setScenePlannerForTests(async (args) => {
+      sceneCalls.push(args);
       return {
-        video_prompt: `video#${index}`,
-        start_frame_prompt: `start#${index}`,
-        end_frame_prompt: `end#${index}`,
+        sceneBible: { location: 'X' },
+        outline: [
+          {
+            description: 'D',
+            shot_type: 'medium',
+            duration_seconds: 4,
+            transition_in: '',
+            characters_in_scene: [],
+          },
+        ],
       };
     });
-    Generate._setImageDispatcherForTests(async () => ({
-      buffer: Buffer.from('img'),
-      contentType: 'image/png',
-    }));
-
-    const beat = await Plots.createBeat({
-      name: 'Roll',
-      desc: 'r',
-      body: 'r',
-      characters: ['Alice'],
+    const expandCalls = [];
+    Generate._setShotExpanderForTests(async (args) => {
+      expandCalls.push(args);
+      return args.outline.map(() => ({
+        start_frame_prompt: 's',
+        video_prompt: 'v',
+        reverse_in_post: false,
+      }));
     });
-    const jobId = await Generate.startStoryboardGenerationJob({
-      beatId: beat._id.toString(),
-    });
-    const job = await waitForJob(jobId);
-    expect(job.status).toBe('done');
-    expect(job.planned).toBe(3);
-
-    // Refinement order is 0, 1, 2 with growing context. Each previousRefined
-    // entry carries the refined prompts of the prior frame(s) (alongside the
-    // outline fields so the refiner can re-read shot_type etc. if needed).
-    expect(refineSeen.map((r) => r.index)).toEqual([0, 1, 2]);
-    expect(refineSeen[0].previousRefined).toEqual([]);
-    expect(refineSeen[1].previousRefined.map((p) => p.video_prompt)).toEqual([
-      'video#0',
-    ]);
-    expect(refineSeen[1].previousRefined.map((p) => p.start_frame_prompt)).toEqual([
-      'start#0',
-    ]);
-    expect(refineSeen[1].previousRefined.map((p) => p.end_frame_prompt)).toEqual([
-      'end#0',
-    ]);
-    expect(refineSeen[2].previousRefined.map((p) => p.video_prompt)).toEqual([
-      'video#0',
-      'video#1',
-    ]);
-    expect(refineSeen[2].previousRefined.map((p) => p.start_frame_prompt)).toEqual([
-      'start#0',
-      'start#1',
-    ]);
-    expect(refineSeen[2].previousRefined.map((p) => p.end_frame_prompt)).toEqual([
-      'end#0',
-      'end#1',
-    ]);
-
-    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
-    // Each row's text_prompt carries the planner's video_prompt verbatim.
-    expect(stored.map((s) => s.text_prompt)).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining('video#0'),
-        expect.stringContaining('video#1'),
-        expect.stringContaining('video#2'),
-      ]),
-    );
-    // The opening/closing still prompts are seeded as each row's two frames.
-    expect(stored.map((s) => s.frames[0]?.prompt)).toEqual(
-      expect.arrayContaining(['start#0', 'start#1', 'start#2']),
-    );
-    expect(stored.map((s) => s.frames[1]?.prompt)).toEqual(
-      expect.arrayContaining(['end#0', 'end#1', 'end#2']),
-    );
-  });
-
-  it('propagates `direction` to both stages', async () => {
-    const outlineCalls = [];
-    Generate._setOutlinePlannerForTests(async (args) => {
-      outlineCalls.push(args);
-      return [
-        {
-          description: 'D',
-          shot_type: 'medium',
-          duration_seconds: 4,
-          transition_in: '',
-          characters_in_scene: [],
-        },
-      ];
-    });
-    const refineCalls = [];
-    Generate._setFrameRefinerForTests(async (args) => {
-      refineCalls.push(args);
-      return { video_prompt: 'v', start_frame_prompt: 's', end_frame_prompt: 'e' };
-    });
-    Generate._setImageDispatcherForTests(async () => ({
-      buffer: Buffer.from('img'),
-      contentType: 'image/png',
-    }));
 
     const beat = await Plots.createBeat({
       name: 'Dir',
@@ -563,22 +429,14 @@ describe('storyboard auto-generation', () => {
     // Direction is recorded on the job.
     expect(job.direction).toBe('lean handheld and dirty over-the-shoulders');
 
-    expect(outlineCalls).toHaveLength(1);
-    expect(outlineCalls[0].direction).toBe(
-      'lean handheld and dirty over-the-shoulders',
-    );
-    expect(refineCalls).toHaveLength(1);
-    expect(refineCalls[0].direction).toBe(
-      'lean handheld and dirty over-the-shoulders',
-    );
+    expect(sceneCalls).toHaveLength(1);
+    expect(sceneCalls[0].direction).toBe('lean handheld and dirty over-the-shoulders');
+    expect(expandCalls).toHaveLength(1);
+    expect(expandCalls[0].direction).toBe('lean handheld and dirty over-the-shoulders');
   });
 
   it('records detailed progress events for each generation step', async () => {
-    installPlannerForFixture(TWO_FRAME_PLAN.frames);
-    Generate._setImageDispatcherForTests(async () => ({
-      buffer: Buffer.from('img'),
-      contentType: 'image/png',
-    }));
+    installPlanner(TWO_SHOT_PLAN);
 
     const beat = await Plots.createBeat({
       name: 'P',
@@ -599,27 +457,24 @@ describe('storyboard auto-generation', () => {
     expect(job.progress.step).toBe('job_done');
     expect(job.progress.message).toMatch(/Done — 2 created/);
 
-    // The event log captures the major phases plus per-frame steps. Each entry
-    // carries an ISO timestamp, phase, step, and human-readable message. With
-    // auto frame-image generation removed, per-frame events shrink to
-    // frame_start / frame_done — no render_*_frame or caption_*_frame steps.
+    // The event log captures the two planning passes plus per-row steps.
     expect(Array.isArray(job.events)).toBe(true);
     const steps = job.events.map((e) => e.step);
     expect(steps).toContain('job_queued');
-    expect(steps).toContain('plan_outline_start');
-    expect(steps).toContain('plan_outline_done');
-    expect(steps).toContain('refine_frame_start');
-    expect(steps).toContain('refine_done');
+    expect(steps).toContain('plan_scene_start');
+    expect(steps).toContain('plan_scene_done');
+    expect(steps).toContain('expand_start');
+    expect(steps).toContain('expand_done');
     expect(steps).toContain('render_start');
     expect(steps).toContain('frame_start');
     expect(steps).toContain('frame_done');
     expect(steps).toContain('job_done');
+    // No legacy per-frame refine / render-image steps.
+    expect(steps).not.toContain('refine_frame_start');
     expect(steps).not.toContain('render_start_frame');
     expect(steps).not.toContain('caption_start_frame');
-    expect(steps).not.toContain('render_end_frame');
-    expect(steps).not.toContain('caption_end_frame');
 
-    // Per-frame events carry the frame index + total so the SPA can render
+    // Per-row events carry the row index + total so the SPA can render
     // "Frame 2/2" without re-deriving it.
     const frameStarts = job.events.filter((e) => e.step === 'frame_start');
     expect(frameStarts.map((e) => e.frame)).toEqual([1, 2]);
@@ -632,13 +487,9 @@ describe('storyboard auto-generation', () => {
   });
 
   it('records a job_crashed progress event when the runner throws', async () => {
-    Generate._setOutlinePlannerForTests(async () => {
-      throw new Error('outline boom');
+    Generate._setScenePlannerForTests(async () => {
+      throw new Error('plan boom');
     });
-    Generate._setImageDispatcherForTests(async () => ({
-      buffer: Buffer.from('img'),
-      contentType: 'image/png',
-    }));
 
     const beat = await Plots.createBeat({
       name: 'Crash',
@@ -654,61 +505,15 @@ describe('storyboard auto-generation', () => {
     expect(job.status).toBe('error');
     expect(job.progress?.phase).toBe('error');
     expect(job.progress?.step).toBe('job_crashed');
-    expect(job.progress?.message).toMatch(/outline boom/);
-  });
-
-  it('falls back to synthesized prompts when refinement returns null', async () => {
-    Generate._setOutlinePlannerForTests(async () => [
-      {
-        description: 'Alice opens the door.',
-        shot_type: 'medium',
-        duration_seconds: 4,
-        transition_in: '',
-        characters_in_scene: ['Alice'],
-      },
-    ]);
-    Generate._setFrameRefinerForTests(async () => null);
-    Generate._setImageDispatcherForTests(async () => ({
-      buffer: Buffer.from('img'),
-      contentType: 'image/png',
-    }));
-
-    const beat = await Plots.createBeat({
-      name: 'F',
-      desc: '',
-      body: '',
-      characters: ['Alice'],
-    });
-    const jobId = await Generate.startStoryboardGenerationJob({
-      beatId: beat._id.toString(),
-    });
-    const job = await waitForJob(jobId);
-    expect(['done', 'partial']).toContain(job.status);
-    expect(job.refine_failures).toBe(1);
-
-    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
-    expect(stored).toHaveLength(1);
-    // Synthesized prompts include the outline description so the row has
-    // usable text. The video_prompt lands in text_prompt; the still prompts
-    // are pre-filled on the row's collab fragments.
-    expect(stored[0].text_prompt).toMatch(/Alice opens the door/);
-    expect(stored[0].text_prompt).not.toMatch(/\*\*Start frame:\*\*/);
-    expect(stored[0].text_prompt).not.toMatch(/\*\*End frame:\*\*/);
-    expect(stored[0].frames).toHaveLength(2);
-    expect(stored[0].frames[0].prompt).toMatch(/Alice opens the door/);
-    expect(stored[0].frames[1].prompt).toMatch(/Alice opens the door/);
+    expect(job.progress?.message).toMatch(/plan boom/);
   });
 
   it('clamps targetCount and records the requested value on the job', async () => {
     let receivedTarget = null;
-    Generate._setOutlinePlannerForTests(async ({ targetCount }) => {
+    Generate._setScenePlannerForTests(async ({ targetCount }) => {
       receivedTarget = targetCount;
-      return [];
+      return { sceneBible: null, outline: [] };
     });
-    Generate._setImageDispatcherForTests(async () => ({
-      buffer: Buffer.from('img'),
-      contentType: 'image/png',
-    }));
 
     const beat = await Plots.createBeat({
       name: 'C',
@@ -730,7 +535,7 @@ describe('storyboard auto-generation', () => {
 
 describe('auto-populated reference images', () => {
   it('attaches beat + per-character reference images to each generated row', async () => {
-    installPlannerForFixture(TWO_FRAME_PLAN.frames);
+    installPlanner(TWO_SHOT_PLAN);
     const Characters = await import('../src/mongo/characters.js');
     const sheetA = new ObjectId();
     const mainA = new ObjectId();
@@ -777,9 +582,8 @@ describe('auto-populated reference images', () => {
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(stored).toHaveLength(2);
 
-    // Each planned row gets two frames (start + end prompt); every frame's
-    // reference list is seeded identically from the aggregator (beat image +
-    // the in-scene characters' refs).
+    // Each planned row's single seeded frame gets its reference list seeded from
+    // the aggregator (beat image + the in-scene characters' refs).
     // Shot 1: Alice only → beat image + Alice's sheet + Alice's main.
     for (const frame of stored[0].frames) {
       const ids = frame.reference_ids.map((x) => x.toString());
@@ -798,7 +602,7 @@ describe('auto-populated reference images', () => {
   });
 
   it('leaves every frame reference list empty when the beat has no images and characters are unknown', async () => {
-    installPlannerForFixture(TWO_FRAME_PLAN.frames);
+    installPlanner(TWO_SHOT_PLAN);
     const beat = await Plots.createBeat({
       name: 'Bare',
       desc: 'd',
@@ -820,31 +624,34 @@ describe('auto-populated reference images', () => {
 });
 
 describe('reverse_in_post override flow', () => {
-  // The outline planner is supposed to mark reveal shots with
-  // reverse_in_post: true, but it can miss them when the beat narrative uses
-  // forward-reveal language. The refiner is a second line of defense: it can
-  // return reverse_in_post in its tool output to override the outline's value.
+  // The scene planner is supposed to mark reveal shots with reverse_in_post:
+  // true, but it can miss them when the beat narrative uses forward-reveal
+  // language. The shot expander is a second line of defense: it can return
+  // reverse_in_post in its output to override the skeleton's value.
 
-  async function runOne({ outlineReverse, refinerReverse }) {
-    Generate._setOutlinePlannerForTests(async () => [
-      {
-        description: 'Skyscraper looms into view as we slowly tilt up.',
-        shot_type: 'cinematic_wide',
-        duration_seconds: 5,
-        transition_in: '',
-        characters_in_scene: [],
-        reverse_in_post: outlineReverse,
-      },
-    ]);
-    Generate._setFrameRefinerForTests(async () => {
-      const out = {
-        video_prompt: 'Heroes shift weight subtly at frame bottom; camera holds locked-off.',
+  async function runOne({ skeletonReverse, expanderReverse }) {
+    Generate._setScenePlannerForTests(async () => ({
+      sceneBible: { location: 'Street' },
+      outline: [
+        {
+          description: 'Skyscraper looms into view as we slowly tilt up.',
+          shot_type: 'cinematic_wide',
+          duration_seconds: 5,
+          transition_in: '',
+          characters_in_scene: [],
+          reverse_in_post: skeletonReverse,
+        },
+      ],
+    }));
+    Generate._setShotExpanderForTests(async ({ outline }) =>
+      outline.map((f) => ({
         start_frame_prompt: 'Skyscraper fills the frame, glass facade reflecting overcast sky.',
-        end_frame_prompt: 'Same wide low-angle; the heroes have shifted a half-step.',
-      };
-      if (refinerReverse !== undefined) out.reverse_in_post = refinerReverse;
-      return out;
-    });
+        video_prompt: 'Heroes shift weight subtly at frame bottom; camera holds locked-off.',
+        // When expanderReverse is undefined the expander inherits the skeleton.
+        reverse_in_post:
+          expanderReverse !== undefined ? expanderReverse : Boolean(f.reverse_in_post),
+      })),
+    );
     const beat = await Plots.createBeat({
       name: 'Reveal',
       desc: 'd',
@@ -861,53 +668,19 @@ describe('reverse_in_post override flow', () => {
     return stored[0];
   }
 
-  it('refiner can flip reverse_in_post from false to true when outline missed a reveal', async () => {
-    const sb = await runOne({ outlineReverse: false, refinerReverse: true });
+  it('expander can flip reverse_in_post from false to true when the skeleton missed a reveal', async () => {
+    const sb = await runOne({ skeletonReverse: false, expanderReverse: true });
     expect(sb.reverse_in_post).toBe(true);
   });
 
-  it('refiner can flip reverse_in_post from true to false when it disagrees', async () => {
-    const sb = await runOne({ outlineReverse: true, refinerReverse: false });
+  it('expander can flip reverse_in_post from true to false when it disagrees', async () => {
+    const sb = await runOne({ skeletonReverse: true, expanderReverse: false });
     expect(sb.reverse_in_post).toBe(false);
   });
 
-  it('outline value is preserved when refiner omits reverse_in_post (true case)', async () => {
-    const sb = await runOne({ outlineReverse: true, refinerReverse: undefined });
+  it('skeleton value is preserved when the expander inherits it', async () => {
+    const sb = await runOne({ skeletonReverse: true, expanderReverse: undefined });
     expect(sb.reverse_in_post).toBe(true);
-  });
-
-  it('outline value is preserved when refiner omits reverse_in_post (false case)', async () => {
-    const sb = await runOne({ outlineReverse: false, refinerReverse: undefined });
-    expect(sb.reverse_in_post).toBe(false);
-  });
-
-  it('synthesized fallback (refiner returns null) preserves the outline value', async () => {
-    Generate._setOutlinePlannerForTests(async () => [
-      {
-        description: 'The killer is revealed in the corner booth.',
-        shot_type: 'cinematic_wide',
-        duration_seconds: 5,
-        transition_in: '',
-        characters_in_scene: [],
-        reverse_in_post: true,
-      },
-    ]);
-    Generate._setFrameRefinerForTests(async () => null);
-    const beat = await Plots.createBeat({
-      name: 'Reveal-fallback',
-      desc: 'd',
-      body: 'b',
-      characters: [],
-    });
-    const jobId = await Generate.startStoryboardGenerationJob({
-      beatId: beat._id.toString(),
-    });
-    const job = await waitForJob(jobId);
-    expect(job.status).toBe('done');
-    expect(job.refine_failures).toBe(1);
-    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
-    expect(stored).toHaveLength(1);
-    expect(stored[0].reverse_in_post).toBe(true);
   });
 });
 
