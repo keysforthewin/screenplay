@@ -1426,6 +1426,24 @@ export async function createStoryboardViaGateway({
   return sb;
 }
 
+// Persist a shot's critique (prompt_critique or image_critique) and notify the
+// storyboards room so connected SPAs re-render the score. target is
+// 'prompt' | 'image'. critique is the object from critiquePanel (or null).
+export async function setStoryboardCritiqueViaGateway({ storyboardId, beatId, target, critique }) {
+  const field = target === 'image' ? 'image_critique' : 'prompt_critique';
+  const updated = await mongoUpdateStoryboard(String(storyboardId), { [field]: critique });
+  try {
+    broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
+      changed: ['critique'],
+      storyboard_id: String(storyboardId),
+      critique_target: target,
+    });
+  } catch (e) {
+    logger.warn(`gateway: critique broadcast failed: ${e?.message || e}`);
+  }
+  return updated;
+}
+
 export async function deleteStoryboardViaGateway({ storyboardId }) {
   const sb = await mongoGetStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);

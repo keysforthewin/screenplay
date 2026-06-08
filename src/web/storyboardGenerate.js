@@ -50,10 +50,13 @@ import {
   createStoryboardViaGateway,
   deleteAllStoryboardsForBeatViaGateway,
   addStoryboardFrameViaGateway,
+  setStoryboardTextPromptViaGateway,
   setStoryboardFrameImageViaGateway,
   setStoryboardFrameEditResultViaGateway,
   setStoryboardFramePromptViaGateway,
+  setStoryboardCritiqueViaGateway,
 } from './gateway.js';
+import { critiquePanel as defaultCritiquePanel } from './storyboardCritique.js';
 import { collectStoryboardReferenceIds } from './storyboardReferenceAggregator.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 import {
@@ -208,6 +211,45 @@ export function _setScenePlannerForTests(fn) {
   scenePlannerOverride = fn;
 }
 
+// Pass-4 critique-panel seam. Tests override to avoid real Anthropic calls.
+let critiquePanelOverride = null;
+export function _setCritiquePanelForTests(fn) {
+  critiquePanelOverride = fn;
+}
+function runCritiquePanel(args) {
+  return (critiquePanelOverride || defaultCritiquePanel)(args);
+}
+
+function toCritiqueNeighbor(sb) {
+  return { order: sb.order, summary: sb.summary, startFramePrompt: sb.frames?.[0]?.prompt || '' };
+}
+
+// Pass 4: auto prompt-tier critique. Runs the four-lens panel over every shot of
+// the beat (bible + director's notes + neighbors) and persists prompt_critique.
+// Per-shot failures are swallowed so a bad critique never fails the job.
+async function critiqueShotsForBeat({ beat, sceneBible, directorNotes, onProgress = null }) {
+  const shots = await listStoryboards({ beatId: beat._id });
+  for (let i = 0; i < shots.length; i++) {
+    const sb = shots[i];
+    onProgress?.({ phase: 'critiquing', step: 'critique_shot_start', frame: i + 1, total: shots.length, message: `Critiquing shot ${i + 1}/${shots.length}…` });
+    try {
+      const shot = {
+        order: sb.order,
+        summary: sb.summary,
+        text_prompt: sb.text_prompt,
+        startFramePrompt: sb.frames?.[0]?.prompt || '',
+        shot_type: sb.shot_type,
+      };
+      const prevShot = i > 0 ? toCritiqueNeighbor(shots[i - 1]) : null;
+      const nextShot = i < shots.length - 1 ? toCritiqueNeighbor(shots[i + 1]) : null;
+      const critique = await runCritiquePanel({ target: 'prompt', sceneBible, directorNotes, shot, prevShot, nextShot });
+      await setStoryboardCritiqueViaGateway({ storyboardId: sb._id, beatId: beat._id, target: 'prompt', critique });
+    } catch (e) {
+      logger.warn(`storyboard critique: shot ${i + 1} failed: ${e?.message || e}`);
+    }
+  }
+}
+
 // In-memory job tracker. Sufficient for single-process runtime; status survives
 // only as long as the process. The SPA polls /api/storyboards/generate/:job_id.
 const jobs = new Map();
@@ -242,6 +284,70 @@ function recordProgress(job, { phase, step, frame = null, total = null, message 
 
 export function getStoryboardGenerationJob(jobId) {
   return jobs.get(jobId) || null;
+}
+
+// On-demand single-shot critique. Separate in-memory job table from the batch
+// `jobs` Map — different shape and polling endpoint. target 'prompt' judges the
+// written prompts; 'image' loads frames[0].image_id and judges the rendered
+// start-frame image (errors if none rendered).
+const critiqueJobs = new Map();
+export function getCritiqueJob(jobId) {
+  return critiqueJobs.get(jobId) || null;
+}
+
+export async function startCritiqueJob({ storyboardId, target = 'prompt' }) {
+  const sb = await getStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const beat = await getBeat(sb.beat_id.toString());
+  if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
+  const jobId = makeJobId();
+  const job = {
+    job_id: jobId,
+    storyboard_id: String(sb._id),
+    beat_id: String(beat._id),
+    target,
+    status: 'queued',
+    started_at: new Date(),
+    finished_at: null,
+    error: null,
+    overall: null,
+  };
+  critiqueJobs.set(jobId, job);
+  (async () => {
+    job.status = 'running';
+    try {
+      const directorNotes = await loadDirectorNotesForPlanner();
+      const shots = await listStoryboards({ beatId: beat._id });
+      const idx = shots.findIndex((s) => String(s._id) === String(sb._id));
+      const prevShot = idx > 0 ? toCritiqueNeighbor(shots[idx - 1]) : null;
+      const nextShot = idx >= 0 && idx < shots.length - 1 ? toCritiqueNeighbor(shots[idx + 1]) : null;
+      let imageInput = null;
+      if (target === 'image') {
+        const imgId = sb.frames?.[0]?.image_id;
+        if (!imgId) throw new Error('no rendered image to critique on this shot');
+        imageInput = await loadImageInput(imgId);
+        if (!imageInput) throw new Error('rendered image could not be read or is an unsupported type');
+      }
+      const shot = {
+        order: sb.order,
+        summary: sb.summary,
+        text_prompt: sb.text_prompt,
+        startFramePrompt: sb.frames?.[0]?.prompt || '',
+        shot_type: sb.shot_type,
+      };
+      const critique = await runCritiquePanel({ target, sceneBible: beat.scene_bible, directorNotes, shot, prevShot, nextShot, imageInput });
+      await setStoryboardCritiqueViaGateway({ storyboardId: sb._id, beatId: beat._id, target, critique });
+      job.overall = critique.overall;
+      job.status = 'done';
+    } catch (e) {
+      job.status = 'error';
+      job.error = e.message;
+      logger.warn(`storyboard critique job ${jobId} failed: ${e.message}`);
+    } finally {
+      job.finished_at = new Date();
+    }
+  })();
+  return jobId;
 }
 
 export class BeatBusyError extends Error {
@@ -422,6 +528,21 @@ async function runStoryboardGenerationJob({
       logger.warn(
         `storyboard gen frame ${order}/${planned.length} failed: ${e.message}`,
       );
+    }
+  }
+  // Pass 4: auto prompt-critique. Best-effort — never flips the job to error.
+  if (job.completed > 0) {
+    job.status = 'critiquing';
+    recordProgress(job, { phase: 'critiquing', step: 'critique_start', total: planned.length, message: 'Critiquing shots…' });
+    try {
+      await critiqueShotsForBeat({
+        beat,
+        sceneBible,
+        directorNotes,
+        onProgress: (fields) => recordProgress(job, fields),
+      });
+    } catch (e) {
+      logger.warn(`storyboard gen: critique pass failed: ${e.message}`);
     }
   }
   job.status = job.failed === 0 ? 'done' : 'partial';
@@ -710,7 +831,7 @@ function formatSkeletonForExpand(outline) {
     .join('\n');
 }
 
-export function buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes = [] }) {
+export function buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes = [], revisionNotes = '' }) {
   const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes });
   const bibleBlock = renderSceneBibleBlock(sceneBible);
   const lines = [ctx];
@@ -721,6 +842,11 @@ export function buildShotExpandUserText({ beat, characters, sceneBible, outline,
     '',
     '# Full shot skeleton:',
     formatSkeletonForExpand(outline),
+  );
+  if (typeof revisionNotes === 'string' && revisionNotes.trim()) {
+    lines.push('', '# Revision notes to address (from a critique of the previous version — fix these):', revisionNotes.trim());
+  }
+  lines.push(
     '',
     `Write start_frame_prompt + video_prompt for ALL ${outline.length} shots via the expand_shots tool, one entry per shot with its 1-based shot_index.`,
   );
@@ -739,11 +865,11 @@ function synthesizeFallbackShot(frame) {
 // Pass 2. One call expands the whole skeleton. Returns an array aligned to the
 // skeleton (index i -> shot i+1); omitted entries are filled with a synthesized
 // fallback so downstream persistence always gets a usable prompt.
-async function expandShots({ beat, characters, sceneBible, outline, direction, directorNotes = [] }) {
+async function expandShots({ beat, characters, sceneBible, outline, direction, directorNotes = [], revisionNotes = '' }) {
   if (shotExpanderOverride) {
-    return shotExpanderOverride({ beat, characters, sceneBible, outline, direction, directorNotes });
+    return shotExpanderOverride({ beat, characters, sceneBible, outline, direction, directorNotes, revisionNotes });
   }
-  const userText = buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes });
+  const userText = buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes, revisionNotes });
   const client = getAnthropic();
   const resp = await client.messages.create({
     model: STORYBOARD_MODEL,
@@ -789,6 +915,93 @@ async function expandShots({ beat, characters, sceneBible, outline, direction, d
 // Test seam.
 export function _expandShotsForTest(args) {
   return expandShots(args);
+}
+
+// Turn a stored critique into a revision-notes string: the comments from lenses
+// that scored below 8 (the ones worth addressing), one per line.
+export function mergeCritiqueComments(critique) {
+  if (!critique || !Array.isArray(critique.lenses)) return '';
+  return critique.lenses
+    .filter((l) => l && l.comments && !l.error && Number(l.score) < 8)
+    .map((l) => `- [${l.lens}] ${l.comments}`)
+    .join('\n');
+}
+
+// Regenerate ONE shot's prompts (Pass 2 for a single shot), inheriting the
+// beat's scene bible and optionally steered by critique guidance. Writes the new
+// start-frame prompt + text_prompt via the gateway. Does NOT re-render the image.
+export async function reExpandShot({ storyboardId, critiqueGuidance = '' }) {
+  const sb = await getStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const beat = await getBeat(sb.beat_id.toString());
+  if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
+  // Fail-fast if a generation job (delete+recreate) is in flight for this beat —
+  // mirror regenerateStoryboardFrame. Editing prompts against rows a concurrent
+  // generate is about to delete would race.
+  if (isBeatLocked(beat._id)) {
+    throw new BeatBusyError(beat._id.toString());
+  }
+  const characters = await findCharactersInBeat(beat);
+  const directorNotes = await loadDirectorNotesForPlanner();
+  const outlineFrame = {
+    description: stripMarkdown(sb.summary || '').trim(),
+    shot_type: sb.shot_type ?? null,
+    duration_seconds: sb.duration_seconds ?? null,
+    transition_in: sb.transition_in || '',
+    characters_in_scene: Array.isArray(sb.characters_in_scene) ? sb.characters_in_scene : [],
+    reverse_in_post: Boolean(sb.reverse_in_post),
+  };
+  // Hold the beat lock for the duration of the expand + writes so a generation
+  // can't start mid-write. The body returns the result, which reExpandShot
+  // returns out. (withBeatLock only queues; it doesn't itself call isBeatLocked,
+  // so the pre-check above doesn't deadlock with this wrap.)
+  return withBeatLock(beat._id, async () => {
+    const expanded = await expandShots({
+      beat, characters, sceneBible: beat.scene_bible, outline: [outlineFrame],
+      direction: '', directorNotes, revisionNotes: critiqueGuidance || '',
+    });
+    if (!expanded.length || !expanded[0]?.start_frame_prompt || !expanded[0]?.video_prompt) {
+      logger.warn(`storyboard reExpandShot: empty/invalid expansion for ${storyboardId}; keeping existing prompts`);
+      return { storyboardId: String(sb._id), unchanged: true };
+    }
+    const e = expanded[0] || {};
+    const newFrame = {
+      ...outlineFrame,
+      start_frame_prompt: e.start_frame_prompt,
+      video_prompt: e.video_prompt,
+      reverse_in_post: typeof e.reverse_in_post === 'boolean' ? e.reverse_in_post : outlineFrame.reverse_in_post,
+    };
+    const newTextPrompt = buildTextPrompt(newFrame);
+    const newStartPrompt = stripMarkdown(newFrame.start_frame_prompt || '').trim();
+
+    // Persist text_prompt — mirror createPlannedStoryboardEntry, which feeds the
+    // rendered text_prompt to createStoryboardViaGateway. For an existing row the
+    // equivalent write is setStoryboardTextPromptViaGateway (the text-field gateway
+    // helper; falls back to Mongo when Hocuspocus isn't running).
+    await setStoryboardTextPromptViaGateway({ storyboardId: sb._id, text: newTextPrompt });
+
+    // Persist the start-frame prompt onto frames[0] — mirror how
+    // createPlannedStoryboardEntry seeds the first frame via addStoryboardFrameViaGateway.
+    // For an existing row, update frames[0]'s prompt in place; if the row has no
+    // frames yet, add one.
+    if (newStartPrompt) {
+      const firstFrame = (sb.frames || [])[0];
+      if (firstFrame) {
+        await setStoryboardFramePromptViaGateway({
+          storyboardId: sb._id,
+          frameId: firstFrame._id,
+          text: newStartPrompt,
+        });
+      } else {
+        await addStoryboardFrameViaGateway({
+          storyboardId: sb._id,
+          prompt: newStartPrompt,
+          referenceIds: [],
+        });
+      }
+    }
+    return { storyboardId: String(sb._id) };
+  });
 }
 
 // Two-output validator. Drops a frame only if it lacks start_frame_prompt or

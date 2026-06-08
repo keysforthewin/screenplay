@@ -173,6 +173,33 @@ describe('planFramesV2 (two-pass orchestration)', () => {
   });
 });
 
+describe('expandShots revisionNotes', () => {
+  it('includes revision notes in the user text when provided', () => {
+    const text = gen.buildShotExpandUserText({
+      beat: { name: 'X', order: 1, body: '', desc: '', characters: [] },
+      characters: [],
+      sceneBible: { location: 'Diner' },
+      outline: [{ description: 'a', shot_type: 'medium', duration_seconds: 4 }],
+      direction: '',
+      directorNotes: [],
+      revisionNotes: 'Make the lighting colder; subject too close to edge.',
+    });
+    expect(text).toContain('Make the lighting colder');
+  });
+
+  it('omits the revision section when revisionNotes is empty', () => {
+    const text = gen.buildShotExpandUserText({
+      beat: { name: 'X', order: 1, body: '', desc: '', characters: [] },
+      characters: [],
+      sceneBible: { location: 'Diner' },
+      outline: [{ description: 'a', shot_type: 'medium', duration_seconds: 4 }],
+      direction: '',
+      directorNotes: [],
+    });
+    expect(text).not.toContain('Revision notes');
+  });
+});
+
 describe('end-to-end generation job (overrides)', () => {
   it('persists the bible on the beat and seeds exactly one start-frame prompt per row', async () => {
     const { createBeat, getBeat } = await import('../src/mongo/plots.js');
