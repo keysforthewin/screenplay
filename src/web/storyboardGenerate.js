@@ -491,8 +491,8 @@ async function loadImageInput(imageId) {
   }
 }
 
-// Format the character list the same way for every LLM call so the planner
-// and refiner see consistent context.
+// Format the character list the same way for every LLM call so all passes
+// (planScene + expandShots) see consistent context.
 function formatCharacterLines(characters) {
   if (!characters?.length) return '(no named characters in this beat)';
   return characters
@@ -516,8 +516,8 @@ function formatDirectorNotes(directorNotes) {
   return items.map((t) => `- ${t}`).join('\n');
 }
 
-// Block of beat context shared between the outline call and every refinement
-// call. Exported via the preview endpoint so the SPA can show users the same
+// Block of beat context shared between the scene-plan call (Pass 1) and the
+// shot-expand call (Pass 2). Exported via the preview endpoint so the SPA can show users the same
 // text the LLM will see.
 //
 // directorNotes is the project-wide list (from getDirectorNotes().notes) —
@@ -855,9 +855,9 @@ async function planFramesV2({ beat, characters, targetCount, direction = '', dir
     reverse_in_post: Boolean(f?.reverse_in_post),
   }));
 
-  onProgress?.({ phase: 'refining', step: 'expand_start', total: outline.length, message: `Expanding ${outline.length} shots…` });
+  onProgress?.({ phase: 'expanding', step: 'expand_start', total: outline.length, message: `Expanding ${outline.length} shots…` });
   const expanded = await expandShots({ beat, characters, sceneBible, outline, direction, directorNotes });
-  onProgress?.({ phase: 'refining', step: 'expand_done', total: outline.length, message: 'Shot expansion complete.' });
+  onProgress?.({ phase: 'expanding', step: 'expand_done', total: outline.length, message: 'Shot expansion complete.' });
 
   const frames = outline.flatMap((f, i) => {
     const e = expanded[i] || {};
