@@ -121,3 +121,43 @@ describe('on-demand critique job', () => {
     expect(j.error).toMatch(/no rendered image|image/i);
   });
 });
+
+describe('reExpandShot (regenerate prompt from critique)', () => {
+  beforeEach(() => fakeDb.reset());
+
+  it('re-expands one shot using critique guidance and updates the prompts', async () => {
+    const { createBeat, getBeat, setBeatSceneBible } = await import('../src/mongo/plots.js');
+    const { createStoryboard, getStoryboard } = await import('../src/mongo/storyboards.js');
+    await createBeat({ name: 'ReExp', desc: 'x', characters: [] });
+    const beat = await getBeat('ReExp');
+    await setBeatSceneBible('ReExp', { location: 'Diner' });
+    const sb = await createStoryboard({ beatId: beat._id, order: 1, textPrompt: 'OLD', summary: 'Sarah at counter', shotType: 'close_up', durationSeconds: 3 });
+
+    let sawNotes = null;
+    gen._setShotExpanderForTests(({ revisionNotes, outline }) => {
+      sawNotes = revisionNotes;
+      return outline.map(() => ({ start_frame_prompt: 'NEW start', video_prompt: 'NEW video', reverse_in_post: false }));
+    });
+
+    await gen.reExpandShot({ storyboardId: sb._id.toString(), critiqueGuidance: 'colder light' });
+    expect(sawNotes).toContain('colder light');
+    const reread = await getStoryboard(sb._id);
+    expect(reread.frames[0].prompt).toBe('NEW start');
+    expect(reread.text_prompt).toContain('NEW video');
+    gen._setShotExpanderForTests(null);
+  });
+
+  it('mergeCritiqueComments turns low-scoring lens comments into guidance', async () => {
+    const guidance = gen.mergeCritiqueComments({
+      overall: 4,
+      lenses: [
+        { lens: 'bible', score: 3, comments: 'Wrong location feel' },
+        { lens: 'cinematic', score: 9, comments: 'Great framing' },
+        { lens: 'continuity', score: 5, comments: 'Jump from prev shot' },
+      ],
+    });
+    expect(guidance).toContain('Wrong location feel');   // score < 8 included
+    expect(guidance).toContain('Jump from prev shot');    // score < 8 included
+    expect(guidance).not.toContain('Great framing');      // score >= 8 excluded
+  });
+});

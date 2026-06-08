@@ -3202,6 +3202,26 @@ export function buildApiRouter() {
     } catch (e) { next(e); }
   });
 
+  // Regenerate ONE shot's prompts from critique guidance. Reruns Pass 2 for the
+  // single shot, steered either by explicit `critique_guidance` text or, when
+  // `use_critique` is set, by the comments merged from the stored prompt critique.
+  router.post('/storyboard/:id/reexpand', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      let guidance = typeof req.body?.critique_guidance === 'string' ? req.body.critique_guidance : '';
+      if (!guidance && req.body?.use_critique) {
+        const { getStoryboard } = await import('../mongo/storyboards.js');
+        const { mergeCritiqueComments } = await import('./storyboardGenerate.js');
+        const sb = await getStoryboard(sbId);
+        guidance = mergeCritiqueComments(sb?.prompt_critique) || '';
+      }
+      const { reExpandShot } = await import('./storyboardGenerate.js');
+      const result = await reExpandShot({ storyboardId: sbId, critiqueGuidance: guidance });
+      res.json(result);
+    } catch (e) { next(e); }
+  });
+
   router.get('/storyboard/critique/job/:jobId', async (req, res, next) => {
     try {
       const { getCritiqueJob } = await import('./storyboardGenerate.js');
