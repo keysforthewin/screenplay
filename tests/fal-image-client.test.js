@@ -27,6 +27,9 @@ const {
   generateFluxKontextImage,
   generateNanoBananaProImage,
   generateFlux2ProImage,
+  generateGemini25FlashImage,
+  generateNanoBanana2Image,
+  generateFlux2KleinImage,
 } = await import('../src/fal/imageClient.js');
 
 beforeEach(() => {
@@ -277,5 +280,103 @@ describe('generateFlux2ProImage', () => {
 
     const [, opts] = subscribeMock.mock.calls[0];
     expect(opts.input.image_urls).toHaveLength(9);
+  });
+});
+
+describe('generateGemini25FlashImage', () => {
+  it('routes text-to-image to fal-ai/gemini-25-flash-image with aspect_ratio', async () => {
+    subscribeMock.mockResolvedValue({
+      data: { images: [{ url: pngDataUrl(Buffer.from('o')), content_type: 'image/png' }] },
+    });
+    const out = await generateGemini25FlashImage({ prompt: 'wide shot' });
+    const [modelId, opts] = subscribeMock.mock.calls[0];
+    expect(modelId).toBe('fal-ai/gemini-25-flash-image');
+    expect(opts.input.image_urls).toBeUndefined();
+    expect(opts.input.aspect_ratio).toBe('16:9');
+    expect(out.model).toBe('fal-ai/gemini-25-flash-image');
+  });
+
+  it('routes edits to fal-ai/gemini-25-flash-image/edit with image_urls', async () => {
+    subscribeMock.mockResolvedValue({
+      data: { images: [{ url: pngDataUrl(Buffer.from('o')), content_type: 'image/png' }] },
+    });
+    const out = await generateGemini25FlashImage({
+      prompt: 'p',
+      inputImages: [{ buffer: Buffer.from('r'), contentType: 'image/png' }],
+    });
+    const [modelId, opts] = subscribeMock.mock.calls[0];
+    expect(modelId).toBe('fal-ai/gemini-25-flash-image/edit');
+    expect(opts.input.image_urls).toHaveLength(1);
+    expect(out.model).toBe('fal-ai/gemini-25-flash-image/edit');
+  });
+});
+
+describe('generateNanoBanana2Image', () => {
+  it('routes text-to-image to fal-ai/nano-banana-2', async () => {
+    subscribeMock.mockResolvedValue({
+      data: { images: [{ url: pngDataUrl(Buffer.from('o')), content_type: 'image/png' }] },
+    });
+    const out = await generateNanoBanana2Image({ prompt: 'wide shot' });
+    const [modelId, opts] = subscribeMock.mock.calls[0];
+    expect(modelId).toBe('fal-ai/nano-banana-2');
+    expect(opts.input.image_urls).toBeUndefined();
+    expect(out.model).toBe('fal-ai/nano-banana-2');
+  });
+
+  it('routes edits to fal-ai/nano-banana-2/edit with image_urls', async () => {
+    subscribeMock.mockResolvedValue({
+      data: { images: [{ url: pngDataUrl(Buffer.from('o')), content_type: 'image/png' }] },
+    });
+    const out = await generateNanoBanana2Image({
+      prompt: 'p',
+      inputImages: [{ buffer: Buffer.from('r'), contentType: 'image/png' }],
+    });
+    const [modelId, opts] = subscribeMock.mock.calls[0];
+    expect(modelId).toBe('fal-ai/nano-banana-2/edit');
+    expect(opts.input.image_urls).toHaveLength(1);
+    expect(out.model).toBe('fal-ai/nano-banana-2/edit');
+  });
+});
+
+describe('generateFlux2KleinImage', () => {
+  it('routes text-to-image to fal-ai/flux-2/klein/9b with image_size (no aspect_ratio)', async () => {
+    subscribeMock.mockResolvedValue({
+      data: { images: [{ url: pngDataUrl(Buffer.from('o')), content_type: 'image/png' }] },
+    });
+    const out = await generateFlux2KleinImage({ prompt: 'wide shot' });
+    const [modelId, opts] = subscribeMock.mock.calls[0];
+    expect(modelId).toBe('fal-ai/flux-2/klein/9b');
+    expect(opts.input.aspect_ratio).toBeUndefined();
+    expect(opts.input.image_size).toEqual({ width: 2048, height: 1152 });
+    expect(opts.input.image_urls).toBeUndefined();
+    expect(out.model).toBe('fal-ai/flux-2/klein/9b');
+  });
+
+  it('routes edits to fal-ai/flux-2/klein/9b/edit with image_urls and no image_size', async () => {
+    subscribeMock.mockResolvedValue({
+      data: { images: [{ url: pngDataUrl(Buffer.from('o')), content_type: 'image/png' }] },
+    });
+    const out = await generateFlux2KleinImage({
+      prompt: 'p',
+      inputImages: [{ buffer: Buffer.from('r'), contentType: 'image/png' }],
+    });
+    const [modelId, opts] = subscribeMock.mock.calls[0];
+    expect(modelId).toBe('fal-ai/flux-2/klein/9b/edit');
+    expect(opts.input.image_urls).toHaveLength(1);
+    expect(opts.input.image_size).toBeUndefined();
+    expect(out.model).toBe('fal-ai/flux-2/klein/9b/edit');
+  });
+
+  it('caps edit references at 4', async () => {
+    subscribeMock.mockResolvedValue({
+      data: { images: [{ url: pngDataUrl(Buffer.from('o')), content_type: 'image/png' }] },
+    });
+    const refs = Array.from({ length: 7 }, (_, i) => ({
+      buffer: Buffer.from(`r${i}`),
+      contentType: 'image/png',
+    }));
+    await generateFlux2KleinImage({ prompt: 'p', inputImages: refs });
+    const [, opts] = subscribeMock.mock.calls[0];
+    expect(opts.input.image_urls).toHaveLength(4);
   });
 });

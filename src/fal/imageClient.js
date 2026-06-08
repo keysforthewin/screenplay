@@ -106,6 +106,48 @@ async function callFal({ modelId, payload }) {
   }
 }
 
+// Shared generate/edit-split driver for fal models that take `aspect_ratio`
+// and accept `image_urls` on their /edit endpoint (Nano Banana Pro/2, Gemini
+// 2.5 Flash, Flux 2 Pro). 0 refs → bare generate endpoint; ≥1 ref → /edit with
+// image_urls, truncated to maxEditInputs.
+async function falGenerateEdit({
+  prompt,
+  inputImages = [],
+  aspectRatio = '16:9',
+  generateModel,
+  editModel,
+  maxEditInputs,
+  label,
+}) {
+  requirePrompt(prompt);
+  requireFal();
+  const refs = Array.isArray(inputImages) ? inputImages : [];
+  const payload = {
+    prompt,
+    aspect_ratio: aspectRatio,
+    num_images: 1,
+    output_format: 'png',
+  };
+  let modelId;
+  if (refs.length === 0) {
+    modelId = generateModel;
+  } else {
+    modelId = editModel;
+    let capped = refs;
+    if (refs.length > maxEditInputs) {
+      logger.warn(
+        `fal ${label}/edit: ${refs.length} refs exceeds cap ${maxEditInputs}; truncating`,
+      );
+      capped = refs.slice(0, maxEditInputs);
+    }
+    payload.image_urls = capped.map(inputToDataUrl);
+  }
+  logger.info(
+    `fal ${label} → model=${modelId} prompt=${prompt.length}c refs=${refs.length}`,
+  );
+  return callFal({ modelId, payload });
+}
+
 // Generate (or refine) an image via Flux Pro Kontext. When `inputImages` is
 // non-empty Kontext anchors on them as the visual reference and treats the
 // prompt as the modification instruction; when empty it runs as pure
@@ -147,33 +189,15 @@ export async function generateNanoBananaProImage({
   inputImages = [],
   aspectRatio = '16:9',
 }) {
-  requirePrompt(prompt);
-  requireFal();
-  const refs = Array.isArray(inputImages) ? inputImages : [];
-  const payload = {
+  return falGenerateEdit({
     prompt,
-    aspect_ratio: aspectRatio,
-    num_images: 1,
-    output_format: 'png',
-  };
-  let modelId;
-  if (refs.length === 0) {
-    modelId = NANO_BANANA_PRO_GENERATE_MODEL;
-  } else {
-    modelId = NANO_BANANA_PRO_EDIT_MODEL;
-    let capped = refs;
-    if (refs.length > NANO_BANANA_PRO_EDIT_MAX_INPUTS) {
-      logger.warn(
-        `fal nano-banana-pro/edit: ${refs.length} refs exceeds cap ${NANO_BANANA_PRO_EDIT_MAX_INPUTS}; truncating`,
-      );
-      capped = refs.slice(0, NANO_BANANA_PRO_EDIT_MAX_INPUTS);
-    }
-    payload.image_urls = capped.map(inputToDataUrl);
-  }
-  logger.info(
-    `fal nano-banana-pro → model=${modelId} prompt=${prompt.length}c refs=${refs.length}`,
-  );
-  return callFal({ modelId, payload });
+    inputImages,
+    aspectRatio,
+    generateModel: NANO_BANANA_PRO_GENERATE_MODEL,
+    editModel: NANO_BANANA_PRO_EDIT_MODEL,
+    maxEditInputs: NANO_BANANA_PRO_EDIT_MAX_INPUTS,
+    label: 'nano-banana-pro',
+  });
 }
 
 // Flux 2 Pro. Auto-routes between text-to-image (no refs) and /edit
@@ -183,31 +207,111 @@ export async function generateFlux2ProImage({
   inputImages = [],
   aspectRatio = '16:9',
 }) {
+  return falGenerateEdit({
+    prompt,
+    inputImages,
+    aspectRatio,
+    generateModel: FLUX_2_PRO_MODEL,
+    editModel: FLUX_2_PRO_EDIT_MODEL,
+    maxEditInputs: FLUX_2_PRO_EDIT_MAX_INPUTS,
+    label: 'flux-2-pro',
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Fast models
+// ---------------------------------------------------------------------------
+
+// Gemini 2.5 Flash Image (original "Nano Banana"). Same generate/edit split as
+// Nano Banana Pro; cheaper and faster. /edit blends multiple references.
+export const GEMINI_25_FLASH_GENERATE_MODEL = config.fal.gemini25FlashGenerateModel;
+export const GEMINI_25_FLASH_EDIT_MODEL = config.fal.gemini25FlashEditModel;
+const GEMINI_25_FLASH_EDIT_MAX_INPUTS = 10;
+
+export async function generateGemini25FlashImage({
+  prompt,
+  inputImages = [],
+  aspectRatio = '16:9',
+}) {
+  return falGenerateEdit({
+    prompt,
+    inputImages,
+    aspectRatio,
+    generateModel: GEMINI_25_FLASH_GENERATE_MODEL,
+    editModel: GEMINI_25_FLASH_EDIT_MODEL,
+    maxEditInputs: GEMINI_25_FLASH_EDIT_MAX_INPUTS,
+    label: 'gemini-25-flash',
+  });
+}
+
+// Nano Banana 2 (Gemini 3.1 Flash). Newer fast Gemini; identical call shape.
+export const NANO_BANANA_2_GENERATE_MODEL = config.fal.nanoBanana2GenerateModel;
+export const NANO_BANANA_2_EDIT_MODEL = config.fal.nanoBanana2EditModel;
+const NANO_BANANA_2_EDIT_MAX_INPUTS = 10;
+
+export async function generateNanoBanana2Image({
+  prompt,
+  inputImages = [],
+  aspectRatio = '16:9',
+}) {
+  return falGenerateEdit({
+    prompt,
+    inputImages,
+    aspectRatio,
+    generateModel: NANO_BANANA_2_GENERATE_MODEL,
+    editModel: NANO_BANANA_2_EDIT_MODEL,
+    maxEditInputs: NANO_BANANA_2_EDIT_MAX_INPUTS,
+    label: 'nano-banana-2',
+  });
+}
+
+// FLUX.2 [klein] 9B. Distilled 4-step model. Unlike the Gemini/Flux-Pro family
+// it takes `image_size` ({width,height}) instead of `aspect_ratio`, and its
+// /edit endpoint caps references at 4 — so it gets its own function rather than
+// going through falGenerateEdit.
+export const FLUX_2_KLEIN_GENERATE_MODEL = config.fal.flux2KleinGenerateModel;
+export const FLUX_2_KLEIN_EDIT_MODEL = config.fal.flux2KleinEditModel;
+const FLUX_2_KLEIN_EDIT_MAX_INPUTS = 4;
+
+// Map the aspect ratios the pipeline uses to explicit pixel dims. 16:9 matches
+// the storyboard pipeline's 2048x1152. Unmapped ratios fall through to the
+// model default (image_size omitted).
+const KLEIN_SIZE_BY_ASPECT = {
+  '16:9': { width: 2048, height: 1152 },
+  '9:16': { width: 1152, height: 2048 },
+  '1:1': { width: 1024, height: 1024 },
+  '4:3': { width: 1536, height: 1152 },
+  '3:4': { width: 1152, height: 1536 },
+};
+
+export async function generateFlux2KleinImage({
+  prompt,
+  inputImages = [],
+  aspectRatio = '16:9',
+}) {
   requirePrompt(prompt);
   requireFal();
   const refs = Array.isArray(inputImages) ? inputImages : [];
-  const payload = {
-    prompt,
-    aspect_ratio: aspectRatio,
-    num_images: 1,
-    output_format: 'png',
-  };
+  const payload = { prompt, num_images: 1, output_format: 'png' };
   let modelId;
   if (refs.length === 0) {
-    modelId = FLUX_2_PRO_MODEL;
+    modelId = FLUX_2_KLEIN_GENERATE_MODEL;
+    const size = KLEIN_SIZE_BY_ASPECT[aspectRatio];
+    if (size) payload.image_size = size;
   } else {
-    modelId = FLUX_2_PRO_EDIT_MODEL;
+    modelId = FLUX_2_KLEIN_EDIT_MODEL;
     let capped = refs;
-    if (refs.length > FLUX_2_PRO_EDIT_MAX_INPUTS) {
+    if (refs.length > FLUX_2_KLEIN_EDIT_MAX_INPUTS) {
       logger.warn(
-        `fal flux-2-pro/edit: ${refs.length} refs exceeds cap ${FLUX_2_PRO_EDIT_MAX_INPUTS}; truncating`,
+        `fal flux-2-klein/edit: ${refs.length} refs exceeds cap ${FLUX_2_KLEIN_EDIT_MAX_INPUTS}; truncating`,
       );
-      capped = refs.slice(0, FLUX_2_PRO_EDIT_MAX_INPUTS);
+      capped = refs.slice(0, FLUX_2_KLEIN_EDIT_MAX_INPUTS);
     }
     payload.image_urls = capped.map(inputToDataUrl);
+    // image_size omitted in edit mode — Klein inherits the reference frame size.
   }
   logger.info(
-    `fal flux-2-pro → model=${modelId} prompt=${prompt.length}c refs=${refs.length}`,
+    `fal flux-2-klein → model=${modelId} prompt=${prompt.length}c refs=${refs.length}`,
   );
   return callFal({ modelId, payload });
 }
