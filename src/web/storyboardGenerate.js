@@ -1007,6 +1007,46 @@ export async function reExpandShot({ storyboardId, critiqueGuidance = '' }) {
   return withBeatLock(beat._id, () => reExpandShotInner({ sb, beat, critiqueGuidance }));
 }
 
+const reExpandAllJobs = new Map();
+export function getReExpandAllJob(jobId) { return reExpandAllJobs.get(jobId) || null; }
+
+// Bulk re-expand: rerun Pass 2 for EVERY shot of a beat against the current
+// scene bible. Holds the beat lock once and loops shots through the lock-free
+// reExpandShotInner. Per-shot failures are swallowed so one bad shot doesn't
+// abort the batch.
+export async function startReExpandAllJob({ beatId }) {
+  const beat = await getBeat(beatId);
+  if (!beat) throw new Error(`Beat not found: ${beatId}`);
+  if (isBeatLocked(beat._id)) throw new BeatBusyError(beat._id.toString());
+  const jobId = makeJobId();
+  const job = { job_id: jobId, beat_id: String(beat._id), status: 'queued', started_at: new Date(), finished_at: null, error: null, total: 0, completed: 0, failed: 0, progress: null, events: [] };
+  reExpandAllJobs.set(jobId, job);
+  withBeatLock(beat._id, async () => {
+    job.status = 'running';
+    const shots = await listStoryboards({ beatId: beat._id });
+    job.total = shots.length;
+    for (let i = 0; i < shots.length; i++) {
+      recordProgress(job, { phase: 'reexpand', step: 'shot_start', frame: i + 1, total: shots.length, message: `Re-expanding shot ${i + 1}/${shots.length}…` });
+      try {
+        const sb = await getStoryboard(shots[i]._id);
+        await reExpandShotInner({ sb, beat });
+        job.completed += 1;
+      } catch (e) {
+        job.failed += 1;
+        logger.warn(`reExpandAll shot ${i + 1}: ${e?.message || e}`);
+      }
+    }
+    job.status = job.failed === 0 ? 'done' : 'partial';
+    job.finished_at = new Date();
+  }).catch((e) => {
+    job.status = 'error';
+    job.error = e.message;
+    job.finished_at = new Date();
+    logger.error(`reExpandAll job ${jobId} crashed: ${e.message}`);
+  });
+  return jobId;
+}
+
 // Two-output validator. Drops a frame only if it lacks start_frame_prompt or
 // video_prompt; otherwise clamps shot_type / duration / characters / transition.
 function cleanPlannedFrameV2(f) {

@@ -3227,6 +3227,34 @@ export function buildApiRouter() {
     } catch (e) { next(e); }
   });
 
+  // Bulk re-expand ALL shots of a beat against the current scene bible. POST
+  // kicks off an in-memory job; the GET below polls it. The poll route uses a
+  // literal 4-segment path (`beat/reexpand/job/:jobId`) so it can't be shadowed
+  // by any 2-segment id-param route (there is no `GET /beat/:id`).
+  router.post('/beat/:beatId/reexpand-shots', async (req, res, next) => {
+    try {
+      const beat = await getBeat(String(req.params.beatId));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { startReExpandAllJob, BeatBusyError } = await import('./storyboardGenerate.js');
+      try {
+        const jobId = await startReExpandAllJob({ beatId: beat._id.toString() });
+        res.status(202).json({ job_id: jobId, beat_id: beat._id });
+      } catch (e) {
+        if (e instanceof BeatBusyError) return res.status(409).json({ error: e.message });
+        throw e;
+      }
+    } catch (e) { next(e); }
+  });
+
+  router.get('/beat/reexpand/job/:jobId', async (req, res, next) => {
+    try {
+      const { getReExpandAllJob } = await import('./storyboardGenerate.js');
+      const job = getReExpandAllJob(req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'job not found' });
+      res.json({ job });
+    } catch (e) { next(e); }
+  });
+
   router.get('/storyboard/critique/job/:jobId', async (req, res, next) => {
     try {
       const { getCritiqueJob } = await import('./storyboardGenerate.js');
