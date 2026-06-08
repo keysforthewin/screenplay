@@ -11,7 +11,7 @@ describe('normalizeSceneBible', () => {
   it('returns an all-empty-string object for null/garbage input', () => {
     const b = normalizeSceneBible(null);
     for (const f of SCENE_BIBLE_FIELDS) expect(b[f]).toBe('');
-    expect(b.updated_at).toBeInstanceOf(Date);
+    expect(b).not.toHaveProperty('updated_at');
   });
 
   it('keeps known string fields and drops unknown keys', () => {
@@ -54,5 +54,6 @@ describe('renderSceneBibleBlock', () => {
     expect(block).toContain('Location: Corner diner');
     expect(block).toContain('Mood: tense');
     expect(block).not.toContain('Palette:');
+    expect(block.indexOf('Location')).toBeLessThan(block.indexOf('Mood'));
   });
 });

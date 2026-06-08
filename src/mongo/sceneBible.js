@@ -1,4 +1,3 @@
-// src/mongo/sceneBible.js
 // Pure scene-bible shape + rendering. No DB access — persistence lives in
 // plots.js (setBeatSceneBible). The bible is a compact structured "look book"
 // for a beat: location, lighting, palette, mood, blocking, continuity anchors,
@@ -36,12 +35,12 @@ function cleanStr(v) {
 
 // Coerce arbitrary input into the canonical bible shape. Unknown keys dropped,
 // non-string field values become ''. Always returns an object with every field
-// present (empty string when unset) plus an `updated_at` Date.
+// present (empty string when unset). `updated_at` is stamped by the persistence
+// layer (setBeatSceneBible in plots.js), not here.
 export function normalizeSceneBible(raw) {
   const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const out = {};
   for (const f of SCENE_BIBLE_FIELDS) out[f] = cleanStr(src[f]);
-  out.updated_at = src.updated_at instanceof Date ? src.updated_at : new Date();
   return out;
 }
 
