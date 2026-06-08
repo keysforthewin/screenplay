@@ -3,6 +3,11 @@
 // combines them with a strict cap (any lens <= CRITICAL_SCORE pins the overall
 // so one hard failure can't be averaged away).
 
+import { getAnthropic } from '../anthropic/client.js';
+import { logger } from '../log.js';
+import { stripMarkdown } from '../util/markdown.js';
+import { renderSceneBibleBlock } from '../mongo/sceneBible.js';
+
 export const CRITICAL_SCORE = 3;
 
 // The four judging lenses. `key` is persisted; `label` is human-facing; `focus`
@@ -71,4 +76,124 @@ export function aggregateCritique(lensResults) {
     }
   }
   return { overall, lowest_lens: lowest.lens };
+}
+
+// Hardcoded top-tier model, matching the rest of the storyboard surface.
+const CRITIQUE_MODEL = 'claude-opus-4-7';
+
+// Forced-tool schema: every lens judge returns one score + comments.
+const JUDGE_TOOL = {
+  name: 'judge_shot',
+  description: 'Return a 1–10 score and detailed improvement comments for this shot, for your assigned lens only.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      score: { type: 'integer', minimum: 1, maximum: 10, description: '1 = unusable, 10 = excellent, for your assigned lens only.' },
+      comments: { type: 'string', description: 'Specific, actionable notes on what to change/improve for this lens. 1–4 sentences.' },
+    },
+    required: ['score', 'comments'],
+    additionalProperties: false,
+  },
+};
+
+function formatNeighbor(label, shot) {
+  if (!shot) return `${label}: (none)`;
+  const sf = stripMarkdown(shot.startFramePrompt || '').trim();
+  const summ = stripMarkdown(shot.summary || '').trim();
+  return `${label} (shot ${shot.order ?? '?'}): ${summ || '(no summary)'}${sf ? ` | start frame: ${sf}` : ''}`;
+}
+
+// Local director-notes formatter (kept here so the module is self-contained).
+function formatDirectorNotesForCritique(directorNotes) {
+  if (!Array.isArray(directorNotes) || !directorNotes.length) return null;
+  const items = directorNotes
+    .map((n) => stripMarkdown(typeof n?.text === 'string' ? n.text : '').trim())
+    .filter(Boolean);
+  return items.length ? items.map((t) => `- ${t}`).join('\n') : null;
+}
+
+// Shared context block every lens judge sees for one shot.
+export function buildShotCritiqueContext({ sceneBible, directorNotes, shot, prevShot, nextShot }) {
+  const lines = [];
+  const bibleBlock = renderSceneBibleBlock(sceneBible);
+  if (bibleBlock) lines.push('# Scene bible (the agreed look):', bibleBlock, '');
+  const notes = formatDirectorNotesForCritique(directorNotes);
+  if (notes) lines.push("# Director's notes (project-wide):", notes, '');
+  lines.push(
+    '# Shot under review:',
+    `order: ${shot.order ?? '?'}`,
+    `shot_type: ${shot.shot_type || '(unset)'}`,
+    `summary: ${stripMarkdown(shot.summary || '').trim() || '(none)'}`,
+    `prompt (video/action): ${stripMarkdown(shot.text_prompt || '').trim() || '(none)'}`,
+    `start-frame prompt: ${stripMarkdown(shot.startFramePrompt || '').trim() || '(none)'}`,
+    '',
+    '# Neighbors (for continuity):',
+    formatNeighbor('Previous', prevShot),
+    formatNeighbor('Next', nextShot),
+  );
+  return lines.join('\n');
+}
+
+let lensJudgeOverride = null;
+export function _setLensJudgeForTests(fn) {
+  lensJudgeOverride = fn;
+}
+
+// Run ONE lens judge. target is 'prompt' | 'image'. On the image tier,
+// imageInput {buffer, contentType} is attached as a base64 image block.
+async function runLensJudge({ lens, target, context, imageInput }) {
+  if (lensJudgeOverride) return lensJudgeOverride({ lens, target, context, imageInput });
+  const system = [
+    `You are a strict film director reviewing ONE storyboard shot through a single lens: ${lens.focus}.`,
+    lens.instruction,
+    'Score 1–10 (1 = unusable, 10 = excellent) and give specific, actionable comments. Be exacting; do not inflate scores.',
+    target === 'image'
+      ? 'You are judging the RENDERED START-FRAME IMAGE attached below against the shot description and the context.'
+      : 'You are judging the WRITTEN PROMPTS (no image yet) against the context.',
+    'Return your verdict via the judge_shot tool.',
+  ].join('\n');
+  const content = [{ type: 'text', text: context }];
+  if (target === 'image' && imageInput?.buffer && imageInput?.contentType) {
+    content.push({
+      type: 'image',
+      source: { type: 'base64', media_type: imageInput.contentType, data: imageInput.buffer.toString('base64') },
+    });
+  }
+  const client = getAnthropic();
+  const resp = await client.messages.create({
+    model: CRITIQUE_MODEL,
+    max_tokens: 600,
+    system,
+    tools: [JUDGE_TOOL],
+    tool_choice: { type: 'tool', name: 'judge_shot' },
+    messages: [{ role: 'user', content }],
+  });
+  const toolUse = (resp.content || []).find((b) => b.type === 'tool_use' && b.name === 'judge_shot');
+  if (!toolUse?.input) {
+    logger.warn(`storyboard critique: lens ${lens.key} returned no tool call`);
+    return { score: 1, comments: '(judge produced no verdict)' };
+  }
+  return {
+    score: toolUse.input.score,
+    comments: typeof toolUse.input.comments === 'string' ? toolUse.input.comments : '',
+  };
+}
+
+// Run all four lenses (in parallel) for one shot and aggregate. Returns the
+// persisted critique shape.
+export async function critiquePanel({ target, sceneBible, directorNotes, shot, prevShot, nextShot, imageInput = null }) {
+  const context = buildShotCritiqueContext({ sceneBible, directorNotes, shot, prevShot, nextShot });
+  const lensResults = await Promise.all(
+    CRITIQUE_LENSES.map(async (lens) => {
+      try {
+        const { score, comments } = await runLensJudge({ lens, target, context, imageInput });
+        return { lens: lens.key, score: clampScore(score), comments: String(comments || '') };
+      } catch (e) {
+        logger.warn(`storyboard critique: lens ${lens.key} failed: ${e?.message || e}`);
+        return { lens: lens.key, score: 1, comments: `(lens failed: ${e?.message || e})` };
+      }
+    }),
+  );
+  const { overall, lowest_lens } = aggregateCritique(lensResults);
+  return { overall, lowest_lens, lenses: lensResults, model: CRITIQUE_MODEL, created_at: new Date(), target };
 }
