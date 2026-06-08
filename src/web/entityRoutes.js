@@ -3188,6 +3188,29 @@ export function buildApiRouter() {
     }
   });
 
+  // On-demand single-shot critique. POST kicks off an in-memory job; the GET
+  // below polls it. The job-poll route uses a literal `critique/job` path
+  // (not `/storyboard/:id/...`) so it can't be shadowed by the id-param routes.
+  router.post('/storyboard/:id/critique', async (req, res, next) => {
+    try {
+      const sbId = await resolveStoryboardId(req);
+      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
+      const target = req.query?.target === 'image' ? 'image' : 'prompt';
+      const { startCritiqueJob } = await import('./storyboardGenerate.js');
+      const jobId = await startCritiqueJob({ storyboardId: sbId, target });
+      res.status(202).json({ job_id: jobId, storyboard_id: sbId, target });
+    } catch (e) { next(e); }
+  });
+
+  router.get('/storyboard/critique/job/:jobId', async (req, res, next) => {
+    try {
+      const { getCritiqueJob } = await import('./storyboardGenerate.js');
+      const job = getCritiqueJob(req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'job not found' });
+      res.json({ job });
+    } catch (e) { next(e); }
+  });
+
   router.get('/storyboard/frame-generate/job/:jobId', async (req, res, next) => {
     try {
       const { getFrameGenerationJob } = await import('./storyboardGenerate.js');

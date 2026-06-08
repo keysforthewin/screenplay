@@ -285,6 +285,70 @@ export function getStoryboardGenerationJob(jobId) {
   return jobs.get(jobId) || null;
 }
 
+// On-demand single-shot critique. Separate in-memory job table from the batch
+// `jobs` Map — different shape and polling endpoint. target 'prompt' judges the
+// written prompts; 'image' loads frames[0].image_id and judges the rendered
+// start-frame image (errors if none rendered).
+const critiqueJobs = new Map();
+export function getCritiqueJob(jobId) {
+  return critiqueJobs.get(jobId) || null;
+}
+
+export async function startCritiqueJob({ storyboardId, target = 'prompt' }) {
+  const sb = await getStoryboard(storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const beat = await getBeat(sb.beat_id.toString());
+  if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
+  const jobId = makeJobId();
+  const job = {
+    job_id: jobId,
+    storyboard_id: String(sb._id),
+    beat_id: String(beat._id),
+    target,
+    status: 'queued',
+    started_at: new Date(),
+    finished_at: null,
+    error: null,
+    overall: null,
+  };
+  critiqueJobs.set(jobId, job);
+  (async () => {
+    job.status = 'running';
+    try {
+      const directorNotes = await loadDirectorNotesForPlanner();
+      const shots = await listStoryboards({ beatId: beat._id });
+      const idx = shots.findIndex((s) => String(s._id) === String(sb._id));
+      const prevShot = idx > 0 ? toCritiqueNeighbor(shots[idx - 1]) : null;
+      const nextShot = idx >= 0 && idx < shots.length - 1 ? toCritiqueNeighbor(shots[idx + 1]) : null;
+      let imageInput = null;
+      if (target === 'image') {
+        const imgId = sb.frames?.[0]?.image_id;
+        if (!imgId) throw new Error('no rendered image to critique on this shot');
+        imageInput = await loadImageInput(imgId);
+        if (!imageInput) throw new Error('rendered image could not be read or is an unsupported type');
+      }
+      const shot = {
+        order: sb.order,
+        summary: sb.summary,
+        text_prompt: sb.text_prompt,
+        startFramePrompt: sb.frames?.[0]?.prompt || '',
+        shot_type: sb.shot_type,
+      };
+      const critique = await runCritiquePanel({ target, sceneBible: beat.scene_bible, directorNotes, shot, prevShot, nextShot, imageInput });
+      await setStoryboardCritiqueViaGateway({ storyboardId: sb._id, beatId: beat._id, target, critique });
+      job.overall = critique.overall;
+      job.status = 'done';
+    } catch (e) {
+      job.status = 'error';
+      job.error = e.message;
+      logger.warn(`storyboard critique job ${jobId} failed: ${e.message}`);
+    } finally {
+      job.finished_at = new Date();
+    }
+  })();
+  return jobId;
+}
+
 export class BeatBusyError extends Error {
   constructor(beatId) {
     super(`Storyboard work already in progress for beat ${beatId}`);

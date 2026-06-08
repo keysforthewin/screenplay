@@ -73,3 +73,51 @@ describe('auto prompt-critique (Pass 4)', () => {
     gen._setCritiquePanelForTests(null);
   });
 });
+
+describe('on-demand critique job', () => {
+  beforeEach(() => fakeDb.reset());
+
+  it('prompt-tier: critiques a single row on demand', async () => {
+    const { createBeat, getBeat, setBeatSceneBible } = await import('../src/mongo/plots.js');
+    const { createStoryboard, getStoryboard } = await import('../src/mongo/storyboards.js');
+    await createBeat({ name: 'OnDemand', desc: 'x', characters: [] });
+    const beat = await getBeat('OnDemand');
+    await setBeatSceneBible('OnDemand', { location: 'Diner' });
+    const sb = await createStoryboard({ beatId: beat._id, order: 1, textPrompt: 'tp', summary: 'a shot' });
+
+    gen._setCritiquePanelForTests(async ({ target }) => ({
+      overall: 5, lowest_lens: 'continuity',
+      lenses: [{ lens: 'bible', score: 5, comments: 'meh' }],
+      model: 'test', created_at: new Date(), target,
+    }));
+
+    const jobId = await gen.startCritiqueJob({ storyboardId: sb._id.toString(), target: 'prompt' });
+    for (let i = 0; i < 100; i++) {
+      const j = gen.getCritiqueJob(jobId);
+      if (j && ['done', 'error'].includes(j.status)) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const j = gen.getCritiqueJob(jobId);
+    expect(j.status).toBe('done');
+    const reread = await getStoryboard(sb._id);
+    expect(reread.prompt_critique.overall).toBe(5);
+  });
+
+  it('image-tier errors cleanly when the row has no rendered image', async () => {
+    const { createBeat, getBeat } = await import('../src/mongo/plots.js');
+    const { createStoryboard } = await import('../src/mongo/storyboards.js');
+    await createBeat({ name: 'NoImg', desc: 'x', characters: [] });
+    const beat = await getBeat('NoImg');
+    const sb = await createStoryboard({ beatId: beat._id, order: 1, summary: 's' });
+
+    const jobId = await gen.startCritiqueJob({ storyboardId: sb._id.toString(), target: 'image' });
+    for (let i = 0; i < 100; i++) {
+      const j = gen.getCritiqueJob(jobId);
+      if (j && ['done', 'error'].includes(j.status)) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const j = gen.getCritiqueJob(jobId);
+    expect(j.status).toBe('error');
+    expect(j.error).toMatch(/no rendered image|image/i);
+  });
+});
