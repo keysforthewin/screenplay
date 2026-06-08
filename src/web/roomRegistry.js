@@ -259,7 +259,9 @@ async function describeBeatRoom(id) {
       // Scene bible: whole-object read-modify-write (avoids dotted $set through
       // a null scene_bible and reuses the normalizing setBeatSceneBible helper).
       const changedBibleFields = bibleFieldNames.filter(
-        (f) => snapshot[f] !== undefined && snapshot[f] !== readMongoValue(f),
+        (f) =>
+          snapshot[f] !== undefined &&
+          String(snapshot[f]).trim() !== readMongoValue(f),
       );
       if (changedBibleFields.length) {
         const bible = {};

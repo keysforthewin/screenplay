@@ -50,4 +50,26 @@ describe('beat room scene_bible fragments', () => {
     const result = await desc.persistFields(snapshot);
     expect(result.changed).toBe(false);
   });
+
+  it('does not re-persist a bible field whose only difference is trailing whitespace', async () => {
+    await createBeat({ name: 'Diner', desc: 'd' });
+    const beat = await getBeat('Diner');
+
+    // First store tick: the y-doc fragment has trailing whitespace.
+    let desc = await resolveRoom(`beat:${beat._id.toString()}`);
+    const snap = {};
+    for (const f of desc.fields) snap[f] = desc.seed[f] ?? '';
+    snap['scene_bible.location'] = 'Rainy alley ';
+    const r1 = await desc.persistFields(snap);
+    expect(r1.changed).toBe(true);
+
+    // Second tick: stored value is now trimmed, but the y-doc fragment is
+    // unchanged (still 'Rainy alley '). This must NOT re-persist.
+    desc = await resolveRoom(`beat:${beat._id.toString()}`);
+    const snap2 = {};
+    for (const f of desc.fields) snap2[f] = desc.seed[f] ?? '';
+    snap2['scene_bible.location'] = 'Rainy alley ';
+    const r2 = await desc.persistFields(snap2);
+    expect(r2.changed).toBe(false);
+  });
 });
