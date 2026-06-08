@@ -1,0 +1,76 @@
+<h2>Critique score badge — where on the collapsed shot row?</h2>
+<p class="subtitle">Each storyboard shot collapses to a row: drag handle · frame thumbnail · summary text. The critique panel gives every shot an overall 1–10 score. Where should that badge live? (Shots under the threshold also get a "needs work" flag.) Click the option that reads best at a glance.</p>
+
+<style>
+  .sbrow {
+    display: flex; align-items: stretch; gap: 12px;
+    background: #1b1d22; border: 1px solid #2c2f36; border-radius: 8px;
+    padding: 10px 12px; position: relative; overflow: hidden;
+  }
+  .sbrow .handle { color: #555; font-size: 18px; display: flex; align-items: center; }
+  .sbrow .thumb {
+    width: 86px; height: 48px; border-radius: 5px; flex: none;
+    background: linear-gradient(135deg,#3a4252,#222732);
+    display: flex; align-items: center; justify-content: center;
+    color: #5b6472; font-size: 10px;
+  }
+  .sbrow .summary { flex: 1; min-width: 0; color: #c9ccd2; font-size: 13px; line-height: 1.4;
+    display: flex; align-items: center; }
+  .sbrow .summary .meta { color: #6b7280; font-size: 11px; }
+  .pill {
+    font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px;
+    letter-spacing: .02em;
+  }
+  .pill.good { background: rgba(52,168,83,.18); color: #5fd07e; border: 1px solid rgba(52,168,83,.35); }
+  .pill.warn { background: rgba(234,179,8,.16); color: #e7c14b; border: 1px solid rgba(234,179,8,.35); }
+  .pill.bad  { background: rgba(239,68,68,.16);  color: #f1736e; border: 1px solid rgba(239,68,68,.4); }
+  .corner { position: absolute; top: 8px; right: 10px; }
+  .rightcol { display: flex; align-items: center; padding-left: 4px; }
+  .flagdot { color: #f1736e; font-size: 12px; margin-right: 6px; }
+  .optnote { color: #8b93a1; font-size: 12px; margin-top: 8px; }
+</style>
+
+<div class="options">
+  <div class="option" data-choice="corner" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content" style="width:100%">
+      <h3>Corner pill over the thumbnail</h3>
+      <div class="sbrow">
+        <div class="handle">⋮⋮</div>
+        <div class="thumb" style="position:relative">
+          frame
+          <span class="pill good corner" style="top:4px;right:4px;font-size:10px;padding:2px 6px">8</span>
+        </div>
+        <div class="summary">Sarah lifts her gaze from the counter toward the door. <span class="meta">&nbsp;· CLOSE UP</span></div>
+      </div>
+      <div class="optnote">Score sits on the image like the existing artwork badge. Compact, but small.</div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="inline" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content" style="width:100%">
+      <h3>Inline chip before the summary</h3>
+      <div class="sbrow">
+        <div class="handle">⋮⋮</div>
+        <div class="thumb">frame</div>
+        <div class="summary"><span class="pill warn" style="margin-right:10px">5 ⚑</span> A wide of the empty diner at dusk; rain on the glass. <span class="meta">&nbsp;· ESTABLISHING</span></div>
+      </div>
+      <div class="optnote">Score leads the text. The ⚑ marks a below-threshold shot. Reads as part of the sentence.</div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="rightcol" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content" style="width:100%">
+      <h3>Dedicated score column on the right</h3>
+      <div class="sbrow">
+        <div class="handle">⋮⋮</div>
+        <div class="thumb">frame</div>
+        <div class="summary">Bob turns from the window, jaw tight, and crosses toward her. <span class="meta">&nbsp;· MEDIUM</span></div>
+        <div class="rightcol"><span class="flagdot">⚑</span><span class="pill bad">2</span></div>
+      </div>
+      <div class="optnote">Score always in the same spot — easy to scan a column of shots for the weak ones.</div>
+    </div>
+  </div>
+</div>

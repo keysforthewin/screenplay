@@ -1,0 +1,80 @@
+<h2>Scene Bible editor — where should it live?</h2>
+<p class="subtitle">The scene bible is the unified look every shot in this beat inherits (8 short fields). Editing it + clicking "Re-expand shots" reruns the prompt pass for all shots against the new bible. Two homes — same form, different place.</p>
+
+<style>
+  .wrap{background:#16181d;border:1px solid #2c2f36;border-radius:10px;overflow:hidden}
+  .barhdr{display:flex;align-items:center;gap:10px;padding:11px 14px;background:#1b1d22;cursor:pointer}
+  .barhdr .tw{font-weight:700;font-size:13px;color:#dfe3e9}
+  .barhdr .sub{font-size:11px;color:#6b7280}
+  .barhdr .spacer{flex:1}
+  .btn{font-size:12px;font-weight:600;padding:6px 11px;border-radius:6px;border:1px solid #34384180;background:#23262d;color:#cdd2da;cursor:pointer}
+  .btn.primary{background:#2f6df0;border-color:#2f6df0;color:#fff}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px;padding:14px}
+  .fld label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#7b8290;margin-bottom:4px}
+  .fld .val{background:#1b1d22;border:1px solid #2c2f36;border-radius:6px;padding:7px 9px;font-size:12.5px;color:#c9ccd2;min-height:16px}
+  .fld.wide{grid-column:1 / -1}
+  .tabbar{display:flex;gap:2px;border-bottom:1px solid #2c2f36;padding:0 8px;background:#16181d}
+  .tab{padding:9px 13px;font-size:12.5px;color:#8b93a1;border-bottom:2px solid transparent}
+  .tab.active{color:#dfe3e9;border-bottom-color:#2f6df0}
+  .shotstrip{display:flex;gap:8px;padding:12px 14px;border-top:1px solid #23262d;background:#131519}
+  .shotmini{width:78px;height:44px;border-radius:5px;background:linear-gradient(135deg,#3a4252,#222732);flex:none}
+  .muted{color:#6b7280;font-size:11px}
+</style>
+
+<div class="options">
+  <div class="option" data-choice="storyboard-top" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content" style="width:100%">
+      <h3>Collapsible panel atop the Storyboard page — right above the shots it governs</h3>
+      <div class="wrap">
+        <div class="barhdr">
+          <span style="color:#6b7280">▾</span>
+          <span class="tw">Scene Bible</span>
+          <span class="sub">dusk · cold key + warm practicals · 11 shots inherit this</span>
+          <span class="spacer"></span>
+          <button class="btn">Regenerate bible</button>
+          <button class="btn primary">Re-expand all shots</button>
+        </div>
+        <div class="grid">
+          <div class="fld"><label>Location</label><div class="val">Corner diner, booth by the window</div></div>
+          <div class="fld"><label>Time of day</label><div class="val">Dusk, rain starting</div></div>
+          <div class="fld"><label>Lighting key</label><div class="val">Cold blue fill + warm sodium practicals</div></div>
+          <div class="fld"><label>Palette</label><div class="val">Teal, amber, wet asphalt grey</div></div>
+          <div class="fld"><label>Mood</label><div class="val">Quiet, waiting, unspoken tension</div></div>
+          <div class="fld"><label>Camera language</label><div class="val">Mostly locked-off; occasional slow push</div></div>
+          <div class="fld wide"><label>Blocking</label><div class="val">Sarah at the booth screen-left; door + Bob's entrance screen-right behind her</div></div>
+        </div>
+        <div class="shotstrip">
+          <div class="shotmini"></div><div class="shotmini"></div><div class="shotmini"></div><div class="shotmini"></div>
+          <div style="align-self:center" class="muted">…the shot list continues below</div>
+        </div>
+      </div>
+      <div class="muted" style="margin-top:8px">Lives with the shots. "Re-expand all" sits right next to the list it rewrites. Collapses to a one-line summary bar so it's out of the way until you need it.</div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="beat-tab" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content" style="width:100%">
+      <h3>A new "Scene Bible" tab on the Beat page — alongside Background / Characters / References</h3>
+      <div class="wrap">
+        <div class="tabbar">
+          <div class="tab">Characters</div>
+          <div class="tab">Background</div>
+          <div class="tab active">Scene Bible</div>
+          <div class="tab">References</div>
+          <div class="tab">Artwork</div>
+        </div>
+        <div class="grid">
+          <div class="fld"><label>Location</label><div class="val">Corner diner, booth by the window</div></div>
+          <div class="fld"><label>Time of day</label><div class="val">Dusk, rain starting</div></div>
+          <div class="fld"><label>Lighting key</label><div class="val">Cold blue fill + warm sodium practicals</div></div>
+          <div class="fld"><label>Palette</label><div class="val">Teal, amber, wet asphalt grey</div></div>
+          <div class="fld wide"><label>Blocking</label><div class="val">Sarah at the booth screen-left; door + Bob's entrance screen-right behind her</div></div>
+          <div class="fld wide" style="display:flex;justify-content:flex-end;gap:8px"><button class="btn">Regenerate bible</button><button class="btn primary">Re-expand all shots</button></div>
+        </div>
+      </div>
+      <div class="muted" style="margin-top:8px">Lives with the beat's other metadata. Cleaner separation, but it's one route away from the storyboard list that "Re-expand" acts on.</div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,76 @@
+<h2>Expanded shot — the critique detail panel</h2>
+<p class="subtitle">When you open a shot, the four-lens critique shows up (bible · director's notes · cinematic · continuity). It can carry two scores: the prompt was judged at generation, and you can re-judge the rendered image on demand. Plus the action buttons. Which layout do you prefer?</p>
+
+<style>
+  .panel { background:#16181d; border:1px solid #2c2f36; border-radius:10px; padding:14px 16px; }
+  .phead { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+  .bigscore { font-size:26px; font-weight:800; line-height:1; }
+  .bigscore .max { font-size:13px; color:#6b7280; font-weight:600; }
+  .good{color:#5fd07e}.warn{color:#e7c14b}.bad{color:#f1736e}
+  .tier { font-size:11px; color:#8b93a1; }
+  .tier b{color:#c9ccd2}
+  .spacer{flex:1}
+  .btn { font-size:12px; font-weight:600; padding:6px 11px; border-radius:6px; border:1px solid #34384180;
+    background:#23262d; color:#cdd2da; cursor:pointer; }
+  .btn.primary{ background:#2f6df0; border-color:#2f6df0; color:#fff; }
+  .lensrow { display:flex; align-items:center; gap:10px; padding:7px 0; border-top:1px solid #23262d; }
+  .lensname { width:120px; flex:none; font-size:12px; color:#aeb4be; text-transform:capitalize; }
+  .lensscore { width:26px; flex:none; font-weight:700; font-size:13px; text-align:right;}
+  .bar { flex:none; width:90px; height:6px; border-radius:3px; background:#23262d; overflow:hidden;}
+  .bar > i { display:block; height:100%; }
+  .lenscomment { flex:1; font-size:12px; color:#9aa1ac; line-height:1.35; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; cursor:default; }
+  .chip.good{background:rgba(52,168,83,.16);color:#5fd07e}
+  .chip.warn{background:rgba(234,179,8,.15);color:#e7c14b}
+  .chip.bad{background:rgba(239,68,68,.16);color:#f1736e}
+  .muted{color:#6b7280;font-size:11px}
+  .commentbox{margin-top:10px;font-size:12px;color:#9aa1ac;background:#1b1d22;border-radius:6px;padding:8px 10px;line-height:1.4}
+</style>
+
+<div class="options">
+  <div class="option" data-choice="full" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content" style="width:100%">
+      <h3>Full breakdown — every lens, comments always visible</h3>
+      <div class="panel">
+        <div class="phead">
+          <div class="bigscore warn">5<span class="max">/10</span></div>
+          <div class="tier">prompt <b>5</b> &nbsp;·&nbsp; render <b class="bad">3</b><br><span class="muted">weakest: continuity</span></div>
+          <div class="spacer"></div>
+          <button class="btn">Critique prompt</button>
+          <button class="btn">Critique image</button>
+          <button class="btn primary">Regenerate from critique</button>
+        </div>
+        <div class="lensrow"><span class="lensname">bible</span><span class="lensscore good">8</span><span class="bar"><i class="good" style="width:80%;background:#5fd07e"></i></span><span class="lenscomment">Palette + dusk lighting match the bible well.</span></div>
+        <div class="lensrow"><span class="lensname">director notes</span><span class="lensscore warn">6</span><span class="bar"><i style="width:60%;background:#e7c14b"></i></span><span class="lenscomment">A touch warmer than the "cold and quiet" note asks for.</span></div>
+        <div class="lensrow"><span class="lensname">cinematic</span><span class="lensscore warn">5</span><span class="bar"><i style="width:50%;background:#e7c14b"></i></span><span class="lenscomment">Composition is flat; subject centered with no depth cue.</span></div>
+        <div class="lensrow"><span class="lensname">continuity</span><span class="lensscore bad">3</span><span class="bar"><i style="width:30%;background:#f1736e"></i></span><span class="lenscomment">Hard jump from the previous wide — no shared motion vector.</span></div>
+      </div>
+      <div class="muted" style="margin-top:8px">Everything on screen at once. Taller, but you read the whole verdict without clicking.</div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="compact" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content" style="width:100%">
+      <h3>Compact — lens chips, click one to read its note</h3>
+      <div class="panel">
+        <div class="phead">
+          <div class="bigscore warn">5<span class="max">/10</span></div>
+          <div class="chips">
+            <span class="chip good">bible 8</span>
+            <span class="chip warn">notes 6</span>
+            <span class="chip warn">cinematic 5</span>
+            <span class="chip bad">continuity 3</span>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn">Critique ▾</button>
+          <button class="btn primary">Regenerate from critique</button>
+        </div>
+        <div class="commentbox"><b style="color:#f1736e">continuity (3):</b> Hard jump from the previous wide — no shared motion vector. <span class="muted">(selected chip)</span></div>
+      </div>
+      <div class="muted" style="margin-top:8px">One-line summary; chips give the shape at a glance, click to expand a comment. "Critique ▾" is a menu (prompt / image). Shorter.</div>
+    </div>
+  </div>
+</div>
