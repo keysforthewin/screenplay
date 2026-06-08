@@ -3,9 +3,13 @@
 # Build and deploy the screenplay bot to a remote host via rsync + ssh.
 # Configuration is read from .env (SSH_PATH=user@host:/absolute/path).
 #
+# Source is bind-mounted into the container (see docker-compose.yml), so a normal
+# deploy is: build the SPA on the host -> rsync -> restart. No image rebuild.
+# Rebuild the deps-only image only when dependencies change (--rebuild).
+#
 # Usage:
-#   ./deploy.sh                # tests + rsync + cached rebuild & restart
-#   ./deploy.sh --rebuild      # same, but rebuild image with --no-cache and force-recreate
+#   ./deploy.sh                # tests + build web + rsync + restart (no image rebuild)
+#   ./deploy.sh --rebuild      # also rebuild the deps image (--no-cache); use when deps change
 #   ./deploy.sh --skip-tests   # skip the local 'npm test' run
 #   ./deploy.sh --help         # show this help
 
@@ -28,10 +32,14 @@ The .env file must contain:
 Usage:
   ./deploy.sh [options]
 
+App source is bind-mounted into the container, so a normal deploy ships code via
+rsync and just restarts the bot — no image rebuild.
+
 Options:
-  -r, --rebuild       Rebuild the bot image with --no-cache and force-recreate
-                      the container. Use after Dockerfile or dependency changes,
-                      or to clear a wedged container.
+  -r, --rebuild       Rebuild the deps-only bot image with --no-cache and
+                      force-recreate the container. Use when dependencies change
+                      (package.json / package-lock.json) or to clear a wedged
+                      container.
   -s, --skip-tests    Skip the local 'npm test' run.
   -h, --help          Show this help.
 EOF
@@ -77,7 +85,7 @@ if [[ -z "$SSH_HOST" || -z "$REMOTE_DIR" || "$REMOTE_DIR" != /* ]]; then
 fi
 
 log "Target: $SSH_HOST:$REMOTE_DIR"
-log "Mode:   $([[ "$REBUILD" == "true" ]] && echo 'full rebuild (--no-cache, force-recreate)' || echo 'cached rebuild + restart')"
+log "Mode:   $([[ "$REBUILD" == "true" ]] && echo 'rebuild deps image (--no-cache, force-recreate)' || echo 'restart only (mounted source, no image rebuild)')"
 
 # --- local verification -------------------------------------------------------
 if [[ "$SKIP_TESTS" == "true" ]]; then
@@ -86,6 +94,15 @@ else
   log "Running npm test"
   npm test
 fi
+
+# --- build the SPA on the host (mounted into the container) --------------------
+# web/dist is a build artifact, not source; it is bind-mounted, so build it here
+# and rsync ships it. Honour WEB_BASE_PATH from .env when reverse-proxied.
+# `|| true`: WEB_BASE_PATH is optional, and a no-match grep under pipefail+set-e
+# would otherwise abort the deploy.
+WEB_BASE_PATH="$(grep -E '^WEB_BASE_PATH=' .env | tail -n1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]' || true)"
+log "Building web SPA (base=${WEB_BASE_PATH:-/})"
+WEB_BASE_PATH="${WEB_BASE_PATH:-/}" npm run build:web
 
 # --- ensure remote dir exists -------------------------------------------------
 log "Ensuring remote directory exists"
@@ -110,11 +127,13 @@ rsync -avz --delete --human-readable \
 
 # --- remote build & restart ---------------------------------------------------
 if [[ "$REBUILD" == "true" ]]; then
-  log "Rebuilding container (no cache) and force-recreating"
+  log "Rebuilding deps image (no cache) and force-recreating"
   ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose build --no-cache bot && docker compose up -d --force-recreate bot"
 else
-  log "Building (cached) and restarting bot"
-  ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose up -d --build bot"
+  log "Restarting bot to pick up mounted source (no image rebuild)"
+  # `up -d` ensures the container exists with current compose config (applying
+  # any volume/env changes); `restart` reloads node against the mounted source.
+  ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose up -d bot && docker compose restart bot"
 fi
 
 log "Deploy complete."

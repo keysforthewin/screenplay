@@ -26,10 +26,10 @@ services:
       retries: 5
 
   bot:
+    # Deps-only image (node_modules + tools); app source is bind-mounted below,
+    # so code changes are rsync + restart with no image rebuild.
     build:
       context: .
-      args:
-        WEB_BASE_PATH: ${WEB_BASE_PATH:-/}
     restart: unless-stopped
     depends_on:
       mongo:
@@ -45,6 +45,13 @@ services:
       - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
       - "${HOCUSPOCUS_PORT:-3001}:${HOCUSPOCUS_PORT:-3001}"
     volumes:
+      # App source — mounted, not baked into the image. `web/dist` is built on
+      # the host by deploy.sh. node_modules stays in the image (we mount the
+      # individual source dirs, never /app, so the image's deps aren't shadowed).
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+      - ./data:/app/data
+      - ./web/dist:/app/web/dist
       - exports:/data/exports
       - ./backups:/data/backups
       - ${GOOGLE_APPLICATION_CREDENTIALS_HOST_PATH:-/dev/null}:/secrets/alexa2.json:ro
