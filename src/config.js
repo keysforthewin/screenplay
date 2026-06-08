@@ -101,6 +101,23 @@ export const config = {
       process.env.FAL_FLUX_2_PRO_MODEL || 'fal-ai/flux-2-pro',
     flux2ProEditModel:
       process.env.FAL_FLUX_2_PRO_EDIT_MODEL || 'fal-ai/flux-2-pro/edit',
+    // Gemini 2.5 Flash Image (original "Nano Banana"). Fast/cheap generate/edit
+    // split — the bare endpoint is text-to-image, /edit takes image_urls.
+    gemini25FlashGenerateModel:
+      process.env.FAL_GEMINI_25_FLASH_MODEL || 'fal-ai/gemini-25-flash-image',
+    gemini25FlashEditModel:
+      process.env.FAL_GEMINI_25_FLASH_EDIT_MODEL || 'fal-ai/gemini-25-flash-image/edit',
+    // Nano Banana 2 (Gemini 3.1 Flash). Newer fast Gemini; same generate/edit split.
+    nanoBanana2GenerateModel:
+      process.env.FAL_NANO_BANANA_2_MODEL || 'fal-ai/nano-banana-2',
+    nanoBanana2EditModel:
+      process.env.FAL_NANO_BANANA_2_EDIT_MODEL || 'fal-ai/nano-banana-2/edit',
+    // FLUX.2 [klein] 9B. Distilled, 4-step fast model. Uses image_size (not
+    // aspect_ratio); /edit caps at 4 reference images.
+    flux2KleinGenerateModel:
+      process.env.FAL_FLUX_2_KLEIN_MODEL || 'fal-ai/flux-2/klein/9b',
+    flux2KleinEditModel:
+      process.env.FAL_FLUX_2_KLEIN_EDIT_MODEL || 'fal-ai/flux-2/klein/9b/edit',
     // Input assets are uploaded into fal storage with this lifecycle. fal
     // bills for storage, so we expire inputs after a week by default.
     storageLifetimeDays: Number(process.env.FAL_STORAGE_LIFETIME_DAYS) || 7,
