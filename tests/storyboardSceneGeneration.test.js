@@ -172,3 +172,42 @@ describe('planFramesV2 (two-pass orchestration)', () => {
     gen._setScenePlannerForTests(null);
   });
 });
+
+describe('end-to-end generation job (overrides)', () => {
+  it('persists the bible on the beat and seeds exactly one start-frame prompt per row', async () => {
+    const { createBeat, getBeat } = await import('../src/mongo/plots.js');
+    await createBeat({ name: 'DinerE2', desc: 'A diner scene', characters: [] });
+    const beat = await getBeat('DinerE2');
+
+    gen._setScenePlannerForTests(() => ({
+      sceneBible: normalizeBibleForTest({ location: 'Diner' }),
+      outline: [{ description: 'wide', shot_type: 'establishing', duration_seconds: 6 }],
+    }));
+    gen._setShotExpanderForTests(({ outline }) =>
+      outline.map((f, i) => ({ start_frame_prompt: `start${i}`, video_prompt: `vid${i}`, reverse_in_post: false })),
+    );
+    gen._setImageDispatcherForTests(() => { throw new Error('should not render during generation'); });
+
+    const jobId = await gen.startStoryboardGenerationJob({ beatId: beat._id.toString(), targetCount: 1 });
+    for (let i = 0; i < 100; i++) {
+      const job = gen.getStoryboardGenerationJob(jobId);
+      if (job && ['done', 'partial', 'error'].includes(job.status)) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const job = gen.getStoryboardGenerationJob(jobId);
+    expect(job.status).not.toBe('error');
+
+    const updatedBeat = await getBeat('DinerE2');
+    expect(updatedBeat.scene_bible.location).toBe('Diner');
+
+    const { listStoryboards } = await import('../src/mongo/storyboards.js');
+    const sbs = await listStoryboards({ beatId: beat._id });
+    expect(sbs).toHaveLength(1);
+    expect(sbs[0].frames).toHaveLength(1); // only the start prompt seeded, not start+end
+    expect(sbs[0].frames[0].prompt).toBe('start0');
+
+    gen._setScenePlannerForTests(null);
+    gen._setShotExpanderForTests(null);
+    gen._setImageDispatcherForTests(null);
+  });
+});

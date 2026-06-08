@@ -745,18 +745,25 @@ async function runStoryboardGenerationJob({
   // Director's notes are project-wide guidance; fetch once and pass to both
   // stages so every refinement call sees the same notes without re-querying.
   const directorNotes = await loadDirectorNotesForPlanner();
-  const planned = await planFrames({
+  const { frames: planned, sceneBible } = await planFramesV2({
     beat,
     characters: characterDocs,
     targetCount: targetCount || DEFAULT_TARGET_COUNT,
     direction: direction || '',
     directorNotes,
-    onRefineFailure: () => {
-      job.refine_failures += 1;
-    },
     onProgress: (fields) => recordProgress(job, fields),
-    refineModel: job.refine_model,
   });
+  // Persist the scene bible on the beat as soon as the plan succeeds, so it
+  // survives for per-shot regen and the SPA editor (later plans), even if
+  // individual row creation fails below.
+  if (sceneBible && !isEmptySceneBible(sceneBible)) {
+    try {
+      const { setBeatSceneBible } = await import('../mongo/plots.js');
+      await setBeatSceneBible(beat._id, sceneBible);
+    } catch (e) {
+      logger.warn(`storyboard gen: persist scene bible failed: ${e.message}`);
+    }
+  }
   job.planned = planned.length;
   if (!planned.length) {
     job.status = 'done';
@@ -1726,7 +1733,6 @@ async function createPlannedStoryboardEntry({
   const textPrompt = buildTextPrompt(frame);
   const summary = stripMarkdown(frame.description || '').replace(/\s+/g, ' ').trim();
   const startFramePrompt = stripMarkdown(frame.start_frame_prompt || '').trim();
-  const endFramePrompt = stripMarkdown(frame.end_frame_prompt || '').trim();
   const sb = await createStoryboardViaGateway({
     beatId: beat._id,
     textPrompt,
@@ -1762,7 +1768,7 @@ async function createPlannedStoryboardEntry({
   // The planner produces an opening and a closing still prompt; seed them as
   // the first two frames of the pool. Frames with no prompt are skipped so a
   // sparse planner output doesn't create empty frames.
-  for (const prompt of [startFramePrompt, endFramePrompt]) {
+  for (const prompt of [startFramePrompt]) {
     if (!prompt) continue;
     try {
       await addStoryboardFrameViaGateway({
