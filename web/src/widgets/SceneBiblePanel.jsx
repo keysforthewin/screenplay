@@ -20,8 +20,38 @@ export function SceneBiblePanel({ beatId, session, shotCount, onRefresh }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [autofilling, setAutofilling] = useState(false);
+  const [autofillConfirmOpen, setAutofillConfirmOpen] = useState(false);
   const pollRef = useRef(null);
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  // Auto-fill all 8 scene bible fields from the beat. Confirm first only when
+  // the bible already has content, so an empty bible fills with zero friction.
+  async function onAutofillClick(e) {
+    e.stopPropagation();
+    setError(null);
+    let hasContent = false;
+    try {
+      const r = await apiGet(`/beat?id=${encodeURIComponent(beatId)}`);
+      const sb = r?.beat?.scene_bible || {};
+      hasContent = Object.values(sb).some((v) => typeof v === 'string' && v.trim());
+    } catch {
+      hasContent = true; // couldn't check — be safe and confirm before overwriting
+    }
+    if (hasContent) setAutofillConfirmOpen(true);
+    else runAutofill();
+  }
+
+  async function runAutofill() {
+    setAutofilling(true); setError(null); setOpen(true);
+    try {
+      await apiPostJson(`/beat/${beatId}/scene-bible/autofill`, {});
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setAutofilling(false);
+    }
+  }
 
   async function reexpandAll() {
     setBusy(true); setError(null);
@@ -49,7 +79,10 @@ export function SceneBiblePanel({ beatId, session, shotCount, onRefresh }) {
         <span className="title">Scene Bible</span>
         <span className="sub">{shotCount} shot{shotCount === 1 ? '' : 's'} inherit this</span>
         <span className="spacer" />
-        <button className="primary" disabled={busy} onClick={(e) => { e.stopPropagation(); setConfirmOpen(true); }}>
+        <button disabled={autofilling || busy} onClick={onAutofillClick}>
+          {autofilling ? 'Auto-filling…' : 'Auto-fill'}
+        </button>
+        <button className="primary" disabled={busy || autofilling} onClick={(e) => { e.stopPropagation(); setConfirmOpen(true); }}>
           {busy ? 'Re-expanding…' : 'Re-expand all shots'}
         </button>
       </div>
@@ -60,6 +93,14 @@ export function SceneBiblePanel({ beatId, session, shotCount, onRefresh }) {
         confirmLabel="Re-expand all"
         onConfirm={() => { setConfirmOpen(false); reexpandAll(); }}
         onCancel={() => setConfirmOpen(false)}
+      />
+      <ConfirmDialog
+        open={autofillConfirmOpen}
+        title="Auto-fill the Scene Bible?"
+        message="Read the current beat and overwrite all 8 Scene Bible fields. This replaces any existing values."
+        confirmLabel="Auto-fill"
+        onConfirm={() => { setAutofillConfirmOpen(false); runAutofill(); }}
+        onCancel={() => setAutofillConfirmOpen(false)}
       />
       {error && <div className="critique-error">{error}</div>}
       {open && (
