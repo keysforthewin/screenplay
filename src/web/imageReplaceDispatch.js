@@ -36,15 +36,21 @@ import {
   generateFluxKontextImage,
   generateFlux2ProImage,
   generateNanoBananaProImage,
+  generateGemini25FlashImage,
+  generateNanoBanana2Image,
+  generateFlux2KleinImage,
   FLUX_KONTEXT_MODEL,
   FLUX_2_PRO_MODEL,
   NANO_BANANA_PRO_GENERATE_MODEL,
+  GEMINI_25_FLASH_GENERATE_MODEL,
+  NANO_BANANA_2_GENERATE_MODEL,
+  FLUX_2_KLEIN_GENERATE_MODEL,
 } from '../fal/imageClient.js';
 import { isConfigured as falConfigured } from '../fal/client.js';
 import { recordOpenAIImageUsage, recordFalImageUsage } from '../mongo/tokenUsage.js';
 
-export const ALLOWED_IMAGE_MODELS = ['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'openai'];
-const FAL_MODELS = new Set(['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext']);
+export const ALLOWED_IMAGE_MODELS = ['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'openai', 'gemini-25-flash', 'nano-banana-2', 'flux-2-klein'];
+const FAL_MODELS = new Set(['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'gemini-25-flash', 'nano-banana-2', 'flux-2-klein']);
 
 export async function dispatchImageReplace({
   prompt,
@@ -113,6 +119,15 @@ export async function dispatchImageReplace({
     } else if (model === 'flux-2-pro') {
       result = await generateFlux2ProImage({ prompt, inputImages });
       fallbackModel = FLUX_2_PRO_MODEL;
+    } else if (model === 'gemini-25-flash') {
+      result = await generateGemini25FlashImage({ prompt, inputImages });
+      fallbackModel = GEMINI_25_FLASH_GENERATE_MODEL;
+    } else if (model === 'nano-banana-2') {
+      result = await generateNanoBanana2Image({ prompt, inputImages });
+      fallbackModel = NANO_BANANA_2_GENERATE_MODEL;
+    } else if (model === 'flux-2-klein') {
+      result = await generateFlux2KleinImage({ prompt, inputImages });
+      fallbackModel = FLUX_2_KLEIN_GENERATE_MODEL;
     } else {
       result = await generateFluxKontextImage({ prompt, inputImages });
       fallbackModel = FLUX_KONTEXT_MODEL;
