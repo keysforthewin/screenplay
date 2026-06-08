@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../log.js';
 import { applyMarkdownEdits } from '../util/textWindow.js';
+import { normalizeSceneBible } from './sceneBible.js';
 
 const col = () => getDb().collection('plots');
 
@@ -59,6 +60,10 @@ async function ensureBeatIds(plot) {
     }
     if (!Array.isArray(next.characters)) {
       next.characters = [];
+      changed = true;
+    }
+    if (next.scene_bible === undefined) {
+      next.scene_bible = null;
       changed = true;
     }
     if (next.name === undefined) {
@@ -387,6 +392,21 @@ export async function setBeatBody(identifier, body) {
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   await updateBeatFields(beat._id, { 'beats.$.body': body });
   logger.info(`mongo: beat set_body id=${beat._id} chars=${body.length}`);
+  return fetchBeat(beat._id);
+}
+
+// Persist a beat's scene bible (the per-beat "look book" that all storyboard
+// shots inherit). Stored as a normalized sub-doc under beats.$.scene_bible.
+// Pass null/empty to clear. Uses the atomic per-beat write path.
+export async function setBeatSceneBible(identifier, bible) {
+  const plot = await getPlot();
+  const beat = findBeat(plot, identifier);
+  if (!beat) throw new Error(`Beat not found: ${identifier}`);
+  // normalizeSceneBible returns only the text fields (it is a pure shape
+  // helper); the persistence layer stamps updated_at at write time.
+  const value = bible == null ? null : { ...normalizeSceneBible(bible), updated_at: new Date() };
+  await updateBeatFields(beat._id, { 'beats.$.scene_bible': value });
+  logger.info(`mongo: beat scene_bible set id=${beat._id}`);
   return fetchBeat(beat._id);
 }
 
