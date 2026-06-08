@@ -29,4 +29,19 @@ describe('scene_bible on beats', () => {
     expect(beat.scene_bible).not.toHaveProperty('bogus');
     expect(beat.scene_bible.mood).toBe('');
   });
+
+  it('setBeatSceneBible(id, null) clears the bible back to null', async () => {
+    await createBeat({ name: 'Diner', desc: 'A diner' });
+    await setBeatSceneBible('Diner', { mood: 'tense' });
+    let beat = await getBeat('Diner');
+    expect(beat.scene_bible.mood).toBe('tense');
+    await setBeatSceneBible('Diner', null);
+    beat = await getBeat('Diner');
+    expect(beat.scene_bible).toBeNull();
+  });
+
+  it('createBeat returns a beat that already has scene_bible: null', async () => {
+    const beat = await createBeat({ name: 'Solo', desc: 'A scene' });
+    expect(beat.scene_bible).toBeNull();
+  });
 });

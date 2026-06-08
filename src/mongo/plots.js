@@ -296,6 +296,7 @@ export async function createBeat({ name, desc = '', body = '', characters = [], 
     dialog_notes: '',
     images: [],
     main_image_id: null,
+    scene_bible: null,
     attachments: [],
     artworks: [],
     created_at: now,
@@ -406,7 +407,7 @@ export async function setBeatSceneBible(identifier, bible) {
   // helper); the persistence layer stamps updated_at at write time.
   const value = bible == null ? null : { ...normalizeSceneBible(bible), updated_at: new Date() };
   await updateBeatFields(beat._id, { 'beats.$.scene_bible': value });
-  logger.info(`mongo: beat scene_bible set id=${beat._id}`);
+  logger.info(`mongo: beat scene_bible set id=${beat._id} cleared=${value === null}`);
   return fetchBeat(beat._id);
 }
 
