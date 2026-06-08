@@ -46,8 +46,13 @@ inversion has to be applied across three outputs.
 ```
 Pass 1  Scene Plan   ── 1 Claude call ──▶  scene_bible  +  shot skeleton[]
 Pass 2  Shot Expand  ── 1 Claude call ──▶  all shots: {start_frame_prompt, video_prompt}
+Pass 4  Critique     ── 4 judges/shot ──▶  per-shot prompt_critique (auto)
 Pass 3  Render       ── per shot ───────▶  start frame image → image-to-video
+        (then on-demand vision re-judge → image_critique)
 ```
+
+Pass 4 runs automatically at the end of generation against the prompts, then again
+on-demand (vision) against a rendered image. See "Critique panel" below.
 
 Pass 2 expands **all** shots in a single call (holistic), inheriting the bible —
 not frame-by-frame. The bible is persisted before Pass 2 runs, so it survives to
@@ -124,7 +129,8 @@ harmlessly; the new flow stops producing/using it.
 
 - **Single-shot regen** (`regenerateStoryboardFrame`) loads the beat's
   `scene_bible` and feeds it into a one-shot version of Pass 2, so the regenerated
-  shot matches the rest of the scene.
+  shot matches the rest of the scene. Accepts an optional `critique_guidance`
+  input (merged lens comments) injected as "revision notes to address."
 - **Re-expand from bible** — new endpoint/action: rerun Pass 2 for all shots of a
   beat against the (possibly edited) bible, without rerunning Pass 1.
 - **Full regenerate** — reruns Pass 1 + 2 (overwrites the bible).
@@ -136,6 +142,54 @@ harmlessly; the new flow stops producing/using it.
   "Re-expand shots" button (wired to the re-expand endpoint), and a last
   generated/edited snapshot. Scoped to the existing storyboard modal/page — no new
   route.
+
+### Critique panel (Pass 4)
+
+A two-tier quality gate. Tier 1 (auto) judges the generated **prompts** at the end
+of generation. Tier 2 (on-demand) re-judges the **rendered start-frame image**
+(vision) once a render exists.
+
+**The panel = four parallel lens-judges per shot**, each a Claude call scoring
+**1–10** with detailed comments. Every judge receives the **scene bible**, the
+**director's notes** (from the `director_notes` singleton via `getDirectorNotes`),
+the shot's own prompts, and its **neighbor shots** (for continuity):
+
+- **Bible adherence** — honors location/lighting/palette/blocking/camera language?
+- **Director's-notes adherence** — respects the global directives?
+- **Cinematic quality** — composition, shot value, does it earn its place?
+- **Continuity** — clean hand-off to/from neighbors; any drift?
+
+**Aggregation (strict):** overall = rounded mean of the four lens scores, **but**
+if any single lens scores ≤ 3 (a hard break), overall is capped at that lens's
+score so one critical failure can't be averaged away. The lowest lens is surfaced
+as the headline issue.
+
+**Vision tier:** the on-demand re-judge runs the same four lenses against the
+rendered start-frame image instead of the prompt text, stored separately — so a
+shot can show "prompt 8 / render 5."
+
+**Persistence** (on the storyboard row):
+
+```
+prompt_critique: { overall, lenses: [{ lens, score, comments }], model, created_at }
+image_critique:  { overall, lenses: [{ lens, score, comments }], model, created_at } | null
+```
+
+**Endpoints:**
+
+- `POST /api/storyboards/:id/critique?target=prompt|image` — re-judge on demand.
+- Single-shot regen (Section "Regeneration") gains a `critique_guidance` input:
+  the merged lens comments are injected into the one-shot Pass 2 as explicit
+  "revision notes to address," steering the new prompt by exactly what the panel
+  flagged.
+
+**UI:**
+
+- **Collapsed card** shows a color-coded **score badge** (image score if present,
+  else prompt score). Shots below a configurable threshold (default < 6) get a
+  visual flag.
+- **Expanded** shows the per-lens breakdown + comments and which tier produced it.
+- **"Regenerate from critique"** button → single-shot regen with `critique_guidance`.
 
 ## Out of scope (kept as-is)
 
@@ -157,3 +211,10 @@ Using the in-memory fake Mongo pattern and the existing test-injection hooks
   the stored bible.
 - The constraint module is imported by both prompts (guard against duplication
   regression).
+- Critique panel: four lenses run per shot, each producing a 1–10 score +
+  comments; strict-cap aggregation pins overall to a lens scoring ≤ 3.
+- Prompt-tier critique runs automatically at end of generation; image-tier runs
+  only on demand and stores `image_critique` separately from `prompt_critique`.
+- Regen-from-critique injects `critique_guidance` into the one-shot Pass 2 and
+  produces a revised prompt.
+- Director's notes are pulled into every lens via `getDirectorNotes` (fake Mongo).
