@@ -1178,6 +1178,184 @@ export function _planSceneForTest(args) {
   return planScene(args);
 }
 
+// Pass-2 shot-expansion tool: expand the WHOLE skeleton in one call, emitting
+// two outputs per shot — start_frame_prompt + video_prompt (NO end frame).
+const SHOT_EXPAND_TOOL = {
+  name: 'expand_shots',
+  description:
+    'Given the scene bible and the full ordered shot skeleton, write the two generation prompts for EVERY shot: ' +
+    'a start_frame_prompt (the opening still that anchors the clip) and a video_prompt (what happens + camera move). ' +
+    'Return one entry per shot, in skeleton order.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      shots: {
+        type: 'array',
+        description: 'One entry per skeleton shot, in order.',
+        items: {
+          type: 'object',
+          properties: {
+            shot_index: { type: 'integer', minimum: 1, description: '1-based index into the skeleton this entry expands.' },
+            start_frame_prompt: {
+              type: 'string',
+              description:
+                'Still-image prompt for the opening composition: subject, action, framing, camera lighting. ~2 sentences. Do NOT re-describe the scene bible (location/lighting/palette/blocking) or character faces/wardrobe — reference them.',
+            },
+            video_prompt: {
+              type: 'string',
+              description:
+                'Clip-gen prompt: what HAPPENS (subject action + one camera move or hold), assuming the start frame already exists. ~2 sentences. Do NOT re-describe the start composition.',
+            },
+            reverse_in_post: {
+              type: 'boolean',
+              description:
+                'Override the skeleton if you detect a reveal it missed. When true, invert: start_frame_prompt = final revealed state, video_prompt = the pull-back/generation-direction move (reversed in post). Omit to inherit the skeleton value.',
+            },
+          },
+          required: ['shot_index', 'start_frame_prompt', 'video_prompt'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['shots'],
+    additionalProperties: false,
+  },
+};
+
+export const SHOT_EXPAND_SYSTEM_PROMPT = [
+  'You are a Hollywood storyboard artist writing the generation prompts for an already-planned shot list. Return all prompts via the expand_shots tool.',
+  '',
+  'You see the SCENE BIBLE (the unified look) and the FULL shot skeleton at once, so you can compose the whole scene coherently: each shot picks up its neighbor, and every shot honors the same bible.',
+  '',
+  '# Two outputs per shot (NO end frame)',
+  '1. start_frame_prompt — the opening still that the image-to-video model conditions on. Subject, action, framing, camera lighting. ~2 sentences.',
+  '2. video_prompt — what HAPPENS during the clip (subject action + one camera move, or a hold), assuming the start frame already exists. ~2 sentences. Lead with the motion; do NOT re-describe the start composition.',
+  '',
+  '# Inherit the bible — do not re-describe it',
+  '- The scene bible already fixes location, time of day, lighting key, palette, mood, blocking, and camera language. Reference them; never restate them.',
+  '- Character faces, bodies, and wardrobe come from reference photos. Do not describe them.',
+  '- This is WHY your prompts can be short: the shared context is carried by the bible + reference images.',
+  '',
+  '# Continuity',
+  "- Compose each start_frame_prompt to pick up the prior shot's motion vector / match cut, per the skeleton's transition_in.",
+  '- Honor each shot\'s description, shot_type, transition_in, and characters_in_scene.',
+  '',
+  '# Camera motion (for video_prompt)',
+  CAMERA_MOTION_RULES,
+  '',
+  '# Subject motion (for video_prompt)',
+  SUBJECT_MOTION_RULES,
+  '',
+  '# Still composition (for start_frame_prompt)',
+  STILL_FRAMING_RULES,
+  '',
+  '# What the model cannot draw',
+  FRAMING_RULES,
+  '',
+  '# Reveals',
+  REVEAL_HANDLING,
+  'For a reverse_in_post shot, the start_frame_prompt is the FINAL revealed state and the video_prompt is the pull-back / generation-direction move; the clip is reversed in post.',
+  '',
+  '# Output',
+  '- Return one entry per skeleton shot, each with its 1-based shot_index. Emit ALL shots.',
+].join('\n');
+
+let shotExpanderOverride = null;
+export function _setShotExpanderForTests(fn) {
+  shotExpanderOverride = fn;
+}
+
+function formatSkeletonForExpand(outline) {
+  return outline
+    .map((f, i) => {
+      const parts = [
+        `${i + 1}. [${f.shot_type || 'shot'} · ${f.duration_seconds || '?'}s] ${f.description || ''}`,
+      ];
+      if (f.transition_in) parts.push(`   transition_in: ${f.transition_in}`);
+      if (Array.isArray(f.characters_in_scene) && f.characters_in_scene.length) {
+        parts.push(`   characters_in_scene: ${f.characters_in_scene.join(', ')}`);
+      }
+      if (f.reverse_in_post) parts.push('   reverse_in_post: true (invert temporal direction)');
+      return parts.join('\n');
+    })
+    .join('\n');
+}
+
+export function buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes = [] }) {
+  const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes });
+  const bibleBlock = renderSceneBibleBlock(sceneBible);
+  const lines = [ctx];
+  if (bibleBlock) {
+    lines.push('', '# Scene bible (the unified look — inherit, do not re-describe):', bibleBlock);
+  }
+  lines.push(
+    '',
+    '# Full shot skeleton:',
+    formatSkeletonForExpand(outline),
+    '',
+    `Write start_frame_prompt + video_prompt for ALL ${outline.length} shots via the expand_shots tool, one entry per shot with its 1-based shot_index.`,
+  );
+  return lines.join('\n');
+}
+
+// Two-output fallback when the model omits a shot's prompts.
+function synthesizeFallbackShot(frame) {
+  const base = stripMarkdown(frame.description || '').trim();
+  return {
+    start_frame_prompt: base ? `Opening composition of the shot: ${base}` : 'Opening composition of the shot.',
+    video_prompt: base ? `The action plays out: ${base}. Camera holds.` : 'Subject performs the action; camera holds.',
+  };
+}
+
+// Pass 2. One call expands the whole skeleton. Returns an array aligned to the
+// skeleton (index i -> shot i+1); omitted entries are filled with a synthesized
+// fallback so downstream persistence always gets a usable prompt.
+async function expandShots({ beat, characters, sceneBible, outline, direction, directorNotes = [] }) {
+  if (shotExpanderOverride) {
+    return shotExpanderOverride({ beat, characters, sceneBible, outline, direction, directorNotes });
+  }
+  const userText = buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes });
+  const client = getAnthropic();
+  const resp = await client.messages.create({
+    model: STORYBOARD_MODEL,
+    max_tokens: 8000,
+    system: SHOT_EXPAND_SYSTEM_PROMPT,
+    tools: [SHOT_EXPAND_TOOL],
+    tool_choice: { type: 'tool', name: 'expand_shots' },
+    messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+  });
+  if (resp.stop_reason === 'max_tokens') {
+    logger.warn(
+      `storyboard expand_shots: hit max_tokens cap (model=${STORYBOARD_MODEL}, shots=${outline.length}); response may be truncated`,
+    );
+  }
+  const toolUse = (resp.content || []).find((b) => b.type === 'tool_use' && b.name === 'expand_shots');
+  const raw = Array.isArray(toolUse?.input?.shots) ? toolUse.input.shots : [];
+  // Index by shot_index so a misordered/partial response still maps correctly;
+  // fall back to array position when shot_index is missing.
+  const byIndex = new Map();
+  raw.forEach((s, pos) => {
+    const idx = Number.isFinite(Number(s?.shot_index)) ? Number(s.shot_index) : pos + 1;
+    byIndex.set(idx, s);
+  });
+  return outline.map((f, i) => {
+    const s = byIndex.get(i + 1);
+    const sfp = typeof s?.start_frame_prompt === 'string' ? s.start_frame_prompt.trim() : '';
+    const vp = typeof s?.video_prompt === 'string' ? s.video_prompt.trim() : '';
+    if (!sfp || !vp) {
+      logger.warn(`storyboard expand_shots: missing output for shot ${i + 1}; using fallback`);
+      return { ...synthesizeFallbackShot(f), reverse_in_post: Boolean(f.reverse_in_post) };
+    }
+    const rev = typeof s.reverse_in_post === 'boolean' ? s.reverse_in_post : Boolean(f.reverse_in_post);
+    return { start_frame_prompt: sfp, video_prompt: vp, reverse_in_post: rev };
+  });
+}
+
+// Test seam.
+export function _expandShotsForTest(args) {
+  return expandShots(args);
+}
+
 async function refineFramePrompts({
   beat,
   characters,

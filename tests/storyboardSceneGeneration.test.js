@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createFakeDb } from './_fakeMongo.js';
 import { CAMERA_MOTION_RULES, REVEAL_HANDLING } from '../src/web/storyboardConstraints.js';
+import { SUBJECT_MOTION_RULES, STILL_FRAMING_RULES } from '../src/web/storyboardConstraints.js';
 
 const fakeDb = createFakeDb();
 vi.mock('../src/mongo/client.js', () => ({
@@ -10,7 +11,7 @@ vi.mock('../src/mongo/client.js', () => ({
 }));
 
 const gen = await import('../src/web/storyboardGenerate.js');
-const { SCENE_PLAN_SYSTEM_PROMPT } = gen;
+const { SCENE_PLAN_SYSTEM_PROMPT, SHOT_EXPAND_SYSTEM_PROMPT } = gen;
 
 describe('scene-plan building blocks (Pass 1)', () => {
   it('exports SCENE_PLAN_SYSTEM_PROMPT as a non-empty string', () => {
@@ -38,5 +39,41 @@ describe('scene-plan building blocks (Pass 1)', () => {
     expect(out.sceneBible.location).toBe('Diner');
     expect(out.outline).toHaveLength(1);
     gen._setScenePlannerForTests(null);
+  });
+});
+
+describe('shot-expand building blocks (Pass 2)', () => {
+  it('exports SHOT_EXPAND_SYSTEM_PROMPT embedding subject + still-framing rules', () => {
+    expect(typeof SHOT_EXPAND_SYSTEM_PROMPT).toBe('string');
+    expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(SUBJECT_MOTION_RULES);
+    expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(STILL_FRAMING_RULES);
+  });
+});
+
+describe('expandShots (Pass 2)', () => {
+  it('returns one {start_frame_prompt, video_prompt} per skeleton shot via override; no end frame', async () => {
+    gen._setShotExpanderForTests(({ outline }) =>
+      outline.map((f, i) => ({
+        start_frame_prompt: `start ${i}`,
+        video_prompt: `move ${i}`,
+        reverse_in_post: Boolean(f.reverse_in_post),
+      })),
+    );
+    const outline = [
+      { description: 'a', shot_type: 'medium', duration_seconds: 4 },
+      { description: 'b', shot_type: 'close_up', duration_seconds: 3 },
+    ];
+    const shots = await gen._expandShotsForTest({
+      beat: { name: 'X', order: 1, body: '', desc: '', characters: [] },
+      characters: [],
+      sceneBible: { location: 'Diner' },
+      outline,
+      direction: '',
+      directorNotes: [],
+    });
+    expect(shots).toHaveLength(2);
+    expect(shots[0]).toMatchObject({ start_frame_prompt: 'start 0', video_prompt: 'move 0' });
+    expect(shots[0]).not.toHaveProperty('end_frame_prompt');
+    gen._setShotExpanderForTests(null);
   });
 });
