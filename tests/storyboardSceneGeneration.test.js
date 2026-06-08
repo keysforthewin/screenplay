@@ -1,13 +1,22 @@
 // tests/storyboardSceneGeneration.test.js
 import { describe, it, expect, vi } from 'vitest';
 import { createFakeDb } from './_fakeMongo.js';
-import { CAMERA_MOTION_RULES, REVEAL_HANDLING } from '../src/web/storyboardConstraints.js';
-import { SUBJECT_MOTION_RULES, STILL_FRAMING_RULES } from '../src/web/storyboardConstraints.js';
+import {
+  CAMERA_MOTION_RULES,
+  REVEAL_HANDLING,
+  SUBJECT_MOTION_RULES,
+  STILL_FRAMING_RULES,
+} from '../src/web/storyboardConstraints.js';
 
 const fakeDb = createFakeDb();
 vi.mock('../src/mongo/client.js', () => ({
   getDb: () => fakeDb,
   connectMongo: async () => fakeDb,
+}));
+
+const { anthropicState } = vi.hoisted(() => ({ anthropicState: { resp: null } }));
+vi.mock('../src/anthropic/client.js', () => ({
+  getAnthropic: () => ({ messages: { create: async () => anthropicState.resp } }),
 }));
 
 const gen = await import('../src/web/storyboardGenerate.js');
@@ -75,5 +84,44 @@ describe('expandShots (Pass 2)', () => {
     expect(shots[0]).toMatchObject({ start_frame_prompt: 'start 0', video_prompt: 'move 0' });
     expect(shots[0]).not.toHaveProperty('end_frame_prompt');
     gen._setShotExpanderForTests(null);
+  });
+
+  it('synthesizes a fallback for a shot the model omits, keeps real prompts for others', async () => {
+    gen._setShotExpanderForTests(null); // use the real expandShots body
+    anthropicState.resp = {
+      stop_reason: 'end_turn',
+      content: [
+        {
+          type: 'tool_use',
+          name: 'expand_shots',
+          input: {
+            shots: [
+              // shot 1 omitted entirely; only shot 2 returned
+              { shot_index: 2, start_frame_prompt: 'real start 2', video_prompt: 'real move 2' },
+            ],
+          },
+        },
+      ],
+    };
+    const outline = [
+      { description: 'first beat', shot_type: 'medium', duration_seconds: 4, reverse_in_post: false },
+      { description: 'second beat', shot_type: 'close_up', duration_seconds: 3, reverse_in_post: false },
+    ];
+    const shots = await gen._expandShotsForTest({
+      beat: { name: 'X', order: 1, body: '', desc: '', characters: [] },
+      characters: [],
+      sceneBible: { location: 'Diner' },
+      outline,
+      direction: '',
+      directorNotes: [],
+    });
+    expect(shots).toHaveLength(2);
+    // shot 1 fell back to a synthesized prompt mentioning its description
+    expect(shots[0].start_frame_prompt).toContain('first beat');
+    expect(shots[0].video_prompt).toContain('first beat');
+    // shot 2 kept the model's real prompts
+    expect(shots[1].start_frame_prompt).toBe('real start 2');
+    expect(shots[1].video_prompt).toBe('real move 2');
+    anthropicState.resp = null;
   });
 });

@@ -1318,7 +1318,7 @@ async function expandShots({ beat, characters, sceneBible, outline, direction, d
   const client = getAnthropic();
   const resp = await client.messages.create({
     model: STORYBOARD_MODEL,
-    max_tokens: 8000,
+    max_tokens: 16000,
     system: SHOT_EXPAND_SYSTEM_PROMPT,
     tools: [SHOT_EXPAND_TOOL],
     tool_choice: { type: 'tool', name: 'expand_shots' },
@@ -1336,6 +1336,12 @@ async function expandShots({ beat, characters, sceneBible, outline, direction, d
   const byIndex = new Map();
   raw.forEach((s, pos) => {
     const idx = Number.isFinite(Number(s?.shot_index)) ? Number(s.shot_index) : pos + 1;
+    if (byIndex.has(idx)) {
+      logger.warn(`storyboard expand_shots: duplicate shot_index ${idx}; later entry wins`);
+    }
+    if (idx > outline.length) {
+      logger.warn(`storyboard expand_shots: shot_index ${idx} exceeds skeleton length ${outline.length}; ignored`);
+    }
     byIndex.set(idx, s);
   });
   return outline.map((f, i) => {
