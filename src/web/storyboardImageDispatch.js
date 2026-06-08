@@ -16,9 +16,15 @@ import {
   generateFluxKontextImage,
   generateFlux2ProImage,
   generateNanoBananaProImage,
+  generateGemini25FlashImage,
+  generateNanoBanana2Image,
+  generateFlux2KleinImage,
   FLUX_KONTEXT_MODEL,
   FLUX_2_PRO_MODEL,
   NANO_BANANA_PRO_GENERATE_MODEL,
+  GEMINI_25_FLASH_GENERATE_MODEL,
+  NANO_BANANA_2_GENERATE_MODEL,
+  FLUX_2_KLEIN_GENERATE_MODEL,
 } from '../fal/imageClient.js';
 import { isConfigured as falConfigured } from '../fal/client.js';
 import { recordOpenAIImageUsage, recordFalImageUsage } from '../mongo/tokenUsage.js';
@@ -28,8 +34,8 @@ import { recordOpenAIImageUsage, recordFalImageUsage } from '../mongo/tokenUsage
 const STORYBOARD_SIZE = '2048x1152';
 const ASPECT_RATIO = '16:9';
 
-export const ALLOWED_STORYBOARD_MODELS = ['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'openai'];
-const FAL_MODELS = new Set(['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext']);
+export const ALLOWED_STORYBOARD_MODELS = ['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'openai', 'gemini-25-flash', 'nano-banana-2', 'flux-2-klein'];
+const FAL_MODELS = new Set(['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'gemini-25-flash', 'nano-banana-2', 'flux-2-klein']);
 
 export async function dispatchStoryboardImage({
   prompt,
@@ -84,6 +90,27 @@ export async function dispatchStoryboardImage({
         aspectRatio: ASPECT_RATIO,
       });
       fallbackModel = FLUX_2_PRO_MODEL;
+    } else if (model === 'gemini-25-flash') {
+      result = await generateGemini25FlashImage({
+        prompt,
+        inputImages: refs,
+        aspectRatio: ASPECT_RATIO,
+      });
+      fallbackModel = GEMINI_25_FLASH_GENERATE_MODEL;
+    } else if (model === 'nano-banana-2') {
+      result = await generateNanoBanana2Image({
+        prompt,
+        inputImages: refs,
+        aspectRatio: ASPECT_RATIO,
+      });
+      fallbackModel = NANO_BANANA_2_GENERATE_MODEL;
+    } else if (model === 'flux-2-klein') {
+      result = await generateFlux2KleinImage({
+        prompt,
+        inputImages: refs,
+        aspectRatio: ASPECT_RATIO,
+      });
+      fallbackModel = FLUX_2_KLEIN_GENERATE_MODEL;
     } else {
       result = await generateFluxKontextImage({
         prompt,
