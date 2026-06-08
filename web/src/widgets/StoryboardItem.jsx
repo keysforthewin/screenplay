@@ -20,6 +20,7 @@ import { GenerateVideoButton } from './GenerateVideoButton.jsx';
 import { StoryboardVideoPanel } from './StoryboardVideoPanel.jsx';
 import { CharacterTagInput } from './CharacterTagInput.jsx';
 import { StoryboardItemCollapsed } from './StoryboardItemCollapsed.jsx';
+import { CritiquePanel } from './CritiquePanel.jsx';
 import { StoryboardSummaryField } from './StoryboardSummaryField.jsx';
 import {
   SHOT_TYPES,
@@ -600,6 +601,8 @@ export function StoryboardItem({
           </button>
         </div>
       </div>
+
+      <CritiquePanel sb={sb} onRefresh={onRefresh} />
 
       <ShotMetaRow
         sb={sb}
