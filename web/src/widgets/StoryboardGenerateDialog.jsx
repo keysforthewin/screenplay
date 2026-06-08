@@ -23,7 +23,8 @@ function clampCount(n) {
 //   - Setup:     count + Analyze, director's commentary
 //   - Beat:      read-only preview of the beat text the LLM will see
 //   - Characters: read-only preview of the characters that will be supplied
-//   - Prompt preview: the exact Stage A (outline) prompt that will be sent
+//   - Prompt preview: the Pass 1 (scene plan) system + user prompts, plus the
+//                     Pass 2 (shot expansion) system prompt
 //
 // Existing storyboards replacement warning sits above the tab strip.
 export function StoryboardGenerateDialog({
@@ -47,7 +48,7 @@ export function StoryboardGenerateDialog({
   // tabs doesn't refetch and re-rendering the panel is free.
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewError, setPreviewError] = useState(null);
-  const [preview, setPreview] = useState(null); // { key, system, user }
+  const [preview, setPreview] = useState(null); // { key, system, user, expand_system }
   const previewDebounce = useRef(null);
 
   // Reset transient state each time the dialog opens.
@@ -82,7 +83,12 @@ export function StoryboardGenerateDialog({
           count: clampCount(count),
           direction: direction.trim(),
         });
-        setPreview({ key: previewKey, system: r.system || '', user: r.user || '' });
+        setPreview({
+          key: previewKey,
+          system: r.system || '',
+          user: r.user || '',
+          expand_system: r.expand_system || '',
+        });
       } catch (e) {
         setPreviewError(e.message || 'Failed to load preview.');
       } finally {
@@ -324,9 +330,10 @@ function PreviewPanel({ busy, error, preview }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <p className="modal-help" style={{ margin: 0 }}>
-        This is the Stage A (outline) prompt. Stage B refines each frame's
-        start/end prompts in a separate per-clip pass and isn't previewable
-        here.
+        The system and user prompts below are Pass 1 (scene plan): they build the
+        scene bible and shot skeleton. Pass 2 (shot expansion) then writes the
+        start-frame and video prompts for each shot — its system prompt is shown
+        at the bottom.
       </p>
       {busy && !preview && (
         <p style={{ color: 'var(--fg-muted)', fontSize: 13 }}>Loading preview…</p>
@@ -344,6 +351,14 @@ function PreviewPanel({ busy, error, preview }) {
             <p className="preview-section-label">User message</p>
             <pre>{preview.user}</pre>
           </div>
+          {preview.expand_system && (
+            <div>
+              <p className="preview-section-label">
+                Pass 2 — shot expansion (system prompt)
+              </p>
+              <pre>{preview.expand_system}</pre>
+            </div>
+          )}
         </>
       )}
     </div>

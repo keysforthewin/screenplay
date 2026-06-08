@@ -66,7 +66,6 @@ import {
 import { renderSceneBibleBlock, normalizeSceneBible, isEmptySceneBible } from '../mongo/sceneBible.js';
 
 const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
-const MAX_REFERENCE_IMAGES = 12; // cap input images per Nano Banana call
 // Every LLM call in the storyboard pipeline runs on the top-tier model.
 // Hardcoded (not config-driven) on purpose — this surface is meant to be
 // "primo", so we don't want silent downgrades via ANTHROPIC_MODEL or similar.
