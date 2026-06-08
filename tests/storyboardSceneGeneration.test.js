@@ -6,6 +6,7 @@ import {
   REVEAL_HANDLING,
   SUBJECT_MOTION_RULES,
   STILL_FRAMING_RULES,
+  VIDEO_PROMPT_RULES,
 } from '../src/web/storyboardConstraints.js';
 import { normalizeSceneBible as normalizeBibleForTest } from '../src/mongo/sceneBible.js';
 
@@ -53,10 +54,11 @@ describe('scene-plan building blocks (Pass 1)', () => {
 });
 
 describe('shot-expand building blocks (Pass 2)', () => {
-  it('exports SHOT_EXPAND_SYSTEM_PROMPT embedding subject + still-framing rules', () => {
+  it('exports SHOT_EXPAND_SYSTEM_PROMPT embedding subject + still-framing + video-prompt rules', () => {
     expect(typeof SHOT_EXPAND_SYSTEM_PROMPT).toBe('string');
     expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(SUBJECT_MOTION_RULES);
     expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(STILL_FRAMING_RULES);
+    expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(VIDEO_PROMPT_RULES);
   });
 });
 

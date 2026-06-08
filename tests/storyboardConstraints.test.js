@@ -6,6 +6,7 @@ import {
   REVEAL_HANDLING,
   FRAMING_RULES,
   STILL_FRAMING_RULES,
+  VIDEO_PROMPT_RULES,
 } from '../src/web/storyboardConstraints.js';
 
 describe('storyboard constraints', () => {
@@ -16,6 +17,7 @@ describe('storyboard constraints', () => {
       REVEAL_HANDLING,
       FRAMING_RULES,
       STILL_FRAMING_RULES,
+      VIDEO_PROMPT_RULES,
     ]) {
       expect(typeof block).toBe('string');
       expect(block.trim().length).toBeGreaterThan(0);
@@ -29,5 +31,15 @@ describe('storyboard constraints', () => {
 
   it('reveal handling names reverse_in_post', () => {
     expect(REVEAL_HANDLING).toContain('reverse_in_post');
+  });
+
+  it('video-prompt rules put the camera first and end on a stillness constraint', () => {
+    expect(VIDEO_PROMPT_RULES.toLowerCase()).toContain('locked-off');
+    expect(VIDEO_PROMPT_RULES.toLowerCase()).toContain('no other movement');
+  });
+
+  it('still-framing rules require explicit subject orientation/heading', () => {
+    expect(STILL_FRAMING_RULES.toLowerCase()).toContain('heading');
+    expect(STILL_FRAMING_RULES.toLowerCase()).toContain('orientation');
   });
 });

@@ -31,9 +31,9 @@ export const CRITIQUE_LENSES = Object.freeze([
   {
     key: 'cinematic',
     label: 'Cinematic quality',
-    focus: 'the cinematic merit of the shot',
+    focus: 'the cinematic merit and AI-video readiness of the shot',
     instruction:
-      'Judge ONLY cinematic merit — composition, shot value, framing choice, and whether this shot earns its place in the sequence. Ignore bible/notes adherence (other lenses cover those).',
+      "Judge ONLY cinematic merit and AI-video readiness. START FRAME: is the subject's pose, orientation, heading and placement concrete and correct for the moment (a car squarely in its lane nose-forward, not slewed across the road; a person mid-action, not limp)? Is composition / shot value strong and does the shot earn its place? VIDEO_PROMPT: does it lead with the camera, state ONE directional motion with an endpoint, feature at most one temporal change, end with a stillness constraint, and avoid re-describing the static scene? Penalize ambiguous stills, buried or wandering camera, vague or duplicated motion, and static re-description. Ignore bible/notes adherence (other lenses cover those).",
   },
   {
     key: 'continuity',

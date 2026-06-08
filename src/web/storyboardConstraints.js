@@ -53,8 +53,25 @@ export const FRAMING_RULES = [
 
 export const STILL_FRAMING_RULES = [
   'Still-frame composition (for the start_frame_prompt that anchors the clip):',
-  '- Place the subject (or both, in a two-shot) centered, not clipped at the frame edge.',
-  '- Keep subjects unoccluded; keep foreground clear of their silhouette.',
+  `- This still is a FROZEN MOMENT of a live action, not a posed product shot. Translate the shot's motion into a concrete pose: a moving car sits squarely in its lane, body aligned with the road, nose pointed the way it travels; a walking person is caught mid-stride, weight shifting, facing their heading. Never leave the subject in a limp, ambiguous, or default stance.`,
+  `- State the subject's ORIENTATION and HEADING explicitly — which way it faces and, for anything in motion, the direction it is traveling. Pair every framing term ("three-quarter rear", "profile") with that heading so the model cannot invent a nonsensical pose (a car slewed diagonally across the road, a figure facing the wrong way).`,
+  `- State WHERE the subject sits in the geography the beat requires (in its lane on the road's center axis, at the head of the table, in the doorway). This is shot-specific blocking — it is NOT a restatement of the scene bible.`,
+  '- Pull the load-bearing concrete details from the beat into the still. If the beat says the subject is driving / fleeing / hiding / waiting, the still must read as exactly that. Do not flatten a specific dramatic state into a generic composition.',
+  '- Place the subject (or both, in a two-shot) centered, not clipped at the frame edge; keep it unoccluded and the foreground clear of its silhouette.',
   '- Specify a simple, separable background when the set allows ("dark interior", "soft blurred street lights").',
   '- The opening still is the WHOLE composition — do NOT describe the camera arriving on the subject from off-frame.',
+].join('\n');
+
+// The output contract for the video_prompt: motion only, in a fixed order
+// (camera → one directional motion → at most one temporal change → stillness),
+// with every static/scene detail stripped (the start frame already carries it).
+// Owns ORDERING/FORMAT; CAMERA_MOTION_RULES / SUBJECT_MOTION_RULES own which
+// moves are allowed.
+export const VIDEO_PROMPT_RULES = [
+  'Video-prompt structure — describe ONLY what changes over time; the start frame already holds the scene. 2–4 sentences, in this order:',
+  '1. CAMERA FIRST, explicitly, as the opening words. For a held shot write "Static, locked-off camera." verbatim — never bury the camera mid-sentence. For a moving shot, name the single move from the camera-motion list as the first clause.',
+  '2. ONE primary motion, directional, with an endpoint. Give a vector AND a destination — "recedes straight down the street toward the vanishing point, shrinking", not "glides forward and slightly away". State that motion exactly ONCE; never repeat it in a later sentence.',
+  '3. At most ONE hero temporal change — the single time-based event that defines the clip (e.g. the sodium glow sweeping across the body as it passes each lamp). Make it the centerpiece; do not scatter competing "pulsing / warm / glowing" clauses.',
+  '4. End with the stillness constraint, verbatim: "Everything else holds still — no other movement." This stops the model inventing background motion.',
+  'Strip ALL static description from the video_prompt: no subject identity (make / model / color / year / name), no setting or location, no composition or framing. Those live in the start_frame_prompt only — the video_prompt assumes the frame is already correct.',
 ].join('\n');

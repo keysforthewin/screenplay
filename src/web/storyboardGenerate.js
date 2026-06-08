@@ -65,6 +65,7 @@ import {
   REVEAL_HANDLING,
   FRAMING_RULES,
   STILL_FRAMING_RULES,
+  VIDEO_PROMPT_RULES,
 } from './storyboardConstraints.js';
 import { renderSceneBibleBlock, normalizeSceneBible, isEmptySceneBible } from '../mongo/sceneBible.js';
 
@@ -749,12 +750,12 @@ const SHOT_EXPAND_TOOL = {
             start_frame_prompt: {
               type: 'string',
               description:
-                'Still-image prompt for the opening composition: subject, action, framing, camera lighting. ~2 sentences. Do NOT re-describe the scene bible (location/lighting/palette/blocking) or character faces/wardrobe — reference them.',
+                'Still-image prompt for the opening composition. Capture the subject as a FROZEN MOMENT of the action — pose, orientation, heading, and placement in the required geography — so the still reads as the intended moment (a car squarely in its lane, nose down the street, not slewed across it). ~2–3 sentences. Do NOT restate the scene bible (location/lighting/palette/blocking) or character faces/wardrobe — reference them.',
             },
             video_prompt: {
               type: 'string',
               description:
-                'Clip-gen prompt: what HAPPENS (subject action + one camera move or hold), assuming the start frame already exists. ~2 sentences. Do NOT re-describe the start composition.',
+                'Clip-gen motion prompt. Camera FIRST (write "Static, locked-off camera." verbatim for held shots), then ONE directional motion with an endpoint, optionally ONE hero temporal change, then "Everything else holds still — no other movement." 2–4 sentences. NO subject identity, setting, composition, or framing — the start frame already holds those.',
             },
             reverse_in_post: {
               type: 'boolean',
@@ -778,8 +779,8 @@ export const SHOT_EXPAND_SYSTEM_PROMPT = [
   'You see the SCENE BIBLE (the unified look) and the FULL shot skeleton at once, so you can compose the whole scene coherently: each shot picks up its neighbor, and every shot honors the same bible.',
   '',
   '# Two outputs per shot (NO end frame)',
-  '1. start_frame_prompt — the opening still that the image-to-video model conditions on. Subject, action, framing, camera lighting. ~2 sentences.',
-  '2. video_prompt — what HAPPENS during the clip (subject action + one camera move, or a hold), assuming the start frame already exists. ~2 sentences. Lead with the motion; do NOT re-describe the start composition.',
+  '1. start_frame_prompt — the opening still the image-to-video model conditions on. Capture the subject as a frozen moment of the action: its pose, orientation, heading, and where it sits in the geography the beat requires. ~2–3 sentences. This is the ONLY place the subject/scene appearance is described.',
+  '2. video_prompt — what CHANGES over the clip: the camera first, then one primary motion, assuming the start frame already exists. 2–4 sentences. Strip every static/scene detail; never re-describe the start composition.',
   '',
   '# Inherit the bible — do not re-describe it',
   '- The scene bible already fixes location, time of day, lighting key, palette, mood, blocking, and camera language. Reference them; never restate them.',
@@ -795,6 +796,9 @@ export const SHOT_EXPAND_SYSTEM_PROMPT = [
   '',
   '# Subject motion (for video_prompt)',
   SUBJECT_MOTION_RULES,
+  '',
+  '# Video-prompt structure (for video_prompt)',
+  VIDEO_PROMPT_RULES,
   '',
   '# Still composition (for start_frame_prompt)',
   STILL_FRAMING_RULES,
@@ -1200,40 +1204,13 @@ async function createPlannedStoryboardEntry({
 }
 
 function buildTextPrompt(frame) {
-  const lines = [];
-  const headerParts = [];
-  if (frame.shot_type) {
-    headerParts.push(`**${frame.shot_type.replace(/_/g, ' ').toUpperCase()}**`);
-  }
-  if (Number.isFinite(Number(frame.duration_seconds))) {
-    headerParts.push(`${frame.duration_seconds}s`);
-  }
-  if (headerParts.length) lines.push(headerParts.join(' · '));
-  if (frame.reverse_in_post) {
-    if (lines.length) lines.push('');
-    lines.push(
-      '**↺ REVERSE IN POST** — generated camera/action runs backwards; reverse the clip in post for the intended reveal.',
-    );
-  }
-  if (frame.description) {
-    if (lines.length) lines.push('');
-    lines.push(stripMarkdown(frame.description));
-  }
-  if (frame.transition_in) {
-    lines.push('');
-    lines.push(`_↳ ${stripMarkdown(frame.transition_in)}_`);
-  }
-  if (frame.video_prompt) {
-    lines.push('');
-    lines.push(stripMarkdown(frame.video_prompt));
-  }
-  if (frame.characters_in_scene?.length) {
-    lines.push('');
-    lines.push(
-      `_Characters: ${frame.characters_in_scene.map((n) => stripMarkdown(n)).join(', ')}_`,
-    );
-  }
-  return lines.join('\n');
+  // text_prompt drives the video model (and the SPA "Prompt" field). Shot type,
+  // duration, transition, characters, reverse-in-post and the one-line summary
+  // are all persisted as structured fields and rendered as separate UI chrome,
+  // so this field stays lean: motion only. Bundling the static description /
+  // header / transition / character list in here is what made the video model
+  // re-describe (and warp) the already-correct start frame.
+  return stripMarkdown(frame.video_prompt || '').trim();
 }
 
 // Build the default suggested prompt for a frame — used by the SPA's
@@ -1244,7 +1221,9 @@ function buildSuggestedFramePrompt({ sb }) {
   if (sb.shot_type) {
     lines.push(`Shot type: ${sb.shot_type.replace(/_/g, ' ').toUpperCase()}.`);
   }
-  const body = stripMarkdown(sb.text_prompt || '').trim();
+  // Prefer the narrative summary: text_prompt is now the motion-only video
+  // prompt, which is a poor seed for a still-frame image prompt.
+  const body = stripMarkdown(sb.summary || sb.text_prompt || '').trim();
   if (body) lines.push(body);
   if (Array.isArray(sb.characters_in_scene) && sb.characters_in_scene.length) {
     lines.push(

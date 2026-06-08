@@ -97,10 +97,19 @@ fi
 
 # --- build the SPA on the host (mounted into the container) --------------------
 # web/dist is a build artifact, not source; it is bind-mounted, so build it here
-# and rsync ships it. Honour WEB_BASE_PATH from .env when reverse-proxied.
-# `|| true`: WEB_BASE_PATH is optional, and a no-match grep under pipefail+set-e
-# would otherwise abort the deploy.
-WEB_BASE_PATH="$(grep -E '^WEB_BASE_PATH=' .env | tail -n1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]' || true)"
+# and rsync ships it. Its Vite `base` must match how PROD serves the SPA (e.g.
+# /lucas/ behind the reverse proxy), so we read WEB_BASE_PATH from the *remote*
+# .env — prod's own source of truth — NOT the local .env. That keeps `npm run
+# dev` / `npm run build:web` on this machine at base '/' (still runnable locally),
+# while only this deploy build picks up the prod prefix.
+# `|| true`: a no-match grep or an unreachable host under pipefail+set-e must not
+# abort the deploy; we fall back to the local .env, then to '/'.
+log "Reading WEB_BASE_PATH from remote .env ($REMOTE_DIR/.env)"
+WEB_BASE_PATH="$(ssh "$SSH_HOST" "grep -E '^WEB_BASE_PATH=' '$REMOTE_DIR/.env' 2>/dev/null | tail -n1" | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]' || true)"
+if [[ -z "$WEB_BASE_PATH" ]]; then
+  WEB_BASE_PATH="$(grep -E '^WEB_BASE_PATH=' .env 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]' || true)"
+  [[ -n "$WEB_BASE_PATH" ]] && log "Remote .env had no WEB_BASE_PATH; falling back to local .env value"
+fi
 log "Building web SPA (base=${WEB_BASE_PATH:-/})"
 WEB_BASE_PATH="${WEB_BASE_PATH:-/}" npm run build:web
 

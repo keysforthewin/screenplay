@@ -384,12 +384,21 @@ describe('storyboard auto-generation (two-pass)', () => {
 
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(stored).toHaveLength(2);
-    // text_prompt carries the expander's video_prompt verbatim (no Start
-    // frame / End frame baking). No legacy markers should appear.
-    expect(stored[0].text_prompt).toContain(TWO_SHOT_PLAN.shots[0].video_prompt);
-    expect(stored[1].text_prompt).toContain(TWO_SHOT_PLAN.shots[1].video_prompt);
+    // text_prompt is the lean, motion-only video prompt — exactly the expander's
+    // video_prompt, with no Start/End markers and (crucially) none of the static
+    // chrome that used to be bundled in (shot-type header, the narrative
+    // description, the transition note). Those live on structured fields and the
+    // SPA renders them separately; bundling them here is what made the video
+    // model re-describe the already-correct start frame.
+    expect(stored[0].text_prompt).toBe(TWO_SHOT_PLAN.shots[0].video_prompt);
+    expect(stored[1].text_prompt).toBe(TWO_SHOT_PLAN.shots[1].video_prompt);
     expect(stored[0].text_prompt).not.toMatch(/\*\*Start frame:\*\*/);
     expect(stored[0].text_prompt).not.toMatch(/\*\*End frame:\*\*/);
+    // No static description / shot-type header / transition note bled into the
+    // prompt the video model receives.
+    expect(stored[0].text_prompt).not.toContain(TWO_SHOT_PLAN.shots[0].description);
+    expect(stored[0].text_prompt).not.toContain('CINEMATIC WIDE');
+    expect(stored[1].text_prompt).not.toContain(TWO_SHOT_PLAN.shots[1].transition_in);
     // Only the opening still prompt is seeded — exactly one frame per row.
     expect(stored[0].frames.map((f) => f.prompt)).toEqual([
       TWO_SHOT_PLAN.shots[0].start_frame_prompt,
