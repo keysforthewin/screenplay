@@ -23,6 +23,7 @@ import { StoryboardGenerateDialog } from '../widgets/StoryboardGenerateDialog.js
 import { BeatTabs } from '../widgets/BeatTabs.jsx';
 import { formatRuntime } from '../shotTypes.js';
 import { BeatPager } from '../widgets/BeatPager.jsx';
+import { SceneBiblePanel } from '../widgets/SceneBiblePanel.jsx';
 
 export function StoryboardBeat({ session }) {
   const { order } = useParams();
@@ -350,6 +351,15 @@ export function StoryboardBeat({ session }) {
           Total runtime: <strong>{formatRuntime(totalRuntime)}</strong>{' '}
           ({sortedItems.length} {sortedItems.length === 1 ? 'shot' : 'shots'})
         </div>
+      )}
+
+      {data?.beat?._id && (
+        <SceneBiblePanel
+          beatId={String(data.beat._id)}
+          session={session}
+          shotCount={sortedItems.length}
+          onRefresh={onRefresh}
+        />
       )}
 
       {room && (

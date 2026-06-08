@@ -2475,3 +2475,12 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .lens-bar > i { display:block; height:100%; }
 .lens-bar > i.good{background:var(--ok,#5fd07e)} .lens-bar > i.medium{background:var(--warning,#e7c14b)} .lens-bar > i.bad{background:var(--danger,#f1736e)}
 .lens-comment { flex:1; font-size:12px; color:#9aa1ac; line-height:1.35; }
+
+.scene-bible { background:#16181d; border:1px solid var(--border,#2c2f36); border-radius:10px; margin-bottom:14px; overflow:hidden; }
+.scene-bible-head { display:flex; align-items:center; gap:10px; padding:11px 14px; cursor:pointer; background:#1b1d22; }
+.scene-bible-head .caret { color:var(--fg-muted,#6b7280); }
+.scene-bible-head .title { font-weight:700; font-size:13px; color:var(--fg,#dfe3e9); }
+.scene-bible-head .sub { font-size:11px; color:var(--fg-muted,#6b7280); }
+.scene-bible-head .spacer { flex:1; }
+.scene-bible-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px 16px; padding:14px; }
+.scene-bible-field label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#7b8290; margin-bottom:4px; }
