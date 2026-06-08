@@ -2443,3 +2443,16 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.storyboard-score-chip {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+.storyboard-score-chip.good { background: rgba(52,168,83,.16); color: var(--ok, #5fd07e); }
+.storyboard-score-chip.medium { background: rgba(234,179,8,.16); color: var(--warning, #e7c14b); }
+.storyboard-score-chip.bad { background: rgba(239,68,68,.16); color: var(--danger, #f1736e); }
