@@ -3246,6 +3246,21 @@ export function buildApiRouter() {
     } catch (e) { next(e); }
   });
 
+  // Auto-fill the scene bible from the beat. Synchronous (one LLM pass, a few
+  // seconds — like the dialogue critic), unlike the polling reexpand job above.
+  router.post('/beat/:beatId/scene-bible/autofill', async (req, res, next) => {
+    try {
+      const beat = await getBeat(String(req.params.beatId));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { autofillSceneBible } = await import('./sceneBibleAutofill.js');
+      const result = await autofillSceneBible({ beatId: beat._id.toString() });
+      res.json(result);
+    } catch (e) {
+      if (e?.code === 'BEAT_BUSY') return res.status(409).json({ error: e.message });
+      next(e);
+    }
+  });
+
   router.get('/beat/reexpand/job/:jobId', async (req, res, next) => {
     try {
       const { getReExpandAllJob } = await import('./storyboardGenerate.js');

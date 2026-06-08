@@ -379,6 +379,17 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
       const m = field.match(/^attachment:([a-f0-9]{24}):(name|description)$/);
       if (m) return setOwnedAttachmentMeta(m[1], { [m[2]]: args.markdown });
     }
+    // Scene bible: whole-object read-modify-write via the normalizing helper.
+    // Avoids a dotted `$set` through a null scene_bible — the same reason
+    // describeBeatRoom.persistFields reassembles the object (roomRegistry.js).
+    if (field.startsWith('scene_bible.')) {
+      const key = field.slice('scene_bible.'.length);
+      const beat = await Plots.getBeat(entityId);
+      return Plots.setBeatSceneBible(entityId, {
+        ...(beat?.scene_bible || {}),
+        [key]: args.markdown,
+      });
+    }
     return Plots.updateBeat(entityId, { [field]: args.markdown });
   }
   if (entityType === 'character') {
