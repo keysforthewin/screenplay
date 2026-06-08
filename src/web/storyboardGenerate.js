@@ -393,6 +393,7 @@ const SCENE_PLAN_TOOL = {
           continuity_anchors: { type: 'string', description: 'Props, wardrobe states, weather that must stay constant across shots.' },
           camera_language: { type: 'string', description: 'The scene default camera grammar, e.g. "mostly locked-off, occasional slow push".' },
         },
+        required: ['location', 'time_of_day', 'lighting_key'],
         additionalProperties: false,
       },
       frames: {
@@ -1151,13 +1152,24 @@ async function planScene({ beat, characters, targetCount, direction, directorNot
     tool_choice: { type: 'tool', name: 'plan_scene' },
     messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
   });
+  if (resp.stop_reason === 'max_tokens') {
+    logger.warn(
+      `storyboard plan_scene: hit max_tokens cap (model=${STORYBOARD_MODEL}, target=${targetCount}); response may be truncated`,
+    );
+  }
   const toolUse = (resp.content || []).find((b) => b.type === 'tool_use' && b.name === 'plan_scene');
-  if (!toolUse?.input) {
+  if (!toolUse) {
     logger.warn(`storyboard plan_scene: model did not call the tool (stop_reason=${resp.stop_reason})`);
     return { sceneBible: null, outline: [] };
   }
   const sceneBible = normalizeSceneBible(toolUse.input.scene_bible);
   const outline = Array.isArray(toolUse.input.frames) ? toolUse.input.frames : [];
+  const want = clampTargetCount(targetCount);
+  if (outline.length < want) {
+    logger.warn(
+      `storyboard plan_scene: model returned ${outline.length} frames; requested ${want} (stop_reason=${resp.stop_reason})`,
+    );
+  }
   return { sceneBible, outline };
 }
 

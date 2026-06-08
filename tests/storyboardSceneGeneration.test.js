@@ -1,6 +1,7 @@
 // tests/storyboardSceneGeneration.test.js
 import { describe, it, expect, vi } from 'vitest';
 import { createFakeDb } from './_fakeMongo.js';
+import { CAMERA_MOTION_RULES, REVEAL_HANDLING } from '../src/web/storyboardConstraints.js';
 
 const fakeDb = createFakeDb();
 vi.mock('../src/mongo/client.js', () => ({
@@ -18,8 +19,8 @@ describe('scene-plan building blocks (Pass 1)', () => {
   });
 
   it('the scene-plan prompt embeds the shared constraint blocks (no duplication)', () => {
-    expect(SCENE_PLAN_SYSTEM_PROMPT).toContain('Locked-off');
-    expect(SCENE_PLAN_SYSTEM_PROMPT).toContain('reverse_in_post');
+    expect(SCENE_PLAN_SYSTEM_PROMPT).toContain(CAMERA_MOTION_RULES);
+    expect(SCENE_PLAN_SYSTEM_PROMPT).toContain(REVEAL_HANDLING);
   });
 
   it('planScene (via override) returns { sceneBible, outline }', async () => {
