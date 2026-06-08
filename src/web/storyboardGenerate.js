@@ -53,7 +53,9 @@ import {
   setStoryboardFrameImageViaGateway,
   setStoryboardFrameEditResultViaGateway,
   setStoryboardFramePromptViaGateway,
+  setStoryboardCritiqueViaGateway,
 } from './gateway.js';
+import { critiquePanel as defaultCritiquePanel } from './storyboardCritique.js';
 import { collectStoryboardReferenceIds } from './storyboardReferenceAggregator.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 import {
@@ -206,6 +208,46 @@ async function callGenerateImage(args) {
 let scenePlannerOverride = null;
 export function _setScenePlannerForTests(fn) {
   scenePlannerOverride = fn;
+}
+
+// Pass-4 critique-panel seam. Tests override to avoid real Anthropic calls.
+let critiquePanelOverride = null;
+export function _setCritiquePanelForTests(fn) {
+  critiquePanelOverride = fn;
+}
+function runCritiquePanel(args) {
+  return (critiquePanelOverride || defaultCritiquePanel)(args);
+}
+
+function toCritiqueNeighbor(sb) {
+  return { order: sb.order, summary: sb.summary, startFramePrompt: sb.frames?.[0]?.prompt || '' };
+}
+
+// Pass 4: auto prompt-tier critique. Runs the four-lens panel over every shot of
+// the beat (bible + director's notes + neighbors) and persists prompt_critique.
+// Per-shot failures are swallowed so a bad critique never fails the job.
+async function critiqueShotsForBeat({ beat, sceneBible, directorNotes, onProgress = null }) {
+  const { listStoryboards } = await import('../mongo/storyboards.js');
+  const shots = await listStoryboards({ beatId: beat._id });
+  for (let i = 0; i < shots.length; i++) {
+    const sb = shots[i];
+    onProgress?.({ phase: 'critiquing', step: 'critique_shot_start', frame: i + 1, total: shots.length, message: `Critiquing shot ${i + 1}/${shots.length}…` });
+    try {
+      const shot = {
+        order: sb.order,
+        summary: sb.summary,
+        text_prompt: sb.text_prompt,
+        startFramePrompt: sb.frames?.[0]?.prompt || '',
+        shot_type: sb.shot_type,
+      };
+      const prevShot = i > 0 ? toCritiqueNeighbor(shots[i - 1]) : null;
+      const nextShot = i < shots.length - 1 ? toCritiqueNeighbor(shots[i + 1]) : null;
+      const critique = await runCritiquePanel({ target: 'prompt', sceneBible, directorNotes, shot, prevShot, nextShot });
+      await setStoryboardCritiqueViaGateway({ storyboardId: sb._id, beatId: beat._id, target: 'prompt', critique });
+    } catch (e) {
+      logger.warn(`storyboard critique: shot ${i + 1} failed: ${e?.message || e}`);
+    }
+  }
 }
 
 // In-memory job tracker. Sufficient for single-process runtime; status survives
@@ -422,6 +464,20 @@ async function runStoryboardGenerationJob({
       logger.warn(
         `storyboard gen frame ${order}/${planned.length} failed: ${e.message}`,
       );
+    }
+  }
+  // Pass 4: auto prompt-critique. Best-effort — never flips the job to error.
+  if (job.completed > 0) {
+    recordProgress(job, { phase: 'critiquing', step: 'critique_start', total: planned.length, message: 'Critiquing shots…' });
+    try {
+      await critiqueShotsForBeat({
+        beat,
+        sceneBible,
+        directorNotes,
+        onProgress: (fields) => recordProgress(job, fields),
+      });
+    } catch (e) {
+      logger.warn(`storyboard gen: critique pass failed: ${e.message}`);
     }
   }
   job.status = job.failed === 0 ? 'done' : 'partial';

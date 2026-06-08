@@ -54,6 +54,18 @@ beforeEach(() => {
   Generate._setImageDispatcherForTests(() => {
     throw new Error('image dispatcher must not be called during generation');
   });
+  // Pass 4 runs at the end of generation; stub the critique panel so these
+  // integration tests don't make real Anthropic calls (this file does not mock
+  // the Anthropic client). The dedicated Pass-4 behavior is covered in
+  // tests/storyboardCritiqueGeneration.test.js.
+  Generate._setCritiquePanelForTests(async () => ({
+    overall: 7,
+    lowest_lens: 'cinematic',
+    lenses: [{ lens: 'bible', score: 7, comments: 'ok' }],
+    model: 'test',
+    created_at: new Date(),
+    target: 'prompt',
+  }));
 });
 
 // A two-shot plan. The skeleton fields (description/shot_type/duration/...) are
