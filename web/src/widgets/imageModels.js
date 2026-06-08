@@ -7,6 +7,9 @@ export const IMAGE_MODELS = [
   { id: 'flux-2-pro', label: 'Flux 2 Pro' },
   { id: 'flux-pro-kontext', label: 'Flux Pro Kontext' },
   { id: 'openai', label: 'OpenAI (gpt-image-2)' },
+  { id: 'gemini-25-flash', label: 'Gemini 2.5 Flash (fast)' },
+  { id: 'nano-banana-2', label: 'Nano Banana 2 (Gemini 3.1 Flash)' },
+  { id: 'flux-2-klein', label: 'Flux 2 Klein (fast)' },
 ];
 
 export const IMAGE_MODEL_IDS = new Set(IMAGE_MODELS.map((m) => m.id));
