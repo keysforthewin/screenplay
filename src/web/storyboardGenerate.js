@@ -1021,6 +1021,7 @@ export async function startReExpandAllJob({ beatId }) {
   const jobId = makeJobId();
   const job = { job_id: jobId, beat_id: String(beat._id), status: 'queued', started_at: new Date(), finished_at: null, error: null, total: 0, completed: 0, failed: 0, progress: null, events: [] };
   reExpandAllJobs.set(jobId, job);
+  recordProgress(job, { phase: 'queued', step: 'job_queued', message: 'Queued re-expand…' });
   withBeatLock(beat._id, async () => {
     job.status = 'running';
     const shots = await listStoryboards({ beatId: beat._id });
@@ -1028,7 +1029,7 @@ export async function startReExpandAllJob({ beatId }) {
     for (let i = 0; i < shots.length; i++) {
       recordProgress(job, { phase: 'reexpand', step: 'shot_start', frame: i + 1, total: shots.length, message: `Re-expanding shot ${i + 1}/${shots.length}…` });
       try {
-        const sb = await getStoryboard(shots[i]._id);
+        const sb = shots[i];
         await reExpandShotInner({ sb, beat });
         job.completed += 1;
       } catch (e) {
