@@ -3216,9 +3216,14 @@ export function buildApiRouter() {
         const sb = await getStoryboard(sbId);
         guidance = mergeCritiqueComments(sb?.prompt_critique) || '';
       }
-      const { reExpandShot } = await import('./storyboardGenerate.js');
-      const result = await reExpandShot({ storyboardId: sbId, critiqueGuidance: guidance });
-      res.json(result);
+      const { reExpandShot, BeatBusyError } = await import('./storyboardGenerate.js');
+      try {
+        const result = await reExpandShot({ storyboardId: sbId, critiqueGuidance: guidance });
+        res.json(result);
+      } catch (e) {
+        if (e instanceof BeatBusyError) return res.status(409).json({ error: e.message });
+        throw e;
+      }
     } catch (e) { next(e); }
   });
 

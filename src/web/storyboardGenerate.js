@@ -922,7 +922,7 @@ export function _expandShotsForTest(args) {
 export function mergeCritiqueComments(critique) {
   if (!critique || !Array.isArray(critique.lenses)) return '';
   return critique.lenses
-    .filter((l) => l && l.comments && Number(l.score) < 8)
+    .filter((l) => l && l.comments && !l.error && Number(l.score) < 8)
     .map((l) => `- [${l.lens}] ${l.comments}`)
     .join('\n');
 }
@@ -935,6 +935,12 @@ export async function reExpandShot({ storyboardId, critiqueGuidance = '' }) {
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const beat = await getBeat(sb.beat_id.toString());
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
+  // Fail-fast if a generation job (delete+recreate) is in flight for this beat —
+  // mirror regenerateStoryboardFrame. Editing prompts against rows a concurrent
+  // generate is about to delete would race.
+  if (isBeatLocked(beat._id)) {
+    throw new BeatBusyError(beat._id.toString());
+  }
   const characters = await findCharactersInBeat(beat);
   const directorNotes = await loadDirectorNotesForPlanner();
   const outlineFrame = {
@@ -945,47 +951,57 @@ export async function reExpandShot({ storyboardId, critiqueGuidance = '' }) {
     characters_in_scene: Array.isArray(sb.characters_in_scene) ? sb.characters_in_scene : [],
     reverse_in_post: Boolean(sb.reverse_in_post),
   };
-  const expanded = await expandShots({
-    beat, characters, sceneBible: beat.scene_bible, outline: [outlineFrame],
-    direction: '', directorNotes, revisionNotes: critiqueGuidance || '',
-  });
-  const e = expanded[0] || {};
-  const newFrame = {
-    ...outlineFrame,
-    start_frame_prompt: e.start_frame_prompt,
-    video_prompt: e.video_prompt,
-    reverse_in_post: typeof e.reverse_in_post === 'boolean' ? e.reverse_in_post : outlineFrame.reverse_in_post,
-  };
-  const newTextPrompt = buildTextPrompt(newFrame);
-  const newStartPrompt = stripMarkdown(newFrame.start_frame_prompt || '').trim();
-
-  // Persist text_prompt — mirror createPlannedStoryboardEntry, which feeds the
-  // rendered text_prompt to createStoryboardViaGateway. For an existing row the
-  // equivalent write is setStoryboardTextPromptViaGateway (the text-field gateway
-  // helper; falls back to Mongo when Hocuspocus isn't running).
-  await setStoryboardTextPromptViaGateway({ storyboardId: sb._id, text: newTextPrompt });
-
-  // Persist the start-frame prompt onto frames[0] — mirror how
-  // createPlannedStoryboardEntry seeds the first frame via addStoryboardFrameViaGateway.
-  // For an existing row, update frames[0]'s prompt in place; if the row has no
-  // frames yet, add one.
-  if (newStartPrompt) {
-    const firstFrame = (sb.frames || [])[0];
-    if (firstFrame) {
-      await setStoryboardFramePromptViaGateway({
-        storyboardId: sb._id,
-        frameId: firstFrame._id,
-        text: newStartPrompt,
-      });
-    } else {
-      await addStoryboardFrameViaGateway({
-        storyboardId: sb._id,
-        prompt: newStartPrompt,
-        referenceIds: [],
-      });
+  // Hold the beat lock for the duration of the expand + writes so a generation
+  // can't start mid-write. The body returns the result, which reExpandShot
+  // returns out. (withBeatLock only queues; it doesn't itself call isBeatLocked,
+  // so the pre-check above doesn't deadlock with this wrap.)
+  return withBeatLock(beat._id, async () => {
+    const expanded = await expandShots({
+      beat, characters, sceneBible: beat.scene_bible, outline: [outlineFrame],
+      direction: '', directorNotes, revisionNotes: critiqueGuidance || '',
+    });
+    if (!expanded.length || !expanded[0]?.start_frame_prompt || !expanded[0]?.video_prompt) {
+      logger.warn(`storyboard reExpandShot: empty/invalid expansion for ${storyboardId}; keeping existing prompts`);
+      return { storyboardId: String(sb._id), unchanged: true };
     }
-  }
-  return { storyboardId: String(sb._id) };
+    const e = expanded[0] || {};
+    const newFrame = {
+      ...outlineFrame,
+      start_frame_prompt: e.start_frame_prompt,
+      video_prompt: e.video_prompt,
+      reverse_in_post: typeof e.reverse_in_post === 'boolean' ? e.reverse_in_post : outlineFrame.reverse_in_post,
+    };
+    const newTextPrompt = buildTextPrompt(newFrame);
+    const newStartPrompt = stripMarkdown(newFrame.start_frame_prompt || '').trim();
+
+    // Persist text_prompt — mirror createPlannedStoryboardEntry, which feeds the
+    // rendered text_prompt to createStoryboardViaGateway. For an existing row the
+    // equivalent write is setStoryboardTextPromptViaGateway (the text-field gateway
+    // helper; falls back to Mongo when Hocuspocus isn't running).
+    await setStoryboardTextPromptViaGateway({ storyboardId: sb._id, text: newTextPrompt });
+
+    // Persist the start-frame prompt onto frames[0] — mirror how
+    // createPlannedStoryboardEntry seeds the first frame via addStoryboardFrameViaGateway.
+    // For an existing row, update frames[0]'s prompt in place; if the row has no
+    // frames yet, add one.
+    if (newStartPrompt) {
+      const firstFrame = (sb.frames || [])[0];
+      if (firstFrame) {
+        await setStoryboardFramePromptViaGateway({
+          storyboardId: sb._id,
+          frameId: firstFrame._id,
+          text: newStartPrompt,
+        });
+      } else {
+        await addStoryboardFrameViaGateway({
+          storyboardId: sb._id,
+          prompt: newStartPrompt,
+          referenceIds: [],
+        });
+      }
+    }
+    return { storyboardId: String(sb._id) };
+  });
 }
 
 // Two-output validator. Drops a frame only if it lacks start_frame_prompt or

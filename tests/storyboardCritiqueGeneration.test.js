@@ -160,4 +160,16 @@ describe('reExpandShot (regenerate prompt from critique)', () => {
     expect(guidance).toContain('Jump from prev shot');    // score < 8 included
     expect(guidance).not.toContain('Great framing');      // score >= 8 excluded
   });
+
+  it('mergeCritiqueComments excludes errored lenses from guidance', async () => {
+    const guidance = gen.mergeCritiqueComments({
+      overall: 4,
+      lenses: [
+        { lens: 'bible', score: 3, comments: 'Wrong location feel' },
+        { lens: 'cinematic', score: 1, comments: '(lens failed: timeout)', error: true },
+      ],
+    });
+    expect(guidance).toContain('Wrong location feel');    // real low score included
+    expect(guidance).not.toContain('lens failed');        // errored lens excluded
+  });
 });
