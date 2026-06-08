@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect } from 'react';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
+import { ConfirmDialog } from './Modal.jsx';
 import { apiGet, apiPostJson } from '../api.js';
 
 const BIBLE_FIELDS = [
@@ -18,11 +19,11 @@ export function SceneBiblePanel({ beatId, session, shotCount, onRefresh }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const pollRef = useRef(null);
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
   async function reexpandAll() {
-    if (!window.confirm(`Re-expand prompts for all ${shotCount} shot(s) from the scene bible? This rewrites their prompts.`)) return;
     setBusy(true); setError(null);
     try {
       const r = await apiPostJson(`/beat/${beatId}/reexpand-shots`, {});
@@ -48,10 +49,18 @@ export function SceneBiblePanel({ beatId, session, shotCount, onRefresh }) {
         <span className="title">Scene Bible</span>
         <span className="sub">{shotCount} shot{shotCount === 1 ? '' : 's'} inherit this</span>
         <span className="spacer" />
-        <button className="primary" disabled={busy} onClick={(e) => { e.stopPropagation(); reexpandAll(); }}>
+        <button className="primary" disabled={busy} onClick={(e) => { e.stopPropagation(); setConfirmOpen(true); }}>
           {busy ? 'Re-expanding…' : 'Re-expand all shots'}
         </button>
       </div>
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Re-expand all shots?"
+        message={`Re-expand prompts for all ${shotCount} shot(s) from the scene bible? This rewrites their prompts.`}
+        confirmLabel="Re-expand all"
+        onConfirm={() => { setConfirmOpen(false); reexpandAll(); }}
+        onCancel={() => setConfirmOpen(false)}
+      />
       {error && <div className="critique-error">{error}</div>}
       {open && (
         <CollabSurface room={`beat:${beatId}`} session={session}>

@@ -2483,4 +2483,4 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .scene-bible-head .sub { font-size:11px; color:var(--fg-muted,#6b7280); }
 .scene-bible-head .spacer { flex:1; }
 .scene-bible-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px 16px; padding:14px; }
-.scene-bible-field label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#7b8290; margin-bottom:4px; }
+.scene-bible-field .field-label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#7b8290; margin-bottom:4px; }
