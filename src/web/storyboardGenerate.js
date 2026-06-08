@@ -32,7 +32,7 @@ import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
-import { getBeat } from '../mongo/plots.js';
+import { getBeat, setBeatSceneBible } from '../mongo/plots.js';
 import { getCharacter } from '../mongo/characters.js';
 import { readImageBuffer, uploadGeneratedImage } from '../mongo/images.js';
 import {
@@ -758,7 +758,6 @@ async function runStoryboardGenerationJob({
   // individual row creation fails below.
   if (sceneBible && !isEmptySceneBible(sceneBible)) {
     try {
-      const { setBeatSceneBible } = await import('../mongo/plots.js');
       await setBeatSceneBible(beat._id, sceneBible);
     } catch (e) {
       logger.warn(`storyboard gen: persist scene bible failed: ${e.message}`);
@@ -1765,9 +1764,9 @@ async function createPlannedStoryboardEntry({
     logger.warn(`storyboard gen: collect refs failed: ${e.message}`);
   }
 
-  // The planner produces an opening and a closing still prompt; seed them as
-  // the first two frames of the pool. Frames with no prompt are skipped so a
-  // sparse planner output doesn't create empty frames.
+  // The planner produces an opening still prompt; seed it as the first frame
+  // of the pool. A frame with no prompt is skipped so a sparse planner output
+  // doesn't create an empty frame.
   for (const prompt of [startFramePrompt]) {
     if (!prompt) continue;
     try {
