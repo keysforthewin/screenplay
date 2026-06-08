@@ -162,16 +162,20 @@ async function runLensJudge({ lens, target, context, imageInput }) {
   const client = getAnthropic();
   const resp = await client.messages.create({
     model: CRITIQUE_MODEL,
-    max_tokens: 600,
+    max_tokens: 1024,
     system,
     tools: [JUDGE_TOOL],
     tool_choice: { type: 'tool', name: 'judge_shot' },
     messages: [{ role: 'user', content }],
   });
+  if (resp.stop_reason === 'max_tokens') {
+    logger.warn(`storyboard critique: lens ${lens.key} hit max_tokens; treating as no verdict`);
+    return { score: 1, comments: '(judge response truncated)', error: true };
+  }
   const toolUse = (resp.content || []).find((b) => b.type === 'tool_use' && b.name === 'judge_shot');
   if (!toolUse?.input) {
     logger.warn(`storyboard critique: lens ${lens.key} returned no tool call`);
-    return { score: 1, comments: '(judge produced no verdict)' };
+    return { score: 1, comments: '(judge produced no verdict)', error: true };
   }
   return {
     score: toolUse.input.score,
@@ -186,14 +190,19 @@ export async function critiquePanel({ target, sceneBible, directorNotes, shot, p
   const lensResults = await Promise.all(
     CRITIQUE_LENSES.map(async (lens) => {
       try {
-        const { score, comments } = await runLensJudge({ lens, target, context, imageInput });
-        return { lens: lens.key, score: clampScore(score), comments: String(comments || '') };
+        const { score, comments, error } = await runLensJudge({ lens, target, context, imageInput });
+        const out = { lens: lens.key, score: clampScore(score), comments: String(comments || '') };
+        if (error) out.error = true;
+        return out;
       } catch (e) {
         logger.warn(`storyboard critique: lens ${lens.key} failed: ${e?.message || e}`);
-        return { lens: lens.key, score: 1, comments: `(lens failed: ${e?.message || e})` };
+        return { lens: lens.key, score: 1, comments: `(lens failed: ${e?.message || e})`, error: true };
       }
     }),
   );
-  const { overall, lowest_lens } = aggregateCritique(lensResults);
+  // Errored lenses are kept in the result for transparency but excluded from the
+  // aggregate so a transient API failure can't paint a shot as critically bad.
+  const scored = lensResults.filter((l) => !l.error);
+  const { overall, lowest_lens } = aggregateCritique(scored);
   return { overall, lowest_lens, lenses: lensResults, model: CRITIQUE_MODEL, created_at: new Date(), target };
 }

@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   buildShotCritiqueContext,
   critiquePanel,
   _setLensJudgeForTests,
 } from '../src/web/storyboardCritique.js';
+
+afterEach(() => _setLensJudgeForTests(null));
 
 describe('buildShotCritiqueContext', () => {
   it('includes the bible block, director notes, the shot prompts, and neighbors', () => {
@@ -63,6 +65,29 @@ describe('critiquePanel', () => {
       imageInput: { buffer: Buffer.from('x'), contentType: 'image/png' },
     });
     expect(sawImage).toBe(true);
+    _setLensJudgeForTests(null);
+  });
+
+  it('excludes an errored lens from the aggregate (no false critical)', async () => {
+    _setLensJudgeForTests(async ({ lens }) => {
+      if (lens.key === 'bible') return { score: 1, comments: 'boom', error: true };
+      return { score: 8, comments: 'fine' };
+    });
+    const result = await critiquePanel({
+      target: 'prompt',
+      sceneBible: {},
+      directorNotes: [],
+      shot: { order: 1, summary: 's', text_prompt: 'tp', startFramePrompt: 'sf' },
+      prevShot: null,
+      nextShot: null,
+    });
+    // all four lenses still listed; the errored one carries error:true
+    expect(result.lenses).toHaveLength(4);
+    const bible = result.lenses.find((l) => l.lens === 'bible');
+    expect(bible.error).toBe(true);
+    // overall reflects ONLY the three successful 8s — NOT capped to 1
+    expect(result.overall).toBe(8);
+    expect(result.lowest_lens).not.toBe('bible');
     _setLensJudgeForTests(null);
   });
 });
