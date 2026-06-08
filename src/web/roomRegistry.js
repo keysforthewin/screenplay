@@ -18,7 +18,8 @@
 //   - render fragments to markdown and persist to Mongo on store ticks
 
 import { ObjectId } from 'mongodb';
-import { getPlot, updatePlot, getBeat, updateBeat } from '../mongo/plots.js';
+import { getPlot, updatePlot, getBeat, updateBeat, setBeatSceneBible } from '../mongo/plots.js';
+import { SCENE_BIBLE_FIELDS } from '../mongo/sceneBible.js';
 import { getCharacter, updateCharacter } from '../mongo/characters.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import {
@@ -218,11 +219,17 @@ async function describeBeatRoom(id) {
   const plot = await getPlot();
   const beat = (plot.beats || []).find((b) => b._id?.toString?.() === id);
   if (!beat) return null;
-  const fieldNames = [...BEAT_TOP_FIELDS];
+  const bibleFieldNames = SCENE_BIBLE_FIELDS.map((f) => `scene_bible.${f}`);
+  const fieldNames = [...BEAT_TOP_FIELDS, ...bibleFieldNames];
 
   function readMongoValue(fieldName) {
     if (BEAT_TOP_FIELDS.includes(fieldName)) {
       return beat[fieldName] != null ? String(beat[fieldName]) : '';
+    }
+    if (fieldName.startsWith('scene_bible.')) {
+      const key = fieldName.slice('scene_bible.'.length);
+      const v = beat.scene_bible?.[key];
+      return v != null ? String(v) : '';
     }
     return '';
   }
@@ -243,13 +250,28 @@ async function describeBeatRoom(id) {
     seed,
     persistFields: async (snapshot) => {
       const patch = {};
-      for (const f of fieldNames) {
+      for (const f of BEAT_TOP_FIELDS) {
         if (snapshot[f] === undefined) continue;
         if (snapshot[f] === readMongoValue(f)) continue;
-        if (BEAT_TOP_FIELDS.includes(f)) {
-          patch[f] = snapshot[f];
-        }
+        patch[f] = snapshot[f];
       }
+
+      // Scene bible: whole-object read-modify-write (avoids dotted $set through
+      // a null scene_bible and reuses the normalizing setBeatSceneBible helper).
+      const changedBibleFields = bibleFieldNames.filter(
+        (f) =>
+          snapshot[f] !== undefined &&
+          String(snapshot[f]).trim() !== readMongoValue(f),
+      );
+      if (changedBibleFields.length) {
+        const bible = {};
+        for (const f of SCENE_BIBLE_FIELDS) {
+          const frag = `scene_bible.${f}`;
+          bible[f] = snapshot[frag] !== undefined ? snapshot[frag] : readMongoValue(frag);
+        }
+        await setBeatSceneBible(id, bible);
+      }
+
       const imgPersist = await persistOwnedImageFragments(snapshot, imageFragments.seed);
       const attachPersist = await persistOwnedAttachmentFragments(
         snapshot,
@@ -262,6 +284,7 @@ async function describeBeatRoom(id) {
       }
       const allChanged = [
         ...entityChangedKeys,
+        ...changedBibleFields,
         ...imgPersist.changedFields,
         ...attachPersist.changedFields,
       ];

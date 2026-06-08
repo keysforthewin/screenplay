@@ -1,4 +1,5 @@
 import { attachmentUrl, thumbUrl } from '../api.js';
+import { pickCritiqueScore, scoreBand, isFlagged } from './critiqueDisplay.js';
 
 export function StoryboardItemCollapsed({
   sb,
@@ -22,6 +23,9 @@ export function StoryboardItemCollapsed({
     : null;
   const previewVideoId = generatedVideoId || uploadedVideoId;
   const hasVideo = !!previewVideoId;
+
+  const critScore = pickCritiqueScore(sb);
+  const critBand = scoreBand(critScore);
 
   return (
     <div
@@ -81,6 +85,11 @@ export function StoryboardItemCollapsed({
       )}
 
       <div className="storyboard-item-collapsed-summary">
+        {critScore != null && (
+          <span className={`storyboard-score-chip ${critBand}`} title="Critique score">
+            {critScore}{isFlagged(critScore) ? ' ⚑' : ''}
+          </span>
+        )}
         {previewText
           ? previewText
           : <span className="storyboard-item-collapsed-empty">No prompt yet.</span>}
