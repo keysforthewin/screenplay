@@ -56,6 +56,14 @@ import {
 } from './gateway.js';
 import { collectStoryboardReferenceIds } from './storyboardReferenceAggregator.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
+import {
+  CAMERA_MOTION_RULES,
+  SUBJECT_MOTION_RULES,
+  REVEAL_HANDLING,
+  FRAMING_RULES,
+  STILL_FRAMING_RULES,
+} from './storyboardConstraints.js';
+import { renderSceneBibleBlock, normalizeSceneBible, isEmptySceneBible } from '../mongo/sceneBible.js';
 
 const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const MAX_REFERENCE_IMAGES = 12; // cap input images per Nano Banana call
@@ -362,6 +370,91 @@ export const OUTLINE_SYSTEM_PROMPT = [
   '- Final reminder: emit EXACTLY the number of frames requested in the user message. Under-delivering is a bug.',
 ].join('\n');
 
+// Pass-1 scene-planner tool: scene bible + ordered shot skeleton in one call.
+const SCENE_PLAN_TOOL = {
+  name: 'plan_scene',
+  description:
+    'Design the whole scene: first a compact scene bible (the unified visual look every shot inherits), ' +
+    'then an ordered shot skeleton covering the entire beat. Do NOT write detailed video / still prompts here.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      scene_bible: {
+        type: 'object',
+        description:
+          'The unified visual plan for the whole scene. Every shot inherits this, so keep each field concrete and consistent.',
+        properties: {
+          location: { type: 'string', description: 'Where the scene takes place, concretely.' },
+          time_of_day: { type: 'string', description: 'Time of day / part of day.' },
+          lighting_key: { type: 'string', description: 'Lighting key and sources, e.g. "warm low practical + cool fill".' },
+          palette: { type: 'string', description: '3–5 anchor colors / overall grade.' },
+          mood: { type: 'string', description: 'Tonal one-liner.' },
+          blocking: { type: 'string', description: 'Character geography: who is where in the space and their spatial relationships.' },
+          continuity_anchors: { type: 'string', description: 'Props, wardrobe states, weather that must stay constant across shots.' },
+          camera_language: { type: 'string', description: 'The scene default camera grammar, e.g. "mostly locked-off, occasional slow push".' },
+        },
+        additionalProperties: false,
+      },
+      frames: {
+        type: 'array',
+        description: 'Ordered shot skeleton covering the entire beat.',
+        items: {
+          type: 'object',
+          properties: {
+            description: { type: 'string', description: 'One-sentence narrative summary of what happens in this shot.' },
+            shot_type: {
+              type: 'string',
+              enum: [...SHOT_TYPES],
+              description:
+                'Framing/coverage class. establishing/cinematic_wide/insert ≤ 15s, medium ≤ 10s, close_up/reaction/two_shot/over_the_shoulder ≤ 5s.',
+            },
+            duration_seconds: { type: 'integer', minimum: 1, maximum: 15, description: 'On-screen hold time; respect the shot_type cap.' },
+            transition_in: { type: 'string', description: 'One-line continuity note: how this shot picks up from the previous one. Empty for the first shot.' },
+            characters_in_scene: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Names of characters visible in this shot, exactly as listed in the beat metadata. AT MOST 2.',
+            },
+            reverse_in_post: { type: 'boolean', description: 'True for spatial reveal/entry shots that must be generated backwards and reversed in post.' },
+          },
+          required: ['description', 'shot_type', 'duration_seconds'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['scene_bible', 'frames'],
+    additionalProperties: false,
+  },
+};
+
+export const SCENE_PLAN_SYSTEM_PROMPT = [
+  'You are a Hollywood storyboard artist and DP planning a whole scene from a screenplay beat. Return your plan via the plan_scene tool.',
+  '',
+  '# Two jobs',
+  '1. Write the SCENE BIBLE — a compact, unified visual plan (location, time of day, lighting key, palette, mood, blocking, continuity anchors, camera language). Every shot will inherit this, so make it concrete and self-consistent. Derive it from the beat body, description, characters, and director guidance.',
+  '2. Plan the ordered SHOT SKELETON — one entry per shot, covering the whole beat with cinematic rhythm.',
+  '',
+  '# FRAME COUNT IS NON-NEGOTIABLE',
+  '- The user message specifies an EXACT target shot count. Emit exactly that many frames — not fewer, not more.',
+  '- If the beat is short, pad with embellishment shots (establishing wides, inserts of props/hands/eyes, reaction close-ups, atmospheric cutaways, alternate-angle coverage).',
+  '',
+  '# Coverage and rhythm',
+  '- Open with an establishing wide. Vary framing (wides, mediums, close-ups in rotation, not three close-ups in a row). Use over_the_shoulder for two-person dialogue.',
+  '- Adjacent shots must hand off cleanly: a shared subject, a matching motion vector, or a deliberate match cut. State the link in transition_in.',
+  '',
+  '# Reveals',
+  REVEAL_HANDLING,
+  '',
+  '# Camera grammar to plan around',
+  CAMERA_MOTION_RULES,
+  '',
+  '# Hard constraints',
+  '- Maximum 2 named characters per shot. If a beat has 4 people, alternate coverage.',
+  '- shot_type drives duration_seconds: establishing/cinematic_wide/insert ≤ 15s, medium ≤ 10s, close_up/reaction/two_shot/over_the_shoulder ≤ 5s. Prefer the lower half of the range — shorter clips survive video gen better.',
+  "- Don't invent characters not in the beat's character list.",
+  '- Emit EXACTLY the requested number of frames.',
+].join('\n');
+
 // Stage B system prompt — covers the three outputs (video_prompt,
 // start_frame_prompt, end_frame_prompt) in detail so the per-frame refinement
 // call produces tight, generator-ready text.
@@ -510,6 +603,12 @@ export function _setOutlinePlannerForTests(fn) {
 let frameRefinerOverride = null;
 export function _setFrameRefinerForTests(fn) {
   frameRefinerOverride = fn;
+}
+
+// Pass-1 scene-planner override. Returns { sceneBible, outline }.
+let scenePlannerOverride = null;
+export function _setScenePlannerForTests(fn) {
+  scenePlannerOverride = fn;
 }
 
 // In-memory job tracker. Sufficient for single-process runtime; status survives
@@ -1019,6 +1118,52 @@ async function planOutline({
     );
   }
   return frames;
+}
+
+export function buildScenePlanUserText({ beat, characters, targetCount, direction, directorNotes = [] }) {
+  const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes });
+  const count = clampTargetCount(targetCount);
+  const lead =
+    `Target shot count: EXACTLY ${count} frames. Your frames array MUST contain ${count} entries.`;
+  const instruction =
+    `First write the scene_bible (the unified look). Then produce ${count} cinematic shots in narrative order, ` +
+    'with embellishment shots interleaved among the narrative beats. Each shot must be visually distinct from ' +
+    'the previous AND continuous with it. Pick a shot_type and duration_seconds for every shot. ' +
+    'Re-interpret any reveals/entries/camera-moves the beat describes per the reveal rules. ' +
+    `Use the plan_scene tool. Reminder: exactly ${count} frames.`;
+  return `${lead}\n\n${ctx}\n\n${instruction}`;
+}
+
+// Pass 1. Returns { sceneBible, outline } where sceneBible is a normalized
+// bible object and outline is the raw frames array (cleaned later). Returns
+// { sceneBible: null, outline: [] } on model failure.
+async function planScene({ beat, characters, targetCount, direction, directorNotes = [] }) {
+  if (scenePlannerOverride) {
+    return scenePlannerOverride({ beat, characters, targetCount, direction, directorNotes });
+  }
+  const userText = buildScenePlanUserText({ beat, characters, targetCount, direction, directorNotes });
+  const client = getAnthropic();
+  const resp = await client.messages.create({
+    model: STORYBOARD_MODEL,
+    max_tokens: 16000,
+    system: SCENE_PLAN_SYSTEM_PROMPT,
+    tools: [SCENE_PLAN_TOOL],
+    tool_choice: { type: 'tool', name: 'plan_scene' },
+    messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+  });
+  const toolUse = (resp.content || []).find((b) => b.type === 'tool_use' && b.name === 'plan_scene');
+  if (!toolUse?.input) {
+    logger.warn(`storyboard plan_scene: model did not call the tool (stop_reason=${resp.stop_reason})`);
+    return { sceneBible: null, outline: [] };
+  }
+  const sceneBible = normalizeSceneBible(toolUse.input.scene_bible);
+  const outline = Array.isArray(toolUse.input.frames) ? toolUse.input.frames : [];
+  return { sceneBible, outline };
+}
+
+// Test seam.
+export function _planSceneForTest(args) {
+  return planScene(args);
 }
 
 async function refineFramePrompts({
