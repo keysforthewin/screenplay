@@ -227,7 +227,6 @@ function toCritiqueNeighbor(sb) {
 // the beat (bible + director's notes + neighbors) and persists prompt_critique.
 // Per-shot failures are swallowed so a bad critique never fails the job.
 async function critiqueShotsForBeat({ beat, sceneBible, directorNotes, onProgress = null }) {
-  const { listStoryboards } = await import('../mongo/storyboards.js');
   const shots = await listStoryboards({ beatId: beat._id });
   for (let i = 0; i < shots.length; i++) {
     const sb = shots[i];
@@ -468,6 +467,7 @@ async function runStoryboardGenerationJob({
   }
   // Pass 4: auto prompt-critique. Best-effort — never flips the job to error.
   if (job.completed > 0) {
+    job.status = 'critiquing';
     recordProgress(job, { phase: 'critiquing', step: 'critique_start', total: planned.length, message: 'Critiquing shots…' });
     try {
       await critiqueShotsForBeat({

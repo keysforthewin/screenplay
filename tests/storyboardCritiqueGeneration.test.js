@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createFakeDb } from './_fakeMongo.js';
 
 const fakeDb = createFakeDb();
@@ -8,6 +8,13 @@ vi.mock('../src/mongo/client.js', () => ({
 }));
 
 const gen = await import('../src/web/storyboardGenerate.js');
+
+afterEach(() => {
+  gen._setScenePlannerForTests(null);
+  gen._setShotExpanderForTests(null);
+  gen._setImageDispatcherForTests(null);
+  gen._setCritiquePanelForTests(null);
+});
 
 async function drain(jobId) {
   for (let i = 0; i < 200; i++) {
