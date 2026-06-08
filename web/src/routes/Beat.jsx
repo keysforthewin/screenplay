@@ -10,6 +10,7 @@ import { ArtworkTab } from '../widgets/ArtworkTab.jsx';
 import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
 import { ReferenceExtrasSection } from '../widgets/ReferenceExtrasSection.jsx';
 import { BeatPager } from '../widgets/BeatPager.jsx';
+import { BeatTabs } from '../widgets/BeatTabs.jsx';
 
 const TABS = ['characters', 'background', 'attachments', 'references', 'artwork'];
 
@@ -101,14 +102,10 @@ export function Beat({ session }) {
             path={`/beat/${beat._id}/download`}
             filename={`beat-${beat.order}.zip`}
           />
-          <button
-            onClick={() => navigate(`/storyboard/${beat.order}`)}
-            title="Open the storyboard for this beat"
-          >
-            View storyboard
-          </button>
         </div>
       </div>
+
+      <BeatTabs order={beat.order} active="writing" />
 
       <div className="tab-nav" role="tablist">
         {TABS.map((t) => (

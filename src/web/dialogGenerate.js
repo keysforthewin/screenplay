@@ -19,9 +19,9 @@ import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
 import { logger } from '../log.js';
 import { getBeat } from '../mongo/plots.js';
-import { listCharacters } from '../mongo/characters.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { getAnthropic } from '../anthropic/client.js';
+import { buildDialogContext } from './dialogContext.js';
 import {
   createDialogViaGateway,
   deleteAllDialogsForBeatViaGateway,
@@ -36,10 +36,19 @@ const POPULATE_TOOL = {
   input_schema: {
     type: 'object',
     properties: {
+      plan: {
+        type: 'string',
+        description:
+          "A 2-3 sentence sketch of the scene's dramatic shape BEFORE you write any " +
+          'lines: who is present, what each character wants, the central tension, and the ' +
+          'turn (the moment something shifts). Write this first — it disciplines the lines ' +
+          'that follow so they play the scene rather than narrate the action top-to-bottom.',
+      },
       entries: {
         type: 'array',
         description:
-          'Ordered list of dialogue entries spoken in this beat, in story order.',
+          'Ordered list of dialogue entries spoken in this beat, in story order. ' +
+          'These should execute the plan you just sketched.',
         items: {
           type: 'object',
           properties: {
@@ -62,7 +71,7 @@ const POPULATE_TOOL = {
         },
       },
     },
-    required: ['entries'],
+    required: ['plan', 'entries'],
     additionalProperties: false,
   },
 };
@@ -71,23 +80,26 @@ const SYSTEM_PROMPT = [
   'You are a screenwriter writing the dialogue for a single beat of a feature film.',
   'Return your result via the populate_dialog tool, in story order.',
   '',
-  'Your job is to write the lines that make this beat land on screen.',
-  'The beat description and body are GUIDANCE, not a transcript. Write what the characters would',
-  'plausibly say to convey or surface what the beat is about — capture the gist of the beat, not',
-  'its exact wording.',
+  'Plan first, then write:',
+  '- Fill the `plan` field BEFORE the lines. Name who is present, what each character wants, the',
+  '  central tension, and the turn. Then write lines that PLAY that scene.',
+  '- The beat description and body are GUIDANCE, not a transcript. Capture the gist of the beat in',
+  '  the characters\' voices — do not walk the prose sentence by sentence.',
+  '',
+  'Continuity:',
+  '- You are given the story logline, the previous beat, and how its dialogue ended. Let this beat\'s',
+  '  opening lines connect to what just happened — pick up the thread rather than restarting cold.',
   '',
   'Voice & character:',
-  '- Each speaker gets a bio block below. Use it. Match speech patterns, education level, attitude,',
-  '  and worldview. If a character has memes / catchphrases, weave them in where they\'d plausibly',
-  '  come up — never shoehorn.',
-  '- If the beat body already quotes a specific line verbatim, preserve that line exactly and write',
-  '  the surrounding dialogue around it.',
+  '- Each speaker gets a bio block. Use it. Match speech patterns, education level, attitude, and',
+  '  worldview. If a character has memes / catchphrases, weave them in where they\'d plausibly come',
+  '  up — never shoehorn.',
   '',
   'Avoid literalism:',
   '- Do NOT restate the beat description or action lines as dialogue. "Alice walked into the diner"',
   '  is action, not a line for Alice to say.',
-  '- Do NOT paraphrase the narrator. Find what the characters would actually say in the scene to',
-  '  surface what\'s happening, what they want, and how they feel about it.',
+  '- Do NOT paraphrase the narrator. Find what the characters would actually say to surface what\'s',
+  '  happening, what they want, and how they feel about it.',
   '- Subtext is fine; let characters talk around things rather than naming them.',
   '',
   'Non-character speakers:',
@@ -160,8 +172,7 @@ export async function startDialogGenerationJob({ beatId }) {
 
 async function runDialogGenerationJob({ job, beat }) {
   job.status = 'extracting';
-  const characterDocs = await loadCharacterDocs(beat.characters || []);
-  const entries = await extractEntries({ beat, characters: characterDocs });
+  const entries = await extractEntries({ beat });
   job.extracted = entries.length;
   if (!entries.length) {
     job.status = 'done';
@@ -202,53 +213,12 @@ async function runDialogGenerationJob({ job, beat }) {
   );
 }
 
-function formatCharacterBio(c) {
-  const plainName = stripMarkdown(c?.name || '').trim();
-  if (!plainName) return '';
-  const lines = [`## ${plainName}`];
-  const actor = stripMarkdown(c.hollywood_actor || '').trim();
-  if (actor) lines.push(`hollywood_actor: ${actor}`);
-  const fields = c.fields && typeof c.fields === 'object' ? c.fields : {};
-  for (const [key, raw] of Object.entries(fields)) {
-    const value = stripMarkdown(typeof raw === 'string' ? raw : '').trim();
-    if (!value) continue;
-    lines.push(`${key}: ${value}`);
-  }
-  return lines.join('\n');
-}
-
-async function loadCharacterDocs(characterNames) {
-  // Preferred order: characters listed on the beat first, then everyone else.
-  const seen = new Set();
-  const out = [];
-  const all = await listCharacters().catch(() => []);
-  const allByKey = new Map();
-  for (const c of all || []) {
-    const key = stripMarkdown(c.name || '').toLowerCase();
-    if (key) allByKey.set(key, c);
-  }
-  for (const raw of characterNames || []) {
-    const key = stripMarkdown(raw || '').toLowerCase();
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    const c = allByKey.get(key);
-    if (c) out.push(c);
-  }
-  for (const c of all || []) {
-    const key = stripMarkdown(c.name || '').toLowerCase();
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    out.push(c);
-  }
-  return out;
-}
-
-async function extractEntries({ beat, characters }) {
-  const characterBlock = characters.length
-    ? characters.map(formatCharacterBio).filter(Boolean).join('\n\n')
-    : '(no named characters known yet)';
+async function extractEntries({ beat }) {
+  const context = await buildDialogContext(beat);
   const userText = [
-    `# Beat #${beat.order}: ${stripMarkdown(beat.name || '') || 'Untitled'}`,
+    context,
+    '',
+    `# This beat — #${beat.order}: ${stripMarkdown(beat.name || '') || 'Untitled'}`,
     '',
     'Beat description:',
     stripMarkdown(beat.desc || '') || '(none)',
@@ -256,13 +226,9 @@ async function extractEntries({ beat, characters }) {
     'Beat body:',
     stripMarkdown(beat.body || '') || '(none)',
     '',
-    '# Characters in this story',
-    'Use these bios to inform each speaker\'s voice. Use a character\'s exact name when they speak.',
-    '',
-    characterBlock,
-    '',
-    'Write the dialogue for this beat using the populate_dialog tool. Capture the gist of the beat',
-    'in the characters\' voices — don\'t be literal, don\'t restate action lines as dialogue.',
+    'Plan the scene in the `plan` field, then write the dialogue with the populate_dialog tool.',
+    'Capture the gist in the characters\' voices, connect to the previous beat, and don\'t restate',
+    'action lines as dialogue.',
   ].join('\n');
 
   const client = getAnthropic();

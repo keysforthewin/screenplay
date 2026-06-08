@@ -6,13 +6,20 @@ export function DialogIndex() {
   const [toc, setToc] = useState(null);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState('');
+  const [style, setStyle] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const t = await apiGet('/toc');
-        if (!cancelled) setToc(t);
+        const [t, s] = await Promise.all([
+          apiGet('/toc'),
+          apiGet('/plot/dialogue-style').catch(() => ({ dialogue_style: '' })),
+        ]);
+        if (!cancelled) {
+          setToc(t);
+          setStyle(s.dialogue_style || '');
+        }
       } catch (e) {
         if (!cancelled) setError(e.message);
       }
@@ -63,6 +70,24 @@ export function DialogIndex() {
         Each beat has its own dialog. <strong>*</strong> marks beats with no
         dialog yet.
       </p>
+
+      <section className="dialog-style-panel" style={{ marginBottom: 20 }}>
+        <span className="field-label" style={{ display: 'block', marginBottom: 4 }}>
+          Global dialogue style &amp; influences
+        </span>
+        <p style={{ color: 'var(--fg-muted)', fontSize: 12, marginTop: 0 }}>
+          Steers every Generate, Regenerate, and Critique across the whole script.
+          Edit it on the <Link to="/about">About page</Link>. Each beat also has its
+          own dialogue notes on its dialog page.
+        </p>
+        {style.trim() ? (
+          <p style={{ whiteSpace: 'pre-wrap', margin: '4px 0 0' }}>{style}</p>
+        ) : (
+          <p style={{ color: 'var(--fg-muted)', fontStyle: 'italic', margin: '4px 0 0' }}>
+            No global dialogue style set yet.
+          </p>
+        )}
+      </section>
 
       <div className="toc-filter">
         <input

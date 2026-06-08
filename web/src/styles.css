@@ -1337,6 +1337,33 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .tab-panel { padding-top: 16px; }
 
+/* Per-beat section switcher (Writing / Dialog / Storyboard). A segmented
+   control, visually distinct from the inner content `.tab-nav` above. */
+.beat-section-tabs {
+  display: inline-flex;
+  gap: 2px;
+  margin: 4px 0 8px;
+  padding: 3px;
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.beat-section-tab {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--fg-muted);
+  padding: 6px 16px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 14px;
+}
+.beat-section-tab:hover { color: var(--fg); }
+.beat-section-tab.is-active {
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
+}
+
 .spec-actions-bar {
   display: flex;
   gap: 16px;
@@ -2168,6 +2195,61 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   flex-direction: column;
   gap: 12px;
 }
+.dialog-regen-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.dialog-critique-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.dialog-critique-weak {
+  color: #fff;
+  background: var(--danger, #b3261e);
+  border-color: transparent;
+}
+.dialog-critique-mid {
+  color: var(--fg-muted);
+}
+.dialog-critique-strong {
+  color: var(--fg-muted);
+  opacity: 0.7;
+}
+.dialog-alternatives {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+.dialog-alternative-option {
+  text-align: left;
+  padding: 6px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.dialog-alternative-option:hover {
+  border-color: var(--accent, #6b9eff);
+}
+.dialog-alternative-dismiss {
+  align-self: flex-start;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  padding: 2px 0;
+}
 .dialog-item-character,
 .dialog-item-body {
   display: flex;
@@ -2226,6 +2308,13 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .dialog-item-collapsed-empty {
   color: var(--fg-muted);
   font-style: italic;
+}
+.dialog-item-collapsed-controls {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
 }
 .dialog-item-play {
   flex: 0 0 auto;

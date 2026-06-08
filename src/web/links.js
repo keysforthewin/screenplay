@@ -38,6 +38,10 @@ export function notesUrl() {
   return `${publicBase()}/notes`;
 }
 
+export function aboutUrl() {
+  return `${publicBase()}/about`;
+}
+
 export function withSpaLink(text, url) {
   if (!url) return text;
   return `${String(text).replace(/\s+$/, '')}\nEdit in browser: ${url}`;

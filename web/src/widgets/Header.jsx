@@ -52,6 +52,7 @@ export function Header({ session, onLogout }) {
     <header className="app-header">
       <Link to="/" className="brand" title={brand}>{brand}</Link>
       <div className="meta">
+        <Link to="/about" title="Project name, synopsis & global dialogue style">About</Link>
         <SavedIndicator />
         <div className="presence-dots">{list.map((u, i) => <Dot key={i} user={u} />)}</div>
         <span>signed in as <strong>{session.username}</strong></span>

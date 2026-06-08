@@ -10,6 +10,7 @@ import { StoryboardIndex } from './routes/StoryboardIndex.jsx';
 import { StoryboardBeat } from './routes/StoryboardBeat.jsx';
 import { DialogIndex } from './routes/DialogIndex.jsx';
 import { DialogBeat } from './routes/DialogBeat.jsx';
+import { About } from './routes/About.jsx';
 import { Header } from './widgets/Header.jsx';
 import { loadSession, validateSession, clearSession } from './auth/session.js';
 
@@ -66,6 +67,7 @@ export function App() {
         <Route path="/storyboard/:order" element={<StoryboardBeat session={session} />} />
         <Route path="/dialog" element={<DialogIndex session={session} />} />
         <Route path="/dialog/:order" element={<DialogBeat session={session} />} />
+        <Route path="/about" element={<About session={session} />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </>

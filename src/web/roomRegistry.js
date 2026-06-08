@@ -18,7 +18,7 @@
 //   - render fragments to markdown and persist to Mongo on store ticks
 
 import { ObjectId } from 'mongodb';
-import { getPlot, updateBeat } from '../mongo/plots.js';
+import { getPlot, updatePlot, getBeat, updateBeat } from '../mongo/plots.js';
 import { getCharacter, updateCharacter } from '../mongo/characters.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import {
@@ -60,6 +60,7 @@ export function parseRoomName(roomName) {
   if (typeof roomName !== 'string') return null;
   if (roomName === 'notes') return { type: 'notes' };
   if (roomName === 'library') return { type: 'library' };
+  if (roomName === 'plot') return { type: 'plot' };
   const m = roomName.match(/^([a-z_]+):(.+)$/);
   if (!m) return null;
   const [, type, rest] = m;
@@ -78,6 +79,7 @@ export function parseRoomName(roomName) {
 export function buildRoomName(type, id) {
   if (type === 'notes') return 'notes';
   if (type === 'library') return 'library';
+  if (type === 'plot') return 'plot';
   if (!isOidHex(String(id))) throw new Error(`invalid id for room: ${id}`);
   return `${type}:${id}`;
 }
@@ -503,8 +505,11 @@ function dialogFieldName(dialogId, field) {
 
 async function describeDialogsRoom(beatId) {
   const dialogs = await listDialogs({ beatId });
-  const fields = [];
-  const seed = {};
+  // The beat itself carries a shared "Dialogue Notes" fragment, alongside the
+  // per-item body/character fragments. It steers generation/regeneration/critique.
+  const beat = await getBeat(beatId).catch(() => null);
+  const fields = ['dialog_notes'];
+  const seed = { dialog_notes: beat?.dialog_notes || '' };
   const dialogById = new Map();
   for (const d of dialogs) {
     const id = d._id.toString();
@@ -515,6 +520,7 @@ async function describeDialogsRoom(beatId) {
       seed[fieldName] = d[f] || '';
     }
   }
+  const notesSeed = beat?.dialog_notes || '';
   return {
     type: 'dialogs',
     id: beatId,
@@ -522,6 +528,18 @@ async function describeDialogsRoom(beatId) {
     seed,
     persistFields: async (snapshot) => {
       const changedFields = [];
+      // Beat-level dialogue notes fragment (bare name, not item:<id>:*).
+      if (
+        Object.prototype.hasOwnProperty.call(snapshot, 'dialog_notes') &&
+        snapshot.dialog_notes !== notesSeed
+      ) {
+        try {
+          await updateBeat(beatId, { dialog_notes: snapshot.dialog_notes });
+          changedFields.push('dialog_notes');
+        } catch (e) {
+          logger.warn(`dialogs persist failed beat=${beatId} field=dialog_notes: ${e.message}`);
+        }
+      }
       for (const [field, value] of Object.entries(snapshot)) {
         const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
         if (!m) continue;
@@ -660,6 +678,43 @@ async function describeLibraryRoom() {
   };
 }
 
+// Plot (project-level) ------------------------------------------------------
+//
+// One singleton y-doc for the whole project (room: "plot"). It carries the
+// project-level text fields edited on the SPA's About page. `title` doubles as
+// the screenplay's display name in the header; `dialogue_style` is the *global*
+// dialogue style (distinct from each beat's per-beat `dialog_notes`).
+
+const PLOT_FIELDS = ['title', 'synopsis', 'dialogue_style'];
+
+async function describePlotRoom() {
+  const plot = await getPlot();
+  const readMongoValue = (field) => (plot[field] != null ? String(plot[field]) : '');
+  const seed = PLOT_FIELDS.reduce((acc, f) => {
+    acc[f] = readMongoValue(f);
+    return acc;
+  }, {});
+
+  return {
+    type: 'plot',
+    id: 'plot',
+    fields: [...PLOT_FIELDS],
+    seed,
+    persistFields: async (snapshot) => {
+      const patch = {};
+      for (const f of PLOT_FIELDS) {
+        if (snapshot[f] === undefined) continue;
+        if (snapshot[f] === readMongoValue(f)) continue;
+        patch[f] = snapshot[f];
+      }
+      const changed = Object.keys(patch);
+      if (!changed.length) return { changed: false };
+      await updatePlot(patch);
+      return { changed: true, fields: changed };
+    },
+  };
+}
+
 // Resolver ------------------------------------------------------------------
 
 export async function resolveRoom(roomName) {
@@ -672,6 +727,8 @@ export async function resolveRoom(roomName) {
       return describeCharacterRoom(parsed.id);
     case 'notes':
       return describeNotesRoom();
+    case 'plot':
+      return describePlotRoom();
     case 'library':
       return describeLibraryRoom();
     case 'storyboards':

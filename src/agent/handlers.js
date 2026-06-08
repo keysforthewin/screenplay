@@ -10,7 +10,7 @@ import * as Images from '../mongo/images.js';
 import * as Attachments from '../mongo/attachments.js';
 import * as Gateway from '../web/gateway.js';
 import { kickoffLibraryVisionSeed } from '../web/libraryVisionWorker.js';
-import { beatUrl, characterUrl, notesUrl, withSpaLink } from '../web/links.js';
+import { aboutUrl, beatUrl, characterUrl, notesUrl, withSpaLink } from '../web/links.js';
 import * as Tmdb from '../tmdb/client.js';
 import * as Tavily from '../tavily/client.js';
 import { buildImagePrompt } from '../gemini/promptBuilder.js';
@@ -50,7 +50,6 @@ import {
   searchLines,
   extractOutline,
   truncateForPreview,
-  applyMarkdownEdits,
 } from '../util/textWindow.js';
 import {
   aggregateUsage,
@@ -989,34 +988,43 @@ function formatPerEditSummary(applied) {
     .join('\n');
 }
 
+// Plot text fields are edited through the gateway (collaborative `plot` y-doc
+// room) so the agent shows up as a live caret on the About page and never
+// clobbers a human editing there. `dialogue_style` is the *global* dialogue
+// style (each beat also has its own `dialog_notes`, edited via the dialogs room).
+const PLOT_EDIT_FIELDS = ['title', 'synopsis', 'dialogue_style', 'notes'];
+
 async function editPlotEntity({ field, edits, isWholeReplace }) {
-  if (field !== 'title' && field !== 'synopsis' && field !== 'notes') {
-    return `Tool error (edit): plot field must be title, synopsis, or notes; got "${field}".`;
+  if (!PLOT_EDIT_FIELDS.includes(field)) {
+    return `Tool error (edit): plot field must be one of ${PLOT_EDIT_FIELDS.join(', ')}; got "${field}".`;
   }
-  const plot = await Plots.getPlot();
-  const current = String(plot[field] || '');
+  const current = String((await Plots.getPlot())[field] || '');
   if (isWholeReplace) {
     const newText = String(edits[0].replace ?? '');
-    await Plots.updatePlot({ [field]: newText });
+    await Gateway.setEntityFieldMarkdown({
+      entityType: 'plot',
+      entityId: 'plot',
+      field,
+      markdown: newText,
+    });
     const delta = newText.length - current.length;
     const sign = delta >= 0 ? '+' : '';
-    return `Replaced plot.${field}. Was ${current.length} chars; now ${newText.length} chars (${sign}${delta}).`;
-  }
-  if (field === 'synopsis' || field === 'notes') {
-    const result = await Plots.editPlotField(field, edits);
-    return (
-      `Applied ${result.edits?.length ?? 0} edit(s) to plot.${field}. ` +
-      `Value: ${result.beforeLen} → ${result.afterLen} chars.\n` +
-      formatPerEditSummary(result.edits)
+    return withSpaLink(
+      `Replaced plot.${field}. Was ${current.length} chars; now ${newText.length} chars (${sign}${delta}).`,
+      aboutUrl(),
     );
   }
-  // field === 'title' — partial edit via applyMarkdownEdits, then write back.
-  const { body, applied, beforeLen, afterLen } = applyMarkdownEdits(current, edits, 'edit');
-  await Plots.updatePlot({ title: body });
-  return (
-    `Applied ${applied.length} edit(s) to plot.title. ` +
-    `Value: ${beforeLen} → ${afterLen} chars.\n` +
-    formatPerEditSummary(applied)
+  const result = await Gateway.editEntityFieldMarkdown({
+    entityType: 'plot',
+    entityId: 'plot',
+    field,
+    edits,
+  });
+  return withSpaLink(
+    `Applied ${result.applied?.length ?? 0} edit(s) to plot.${field}. ` +
+      `Value: ${result.beforeLen} → ${result.afterLen} chars.\n` +
+      formatPerEditSummary(result.applied),
+    aboutUrl(),
   );
 }
 
@@ -1425,6 +1433,30 @@ export const HANDLERS = {
   async add_director_note({ text, position } = {}) {
     const note = await Gateway.addDirectorNoteViaGateway({ text, position });
     return withSpaLink(`Added director's note ${note._id}: ${preview(note.text)}`, notesUrl());
+  },
+
+  // Append a representative dialogue sample from a named film — recalled from
+  // the model's own knowledge — to the project's GLOBAL dialogue style, so it
+  // steers Generate/Regenerate/Critique across every beat.
+  async add_film_dialogue_sample({ film, sample, note } = {}) {
+    if (typeof film !== 'string' || !film.trim()) {
+      return 'Tool error (add_film_dialogue_sample): `film` is required.';
+    }
+    if (typeof sample !== 'string' || !sample.trim()) {
+      return 'Tool error (add_film_dialogue_sample): `sample` is required.';
+    }
+    const noteLine = typeof note === 'string' && note.trim() ? `\n_${note.trim()}_` : '';
+    const content = `**Sample — ${film.trim()}:**\n${sample.trim()}${noteLine}`;
+    await Gateway.appendEntityFieldMarkdown({
+      entityType: 'plot',
+      entityId: 'plot',
+      field: 'dialogue_style',
+      content,
+    });
+    return withSpaLink(
+      `Added a dialogue sample from "${film.trim()}" to the global dialogue style.`,
+      aboutUrl(),
+    );
   },
 
   async remove_director_note({ note_id } = {}) {

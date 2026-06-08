@@ -4509,23 +4509,40 @@ export function buildApiRouter() {
     }
   });
 
-  // Set the speaker on a dialog item. Roster character names are canonicalized
-  // to their stored spelling; anything else is saved as a free-text speaker
-  // (e.g. "radio", "TV ANCHOR"). Empty input is rejected.
+  // Update a dialog item's speaker and/or body. Roster character names are
+  // canonicalized to their stored spelling; anything else is saved as a
+  // free-text speaker (e.g. "radio", "TV ANCHOR"). `body` is written through
+  // the y-doc so the change reflects in connected SPAs — used when the user
+  // applies a regenerated alternative. At least one field is required.
   router.patch('/dialog/:id', async (req, res, next) => {
     try {
       const dId = await resolveDialogId(req);
       if (!dId) return res.status(404).json({ error: 'dialog not found' });
-      const { character } = req.body || {};
-      if (typeof character !== 'string') {
-        return res.status(400).json({ error: 'character (string) required' });
+      const { character, body } = req.body || {};
+      const hasCharacter = typeof character === 'string';
+      const hasBody = typeof body === 'string';
+      if (!hasCharacter && !hasBody) {
+        return res
+          .status(400)
+          .json({ error: 'character and/or body (string) required' });
       }
-      const { setDialogCharacterViaGateway } = await import('./gateway.js');
+      const {
+        setDialogCharacterViaGateway,
+        setDialogTextFieldViaGateway,
+      } = await import('./gateway.js');
       try {
-        const dialog = await setDialogCharacterViaGateway({
-          dialogId: dId,
-          characterName: character,
-        });
+        if (hasBody) {
+          await setDialogTextFieldViaGateway({ dialogId: dId, field: 'body', text: body });
+        }
+        let dialog;
+        if (hasCharacter) {
+          dialog = await setDialogCharacterViaGateway({
+            dialogId: dId,
+            characterName: character,
+          });
+        } else {
+          dialog = await getDialog(dId);
+        }
         res.json({ dialog });
       } catch (e) {
         if (/character is required/.test(e.message)) {
@@ -4733,6 +4750,62 @@ export function buildApiRouter() {
         }
         throw e;
       }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Per-line regenerate: propose alternative rewrites for one dialog line,
+  // keeping the speaker and the surrounding lines fixed. Read-only — the SPA
+  // shows the options and applies a choice via PATCH /dialog/:id { body }.
+  router.post('/dialog/:id/alternatives', async (req, res, next) => {
+    try {
+      const dId = await resolveDialogId(req);
+      if (!dId) return res.status(404).json({ error: 'dialog not found' });
+      const { generateAlternatives } = await import('./dialogRegenerate.js');
+      const result = await generateAlternatives({ dialogId: dId });
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Advisory critic: score every line of a beat's dialogue. Synchronous,
+  // persists nothing — the SPA renders the scores as flags.
+  router.post('/dialogs/critique', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { critiqueDialog } = await import('./dialogCritique.js');
+      const result = await critiqueDialog({ beatId: beat._id.toString() });
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Project-level dialogue style / influences (steers every dialogue op).
+  router.get('/plot/dialogue-style', async (_req, res, next) => {
+    try {
+      const { getPlot } = await import('../mongo/plots.js');
+      const plot = await getPlot();
+      res.json({ dialogue_style: plot.dialogue_style || '' });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.patch('/plot/dialogue-style', async (req, res, next) => {
+    try {
+      const { text } = req.body || {};
+      if (typeof text !== 'string') {
+        return res.status(400).json({ error: 'text (string) required' });
+      }
+      const { updatePlot } = await import('../mongo/plots.js');
+      const plot = await updatePlot({ dialogue_style: text });
+      res.json({ dialogue_style: plot.dialogue_style || '' });
     } catch (e) {
       next(e);
     }

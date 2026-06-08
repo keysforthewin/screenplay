@@ -16,9 +16,12 @@ import {
 } from '@dnd-kit/sortable';
 import { apiDelete, apiGet, apiPatchJson, apiPostJson } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
+import { CollabField } from '../editor/CollabField.jsx';
 import { DialogItem } from '../widgets/DialogItem.jsx';
 import { ConfirmDialog } from '../widgets/Modal.jsx';
 import { DialogEditDialog } from '../widgets/DialogEditDialog.jsx';
+import { BeatTabs } from '../widgets/BeatTabs.jsx';
+import { BeatPager } from '../widgets/BeatPager.jsx';
 
 export function DialogBeat({ session }) {
   const { order } = useParams();
@@ -36,8 +39,12 @@ export function DialogBeat({ session }) {
   const [editOpen, setEditOpen] = useState(false);
   const [deleteAllError, setDeleteAllError] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
+  const [critiquing, setCritiquing] = useState(false);
+  const [critiqueError, setCritiqueError] = useState(null);
+  const [critiqueScores, setCritiqueScores] = useState(null);
 
   const [characters, setCharacters] = useState([]);
+  const [tocBeats, setTocBeats] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,6 +57,7 @@ export function DialogBeat({ session }) {
         if (!cancelled) {
           setData(r);
           setCharacters(toc.characters || []);
+          setTocBeats(toc.beats || []);
         }
       } catch (e) {
         if (!cancelled) setError(e.message);
@@ -186,6 +194,24 @@ export function DialogBeat({ session }) {
     }
   }
 
+  async function critique() {
+    if (!data?.beat) return;
+    setCritiquing(true);
+    setCritiqueError(null);
+    try {
+      const r = await apiPostJson('/dialogs/critique', { beat_id: data.beat._id });
+      const map = new Map();
+      for (const s of r.scores || []) {
+        map.set(s.dialog_id, { score: s.score, issue: s.issue });
+      }
+      setCritiqueScores(map);
+    } catch (e) {
+      setCritiqueError(e.message);
+    } finally {
+      setCritiquing(false);
+    }
+  }
+
   async function deleteAll() {
     setDeleteAllError(null);
     try {
@@ -238,11 +264,9 @@ export function DialogBeat({ session }) {
         <a href="#" onClick={(e) => { e.preventDefault(); navigate('/dialog'); }}>
           ← Back to all dialog
         </a>
-        {' · '}
-        <a href="#" onClick={(e) => { e.preventDefault(); navigate(`/beat/${data.beat.order}`); }}>
-          Open beat #{data.beat.order}
-        </a>
       </p>
+
+      <BeatPager beats={tocBeats} currentId={data.beat?._id} basePath="/dialog" />
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
         <h1 style={{ marginTop: 0 }}>
@@ -268,6 +292,13 @@ export function DialogBeat({ session }) {
           >
             Edit…
           </button>
+          <button
+            onClick={critique}
+            disabled={generating || critiquing || sortedItems.length === 0}
+            title="Score each line for naturalness and flag the weak ones"
+          >
+            {critiquing ? 'Critiquing…' : 'Critique'}
+          </button>
           <button onClick={addDialog} disabled={generating}>+ Add dialog</button>
           <button
             className="danger"
@@ -280,11 +311,16 @@ export function DialogBeat({ session }) {
         </div>
       </div>
 
+      <BeatTabs order={data.beat.order} active="dialog" />
+
       {generationError && (
         <div className="error-banner">Generation error: {generationError}</div>
       )}
       {deleteAllError && (
         <div className="error-banner">Delete failed: {deleteAllError}</div>
+      )}
+      {critiqueError && (
+        <div className="error-banner">Critique failed: {critiqueError}</div>
       )}
       {generating && generationStatus && (
         <div
@@ -305,6 +341,14 @@ export function DialogBeat({ session }) {
 
       {room && (
         <CollabSurface room={room} session={session} onPing={onRefresh}>
+          <div className="dialog-notes-panel" style={{ marginBottom: 16 }}>
+            <CollabField
+              label="Dialogue Notes"
+              field="dialog_notes"
+              multiline
+              placeholder="Guidance for this beat's dialogue — tone, what's unsaid, who's lying… (fed into Generate, Regenerate, and Critique)"
+            />
+          </div>
           {sortedItems.length === 0 ? (
             <p style={{ color: 'var(--fg-muted)' }}>
               No dialog yet. Click <strong>Generate</strong> to auto-extract
@@ -332,6 +376,8 @@ export function DialogBeat({ session }) {
                         onDelete={() => deleteDialog(d._id)}
                         onCharacterChange={setDialogCharacter}
                         onAudioChange={onRefresh}
+                        onApplied={onRefresh}
+                        critique={critiqueScores?.get(sid) || null}
                         isExpanded={expandedId === sid}
                         onExpandToggle={(toggledId) =>
                           setExpandedId((cur) => (cur === toggledId ? null : toggledId))
@@ -379,6 +425,8 @@ export function DialogBeat({ session }) {
         onClose={() => setEditOpen(false)}
         onApplied={() => { setEditOpen(false); onRefresh(); }}
       />
+
+      <BeatPager beats={tocBeats} currentId={data.beat?._id} basePath="/dialog" />
     </main>
   );
 }

@@ -20,6 +20,7 @@ import { StoryboardItem } from '../widgets/StoryboardItem.jsx';
 import { ConfirmDialog } from '../widgets/Modal.jsx';
 import { StoryboardEditDialog } from '../widgets/StoryboardEditDialog.jsx';
 import { StoryboardGenerateDialog } from '../widgets/StoryboardGenerateDialog.jsx';
+import { BeatTabs } from '../widgets/BeatTabs.jsx';
 import { formatRuntime } from '../shotTypes.js';
 import { BeatPager } from '../widgets/BeatPager.jsx';
 
@@ -289,17 +290,13 @@ export function StoryboardBeat({ session }) {
         </a>
       </p>
 
+      <BeatPager beats={tocBeats} currentId={data?.beat?._id} basePath="/storyboard" />
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
         <h1 style={{ marginTop: 0 }}>
           Storyboard · Beat #{data.beat.order}: {beatTitle}
         </h1>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button
-            onClick={() => navigate(`/beat/${data.beat.order}`)}
-            title={`Open beat #${data.beat.order} in the editor`}
-          >
-            View beat
-          </button>
           <button
             className="primary"
             onClick={onGenerateClick}
@@ -330,6 +327,8 @@ export function StoryboardBeat({ session }) {
           </button>
         </div>
       </div>
+
+      <BeatTabs order={data.beat.order} active="storyboard" />
 
       {generationError && (
         <div className="error-banner">Generation error: {generationError}</div>

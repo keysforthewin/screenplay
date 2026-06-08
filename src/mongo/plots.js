@@ -134,7 +134,7 @@ export async function updatePlot(patch) {
       }.`,
     );
   }
-  const recognized = ['title', 'synopsis', 'notes'];
+  const recognized = ['title', 'synopsis', 'notes', 'dialogue_style'];
   if (!recognized.some((k) => patch[k] !== undefined)) {
     throw new Error(
       `update_plot: \`patch\` has no recognized fields. Expected one of: ${recognized.join(', ')}. Got keys: [${Object.keys(patch).join(', ')}].`,
@@ -150,6 +150,7 @@ export async function updatePlot(patch) {
   }
   if (patch.synopsis !== undefined) set.synopsis = patch.synopsis;
   if (patch.notes !== undefined) set.notes = patch.notes;
+  if (patch.dialogue_style !== undefined) set.dialogue_style = patch.dialogue_style;
   const result = await col().updateOne({ _id: 'main' }, { $set: set });
   if (!result || result.matchedCount === 0) {
     const msg = 'updatePlot: plot doc {_id: "main"} not found — write did not apply.';
@@ -287,6 +288,7 @@ export async function createBeat({ name, desc = '', body = '', characters = [], 
     desc: finalDesc,
     body: String(body || ''),
     characters: dedupeNames(characters),
+    dialog_notes: '',
     images: [],
     main_image_id: null,
     attachments: [],
@@ -315,10 +317,11 @@ export async function updateBeat(identifier, patch) {
     k === 'body' ||
     k === 'order' ||
     k === 'characters' ||
+    k === 'dialog_notes' ||
     k === 'scene_sheet_image_id';
   if (!Object.keys(patch).some((k) => isRecognizedKey(k) && patch[k] !== undefined)) {
     throw new Error(
-      `update_beat: \`patch\` has no recognized fields. Expected one of: name, desc, body, order, characters, scene_sheet_image_id. Got keys: [${Object.keys(patch).join(', ')}].`,
+      `update_beat: \`patch\` has no recognized fields. Expected one of: name, desc, body, order, characters, dialog_notes, scene_sheet_image_id. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
 
@@ -348,6 +351,9 @@ export async function updateBeat(identifier, patch) {
   if (patch.name !== undefined) set['beats.$.name'] = String(patch.name);
   if (patch.desc !== undefined) set['beats.$.desc'] = String(patch.desc);
   if (patch.body !== undefined) set['beats.$.body'] = String(patch.body);
+  if (patch.dialog_notes !== undefined) {
+    set['beats.$.dialog_notes'] = String(patch.dialog_notes);
+  }
   if (patch.characters !== undefined && Array.isArray(patch.characters)) {
     set['beats.$.characters'] = dedupeNames(patch.characters);
   }

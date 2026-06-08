@@ -6,6 +6,8 @@ export function DialogItemCollapsed({
   onClick,
   dragAttributes,
   dragListeners,
+  critiqueBadge,
+  regenButton,
 }) {
   const speaker = stripMd(dialog.character || '') || '(no speaker)';
   const body = stripMd(dialog.body || '');
@@ -41,6 +43,15 @@ export function DialogItemCollapsed({
           ? <span className="dialog-item-collapsed-body">{body}</span>
           : <span className="dialog-item-collapsed-empty">(empty)</span>}
       </div>
+      {(critiqueBadge || regenButton) && (
+        <div
+          className="dialog-item-collapsed-controls"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {critiqueBadge}
+          {regenButton}
+        </div>
+      )}
     </div>
   );
 }

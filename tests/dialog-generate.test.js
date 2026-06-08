@@ -201,6 +201,37 @@ describe('dialog auto-generation', () => {
     expect(callArg.system).not.toMatch(/extract every line/i);
   });
 
+  it('declares a required plan field in the populate_dialog tool schema', async () => {
+    const client = fakeAnthropicClient(TWO_LINE_RESULT);
+    _setAnthropicClientForTests(client);
+    const beat = await Plots.createBeat({ name: 'P', desc: 'p', body: 'p', characters: [] });
+    const jobId = await Generate.startDialogGenerationJob({ beatId: beat._id.toString() });
+    await waitForJob(jobId);
+
+    const callArg = client.messages.create.mock.calls[0][0];
+    const tool = (callArg.tools || []).find((t) => t.name === 'populate_dialog');
+    expect(tool).toBeTruthy();
+    expect(tool.input_schema.properties.plan).toBeTruthy();
+    expect(tool.input_schema.required).toContain('plan');
+  });
+
+  it('includes story context (logline + previous beat dialogue) in the prompt', async () => {
+    const client = fakeAnthropicClient(TWO_LINE_RESULT);
+    _setAnthropicClientForTests(client);
+    await Plots.updatePlot({ title: 'Nightfall', synopsis: 'A courier crosses a dead country.' });
+    const b1 = await Plots.createBeat({ name: 'The diner', desc: 'd1', body: 'b1' });
+    await Dialogs.createDialog({ beatId: b1._id, body: 'No. Drive.', character: 'Bob' });
+    const b2 = await Plots.createBeat({ name: 'The road', desc: 'd2', body: 'b2' });
+
+    const jobId = await Generate.startDialogGenerationJob({ beatId: b2._id.toString() });
+    await waitForJob(jobId);
+
+    const userText = client.messages.create.mock.calls[0][0].messages[0].content[0].text;
+    expect(userText).toContain('A courier crosses a dead country.');
+    expect(userText).toContain('The diner');
+    expect(userText).toContain('No. Drive.');
+  });
+
   it('drops entries with empty body or missing character', async () => {
     _setAnthropicClientForTests(
       fakeAnthropicClient({

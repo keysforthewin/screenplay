@@ -73,7 +73,7 @@ export const TOOLS = [
       'Field map:\n' +
       '- `beat`: `body`, `name`, or `desc` (identifier = beat _id, order, or name; omit to use the current beat).\n' +
       '- `character`: `name`, `hollywood_actor`, `fields.<custom>`, or a bare custom field name (auto-prefixed with `fields.`). Identifier = character name (case-insensitive) or _id.\n' +
-      '- `plot`: `title`, `synopsis`, `notes` (singleton; omit identifier).\n' +
+      '- `plot`: `title`, `synopsis`, `dialogue_style`, `notes` (singleton; omit identifier). `dialogue_style` is the project-wide GLOBAL dialogue style; per-beat dialogue notes are edited via the beat instead.\n' +
       '- `director_note`: `text` (identifier = note _id from `list_director_notes`).\n\n' +
       'On error (e.g. find string not present, ambiguous, or invalid field) the tool returns `is_error: true` with a message. **Do not retry by switching to a wholesale rewrite or guessing.** Re-read the field with the appropriate read tool and retry with verbatim text, or surface the error to the user.',
     input_schema: {
@@ -92,7 +92,7 @@ export const TOOLS = [
         field: {
           type: 'string',
           description:
-            'Field name. See the description for the per-collection map. Examples: "body", "name", "desc", "synopsis", "notes", "title", "text", "hollywood_actor", "fields.bio".',
+            'Field name. See the description for the per-collection map. Examples: "body", "name", "desc", "synopsis", "dialogue_style", "notes", "title", "text", "hollywood_actor", "fields.bio".',
         },
         edits: {
           type: 'array',
@@ -114,6 +114,36 @@ export const TOOLS = [
         },
       },
       required: ['collection', 'field', 'edits'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'add_film_dialogue_sample',
+    keywords: [
+      'dialogue', 'dialog', 'sample', 'example', 'movie', 'film', 'script',
+      'style', 'voice', 'tone', 'reference', 'influence', 'inspiration',
+      'screenplay', 'lines', 'quote',
+    ],
+    description:
+      'Append a short, representative dialogue sample from a named film to the project-wide GLOBAL dialogue style (which steers every Generate/Regenerate/Critique). Recall a few characteristic lines from the film from your own knowledge and pass them as `sample` — capturing the rhythm, diction, and subtext the user wants to emulate. Keep it brief (a handful of lines). Use this when the user says something like "make the dialogue feel like <film>" or "add a sample from <film>". For arbitrary text not tied to a film, use `edit` on plot `dialogue_style` instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        film: {
+          type: 'string',
+          description: 'The film to draw the sample from, e.g. "Chinatown" or "The Social Network (2010)".',
+        },
+        sample: {
+          type: 'string',
+          description:
+            'A few representative lines of dialogue recalled from the film, formatted with speaker labels (e.g. "JAKE: …"). Keep it short.',
+        },
+        note: {
+          type: 'string',
+          description: 'Optional one-line note on what to emulate (e.g. "clipped, hard-boiled, lots of subtext").',
+        },
+      },
+      required: ['film', 'sample'],
       additionalProperties: false,
     },
   },

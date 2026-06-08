@@ -292,6 +292,10 @@ async function readEntityField({ entityType, entityId, field }) {
     if (!note) throw new Error(`Director's note not found: ${noteId}`);
     return String(note.text || '');
   }
+  if (entityType === 'plot') {
+    const plot = await Plots.getPlot();
+    return plot[field] != null ? String(plot[field]) : '';
+  }
   if (entityType === 'storyboards') {
     const fm = field.match(/^item:([a-f0-9]{24}):frame:([a-f0-9]{24}):prompt$/);
     if (fm) {
@@ -399,6 +403,9 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
     const { editDirectorNote } = await import('../mongo/directorNotes.js');
     return editDirectorNote({ noteId, text: args.markdown });
   }
+  if (entityType === 'plot') {
+    return Plots.updatePlot({ [field]: args.markdown });
+  }
   if (entityType === 'storyboards') {
     const fm = field.match(/^item:([a-f0-9]{24}):frame:([a-f0-9]{24}):prompt$/);
     if (fm) return mongoSetFramePrompt(fm[1], fm[2], args.markdown);
@@ -407,6 +414,9 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
     return mongoUpdateStoryboard(m[1], { [m[2]]: args.markdown });
   }
   if (entityType === 'dialogs') {
+    if (field === 'dialog_notes') {
+      return Plots.updateBeat(entityId, { dialog_notes: args.markdown });
+    }
     const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
     if (!m) throw new Error(`gateway fallback: unknown dialogs field "${field}"`);
     return mongoUpdateDialog(m[1], { [m[2]]: args.markdown });
