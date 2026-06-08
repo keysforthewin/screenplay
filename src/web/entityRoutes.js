@@ -4347,9 +4347,12 @@ export function buildApiRouter() {
     }
   });
 
-  // Returns the exact Stage A (outline) system + user messages that would be
-  // sent to the planner with the current settings. No LLM call; powers the
-  // "Prompt Preview" tab on the storyboard generation dialog.
+  // Returns the exact Pass 1 (scene-plan) system + user messages that would be
+  // sent to the planner with the current settings, plus the Pass 2
+  // (shot-expand) system prompt. No LLM call; powers the "Prompt Preview" tab
+  // on the storyboard generation dialog. The Pass-2 user message can't be
+  // previewed deterministically (it depends on the Pass-1 output), so only its
+  // system prompt is surfaced.
   router.post('/storyboards/preview-prompt', async (req, res, next) => {
     try {
       const beatRef = req.body?.beat_id;
@@ -4362,20 +4365,28 @@ export function buildApiRouter() {
         Number(req.body?.count) > 0 ? Number(req.body.count) : null;
       const {
         findCharactersInBeat,
-        buildOutlineUserText,
+        buildScenePlanUserText,
         loadDirectorNotesForPlanner,
-        OUTLINE_SYSTEM_PROMPT,
+        SCENE_PLAN_SYSTEM_PROMPT,
+        SHOT_EXPAND_SYSTEM_PROMPT,
       } = await import('./storyboardGenerate.js');
       const characters = await findCharactersInBeat(beat);
       const directorNotes = await loadDirectorNotesForPlanner();
-      const user = buildOutlineUserText({
+      const user = buildScenePlanUserText({
         beat,
         characters,
         targetCount: count,
         direction,
         directorNotes,
       });
-      res.json({ system: OUTLINE_SYSTEM_PROMPT, user });
+      // `system`/`user` describe Pass 1 (scene plan), preserving the original
+      // single-prompt response shape; `expand_system` adds the Pass-2 system
+      // prompt as a new field.
+      res.json({
+        system: SCENE_PLAN_SYSTEM_PROMPT,
+        user,
+        expand_system: SHOT_EXPAND_SYSTEM_PROMPT,
+      });
     } catch (e) {
       next(e);
     }

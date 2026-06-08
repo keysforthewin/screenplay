@@ -1,6 +1,7 @@
 // Tests for POST /api/storyboards/preview-prompt — the read-only endpoint
-// that returns the exact Stage A (outline) system + user messages that
-// would be sent to the planner. Deterministic; no LLM call.
+// that returns the exact Pass 1 (scene-plan) system + user messages that
+// would be sent to the planner, plus the Pass 2 (shot-expand) system prompt.
+// Deterministic; no LLM call.
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import express from 'express';
@@ -94,9 +95,12 @@ describe('POST /api/storyboards/preview-prompt', () => {
     expect(json.user).toMatch(/- Alice — protagonist/);
     expect(json.user).toMatch(/- Bob/);
     expect(json.user).toMatch(/EXACTLY 9 frames/);
-    expect(json.user).toMatch(/Produce 9 cinematic storyboard frames/);
+    expect(json.user).toMatch(/produce 9 cinematic shots/);
     // Without `direction` the user message must not advertise an empty block.
     expect(json.user).not.toMatch(/Director's commentary:/);
+    // Pass 2's system prompt is surfaced alongside the Pass 1 prompts.
+    expect(typeof json.expand_system).toBe('string');
+    expect(json.expand_system).toMatch(/expand_shots/);
   });
 
   it("includes the director's commentary when provided", async () => {

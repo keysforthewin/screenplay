@@ -263,7 +263,9 @@ export async function setBeatSceneBible(identifier, bible) {
   const plot = await getPlot();
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
-  const value = bible == null ? null : normalizeSceneBible(bible);
+  // normalizeSceneBible returns only the text fields (it is a pure shape
+  // helper); the persistence layer stamps updated_at at write time.
+  const value = bible == null ? null : { ...normalizeSceneBible(bible), updated_at: new Date() };
   await updateBeatFields(beat._id, { 'beats.$.scene_bible': value });
   logger.info(`mongo: beat scene_bible set id=${beat._id}`);
   return fetchBeat(beat._id);
