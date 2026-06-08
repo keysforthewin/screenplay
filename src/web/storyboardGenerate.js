@@ -1370,10 +1370,27 @@ function cleanPlannedFrameV2(f) {
     return [];
   }
   const shotType = SHOT_TYPES.includes(f.shot_type) ? f.shot_type : null;
+  if (!shotType && f.shot_type != null) {
+    logger.warn(`storyboard plan (v2): dropping invalid shot_type "${f.shot_type}"`);
+  }
   const clampedDur = clampDuration(f.duration_seconds, shotType);
+  if (
+    f.duration_seconds != null &&
+    Number.isFinite(Number(f.duration_seconds)) &&
+    Number(f.duration_seconds) !== clampedDur
+  ) {
+    logger.warn(
+      `storyboard plan (v2): duration ${f.duration_seconds}s clamped to ${clampedDur}s for shot_type=${shotType}`,
+    );
+  }
   const rawChars = Array.isArray(f.characters_in_scene)
     ? f.characters_in_scene.map((n) => stripMarkdown(String(n ?? '')).trim()).filter(Boolean)
     : [];
+  if (rawChars.length > MAX_CHARS_PER_SHOT) {
+    logger.warn(
+      `storyboard plan (v2): trimming characters_in_scene from ${rawChars.length} to ${MAX_CHARS_PER_SHOT}`,
+    );
+  }
   const transition =
     typeof f.transition_in === 'string' && f.transition_in.trim()
       ? f.transition_in.trim().slice(0, MAX_TRANSITION_LEN)
