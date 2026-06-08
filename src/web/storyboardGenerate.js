@@ -1362,6 +1362,74 @@ export function _expandShotsForTest(args) {
   return expandShots(args);
 }
 
+// Two-output validator for the new pipeline (parallels the old three-output
+// cleanPlannedFrame). Drops a frame only if it lacks start_frame_prompt or
+// video_prompt; otherwise clamps shot_type / duration / characters / transition.
+function cleanPlannedFrameV2(f) {
+  if (!f || typeof f.start_frame_prompt !== 'string' || typeof f.video_prompt !== 'string') {
+    return [];
+  }
+  const shotType = SHOT_TYPES.includes(f.shot_type) ? f.shot_type : null;
+  const clampedDur = clampDuration(f.duration_seconds, shotType);
+  const rawChars = Array.isArray(f.characters_in_scene)
+    ? f.characters_in_scene.map((n) => stripMarkdown(String(n ?? '')).trim()).filter(Boolean)
+    : [];
+  const transition =
+    typeof f.transition_in === 'string' && f.transition_in.trim()
+      ? f.transition_in.trim().slice(0, MAX_TRANSITION_LEN)
+      : null;
+  return [{
+    ...f,
+    shot_type: shotType,
+    duration_seconds: clampedDur,
+    transition_in: transition,
+    characters_in_scene: rawChars.slice(0, MAX_CHARS_PER_SHOT),
+    reverse_in_post: Boolean(f.reverse_in_post),
+  }];
+}
+
+// New two-pass planner. Returns { frames, sceneBible }. frames carry
+// start_frame_prompt + video_prompt (no end_frame_prompt). On planner failure
+// returns { frames: [], sceneBible } (bible may still be present/null).
+async function planFramesV2({ beat, characters, targetCount, direction = '', directorNotes = [], onProgress = null }) {
+  onProgress?.({ phase: 'planning', step: 'plan_scene_start', message: 'Planning scene bible + shot list…' });
+  const { sceneBible, outline: outlineRaw } = await planScene({ beat, characters, targetCount, direction, directorNotes });
+  if (!Array.isArray(outlineRaw) || !outlineRaw.length) {
+    onProgress?.({ phase: 'planning', step: 'plan_scene_empty', message: 'Scene planner returned no shots.' });
+    return { frames: [], sceneBible };
+  }
+  onProgress?.({ phase: 'planning', step: 'plan_scene_done', total: outlineRaw.length, message: `Scene plan complete: ${outlineRaw.length} shots.` });
+
+  const outline = outlineRaw.map((f) => ({
+    description: typeof f?.description === 'string' ? f.description : '',
+    shot_type: f?.shot_type ?? null,
+    duration_seconds: f?.duration_seconds ?? null,
+    transition_in: typeof f?.transition_in === 'string' ? f.transition_in : '',
+    characters_in_scene: Array.isArray(f?.characters_in_scene) ? f.characters_in_scene : [],
+    reverse_in_post: Boolean(f?.reverse_in_post),
+  }));
+
+  onProgress?.({ phase: 'refining', step: 'expand_start', total: outline.length, message: `Expanding ${outline.length} shots…` });
+  const expanded = await expandShots({ beat, characters, sceneBible, outline, direction, directorNotes });
+  onProgress?.({ phase: 'refining', step: 'expand_done', total: outline.length, message: 'Shot expansion complete.' });
+
+  const frames = outline.flatMap((f, i) => {
+    const e = expanded[i] || {};
+    return cleanPlannedFrameV2({
+      ...f,
+      start_frame_prompt: e.start_frame_prompt,
+      video_prompt: e.video_prompt,
+      reverse_in_post: typeof e.reverse_in_post === 'boolean' ? e.reverse_in_post : f.reverse_in_post,
+    });
+  });
+  return { frames, sceneBible };
+}
+
+// Test seam.
+export function _planFramesV2ForTest(args) {
+  return planFramesV2(args);
+}
+
 async function refineFramePrompts({
   beat,
   characters,

@@ -7,6 +7,7 @@ import {
   SUBJECT_MOTION_RULES,
   STILL_FRAMING_RULES,
 } from '../src/web/storyboardConstraints.js';
+import { normalizeSceneBible as normalizeBibleForTest } from '../src/mongo/sceneBible.js';
 
 const fakeDb = createFakeDb();
 vi.mock('../src/mongo/client.js', () => ({
@@ -123,5 +124,51 @@ describe('expandShots (Pass 2)', () => {
     expect(shots[1].start_frame_prompt).toBe('real start 2');
     expect(shots[1].video_prompt).toBe('real move 2');
     anthropicState.resp = null;
+  });
+});
+
+describe('planFramesV2 (two-pass orchestration)', () => {
+  it('runs scene plan then expand, returns cleaned frames + the bible, no end frame', async () => {
+    gen._setScenePlannerForTests(() => ({
+      sceneBible: normalizeBibleForTest({ location: 'Diner', mood: 'tense' }),
+      outline: [
+        { description: 'wide of diner', shot_type: 'establishing', duration_seconds: 6 },
+        { description: 'Sarah looks up', shot_type: 'close_up', duration_seconds: 3, characters_in_scene: ['Sarah'] },
+      ],
+    }));
+    gen._setShotExpanderForTests(({ outline }) =>
+      outline.map((f, i) => ({ start_frame_prompt: `s${i}`, video_prompt: `v${i}`, reverse_in_post: false })),
+    );
+
+    const { frames, sceneBible } = await gen._planFramesV2ForTest({
+      beat: { name: 'Diner', order: 1, body: 'x', desc: '', characters: ['Sarah'] },
+      characters: [{ name: 'Sarah' }],
+      targetCount: 2,
+      direction: '',
+      directorNotes: [],
+    });
+
+    expect(sceneBible.location).toBe('Diner');
+    expect(frames).toHaveLength(2);
+    expect(frames[0]).toMatchObject({ start_frame_prompt: 's0', video_prompt: 'v0', shot_type: 'establishing' });
+    expect(frames[0]).not.toHaveProperty('end_frame_prompt');
+    expect(frames[0].duration_seconds).toBe(6);
+
+    gen._setScenePlannerForTests(null);
+    gen._setShotExpanderForTests(null);
+  });
+
+  it('returns empty frames + bible when the scene planner returns no shots', async () => {
+    gen._setScenePlannerForTests(() => ({ sceneBible: normalizeBibleForTest({ location: 'Void' }), outline: [] }));
+    const { frames, sceneBible } = await gen._planFramesV2ForTest({
+      beat: { name: 'Empty', order: 1, body: '', desc: '', characters: [] },
+      characters: [],
+      targetCount: 3,
+      direction: '',
+      directorNotes: [],
+    });
+    expect(frames).toHaveLength(0);
+    expect(sceneBible.location).toBe('Void');
+    gen._setScenePlannerForTests(null);
   });
 });
