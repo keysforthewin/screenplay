@@ -60,6 +60,58 @@ describe('shot-expand building blocks (Pass 2)', () => {
     expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(STILL_FRAMING_RULES);
     expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(VIDEO_PROMPT_RULES);
   });
+
+  it('forbids proper names and requires a visual handle (actor likeness / described look)', () => {
+    expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain('NEVER use');
+    const t = SHOT_EXPAND_SYSTEM_PROMPT.toLowerCase();
+    expect(t).toContain('proper name');
+    expect(t).toContain('visual handle');
+  });
+});
+
+describe('buildBeatContextBlock — character appearance plumbing', () => {
+  const beat = { order: 1, name: 'Van', desc: 'd', body: 'b', characters: [] };
+
+  it('surfaces hollywood_actor + background_story + memes + faction for each character', () => {
+    const characters = [
+      {
+        name: 'Keys',
+        hollywood_actor: 'Tom Green',
+        fields: {
+          background_story: 'A scrappy pilot in a patched flight jacket.',
+          memes: 'formerly Nully',
+          faction: 'Fruit Cup Fucks',
+        },
+      },
+    ];
+    const ctx = gen.buildBeatContextBlock({ beat, characters, direction: '', directorNotes: [] });
+    expect(ctx).toContain('played by Tom Green');
+    expect(ctx).toContain('A scrappy pilot in a patched flight jacket.');
+    expect(ctx).toContain('formerly Nully');
+    expect(ctx).toContain('Fruit Cup Fucks');
+  });
+
+  it('clips an over-long appearance field', () => {
+    const characters = [
+      { name: 'Tuna', fields: { background_story: 'X'.repeat(600) } },
+    ];
+    const ctx = gen.buildBeatContextBlock({ beat, characters, direction: '', directorNotes: [] });
+    expect(ctx).toContain('…');
+    expect(ctx).not.toContain('X'.repeat(600));
+  });
+
+  it('treats voice-only casting as non-visual: no "played by", relies on look', () => {
+    const characters = [
+      {
+        name: 'Tuna',
+        hollywood_actor: 'Jeremy Irons (voice only)',
+        fields: { background_story: 'A fish in a black-and-yellow armored space suit.' },
+      },
+    ];
+    const ctx = gen.buildBeatContextBlock({ beat, characters, direction: '', directorNotes: [] });
+    expect(ctx).not.toContain('played by Jeremy Irons');
+    expect(ctx).toContain('A fish in a black-and-yellow armored space suit.');
+  });
 });
 
 describe('expandShots (Pass 2)', () => {

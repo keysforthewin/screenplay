@@ -613,15 +613,55 @@ async function loadImageInput(imageId) {
   }
 }
 
+// Clip a markdown field to a plain, length-bounded one-liner for prompt
+// context — strips markdown, collapses whitespace, truncates on a word boundary,
+// and appends an ellipsis. Returns '' for empty/missing input.
+function clipField(raw, max = 300) {
+  const s = stripMarkdown(typeof raw === 'string' ? raw : '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!s || s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+// Casting markers that mean the actor is NOT the on-screen visual likeness, so
+// we must not present them as "played by" (the image model would paint the
+// voice actor's face). The character's own look field carries the visuals.
+const NON_VISUAL_CASTING = /\b(voice[\s-]?only|voice[\s-]?over|v\.?o\.?|motion[\s-]?capture|mo-?cap)\b/i;
+
 // Format the character list the same way for every LLM call so all passes
-// (planScene + expandShots) see consistent context.
+// (planScene + expandShots) see consistent context. Surfaces the appearance-
+// bearing fields the image prompts need — the actor (the strongest likeness
+// handle, skipped for voice-only/mocap casting), the visual prose in a custom
+// `description` field or `background_story`, `memes`, and `faction` as a light
+// wardrobe/aesthetic hint. Prompts refer to characters by these, never the name.
 function formatCharacterLines(characters) {
   if (!characters?.length) return '(no named characters in this beat)';
   return characters
     .map((c) => {
-      const name = stripMarkdown(c.name || '');
-      const role = c.fields?.role || c.fields?.description || '';
-      return `- ${name}${role ? ` — ${stripMarkdown(role)}` : ''}`;
+      const name = stripMarkdown(c.name || '').trim();
+      const actorClean = stripMarkdown(
+        typeof c.hollywood_actor === 'string' ? c.hollywood_actor : '',
+      )
+        .replace(/\s+/g, ' ')
+        .trim();
+      // Voice-only / mocap casting isn't a face — don't surface it as "played
+      // by", or the image model paints the wrong likeness.
+      const actor = NON_VISUAL_CASTING.test(actorClean) ? '' : clipField(actorClean, 80);
+      const role = clipField(c.fields?.role, 80);
+      const look = clipField(c.fields?.description || c.fields?.background_story);
+      const memes = clipField(c.fields?.memes, 160);
+      const faction = clipField(c.fields?.faction, 80);
+      // Name-line suffix: actor likeness is the strongest handle; otherwise a
+      // role label if one exists.
+      const suffix = actor ? ` — played by ${actor}` : role ? ` — ${role}` : '';
+      const lines = [`- ${name}${suffix}`];
+      if (look) lines.push(`    look: ${look}`);
+      if (memes) lines.push(`    memes: ${memes}`);
+      if (faction) lines.push(`    faction: ${faction}`);
+      return lines.join('\n');
     })
     .join('\n');
 }
@@ -785,7 +825,12 @@ export const SHOT_EXPAND_SYSTEM_PROMPT = [
   '',
   '# Inherit the bible — do not re-describe it',
   '- The scene bible already fixes location, time of day, lighting key, palette, mood, blocking, and camera language. Reference them; never restate them.',
-  '- Character faces, bodies, and wardrobe come from reference photos. Do not describe them — the one exception is placeholder occupants seen from outside a vehicle or window (see "Placeholder occupants").',
+  '- NEVER use a character\'s proper name in a prompt. Image models can\'t resolve a made-up name ("Young Keys") — they drop the figure, merge it into another, or misplace it. Refer to each character by a concise VISUAL HANDLE drawn from the character context:',
+  '  • Played on-screen by a real actor? Use that likeness — e.g. "the pilot, played by Jake Gyllenhaal".',
+  '  • Voice-only or non-human? Use their described physical look — e.g. "the fish in the black-and-yellow armored suit with a teal visor".',
+  '  • Neither available? Fall back to role/relationship — "the young son", "the mother".',
+  '  • The shot skeleton names characters for planning (and characters_in_scene must stay names) — translate those into visual handles here; never copy a proper name into the prompt itself.',
+  '- Reference photos lock the exact likeness, so keep the handle SHORT — do not re-describe faces/bodies/wardrobe in detail. (Exception: placeholder occupants seen from outside a vehicle or window — see "Placeholder occupants".)',
   '- This is WHY your prompts can be short: the shared context is carried by the bible + reference images.',
   '',
   '# Continuity',
