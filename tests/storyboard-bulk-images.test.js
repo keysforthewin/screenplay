@@ -24,10 +24,12 @@ vi.mock('../src/mongo/images.js', () => ({
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Generate = await import('../src/web/storyboardGenerate.js');
+const BeatLocks = await import('../src/web/beatLocks.js');
 
 beforeEach(() => {
   fakeDb.reset();
   Generate._setImageDispatcherForTests(null);
+  BeatLocks._clearBeatLocksForTests();
 });
 
 async function waitForJob(jobId) {
@@ -73,9 +75,10 @@ describe('listMissingStartFrameTargets', () => {
 
 describe('startBulkFrameGenerationJob', () => {
   it('generates only the missing start frames and reports planned/completed', async () => {
+    const midImage = new ObjectId();
     const { beat, out } = await makeBeat({ shots: [
       { prompt: 'first shot' },
-      { imageId: new ObjectId() },              // skipped
+      { imageId: midImage },              // skipped — must stay untouched
       { prompt: 'third shot' },
     ] });
     const seen = [];
@@ -96,6 +99,10 @@ describe('startBulkFrameGenerationJob', () => {
 
     const sb0 = await Storyboards.getStoryboard(out[0].sbId);
     expect(sb0.frames[0].image_id).toBeTruthy();
+
+    // The already-rendered middle shot must NOT be regenerated/overwritten.
+    const sb1 = await Storyboards.getStoryboard(out[1].sbId);
+    expect(sb1.frames[0].image_id.toString()).toBe(midImage.toString());
   });
 
   it('falls back to the suggested prompt when a start frame has no stored prompt', async () => {
