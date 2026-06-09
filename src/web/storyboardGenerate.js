@@ -1107,6 +1107,54 @@ export async function startReExpandAllJob({ beatId }) {
   return jobId;
 }
 
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Which of the beat's linked characters are named in a shot's text? Whole-word,
+// case- and markdown-insensitive. Candidate set is the curated beat cast only.
+// Returns the beat's canonical name strings (deduped). This is the backstop
+// that links a character the planner mentioned but forgot to list.
+export function findAppearingBeatCharacters(text, beatCharacters) {
+  const haystack = stripMarkdown(String(text ?? '')).toLowerCase();
+  if (!haystack) return [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of beatCharacters || []) {
+    const name = stripMarkdown(String(raw ?? '')).trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    const re = new RegExp(`\\b${escapeRegExp(key)}\\b`);
+    if (re.test(haystack)) {
+      seen.add(key);
+      out.push(name);
+    }
+  }
+  return out;
+}
+
+// Union the planner's characters_in_scene with any beat characters detected in
+// the shot text, deduped case-insensitively. Planner picks lead the ordering.
+export function linkBeatCharactersForShot(frame, beatCharacters) {
+  const picks = Array.isArray(frame?.characters_in_scene) ? frame.characters_in_scene : [];
+  const text = [frame?.description, frame?.start_frame_prompt, frame?.video_prompt, frame?.transition_in]
+    .filter(Boolean)
+    .join('\n');
+  const detected = findAppearingBeatCharacters(text, beatCharacters);
+  const out = [];
+  const seen = new Set();
+  for (const raw of [...picks, ...detected]) {
+    const name = stripMarkdown(String(raw ?? '')).trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
 // Two-output validator. Drops a frame only if it lacks start_frame_prompt or
 // video_prompt; otherwise clamps shot_type / duration / characters / transition.
 function cleanPlannedFrameV2(f) {
