@@ -102,7 +102,6 @@ export function FrameRegenerateDialog({
   }
 
   async function removeReference(id) {
-    if (!confirm('Remove this reference image?')) return;
     setRefsError(null);
     try {
       await apiPostJson(
