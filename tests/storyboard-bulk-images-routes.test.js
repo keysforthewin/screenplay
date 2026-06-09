@@ -28,6 +28,7 @@ vi.mock('../src/mongo/images.js', () => ({
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Generate = await import('../src/web/storyboardGenerate.js');
+const BeatLocks = await import('../src/web/beatLocks.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
 
 let server, baseUrl;
@@ -43,6 +44,7 @@ afterAll(async () => { await new Promise((r) => server.close(() => r())); });
 
 beforeEach(() => {
   fakeDb.reset();
+  BeatLocks._clearBeatLocksForTests();
   Generate._setImageDispatcherForTests(async () => ({
     buffer: Buffer.from('img'), contentType: 'image/png',
   }));
@@ -84,6 +86,19 @@ describe('POST /storyboards/generate-images', () => {
     const body = await r.json();
     expect(body.job_id).toBeTruthy();
     expect(body.planned).toBe(1);
+  });
+  it('409 when the beat is locked', async () => {
+    const beat = await beatWithMissingStart();
+    let release;
+    const held = new Promise((r) => { release = r; });
+    BeatLocks.withBeatLock(beat._id, () => held); // hold the lock
+    try {
+      const r = await post('/storyboards/generate-images', { beat_id: beat._id.toString() });
+      expect(r.status).toBe(409);
+    } finally {
+      release();
+      BeatLocks._clearBeatLocksForTests();
+    }
   });
 });
 

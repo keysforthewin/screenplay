@@ -4534,12 +4534,19 @@ export function buildApiRouter() {
           .status(409)
           .json({ error: 'Storyboard work in progress for this beat; try again' });
       }
-      const { startBulkFrameGenerationJob } = await import('./storyboardGenerate.js');
-      const { jobId, planned } = await startBulkFrameGenerationJob({
-        beatId: beat._id,
-        imageModel,
-      });
-      res.status(202).json({ job_id: jobId, planned, beat_id: beat._id.toString() });
+      const { startBulkFrameGenerationJob, BeatBusyError } = await import('./storyboardGenerate.js');
+      try {
+        const { jobId, planned } = await startBulkFrameGenerationJob({
+          beatId: beat._id,
+          imageModel,
+        });
+        res.status(202).json({ job_id: jobId, planned, beat_id: beat._id.toString() });
+      } catch (e) {
+        if (e instanceof BeatBusyError) {
+          return res.status(409).json({ error: e.message });
+        }
+        throw e;
+      }
     } catch (e) {
       next(e);
     }
