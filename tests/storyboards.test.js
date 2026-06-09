@@ -548,10 +548,18 @@ describe('storyboard scalar metadata', () => {
     expect(sb.shot_type).toBe(null);
   });
 
-  it('createStoryboard trims characters_in_scene at MAX_CHARS_PER_SHOT', async () => {
+  it('createStoryboard keeps all characters_in_scene (no cap)', async () => {
     const sb = await Storyboards.createStoryboard({
       beatId: beatA,
       charactersInScene: ['Alice', 'Bob', 'Carol', 'Dave'],
+    });
+    expect(sb.characters_in_scene).toEqual(['Alice', 'Bob', 'Carol', 'Dave']);
+  });
+
+  it('createStoryboard dedupes characters_in_scene case-insensitively', async () => {
+    const sb = await Storyboards.createStoryboard({
+      beatId: beatA,
+      charactersInScene: ['Alice', 'alice', '**Alice**', 'Bob'],
     });
     expect(sb.characters_in_scene).toEqual(['Alice', 'Bob']);
   });
@@ -641,12 +649,12 @@ describe('storyboard scalar metadata', () => {
     expect(cleared.transition_in).toBe(null);
   });
 
-  it('updateStoryboard trims and dedups characters_in_scene', async () => {
+  it('updateStoryboard keeps all characters_in_scene and dedupes', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
     const updated = await Storyboards.updateStoryboard(sb._id, {
-      characters_in_scene: ['Alice', 'Bob', 'Carol', 'Dave'],
+      characters_in_scene: ['Alice', 'Bob', 'Carol', 'Dave', 'alice'],
     });
-    expect(updated.characters_in_scene).toEqual(['Alice', 'Bob']);
+    expect(updated.characters_in_scene).toEqual(['Alice', 'Bob', 'Carol', 'Dave']);
   });
 
   it('updateStoryboard rejects non-array characters_in_scene', async () => {

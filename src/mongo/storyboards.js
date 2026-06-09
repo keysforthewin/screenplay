@@ -73,7 +73,7 @@
 //   duration_seconds: number | null   (1..15 inclusive, clamped to shot_type cap)
 //   shot_type: string | null          (one of SHOT_TYPES)
 //   transition_in: string | null      (short continuity note, ≤ MAX_TRANSITION_LEN)
-//   characters_in_scene: string[]     (≤ MAX_CHARS_PER_SHOT stripped names)
+//   characters_in_scene: string[]     (deduped, stripped names)
 //   reverse_in_post: boolean          (when true, this is a reveal shot whose
 //                                      generated video should be played in
 //                                      reverse during post — the start_prompt
@@ -117,7 +117,6 @@ export const SHOT_TYPE_DURATION_CAP = Object.freeze({
 });
 
 export const ABSOLUTE_DURATION_CAP = 15;
-export const MAX_CHARS_PER_SHOT = 2;
 export const MAX_TRANSITION_LEN = 280;
 
 export function durationCapFor(shotType) {
@@ -143,17 +142,19 @@ function sanitizeTransition(s) {
     : stripped;
 }
 
-function sanitizeCharacterList(list, { warnOnTrim } = {}) {
+function sanitizeCharacterList(list) {
   if (!Array.isArray(list)) return [];
-  const cleaned = list
-    .map((n) => stripMarkdown(String(n ?? '')).trim())
-    .filter(Boolean);
-  if (warnOnTrim && cleaned.length > MAX_CHARS_PER_SHOT) {
-    logger.warn(
-      `mongo: storyboard characters_in_scene length ${cleaned.length} > ${MAX_CHARS_PER_SHOT}; trimming`,
-    );
+  const out = [];
+  const seen = new Set();
+  for (const n of list) {
+    const stripped = stripMarkdown(String(n ?? '')).trim();
+    if (!stripped) continue;
+    const key = stripped.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(stripped);
   }
-  return cleaned.slice(0, MAX_CHARS_PER_SHOT);
+  return out;
 }
 
 const col = () => getDb().collection('storyboards');
@@ -527,7 +528,7 @@ export async function updateStoryboard(id, patch) {
           `update_storyboard: characters_in_scene must be an array of strings`,
         );
       }
-      set[k] = sanitizeCharacterList(v, { warnOnTrim: true });
+      set[k] = sanitizeCharacterList(v);
     } else if (
       k === 'video_duration_seconds' ||
       k === 'audio_duration_seconds' ||
