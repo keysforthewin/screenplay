@@ -40,7 +40,6 @@ import {
   listStoryboards,
   SHOT_TYPES,
   clampDuration,
-  MAX_CHARS_PER_SHOT,
   MAX_TRANSITION_LEN,
 } from '../mongo/storyboards.js';
 import { stripMarkdown } from '../util/markdown.js';
@@ -1131,11 +1130,6 @@ function cleanPlannedFrameV2(f) {
   const rawChars = Array.isArray(f.characters_in_scene)
     ? f.characters_in_scene.map((n) => stripMarkdown(String(n ?? '')).trim()).filter(Boolean)
     : [];
-  if (rawChars.length > MAX_CHARS_PER_SHOT) {
-    logger.warn(
-      `storyboard plan (v2): trimming characters_in_scene from ${rawChars.length} to ${MAX_CHARS_PER_SHOT}`,
-    );
-  }
   const transition =
     typeof f.transition_in === 'string' && f.transition_in.trim()
       ? f.transition_in.trim().slice(0, MAX_TRANSITION_LEN)
@@ -1145,7 +1139,7 @@ function cleanPlannedFrameV2(f) {
     shot_type: shotType,
     duration_seconds: clampedDur,
     transition_in: transition,
-    characters_in_scene: rawChars.slice(0, MAX_CHARS_PER_SHOT),
+    characters_in_scene: rawChars,
     reverse_in_post: Boolean(f.reverse_in_post),
   }];
 }

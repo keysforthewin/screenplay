@@ -261,7 +261,7 @@ describe('storyboard auto-generation (two-pass)', () => {
     expect(stored[0].duration_seconds).toBe(5);
   });
 
-  it('trims characters_in_scene to MAX_CHARS_PER_SHOT', async () => {
+  it('keeps all characters_in_scene (cap removed)', async () => {
     installPlanner({
       sceneBible: { location: 'Diner' },
       shots: [
@@ -290,7 +290,7 @@ describe('storyboard auto-generation (two-pass)', () => {
     await waitForJob(jobId);
 
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
-    expect(stored[0].characters_in_scene).toEqual(['Alice', 'Bob']);
+    expect(stored[0].characters_in_scene).toEqual(['Alice', 'Bob', 'Carol', 'Dave']);
   });
 
   it('handles atmospheric/insert shots with empty characters_in_scene', async () => {
