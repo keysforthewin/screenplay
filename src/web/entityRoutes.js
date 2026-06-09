@@ -4515,6 +4515,69 @@ export function buildApiRouter() {
     }
   });
 
+  // Page-level "Generate all images": render every shot's missing start frame.
+  // Async — returns 202 + { job_id, planned }; SPA polls
+  // /storyboards/generate-images/:jobId.
+  router.post('/storyboards/generate-images', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const imageModel = normalizeImageModel(req.body?.image_model);
+      if (!isValidImageModel(imageModel)) {
+        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
+      }
+      const { isBeatLocked } = await import('./beatLocks.js');
+      if (isBeatLocked(beat._id)) {
+        return res
+          .status(409)
+          .json({ error: 'Storyboard work in progress for this beat; try again' });
+      }
+      const { startBulkFrameGenerationJob } = await import('./storyboardGenerate.js');
+      const { jobId, planned } = await startBulkFrameGenerationJob({
+        beatId: beat._id,
+        imageModel,
+      });
+      res.status(202).json({ job_id: jobId, planned, beat_id: beat._id.toString() });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/storyboards/generate-images/:jobId', async (req, res, next) => {
+    try {
+      const { getImageGenerationJob } = await import('./storyboardGenerate.js');
+      const job = getImageGenerationJob(req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'job not found' });
+      res.json({ job });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Page-level "Delete all images": clear every generated frame image in the beat.
+  // Synchronous; keeps prompts + references.
+  router.post('/storyboards/clear-images', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { isBeatLocked } = await import('./beatLocks.js');
+      if (isBeatLocked(beat._id)) {
+        return res
+          .status(409)
+          .json({ error: 'Storyboard work in progress for this beat; try again' });
+      }
+      const { clearAllFrameImagesForBeatViaGateway } = await import('./gateway.js');
+      const result = await clearAllFrameImagesForBeatViaGateway({ beatId: beat._id });
+      res.json({ ...result, beat_id: beat._id.toString() });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // LLM-driven batch edit. Body: { beat_id, instructions }. Synchronous —
   // returns the new storyboard list once Anthropic + apply have completed.
   router.post('/storyboards/edit', async (req, res, next) => {
