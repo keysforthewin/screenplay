@@ -628,6 +628,40 @@ export async function deleteStoryboardsForBeat(beatId) {
   return list.map(backfill);
 }
 
+// Clear every generated frame image in a beat's storyboards (the "Delete all
+// images" core). Nulls image_id, previous_image_id and last_edit_prompt on every
+// frame of every shot; KEEPS each frame's prompt and reference_ids. Returns the
+// freed image ids (current + undo, for GridFS cleanup), all referenced ids (so
+// the caller can avoid deleting a blob still used as a reference), and the
+// touched storyboard ids.
+export async function clearAllFrameImagesForBeat(beatId) {
+  const sbs = await listStoryboards({ beatId });
+  const freedImageIds = [];
+  const referencedIds = [];
+  const storyboardIds = [];
+  for (const sb of sbs) {
+    storyboardIds.push(sb._id);
+    let touched = false;
+    const frames = sb.frames.map((f) => {
+      if (f.image_id) { freedImageIds.push(f.image_id); touched = true; }
+      if (f.previous_image_id) { freedImageIds.push(f.previous_image_id); touched = true; }
+      if (f.last_edit_prompt) touched = true;
+      for (const r of f.reference_ids || []) if (r) referencedIds.push(r);
+      return {
+        ...f,
+        image_id: null,
+        previous_image_id: null,
+        last_edit_prompt: '',
+        reference_ids: [...(f.reference_ids || [])],
+      };
+    });
+    if (touched) {
+      await col().updateOne({ _id: sb._id }, { $set: { frames, updated_at: new Date() } });
+    }
+  }
+  return { freedImageIds, referencedIds, storyboardIds };
+}
+
 // Append a new image to the frame pool. Rejects once MAX_FRAMES is reached.
 // Returns { storyboard, frameId } so callers can address the new frame.
 export async function addFrame(
