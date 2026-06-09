@@ -152,7 +152,7 @@ const SCENE_PLAN_TOOL = {
             characters_in_scene: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Names of characters visible in this shot, exactly as listed in the beat metadata. AT MOST 2.',
+              description: 'Names of EVERY character visible in this shot, exactly as listed in the beat metadata. List everyone who appears in frame — however many that is.',
             },
             reverse_in_post: { type: 'boolean', description: 'True for spatial reveal/entry shots that must be generated backwards and reversed in post.' },
           },
@@ -191,7 +191,7 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   CAMERA_COHERENCE_RULES,
   '',
   '# Hard constraints',
-  '- Maximum 2 named characters per shot. If a beat has 4 people, alternate coverage.',
+  '- List EVERY named character visible in a shot in characters_in_scene — there is no cap. You may still vary which characters are prominent across shots, but anyone visible in frame must be listed.',
   '- shot_type drives duration_seconds: establishing/cinematic_wide/insert ≤ 15s, medium ≤ 10s, close_up/reaction/two_shot/over_the_shoulder ≤ 5s. Prefer the lower half of the range — shorter clips survive video gen better.',
   "- Don't invent characters not in the beat's character list.",
   '- Emit EXACTLY the requested number of frames.',
