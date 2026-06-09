@@ -67,6 +67,7 @@ import {
   STILL_FRAMING_RULES,
   VIDEO_PROMPT_RULES,
   OCCUPANT_PLACEHOLDER_RULES,
+  CAMERA_COHERENCE_RULES,
 } from './storyboardConstraints.js';
 import { renderSceneBibleBlock, normalizeSceneBible, isEmptySceneBible } from '../mongo/sceneBible.js';
 
@@ -186,6 +187,9 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   '',
   '# Camera grammar to plan around',
   CAMERA_MOTION_RULES,
+  '',
+  '# Camera vantage (one coherent eyeline per shot)',
+  CAMERA_COHERENCE_RULES,
   '',
   '# Hard constraints',
   '- Maximum 2 named characters per shot. If a beat has 4 people, alternate coverage.',
@@ -845,6 +849,9 @@ export const SHOT_EXPAND_SYSTEM_PROMPT = [
   '',
   '# Video-prompt structure (for video_prompt)',
   VIDEO_PROMPT_RULES,
+  '',
+  '# Camera vantage (for start_frame_prompt)',
+  CAMERA_COHERENCE_RULES,
   '',
   '# Still composition (for start_frame_prompt)',
   STILL_FRAMING_RULES,

@@ -7,6 +7,7 @@ import {
   SUBJECT_MOTION_RULES,
   STILL_FRAMING_RULES,
   VIDEO_PROMPT_RULES,
+  CAMERA_COHERENCE_RULES,
 } from '../src/web/storyboardConstraints.js';
 import { normalizeSceneBible as normalizeBibleForTest } from '../src/mongo/sceneBible.js';
 
@@ -33,6 +34,7 @@ describe('scene-plan building blocks (Pass 1)', () => {
   it('the scene-plan prompt embeds the shared constraint blocks (no duplication)', () => {
     expect(SCENE_PLAN_SYSTEM_PROMPT).toContain(CAMERA_MOTION_RULES);
     expect(SCENE_PLAN_SYSTEM_PROMPT).toContain(REVEAL_HANDLING);
+    expect(SCENE_PLAN_SYSTEM_PROMPT).toContain(CAMERA_COHERENCE_RULES);
   });
 
   it('planScene (via override) returns { sceneBible, outline }', async () => {
@@ -59,6 +61,7 @@ describe('shot-expand building blocks (Pass 2)', () => {
     expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(SUBJECT_MOTION_RULES);
     expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(STILL_FRAMING_RULES);
     expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(VIDEO_PROMPT_RULES);
+    expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(CAMERA_COHERENCE_RULES);
   });
 
   it('forbids proper names and requires a visual handle (actor likeness / described look)', () => {

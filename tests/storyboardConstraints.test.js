@@ -8,6 +8,7 @@ import {
   STILL_FRAMING_RULES,
   VIDEO_PROMPT_RULES,
   OCCUPANT_PLACEHOLDER_RULES,
+  CAMERA_COHERENCE_RULES,
 } from '../src/web/storyboardConstraints.js';
 
 describe('storyboard constraints', () => {
@@ -20,6 +21,7 @@ describe('storyboard constraints', () => {
       STILL_FRAMING_RULES,
       VIDEO_PROMPT_RULES,
       OCCUPANT_PLACEHOLDER_RULES,
+      CAMERA_COHERENCE_RULES,
     ]) {
       expect(typeof block).toBe('string');
       expect(block.trim().length).toBeGreaterThan(0);
@@ -56,5 +58,13 @@ describe('storyboard constraints', () => {
     expect(t).toContain('placeholder');
     expect(t).toContain('through the glass');
     expect(t).toContain('number');
+  });
+
+  it('camera-coherence rules tie the eyeline to what is visible (no two-vantage frames)', () => {
+    const t = CAMERA_COHERENCE_RULES.toLowerCase();
+    expect(t).toContain('eyeline');
+    expect(t).toContain('face');
+    expect(t).toContain('back');
+    expect(t).toContain('two separate shots');
   });
 });

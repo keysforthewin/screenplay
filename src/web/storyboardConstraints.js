@@ -88,3 +88,19 @@ export const OCCUPANT_PLACEHOLDER_RULES = [
   '- This is the ONE exception to "do not describe character appearance": there are no reference photos reaching tiny through-glass figures, so a rough build / hair / wardrobe cue is what keeps the count and silhouettes right.',
   '- Still-frame detail only — occupants do NOT move in the video_prompt; figures seen through glass warp if animated.',
 ].join('\n');
+
+// A shot is ONE camera position. The failure this prevents: a prompt that names
+// a from-behind vantage ("looking forward up the cabin") and then describes the
+// subjects' faces / frontal gestures — physically two shots, which makes the
+// model spin a character around to face the rear camera. Shared by Pass 1 (so
+// the planner doesn't create two-vantage shots) and Pass 2 (so each written
+// still is single-vantage).
+export const CAMERA_COHERENCE_RULES = [
+  'Camera vantage — ONE coherent eyeline per shot:',
+  '- Name the vantage explicitly at the start of the still ("frontal medium", "three-quarter rear wide", "profile close-up"), then describe only what that camera can see from it.',
+  '- A subject whose BACK is to the camera shows the back of the head and shoulders — you CANNOT describe their face, expression, or front-of-body gesture. A from-behind master ("forward up the cabin" / "down the road") shows backs and the space ahead.',
+  "- To show a character's FACE, expression, or frontal action, the camera must FACE them: front or three-quarter FRONT shows the face; profile shows a side; three-quarter REAR and full rear do NOT. If the camera can't physically see a face from your stated angle, don't describe it.",
+  '- THE BUG TO AVOID: one frame that describes the FACES of people whose backs are to the camera (a from-behind master + frontal detail). That is two separate shots — give the character beat its own shot angled to see them.',
+  '- This does NOT forbid a person seen from behind in frame. Standard grammar is fine — over_the_shoulder shows the near person from behind (no face described) while the camera FACES the far character whose beat it is; a two-shot may show one character facing the camera (face visible) and another facing away (back visible). Both are one coherent eyeline.',
+  '- The single test: every face or expression you describe must belong to someone this one camera can actually see.',
+].join('\n');
