@@ -20,6 +20,7 @@ import { StoryboardItem } from '../widgets/StoryboardItem.jsx';
 import { ConfirmDialog } from '../widgets/Modal.jsx';
 import { StoryboardEditDialog } from '../widgets/StoryboardEditDialog.jsx';
 import { StoryboardGenerateDialog } from '../widgets/StoryboardGenerateDialog.jsx';
+import { BulkGenerateImagesDialog } from '../widgets/BulkGenerateImagesDialog.jsx';
 import { BeatTabs } from '../widgets/BeatTabs.jsx';
 import { formatRuntime } from '../shotTypes.js';
 import { BeatPager } from '../widgets/BeatPager.jsx';
@@ -39,6 +40,16 @@ export function StoryboardBeat({ session }) {
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteAllError, setDeleteAllError] = useState(null);
+  // Bulk start-frame image generation ("Generate all images") — separate job +
+  // poll from the plan-generation flow above. Both are mutually exclusive via
+  // the per-beat lock; the UI also disables one while the other runs.
+  const [imageGenDialogOpen, setImageGenDialogOpen] = useState(false);
+  const [imageGenerating, setImageGenerating] = useState(false);
+  const [imageJobStatus, setImageJobStatus] = useState(null);
+  const [imageGenError, setImageGenError] = useState(null);
+  const imagePollRef = useRef(null);
+  const [confirmDeleteImages, setConfirmDeleteImages] = useState(false);
+  const [deleteImagesError, setDeleteImagesError] = useState(null);
   // Only one storyboard item can be expanded at a time. Collapsed by default
   // so the heavy media (videos, frames, audio, prompt CollabField) doesn't
   // mount until the user opens that item.
@@ -154,6 +165,19 @@ export function StoryboardBeat({ session }) {
     [sortedItems],
   );
 
+  // Each shot's start frame is frames[0]. "Missing" = it exists but has no image.
+  const startFrameStats = useMemo(() => {
+    let missing = 0;
+    let withImage = 0;
+    for (const sb of sortedItems) {
+      const f0 = sb.frames?.[0];
+      if (!f0) continue;
+      if (f0.image_id) withImage += 1;
+      else missing += 1;
+    }
+    return { missing, withImage };
+  }, [sortedItems]);
+
   async function handleDragEnd(event) {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
@@ -258,9 +282,64 @@ export function StoryboardBeat({ session }) {
     }
   }
 
+  async function pollImageJob(jobId) {
+    try {
+      const r = await apiGet(`/storyboards/generate-images/${jobId}`);
+      setImageJobStatus(r.job);
+      if (['done', 'partial', 'error'].includes(r.job?.status)) {
+        clearInterval(imagePollRef.current);
+        imagePollRef.current = null;
+        setImageGenerating(false);
+        if (r.job.status === 'error') {
+          setImageGenError(r.job.error || 'Image generation failed.');
+        }
+        onRefresh();
+      } else {
+        onRefresh();
+      }
+    } catch (e) {
+      // Ignore transient errors; polling keeps trying.
+    }
+  }
+
+  async function generateAllImages({ imageModel }) {
+    if (!data?.beat) return;
+    setImageGenError(null);
+    setImageGenerating(true);
+    setImageJobStatus({ status: 'queued', completed: 0, planned: 0, failed: 0 });
+    try {
+      const r = await apiPostJson('/storyboards/generate-images', {
+        beat_id: data.beat._id,
+        image_model: imageModel,
+      });
+      const jobId = r.job_id;
+      imagePollRef.current = setInterval(() => pollImageJob(jobId), 2000);
+      pollImageJob(jobId);
+    } catch (e) {
+      setImageGenerating(false);
+      setImageGenError(e.message);
+    }
+  }
+
+  function onGenDialogImagesSubmit(settings) {
+    setImageGenDialogOpen(false);
+    generateAllImages(settings);
+  }
+
+  async function deleteAllImages() {
+    setDeleteImagesError(null);
+    try {
+      await apiPostJson('/storyboards/clear-images', { beat_id: data.beat._id });
+      onRefresh();
+    } catch (e) {
+      setDeleteImagesError(e.message);
+    }
+  }
+
   useEffect(() => {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
+      if (imagePollRef.current) clearInterval(imagePollRef.current);
     };
   }, []);
 
@@ -301,7 +380,7 @@ export function StoryboardBeat({ session }) {
           <button
             className="primary"
             onClick={onGenerateClick}
-            disabled={generating}
+            disabled={generating || imageGenerating}
             title={
               sortedItems.length
                 ? 'Replace existing storyboards with a freshly generated set'
@@ -321,10 +400,25 @@ export function StoryboardBeat({ session }) {
           <button
             className="danger"
             onClick={() => setConfirmDeleteAll(true)}
-            disabled={generating || sortedItems.length === 0}
+            disabled={generating || imageGenerating || sortedItems.length === 0}
             title="Delete every storyboard for this beat"
           >
             Delete all
+          </button>
+          <button
+            onClick={() => setImageGenDialogOpen(true)}
+            disabled={generating || imageGenerating || sortedItems.length === 0}
+            title="Render the start-frame image for every shot that's missing one"
+          >
+            {imageGenerating ? 'Generating images…' : 'Generate all images'}
+          </button>
+          <button
+            className="danger"
+            onClick={() => setConfirmDeleteImages(true)}
+            disabled={generating || imageGenerating || sortedItems.length === 0}
+            title="Remove every generated frame image in this beat (keeps prompts & references)"
+          >
+            Delete all images
           </button>
         </div>
       </div>
@@ -340,6 +434,20 @@ export function StoryboardBeat({ session }) {
       {generating && generationStatus && (
         <StoryboardGenerationProgress
           job={generationStatus}
+          showLog={showProgressLog}
+          onToggleLog={() => setShowProgressLog((s) => !s)}
+          logRef={progressLogRef}
+        />
+      )}
+      {imageGenError && (
+        <div className="error-banner">Image generation error: {imageGenError}</div>
+      )}
+      {deleteImagesError && (
+        <div className="error-banner">Delete images failed: {deleteImagesError}</div>
+      )}
+      {imageGenerating && imageJobStatus && (
+        <StoryboardGenerationProgress
+          job={imageJobStatus}
           showLog={showProgressLog}
           onToggleLog={() => setShowProgressLog((s) => !s)}
           logRef={progressLogRef}
@@ -413,6 +521,27 @@ export function StoryboardBeat({ session }) {
         beat={data?.beat || null}
         beatCharacters={beatCharacters}
         existingCount={sortedItems.length}
+      />
+
+      <BulkGenerateImagesDialog
+        open={imageGenDialogOpen}
+        onClose={() => setImageGenDialogOpen(false)}
+        onSubmit={onGenDialogImagesSubmit}
+        missingCount={startFrameStats.missing}
+        skipCount={startFrameStats.withImage}
+      />
+
+      <ConfirmDialog
+        open={confirmDeleteImages}
+        title="Delete all images?"
+        message={
+          'This removes every generated frame image in this beat. ' +
+          'Prompts and reference images are kept. This cannot be undone.'
+        }
+        confirmLabel="Delete all images"
+        danger
+        onConfirm={() => { setConfirmDeleteImages(false); deleteAllImages(); }}
+        onCancel={() => setConfirmDeleteImages(false)}
       />
 
       <ConfirmDialog
