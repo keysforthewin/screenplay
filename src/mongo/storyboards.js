@@ -640,7 +640,6 @@ export async function clearAllFrameImagesForBeat(beatId) {
   const referencedIds = [];
   const storyboardIds = [];
   for (const sb of sbs) {
-    storyboardIds.push(sb._id);
     let touched = false;
     const frames = sb.frames.map((f) => {
       if (f.image_id) { freedImageIds.push(f.image_id); touched = true; }
@@ -652,13 +651,16 @@ export async function clearAllFrameImagesForBeat(beatId) {
         image_id: null,
         previous_image_id: null,
         last_edit_prompt: '',
-        reference_ids: [...(f.reference_ids || [])],
       };
     });
     if (touched) {
       await col().updateOne({ _id: sb._id }, { $set: { frames, updated_at: new Date() } });
+      storyboardIds.push(sb._id);
     }
   }
+  logger.info(
+    `mongo: clear frame images beat=${beatId} storyboards=${storyboardIds.length} freed=${freedImageIds.length}`,
+  );
   return { freedImageIds, referencedIds, storyboardIds };
 }
 

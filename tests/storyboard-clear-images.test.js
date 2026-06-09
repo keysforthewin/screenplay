@@ -72,4 +72,17 @@ describe('clearAllFrameImagesForBeat', () => {
     const result = await Storyboards.clearAllFrameImagesForBeat(beat._id);
     expect(result).toEqual({ freedImageIds: [], referencedIds: [], storyboardIds: [] });
   });
+
+  it('skips a storyboard whose frames have no images (no write, absent from storyboardIds)', async () => {
+    const beat = await Plots.createBeat({ name: 'B', desc: '', body: '', characters: [] });
+    const sb = await Storyboards.createStoryboard({ beatId: beat._id, textPrompt: 'one' });
+    await Storyboards.addFrame(sb._id, {}); // frame exists but has no image
+
+    const result = await Storyboards.clearAllFrameImagesForBeat(beat._id);
+
+    expect(result.freedImageIds).toEqual([]);
+    expect(result.storyboardIds).toEqual([]);
+    const fresh = await Storyboards.getStoryboard(sb._id);
+    expect(fresh.frames[0].image_id).toBe(null); // still present, just untouched
+  });
 });
