@@ -13,10 +13,21 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const deletedImageIds = [];
+vi.mock('../src/mongo/images.js', () => ({
+  deleteImage: vi.fn(async (id) => { deletedImageIds.push(String(id)); }),
+  deleteImages: vi.fn(async (ids) => { for (const i of ids) deletedImageIds.push(String(i)); }),
+  uploadGeneratedImage: vi.fn(async () => ({ _id: new ObjectId() })),
+}));
+
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
+const Gateway = await import('../src/web/gateway.js');
 
-beforeEach(() => fakeDb.reset());
+beforeEach(() => {
+  fakeDb.reset();
+  deletedImageIds.length = 0;
+});
 
 function frameOf(sb, frameId) {
   return sb.frames.find((f) => f._id.toString() === String(frameId));
@@ -84,5 +95,31 @@ describe('clearAllFrameImagesForBeat', () => {
     expect(result.storyboardIds).toEqual([]);
     const fresh = await Storyboards.getStoryboard(sb._id);
     expect(fresh.frames[0].image_id).toBe(null); // still present, just untouched
+  });
+});
+
+describe('clearAllFrameImagesForBeatViaGateway', () => {
+  it('deletes freed blobs, skips referenced ids, and returns counts', async () => {
+    const beat = await Plots.createBeat({ name: 'B', desc: '', body: '', characters: [] });
+    const current = new ObjectId();
+    const ref = new ObjectId();
+    const sb = await Storyboards.createStoryboard({ beatId: beat._id, textPrompt: 'one' });
+    await Storyboards.addFrame(sb._id, { imageId: current, referenceIds: [ref] });
+    // A second shot whose current image IS also used as a reference elsewhere:
+    const shared = new ObjectId();
+    const sb2 = await Storyboards.createStoryboard({ beatId: beat._id, textPrompt: 'two' });
+    await Storyboards.addFrame(sb2._id, { imageId: shared, referenceIds: [shared] });
+
+    const result = await Gateway.clearAllFrameImagesForBeatViaGateway({ beatId: beat._id });
+
+    expect(result.cleared).toBe(2);
+    // `current` is freed and not referenced → deleted. `shared` is referenced → kept.
+    expect(deletedImageIds).toContain(current.toString());
+    expect(deletedImageIds).not.toContain(shared.toString());
+    expect(result.freed).toBe(deletedImageIds.length);
+
+    const fresh = await Storyboards.getStoryboard(sb._id);
+    expect(fresh.frames[0].image_id).toBe(null);
+    expect(fresh.frames[0].reference_ids.map(String)).toEqual([ref.toString()]);
   });
 });

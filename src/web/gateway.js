@@ -92,6 +92,7 @@ import {
   undoFrameImageEdit as mongoUndoFrameImageEdit,
   deleteStoryboard as mongoDeleteStoryboard,
   deleteStoryboardsForBeat as mongoDeleteStoryboardsForBeat,
+  clearAllFrameImagesForBeat as mongoClearAllFrameImagesForBeat,
   getStoryboard as mongoGetStoryboard,
   reorderStoryboardsForBeat as mongoReorderStoryboards,
   pushFrameReferenceImage as mongoPushFrameReferenceImage,
@@ -1488,6 +1489,31 @@ export async function deleteAllStoryboardsForBeatViaGateway({ beatId }) {
     cleared: true,
   });
   return { ok: true, removed_count: removed.length };
+}
+
+// "Delete all images" for a beat: clear every frame's generated image (current +
+// undo), free the underlying GridFS blobs, and ping the room so SPAs re-render.
+// Never deletes a blob still used as a frame reference or as the beat's hero
+// image (the codebase "may be shared" guard). Keeps prompts and references.
+export async function clearAllFrameImagesForBeatViaGateway({ beatId }) {
+  const { freedImageIds, referencedIds, storyboardIds } =
+    await mongoClearAllFrameImagesForBeat(beatId);
+  const beat = await getBeat(beatId);
+  const protectedIds = new Set([
+    ...referencedIds.map(String),
+    ...(beat?.main_image_id ? [String(beat.main_image_id)] : []),
+  ]);
+  const toDelete = [...new Set(freedImageIds.map(String))].filter(
+    (id) => !protectedIds.has(id),
+  );
+  for (const id of toDelete) {
+    await tryDeleteImage(id, 'cleared all storyboard frame images');
+  }
+  broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
+    changed: ['frames'],
+    cleared_images: true,
+  });
+  return { cleared: storyboardIds.length, freed: toDelete.length };
 }
 
 // Broadcast helper: every frame mutation re-renders the whole frame strip on
