@@ -93,6 +93,29 @@ describe('collectStoryboardReferenceIds', () => {
     ]);
   });
 
+  it('interleaves canonical-first: beat main + one signature image per character before extras', async () => {
+    const beatMain = new ObjectId();
+    const sheetA = new ObjectId();
+    const portraitA = new ObjectId();
+    const sheetB = new ObjectId();
+    const portraitB = new ObjectId();
+    await makeCharacter('Alice', { sheets: [sheetA], mainId: portraitA });
+    await makeCharacter('Bob', { sheets: [sheetB], mainId: portraitB });
+    const beat = { _id: new ObjectId(), images: [], main_image_id: beatMain };
+    const result = await collectStoryboardReferenceIds({
+      beat,
+      charactersInScene: ['Alice', 'Bob'],
+      existingIds: [],
+    });
+    expect(result.ids).toEqual([
+      beatMain.toString(),
+      sheetA.toString(),
+      sheetB.toString(),
+      portraitA.toString(),
+      portraitB.toString(),
+    ]);
+  });
+
   it('skips unknown character names but still aggregates the rest', async () => {
     const sheetB = new ObjectId();
     await makeCharacter('Bob', { sheets: [sheetB] });

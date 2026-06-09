@@ -33,6 +33,12 @@ function defaultSheetIdFor(c) {
   return c?.character_sheet_image_id || null;
 }
 
+// The single signature image we'd lead with for a character: default sheet,
+// else main portrait, else their first attached image.
+function canonicalImageIdFor(c) {
+  return defaultSheetIdFor(c) || c?.main_image_id || c?.images?.[0]?._id || null;
+}
+
 export async function collectStoryboardReferenceIds({
   beat,
   charactersInScene,
@@ -41,20 +47,9 @@ export async function collectStoryboardReferenceIds({
   const seen = new Set();
   const ids = [];
 
-  // 1. Beat images first — set/scene context. main_image_id usually appears
-  //    inside images[] too; dedupe handles either order.
-  if (beat) {
-    for (const img of beat.images || []) {
-      pushId(seen, ids, img?._id);
-    }
-    if (beat.main_image_id) {
-      pushId(seen, ids, beat.main_image_id);
-    }
-  }
-
-  // 2. Per-character images. Default sheet first (matches the single-character
-  //    pin behavior at generation time), then the rest of the sheets, then the
-  //    main portrait, then every other image attached to the character.
+  // Resolve the in-scene characters once, preserving order and skipping
+  // unknowns, so both seeding rounds below work off the same resolved list.
+  const chars = [];
   for (const raw of charactersInScene || []) {
     const stripped = stripMarkdown(raw || '').trim();
     if (!stripped) continue;
@@ -71,8 +66,30 @@ export async function collectStoryboardReferenceIds({
       logger.warn(`storyboard refs: unknown character "${stripped}" — skipped`);
       continue;
     }
-    const defaultSheet = defaultSheetIdFor(c);
-    pushId(seen, ids, defaultSheet);
+    chars.push(c);
+  }
+
+  // Round 1 — canonical: the beat set image, then one signature image per
+  // character. Frame generation only consumes the first N references, so this
+  // guarantees every linked character is represented even before the user
+  // prunes the list down.
+  if (beat?.main_image_id) {
+    pushId(seen, ids, beat.main_image_id);
+  }
+  for (const c of chars) {
+    pushId(seen, ids, canonicalImageIdFor(c));
+  }
+
+  // Round 2 — remainder: the rest of the beat images, then each character's
+  // full set (default sheet, all sheets, main portrait, every image) for the
+  // user to prune down. Dedupe via `seen` drops anything already added above.
+  if (beat) {
+    for (const img of beat.images || []) {
+      pushId(seen, ids, img?._id);
+    }
+  }
+  for (const c of chars) {
+    pushId(seen, ids, defaultSheetIdFor(c));
     for (const sid of c.character_sheet_image_ids || []) {
       pushId(seen, ids, sid);
     }
@@ -82,9 +99,9 @@ export async function collectStoryboardReferenceIds({
     }
   }
 
-  // 3. Compute the `added` delta vs. existingIds. We keep the full deduped
-  //    list in `ids` so callers can do either an append or a replace; the
-  //    delta is just informational.
+  // Compute the `added` delta vs. existingIds. We keep the full deduped list in
+  // `ids` so callers can do either an append or a replace; the delta is just
+  // informational.
   const existing = new Set((existingIds || []).map((x) => String(x)));
   const added = ids.filter((id) => !existing.has(id));
 
