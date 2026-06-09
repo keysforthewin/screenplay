@@ -69,10 +69,10 @@ export function StoryboardBeat({ session }) {
   // between the slower 2s polls.
   const [, setNowTick] = useState(0);
   useEffect(() => {
-    if (!generating) return undefined;
+    if (!generating && !imageGenerating) return undefined;
     const t = setInterval(() => setNowTick((n) => n + 1), 1000);
     return () => clearInterval(t);
-  }, [generating]);
+  }, [generating, imageGenerating]);
 
   useEffect(() => {
     let cancelled = false;
@@ -306,6 +306,7 @@ export function StoryboardBeat({ session }) {
     if (!data?.beat) return;
     setImageGenError(null);
     setImageGenerating(true);
+    setShowProgressLog(true);
     setImageJobStatus({ status: 'queued', completed: 0, planned: 0, failed: 0 });
     try {
       const r = await apiPostJson('/storyboards/generate-images', {
