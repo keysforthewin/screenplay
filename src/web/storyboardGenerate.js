@@ -291,6 +291,152 @@ export function getStoryboardGenerationJob(jobId) {
   return jobs.get(jobId) || null;
 }
 
+// ── Bulk start-frame image generation ("Generate all images") ───────────────
+// Separate in-memory job table from the plan-generation `jobs` Map: same shape
+// (so the SPA's StoryboardGenerationProgress renders it unchanged) but a
+// distinct polling endpoint and lifecycle. Mirrors the critiqueJobs convention.
+const imageJobs = new Map();
+
+export function getImageGenerationJob(jobId) {
+  return imageJobs.get(jobId) || null;
+}
+
+// Each shot's START frame is frames[0]. Returns [{ sb, frame }] for every shot in
+// the beat whose start frame exists and has no image yet. Shots with an empty
+// frame pool (no start frame) and shots whose start frame already has an image
+// are skipped.
+export async function listMissingStartFrameTargets(beatId) {
+  const sbs = await listStoryboards({ beatId });
+  const targets = [];
+  for (const sb of sbs) {
+    const frame = sb.frames?.[0];
+    if (!frame) continue;
+    if (frame.image_id) continue;
+    targets.push({ sb, frame });
+  }
+  return targets;
+}
+
+// SPA entry point for the page-level "Generate all images" button. Returns
+// { jobId, planned } immediately; the SPA polls
+// /storyboards/generate-images/:jobId. The runner holds the per-beat lock for
+// its whole duration so it can't race the plan-generation job or per-frame edits.
+export async function startBulkFrameGenerationJob({
+  beatId,
+  imageModel = 'nano-banana-pro',
+}) {
+  const beat = await getBeat(beatId);
+  if (!beat) throw new Error(`Beat not found: ${beatId}`);
+  if (isBeatLocked(beat._id)) {
+    throw new BeatBusyError(beat._id.toString());
+  }
+  const targets = await listMissingStartFrameTargets(beat._id);
+  const jobId = makeJobId();
+  const job = {
+    job_id: jobId,
+    beat_id: beat._id.toString(),
+    status: 'queued',
+    started_at: new Date(),
+    finished_at: null,
+    error: null,
+    planned: targets.length,
+    completed: 0,
+    failed: 0,
+    image_model: imageModel,
+    progress: null,
+    events: [],
+  };
+  imageJobs.set(jobId, job);
+  recordProgress(job, {
+    phase: 'queued',
+    step: 'job_queued',
+    message: `Queued — ${targets.length} missing start frame${targets.length === 1 ? '' : 's'}`,
+  });
+
+  withBeatLock(beat._id, () =>
+    runBulkFrameGenerationJob({ job, beat, targets, imageModel }),
+  ).catch((e) => {
+    job.status = 'error';
+    job.error = e.message;
+    job.finished_at = new Date();
+    recordProgress(job, {
+      phase: 'error',
+      step: 'job_crashed',
+      message: `Bulk generate crashed: ${e.message}`,
+    });
+    logger.error(`bulk image gen job ${jobId} crashed: ${e.message}`);
+  });
+
+  return { jobId, planned: targets.length };
+}
+
+async function runBulkFrameGenerationJob({ job, beat, targets, imageModel }) {
+  if (targets.length === 0) {
+    job.status = 'done';
+    job.finished_at = new Date();
+    recordProgress(job, {
+      phase: 'done',
+      step: 'job_done_empty',
+      message: 'No missing start frames — nothing to generate.',
+    });
+    return;
+  }
+  job.status = 'rendering';
+  recordProgress(job, {
+    phase: 'rendering',
+    step: 'render_start',
+    total: targets.length,
+    message: `Rendering ${targets.length} start frame${targets.length === 1 ? '' : 's'}…`,
+  });
+  for (let index = 0; index < targets.length; index++) {
+    const { sb, frame } = targets[index];
+    const order = index + 1;
+    const prompt = (frame.prompt || '').trim() || buildSuggestedFramePrompt({ sb });
+    recordProgress(job, {
+      phase: 'rendering',
+      step: 'frame_start',
+      frame: order,
+      total: targets.length,
+      message: `Frame ${order}/${targets.length}: rendering…`,
+    });
+    try {
+      await regenerateStoryboardFrameInternal({
+        sb,
+        beat,
+        frame,
+        imageModel,
+        mode: 'generate',
+        prompt,
+      });
+      job.completed += 1;
+      recordProgress(job, {
+        phase: 'rendering',
+        step: 'frame_done',
+        frame: order,
+        total: targets.length,
+        message: `Frame ${order}/${targets.length}: done`,
+      });
+    } catch (e) {
+      job.failed += 1;
+      recordProgress(job, {
+        phase: 'rendering',
+        step: 'frame_failed',
+        frame: order,
+        total: targets.length,
+        message: `Frame ${order}/${targets.length}: failed — ${e.message}`,
+      });
+      logger.warn(`bulk image gen ${job.job_id} frame ${order} failed: ${e.message}`);
+    }
+  }
+  job.status = job.failed > 0 ? 'partial' : 'done';
+  job.finished_at = new Date();
+  recordProgress(job, {
+    phase: job.status,
+    step: 'job_done',
+    message: `Done — ${job.completed} generated${job.failed ? `, ${job.failed} failed` : ''}.`,
+  });
+}
+
 // On-demand single-shot critique. Separate in-memory job table from the batch
 // `jobs` Map — different shape and polling endpoint. target 'prompt' judges the
 // written prompts; 'image' loads frames[0].image_id and judges the rendered
