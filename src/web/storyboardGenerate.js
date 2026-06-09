@@ -1226,7 +1226,16 @@ async function planFramesV2({ beat, characters, targetCount, direction = '', dir
       reverse_in_post: typeof e.reverse_in_post === 'boolean' ? e.reverse_in_post : f.reverse_in_post,
     });
   });
-  return { frames, sceneBible };
+
+  // Backstop: link any beat character named in a shot's text but missing from
+  // the planner's characters_in_scene, so their artwork gets seeded as a
+  // reference. Scoped to the curated beat cast.
+  const beatCharacters = Array.isArray(beat?.characters) ? beat.characters : [];
+  const linkedFrames = frames.map((fr) => ({
+    ...fr,
+    characters_in_scene: linkBeatCharactersForShot(fr, beatCharacters),
+  }));
+  return { frames: linkedFrames, sceneBible };
 }
 
 // Test seam.

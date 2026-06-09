@@ -293,6 +293,38 @@ describe('storyboard auto-generation (two-pass)', () => {
     expect(stored[0].characters_in_scene).toEqual(['Alice', 'Bob', 'Carol', 'Dave']);
   });
 
+  it('links a beat character mentioned only in the shot text (backstop)', async () => {
+    installPlanner({
+      sceneBible: { location: 'Diner' },
+      shots: [
+        {
+          description: 'Two figures talk.',
+          shot_type: 'two_shot',
+          duration_seconds: 5,
+          transition_in: '',
+          characters_in_scene: ['Alice'], // planner forgot Bob
+          reverse_in_post: false,
+          start_frame_prompt: 'Alice and Bob at the counter.',
+          video_prompt: 'Bob leans in; Alice reacts.',
+        },
+      ],
+    });
+
+    const beat = await Plots.createBeat({
+      name: 'Talk',
+      desc: 't',
+      body: 't',
+      characters: ['Alice', 'Bob'],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({
+      beatId: beat._id.toString(),
+    });
+    await waitForJob(jobId);
+
+    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
+    expect(stored[0].characters_in_scene).toEqual(['Alice', 'Bob']);
+  });
+
   it('handles atmospheric/insert shots with empty characters_in_scene', async () => {
     installPlanner({
       sceneBible: { location: 'Diner exterior' },
