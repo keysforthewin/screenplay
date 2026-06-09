@@ -66,6 +66,7 @@ import {
   FRAMING_RULES,
   STILL_FRAMING_RULES,
   VIDEO_PROMPT_RULES,
+  OCCUPANT_PLACEHOLDER_RULES,
 } from './storyboardConstraints.js';
 import { renderSceneBibleBlock, normalizeSceneBible, isEmptySceneBible } from '../mongo/sceneBible.js';
 
@@ -784,7 +785,7 @@ export const SHOT_EXPAND_SYSTEM_PROMPT = [
   '',
   '# Inherit the bible — do not re-describe it',
   '- The scene bible already fixes location, time of day, lighting key, palette, mood, blocking, and camera language. Reference them; never restate them.',
-  '- Character faces, bodies, and wardrobe come from reference photos. Do not describe them.',
+  '- Character faces, bodies, and wardrobe come from reference photos. Do not describe them — the one exception is placeholder occupants seen from outside a vehicle or window (see "Placeholder occupants").',
   '- This is WHY your prompts can be short: the shared context is carried by the bible + reference images.',
   '',
   '# Continuity',
@@ -802,6 +803,9 @@ export const SHOT_EXPAND_SYSTEM_PROMPT = [
   '',
   '# Still composition (for start_frame_prompt)',
   STILL_FRAMING_RULES,
+  '',
+  '# Placeholder occupants (for start_frame_prompt)',
+  OCCUPANT_PLACEHOLDER_RULES,
   '',
   '# What the model cannot draw',
   FRAMING_RULES,

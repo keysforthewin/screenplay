@@ -724,3 +724,12 @@ describe('findCharactersInBeat', () => {
     expect(names).toEqual(['Alice', 'Bob']);
   });
 });
+
+describe('shot-expand prompt wiring', () => {
+  it('includes the placeholder-occupant guidance in the expand system prompt', () => {
+    expect(Generate.SHOT_EXPAND_SYSTEM_PROMPT).toContain('Placeholder occupants');
+    expect(Generate.SHOT_EXPAND_SYSTEM_PROMPT.toLowerCase()).toContain(
+      'through the glass',
+    );
+  });
+});

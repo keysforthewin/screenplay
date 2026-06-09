@@ -55,9 +55,9 @@ export const STILL_FRAMING_RULES = [
   'Still-frame composition (for the start_frame_prompt that anchors the clip):',
   `- This still is a FROZEN MOMENT of a live action, not a posed product shot. Translate the shot's motion into a concrete pose: a moving car sits squarely in its lane, body aligned with the road, nose pointed the way it travels; a walking person is caught mid-stride, weight shifting, facing their heading. Never leave the subject in a limp, ambiguous, or default stance.`,
   `- State the subject's ORIENTATION and HEADING explicitly — which way it faces and, for anything in motion, the direction it is traveling. Pair every framing term ("three-quarter rear", "profile") with that heading so the model cannot invent a nonsensical pose (a car slewed diagonally across the road, a figure facing the wrong way).`,
-  `- State WHERE the subject sits in the geography the beat requires (in its lane on the road's center axis, at the head of the table, in the doorway). This is shot-specific blocking — it is NOT a restatement of the scene bible.`,
+  `- State WHERE the subject sits in the geography the beat requires (in its travel lane to one side of the centerline, at the head of the table, in the doorway). This is shot-specific blocking — it is NOT a restatement of the scene bible.`,
   '- Pull the load-bearing concrete details from the beat into the still. If the beat says the subject is driving / fleeing / hiding / waiting, the still must read as exactly that. Do not flatten a specific dramatic state into a generic composition.',
-  '- Place the subject (or both, in a two-shot) centered, not clipped at the frame edge; keep it unoccluded and the foreground clear of its silhouette.',
+  `- Compose the subject (or both, in a two-shot) within the frame so it reads clearly and is not clipped at the edge — but "centered in frame" never means "centered in the world": a vehicle still sits in its travel lane, not on the centerline. Keep it unoccluded and the foreground clear of its silhouette.`,
   '- Specify a simple, separable background when the set allows ("dark interior", "soft blurred street lights").',
   '- The opening still is the WHOLE composition — do NOT describe the camera arriving on the subject from off-frame.',
 ].join('\n');
@@ -74,4 +74,17 @@ export const VIDEO_PROMPT_RULES = [
   '3. At most ONE hero temporal change — the single time-based event that defines the clip (e.g. the sodium glow sweeping across the body as it passes each lamp). Make it the centerpiece; do not scatter competing "pulsing / warm / glowing" clauses.',
   '4. End with the stillness constraint, verbatim: "Everything else holds still — no other movement." This stops the model inventing background motion.',
   'Strip ALL static description from the video_prompt: no subject identity (make / model / color / year / name), no setting or location, no composition or framing. Those live in the start_frame_prompt only — the video_prompt assumes the frame is already correct.',
+].join('\n');
+
+// When the beat puts characters INSIDE something the shot frames from the
+// OUTSIDE, the interior must not read as empty. These figures are deliberately
+// low-detail placeholders (no reference photos reach them) — a rough build/hair
+// cue is enough to fix the count and silhouettes; real actors get swapped in
+// later. This is the one sanctioned exception to "don't describe characters".
+export const OCCUPANT_PLACEHOLDER_RULES = [
+  'Placeholder occupants — when the beat puts characters INSIDE something the shot frames from OUTSIDE (a vehicle on the road, a lit window, a glass-walled room), the interior must not read as empty:',
+  '- Render the right NUMBER of figures, dimly visible through the glass, roughly matching each named occupant\'s build, hair, and wardrobe color from the character list. They are low-detail PLACEHOLDERS — silhouetted heads and shoulders, not rendered faces — to be replaced later.',
+  '- Keep occupants INSIDE and low-contrast behind the glass; do NOT promote them to framed subjects. The exterior object (the vehicle / the building) stays the hero of the shot.',
+  '- This is the ONE exception to "do not describe character appearance": there are no reference photos reaching tiny through-glass figures, so a rough build / hair / wardrobe cue is what keeps the count and silhouettes right.',
+  '- Still-frame detail only — occupants do NOT move in the video_prompt; figures seen through glass warp if animated.',
 ].join('\n');

@@ -7,6 +7,7 @@ import {
   FRAMING_RULES,
   STILL_FRAMING_RULES,
   VIDEO_PROMPT_RULES,
+  OCCUPANT_PLACEHOLDER_RULES,
 } from '../src/web/storyboardConstraints.js';
 
 describe('storyboard constraints', () => {
@@ -18,6 +19,7 @@ describe('storyboard constraints', () => {
       FRAMING_RULES,
       STILL_FRAMING_RULES,
       VIDEO_PROMPT_RULES,
+      OCCUPANT_PLACEHOLDER_RULES,
     ]) {
       expect(typeof block).toBe('string');
       expect(block.trim().length).toBeGreaterThan(0);
@@ -41,5 +43,18 @@ describe('storyboard constraints', () => {
   it('still-framing rules require explicit subject orientation/heading', () => {
     expect(STILL_FRAMING_RULES.toLowerCase()).toContain('heading');
     expect(STILL_FRAMING_RULES.toLowerCase()).toContain('orientation');
+  });
+
+  it('still-framing rules keep a vehicle in its lane, not the road center', () => {
+    expect(STILL_FRAMING_RULES.toLowerCase()).toContain('travel lane');
+    // The old "road's center axis" wording pushed vehicles onto the centerline.
+    expect(STILL_FRAMING_RULES.toLowerCase()).not.toContain('center axis');
+  });
+
+  it('occupant placeholder rules cover interiors framed from outside', () => {
+    const t = OCCUPANT_PLACEHOLDER_RULES.toLowerCase();
+    expect(t).toContain('placeholder');
+    expect(t).toContain('through the glass');
+    expect(t).toContain('number');
   });
 });
