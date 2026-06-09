@@ -113,7 +113,6 @@ function ShotMetaRow({ sb, sbId, tocCharacters, onRefresh }) {
       <CharacterTagInput
         value={sb.characters_in_scene || []}
         characters={tocCharacters}
-        maxTags={2}
         disabled={busy}
         onChange={(next) => patch({ characters_in_scene: next })}
       />

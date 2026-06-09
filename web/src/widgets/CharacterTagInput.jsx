@@ -9,13 +9,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 // Props:
 //   value        — string[]   current characters_in_scene (plain names)
 //   characters   — array      [{ _id, name, plain_name }] from /api/toc
-//   maxTags      — number     hard cap on pill count (default 2)
+//   maxTags      — number     hard cap on pill count (default unlimited)
 //   disabled     — boolean    disable add/remove
 //   onChange     — async (next: string[]) => …  full updated array
 export function CharacterTagInput({
   value,
   characters,
-  maxTags = 2,
+  maxTags = Infinity,
   disabled,
   onChange,
 }) {
