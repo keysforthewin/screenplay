@@ -18,9 +18,13 @@ vi.mock('../src/rag/queue.js', () => ({
 vi.mock('../src/rag/indexer.js', () => ({}));
 
 const { resolveRoom, parseRoomName, buildRoomName } = await import('../src/web/roomRegistry.js');
+const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let pid;
+
+beforeEach(async () => {
   fakeDb.reset();
+  pid = (await Projects.getDefaultProject())._id.toString();
 });
 
 function seedLibrary({ id, name = '', description = '' } = {}) {
@@ -31,6 +35,7 @@ function seedLibrary({ id, name = '', description = '' } = {}) {
     length: 100,
     uploadDate: new Date(),
     metadata: {
+      project_id: pid,
       owner_type: null,
       owner_id: null,
       source: 'upload',

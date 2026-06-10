@@ -86,7 +86,7 @@ vi.mock('../src/mongo/directorNotes.js', () => ({
 }));
 
 vi.mock('../src/mongo/images.js', () => ({
-  listImagesForBeat: async (id) => {
+  listImagesForBeat: async (_projectId, id) => {
     return id === beatId.toString() ? [beatImage1, beatImage2] : [];
   },
   listImagesForDirectorNote: async (id) => {

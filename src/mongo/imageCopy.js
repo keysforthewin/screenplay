@@ -9,6 +9,7 @@ import { readImageBuffer, uploadGeneratedImage } from './images.js';
 // is left untouched; the new owner gets an independent copy with its own
 // GridFS id and metadata. Returns the embedded-gallery meta entry shape.
 export async function copyImageToNewOwner({
+  projectId,
   imageId,
   ownerType,
   ownerId,
@@ -21,6 +22,8 @@ export async function copyImageToNewOwner({
     throw e;
   }
   const { buffer, file } = src;
+  // Copies stay in the source image's project unless the caller pins one.
+  const targetProjectId = projectId || file.metadata?.project_id || undefined;
   const contentType =
     file.contentType || file.metadata?.content_type || 'image/png';
   const ext = (() => {
@@ -28,7 +31,7 @@ export async function copyImageToNewOwner({
     if (contentType.includes('webp')) return 'webp';
     return 'png';
   })();
-  const newFile = await uploadGeneratedImage({
+  const newFile = await uploadGeneratedImage(targetProjectId, {
     buffer,
     contentType,
     ownerType,

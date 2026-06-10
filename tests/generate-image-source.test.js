@@ -49,7 +49,7 @@ vi.mock('../src/mongo/images.js', async () => {
   const real = await vi.importActual('../src/mongo/images.js');
   return {
     ...real,
-    uploadGeneratedImage: async (args) => {
+    uploadGeneratedImage: async (_projectId, args) => {
       uploadCalls.push({ ownerType: args.ownerType, ownerId: args.ownerId });
       return {
         _id: new ObjectId(),

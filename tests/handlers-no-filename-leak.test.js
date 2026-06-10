@@ -17,9 +17,13 @@ const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
 const DirectorNotes = await import('../src/mongo/directorNotes.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
+const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let pid;
+
+beforeEach(async () => {
   fakeDb.reset();
+  pid = (await Projects.getDefaultProject())._id.toString();
 });
 
 const TMDB_FILENAME = 'iYdeP6K0qz44Wg2Nw9LPJGMBkQ5.jpg';
@@ -66,7 +70,7 @@ function seedLibraryImage(filename = 'lib-leak-name.png') {
     contentType: 'image/png',
     length: 1234,
     uploadDate: new Date(),
-    metadata: { owner_type: null, owner_id: null, source: 'generated' },
+    metadata: { project_id: pid, owner_type: null, owner_id: null, source: 'generated' },
   };
   fakeDb.collection('images.files')._docs.push(doc);
   return doc;

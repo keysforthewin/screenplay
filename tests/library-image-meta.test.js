@@ -13,9 +13,13 @@ vi.mock('../src/log.js', () => ({
 }));
 
 const Images = await import('../src/mongo/images.js');
+const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let pid;
+
+beforeEach(async () => {
   fakeDb.reset();
+  pid = (await Projects.getDefaultProject())._id.toString();
 });
 
 function seedLibrary({ id, name = '', description = '', name_lower = '' } = {}) {
@@ -26,6 +30,7 @@ function seedLibrary({ id, name = '', description = '', name_lower = '' } = {}) 
     length: 100,
     uploadDate: new Date(),
     metadata: {
+      project_id: pid,
       owner_type: null,
       owner_id: null,
       source: 'upload',

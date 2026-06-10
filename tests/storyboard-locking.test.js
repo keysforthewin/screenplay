@@ -18,7 +18,7 @@ vi.mock('../src/log.js', () => ({
 const uploadCounter = { n: 0 };
 vi.mock('../src/mongo/images.js', () => ({
   readImageBuffer: vi.fn(async () => null),
-  uploadGeneratedImage: vi.fn(async ({ filename, contentType }) => {
+  uploadGeneratedImage: vi.fn(async (_projectId, { filename, contentType }) => {
     uploadCounter.n += 1;
     return {
       _id: new ObjectId(),

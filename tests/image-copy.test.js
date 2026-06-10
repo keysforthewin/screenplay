@@ -43,7 +43,7 @@ vi.mock('../src/mongo/images.js', async () => {
         file: found,
       };
     },
-    uploadGeneratedImage: async (args) => {
+    uploadGeneratedImage: async (_projectId, args) => {
       const id = new ObjectId();
       uploadCalls.push({
         ownerType: args.ownerType,

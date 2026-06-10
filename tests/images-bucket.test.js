@@ -10,12 +10,16 @@ vi.mock('../src/mongo/client.js', () => ({
 }));
 
 const Images = await import('../src/mongo/images.js');
+const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let pid; // default project id (hex string), recreated per test by getDefaultProject
+
+beforeEach(async () => {
   fakeDb.reset();
+  pid = (await Projects.getDefaultProject())._id.toString();
 });
 
-function seedFile({ id, ownerType = null, ownerId = null, source = 'upload', prompt = null }) {
+function seedFile({ id, projectId, ownerType = null, ownerId = null, source = 'upload', prompt = null }) {
   const doc = {
     _id: id || new ObjectId(),
     filename: 'a.png',
@@ -23,6 +27,7 @@ function seedFile({ id, ownerType = null, ownerId = null, source = 'upload', pro
     length: 100,
     uploadDate: new Date(),
     metadata: {
+      project_id: projectId ?? pid,
       owner_type: ownerType,
       owner_id: ownerId,
       source,
@@ -52,7 +57,7 @@ describe('images metadata helpers', () => {
     seedFile({ ownerType: 'beat', ownerId: beatA });
     seedFile({ ownerType: 'beat', ownerId: beatB });
 
-    const aImages = await Images.listImagesForBeat(beatA);
+    const aImages = await Images.listImagesForBeat(undefined, beatA);
     expect(aImages).toHaveLength(2);
     for (const f of aImages) expect(f.metadata.owner_id.equals(beatA)).toBe(true);
   });
@@ -70,7 +75,7 @@ describe('images metadata helpers', () => {
     const lib = await Images.listLibraryImages();
     expect(lib).toHaveLength(0);
 
-    const beatImages = await Images.listImagesForBeat(beatId);
+    const beatImages = await Images.listImagesForBeat(undefined, beatId);
     expect(beatImages).toHaveLength(1);
   });
 
@@ -102,5 +107,59 @@ describe('images metadata helpers', () => {
     expect(Images.ensureObjectId(oid)).toBe(oid);
     const fromStr = Images.ensureObjectId(oid.toString());
     expect(fromStr.equals(oid)).toBe(true);
+  });
+});
+
+describe('images project scoping', () => {
+  it('listLibraryImages(projectId) only returns that project\'s library', async () => {
+    const other = await Projects.createProject('Other Movie');
+    const otherPid = other._id.toString();
+    seedFile({ ownerType: null });                       // default project
+    seedFile({ ownerType: null, projectId: otherPid });  // other project
+
+    const defaults = await Images.listLibraryImages();   // undefined → default project
+    expect(defaults).toHaveLength(1);
+    expect(defaults[0].metadata.project_id).toBe(pid);
+
+    const others = await Images.listLibraryImages(otherPid);
+    expect(others).toHaveLength(1);
+    expect(others[0].metadata.project_id).toBe(otherPid);
+  });
+
+  it('listImagesByOwnerType(projectId, ownerType) is project-filtered', async () => {
+    const other = await Projects.createProject('Other Movie');
+    const otherPid = other._id.toString();
+    seedFile({ ownerType: 'character', ownerId: new ObjectId() });
+    seedFile({ ownerType: 'character', ownerId: new ObjectId(), projectId: otherPid });
+
+    const defaults = await Images.listImagesByOwnerType(undefined, 'character');
+    expect(defaults).toHaveLength(1);
+    expect(defaults[0].metadata.project_id).toBe(pid);
+
+    const others = await Images.listImagesByOwnerType(otherPid, 'character');
+    expect(others).toHaveLength(1);
+  });
+
+  it('listImagesForBeat verifies project but is lenient toward unstamped legacy files', async () => {
+    const other = await Projects.createProject('Other Movie');
+    const otherPid = other._id.toString();
+    const beatId = new ObjectId();
+    seedFile({ ownerType: 'beat', ownerId: beatId });                      // default project
+    seedFile({ ownerType: 'beat', ownerId: beatId, projectId: otherPid }); // other project
+    const legacy = seedFile({ ownerType: 'beat', ownerId: beatId });
+    delete legacy.metadata.project_id;                                     // pre-migration file
+
+    const defaults = await Images.listImagesForBeat(undefined, beatId);
+    expect(defaults).toHaveLength(2); // default-project file + legacy file
+
+    const others = await Images.listImagesForBeat(otherPid, beatId);
+    expect(others).toHaveLength(2); // other-project file + legacy file
+  });
+
+  it('files without metadata.project_id are excluded (strict filter; migration stamps legacy files)', async () => {
+    const doc = seedFile({ ownerType: null });
+    delete doc.metadata.project_id;
+    const lib = await Images.listLibraryImages();
+    expect(lib).toHaveLength(0);
   });
 });

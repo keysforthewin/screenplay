@@ -129,7 +129,7 @@ export async function grabFrameFromPrevious({ currentSbId, prev }) {
     // entry point uses, so we stay consistent.
     validateImageBuffer(buffer);
 
-    const file = await uploadGeneratedImage({
+    const file = await uploadGeneratedImage(undefined, {
       buffer,
       contentType: 'image/jpeg',
       ownerType: 'beat',

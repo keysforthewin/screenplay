@@ -36,7 +36,7 @@ vi.mock('../src/mongo/attachments.js', () => ({
 
 const uploadedImages = [];
 vi.mock('../src/mongo/images.js', () => ({
-  uploadGeneratedImage: vi.fn(async ({ buffer, contentType, ownerType, ownerId, filename }) => {
+  uploadGeneratedImage: vi.fn(async (_projectId, { buffer, contentType, ownerType, ownerId, filename }) => {
     const id = new ObjectId();
     uploadedImages.push({ id, buffer, contentType, ownerType, ownerId, filename });
     return {

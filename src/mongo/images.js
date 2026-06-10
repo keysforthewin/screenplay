@@ -13,6 +13,7 @@ import {
 } from './imageBytes.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { logger } from '../log.js';
+import { resolveProjectId } from './projects.js';
 
 const BUCKET_NAME = 'images';
 
@@ -39,7 +40,7 @@ export function uploadBuffer({ buffer, filename, contentType, metadata }) {
   });
 }
 
-export async function uploadGeneratedImage({
+export async function uploadGeneratedImage(projectId, {
   buffer,
   contentType,
   prompt,
@@ -49,12 +50,14 @@ export async function uploadGeneratedImage({
   filename,
   name = '',
   description = '',
-}) {
+} = {}) {
+  const pid = await resolveProjectId(projectId);
   const sniffed = validateImageBuffer(buffer);
   const ct = contentType || sniffed;
   const finalFilename =
     filename?.trim() || `generated-${Date.now()}.${extensionForType(ct)}`;
   const metadata = {
+    project_id: pid,
     owner_type: ownerType,
     owner_id: ownerId ? toObjectId(ownerId) : null,
     source: 'generated',
@@ -66,7 +69,7 @@ export async function uploadGeneratedImage({
   };
   const id = await uploadBuffer({ buffer, filename: finalFilename, contentType: ct, metadata });
   logger.info(
-    `mongo: gridfs upload owner=${ownerType || 'library'}/${ownerId || '-'} bytes=${buffer.length} source=generated`,
+    `mongo: gridfs upload project=${pid} owner=${ownerType || 'library'}/${ownerId || '-'} bytes=${buffer.length} source=generated`,
   );
   return {
     _id: id,
@@ -78,17 +81,19 @@ export async function uploadGeneratedImage({
   };
 }
 
-export async function uploadImageFromUrl({
+export async function uploadImageFromUrl(projectId, {
   sourceUrl,
   filename,
   ownerType = null,
   ownerId = null,
   name = '',
   description = '',
-}) {
+} = {}) {
+  const pid = await resolveProjectId(projectId);
   const { buffer, contentType } = await fetchImageFromUrl(sourceUrl);
   const finalFilename = filename?.trim() || deriveImageFilename(sourceUrl, contentType);
   const metadata = {
+    project_id: pid,
     owner_type: ownerType,
     owner_id: ownerId ? toObjectId(ownerId) : null,
     source: 'upload',
@@ -100,7 +105,7 @@ export async function uploadImageFromUrl({
   };
   const id = await uploadBuffer({ buffer, filename: finalFilename, contentType, metadata });
   logger.info(
-    `mongo: gridfs upload owner=${ownerType || 'library'}/${ownerId || '-'} bytes=${buffer.length} source=url`,
+    `mongo: gridfs upload project=${pid} owner=${ownerType || 'library'}/${ownerId || '-'} bytes=${buffer.length} source=url`,
   );
   return {
     _id: id,
@@ -116,25 +121,45 @@ export async function findImageFile(imageId) {
   return filesCol().findOne({ _id: toObjectId(imageId) });
 }
 
-export async function listLibraryImages() {
+export async function listLibraryImages(projectId) {
+  const pid = await resolveProjectId(projectId);
   return filesCol()
-    .find({ 'metadata.owner_type': null, 'metadata.kind': { $ne: 'thumbnail' } })
+    .find({
+      'metadata.project_id': pid,
+      'metadata.owner_type': null,
+      'metadata.kind': { $ne: 'thumbnail' },
+    })
     .sort({ uploadDate: -1 })
     .toArray();
 }
 
-export async function listImagesForBeat(beatId) {
-  return filesCol()
+// Lenient project check for owner-addressed listers: the owner ObjectId is
+// globally unique, so the query stays id-addressed and the project id is a
+// verification, not a key. Files with no metadata.project_id stamp are legacy
+// (pre-migration) and count as in-project. Filtered in JS rather than via
+// $or/$in so the in-memory fake Mongo used in tests keeps working.
+function filterByProject(files, pid) {
+  return files.filter(
+    (f) => f.metadata?.project_id == null || String(f.metadata.project_id) === String(pid),
+  );
+}
+
+export async function listImagesForBeat(projectId, beatId) {
+  const pid = await resolveProjectId(projectId);
+  const files = await filesCol()
     .find({ 'metadata.owner_type': 'beat', 'metadata.owner_id': toObjectId(beatId) })
     .sort({ uploadDate: 1 })
     .toArray();
+  return filterByProject(files, pid);
 }
 
-export async function listImagesForCharacter(characterId) {
-  return filesCol()
+export async function listImagesForCharacter(projectId, characterId) {
+  const pid = await resolveProjectId(projectId);
+  const files = await filesCol()
     .find({ 'metadata.owner_type': 'character', 'metadata.owner_id': toObjectId(characterId) })
     .sort({ uploadDate: 1 })
     .toArray();
+  return filterByProject(files, pid);
 }
 
 export async function listImagesForDirectorNote(noteId) {
@@ -147,9 +172,14 @@ export async function listImagesForDirectorNote(noteId) {
 // All non-thumbnail GridFS images currently owned by entities of `ownerType`
 // (e.g. 'character', 'beat', 'director_note'). Used by the picker modal's
 // Character/Beats source tabs.
-export async function listImagesByOwnerType(ownerType) {
+export async function listImagesByOwnerType(projectId, ownerType) {
+  const pid = await resolveProjectId(projectId);
   return filesCol()
-    .find({ 'metadata.owner_type': ownerType, 'metadata.kind': { $ne: 'thumbnail' } })
+    .find({
+      'metadata.project_id': pid,
+      'metadata.owner_type': ownerType,
+      'metadata.kind': { $ne: 'thumbnail' },
+    })
     .sort({ uploadDate: -1 })
     .toArray();
 }
@@ -287,8 +317,8 @@ export async function setOwnedImageMeta(imageId, { name, description } = {}) {
 // metadata.description. Done in JS rather than via $regex so the in-memory
 // fake Mongo used in tests keeps working. listLibraryImages already filters
 // out cached thumbnails (metadata.kind === 'thumbnail').
-export async function searchLibraryImages({ query, limit = 20 } = {}) {
-  const all = await listLibraryImages();
+export async function searchLibraryImages({ projectId, query, limit = 20 } = {}) {
+  const all = await listLibraryImages(projectId);
   const q = String(query || '').toLowerCase().trim();
   const filtered = q
     ? all.filter((f) => {

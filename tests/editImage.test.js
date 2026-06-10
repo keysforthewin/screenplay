@@ -56,7 +56,7 @@ vi.mock('../src/mongo/images.js', async () => {
       const key = id instanceof ObjectId ? id.toString() : String(id);
       return fakeBucket.get(key) || null;
     },
-    uploadGeneratedImage: async ({ buffer, contentType, prompt, generatedBy, ownerType, ownerId }) => {
+    uploadGeneratedImage: async (_projectId, { buffer, contentType, prompt, generatedBy, ownerType, ownerId }) => {
       const _id = new ObjectId();
       uploads.push({ _id, ownerType, ownerId, prompt, generatedBy, contentType });
       const file = {
@@ -107,7 +107,7 @@ const { HANDLERS } = await import('../src/agent/handlers.js');
 // done previously).
 async function seedBeatWithImage(beatName, { setAsMain = true } = {}) {
   const b = await Plots.createBeat({ name: beatName, desc: 'd' });
-  const file = await Images.uploadGeneratedImage({
+  const file = await Images.uploadGeneratedImage(undefined, {
     buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x02]),
     contentType: 'image/png',
     prompt: 'seed-beat',
@@ -135,7 +135,7 @@ async function seedBeatWithImage(beatName, { setAsMain = true } = {}) {
 }
 
 async function seedLibraryImage() {
-  const file = await Images.uploadGeneratedImage({
+  const file = await Images.uploadGeneratedImage(undefined, {
     buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x03]),
     contentType: 'image/png',
     prompt: 'seed-library',
@@ -151,7 +151,7 @@ async function seedLibraryImage() {
 
 async function seedCharacterWithImage(name, { setAsMain = true } = {}) {
   const c = await Characters.createCharacter({ name });
-  const file = await Images.uploadGeneratedImage({
+  const file = await Images.uploadGeneratedImage(undefined, {
     buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]),
     contentType: 'image/png',
     prompt: 'seed',
@@ -243,7 +243,7 @@ describe('edit_image', () => {
   it('editing a non-main character image leaves main_image_id alone', async () => {
     // Seed a character with a main image first, then add a second image (non-main)
     const c = await Characters.createCharacter({ name: 'Foxglove' });
-    const fileA = await Images.uploadGeneratedImage({
+    const fileA = await Images.uploadGeneratedImage(undefined, {
       buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xa]),
       contentType: 'image/png',
       ownerType: 'character',
@@ -255,7 +255,7 @@ describe('edit_image', () => {
       { _id: fileA._id, filename: fileA.filename, content_type: 'image/png', size: 5, uploaded_at: new Date(), caption: null },
       true,
     );
-    const fileB = await Images.uploadGeneratedImage({
+    const fileB = await Images.uploadGeneratedImage(undefined, {
       buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xb]),
       contentType: 'image/png',
       ownerType: 'character',
@@ -414,7 +414,7 @@ describe('edit_image', () => {
 
   it('returns an error when source content_type is unsupported', async () => {
     const c = await Characters.createCharacter({ name: 'Tinkerbell' });
-    const file = await Images.uploadGeneratedImage({
+    const file = await Images.uploadGeneratedImage(undefined, {
       buffer: Buffer.from([0x00, 0x01]),
       contentType: 'image/gif',
       ownerType: 'character',

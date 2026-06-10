@@ -101,6 +101,9 @@ export async function connectMongo() {
   await db
     .collection('images.files')
     .createIndex({ 'metadata.owner_type': 1, 'metadata.name_lower': 1 });
+  await db
+    .collection('images.files')
+    .createIndex({ 'metadata.project_id': 1, 'metadata.owner_type': 1 });
   await db.collection('token_usage').createIndex({ discord_user_id: 1, created_at: -1 });
   await db.collection('token_usage').createIndex({ created_at: -1 });
   await db.collection('storyboards').createIndex({ beat_id: 1, order: 1 });

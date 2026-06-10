@@ -1471,7 +1471,7 @@ export const HANDLERS = {
 
   async add_director_note_image({ note_id, source_url, filename, caption, set_as_main } = {}) {
     const target = await resolveDirectorNote(note_id);
-    const file = await Images.uploadImageFromUrl({
+    const file = await Images.uploadImageFromUrl(undefined, {
       sourceUrl: source_url,
       filename,
       ownerType: 'director_note',
@@ -1846,7 +1846,7 @@ export const HANDLERS = {
 
   async add_beat_image({ beat, source_url, filename, caption, set_as_main }) {
     const target = await resolveBeat(beat);
-    const file = await Images.uploadImageFromUrl({
+    const file = await Images.uploadImageFromUrl(undefined, {
       sourceUrl: source_url,
       filename,
       ownerType: 'beat',
@@ -2342,7 +2342,7 @@ export const HANDLERS = {
       }
     }
 
-    const file = await Images.uploadGeneratedImage({
+    const file = await Images.uploadGeneratedImage(undefined, {
       buffer,
       contentType,
       prompt: finalPrompt,
@@ -2556,7 +2556,7 @@ export const HANDLERS = {
       channelId: context?.channelId || null,
     });
 
-    const file = await Images.uploadGeneratedImage({
+    const file = await Images.uploadGeneratedImage(undefined, {
       buffer,
       contentType,
       prompt: editPrompt,

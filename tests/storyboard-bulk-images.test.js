@@ -16,7 +16,7 @@ vi.mock('../src/log.js', () => ({
 }));
 vi.mock('../src/mongo/images.js', () => ({
   readImageBuffer: vi.fn(async () => null),
-  uploadGeneratedImage: vi.fn(async ({ filename }) => ({
+  uploadGeneratedImage: vi.fn(async (_projectId, { filename }) => ({
     _id: new ObjectId(), filename, contentType: 'image/png', metadata: {},
   })),
 }));

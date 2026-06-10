@@ -1500,7 +1500,7 @@ async function persistFrameImage({
   rotateToPrevious = false,
   editPrompt = null,
 }) {
-  const file = await uploadGeneratedImage({
+  const file = await uploadGeneratedImage(undefined, {
     buffer: result.buffer,
     contentType: result.contentType,
     prompt: null,

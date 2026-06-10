@@ -26,7 +26,7 @@ vi.mock('../src/mongo/images.js', () => ({
     if (!imageBlobs.has(key)) return null;
     return imageBlobs.get(key);
   }),
-  uploadGeneratedImage: vi.fn(async ({ filename }) => ({
+  uploadGeneratedImage: vi.fn(async (_projectId, { filename }) => ({
     _id: new ObjectId(),
     filename,
     contentType: 'image/png',

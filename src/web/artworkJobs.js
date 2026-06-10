@@ -186,7 +186,7 @@ async function runGenerate(opts) {
       discordUser,
       channelId,
     });
-    const file = await uploadGeneratedImage({
+    const file = await uploadGeneratedImage(undefined, {
       buffer: result.buffer,
       contentType: result.contentType,
       prompt,
@@ -354,7 +354,7 @@ async function runEdit(opts) {
       discordUser,
       channelId,
     });
-    const file = await uploadGeneratedImage({
+    const file = await uploadGeneratedImage(undefined, {
       buffer: result.buffer,
       contentType: result.contentType,
       prompt,

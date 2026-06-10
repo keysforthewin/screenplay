@@ -99,7 +99,7 @@ vi.mock('../src/mongo/images.js', async () => ({
     const key = id instanceof ObjectId ? id.toString() : String(id);
     return fakeBucket.get(key) || null;
   },
-  uploadGeneratedImage: async ({ buffer, contentType, prompt, generatedBy, ownerType, ownerId }) => {
+  uploadGeneratedImage: async (_projectId, { buffer, contentType, prompt, generatedBy, ownerType, ownerId }) => {
     const _id = new ObjectId();
     uploads.push({ _id, ownerType, ownerId, prompt, generatedBy, contentType });
     const file = {

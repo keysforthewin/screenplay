@@ -34,7 +34,7 @@ vi.mock('../src/fal/client.js', () => ({
 let lastUploadOwner = null;
 vi.mock('../src/mongo/images.js', async () => {
   return {
-    uploadGeneratedImage: async ({ ownerType, ownerId }) => {
+    uploadGeneratedImage: async (_projectId, { ownerType, ownerId }) => {
       lastUploadOwner = { ownerType, ownerId };
       return {
         _id: new ObjectId(),

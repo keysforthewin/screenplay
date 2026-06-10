@@ -40,8 +40,12 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(() => resolve()));
 });
 
-beforeEach(() => {
+let pid;
+
+beforeEach(async () => {
   fakeDb.reset();
+  const Projects = await import('../src/mongo/projects.js');
+  pid = (await Projects.getDefaultProject())._id.toString();
 });
 
 function seedImageFile({ ownerType, ownerId, kind, name, description, prompt }) {
@@ -52,6 +56,7 @@ function seedImageFile({ ownerType, ownerId, kind, name, description, prompt }) 
     length: 4096,
     uploadDate: new Date(),
     metadata: {
+      project_id: pid,
       owner_type: ownerType ?? null,
       owner_id: ownerId ?? null,
       source: 'generated',

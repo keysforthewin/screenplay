@@ -20,7 +20,7 @@ vi.mock('../src/mongo/images.js', () => ({
   readImageBuffer: vi.fn(async () => null),
   deleteImage: vi.fn(async () => {}),
   deleteImages: vi.fn(async () => {}),
-  uploadGeneratedImage: vi.fn(async ({ filename }) => ({
+  uploadGeneratedImage: vi.fn(async (_projectId, { filename }) => ({
     _id: new ObjectId(), filename, contentType: 'image/png', metadata: {},
   })),
 }));

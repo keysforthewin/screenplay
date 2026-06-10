@@ -142,7 +142,7 @@ export async function streamBeatZip(req, res) {
 
   const beatIdHex = beat._id.toString();
   const [images, attachments] = await Promise.all([
-    listImagesForBeat(beatIdHex),
+    listImagesForBeat(undefined, beatIdHex),
     listAttachmentsForBeat(beatIdHex),
   ]);
 

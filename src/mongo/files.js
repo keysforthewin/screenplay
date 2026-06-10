@@ -47,7 +47,7 @@ export async function attachImageToCharacter({ projectId, character, sourceUrl, 
   const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
 
-  const file = await uploadImageFromUrl({
+  const file = await uploadImageFromUrl(projectId ?? c.project_id, {
     sourceUrl,
     filename,
     ownerType: 'character',

@@ -40,10 +40,14 @@ vi.mock('../src/llm/referenceImageDescription.js', () => ({
 }));
 
 const Images = await import('../src/mongo/images.js');
+const Projects = await import('../src/mongo/projects.js');
 const { kickoffLibraryVisionSeed, kickoffImageVisionSeed } = await import('../src/web/libraryVisionWorker.js');
 
-beforeEach(() => {
+let pid;
+
+beforeEach(async () => {
   fakeDb.reset();
+  pid = (await Projects.getDefaultProject())._id.toString();
   analyzeMock.mockClear();
   describeMock.mockClear();
 });
@@ -56,6 +60,7 @@ function seedLibrary() {
     length: 100,
     uploadDate: new Date(),
     metadata: {
+      project_id: pid,
       owner_type: null,
       owner_id: null,
       source: 'upload',

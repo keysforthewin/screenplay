@@ -585,7 +585,7 @@ export function buildApiRouter() {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const [files, beat] = await Promise.all([
-        listImagesForBeat(beatId),
+        listImagesForBeat(undefined, beatId),
         getBeat(undefined, beatId),
       ]);
       const artworkImageIds = new Set(
@@ -613,7 +613,7 @@ export function buildApiRouter() {
     try {
       const c = await getCharacter(undefined, req.params.id);
       if (!c) return res.status(404).json({ error: 'character not found' });
-      const files = await listImagesForCharacter(c._id);
+      const files = await listImagesForCharacter(undefined, c._id);
       const artworkImageIds = new Set(
         (c.artworks || [])
           .flatMap((a) => [a?.result_image_id, a?.previous_result_image_id])
@@ -672,7 +672,7 @@ export function buildApiRouter() {
   router.get('/images/by-owner/characters', async (req, res, next) => {
     try {
       const exclude = String(req.query?.exclude_id || '').trim();
-      const files = await listImagesByOwnerType('character');
+      const files = await listImagesByOwnerType(undefined, 'character');
       const ids = [];
       const seen = new Set();
       for (const f of files) {
@@ -718,7 +718,7 @@ export function buildApiRouter() {
     try {
       const exclude = String(req.query?.exclude_id || '').trim();
       const [files, plot] = await Promise.all([
-        listImagesByOwnerType('beat'),
+        listImagesByOwnerType(undefined, 'beat'),
         getPlot(),
       ]);
       const beatById = new Map();
@@ -793,7 +793,7 @@ export function buildApiRouter() {
       const buffer = req.file.buffer;
       const contentType = req.file.mimetype;
       const sniffed = validateImageBuffer(buffer);
-      const meta = await uploadGeneratedImage({
+      const meta = await uploadGeneratedImage(undefined, {
         buffer,
         contentType,
         prompt: null,
@@ -884,7 +884,7 @@ export function buildApiRouter() {
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
       const sniffed = validateImageBuffer(req.file.buffer);
-      const file = await uploadGeneratedImage({
+      const file = await uploadGeneratedImage(undefined, {
         buffer: req.file.buffer,
         contentType: req.file.mimetype,
         ownerType: 'beat',
@@ -1033,7 +1033,7 @@ export function buildApiRouter() {
         throw e;
       }
 
-      const file = await uploadGeneratedImage({
+      const file = await uploadGeneratedImage(undefined, {
         buffer: result.buffer,
         contentType: result.contentType,
         prompt,
@@ -1189,7 +1189,7 @@ export function buildApiRouter() {
         referenceImages: refs.images,
         discordUser: webDiscordUser(req),
       });
-      const file = await uploadGeneratedImage({
+      const file = await uploadGeneratedImage(undefined, {
         buffer: result.buffer,
         contentType: result.contentType,
         prompt,
@@ -1398,7 +1398,7 @@ export function buildApiRouter() {
       if (!cid) return res.status(404).json({ error: 'character not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
       const sniffed = validateImageBuffer(req.file.buffer);
-      const file = await uploadGeneratedImage({
+      const file = await uploadGeneratedImage(undefined, {
         buffer: req.file.buffer,
         contentType: req.file.mimetype,
         ownerType: 'character',
@@ -1545,7 +1545,7 @@ export function buildApiRouter() {
         throw e;
       }
 
-      const file = await uploadGeneratedImage({
+      const file = await uploadGeneratedImage(undefined, {
         buffer: result.buffer,
         contentType: result.contentType,
         prompt,
@@ -1700,7 +1700,7 @@ export function buildApiRouter() {
         referenceImages: refs.images,
         discordUser: webDiscordUser(req),
       });
-      const file = await uploadGeneratedImage({
+      const file = await uploadGeneratedImage(undefined, {
         buffer: result.buffer,
         contentType: result.contentType,
         prompt,
@@ -2015,7 +2015,7 @@ export function buildApiRouter() {
           if (!req.file) return res.status(400).json({ error: 'file required' });
           validateImageBuffer(req.file.buffer);
           const name = String(req.body?.name || '').slice(0, 200);
-          const file = await uploadGeneratedImage({
+          const file = await uploadGeneratedImage(undefined, {
             buffer: req.file.buffer,
             contentType: req.file.mimetype,
             ownerType: hostType,
@@ -2321,7 +2321,7 @@ export function buildApiRouter() {
       if (!isOidHex(req.params.noteId)) return res.status(400).json({ error: 'invalid id' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
       validateImageBuffer(req.file.buffer);
-      const file = await uploadGeneratedImage({
+      const file = await uploadGeneratedImage(undefined, {
         buffer: req.file.buffer,
         contentType: req.file.mimetype,
         ownerType: 'director_note',
@@ -2636,7 +2636,7 @@ export function buildApiRouter() {
       if (!req.file) return res.status(400).json({ error: 'file required' });
       const sniffed = validateImageBuffer(req.file.buffer);
       const sb = await getStoryboard(undefined, sbId);
-      const file = await uploadGeneratedImage({
+      const file = await uploadGeneratedImage(undefined, {
         buffer: req.file.buffer,
         contentType: req.file.mimetype,
         ownerType: 'beat',
@@ -3060,7 +3060,7 @@ export function buildApiRouter() {
         if (!req.file) return res.status(400).json({ error: 'file required' });
         const sniffed = validateImageBuffer(req.file.buffer);
         const sb = await getStoryboard(undefined, sbId);
-        const file = await uploadGeneratedImage({
+        const file = await uploadGeneratedImage(undefined, {
           buffer: req.file.buffer,
           contentType: req.file.mimetype,
           ownerType: 'beat',
@@ -3137,7 +3137,7 @@ export function buildApiRouter() {
             artwork_id: String(a._id),
           }));
 
-        const files = await listImagesForBeat(beat._id);
+        const files = await listImagesForBeat(undefined, beat._id);
         const beatImages = files
           .filter((f) => f.metadata?.kind !== 'thumbnail')
           .map(imageFileToMeta);
@@ -3305,7 +3305,7 @@ export function buildApiRouter() {
         if (!req.file) return res.status(400).json({ error: 'file required' });
         const sniffed = validateImageBuffer(req.file.buffer);
         const sb = await getStoryboard(undefined, sbId);
-        const file = await uploadGeneratedImage({
+        const file = await uploadGeneratedImage(undefined, {
           buffer: req.file.buffer,
           contentType: req.file.mimetype,
           ownerType: 'beat',
@@ -3523,7 +3523,7 @@ export function buildApiRouter() {
           model,
           discordUser: webDiscordUser(req),
         });
-        const file = await uploadGeneratedImage({
+        const file = await uploadGeneratedImage(undefined, {
           buffer: result.buffer,
           contentType: result.contentType,
           prompt,
@@ -3632,7 +3632,7 @@ export function buildApiRouter() {
         inputImages: [],
         mode: 'generate',
       });
-      const file = await uploadGeneratedImage({
+      const file = await uploadGeneratedImage(undefined, {
         buffer: result.buffer,
         contentType: result.contentType,
         prompt,
