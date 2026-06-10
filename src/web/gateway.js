@@ -236,7 +236,7 @@ function enqueueRagAfterFallback({ entityType, entityId, field }) {
 
 async function readEntityField({ entityType, entityId, field }) {
   if (entityType === 'beat') {
-    const beat = await getBeat(entityId);
+    const beat = await getBeat(undefined, entityId);
     if (!beat) throw new Error(`Beat not found: ${entityId}`);
     if (field === 'body') return String(beat.body || '');
     if (field === 'name') return String(beat.name || '');
@@ -342,9 +342,9 @@ async function readEntityField({ entityType, entityId, field }) {
 
 async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
   if (entityType === 'beat' && field === 'body') {
-    if (op === 'set') return Plots.setBeatBody(entityId, args.markdown);
-    if (op === 'edit') return Plots.editBeatBody(entityId, args.edits);
-    if (op === 'append') return Plots.appendBeatBody(entityId, args.content);
+    if (op === 'set') return Plots.setBeatBody(undefined, entityId, args.markdown);
+    if (op === 'edit') return Plots.editBeatBody(undefined, entityId, args.edits);
+    if (op === 'append') return Plots.appendBeatBody(undefined, entityId, args.content);
   }
 
   if (op === 'edit') {
@@ -385,13 +385,13 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
     // describeBeatRoom.persistFields reassembles the object (roomRegistry.js).
     if (field.startsWith('scene_bible.')) {
       const key = field.slice('scene_bible.'.length);
-      const beat = await Plots.getBeat(entityId);
-      return Plots.setBeatSceneBible(entityId, {
+      const beat = await Plots.getBeat(undefined, entityId);
+      return Plots.setBeatSceneBible(undefined, entityId, {
         ...(beat?.scene_bible || {}),
         [key]: args.markdown,
       });
     }
-    return Plots.updateBeat(entityId, { [field]: args.markdown });
+    return Plots.updateBeat(undefined, entityId, { [field]: args.markdown });
   }
   if (entityType === 'character') {
     {
@@ -416,7 +416,7 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
     return editDirectorNote({ noteId, text: args.markdown });
   }
   if (entityType === 'plot') {
-    return Plots.updatePlot({ [field]: args.markdown });
+    return Plots.updatePlot(undefined, { [field]: args.markdown });
   }
   if (entityType === 'storyboards') {
     const fm = field.match(/^item:([a-f0-9]{24}):frame:([a-f0-9]{24}):prompt$/);
@@ -427,7 +427,7 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
   }
   if (entityType === 'dialogs') {
     if (field === 'dialog_notes') {
-      return Plots.updateBeat(entityId, { dialog_notes: args.markdown });
+      return Plots.updateBeat(undefined, entityId, { dialog_notes: args.markdown });
     }
     const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
     if (!m) throw new Error(`gateway fallback: unknown dialogs field "${field}"`);
@@ -563,7 +563,7 @@ export async function updateBeatViaGateway(identifier, patch) {
       `update_beat: \`patch\` has no recognized fields. Expected one of: name, body, order, characters. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
-  const beat = await getBeat(identifier);
+  const beat = await getBeat(undefined, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   const beatId = beat._id.toString();
   if (patch.name !== undefined) {
@@ -588,12 +588,12 @@ export async function updateBeatViaGateway(identifier, patch) {
   if (Array.isArray(patch.characters)) onlyDiscrete.characters = patch.characters;
   if (Object.keys(onlyDiscrete).length) {
     const { updateBeat: mongoUpdateBeat } = await import('../mongo/plots.js');
-    await mongoUpdateBeat(beatId, onlyDiscrete);
+    await mongoUpdateBeat(undefined, beatId, onlyDiscrete);
     broadcastFieldsUpdated(buildRoomName('beat', beatId), {
       changed: Object.keys(onlyDiscrete),
     });
   }
-  return getBeat(beatId);
+  return getBeat(undefined, beatId);
 }
 
 export async function updateCharacterViaGateway(identifier, patch) {
@@ -709,7 +709,7 @@ export async function removeDirectorNoteViaGateway({ noteId }) {
 // ─── Non-text mutations ────────────────────────────────────────────────────
 
 export async function addBeatImageViaGateway({ beatId, imageMeta, setAsMain }) {
-  const result = await pushBeatImage(String(beatId), imageMeta, !!setAsMain);
+  const result = await pushBeatImage(undefined, String(beatId), imageMeta, !!setAsMain);
   broadcastFieldsUpdated(buildRoomName('beat', String(beatId)), {
     changed: ['images', 'main_image_id'],
   });
@@ -717,7 +717,7 @@ export async function addBeatImageViaGateway({ beatId, imageMeta, setAsMain }) {
 }
 
 export async function removeBeatImageViaGateway({ beatId, imageId }) {
-  const result = await pullBeatImage(String(beatId), imageId);
+  const result = await pullBeatImage(undefined, String(beatId), imageId);
   broadcastFieldsUpdated(buildRoomName('beat', String(beatId)), {
     changed: ['images', 'main_image_id'],
   });
@@ -725,7 +725,7 @@ export async function removeBeatImageViaGateway({ beatId, imageId }) {
 }
 
 export async function setBeatMainImageViaGateway({ beatId, imageId }) {
-  const result = await setBeatMainImage(String(beatId), imageId);
+  const result = await setBeatMainImage(undefined, String(beatId), imageId);
   broadcastFieldsUpdated(buildRoomName('beat', String(beatId)), {
     changed: ['main_image_id'],
   });
@@ -733,7 +733,7 @@ export async function setBeatMainImageViaGateway({ beatId, imageId }) {
 }
 
 export async function addBeatAttachmentViaGateway({ beatId, attachmentMeta }) {
-  const result = await pushBeatAttachment(String(beatId), attachmentMeta);
+  const result = await pushBeatAttachment(undefined, String(beatId), attachmentMeta);
   broadcastFieldsUpdated(buildRoomName('beat', String(beatId)), {
     changed: ['attachments'],
   });
@@ -741,7 +741,7 @@ export async function addBeatAttachmentViaGateway({ beatId, attachmentMeta }) {
 }
 
 export async function removeBeatAttachmentViaGateway({ beatId, attachmentId }) {
-  const result = await pullBeatAttachment(String(beatId), attachmentId);
+  const result = await pullBeatAttachment(undefined, String(beatId), attachmentId);
   broadcastFieldsUpdated(buildRoomName('beat', String(beatId)), {
     changed: ['attachments'],
   });
@@ -972,7 +972,7 @@ export async function removeCharacterAttachmentViaGateway({ character, attachmen
 // inside beat.images[], updates main_image_id when applicable, deletes the
 // old GridFS bytes, then broadcasts to the room.
 export async function replaceBeatImageViaGateway({ beatId, oldImageId, newImageMeta }) {
-  const result = await replaceBeatImage(String(beatId), oldImageId, newImageMeta);
+  const result = await replaceBeatImage(undefined, String(beatId), oldImageId, newImageMeta);
   try {
     await deleteImage(oldImageId);
   } catch (e) {
@@ -1066,7 +1066,7 @@ export async function attachExistingImageToBeatViaGateway({
 }) {
   const file = await findImageFile(imageId);
   if (!file) throw new Error(`Image not found: ${imageId}`);
-  const targetBeat = await getBeat(String(beatId));
+  const targetBeat = await getBeat(undefined, String(beatId));
   if (!targetBeat) throw new Error(`Beat not found: ${beatId}`);
   if (
     file.metadata?.owner_type === 'beat' &&
@@ -1091,6 +1091,7 @@ export async function attachExistingImageToBeatViaGateway({
     uploaded_at: file.uploadDate,
   };
   const result = await pushBeatImage(
+    undefined,
     targetBeat._id.toString(),
     meta,
     !!setAsMain,
@@ -1247,7 +1248,7 @@ export async function attachExistingAttachmentToDirectorNoteViaGateway({
 }
 
 export async function moveBeatImageToLibraryViaGateway({ beatId, imageId }) {
-  const result = await pullBeatImage(String(beatId), imageId);
+  const result = await pullBeatImage(undefined, String(beatId), imageId);
   await setImageOwner(imageId, { ownerType: null, ownerId: null });
   broadcastFieldsUpdated(buildRoomName('beat', String(beatId)), {
     changed: ['images', 'main_image_id'],
@@ -1498,7 +1499,7 @@ export async function deleteAllStoryboardsForBeatViaGateway({ beatId }) {
 export async function clearAllFrameImagesForBeatViaGateway({ beatId }) {
   const { freedImageIds, referencedIds, storyboardIds } =
     await mongoClearAllFrameImagesForBeat(beatId);
-  const beat = await getBeat(beatId);
+  const beat = await getBeat(undefined, beatId);
   const protectedIds = new Set([
     ...referencedIds.map(String),
     ...(beat?.main_image_id ? [String(beat.main_image_id)] : []),

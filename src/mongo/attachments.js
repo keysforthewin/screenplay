@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { getDb } from './client.js';
 import { getCharacter, pullCharacterAttachment } from './characters.js';
-import { pushBeatAttachment, pullBeatAttachment, getBeat } from './plots.js';
+import { pushBeatAttachment, pullBeatAttachment, getBeat, findPlotByBeatId } from './plots.js';
 import {
   pushDirectorNoteAttachment,
   pullDirectorNoteAttachment,
@@ -308,7 +308,8 @@ export async function detachAttachmentFromCurrentOwner(file) {
   let priorName = null;
   try {
     if (ownerType === 'beat') {
-      const res = await pullBeatAttachment(ownerId, file._id);
+      const hostPlot = await findPlotByBeatId(ownerId);
+      const res = await pullBeatAttachment(hostPlot?.project_id, ownerId, file._id);
       priorName = res?.beat?.name || null;
     } else if (ownerType === 'character') {
       const res = await pullCharacterAttachment(ownerId, file._id);
@@ -359,11 +360,11 @@ export async function attachExistingAttachmentToCharacter({ character, attachmen
   return { character: c.name, ...meta, moved_from: movedFrom };
 }
 
-export async function attachExistingAttachmentToBeat({ beat, attachmentId, caption }) {
+export async function attachExistingAttachmentToBeat({ projectId, beat, attachmentId, caption }) {
   const file = await findAttachmentFile(attachmentId);
   if (!file) throw new Error(`Attachment not found: ${attachmentId}`);
 
-  const beatDoc = await getBeat(beat);
+  const beatDoc = await getBeat(projectId, beat);
   if (!beatDoc) throw new Error(`Beat not found: ${beat}`);
 
   if (
@@ -382,7 +383,7 @@ export async function attachExistingAttachmentToBeat({ beat, attachmentId, capti
   const movedFrom = await detachAttachmentFromCurrentOwner(file);
   await setAttachmentOwner(attachmentId, { ownerType: 'beat', ownerId: beatDoc._id });
   const meta = buildAttachmentMeta(file, caption);
-  await pushBeatAttachment(beatDoc._id.toString(), meta);
+  await pushBeatAttachment(projectId, beatDoc._id.toString(), meta);
   return { beat: { _id: beatDoc._id, name: beatDoc.name }, ...meta, moved_from: movedFrom };
 }
 

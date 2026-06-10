@@ -22,7 +22,7 @@ beforeEach(() => {
 
 describe('plot dialogue_style', () => {
   it('updatePlot accepts and persists dialogue_style', async () => {
-    await Plots.updatePlot({ dialogue_style: '1970s neo-noir. Sparse, hard-boiled.' });
+    await Plots.updatePlot(undefined, { dialogue_style: '1970s neo-noir. Sparse, hard-boiled.' });
     const plot = await Plots.getPlot();
     expect(plot.dialogue_style).toBe('1970s neo-noir. Sparse, hard-boiled.');
   });

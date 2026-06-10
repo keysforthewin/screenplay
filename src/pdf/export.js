@@ -585,7 +585,7 @@ async function buildExportData({ characters: charNames, beats_query, dossier_cha
   }
 
   if (beats_query) {
-    const matches = await searchBeats(beats_query);
+    const matches = await searchBeats(undefined, beats_query);
     if (!matches.length) return { error: `No beats matched query: "${beats_query}".` };
     const beats = matches
       .map((m) => m.beat)

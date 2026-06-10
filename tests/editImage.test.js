@@ -115,7 +115,7 @@ async function seedBeatWithImage(beatName, { setAsMain = true } = {}) {
     ownerType: 'beat',
     ownerId: b._id,
   });
-  await Plots.pushBeatImage(
+  await Plots.pushBeatImage(undefined, 
     b._id.toString(),
     {
       _id: file._id,

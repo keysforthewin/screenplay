@@ -137,7 +137,7 @@ async function appendAttachments(archive, attachments, folder) {
 
 export async function streamBeatZip(req, res) {
   const idOrOrder = req.params.id;
-  const beat = await getBeat(idOrOrder);
+  const beat = await getBeat(undefined, idOrOrder);
   if (!beat) return res.status(404).json({ error: 'beat not found' });
 
   const beatIdHex = beat._id.toString();

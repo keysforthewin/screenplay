@@ -111,7 +111,7 @@ describe('GET /api/beat/:id/images', () => {
     const beat = await Plots.createBeat({ name: 'Diner' });
     // In the embedded gallery (typical reference image).
     const gallery = seedImage({ ownerType: 'beat', ownerId: beat._id, name: 'gallery' });
-    await Plots.pushBeatImage(beat._id, {
+    await Plots.pushBeatImage(undefined, beat._id, {
       _id: gallery._id,
       filename: gallery.filename,
       content_type: 'image/png',
@@ -232,7 +232,7 @@ describe('DELETE /api/beat/:id/orphan-image/:imageId', () => {
   it('refuses to delete an image that lives in beat.images[]', async () => {
     const beat = await Plots.createBeat({ name: 'Diner' });
     const gallery = seedImage({ ownerType: 'beat', ownerId: beat._id, name: 'gallery' });
-    await Plots.pushBeatImage(beat._id, {
+    await Plots.pushBeatImage(undefined, beat._id, {
       _id: gallery._id,
       filename: gallery.filename,
       content_type: 'image/png',

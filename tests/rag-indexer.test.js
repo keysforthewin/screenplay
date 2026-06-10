@@ -70,7 +70,7 @@ describe('rag indexer — beats', () => {
       k.startsWith(`beat:${beat._id.toString()}:body:`),
     ).length;
     expect(wide).toBeGreaterThan(1);
-    await Plots.setBeatBody(beat._id.toString(), 'tiny');
+    await Plots.setBeatBody(undefined, beat._id.toString(), 'tiny');
     await Indexer.indexBeat(beat._id);
     const narrow = [...fakeChroma._store.keys()].filter((k) =>
       k.startsWith(`beat:${beat._id.toString()}:body:`),

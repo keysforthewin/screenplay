@@ -17,14 +17,14 @@ describe('scene_bible on beats', () => {
 
   it('backfills scene_bible: null on beats that lack it', async () => {
     await createBeat({ name: 'Diner', desc: 'A diner' });
-    const beat = await getBeat('Diner');
+    const beat = await getBeat(undefined, 'Diner');
     expect(beat.scene_bible).toBeNull();
   });
 
   it('setBeatSceneBible persists a normalized bible and re-reads it', async () => {
     await createBeat({ name: 'Diner', desc: 'A diner' });
-    await setBeatSceneBible('Diner', { location: '  Corner diner  ', bogus: 'x' });
-    const beat = await getBeat('Diner');
+    await setBeatSceneBible(undefined, 'Diner', { location: '  Corner diner  ', bogus: 'x' });
+    const beat = await getBeat(undefined, 'Diner');
     expect(beat.scene_bible.location).toBe('Corner diner');
     expect(beat.scene_bible).not.toHaveProperty('bogus');
     expect(beat.scene_bible.mood).toBe('');
@@ -32,11 +32,11 @@ describe('scene_bible on beats', () => {
 
   it('setBeatSceneBible(id, null) clears the bible back to null', async () => {
     await createBeat({ name: 'Diner', desc: 'A diner' });
-    await setBeatSceneBible('Diner', { mood: 'tense' });
-    let beat = await getBeat('Diner');
+    await setBeatSceneBible(undefined, 'Diner', { mood: 'tense' });
+    let beat = await getBeat(undefined, 'Diner');
     expect(beat.scene_bible.mood).toBe('tense');
-    await setBeatSceneBible('Diner', null);
-    beat = await getBeat('Diner');
+    await setBeatSceneBible(undefined, 'Diner', null);
+    beat = await getBeat(undefined, 'Diner');
     expect(beat.scene_bible).toBeNull();
   });
 

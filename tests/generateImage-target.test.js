@@ -98,7 +98,7 @@ describe('generate_image targeted attachment', () => {
   it('attaches to attach_to_beat regardless of current beat', async () => {
     const a = await Plots.createBeat({ name: 'Diner Showdown', desc: 'tense' });
     const b = await Plots.createBeat({ name: 'Rooftop', desc: 'storm' });
-    await Plots.setCurrentBeat(b._id.toString());
+    await Plots.setCurrentBeat(undefined, b._id.toString());
 
     const out = await HANDLERS.generate_image({
       prompt: 'establishing shot',
@@ -131,7 +131,7 @@ describe('generate_image targeted attachment', () => {
 
   it('preserves existing behavior: defaults to current beat', async () => {
     const beat = await Plots.createBeat({ name: 'Cathedral', desc: 'dusk' });
-    await Plots.setCurrentBeat(beat._id.toString());
+    await Plots.setCurrentBeat(undefined, beat._id.toString());
 
     const out = await HANDLERS.generate_image({ prompt: 'cathedral at dusk' });
     expect(out).toMatch(/attached to beat "Cathedral"/);
@@ -141,7 +141,7 @@ describe('generate_image targeted attachment', () => {
 
   it('respects attach_to_current_beat: false to override current-beat default', async () => {
     const beat = await Plots.createBeat({ name: 'Cathedral', desc: 'dusk' });
-    await Plots.setCurrentBeat(beat._id.toString());
+    await Plots.setCurrentBeat(undefined, beat._id.toString());
 
     const out = await HANDLERS.generate_image({
       prompt: 'detached image',

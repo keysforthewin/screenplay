@@ -1,6 +1,6 @@
 import { getDb } from './client.js';
 import { getCharacter, pushCharacterImage, pullCharacterImage } from './characters.js';
-import { pullBeatImage } from './plots.js';
+import { pullBeatImage, findPlotByBeatId } from './plots.js';
 import { pullDirectorNoteImage } from './directorNotes.js';
 import {
   uploadImageFromUrl,
@@ -28,7 +28,8 @@ export async function detachImageFromCurrentOwner(file) {
   let priorName = null;
   try {
     if (ownerType === 'beat') {
-      const res = await pullBeatImage(ownerId, file._id);
+      const hostPlot = await findPlotByBeatId(ownerId);
+      const res = await pullBeatImage(hostPlot?.project_id, ownerId, file._id);
       priorName = res?.beat?.name || null;
     } else if (ownerType === 'character') {
       const res = await pullCharacterImage(ownerId, file._id);

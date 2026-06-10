@@ -42,7 +42,7 @@ async function announceArtwork({ hostType, hostId, username, verb, fileId, promp
     let entityLabel = null;
     let entityUrl = null;
     if (hostType === 'beat') {
-      const beat = await getBeat(String(hostId));
+      const beat = await getBeat(undefined, String(hostId));
       if (beat) {
         const name = stripMarkdown(beat.name || '').trim();
         const order = Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';

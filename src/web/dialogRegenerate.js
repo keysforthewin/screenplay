@@ -51,7 +51,7 @@ const SYSTEM_PROMPT = [
 export async function generateAlternatives({ dialogId, count = ALTERNATIVE_COUNT } = {}) {
   const dialog = await getDialog(dialogId);
   if (!dialog) throw new Error(`Dialog not found: ${dialogId}`);
-  const beat = await getBeat(dialog.beat_id.toString());
+  const beat = await getBeat(undefined, dialog.beat_id.toString());
   if (!beat) throw new Error(`Beat not found for dialog ${dialogId}`);
 
   const all = await listDialogs({ beatId: dialog.beat_id });

@@ -108,7 +108,7 @@ export async function buildSceneBibleContext(beat) {
 }
 
 export async function autofillSceneBible({ beatId } = {}) {
-  const beat = await getBeat(String(beatId));
+  const beat = await getBeat(undefined, String(beatId));
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
   // Serialize with every other scene_bible writer (storyboard generation writes
   // the bible too). Fail fast if the beat is already busy, then hold the lock

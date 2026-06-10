@@ -226,7 +226,7 @@ describe('edit (director note)', () => {
 
 describe('edit (plot field)', () => {
   it('applies find/replace to plot synopsis via Mongo', async () => {
-    await Plots.updatePlot({ synopsis: 'A story about Steve and Maya.' });
+    await Plots.updatePlot(undefined, { synopsis: 'A story about Steve and Maya.' });
     const out = await HANDLERS.edit({
       collection: 'plot',
       field: 'synopsis',
@@ -247,7 +247,7 @@ describe('edit (plot field)', () => {
   });
 
   it('errors on missing find', async () => {
-    await Plots.updatePlot({ notes: 'Tone is deadpan.' });
+    await Plots.updatePlot(undefined, { notes: 'Tone is deadpan.' });
     await expect(
       HANDLERS.edit({
         collection: 'plot',

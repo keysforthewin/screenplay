@@ -261,7 +261,7 @@ describe('end-to-end generation job (overrides)', () => {
   it('persists the bible on the beat and seeds exactly one start-frame prompt per row', async () => {
     const { createBeat, getBeat } = await import('../src/mongo/plots.js');
     await createBeat({ name: 'DinerE2', desc: 'A diner scene', characters: [] });
-    const beat = await getBeat('DinerE2');
+    const beat = await getBeat(undefined, 'DinerE2');
 
     gen._setScenePlannerForTests(() => ({
       sceneBible: normalizeBibleForTest({ location: 'Diner' }),
@@ -281,7 +281,7 @@ describe('end-to-end generation job (overrides)', () => {
     const job = gen.getStoryboardGenerationJob(jobId);
     expect(job.status).not.toBe('error');
 
-    const updatedBeat = await getBeat('DinerE2');
+    const updatedBeat = await getBeat(undefined, 'DinerE2');
     expect(updatedBeat.scene_bible.location).toBe('Diner');
 
     const { listStoryboards } = await import('../src/mongo/storyboards.js');

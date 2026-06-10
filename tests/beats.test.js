@@ -10,6 +10,7 @@ vi.mock('../src/mongo/client.js', () => ({
 }));
 
 const Plots = await import('../src/mongo/plots.js');
+const Projects = await import('../src/mongo/projects.js');
 
 beforeEach(() => {
   fakeDb.reset();
@@ -18,7 +19,8 @@ beforeEach(() => {
 describe('plots beat CRUD', () => {
   it('seeds a plot on first read with all expected fields', async () => {
     const plot = await Plots.getPlot();
-    expect(plot._id).toBe('main');
+    const def = await Projects.getDefaultProject();
+    expect(plot.project_id).toBe(def._id.toString());
     expect(plot.synopsis).toBe('');
     expect(plot.notes).toBe('');
     expect(plot.beats).toEqual([]);
@@ -73,13 +75,13 @@ describe('plots beat CRUD', () => {
     const a = await Plots.createBeat({ name: 'Open', desc: 'd1' });
     const b = await Plots.createBeat({ name: 'Twist', desc: 'd2' });
 
-    const byId = await Plots.getBeat(a._id.toString());
+    const byId = await Plots.getBeat(undefined, a._id.toString());
     expect(byId.name).toBe('Open');
 
-    const byOrder = await Plots.getBeat('2');
+    const byOrder = await Plots.getBeat(undefined, '2');
     expect(byOrder.name).toBe('Twist');
 
-    const byName = await Plots.getBeat('twist');
+    const byName = await Plots.getBeat(undefined, 'twist');
     expect(byName._id.equals(b._id)).toBe(true);
 
     const current = await Plots.getBeat();
@@ -93,7 +95,7 @@ describe('plots beat CRUD', () => {
       body: 'orig body',
       characters: ['Alice'],
     });
-    const updated = await Plots.updateBeat(a._id.toString(), {
+    const updated = await Plots.updateBeat(undefined, a._id.toString(), {
       name: 'Opening Sequence',
       desc: 'rev desc',
       body: 'rev body',
@@ -107,26 +109,26 @@ describe('plots beat CRUD', () => {
 
   it('appendBeatBody adds to existing body with a blank-line separator', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'first paragraph' });
-    const updated = await Plots.appendBeatBody(a._id.toString(), 'second paragraph');
+    const updated = await Plots.appendBeatBody(undefined, a._id.toString(), 'second paragraph');
     expect(updated.body).toBe('first paragraph\n\nsecond paragraph');
   });
 
   it('appendBeatBody on empty body has no leading separator', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd' });
-    const updated = await Plots.appendBeatBody(a._id.toString(), 'first content');
+    const updated = await Plots.appendBeatBody(undefined, a._id.toString(), 'first content');
     expect(updated.body).toBe('first content');
   });
 
   it('appendBeatBody throws on empty content', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd' });
-    await expect(Plots.appendBeatBody(a._id.toString(), '   ')).rejects.toThrow(/content/);
+    await expect(Plots.appendBeatBody(undefined, a._id.toString(), '   ')).rejects.toThrow(/content/);
   });
 
   it('setBeatBody replaces the body and preserves other fields', async () => {
     const a = await Plots.createBeat({
       name: 'B', desc: 'd', body: 'old body', characters: ['Alice'],
     });
-    const updated = await Plots.setBeatBody(a._id.toString(), 'brand new body\n\nwith a second paragraph');
+    const updated = await Plots.setBeatBody(undefined, a._id.toString(), 'brand new body\n\nwith a second paragraph');
     expect(updated.body).toBe('brand new body\n\nwith a second paragraph');
     expect(updated.name).toBe('B');
     expect(updated.desc).toBe('d');
@@ -135,24 +137,24 @@ describe('plots beat CRUD', () => {
 
   it('setBeatBody accepts an empty string (clears the body)', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'something' });
-    const updated = await Plots.setBeatBody(a._id.toString(), '');
+    const updated = await Plots.setBeatBody(undefined, a._id.toString(), '');
     expect(updated.body).toBe('');
   });
 
   it('setBeatBody rejects non-string body', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd' });
-    await expect(Plots.setBeatBody(a._id.toString(), 123)).rejects.toThrow(/`body` must be a string/);
-    await expect(Plots.setBeatBody(a._id.toString(), null)).rejects.toThrow(/`body` must be a string/);
-    await expect(Plots.setBeatBody(a._id.toString(), { body: 'oops' })).rejects.toThrow(/`body` must be a string/);
+    await expect(Plots.setBeatBody(undefined, a._id.toString(), 123)).rejects.toThrow(/`body` must be a string/);
+    await expect(Plots.setBeatBody(undefined, a._id.toString(), null)).rejects.toThrow(/`body` must be a string/);
+    await expect(Plots.setBeatBody(undefined, a._id.toString(), { body: 'oops' })).rejects.toThrow(/`body` must be a string/);
   });
 
   it('setBeatBody throws when the beat is not found', async () => {
-    await expect(Plots.setBeatBody('nonexistent-beat', 'x')).rejects.toThrow(/Beat not found/);
+    await expect(Plots.setBeatBody(undefined, 'nonexistent-beat', 'x')).rejects.toThrow(/Beat not found/);
   });
 
   it('editBeatBody applies a single find/replace', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'Keys says "hello" to Bob.' });
-    const result = await Plots.editBeatBody(a._id.toString(), [
+    const result = await Plots.editBeatBody(undefined, a._id.toString(), [
       { find: '"hello"', replace: '"good morning"' },
     ]);
     expect(result.beat.body).toBe('Keys says "good morning" to Bob.');
@@ -164,7 +166,7 @@ describe('plots beat CRUD', () => {
 
   it('editBeatBody applies multiple edits sequentially (each operates on the result of the previous)', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'one two three' });
-    const result = await Plots.editBeatBody(a._id.toString(), [
+    const result = await Plots.editBeatBody(undefined, a._id.toString(), [
       { find: 'one', replace: 'ONE' },
       { find: 'three', replace: 'THREE' },
     ]);
@@ -174,7 +176,7 @@ describe('plots beat CRUD', () => {
 
   it('editBeatBody supports cascading edits where edit N depends on edit N-1', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'alpha bravo charlie' });
-    const result = await Plots.editBeatBody(a._id.toString(), [
+    const result = await Plots.editBeatBody(undefined, a._id.toString(), [
       { find: 'bravo', replace: 'beta' },
       { find: 'beta', replace: 'BETA' },
     ]);
@@ -183,7 +185,7 @@ describe('plots beat CRUD', () => {
 
   it('editBeatBody supports deletion via empty replace', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'keep this. DELETE ME. keep this too.' });
-    const result = await Plots.editBeatBody(a._id.toString(), [
+    const result = await Plots.editBeatBody(undefined, a._id.toString(), [
       { find: ' DELETE ME.', replace: '' },
     ]);
     expect(result.beat.body).toBe('keep this. keep this too.');
@@ -193,50 +195,50 @@ describe('plots beat CRUD', () => {
   it('editBeatBody throws when find text is not present in the body', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'hello world' });
     await expect(
-      Plots.editBeatBody(a._id.toString(), [{ find: 'banana', replace: 'apple' }]),
+      Plots.editBeatBody(undefined, a._id.toString(), [{ find: 'banana', replace: 'apple' }]),
     ).rejects.toThrow(/not found.*banana/);
   });
 
   it('editBeatBody throws when find text matches more than once (forces uniqueness)', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'one one one' });
     await expect(
-      Plots.editBeatBody(a._id.toString(), [{ find: 'one', replace: 'two' }]),
+      Plots.editBeatBody(undefined, a._id.toString(), [{ find: 'one', replace: 'two' }]),
     ).rejects.toThrow(/matched 3 places.*must be unique/);
   });
 
   it('editBeatBody rejects an empty find string with guidance toward the dedicated tools', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'something' });
     await expect(
-      Plots.editBeatBody(a._id.toString(), [{ find: '', replace: 'x' }]),
+      Plots.editBeatBody(undefined, a._id.toString(), [{ find: '', replace: 'x' }]),
     ).rejects.toThrow(/empty `find`/);
   });
 
   it('editBeatBody rejects non-array edits', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd' });
-    await expect(Plots.editBeatBody(a._id.toString(), null)).rejects.toThrow(/non-empty array/);
-    await expect(Plots.editBeatBody(a._id.toString(), [])).rejects.toThrow(/non-empty array/);
-    await expect(Plots.editBeatBody(a._id.toString(), 'find/replace')).rejects.toThrow(/non-empty array/);
+    await expect(Plots.editBeatBody(undefined, a._id.toString(), null)).rejects.toThrow(/non-empty array/);
+    await expect(Plots.editBeatBody(undefined, a._id.toString(), [])).rejects.toThrow(/non-empty array/);
+    await expect(Plots.editBeatBody(undefined, a._id.toString(), 'find/replace')).rejects.toThrow(/non-empty array/);
   });
 
   it('editBeatBody rejects an edit missing find/replace strings', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'x' });
     await expect(
-      Plots.editBeatBody(a._id.toString(), [{ find: 'x' }]),
+      Plots.editBeatBody(undefined, a._id.toString(), [{ find: 'x' }]),
     ).rejects.toThrow(/string `find` and `replace`/);
     await expect(
-      Plots.editBeatBody(a._id.toString(), [{ find: 1, replace: 'y' }]),
+      Plots.editBeatBody(undefined, a._id.toString(), [{ find: 1, replace: 'y' }]),
     ).rejects.toThrow(/string `find` and `replace`/);
   });
 
   it('editBeatBody is atomic: a failing edit late in the list does NOT persist earlier edits', async () => {
     const a = await Plots.createBeat({ name: 'B', desc: 'd', body: 'alpha bravo' });
     await expect(
-      Plots.editBeatBody(a._id.toString(), [
+      Plots.editBeatBody(undefined, a._id.toString(), [
         { find: 'alpha', replace: 'ALPHA' },
         { find: 'nonexistent', replace: 'X' },
       ]),
     ).rejects.toThrow(/not found/);
-    const fresh = await Plots.getBeat(a._id.toString());
+    const fresh = await Plots.getBeat(undefined, a._id.toString());
     expect(fresh.body).toBe('alpha bravo'); // unchanged
   });
 
@@ -245,7 +247,7 @@ describe('plots beat CRUD', () => {
     const b = await Plots.createBeat({ name: 'Roadhouse', desc: 'they reach the diner outskirts' });
     const c = await Plots.createBeat({ name: 'Climax', desc: 'final confrontation', body: 'they end up back at the diner' });
 
-    const results = await Plots.searchBeats('diner');
+    const results = await Plots.searchBeats(undefined, 'diner');
     expect(results).toHaveLength(3);
     expect(results[0].beat._id.equals(a._id)).toBe(true);
     expect(results[0].matched_field).toBe('name');
@@ -257,13 +259,13 @@ describe('plots beat CRUD', () => {
 
   it('searchBeats returns empty array for blank query', async () => {
     await Plots.createBeat({ name: 'X', desc: 'Y' });
-    expect(await Plots.searchBeats('')).toEqual([]);
-    expect(await Plots.searchBeats('   ')).toEqual([]);
+    expect(await Plots.searchBeats(undefined, '')).toEqual([]);
+    expect(await Plots.searchBeats(undefined, '   ')).toEqual([]);
   });
 
   it('deleteBeat removes the beat, returns name, and clears current_beat_id when it pointed there', async () => {
     const a = await Plots.createBeat({ name: 'Open', desc: 'd' });
-    const res = await Plots.deleteBeat(a._id.toString());
+    const res = await Plots.deleteBeat(undefined, a._id.toString());
     expect(res._id.equals(a._id)).toBe(true);
     expect(res.name).toBe('Open');
 
@@ -274,16 +276,16 @@ describe('plots beat CRUD', () => {
 
   it('linkCharacterToBeat is idempotent (no duplicates)', async () => {
     const a = await Plots.createBeat({ name: 'Open', desc: 'd' });
-    await Plots.linkCharacterToBeat(a._id.toString(), 'Alice');
-    await Plots.linkCharacterToBeat(a._id.toString(), 'alice');
-    const beat = await Plots.getBeat(a._id.toString());
+    await Plots.linkCharacterToBeat(undefined, a._id.toString(), 'Alice');
+    await Plots.linkCharacterToBeat(undefined, a._id.toString(), 'alice');
+    const beat = await Plots.getBeat(undefined, a._id.toString());
     expect(beat.characters).toEqual(['Alice']);
   });
 
   it('unlinkCharacterFromBeat removes case-insensitively', async () => {
     const a = await Plots.createBeat({ name: 'Open', desc: 'd', characters: ['Alice', 'Bob'] });
-    await Plots.unlinkCharacterFromBeat(a._id.toString(), 'alice');
-    const beat = await Plots.getBeat(a._id.toString());
+    await Plots.unlinkCharacterFromBeat(undefined, a._id.toString(), 'alice');
+    const beat = await Plots.getBeat(undefined, a._id.toString());
     expect(beat.characters).toEqual(['Bob']);
   });
 });
@@ -304,10 +306,10 @@ describe('beat images', () => {
   it('pushBeatImage appends and auto-promotes the first image to main', async () => {
     const a = await Plots.createBeat({ name: 'Open', desc: 'd' });
     const m1 = fakeMeta('1');
-    const { is_main } = await Plots.pushBeatImage(a._id.toString(), m1);
+    const { is_main } = await Plots.pushBeatImage(undefined, a._id.toString(), m1);
     expect(is_main).toBe(true);
 
-    const beat = await Plots.getBeat(a._id.toString());
+    const beat = await Plots.getBeat(undefined, a._id.toString());
     expect(beat.images).toHaveLength(1);
     expect(beat.main_image_id.equals(m1._id)).toBe(true);
   });
@@ -316,11 +318,11 @@ describe('beat images', () => {
     const a = await Plots.createBeat({ name: 'Open', desc: 'd' });
     const m1 = fakeMeta('1');
     const m2 = fakeMeta('2');
-    await Plots.pushBeatImage(a._id.toString(), m1);
-    const { is_main } = await Plots.pushBeatImage(a._id.toString(), m2, true);
+    await Plots.pushBeatImage(undefined, a._id.toString(), m1);
+    const { is_main } = await Plots.pushBeatImage(undefined, a._id.toString(), m2, true);
     expect(is_main).toBe(true);
 
-    const beat = await Plots.getBeat(a._id.toString());
+    const beat = await Plots.getBeat(undefined, a._id.toString());
     expect(beat.images).toHaveLength(2);
     expect(beat.main_image_id.equals(m2._id)).toBe(true);
   });
@@ -329,11 +331,11 @@ describe('beat images', () => {
     const a = await Plots.createBeat({ name: 'Open', desc: 'd' });
     const m1 = fakeMeta('1');
     const m2 = fakeMeta('2');
-    await Plots.pushBeatImage(a._id.toString(), m1);
-    await Plots.pushBeatImage(a._id.toString(), m2);
-    await Plots.pullBeatImage(a._id.toString(), m1._id);
+    await Plots.pushBeatImage(undefined, a._id.toString(), m1);
+    await Plots.pushBeatImage(undefined, a._id.toString(), m2);
+    await Plots.pullBeatImage(undefined, a._id.toString(), m1._id);
 
-    const beat = await Plots.getBeat(a._id.toString());
+    const beat = await Plots.getBeat(undefined, a._id.toString());
     expect(beat.images).toHaveLength(1);
     expect(beat.main_image_id.equals(m2._id)).toBe(true);
   });
@@ -341,7 +343,7 @@ describe('beat images', () => {
   it('setBeatMainImage requires the image to be attached', async () => {
     const a = await Plots.createBeat({ name: 'Open', desc: 'd' });
     const stranger = new ObjectId();
-    await expect(Plots.setBeatMainImage(a._id.toString(), stranger)).rejects.toThrow(/not attached/);
+    await expect(Plots.setBeatMainImage(undefined, a._id.toString(), stranger)).rejects.toThrow(/not attached/);
   });
 });
 
@@ -350,7 +352,7 @@ describe('current beat lifecycle', () => {
     const a = await Plots.createBeat({ name: 'Open', desc: 'd' });
     const b = await Plots.createBeat({ name: 'Climax', desc: 'd' });
 
-    await Plots.setCurrentBeat(b._id.toString());
+    await Plots.setCurrentBeat(undefined, b._id.toString());
     const cur = await Plots.getCurrentBeat();
     expect(cur._id.equals(b._id)).toBe(true);
 
@@ -373,7 +375,7 @@ describe('per-beat timestamps', () => {
     const originalUpdated = beat.updated_at.getTime();
     // Force a clock tick (Date resolution is 1ms; some platforms may need a nudge).
     await new Promise((r) => setTimeout(r, 2));
-    const updated = await Plots.updateBeat(beat._id.toString(), { desc: 'd2' });
+    const updated = await Plots.updateBeat(undefined, beat._id.toString(), { desc: 'd2' });
     expect(updated.created_at.getTime()).toBe(originalCreated);
     expect(updated.updated_at.getTime()).toBeGreaterThan(originalUpdated);
   });
@@ -382,7 +384,7 @@ describe('per-beat timestamps', () => {
     const beat = await Plots.createBeat({ name: 'Open', desc: 'd' });
     const originalUpdated = beat.updated_at.getTime();
     await new Promise((r) => setTimeout(r, 2));
-    const updated = await Plots.appendBeatBody(beat._id.toString(), 'more lore');
+    const updated = await Plots.appendBeatBody(undefined, beat._id.toString(), 'more lore');
     expect(updated.updated_at.getTime()).toBeGreaterThan(originalUpdated);
   });
 
@@ -390,8 +392,8 @@ describe('per-beat timestamps', () => {
     const beat = await Plots.createBeat({ name: 'Open', desc: 'd' });
     const originalUpdated = beat.updated_at.getTime();
     await new Promise((r) => setTimeout(r, 2));
-    await Plots.linkCharacterToBeat(beat._id.toString(), 'Alice');
-    const after = await Plots.getBeat(beat._id.toString());
+    await Plots.linkCharacterToBeat(undefined, beat._id.toString(), 'Alice');
+    const after = await Plots.getBeat(undefined, beat._id.toString());
     expect(after.updated_at.getTime()).toBeGreaterThan(originalUpdated);
   });
 });
@@ -412,10 +414,10 @@ describe('disambiguation by explicit identifier (scenario D, T4 regression)', ()
       characters: ['Nully', 'Streamer Kid'],
     });
 
-    await Plots.appendBeatBody(despawn._id.toString(), 'He forgot to fill the cupboard.');
+    await Plots.appendBeatBody(undefined, despawn._id.toString(), 'He forgot to fill the cupboard.');
 
-    const despawnAfter = await Plots.getBeat(despawn._id.toString());
-    const shootingAfter = await Plots.getBeat(shooting._id.toString());
+    const despawnAfter = await Plots.getBeat(undefined, despawn._id.toString());
+    const shootingAfter = await Plots.getBeat(undefined, shooting._id.toString());
     expect(despawnAfter.body).toBe('He forgot to fill the cupboard.');
     expect(shootingAfter.body).toBe('');
   });
@@ -468,25 +470,25 @@ describe('updateBeat input validation', () => {
   it('throws when patch is a string (the model-passed-body-as-patch bug)', async () => {
     const beat = await Plots.createBeat({ name: 'Open', desc: 'Opening' });
     await expect(
-      Plots.updateBeat(beat._id.toString(), 'a 10000 char body that should have been wrapped'),
+      Plots.updateBeat(undefined, beat._id.toString(), 'a 10000 char body that should have been wrapped'),
     ).rejects.toThrow(/must be an object/);
   });
 
   it('throws when patch is an array', async () => {
     const beat = await Plots.createBeat({ name: 'Open', desc: 'Opening' });
-    await expect(Plots.updateBeat(beat._id.toString(), ['name', 'New'])).rejects.toThrow(
+    await expect(Plots.updateBeat(undefined, beat._id.toString(), ['name', 'New'])).rejects.toThrow(
       /must be an object.*array/,
     );
   });
 
   it('throws when patch is null', async () => {
     const beat = await Plots.createBeat({ name: 'Open', desc: 'Opening' });
-    await expect(Plots.updateBeat(beat._id.toString(), null)).rejects.toThrow(/must be an object/);
+    await expect(Plots.updateBeat(undefined, beat._id.toString(), null)).rejects.toThrow(/must be an object/);
   });
 
   it('throws when patch has no recognized fields', async () => {
     const beat = await Plots.createBeat({ name: 'Open', desc: 'Opening' });
-    await expect(Plots.updateBeat(beat._id.toString(), { foo: 'bar' })).rejects.toThrow(
+    await expect(Plots.updateBeat(undefined, beat._id.toString(), { foo: 'bar' })).rejects.toThrow(
       /no recognized fields/,
     );
   });
@@ -494,9 +496,9 @@ describe('updateBeat input validation', () => {
   it('valid patch.body still updates end-to-end', async () => {
     const beat = await Plots.createBeat({ name: 'Open', desc: 'Opening' });
     const newBody = 'A long body content that should actually persist.';
-    const updated = await Plots.updateBeat(beat._id.toString(), { body: newBody });
+    const updated = await Plots.updateBeat(undefined, beat._id.toString(), { body: newBody });
     expect(updated.body).toBe(newBody);
-    const reread = await Plots.getBeat(beat._id.toString());
+    const reread = await Plots.getBeat(undefined, beat._id.toString());
     expect(reread.body).toBe(newBody);
   });
 
@@ -509,11 +511,54 @@ describe('updateBeat input validation', () => {
     const spy = vi.spyOn(col, 'updateOne').mockResolvedValue({ matchedCount: 0 });
     try {
       await expect(
-        Plots.updateBeat(beat._id.toString(), { body: 'new body' }),
+        Plots.updateBeat(undefined, beat._id.toString(), { body: 'new body' }),
       ).rejects.toThrow(/updateBeatFields:.*not found in plot doc/);
     } finally {
       spy.mockRestore();
       col.updateOne = original;
     }
+  });
+});
+
+describe('multi-project plots', () => {
+  it('getPlot lazy-claims the legacy {_id:"main"} doc for the default project', async () => {
+    await fakeDb.collection('plots').insertOne({
+      _id: 'main',
+      title: 'Legacy',
+      synopsis: 's',
+      beats: [],
+      notes: '',
+      current_beat_id: null,
+      updated_at: new Date(),
+    });
+    const plot = await Plots.getPlot();
+    expect(plot._id).toBe('main'); // claimed, not replaced
+    expect(plot.title).toBe('Legacy');
+    const def = await Projects.getDefaultProject();
+    const stored = await fakeDb.collection('plots').findOne({ _id: 'main' });
+    expect(stored.project_id).toBe(def._id.toString());
+    expect(fakeDb.collection('plots')._docs).toHaveLength(1); // no second doc
+  });
+
+  it('keeps two projects\' plots independent', async () => {
+    const p1 = (await Projects.createProject('Alpha'))._id.toString();
+    const p2 = (await Projects.createProject('Beta'))._id.toString();
+    const beat = await Plots.createBeat({ projectId: p1, name: 'Open', desc: 'd1' });
+    expect(await Plots.listBeats(p1)).toHaveLength(1);
+    expect(await Plots.listBeats(p2)).toHaveLength(0);
+    // Cross-project id lookup behaves as not-found.
+    expect(await Plots.getBeat(p2, beat._id.toString())).toBe(null);
+    // Writes land in the right doc.
+    await Plots.updatePlot(p2, { synopsis: 'beta synopsis' });
+    expect((await Plots.getPlot(p1)).synopsis).toBe('');
+    expect((await Plots.getPlot(p2)).synopsis).toBe('beta synopsis');
+  });
+
+  it('findPlotByBeatId locates the containing plot across projects', async () => {
+    const p1 = (await Projects.createProject('Alpha'))._id.toString();
+    const beat = await Plots.createBeat({ projectId: p1, name: 'Open', desc: 'd' });
+    const host = await Plots.findPlotByBeatId(beat._id.toString());
+    expect(host.project_id).toBe(p1);
+    expect(await Plots.findPlotByBeatId(new ObjectId().toString())).toBe(null);
   });
 });

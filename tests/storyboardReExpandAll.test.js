@@ -25,8 +25,8 @@ describe('startReExpandAllJob', () => {
     const { createBeat, getBeat, setBeatSceneBible } = await import('../src/mongo/plots.js');
     const { createStoryboard, listStoryboards } = await import('../src/mongo/storyboards.js');
     await createBeat({ name: 'Bulk', desc: 'd', characters: [] });
-    const beat = await getBeat('Bulk');
-    await setBeatSceneBible('Bulk', { location: 'Diner' });
+    const beat = await getBeat(undefined, 'Bulk');
+    await setBeatSceneBible(undefined, 'Bulk', { location: 'Diner' });
     await createStoryboard({ beatId: beat._id, order: 1, textPrompt: 'OLD1', summary: 'shot one', shotType: 'medium', durationSeconds: 4 });
     await createStoryboard({ beatId: beat._id, order: 2, textPrompt: 'OLD2', summary: 'shot two', shotType: 'close_up', durationSeconds: 3 });
 
@@ -52,7 +52,7 @@ describe('startReExpandAllJob', () => {
   it('reports done with zero shots (no-op)', async () => {
     const { createBeat, getBeat } = await import('../src/mongo/plots.js');
     await createBeat({ name: 'Empty', desc: 'd' });
-    const beat = await getBeat('Empty');
+    const beat = await getBeat(undefined, 'Empty');
     const jobId = await gen.startReExpandAllJob({ beatId: beat._id.toString() });
     const job = await drain(jobId);
     expect(job.status).toBe('done');

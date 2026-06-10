@@ -31,14 +31,14 @@ describe('gateway fallback (no Hocuspocus)', () => {
   it('setBeatBodyViaGateway writes the beat body via Mongo', async () => {
     const beat = await Plots.createBeat({ name: 'Pilot', desc: 'Opening scene' });
     await Gateway.setBeatBodyViaGateway(beat._id.toString(), 'Once upon a time...');
-    const fresh = await Plots.getBeat(beat._id.toString());
+    const fresh = await Plots.getBeat(undefined, beat._id.toString());
     expect(fresh.body).toBe('Once upon a time...');
   });
 
   it('appendBeatBodyViaGateway appends to the beat body', async () => {
     const beat = await Plots.createBeat({ name: 'Pilot', desc: 'X', body: 'first' });
     await Gateway.appendBeatBodyViaGateway(beat._id.toString(), 'second');
-    const fresh = await Plots.getBeat(beat._id.toString());
+    const fresh = await Plots.getBeat(undefined, beat._id.toString());
     expect(fresh.body).toBe('first\n\nsecond');
   });
 
@@ -48,7 +48,7 @@ describe('gateway fallback (no Hocuspocus)', () => {
       { find: 'bar', replace: 'BAZ' },
     ]);
     expect(result.applied).toHaveLength(1);
-    const fresh = await Plots.getBeat(beat._id.toString());
+    const fresh = await Plots.getBeat(undefined, beat._id.toString());
     expect(fresh.body).toBe('foo BAZ baz');
   });
 

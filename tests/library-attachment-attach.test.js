@@ -98,7 +98,7 @@ describe('attachExistingAttachmentToCharacter', () => {
     const file = seedLibraryAttachment({
       metadata: { owner_type: 'beat', owner_id: beat._id },
     });
-    await Plots.pushBeatAttachment(beat._id.toString(), {
+    await Plots.pushBeatAttachment(undefined, beat._id.toString(), {
       _id: file._id,
       filename: file.filename,
       content_type: file.contentType,
@@ -309,7 +309,7 @@ describe('handler: list_library_attachments and attach_library_attachment_to_cha
     const file = seedLibraryAttachment({
       metadata: { owner_type: 'beat', owner_id: beat._id },
     });
-    await Plots.pushBeatAttachment(beat._id.toString(), {
+    await Plots.pushBeatAttachment(undefined, beat._id.toString(), {
       _id: file._id,
       filename: file.filename,
       content_type: file.contentType,

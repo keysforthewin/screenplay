@@ -29,7 +29,7 @@ describe('agent plot-field tools', () => {
   });
 
   it('edit applies find/replace to plot.synopsis', async () => {
-    await Plots.updatePlot({ synopsis: 'A quiet town.' });
+    await Plots.updatePlot(undefined, { synopsis: 'A quiet town.' });
     const out = await HANDLERS.edit({
       collection: 'plot',
       field: 'synopsis',
@@ -50,7 +50,7 @@ describe('agent plot-field tools', () => {
   });
 
   it('add_film_dialogue_sample appends a formatted sample to the global dialogue style', async () => {
-    await Plots.updatePlot({ dialogue_style: 'Base style.' });
+    await Plots.updatePlot(undefined, { dialogue_style: 'Base style.' });
     const out = await HANDLERS.add_film_dialogue_sample({
       film: 'Chinatown',
       sample: 'JAKE: How much better can you eat?',

@@ -124,22 +124,22 @@ describe('setBeatMainImage — artwork source', () => {
       resultImageId: resultId,
     });
 
-    const updated = await Plots.setBeatMainImage(b._id.toString(), resultId);
+    const updated = await Plots.setBeatMainImage(undefined, b._id.toString(), resultId);
     expect(updated.main_image_id.equals(resultId)).toBe(true);
   });
 
   it('still accepts a regular images[] entry on a beat (no regression)', async () => {
     const b = await Plots.createBeat({ name: 'Cold open' });
     const meta = makeMeta();
-    await Plots.pushBeatImage(b._id.toString(), meta, false);
-    const updated = await Plots.setBeatMainImage(b._id.toString(), meta._id);
+    await Plots.pushBeatImage(undefined, b._id.toString(), meta, false);
+    const updated = await Plots.setBeatMainImage(undefined, b._id.toString(), meta._id);
     expect(updated.main_image_id.equals(meta._id)).toBe(true);
   });
 
   it('rejects an id that is neither in images[] nor an artwork result', async () => {
     const b = await Plots.createBeat({ name: 'Cold open' });
     await expect(
-      Plots.setBeatMainImage(b._id.toString(), new ObjectId()),
+      Plots.setBeatMainImage(undefined, b._id.toString(), new ObjectId()),
     ).rejects.toThrow(/not attached/i);
   });
 });

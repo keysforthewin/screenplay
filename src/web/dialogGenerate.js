@@ -141,7 +141,7 @@ export class BeatBusyError extends Error {
 }
 
 export async function startDialogGenerationJob({ beatId }) {
-  const beat = await getBeat(beatId);
+  const beat = await getBeat(undefined, beatId);
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());

@@ -73,7 +73,7 @@ const FULL = {
 };
 
 function reloadBeat(beatId) {
-  return Plots.getBeat(String(beatId));
+  return Plots.getBeat(undefined, String(beatId));
 }
 
 beforeEach(() => {
@@ -154,7 +154,7 @@ describe('autofillSceneBible (module)', () => {
 
 describe('buildSceneBibleContext', () => {
   it('includes the logline and the beat body', async () => {
-    await Plots.updatePlot({ title: 'Neon City', synopsis: 'A courier outruns her past.' });
+    await Plots.updatePlot(undefined, { title: 'Neon City', synopsis: 'A courier outruns her past.' });
     const beat = await Plots.createBeat({ name: 'Chase', body: 'She sprints down the wet alley.' });
 
     const ctx = await buildSceneBibleContext(await reloadBeat(beat._id));

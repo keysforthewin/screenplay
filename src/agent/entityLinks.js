@@ -125,7 +125,7 @@ export async function resolveEntityLinks(touched) {
       }
       beat = await currentBeatPromise;
     } else {
-      beat = await safeCall(() => getBeat(ref));
+      beat = await safeCall(() => getBeat(undefined, ref));
     }
     push(beatUrl(beat));
   }

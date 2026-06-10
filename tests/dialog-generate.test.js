@@ -218,7 +218,7 @@ describe('dialog auto-generation', () => {
   it('includes story context (logline + previous beat dialogue) in the prompt', async () => {
     const client = fakeAnthropicClient(TWO_LINE_RESULT);
     _setAnthropicClientForTests(client);
-    await Plots.updatePlot({ title: 'Nightfall', synopsis: 'A courier crosses a dead country.' });
+    await Plots.updatePlot(undefined, { title: 'Nightfall', synopsis: 'A courier crosses a dead country.' });
     const b1 = await Plots.createBeat({ name: 'The diner', desc: 'd1', body: 'b1' });
     await Dialogs.createDialog({ beatId: b1._id, body: 'No. Drive.', character: 'Bob' });
     const b2 = await Plots.createBeat({ name: 'The road', desc: 'd2', body: 'b2' });

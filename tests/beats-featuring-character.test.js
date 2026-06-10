@@ -71,7 +71,7 @@ describe('GET /api/beats-featuring-character', () => {
       description: 'establishing',
       content_type: 'image/png',
     };
-    await Plots.pushBeatImage(b1._id.toString(), img);
+    await Plots.pushBeatImage(undefined, b1._id.toString(), img);
     const { artwork: a1 } = await Artworks.createPendingArtwork({
       hostType: 'beat',
       hostId: b1._id.toString(),

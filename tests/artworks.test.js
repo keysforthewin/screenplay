@@ -296,7 +296,7 @@ describe('artworks.js — beat host', () => {
       model: 'fal',
     });
     expect(artwork.status).toBe('pending');
-    const fresh = await Plots.getBeat(b._id.toString());
+    const fresh = await Plots.getBeat(undefined, b._id.toString());
     expect(fresh.artworks).toHaveLength(1);
     expect(fresh.artworks[0].name).toBe('establishing');
   });
@@ -362,7 +362,7 @@ describe('artworks.js — beat host', () => {
       prompt: 'p3',
       model: 'gemini',
     });
-    const fresh = await Plots.getBeat(b._id.toString());
+    const fresh = await Plots.getBeat(undefined, b._id.toString());
     expect(fresh.artworks).toHaveLength(3);
     expect(fresh.artworks.map((a) => a.prompt)).toEqual(['p1', 'p2', 'p3']);
   });

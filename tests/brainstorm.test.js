@@ -38,12 +38,12 @@ describe('rapid-fire brainstorm: stub character + beats + rename', () => {
     // DOCUMENTED LIMITATION: beat.characters is a string array, not _id refs.
     // The rename does NOT propagate. The model is told (in systemPrompt) to
     // explicitly call update_beat to fix references after a rename.
-    const beatStaleLink = await Plots.getBeat(beat._id.toString());
+    const beatStaleLink = await Plots.getBeat(undefined, beat._id.toString());
     expect(beatStaleLink.characters).toEqual(['Nully', 'Streamer Kid']);
 
     // Apply the corrective update_beat the model is supposed to issue.
-    await Plots.updateBeat(beat._id.toString(), { characters: ['Nully', 'Marcus'] });
-    const beatFixed = await Plots.getBeat(beat._id.toString());
+    await Plots.updateBeat(undefined, beat._id.toString(), { characters: ['Nully', 'Marcus'] });
+    const beatFixed = await Plots.getBeat(undefined, beat._id.toString());
     expect(beatFixed.characters).toEqual(['Nully', 'Marcus']);
   });
 

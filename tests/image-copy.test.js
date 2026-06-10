@@ -184,7 +184,7 @@ describe('POST /api/character/:id/image/copy', () => {
     const char = await Characters.createCharacter({ name: 'Bronze Leopard' });
     const beat = await Plots.createBeat({ name: 'Diner Showdown' });
     const file = seedSourceImage({ ownerType: 'beat', ownerId: beat._id });
-    await Plots.pushBeatImage(beat._id.toString(), {
+    await Plots.pushBeatImage(undefined, beat._id.toString(), {
       _id: file._id,
       filename: file.filename,
       content_type: file.contentType,

@@ -73,7 +73,7 @@ describe('Plots.unlinkCharacterFromAllBeats', () => {
     await Plots.createBeat({ name: 'Mid', desc: 'd', characters: ['alice', 'Carol'] });
     await Plots.createBeat({ name: 'End', desc: 'd', characters: ['Bob'] });
 
-    const res = await Plots.unlinkCharacterFromAllBeats('Alice');
+    const res = await Plots.unlinkCharacterFromAllBeats(undefined, 'Alice');
     expect(res.unlinked_from).toBe(2);
 
     const beats = await Plots.listBeats();
@@ -84,7 +84,7 @@ describe('Plots.unlinkCharacterFromAllBeats', () => {
 
   it('reports zero when no beats reference the character', async () => {
     await Plots.createBeat({ name: 'Open', desc: 'd', characters: ['Bob'] });
-    const res = await Plots.unlinkCharacterFromAllBeats('Alice');
+    const res = await Plots.unlinkCharacterFromAllBeats(undefined, 'Alice');
     expect(res.unlinked_from).toBe(0);
   });
 });

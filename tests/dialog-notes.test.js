@@ -25,8 +25,8 @@ beforeEach(() => {
 describe('beat dialog_notes field', () => {
   it('updateBeat accepts and persists dialog_notes', async () => {
     const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: 'b' });
-    await Plots.updateBeat(beat._id, { dialog_notes: 'Keep it clipped.' });
-    const fresh = await Plots.getBeat(beat._id.toString());
+    await Plots.updateBeat(undefined, beat._id, { dialog_notes: 'Keep it clipped.' });
+    const fresh = await Plots.getBeat(undefined, beat._id.toString());
     expect(fresh.dialog_notes).toBe('Keep it clipped.');
   });
 });
@@ -34,7 +34,7 @@ describe('beat dialog_notes field', () => {
 describe('dialogs room dialog_notes fragment', () => {
   it('exposes a dialog_notes fragment seeded from the beat', async () => {
     const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: 'b' });
-    await Plots.updateBeat(beat._id, { dialog_notes: 'seeded note' });
+    await Plots.updateBeat(undefined, beat._id, { dialog_notes: 'seeded note' });
 
     const room = await resolveRoom(`dialogs:${beat._id.toString()}`);
     expect(room.fields).toContain('dialog_notes');
@@ -48,7 +48,7 @@ describe('dialogs room dialog_notes fragment', () => {
     const result = await room.persistFields({ dialog_notes: 'written from y-doc' });
     expect(result.changed).toBe(true);
 
-    const fresh = await Plots.getBeat(beat._id.toString());
+    const fresh = await Plots.getBeat(undefined, beat._id.toString());
     expect(fresh.dialog_notes).toBe('written from y-doc');
   });
 });

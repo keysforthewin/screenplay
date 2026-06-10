@@ -109,7 +109,7 @@ describe('resolveEntityLinks', () => {
   it('resolves :current: via plot.current_beat_id to the matching /beat/<order>', async () => {
     const a = await Plots.createBeat({ name: 'Open', desc: 'Opening scene' });
     await Plots.createBeat({ name: 'Inciting', desc: 'Inciting incident' });
-    await Plots.setCurrentBeat(a.order); // sets current to beat 1
+    await Plots.setCurrentBeat(undefined, a.order); // sets current to beat 1
     const t = createTouchedEntities();
     t.beats.add(':current:');
     const urls = await resolveEntityLinks(t);

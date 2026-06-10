@@ -303,7 +303,7 @@ describe('beat attachment handlers', () => {
     expect(out).toContain('recording.ogg');
     expect(out).toContain('use at PAULY IS FULL DEEP');
 
-    const after = await Plots.getBeat(beat._id.toString());
+    const after = await Plots.getBeat(undefined, beat._id.toString());
     expect(after.attachments).toHaveLength(1);
     expect(after.attachments[0].filename).toBe('recording.ogg');
     expect(after.attachments[0].caption).toBe('use at PAULY IS FULL DEEP');
@@ -350,7 +350,7 @@ describe('beat attachment handlers', () => {
     });
     expect(out).toMatch(/Removed attachment/);
     expect(Attachments.deleteAttachment).toHaveBeenCalledTimes(1);
-    const after = await Plots.getBeat(beat._id.toString());
+    const after = await Plots.getBeat(undefined, beat._id.toString());
     expect(after.attachments).toHaveLength(0);
   });
 

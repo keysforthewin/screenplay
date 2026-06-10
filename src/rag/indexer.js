@@ -23,7 +23,7 @@ import { embedTexts, RagDisabledError } from './embeddings.js';
 import { getCollection, isRagEnabled } from './chromaClient.js';
 import { setReindexRunner } from './queue.js';
 
-import { getPlot } from '../mongo/plots.js';
+import { findPlotByBeatId } from '../mongo/plots.js';
 import { getCharacter } from '../mongo/characters.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import { extractSearchableText } from '../mongo/messages.js';
@@ -157,8 +157,8 @@ async function safeRun(label, fn) {
 
 export async function indexBeat(beatId) {
   return safeRun(`beat:${beatId}`, async (col) => {
-    const plot = await getPlot();
-    const beat = (plot.beats || []).find((b) => b._id && idStr(b._id) === idStr(beatId));
+    const plot = await findPlotByBeatId(beatId);
+    const beat = (plot?.beats || []).find((b) => b._id && idStr(b._id) === idStr(beatId));
     if (!beat) {
       // Entity gone — clean up any chunks for it.
       try { await col.delete({ where: { $and: [{ entity_type: 'beat' }, { entity_id: idStr(beatId) }] } }); } catch {}
@@ -174,7 +174,7 @@ export async function indexBeat(beatId) {
     // Stamp rag_indexed_at into the embedded beat for resumable backfill.
     try {
       await getDb().collection('plots').updateOne(
-        { _id: 'main', 'beats._id': beat._id },
+        { _id: plot._id, 'beats._id': beat._id },
         { $set: { 'beats.$.rag_indexed_at': new Date() } },
       );
     } catch {}

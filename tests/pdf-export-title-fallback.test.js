@@ -28,14 +28,14 @@ function userPromptFromCall() {
 
 describe('exportToPdf title fallback', () => {
   it('uses an explicit title argument when one is provided (overrides plot.title)', async () => {
-    await Plots.updatePlot({ title: 'Stored Title' });
+    await Plots.updatePlot(undefined, { title: 'Stored Title' });
     const result = await exportToPdf({ title: 'Explicit Title' });
     expect(result.path).toMatch(/\.pdf$/);
     expect(userPromptFromCall()).toMatch(/Working title: "Explicit Title"/);
   });
 
   it('falls back to the persisted plot.title when no title argument is given', async () => {
-    await Plots.updatePlot({ title: 'Stored Title' });
+    await Plots.updatePlot(undefined, { title: 'Stored Title' });
     const result = await exportToPdf({});
     expect(result.path).toMatch(/\.pdf$/);
     expect(userPromptFromCall()).toMatch(/Working title: "Stored Title"/);
@@ -49,7 +49,7 @@ describe('exportToPdf title fallback', () => {
   });
 
   it('treats a whitespace-only title argument as missing and uses plot.title', async () => {
-    await Plots.updatePlot({ title: 'Stored Title' });
+    await Plots.updatePlot(undefined, { title: 'Stored Title' });
     const result = await exportToPdf({ title: '   ' });
     expect(result.path).toMatch(/\.pdf$/);
     expect(userPromptFromCall()).toMatch(/Working title: "Stored Title"/);
@@ -57,7 +57,7 @@ describe('exportToPdf title fallback', () => {
 
   it('character-only filter (synthetic plot has no title) reads plot.title from DB as fallback', async () => {
     await Characters.createCharacter({ name: 'Alice', plays_self: true, own_voice: true });
-    await Plots.updatePlot({ title: 'Stored Title' });
+    await Plots.updatePlot(undefined, { title: 'Stored Title' });
     const result = await exportToPdf({ characters: ['Alice'] });
     expect(result.path).toMatch(/\.pdf$/);
     expect(userPromptFromCall()).toMatch(/Working title: "Stored Title"/);
@@ -65,7 +65,7 @@ describe('exportToPdf title fallback', () => {
 
   it('beats_query mode (synthetic plot) reads plot.title from DB as fallback', async () => {
     await Plots.createBeat({ name: 'Heist Setup', desc: 'Plan the score.' });
-    await Plots.updatePlot({ title: 'Stored Title' });
+    await Plots.updatePlot(undefined, { title: 'Stored Title' });
     const result = await exportToPdf({ beats_query: 'heist' });
     expect(result.path).toMatch(/\.pdf$/);
     expect(userPromptFromCall()).toMatch(/Working title: "Stored Title"/);

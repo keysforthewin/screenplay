@@ -624,7 +624,7 @@ describe('auto-populated reference images', () => {
       body: 'Alice walks in. Bob is waiting.',
       characters: ['Alice', 'Bob'],
     });
-    await Plots.pushBeatImage(beat._id, { _id: beatImg }, true);
+    await Plots.pushBeatImage(undefined, beat._id, { _id: beatImg }, true);
 
     const jobId = await Generate.startStoryboardGenerationJob({
       beatId: beat._id.toString(),

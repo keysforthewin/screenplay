@@ -52,7 +52,7 @@ describe('buildOverview', () => {
 
   it('summarizes a populated screenplay', async () => {
     await seedTemplate();
-    await Plots.updatePlot({ synopsis: 'A test story.', notes: 'some notes' });
+    await Plots.updatePlot(undefined, { synopsis: 'A test story.', notes: 'some notes' });
 
     await Characters.createCharacter({
       name: 'Alice',
@@ -66,7 +66,7 @@ describe('buildOverview', () => {
 
     const beat1 = await Plots.createBeat({ name: 'Open', desc: 'Opening scene', body: 'lots of words' });
     await Plots.createBeat({ name: 'Climax', desc: 'They fight.', characters: ['Alice', 'Bob'] });
-    await Plots.setCurrentBeat(beat1._id.toString());
+    await Plots.setCurrentBeat(undefined, beat1._id.toString());
 
     const o = await buildOverview();
 
@@ -117,7 +117,7 @@ describe('buildOverview', () => {
       { _id: alice._id },
       { $set: { main_image_id: charImgId, images: [{ _id: charImgId }] } },
     );
-    await Plots.pushBeatImage(beat._id.toString(), {
+    await Plots.pushBeatImage(undefined, beat._id.toString(), {
       _id: new ObjectId(),
       filename: 'x.png',
       content_type: 'image/png',

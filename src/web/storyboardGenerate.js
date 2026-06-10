@@ -325,7 +325,7 @@ export async function startBulkFrameGenerationJob({
   beatId,
   imageModel = 'nano-banana-pro',
 }) {
-  const beat = await getBeat(beatId);
+  const beat = await getBeat(undefined, beatId);
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
@@ -449,7 +449,7 @@ export function getCritiqueJob(jobId) {
 export async function startCritiqueJob({ storyboardId, target = 'prompt' }) {
   const sb = await getStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const beat = await getBeat(sb.beat_id.toString());
+  const beat = await getBeat(undefined, sb.beat_id.toString());
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
   const jobId = makeJobId();
   const job = {
@@ -515,7 +515,7 @@ export async function startStoryboardGenerationJob({
   direction = '',
   announceUsername = null,
 }) {
-  const beat = await getBeat(beatId);
+  const beat = await getBeat(undefined, beatId);
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
@@ -606,7 +606,7 @@ async function runStoryboardGenerationJob({
   // individual row creation fails below.
   if (sceneBible && !isEmptySceneBible(sceneBible)) {
     try {
-      await setBeatSceneBible(beat._id, sceneBible);
+      await setBeatSceneBible(undefined, beat._id, sceneBible);
     } catch (e) {
       logger.warn(`storyboard gen: persist scene bible failed: ${e.message}`);
     }
@@ -1198,7 +1198,7 @@ export async function reExpandShotInner({ sb, beat, critiqueGuidance = '' }) {
 export async function reExpandShot({ storyboardId, critiqueGuidance = '' }) {
   const sb = await getStoryboard(storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const beat = await getBeat(sb.beat_id.toString());
+  const beat = await getBeat(undefined, sb.beat_id.toString());
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
   // Fail-fast if a generation job (delete+recreate) is in flight for this beat —
   // mirror regenerateStoryboardFrame. Editing prompts against rows a concurrent
@@ -1220,7 +1220,7 @@ export function getReExpandAllJob(jobId) { return reExpandAllJobs.get(jobId) || 
 // reExpandShotInner. Per-shot failures are swallowed so one bad shot doesn't
 // abort the batch.
 export async function startReExpandAllJob({ beatId }) {
-  const beat = await getBeat(beatId);
+  const beat = await getBeat(undefined, beatId);
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
   if (isBeatLocked(beat._id)) throw new BeatBusyError(beat._id.toString());
   const jobId = makeJobId();
@@ -1596,7 +1596,7 @@ export async function regenerateStoryboardFrame({
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const frame = getFrame(sb, frameId);
   if (!frame) throw new FrameNotFoundError(frameId);
-  const beat = await getBeat(sb.beat_id);
+  const beat = await getBeat(undefined, sb.beat_id);
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
@@ -1622,7 +1622,7 @@ export async function previewFrameGenerationPrompt({ storyboardId, frameId }) {
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const frame = getFrame(sb, frameId);
   if (!frame) throw new FrameNotFoundError(frameId);
-  const beat = await getBeat(sb.beat_id);
+  const beat = await getBeat(undefined, sb.beat_id);
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
@@ -1754,7 +1754,7 @@ export async function startFrameGenerationJob({
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const frame = getFrame(sb, frameId);
   if (!frame) throw new FrameNotFoundError(frameId);
-  const beat = await getBeat(sb.beat_id);
+  const beat = await getBeat(undefined, sb.beat_id);
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());

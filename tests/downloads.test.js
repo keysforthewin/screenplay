@@ -50,7 +50,7 @@ vi.mock('../src/web/auth.js', () => ({
 }));
 
 vi.mock('../src/mongo/plots.js', () => ({
-  getBeat: async (idOrOrder) => {
+  getBeat: async (_projectId, idOrOrder) => {
     if (idOrOrder === beatId.toString() || idOrOrder === '7') {
       return { _id: beatId, order: 7, name: 'Climax **scene**' };
     }

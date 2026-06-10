@@ -31,7 +31,7 @@ describe('auto prompt-critique (Pass 4)', () => {
   it('critiques each generated row and persists prompt_critique', async () => {
     const { createBeat, getBeat } = await import('../src/mongo/plots.js');
     await createBeat({ name: 'CritBeat', desc: 'scene', characters: [] });
-    const beat = await getBeat('CritBeat');
+    const beat = await getBeat(undefined, 'CritBeat');
 
     gen._setScenePlannerForTests(() => ({
       sceneBible: { location: 'Diner' },
@@ -81,8 +81,8 @@ describe('on-demand critique job', () => {
     const { createBeat, getBeat, setBeatSceneBible } = await import('../src/mongo/plots.js');
     const { createStoryboard, getStoryboard } = await import('../src/mongo/storyboards.js');
     await createBeat({ name: 'OnDemand', desc: 'x', characters: [] });
-    const beat = await getBeat('OnDemand');
-    await setBeatSceneBible('OnDemand', { location: 'Diner' });
+    const beat = await getBeat(undefined, 'OnDemand');
+    await setBeatSceneBible(undefined, 'OnDemand', { location: 'Diner' });
     const sb = await createStoryboard({ beatId: beat._id, order: 1, textPrompt: 'tp', summary: 'a shot' });
 
     gen._setCritiquePanelForTests(async ({ target }) => ({
@@ -107,7 +107,7 @@ describe('on-demand critique job', () => {
     const { createBeat, getBeat } = await import('../src/mongo/plots.js');
     const { createStoryboard } = await import('../src/mongo/storyboards.js');
     await createBeat({ name: 'NoImg', desc: 'x', characters: [] });
-    const beat = await getBeat('NoImg');
+    const beat = await getBeat(undefined, 'NoImg');
     const sb = await createStoryboard({ beatId: beat._id, order: 1, summary: 's' });
 
     const jobId = await gen.startCritiqueJob({ storyboardId: sb._id.toString(), target: 'image' });
@@ -129,8 +129,8 @@ describe('reExpandShot (regenerate prompt from critique)', () => {
     const { createBeat, getBeat, setBeatSceneBible } = await import('../src/mongo/plots.js');
     const { createStoryboard, getStoryboard } = await import('../src/mongo/storyboards.js');
     await createBeat({ name: 'ReExp', desc: 'x', characters: [] });
-    const beat = await getBeat('ReExp');
-    await setBeatSceneBible('ReExp', { location: 'Diner' });
+    const beat = await getBeat(undefined, 'ReExp');
+    await setBeatSceneBible(undefined, 'ReExp', { location: 'Diner' });
     const sb = await createStoryboard({ beatId: beat._id, order: 1, textPrompt: 'OLD', summary: 'Sarah at counter', shotType: 'close_up', durationSeconds: 3 });
 
     let sawNotes = null;

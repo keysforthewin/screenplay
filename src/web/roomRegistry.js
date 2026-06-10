@@ -269,7 +269,7 @@ async function describeBeatRoom(id) {
           const frag = `scene_bible.${f}`;
           bible[f] = snapshot[frag] !== undefined ? snapshot[frag] : readMongoValue(frag);
         }
-        await setBeatSceneBible(id, bible);
+        await setBeatSceneBible(undefined, id, bible);
       }
 
       const imgPersist = await persistOwnedImageFragments(snapshot, imageFragments.seed);
@@ -279,7 +279,7 @@ async function describeBeatRoom(id) {
       );
       const entityChangedKeys = Object.keys(patch);
       if (entityChangedKeys.length) {
-        await updateBeat(id, patch);
+        await updateBeat(undefined, id, patch);
         enqueueReindex('beat', id);
       }
       const allChanged = [
@@ -530,7 +530,7 @@ async function describeDialogsRoom(beatId) {
   const dialogs = await listDialogs({ beatId });
   // The beat itself carries a shared "Dialogue Notes" fragment, alongside the
   // per-item body/character fragments. It steers generation/regeneration/critique.
-  const beat = await getBeat(beatId).catch(() => null);
+  const beat = await getBeat(undefined, beatId).catch(() => null);
   const fields = ['dialog_notes'];
   const seed = { dialog_notes: beat?.dialog_notes || '' };
   const dialogById = new Map();
@@ -557,7 +557,7 @@ async function describeDialogsRoom(beatId) {
         snapshot.dialog_notes !== notesSeed
       ) {
         try {
-          await updateBeat(beatId, { dialog_notes: snapshot.dialog_notes });
+          await updateBeat(undefined, beatId, { dialog_notes: snapshot.dialog_notes });
           changedFields.push('dialog_notes');
         } catch (e) {
           logger.warn(`dialogs persist failed beat=${beatId} field=dialog_notes: ${e.message}`);
@@ -732,7 +732,7 @@ async function describePlotRoom() {
       }
       const changed = Object.keys(patch);
       if (!changed.length) return { changed: false };
-      await updatePlot(patch);
+      await updatePlot(undefined, patch);
       return { changed: true, fields: changed };
     },
   };

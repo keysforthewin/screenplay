@@ -64,7 +64,7 @@ async function makeBeatWithMainArtwork() {
     artworkId: artwork._id,
     resultImageId: r1,
   });
-  await Plots.setBeatMainImage(b._id.toString(), r1);
+  await Plots.setBeatMainImage(undefined, b._id.toString(), r1);
   return { b, artworkId: artwork._id, r1 };
 }
 
@@ -204,7 +204,7 @@ describe('Artwork → main_image_id cascade (beat)', () => {
     expect(out.orphanedImageId.equals(r1)).toBe(true);
     expect(out.mainImageIdChange?.changed).toBe(true);
     expect(out.mainImageIdChange.value.equals(r2)).toBe(true);
-    const fresh = await Plots.getBeat(b._id.toString());
+    const fresh = await Plots.getBeat(undefined, b._id.toString());
     expect(fresh.main_image_id.equals(r2)).toBe(true);
   });
 
@@ -217,7 +217,7 @@ describe('Artwork → main_image_id cascade (beat)', () => {
     });
     expect(out.mainImageIdChange?.changed).toBe(true);
     expect(out.mainImageIdChange.value).toBeNull();
-    const fresh = await Plots.getBeat(b._id.toString());
+    const fresh = await Plots.getBeat(undefined, b._id.toString());
     expect(fresh.main_image_id).toBeNull();
   });
 });

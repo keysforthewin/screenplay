@@ -771,7 +771,7 @@ async function runVideoGenerationJob({
         const { storyboardUrl } = await import('./links.js');
         const { stripMarkdown } = await import('../util/markdown.js');
         const { getBeat } = await import('../mongo/plots.js');
-        const beat = await getBeat(String(storyboard.beat_id));
+        const beat = await getBeat(undefined, String(storyboard.beat_id));
         const name = beat ? stripMarkdown(beat.name || '').trim() : '';
         const order = beat && Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
         const beatLabel = name ? `${order}: ${name}` : order;

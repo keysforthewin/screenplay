@@ -45,7 +45,7 @@ describe('similar_works', () => {
   });
 
   it('uses synopsis + beat outlines for plot scope', async () => {
-    await Plots.updatePlot({
+    await Plots.updatePlot(undefined, {
       synopsis: 'A young wizard discovers he is destined to defeat a dark lord at school.',
     });
     await Plots.createBeat({ name: 'Letter Arrives', desc: 'Mysterious letter arrives by owl post.' });
@@ -73,7 +73,7 @@ describe('similar_works', () => {
   });
 
   it('uses one beat for beat scope', async () => {
-    await Plots.updatePlot({ synopsis: 'something' });
+    await Plots.updatePlot(undefined, { synopsis: 'something' });
     const beat = await Plots.createBeat({
       name: 'Diner Showdown',
       desc: 'Two former lovers argue at the diner.',
@@ -90,10 +90,10 @@ describe('similar_works', () => {
   });
 
   it('falls back to current beat when scope=beat and beat omitted', async () => {
-    await Plots.updatePlot({ synopsis: 'x' });
+    await Plots.updatePlot(undefined, { synopsis: 'x' });
     await Plots.createBeat({ name: 'First', desc: 'first beat unique-token-alpha' });
     await Plots.createBeat({ name: 'Second', desc: 'second beat unique-token-beta' });
-    await Plots.setCurrentBeat('First');
+    await Plots.setCurrentBeat(undefined, 'First');
     tavilySearch.mockResolvedValue({ results: [] });
     analyzeTextMock.mockResolvedValue('none');
     await HANDLERS.similar_works({ scope: 'beat' });
@@ -111,7 +111,7 @@ describe('similar_works', () => {
   });
 
   it('appends focus to the query', async () => {
-    await Plots.updatePlot({ synopsis: 'A heist crew plans one last score.' });
+    await Plots.updatePlot(undefined, { synopsis: 'A heist crew plans one last score.' });
     tavilySearch.mockResolvedValue({ results: [] });
     analyzeTextMock.mockResolvedValue('none');
     await HANDLERS.similar_works({ focus: 'heist films' });

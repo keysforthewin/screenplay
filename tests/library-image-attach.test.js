@@ -195,7 +195,7 @@ describe('attach_library_image_to_character', () => {
     const file = seedLibraryImage({
       metadata: { owner_type: 'beat', owner_id: beat._id },
     });
-    await Plots.pushBeatImage(beat._id.toString(), {
+    await Plots.pushBeatImage(undefined, beat._id.toString(), {
       _id: file._id,
       filename: file.filename,
       content_type: file.contentType,
@@ -323,7 +323,7 @@ describe('attach_library_image_to_character handler', () => {
     const file = seedLibraryImage({
       metadata: { owner_type: 'beat', owner_id: beat._id },
     });
-    await Plots.pushBeatImage(beat._id.toString(), {
+    await Plots.pushBeatImage(undefined, beat._id.toString(), {
       _id: file._id,
       filename: file.filename,
       content_type: file.contentType,

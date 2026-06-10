@@ -48,7 +48,7 @@ describe('gateway: moveBeatImageToLibraryViaGateway', () => {
     const b = await Plots.createBeat({ name: 'Diner', desc: 'd' });
     const imageId = new ObjectId();
     seedOwnedImage({ ownerType: 'beat', ownerId: b._id, _id: imageId });
-    await Plots.pushBeatImage(b._id.toString(), {
+    await Plots.pushBeatImage(undefined, b._id.toString(), {
       _id: imageId,
       filename: 'a.png',
       content_type: 'image/png',
@@ -112,7 +112,7 @@ describe('handler: move_image_to_library', () => {
     const b = await Plots.createBeat({ name: 'Diner', desc: 'd' });
     const imageId = new ObjectId();
     seedOwnedImage({ ownerType: 'beat', ownerId: b._id, _id: imageId });
-    await Plots.pushBeatImage(b._id.toString(), {
+    await Plots.pushBeatImage(undefined, b._id.toString(), {
       _id: imageId,
       filename: 'a.png',
       content_type: 'image/png',

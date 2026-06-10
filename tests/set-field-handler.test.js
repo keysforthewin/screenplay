@@ -73,7 +73,7 @@ describe('set_field handler — beat', () => {
       value: 5,
     });
     expect(out).toMatch(/Set beat "A"\.order = 5/);
-    expect((await Plots.getBeat(a._id.toString())).order).toBe(5);
+    expect((await Plots.getBeat(undefined, a._id.toString())).order).toBe(5);
   });
 
   it('rejects non-number for order', async () => {
@@ -96,7 +96,7 @@ describe('set_field handler — beat', () => {
       value: ['New1', 'New2'],
     });
     expect(out).toMatch(/Set beat "A"\.characters = \["New1", "New2"\]/);
-    expect((await Plots.getBeat(a._id.toString())).characters).toEqual(['New1', 'New2']);
+    expect((await Plots.getBeat(undefined, a._id.toString())).characters).toEqual(['New1', 'New2']);
   });
 
   it('rejects non-string-array characters', async () => {

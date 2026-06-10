@@ -38,13 +38,13 @@ describe('mongo: replaceBeatImage', () => {
     const b = await Plots.createBeat({ name: 'Diner', desc: 'd' });
     const old1 = new ObjectId();
     const old2 = new ObjectId();
-    await Plots.pushBeatImage(b._id.toString(), {
+    await Plots.pushBeatImage(undefined, b._id.toString(), {
       _id: old1,
       filename: 'a.png',
       content_type: 'image/png',
       size: 1,
     });
-    await Plots.pushBeatImage(b._id.toString(), {
+    await Plots.pushBeatImage(undefined, b._id.toString(), {
       _id: old2,
       filename: 'b.png',
       content_type: 'image/png',
@@ -56,7 +56,7 @@ describe('mongo: replaceBeatImage', () => {
     expect(beat.main_image_id.equals(old1)).toBe(true);
 
     const newId = new ObjectId();
-    const result = await Plots.replaceBeatImage(b._id.toString(), old1, {
+    const result = await Plots.replaceBeatImage(undefined, b._id.toString(), old1, {
       _id: newId,
       filename: 'new.png',
       content_type: 'image/png',
@@ -77,7 +77,7 @@ describe('mongo: replaceBeatImage', () => {
   it('throws when the old image is not on the beat', async () => {
     const b = await Plots.createBeat({ name: 'Diner', desc: 'd' });
     await expect(
-      Plots.replaceBeatImage(b._id.toString(), new ObjectId(), {
+      Plots.replaceBeatImage(undefined, b._id.toString(), new ObjectId(), {
         _id: new ObjectId(),
         filename: 'x.png',
         content_type: 'image/png',
@@ -123,7 +123,7 @@ describe('gateway: replaceBeatImageViaGateway deletes old gridfs bytes', () => {
   it('passes through to mongo replace, then drops the old image bytes', async () => {
     const b = await Plots.createBeat({ name: 'Diner', desc: 'd' });
     const old = new ObjectId();
-    await Plots.pushBeatImage(b._id.toString(), {
+    await Plots.pushBeatImage(undefined, b._id.toString(), {
       _id: old,
       filename: 'a.png',
       content_type: 'image/png',

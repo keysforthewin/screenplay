@@ -63,7 +63,7 @@ const SYSTEM_PROMPT = [
 ].join('\n');
 
 export async function critiqueDialog({ beatId } = {}) {
-  const beat = await getBeat(String(beatId));
+  const beat = await getBeat(undefined, String(beatId));
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
   const dialogs = await listDialogs({ beatId: beat._id });
   if (!dialogs.length) return { scores: [] };

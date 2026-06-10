@@ -30,7 +30,7 @@ describe('plot room', () => {
   });
 
   it('describePlotRoom exposes title/synopsis/dialogue_style seeded from Mongo', async () => {
-    await Plots.updatePlot({
+    await Plots.updatePlot(undefined, {
       title: 'Neon City',
       synopsis: 'A detective hunts a ghost.',
       dialogue_style: '1970s neo-noir.',
@@ -45,7 +45,7 @@ describe('plot room', () => {
   });
 
   it('persistFields writes only changed fields back to Mongo', async () => {
-    await Plots.updatePlot({ title: 'Old', synopsis: 'keep', dialogue_style: 'keep too' });
+    await Plots.updatePlot(undefined, { title: 'Old', synopsis: 'keep', dialogue_style: 'keep too' });
 
     const desc = await resolveRoom('plot');
     const result = await desc.persistFields({
@@ -62,7 +62,7 @@ describe('plot room', () => {
   });
 
   it('persistFields is a no-op when nothing changed', async () => {
-    await Plots.updatePlot({ title: 'Same', synopsis: 'same', dialogue_style: 'same' });
+    await Plots.updatePlot(undefined, { title: 'Same', synopsis: 'same', dialogue_style: 'same' });
     const desc = await resolveRoom('plot');
     const result = await desc.persistFields({
       title: 'Same',

@@ -27,12 +27,12 @@ beforeEach(() => {
 async function setPlotStyle(text) {
   await fakeDb
     .collection('plots')
-    .updateOne({ _id: 'main' }, { $set: { dialogue_style: text } });
+    .updateOne({}, { $set: { dialogue_style: text } });
 }
 
 describe('buildDialogContext', () => {
   it('includes the logline (title + synopsis)', async () => {
-    await Plots.updatePlot({ title: 'The Long Drive', synopsis: 'A courier crosses a dead country.' });
+    await Plots.updatePlot(undefined, { title: 'The Long Drive', synopsis: 'A courier crosses a dead country.' });
     const beat = await Plots.createBeat({ name: 'Open road', desc: 'd', body: 'b' });
 
     const ctx = await buildDialogContext(beat);

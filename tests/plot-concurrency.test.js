@@ -52,10 +52,10 @@ describe('plots concurrency — beat mutations must not clobber each other', () 
         artworkId: artwork._id,
         resultImageId: newResult,
       }),
-      Plots.updateBeat(beat._id.toString(), { body: 'new body' }),
+      Plots.updateBeat(undefined, beat._id.toString(), { body: 'new body' }),
     ]);
 
-    const fresh = await Plots.getBeat(beat._id.toString());
+    const fresh = await Plots.getBeat(undefined, beat._id.toString());
     expect(fresh.body).toBe('new body');
     expect(fresh.artworks).toHaveLength(1);
     expect(fresh.artworks[0].status).toBe('done');
@@ -72,10 +72,10 @@ describe('plots concurrency — beat mutations must not clobber each other', () 
         prompt: 'p',
         model: 'nano-banana-pro',
       }),
-      Plots.updateBeat(beat._id.toString(), { body: 'new body' }),
+      Plots.updateBeat(undefined, beat._id.toString(), { body: 'new body' }),
     ]);
 
-    const fresh = await Plots.getBeat(beat._id.toString());
+    const fresh = await Plots.getBeat(undefined, beat._id.toString());
     expect(fresh.body).toBe('new body');
     expect(fresh.artworks).toHaveLength(1);
     expect(fresh.artworks[0]._id.toString()).toBe(artwork._id.toString());
@@ -100,7 +100,7 @@ describe('plots concurrency — beat mutations must not clobber each other', () 
       }),
     ]);
 
-    const fresh = await Plots.getBeat(beat._id.toString());
+    const fresh = await Plots.getBeat(undefined, beat._id.toString());
     const ids = (fresh.artworks || []).map((aw) => aw._id.toString()).sort();
     const expected = [a.artwork._id.toString(), b.artwork._id.toString()].sort();
     expect(ids).toEqual(expected);
@@ -124,11 +124,11 @@ describe('plots concurrency — beat mutations must not clobber each other', () 
         artworkId: artwork._id,
         resultImageId: newResult,
       }),
-      Plots.updateBeat(beatB._id.toString(), { body: 'b-new' }),
+      Plots.updateBeat(undefined, beatB._id.toString(), { body: 'b-new' }),
     ]);
 
-    const freshA = await Plots.getBeat(beatA._id.toString());
-    const freshB = await Plots.getBeat(beatB._id.toString());
+    const freshA = await Plots.getBeat(undefined, beatA._id.toString());
+    const freshB = await Plots.getBeat(undefined, beatB._id.toString());
     expect(freshA.artworks[0].status).toBe('done');
     expect(freshA.artworks[0].result_image_id.toString()).toBe(newResult.toString());
     expect(freshB.body).toBe('b-new');

@@ -396,7 +396,7 @@ async function resolveBeat(identifier, { allowCurrent = true } = {}) {
     }
     return cur;
   }
-  const b = await Plots.getBeat(String(identifier));
+  const b = await Plots.getBeat(undefined, String(identifier));
   if (!b) throw new Error(`Beat not found: ${identifier}`);
   return b;
 }
@@ -1143,7 +1143,7 @@ export const HANDLERS = {
         target.gatewayField === 'desc' ||
         target.gatewayField === 'body'
       ) {
-        const fresh = await Plots.getBeat(target.entityId);
+        const fresh = await Plots.getBeat(undefined, target.entityId);
         if (fresh) summary = await appendSimilarityHeadsUp('beat', fresh, summary);
       }
     }
@@ -1390,7 +1390,7 @@ export const HANDLERS = {
   async delete_character({ identifier }) {
     const existing = await Characters.getCharacter(identifier);
     if (!existing) return `No character found for "${identifier}".`;
-    const { unlinked_from } = await Plots.unlinkCharacterFromAllBeats(existing.name);
+    const { unlinked_from } = await Plots.unlinkCharacterFromAllBeats(undefined, existing.name);
     const res = await Characters.deleteCharacter(existing._id.toString());
     await Images.deleteImages(res.image_ids);
     await Attachments.deleteAttachments(res.attachment_ids);
@@ -1651,7 +1651,7 @@ export const HANDLERS = {
   },
 
   async get_beat({ identifier, full_body } = {}) {
-    const b = await Plots.getBeat(identifier);
+    const b = await Plots.getBeat(undefined, identifier);
     if (!b) {
       return identifier
         ? `No beat found for "${identifier}".`
@@ -1785,7 +1785,7 @@ export const HANDLERS = {
   },
 
   async search_beats({ query }) {
-    const matches = await Plots.searchBeats(query);
+    const matches = await Plots.searchBeats(undefined, query);
     return compact({
       query,
       result_count: matches.length,
@@ -1801,14 +1801,14 @@ export const HANDLERS = {
   },
 
   async delete_beat({ identifier }) {
-    const res = await Plots.deleteBeat(identifier);
+    const res = await Plots.deleteBeat(undefined, identifier);
     await Images.deleteImages(res.image_ids);
     return `Deleted beat "${res.name}" and ${res.image_ids.length} image(s).`;
   },
 
   async link_character_to_beat({ beat, character }) {
     const target = await resolveBeat(beat);
-    const updated = await Plots.linkCharacterToBeat(target._id.toString(), character);
+    const updated = await Plots.linkCharacterToBeat(undefined, target._id.toString(), character);
     return withSpaLink(
       `Linked ${character} to beat "${updated.name}". Characters now: ${updated.characters.join(', ') || '(none)'}.`,
       beatUrl(updated),
@@ -1817,7 +1817,7 @@ export const HANDLERS = {
 
   async unlink_character_from_beat({ beat, character }) {
     const target = await resolveBeat(beat);
-    const updated = await Plots.unlinkCharacterFromBeat(target._id.toString(), character);
+    const updated = await Plots.unlinkCharacterFromBeat(undefined, target._id.toString(), character);
     return withSpaLink(
       `Unlinked ${character} from beat "${updated.name}". Characters now: ${updated.characters.join(', ') || '(none)'}.`,
       beatUrl(updated),
@@ -1825,7 +1825,7 @@ export const HANDLERS = {
   },
 
   async set_current_beat({ identifier }) {
-    const b = await Plots.setCurrentBeat(identifier);
+    const b = await Plots.setCurrentBeat(undefined, identifier);
     return `Current beat is now "${b.name}" (_id ${b._id}).`;
   },
 
@@ -2004,7 +2004,7 @@ export const HANDLERS = {
       caption: null,
       uploaded_at: file.uploadDate,
     };
-    const { is_main } = await Plots.pushBeatImage(target._id.toString(), meta, set_as_main);
+    const { is_main } = await Plots.pushBeatImage(undefined, target._id.toString(), meta, set_as_main);
     const moveSuffix = formatMovedFromSuffix(movedFrom);
     return withSpaLink(
       `Attached image to beat "${target.name}"${is_main ? ' (now main image)' : ''}${moveSuffix}.`,
@@ -2023,7 +2023,7 @@ export const HANDLERS = {
     }
     try {
       if (ownerType === 'beat') {
-        const beat = await Plots.getBeat(String(ownerId));
+        const beat = await Plots.getBeat(undefined, String(ownerId));
         if (!beat) {
           return `Error: image's owner beat ${ownerId} was not found.`;
         }
@@ -2385,7 +2385,7 @@ export const HANDLERS = {
         caption: null,
         uploaded_at: file.uploaded_at,
       };
-      await Plots.pushBeatImage(targetBeatDoc._id.toString(), beatMeta, set_as_main);
+      await Plots.pushBeatImage(undefined, targetBeatDoc._id.toString(), beatMeta, set_as_main);
       where = `attached to beat "${targetBeatDoc.name}"`;
     }
 
@@ -2597,7 +2597,7 @@ export const HANDLERS = {
         caption: null,
         uploaded_at: file.uploaded_at,
       };
-      await Plots.pushBeatImage(targetBeat._id.toString(), beatMeta, effectiveSetAsMain);
+      await Plots.pushBeatImage(undefined, targetBeat._id.toString(), beatMeta, effectiveSetAsMain);
       where = `attached to beat "${targetBeat.name}"`;
     } else if (targetNoteId) {
       const noteMeta = {
@@ -2627,7 +2627,7 @@ export const HANDLERS = {
             imageId: srcFile._id.toString(),
           });
         } else if (srcOwnerType === 'beat' && srcOwnerBeat) {
-          await Plots.pullBeatImage(srcOwnerBeat._id.toString(), srcFile._id.toString());
+          await Plots.pullBeatImage(undefined, srcOwnerBeat._id.toString(), srcFile._id.toString());
           await Images.deleteImage(srcFile._id);
         } else if (srcOwnerType === 'director_note' && srcOwnerNoteId) {
           await DirectorNotes.pullDirectorNoteImage(
@@ -2743,7 +2743,7 @@ export const HANDLERS = {
       caption: caption?.trim() || null,
       uploaded_at: file.uploaded_at,
     };
-    await Plots.pushBeatAttachment(target._id.toString(), meta);
+    await Plots.pushBeatAttachment(undefined, target._id.toString(), meta);
     const text = `Added attachment to beat "${target.name}".\n${compact({
       _id: meta._id.toString(),
       filename: meta.filename,
@@ -2773,6 +2773,7 @@ export const HANDLERS = {
   async remove_beat_attachment({ beat, attachment_id }) {
     const target = await resolveBeat(beat);
     const { removed, beat: updated } = await Plots.pullBeatAttachment(
+      undefined,
       target._id.toString(),
       attachment_id,
     );
@@ -3064,7 +3065,7 @@ export const HANDLERS = {
         return { id: b._id.toString(), label: `#${b.order} ${b.name}`, fields };
       });
       if (identifier) {
-        const t = await Plots.getBeat(identifier);
+        const t = await Plots.getBeat(undefined, identifier);
         if (!t) return `No beat found for "${identifier}".`;
         excludeId = t._id.toString();
         const targetText = BEAT_TEXT_FIELDS.map((f) => t[f] || '').filter(Boolean).join('\n');

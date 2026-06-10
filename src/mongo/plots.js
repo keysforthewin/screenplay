@@ -3,6 +3,7 @@ import { getDb } from './client.js';
 import { logger } from '../log.js';
 import { applyMarkdownEdits } from '../util/textWindow.js';
 import { normalizeSceneBible } from './sceneBible.js';
+import { resolveProjectId, getDefaultProject } from './projects.js';
 
 const col = () => getDb().collection('plots');
 
@@ -98,18 +99,33 @@ async function ensureBeatIds(plot) {
   });
   if (changed) {
     await col().updateOne(
-      { _id: 'main' },
+      { _id: plot._id },
       { $set: { beats, updated_at: new Date() } },
     );
   }
   return { ...plot, beats };
 }
 
-export async function getPlot() {
-  let existing = await col().findOne({ _id: 'main' });
+export async function getPlot(projectId) {
+  projectId = await resolveProjectId(projectId);
+  let existing = await col().findOne({ project_id: projectId });
+  if (!existing) {
+    // Lazy-claim: adopt the pre-multi-project singleton {_id:'main'} for the
+    // default project the first time it is read post-upgrade.
+    const defaultId = (await getDefaultProject())._id.toString();
+    if (projectId === defaultId) {
+      const legacy = await col().findOne({ _id: 'main', project_id: { $exists: false } });
+      if (legacy) {
+        await col().updateOne({ _id: 'main' }, { $set: { project_id: projectId } });
+        existing = { ...legacy, project_id: projectId };
+        logger.info('mongo: plot lazy-claimed legacy {_id:"main"} doc for default project');
+      }
+    }
+  }
   if (!existing) {
     existing = {
-      _id: 'main',
+      _id: new ObjectId(),
+      project_id: projectId,
       title: '',
       synopsis: '',
       beats: [],
@@ -122,16 +138,17 @@ export async function getPlot() {
   }
   if (existing.current_beat_id === undefined) {
     existing.current_beat_id = null;
-    await col().updateOne({ _id: 'main' }, { $set: { current_beat_id: null } });
+    await col().updateOne({ _id: existing._id }, { $set: { current_beat_id: null } });
   }
   if (existing.title === undefined) {
     existing.title = '';
-    await col().updateOne({ _id: 'main' }, { $set: { title: '' } });
+    await col().updateOne({ _id: existing._id }, { $set: { title: '' } });
   }
   return ensureBeatIds(existing);
 }
 
-export async function updatePlot(patch) {
+export async function updatePlot(projectId, patch) {
+  projectId = await resolveProjectId(projectId);
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new Error(
       `update_plot: \`patch\` must be an object like {synopsis: "..."}, got ${
@@ -145,7 +162,7 @@ export async function updatePlot(patch) {
       `update_plot: \`patch\` has no recognized fields. Expected one of: ${recognized.join(', ')}. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
-  await getPlot();
+  await getPlot(projectId);
   const set = { updated_at: new Date() };
   if (patch.title !== undefined) {
     if (typeof patch.title !== 'string') {
@@ -156,15 +173,15 @@ export async function updatePlot(patch) {
   if (patch.synopsis !== undefined) set.synopsis = patch.synopsis;
   if (patch.notes !== undefined) set.notes = patch.notes;
   if (patch.dialogue_style !== undefined) set.dialogue_style = patch.dialogue_style;
-  const result = await col().updateOne({ _id: 'main' }, { $set: set });
+  const result = await col().updateOne({ project_id: projectId }, { $set: set });
   if (!result || result.matchedCount === 0) {
-    const msg = 'updatePlot: plot doc {_id: "main"} not found — write did not apply.';
+    const msg = `updatePlot: plot doc {project_id: "${projectId}"} not found — write did not apply.`;
     logger.error(msg);
     throw new Error(msg);
   }
   const fieldList = Object.keys(set).filter((k) => k !== 'updated_at');
   logger.info(`mongo: plot update fields=[${fieldList.join(',')}]`);
-  return getPlot();
+  return getPlot(projectId);
 }
 
 function findBeat(plot, identifier) {
@@ -184,13 +201,15 @@ function findBeat(plot, identifier) {
   return beats.find((b) => (b.name || '').toLowerCase() === t) || null;
 }
 
-export async function listBeats() {
-  const p = await getPlot();
+export async function listBeats(projectId) {
+  projectId = await resolveProjectId(projectId);
+  const p = await getPlot(projectId);
   return [...(p.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
 }
 
-export async function getBeat(identifier) {
-  const plot = await getPlot();
+export async function getBeat(projectId, identifier) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   if (identifier === undefined || identifier === null || identifier === '') {
     if (!plot.current_beat_id) return null;
     return (plot.beats || []).find((b) => b._id && plot.current_beat_id.equals(b._id)) || null;
@@ -198,10 +217,11 @@ export async function getBeat(identifier) {
   return findBeat(plot, identifier);
 }
 
-export async function searchBeats(query) {
+export async function searchBeats(projectId, query) {
+  projectId = await resolveProjectId(projectId);
   const q = String(query || '').trim().toLowerCase();
   if (!q) return [];
-  const plot = await getPlot();
+  const plot = await getPlot(projectId);
   const beats = [...(plot.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
   const matches = [];
   for (const b of beats) {
@@ -234,14 +254,14 @@ export async function searchBeats(query) {
 // on the same plots doc can't trample each other (the old whole-array $set
 // pattern was a lost-update minefield — see plot-concurrency.test.js).
 
-async function updateBeatFields(beatOid, set = {}, opts = {}) {
+async function updateBeatFields(projectId, beatOid, set = {}, opts = {}) {
   const now = new Date();
   const $set = { ...set, 'beats.$.updated_at': now, updated_at: now };
   const update = { $set };
   if (opts.$push) update.$push = opts.$push;
   if (opts.$pull) update.$pull = opts.$pull;
   const result = await col().updateOne(
-    { _id: 'main', 'beats._id': beatOid },
+    { project_id: projectId, 'beats._id': beatOid },
     update,
   );
   if (!result || result.matchedCount === 0) {
@@ -250,36 +270,37 @@ async function updateBeatFields(beatOid, set = {}, opts = {}) {
   return result;
 }
 
-async function fetchBeat(beatOid) {
-  const plot = await getPlot();
+async function fetchBeat(projectId, beatOid) {
+  const plot = await getPlot(projectId);
   return (plot.beats || []).find((b) => b._id && b._id.equals(beatOid)) || null;
 }
 
-async function persistBeatsFullArray(beats, extraSet = {}) {
+async function persistBeatsFullArray(projectId, beats, extraSet = {}) {
   // Used only for plot-level operations that genuinely need to rewrite the
   // whole array: createBeat (insertion + sort), deleteBeat (removal),
   // reorder. These are rare relative to per-beat field edits and the lost-
   // update risk is bounded by their natural exclusivity (you don't delete a
   // beat while editing its body).
   const result = await col().updateOne(
-    { _id: 'main' },
+    { project_id: projectId },
     { $set: { beats, updated_at: new Date(), ...extraSet } },
   );
   if (!result || result.matchedCount === 0) {
-    const msg = 'persistBeatsFullArray: plot doc {_id: "main"} not found — write did not apply.';
+    const msg = `persistBeatsFullArray: plot doc {project_id: "${projectId}"} not found — write did not apply.`;
     logger.error(msg);
     throw new Error(msg);
   }
 }
 
-export async function createBeat({ name, desc = '', body = '', characters = [], order } = {}) {
+export async function createBeat({ projectId, name, desc = '', body = '', characters = [], order } = {}) {
+  projectId = await resolveProjectId(projectId);
   const finalDesc = String(desc || '').trim();
   let finalName = String(name || '').trim();
   if (!finalName) finalName = deriveName(finalDesc);
   if (!finalDesc && !name) {
     throw new Error('Beat requires a `desc` or an explicit `name`.');
   }
-  const plot = await getPlot();
+  const plot = await getPlot(projectId);
   const existing = plot.beats || [];
   let nextOrder = order;
   if (nextOrder === undefined || nextOrder === null) {
@@ -304,12 +325,13 @@ export async function createBeat({ name, desc = '', body = '', characters = [], 
   };
   const beats = [...existing, beat].sort((a, b) => (a.order || 0) - (b.order || 0));
   const extra = plot.current_beat_id ? {} : { current_beat_id: beat._id };
-  await persistBeatsFullArray(beats, extra);
+  await persistBeatsFullArray(projectId, beats, extra);
   logger.info(`mongo: beat create id=${beat._id} order=${beat.order} name="${beat.name}"`);
   return beat;
 }
 
-export async function updateBeat(identifier, patch) {
+export async function updateBeat(projectId, identifier, patch) {
+  projectId = await resolveProjectId(projectId);
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new Error(
       `update_beat: \`patch\` must be an object like {body: "..."}, got ${
@@ -349,7 +371,7 @@ export async function updateBeat(identifier, patch) {
     }
   }
 
-  const plot = await getPlot();
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
 
@@ -368,7 +390,7 @@ export async function updateBeat(identifier, patch) {
   const orderChanging = patch.order !== undefined && patch.order !== null;
   if (orderChanging) set['beats.$.order'] = Number(patch.order);
 
-  await updateBeatFields(beat._id, set);
+  await updateBeatFields(projectId, beat._id, set);
   const patchFields = Object.keys(patch || {});
   logger.info(`mongo: beat update id=${beat._id} fields=[${patchFields.join(',')}]`);
 
@@ -376,43 +398,46 @@ export async function updateBeat(identifier, patch) {
     // Re-sort the array. The atomic update can't reorder; do it as a
     // dedicated full-array write. By construction, reordering doesn't race
     // with field edits because sort is order-only.
-    const fresh = await getPlot();
+    const fresh = await getPlot(projectId);
     const sorted = [...(fresh.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
-    await persistBeatsFullArray(sorted);
+    await persistBeatsFullArray(projectId, sorted);
     return sorted.find((b) => b._id && b._id.equals(beat._id));
   }
-  return fetchBeat(beat._id);
+  return fetchBeat(projectId, beat._id);
 }
 
-export async function setBeatBody(identifier, body) {
+export async function setBeatBody(projectId, identifier, body) {
+  projectId = await resolveProjectId(projectId);
   if (typeof body !== 'string') {
     throw new Error(`set_beat_body: \`body\` must be a string, got ${typeof body}.`);
   }
-  const plot = await getPlot();
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
-  await updateBeatFields(beat._id, { 'beats.$.body': body });
+  await updateBeatFields(projectId, beat._id, { 'beats.$.body': body });
   logger.info(`mongo: beat set_body id=${beat._id} chars=${body.length}`);
-  return fetchBeat(beat._id);
+  return fetchBeat(projectId, beat._id);
 }
 
 // Persist a beat's scene bible (the per-beat "look book" that all storyboard
 // shots inherit). Stored as a normalized sub-doc under beats.$.scene_bible.
 // Pass null/empty to clear. Uses the atomic per-beat write path.
-export async function setBeatSceneBible(identifier, bible) {
-  const plot = await getPlot();
+export async function setBeatSceneBible(projectId, identifier, bible) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   // normalizeSceneBible returns only the text fields (it is a pure shape
   // helper); the persistence layer stamps updated_at at write time.
   const value = bible == null ? null : { ...normalizeSceneBible(bible), updated_at: new Date() };
-  await updateBeatFields(beat._id, { 'beats.$.scene_bible': value });
+  await updateBeatFields(projectId, beat._id, { 'beats.$.scene_bible': value });
   logger.info(`mongo: beat scene_bible set id=${beat._id} cleared=${value === null}`);
-  return fetchBeat(beat._id);
+  return fetchBeat(projectId, beat._id);
 }
 
-export async function editBeatBody(identifier, edits) {
-  const plot = await getPlot();
+export async function editBeatBody(projectId, identifier, edits) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   const { body, applied, beforeLen, afterLen } = applyMarkdownEdits(
@@ -420,19 +445,20 @@ export async function editBeatBody(identifier, edits) {
     edits,
     'edit_beat_body',
   );
-  await updateBeatFields(beat._id, { 'beats.$.body': body });
-  const updated = await fetchBeat(beat._id);
+  await updateBeatFields(projectId, beat._id, { 'beats.$.body': body });
+  const updated = await fetchBeat(projectId, beat._id);
   logger.info(
     `mongo: beat edit_body id=${beat._id} edits=${edits.length} before=${beforeLen} after=${afterLen}`,
   );
   return { beat: updated, edits: applied, beforeLen, afterLen };
 }
 
-export async function editPlotField(field, edits) {
+export async function editPlotField(projectId, field, edits) {
+  projectId = await resolveProjectId(projectId);
   if (field !== 'synopsis' && field !== 'notes') {
     throw new Error(`edit_plot_field: \`field\` must be "synopsis" or "notes", got "${field}".`);
   }
-  const plot = await getPlot();
+  const plot = await getPlot(projectId);
   const current = String(plot[field] || '');
   const { body, applied, beforeLen, afterLen } = applyMarkdownEdits(
     current,
@@ -440,11 +466,11 @@ export async function editPlotField(field, edits) {
     'edit_plot_field',
   );
   const result = await col().updateOne(
-    { _id: 'main' },
+    { project_id: projectId },
     { $set: { [field]: body, updated_at: new Date() } },
   );
   if (!result || result.matchedCount === 0) {
-    throw new Error('editPlotField: plot doc {_id: "main"} not found — write did not apply.');
+    throw new Error(`editPlotField: plot doc {project_id: "${projectId}"} not found — write did not apply.`);
   }
   logger.info(
     `mongo: plot edit_${field} edits=${edits.length} before=${beforeLen} after=${afterLen}`,
@@ -452,8 +478,9 @@ export async function editPlotField(field, edits) {
   return { field, edits: applied, beforeLen, afterLen, value: body };
 }
 
-export async function appendBeatBody(identifier, content) {
-  const plot = await getPlot();
+export async function appendBeatBody(projectId, identifier, content) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   const addition = String(content || '').trim();
@@ -461,24 +488,25 @@ export async function appendBeatBody(identifier, content) {
   const existing = String(beat.body || '');
   const separator = existing.trim() ? '\n\n' : '';
   const newBody = `${existing}${separator}${addition}`;
-  await updateBeatFields(beat._id, { 'beats.$.body': newBody });
+  await updateBeatFields(projectId, beat._id, { 'beats.$.body': newBody });
   logger.info(
     `mongo: beat append_body id=${beat._id} added_chars=${addition.length}`,
   );
-  return fetchBeat(beat._id);
+  return fetchBeat(projectId, beat._id);
 }
 
-export async function deleteBeat(identifier) {
-  const plot = await getPlot();
+export async function deleteBeat(projectId, identifier) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   const wasCurrent =
     plot.current_beat_id && plot.current_beat_id.equals(beat._id);
   const update = { $pull: { beats: { _id: beat._id } }, $set: { updated_at: new Date() } };
   if (wasCurrent) update.$set.current_beat_id = null;
-  const result = await col().updateOne({ _id: 'main' }, update);
+  const result = await col().updateOne({ project_id: projectId }, update);
   if (!result || result.matchedCount === 0) {
-    throw new Error('deleteBeat: plot doc {_id: "main"} not found — write did not apply.');
+    throw new Error(`deleteBeat: plot doc {project_id: "${projectId}"} not found — write did not apply.`);
   }
   logger.info(`mongo: beat delete id=${beat._id} name="${beat.name}"`);
   return {
@@ -488,34 +516,37 @@ export async function deleteBeat(identifier) {
   };
 }
 
-export async function linkCharacterToBeat(identifier, characterName) {
-  const plot = await getPlot();
+export async function linkCharacterToBeat(projectId, identifier, characterName) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   const characters = dedupeNames([...(beat.characters || []), characterName]);
-  await updateBeatFields(beat._id, { 'beats.$.characters': characters });
-  return fetchBeat(beat._id);
+  await updateBeatFields(projectId, beat._id, { 'beats.$.characters': characters });
+  return fetchBeat(projectId, beat._id);
 }
 
-export async function unlinkCharacterFromBeat(identifier, characterName) {
-  const plot = await getPlot();
+export async function unlinkCharacterFromBeat(projectId, identifier, characterName) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   const lower = String(characterName).toLowerCase();
   const characters = (beat.characters || []).filter((c) => String(c).toLowerCase() !== lower);
-  await updateBeatFields(beat._id, { 'beats.$.characters': characters });
-  return fetchBeat(beat._id);
+  await updateBeatFields(projectId, beat._id, { 'beats.$.characters': characters });
+  return fetchBeat(projectId, beat._id);
 }
 
-export async function unlinkCharacterFromAllBeats(characterName) {
-  const plot = await getPlot();
+export async function unlinkCharacterFromAllBeats(projectId, characterName) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   const lower = String(characterName).toLowerCase();
   let touched = 0;
   for (const b of plot.beats || []) {
     const filtered = (b.characters || []).filter((c) => String(c).toLowerCase() !== lower);
     if (filtered.length === (b.characters || []).length) continue;
     touched += 1;
-    await updateBeatFields(b._id, { 'beats.$.characters': filtered });
+    await updateBeatFields(projectId, b._id, { 'beats.$.characters': filtered });
   }
   if (touched > 0) {
     logger.info(`mongo: unlink "${characterName}" from ${touched} beat(s)`);
@@ -523,17 +554,18 @@ export async function unlinkCharacterFromAllBeats(characterName) {
   return { unlinked_from: touched };
 }
 
-export async function pushBeatImage(beatIdentifier, imageMeta, setAsMain = false) {
-  const plot = await getPlot();
+export async function pushBeatImage(projectId, beatIdentifier, imageMeta, setAsMain = false) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, beatIdentifier);
   if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
   const promote = !!setAsMain || !beat.main_image_id;
   const set = {};
   if (promote) set['beats.$.main_image_id'] = imageMeta._id;
-  await updateBeatFields(beat._id, set, {
+  await updateBeatFields(projectId, beat._id, set, {
     $push: { 'beats.$.images': imageMeta },
   });
-  const updated = await fetchBeat(beat._id);
+  const updated = await fetchBeat(projectId, beat._id);
   const isMain = !!(updated.main_image_id && updated.main_image_id.equals(imageMeta._id));
   logger.info(
     `mongo: beat image push id=${beat._id} image=${imageMeta._id}${isMain ? ' (main)' : ''}`,
@@ -541,8 +573,9 @@ export async function pushBeatImage(beatIdentifier, imageMeta, setAsMain = false
   return { beat: updated, is_main: isMain };
 }
 
-export async function setBeatMainImage(beatIdentifier, imageId) {
-  const plot = await getPlot();
+export async function setBeatMainImage(projectId, beatIdentifier, imageId) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, beatIdentifier);
   if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
   const oid = imageId instanceof ObjectId ? imageId : new ObjectId(String(imageId));
@@ -553,17 +586,18 @@ export async function setBeatMainImage(beatIdentifier, imageId) {
   if (!inImages && !inArtworks) {
     throw new Error(`Image ${imageId} is not attached to this beat`);
   }
-  await updateBeatFields(beat._id, { 'beats.$.main_image_id': oid });
+  await updateBeatFields(projectId, beat._id, { 'beats.$.main_image_id': oid });
   logger.info(`mongo: beat main_image set id=${beat._id} image=${oid}`);
-  return fetchBeat(beat._id);
+  return fetchBeat(projectId, beat._id);
 }
 
 // Replace one image meta in the beat's images[] array, preserving slot
 // position. Uses arrayFilters so the swap is one atomic write; the optional
 // main_image_id pivot is included in the same update when the replaced
 // image was the main image.
-export async function replaceBeatImage(beatIdentifier, oldImageId, newImageMeta) {
-  const plot = await getPlot();
+export async function replaceBeatImage(projectId, beatIdentifier, oldImageId, newImageMeta) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, beatIdentifier);
   if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
   const oldOid = oldImageId instanceof ObjectId ? oldImageId : new ObjectId(String(oldImageId));
@@ -579,7 +613,7 @@ export async function replaceBeatImage(beatIdentifier, oldImageId, newImageMeta)
   };
   if (wasMain) $set['beats.$[b].main_image_id'] = newImageMeta._id;
   const result = await col().updateOne(
-    { _id: 'main' },
+    { project_id: projectId },
     { $set },
     { arrayFilters: [{ 'b._id': beat._id }, { 'i._id': oldOid }] },
   );
@@ -590,15 +624,16 @@ export async function replaceBeatImage(beatIdentifier, oldImageId, newImageMeta)
     `mongo: beat image replace id=${beat._id} old=${oldOid} new=${newImageMeta._id}${wasMain ? ' (main)' : ''}`,
   );
   return {
-    beat: await fetchBeat(beat._id),
+    beat: await fetchBeat(projectId, beat._id),
     replaced: oldOid,
     new_image_id: newImageMeta._id,
     was_main: !!wasMain,
   };
 }
 
-export async function pullBeatImage(beatIdentifier, imageId) {
-  const plot = await getPlot();
+export async function pullBeatImage(projectId, beatIdentifier, imageId) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, beatIdentifier);
   if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
   const oid = imageId instanceof ObjectId ? imageId : new ObjectId(String(imageId));
@@ -611,63 +646,78 @@ export async function pullBeatImage(beatIdentifier, imageId) {
     const fallback = (beat.images || []).find((i) => !i._id.equals(oid));
     set['beats.$.main_image_id'] = fallback?._id || null;
   }
-  await updateBeatFields(beat._id, set, {
+  await updateBeatFields(projectId, beat._id, set, {
     $pull: { 'beats.$.images': { _id: oid } },
   });
   logger.info(`mongo: beat image pull id=${beat._id} image=${oid}`);
-  return { beat: await fetchBeat(beat._id), removed: oid };
+  return { beat: await fetchBeat(projectId, beat._id), removed: oid };
 }
 
-export async function pushBeatAttachment(beatIdentifier, attachmentMeta) {
-  const plot = await getPlot();
+export async function pushBeatAttachment(projectId, beatIdentifier, attachmentMeta) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, beatIdentifier);
   if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
-  await updateBeatFields(beat._id, {}, {
+  await updateBeatFields(projectId, beat._id, {}, {
     $push: { 'beats.$.attachments': attachmentMeta },
   });
   logger.info(
     `mongo: beat attachment push id=${beat._id} attach=${attachmentMeta?._id || '-'}`,
   );
-  return fetchBeat(beat._id);
+  return fetchBeat(projectId, beat._id);
 }
 
-export async function pullBeatAttachment(beatIdentifier, attachmentId) {
-  const plot = await getPlot();
+export async function pullBeatAttachment(projectId, beatIdentifier, attachmentId) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, beatIdentifier);
   if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
   const oid = attachmentId instanceof ObjectId ? attachmentId : new ObjectId(String(attachmentId));
   if (!(beat.attachments || []).some((a) => a._id.equals(oid))) {
     throw new Error(`Attachment ${attachmentId} is not attached to this beat`);
   }
-  await updateBeatFields(beat._id, {}, {
+  await updateBeatFields(projectId, beat._id, {}, {
     $pull: { 'beats.$.attachments': { _id: oid } },
   });
   logger.info(`mongo: beat attachment pull id=${beat._id} attach=${oid}`);
-  return { beat: await fetchBeat(beat._id), removed: oid };
+  return { beat: await fetchBeat(projectId, beat._id), removed: oid };
 }
 
-export async function setCurrentBeat(identifier) {
-  const plot = await getPlot();
+export async function setCurrentBeat(projectId, identifier) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   await col().updateOne(
-    { _id: 'main' },
+    { project_id: projectId },
     { $set: { current_beat_id: beat._id, updated_at: new Date() } },
   );
   logger.info(`mongo: current_beat set id=${beat._id} name="${beat.name}"`);
   return beat;
 }
 
-export async function getCurrentBeat() {
-  const plot = await getPlot();
+export async function getCurrentBeat(projectId) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   if (!plot.current_beat_id) return null;
   return (plot.beats || []).find((b) => b._id && plot.current_beat_id.equals(b._id)) || null;
 }
 
-export async function clearCurrentBeat() {
+export async function clearCurrentBeat(projectId) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
   await col().updateOne(
-    { _id: 'main' },
+    { _id: plot._id },
     { $set: { current_beat_id: null, updated_at: new Date() } },
   );
   logger.info('mongo: current_beat cleared');
+}
+
+// Locate the plot containing a beat — ANY project. Beat ObjectIds are
+// globally unique, so this is the verify-after-locate hook for callers that
+// know a beat id but not its project (GridFS detach paths, RAG indexer).
+export async function findPlotByBeatId(beatId) {
+  const oid = beatId instanceof ObjectId ? beatId : maybeOid(String(beatId));
+  if (!oid) return null;
+  return col().findOne({ 'beats._id': oid });
 }

@@ -36,33 +36,33 @@ describe('plot title', () => {
   });
 
   it('updatePlot persists a new title and returns it', async () => {
-    const updated = await Plots.updatePlot({ title: 'The Long Drive' });
+    const updated = await Plots.updatePlot(undefined, { title: 'The Long Drive' });
     expect(updated.title).toBe('The Long Drive');
     const fresh = await Plots.getPlot();
     expect(fresh.title).toBe('The Long Drive');
   });
 
   it('updatePlot trims surrounding whitespace on title', async () => {
-    const updated = await Plots.updatePlot({ title: '   Caper   ' });
+    const updated = await Plots.updatePlot(undefined, { title: '   Caper   ' });
     expect(updated.title).toBe('Caper');
   });
 
   it('updatePlot accepts an empty title string to clear the title', async () => {
-    await Plots.updatePlot({ title: 'Working Title' });
-    const cleared = await Plots.updatePlot({ title: '' });
+    await Plots.updatePlot(undefined, { title: 'Working Title' });
+    const cleared = await Plots.updatePlot(undefined, { title: '' });
     expect(cleared.title).toBe('');
   });
 
   it('updatePlot rejects non-string title values', async () => {
-    await expect(Plots.updatePlot({ title: 42 })).rejects.toThrow(/`title` must be a string/);
+    await expect(Plots.updatePlot(undefined, { title: 42 })).rejects.toThrow(/`title` must be a string/);
   });
 
   it('updatePlot still rejects when patch has no recognized fields (regression)', async () => {
-    await expect(Plots.updatePlot({ foo: 'bar' })).rejects.toThrow(/no recognized fields/);
+    await expect(Plots.updatePlot(undefined, { foo: 'bar' })).rejects.toThrow(/no recognized fields/);
   });
 
   it('updatePlot can update title and synopsis in one call', async () => {
-    const out = await Plots.updatePlot({ title: 'Caper', synopsis: 'A heist gone right.' });
+    const out = await Plots.updatePlot(undefined, { title: 'Caper', synopsis: 'A heist gone right.' });
     expect(out.title).toBe('Caper');
     expect(out.synopsis).toBe('A heist gone right.');
   });

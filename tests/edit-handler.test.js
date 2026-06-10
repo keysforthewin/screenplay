@@ -98,7 +98,7 @@ describe('edit handler — beat', () => {
       edits: [{ find: 'world', replace: 'mars' }],
     });
     expect(out).toMatch(/Applied 1 edit/);
-    expect((await Plots.getBeat(b._id.toString())).body).toBe('hello mars');
+    expect((await Plots.getBeat(undefined, b._id.toString())).body).toBe('hello mars');
   });
 
   it('whole-field replace via empty find', async () => {
@@ -110,7 +110,7 @@ describe('edit handler — beat', () => {
       edits: [{ find: '', replace: 'totally new body' }],
     });
     expect(out).toMatch(/Replaced beat "B"\.body/);
-    expect((await Plots.getBeat(b._id.toString())).body).toBe('totally new body');
+    expect((await Plots.getBeat(undefined, b._id.toString())).body).toBe('totally new body');
   });
 
   it('resolves identifier by order', async () => {
@@ -171,7 +171,7 @@ describe('edit handler — character', () => {
 // ─── plot ────────────────────────────────────────────────────────────────────
 describe('edit handler — plot', () => {
   it('partial edit on synopsis', async () => {
-    await Plots.updatePlot({ synopsis: 'A short tale.' });
+    await Plots.updatePlot(undefined, { synopsis: 'A short tale.' });
     const out = await HANDLERS.edit({
       collection: 'plot',
       field: 'synopsis',
@@ -182,7 +182,7 @@ describe('edit handler — plot', () => {
   });
 
   it('whole replace on title', async () => {
-    await Plots.updatePlot({ title: 'Old' });
+    await Plots.updatePlot(undefined, { title: 'Old' });
     const out = await HANDLERS.edit({
       collection: 'plot',
       field: 'title',
@@ -193,7 +193,7 @@ describe('edit handler — plot', () => {
   });
 
   it('partial edit on title', async () => {
-    await Plots.updatePlot({ title: 'The Big Caper' });
+    await Plots.updatePlot(undefined, { title: 'The Big Caper' });
     const out = await HANDLERS.edit({
       collection: 'plot',
       field: 'title',

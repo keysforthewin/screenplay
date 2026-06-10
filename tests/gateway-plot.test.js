@@ -46,7 +46,7 @@ describe('gateway plot fallback (no Hocuspocus)', () => {
   });
 
   it('editEntityFieldMarkdown applies find/replace to plot.dialogue_style', async () => {
-    await Plots.updatePlot({ dialogue_style: 'foo bar baz' });
+    await Plots.updatePlot(undefined, { dialogue_style: 'foo bar baz' });
     const result = await Gateway.editEntityFieldMarkdown({
       entityType: 'plot',
       entityId: 'plot',
@@ -59,7 +59,7 @@ describe('gateway plot fallback (no Hocuspocus)', () => {
   });
 
   it('appendEntityFieldMarkdown appends to plot.dialogue_style', async () => {
-    await Plots.updatePlot({ dialogue_style: 'Base style.' });
+    await Plots.updatePlot(undefined, { dialogue_style: 'Base style.' });
     await Gateway.appendEntityFieldMarkdown({
       entityType: 'plot',
       entityId: 'plot',

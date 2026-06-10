@@ -93,10 +93,10 @@ describe('GET /api/storyboard/:id/video-source-storyboards', () => {
 
     const attCurrentSource = videoAtt('current-source.mp4'); // excluded from refs
     const attBeatB = videoAtt('beatB-clip.mp4'); // should appear
-    await Plots.pushBeatAttachment(beatA._id, attCurrentSource);
-    await Plots.pushBeatAttachment(beatB._id, attBeatB);
+    await Plots.pushBeatAttachment(undefined, beatA._id, attCurrentSource);
+    await Plots.pushBeatAttachment(undefined, beatB._id, attBeatB);
     // A non-video attachment must be filtered out.
-    await Plots.pushBeatAttachment(beatB._id, {
+    await Plots.pushBeatAttachment(undefined, beatB._id, {
       _id: new ObjectId(),
       filename: 'poster.png',
       content_type: 'image/png',

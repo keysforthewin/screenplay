@@ -48,7 +48,7 @@ async function seedCharacterWithImage(name = 'Flikk') {
 async function seedBeatWithImage() {
   const beat = await Plots.createBeat({ name: 'Diner', desc: 'A scene at the diner.' });
   const meta = fakeImageMeta({ filename: 'beat-leak-name.jpg' });
-  await Plots.pushBeatImage(beat._id.toString(), meta, true);
+  await Plots.pushBeatImage(undefined, beat._id.toString(), meta, true);
   return { beat, imageMeta: meta };
 }
 
