@@ -5,6 +5,8 @@ import {
   setPlotTemplate,
   updateCharacterTemplateFields,
 } from '../mongo/prompts.js';
+import { getPlot } from '../mongo/plots.js';
+import { getDefaultProject, listProjects } from '../mongo/projects.js';
 
 const RETIRED_CORE_FIELDS = ['plays_self', 'own_voice'];
 
@@ -25,23 +27,37 @@ const DEFAULT_PLOT_TEMPLATE = {
   beat_guidance: 'A beat is a per-scene unit of the story. Each beat has order (number), name (short identifier), desc (1-2 sentence summary set on creation), body (long-form developing content), and characters. Beats are created on the fly whenever the user describes an event or scene; the bot generates a name and desc from the description, then accumulates body content as the user adds lore. Aim for 8-15 beats covering setup, inciting incident, escalations, climax, resolution — but expect lots of supporting beats for character moments and lore.',
 };
 
-export async function seedDefaults() {
-  const existing = await getCharacterTemplate();
+// Seed one project's defaults: clone the default character/plot templates and
+// create the project's empty plot doc. Called at project creation (POST
+// /api/projects) and for every project during the startup pass below.
+export async function seedProjectDefaults(projectId) {
+  const existing = await getCharacterTemplate(projectId);
   if (!existing) {
-    await setCharacterTemplate({ fields: DEFAULT_CHARACTER_FIELDS });
+    await setCharacterTemplate(projectId, { fields: DEFAULT_CHARACTER_FIELDS });
   } else {
     const optionalDefaults = DEFAULT_CHARACTER_FIELDS.filter((f) => !f.core);
     if (optionalDefaults.length) {
-      await updateCharacterTemplateFields({ add: optionalDefaults });
+      await updateCharacterTemplateFields({ projectId, add: optionalDefaults });
     }
     const currentFields = existing.fields || [];
     const hasRetired = currentFields.some((f) => RETIRED_CORE_FIELDS.includes(f.name));
     if (hasRetired) {
       const trimmed = currentFields.filter((f) => !RETIRED_CORE_FIELDS.includes(f.name));
-      await setCharacterTemplate({ fields: trimmed });
+      await setCharacterTemplate(projectId, { fields: trimmed });
     }
   }
-  if (!(await getPlotTemplate())) {
-    await setPlotTemplate(DEFAULT_PLOT_TEMPLATE);
+  if (!(await getPlotTemplate(projectId))) {
+    await setPlotTemplate(projectId, DEFAULT_PLOT_TEMPLATE);
+  }
+  await getPlot(projectId); // lazily creates (or claims) the plot doc
+}
+
+// Startup pass: guarantee the default project exists, then backfill/retire
+// fields for EVERY project (today's behavior, per project).
+export async function seedDefaults() {
+  await getDefaultProject();
+  const projects = await listProjects();
+  for (const p of projects) {
+    await seedProjectDefaults(p._id.toString());
   }
 }

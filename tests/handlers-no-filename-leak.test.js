@@ -55,7 +55,7 @@ async function seedBeatWithImage() {
 async function seedDirectorNoteWithImage() {
   const note = await DirectorNotes.addDirectorNote({ text: 'Always show, never tell.' });
   const meta = fakeImageMeta({ filename: 'note-leak-name.png' });
-  await DirectorNotes.pushDirectorNoteImage(note._id.toString(), meta, true);
+  await DirectorNotes.pushDirectorNoteImage(undefined, note._id.toString(), meta, true);
   return { note, imageMeta: meta };
 }
 

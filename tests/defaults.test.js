@@ -9,6 +9,7 @@ vi.mock('../src/mongo/client.js', () => ({
 
 const { seedDefaults } = await import('../src/seed/defaults.js');
 const { getCharacterTemplate, updateCharacterTemplateFields } = await import('../src/mongo/prompts.js');
+const Projects = await import('../src/mongo/projects.js');
 
 beforeEach(() => {
   fakeDb.reset();
@@ -43,8 +44,9 @@ describe('seedDefaults', () => {
 
   it('backfills new optional fields onto a pre-existing template that lacks them', async () => {
     // Simulate an existing deployment seeded BEFORE alternate_names / name_changes were added.
+    const def = await Projects.getDefaultProject();
     await fakeDb.collection('prompts').insertOne({
-      _id: 'character_template',
+      _id: `${def._id.toString()}:character_template`,
       fields: [
         { name: 'name', description: 'x', required: true, core: true },
         { name: 'hollywood_actor', description: 'x', required: false, core: true },
@@ -63,8 +65,9 @@ describe('seedDefaults', () => {
   });
 
   it('strips retired plays_self / own_voice fields from an existing template', async () => {
+    const def = await Projects.getDefaultProject();
     await fakeDb.collection('prompts').insertOne({
-      _id: 'character_template',
+      _id: `${def._id.toString()}:character_template`,
       fields: [
         { name: 'name', description: 'x', required: true, core: true },
         { name: 'plays_self', description: 'legacy', required: false, core: true },
@@ -93,5 +96,18 @@ describe('seedDefaults', () => {
     const names = tpl.fields.map((f) => f.name);
     expect(names).toContain('favorite_color');
     expect(names).toContain('alternate_names');
+  });
+});
+
+describe('seedProjectDefaults', () => {
+  it('seeds templates and an empty plot doc for every project on startup', async () => {
+    const p2 = (await Projects.createProject('Second'))._id.toString();
+    await seedDefaults();
+    const { getCharacterTemplate, getPlotTemplate } = await import('../src/mongo/prompts.js');
+    expect(await getCharacterTemplate(p2)).toBeTruthy();
+    expect(await getPlotTemplate(p2)).toBeTruthy();
+    const plot = await fakeDb.collection('plots').findOne({ project_id: p2 });
+    expect(plot).toBeTruthy();
+    expect(plot.beats).toEqual([]);
   });
 });

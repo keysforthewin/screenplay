@@ -21,7 +21,7 @@ import { ObjectId } from 'mongodb';
 import { getPlot, updatePlot, getBeat, updateBeat, setBeatSceneBible } from '../mongo/plots.js';
 import { SCENE_BIBLE_FIELDS } from '../mongo/sceneBible.js';
 import { getCharacter, updateCharacter } from '../mongo/characters.js';
-import { getDirectorNotes } from '../mongo/directorNotes.js';
+import { getDirectorNotes, writeDirectorNotesArray } from '../mongo/directorNotes.js';
 import {
   listStoryboards,
   updateStoryboard,
@@ -399,8 +399,6 @@ async function describeNotesRoom() {
     fields,
     seed,
     persistFields: async (snapshot) => {
-      const col = getDb().collection('prompts');
-      const updates = {};
       let changed = false;
       const fresh = await getDirectorNotes();
       const nextNotes = (fresh.notes || []).map((n) => {
@@ -413,10 +411,7 @@ async function describeNotesRoom() {
         return n;
       });
       if (!changed) return { changed: false };
-      await col.updateOne(
-        { _id: 'director_notes' },
-        { $set: { notes: nextNotes, updated_at: new Date() } },
-      );
+      await writeDirectorNotesArray(undefined, nextNotes);
       logger.info(`mongo: director_notes batch update fields=${Object.keys(snapshot).length}`);
       for (const fieldName of Object.keys(snapshot)) {
         const m = fieldName.match(/^note:([a-f0-9]{24}):text$/);

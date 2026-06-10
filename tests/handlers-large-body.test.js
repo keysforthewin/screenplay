@@ -18,7 +18,7 @@ const { config } = await import('../src/config.js');
 beforeEach(async () => {
   fakeDb.reset();
   // Seed character template so non-core fields are recognized.
-  await Prompts.setCharacterTemplate({
+  await Prompts.setCharacterTemplate(undefined, {
     fields: [
       { name: 'name', core: true },
       { name: 'hollywood_actor', core: true },

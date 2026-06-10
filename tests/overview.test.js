@@ -11,6 +11,7 @@ vi.mock('../src/mongo/client.js', () => ({
 
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
+const Projects = await import('../src/mongo/projects.js');
 const { buildOverview } = await import('../src/agent/overview.js');
 
 beforeEach(() => {
@@ -18,8 +19,9 @@ beforeEach(() => {
 });
 
 async function seedTemplate() {
+  const def = await Projects.getDefaultProject();
   await fakeDb.collection('prompts').insertOne({
-    _id: 'character_template',
+    _id: `${def._id.toString()}:character_template`,
     fields: [
       { name: 'name', description: 'name', required: true, core: true },
       { name: 'hollywood_actor', description: 'actor', required: false, core: true },

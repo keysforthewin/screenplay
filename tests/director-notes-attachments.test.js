@@ -10,6 +10,7 @@ vi.mock('../src/mongo/client.js', () => ({
 }));
 
 const Notes = await import('../src/mongo/directorNotes.js');
+const Projects = await import('../src/mongo/projects.js');
 
 beforeEach(() => {
   fakeDb.reset();
@@ -51,7 +52,7 @@ describe('director note image lifecycle', () => {
   it('pushDirectorNoteImage appends and auto-promotes the first image to main', async () => {
     const a = await Notes.addDirectorNote({ text: 'rule a' });
     const m1 = fakeImageMeta('1');
-    const { is_main, note } = await Notes.pushDirectorNoteImage(a._id.toString(), m1);
+    const { is_main, note } = await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m1);
     expect(is_main).toBe(true);
     expect(note.images).toHaveLength(1);
     expect(note.main_image_id.equals(m1._id)).toBe(true);
@@ -65,8 +66,8 @@ describe('director note image lifecycle', () => {
     const a = await Notes.addDirectorNote({ text: 'rule a' });
     const m1 = fakeImageMeta('1');
     const m2 = fakeImageMeta('2');
-    await Notes.pushDirectorNoteImage(a._id.toString(), m1);
-    const { is_main } = await Notes.pushDirectorNoteImage(a._id.toString(), m2, true);
+    await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m1);
+    const { is_main } = await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m2, true);
     expect(is_main).toBe(true);
 
     const doc = await Notes.getDirectorNotes();
@@ -78,9 +79,9 @@ describe('director note image lifecycle', () => {
     const a = await Notes.addDirectorNote({ text: 'rule a' });
     const m1 = fakeImageMeta('1');
     const m2 = fakeImageMeta('2');
-    await Notes.pushDirectorNoteImage(a._id.toString(), m1);
-    await Notes.pushDirectorNoteImage(a._id.toString(), m2);
-    const { removed } = await Notes.pullDirectorNoteImage(a._id.toString(), m1._id);
+    await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m1);
+    await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m2);
+    const { removed } = await Notes.pullDirectorNoteImage(undefined, a._id.toString(), m1._id);
     expect(removed.equals(m1._id)).toBe(true);
 
     const doc = await Notes.getDirectorNotes();
@@ -91,8 +92,8 @@ describe('director note image lifecycle', () => {
   it('pullDirectorNoteImage clears main_image_id when last image is pulled', async () => {
     const a = await Notes.addDirectorNote({ text: 'rule a' });
     const m1 = fakeImageMeta('1');
-    await Notes.pushDirectorNoteImage(a._id.toString(), m1);
-    await Notes.pullDirectorNoteImage(a._id.toString(), m1._id);
+    await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m1);
+    await Notes.pullDirectorNoteImage(undefined, a._id.toString(), m1._id);
 
     const doc = await Notes.getDirectorNotes();
     expect(doc.notes[0].images).toHaveLength(0);
@@ -103,7 +104,7 @@ describe('director note image lifecycle', () => {
     const a = await Notes.addDirectorNote({ text: 'rule a' });
     const stranger = new ObjectId();
     await expect(
-      Notes.setDirectorNoteMainImage(a._id.toString(), stranger),
+      Notes.setDirectorNoteMainImage(undefined, a._id.toString(), stranger),
     ).rejects.toThrow(/not attached/);
   });
 
@@ -111,22 +112,22 @@ describe('director note image lifecycle', () => {
     const a = await Notes.addDirectorNote({ text: 'rule a' });
     const m1 = fakeImageMeta('1');
     const m2 = fakeImageMeta('2');
-    await Notes.pushDirectorNoteImage(a._id.toString(), m1);
-    await Notes.pushDirectorNoteImage(a._id.toString(), m2);
-    const next = await Notes.setDirectorNoteMainImage(a._id.toString(), m2._id);
+    await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m1);
+    await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m2);
+    const next = await Notes.setDirectorNoteMainImage(undefined, a._id.toString(), m2._id);
     expect(next.main_image_id.equals(m2._id)).toBe(true);
   });
 
   it('pushDirectorNoteAttachment / pullDirectorNoteAttachment round-trip', async () => {
     const a = await Notes.addDirectorNote({ text: 'rule a' });
     const att = fakeAttachmentMeta('1');
-    await Notes.pushDirectorNoteAttachment(a._id.toString(), att);
+    await Notes.pushDirectorNoteAttachment(undefined, a._id.toString(), att);
 
     let doc = await Notes.getDirectorNotes();
     expect(doc.notes[0].attachments).toHaveLength(1);
     expect(doc.notes[0].attachments[0]._id.equals(att._id)).toBe(true);
 
-    const { removed } = await Notes.pullDirectorNoteAttachment(a._id.toString(), att._id);
+    const { removed } = await Notes.pullDirectorNoteAttachment(undefined, a._id.toString(), att._id);
     expect(removed.equals(att._id)).toBe(true);
 
     doc = await Notes.getDirectorNotes();
@@ -137,24 +138,25 @@ describe('director note image lifecycle', () => {
     const a = await Notes.addDirectorNote({ text: 'rule a' });
     const stranger = new ObjectId();
     await expect(
-      Notes.pullDirectorNoteAttachment(a._id.toString(), stranger),
+      Notes.pullDirectorNoteAttachment(undefined, a._id.toString(), stranger),
     ).rejects.toThrow(/not attached/);
   });
 
   it('helpers reject an unknown note_id', async () => {
     const stranger = new ObjectId();
     await expect(
-      Notes.pushDirectorNoteImage(stranger.toString(), fakeImageMeta()),
+      Notes.pushDirectorNoteImage(undefined, stranger.toString(), fakeImageMeta()),
     ).rejects.toThrow(/note not found/);
     await expect(
-      Notes.pushDirectorNoteAttachment(stranger.toString(), fakeAttachmentMeta()),
+      Notes.pushDirectorNoteAttachment(undefined, stranger.toString(), fakeAttachmentMeta()),
     ).rejects.toThrow(/note not found/);
   });
 
   it('legacy notes (no images/attachments fields) read back as empty arrays', async () => {
     // Insert a legacy doc directly, mirroring what an older bot version may have stored.
+    const def = await Projects.getDefaultProject();
     await fakeDb.collection('prompts').insertOne({
-      _id: 'director_notes',
+      _id: `${def._id.toString()}:director_notes`,
       notes: [{ _id: new ObjectId(), text: 'old rule', created_at: new Date() }],
       updated_at: new Date(),
     });

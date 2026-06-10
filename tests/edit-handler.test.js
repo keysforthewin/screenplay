@@ -20,7 +20,7 @@ const { HANDLERS, dispatchTool } = await import('../src/agent/handlers.js');
 
 beforeEach(async () => {
   fakeDb.reset();
-  await Prompts.setCharacterTemplate({
+  await Prompts.setCharacterTemplate(undefined, {
     fields: [
       { name: 'name', core: true },
       { name: 'plays_self', core: true },

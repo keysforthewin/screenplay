@@ -225,7 +225,7 @@ describe('attach_library_image_to_character', () => {
     const file = seedLibraryImage({
       metadata: { owner_type: 'director_note', owner_id: note._id },
     });
-    await DirectorNotes.pushDirectorNoteImage(note._id.toString(), {
+    await DirectorNotes.pushDirectorNoteImage(undefined, note._id.toString(), {
       _id: file._id,
       filename: file.filename,
       content_type: file.contentType,

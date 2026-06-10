@@ -1489,6 +1489,7 @@ export const HANDLERS = {
       uploaded_at: file.uploaded_at,
     };
     const { is_main } = await DirectorNotes.pushDirectorNoteImage(
+      undefined,
       target._id.toString(),
       meta,
       set_as_main,
@@ -1521,7 +1522,7 @@ export const HANDLERS = {
   },
 
   async set_main_director_note_image({ note_id, image_id } = {}) {
-    const updated = await DirectorNotes.setDirectorNoteMainImage(note_id, image_id);
+    const updated = await DirectorNotes.setDirectorNoteMainImage(undefined, note_id, image_id);
     return withSpaLink(
       `Main image for director's note ${updated._id} set to ${updated.main_image_id.toString()}.`,
       notesUrl(),
@@ -1530,6 +1531,7 @@ export const HANDLERS = {
 
   async remove_director_note_image({ note_id, image_id } = {}) {
     const { removed, note: updated } = await DirectorNotes.pullDirectorNoteImage(
+      undefined,
       note_id,
       image_id,
     );
@@ -1567,6 +1569,7 @@ export const HANDLERS = {
       uploaded_at: file.uploadDate,
     };
     const { is_main } = await DirectorNotes.pushDirectorNoteImage(
+      undefined,
       target._id.toString(),
       meta,
       set_as_main,
@@ -1594,7 +1597,7 @@ export const HANDLERS = {
       caption: caption?.trim() || null,
       uploaded_at: file.uploaded_at,
     };
-    await DirectorNotes.pushDirectorNoteAttachment(target._id.toString(), meta);
+    await DirectorNotes.pushDirectorNoteAttachment(undefined, target._id.toString(), meta);
     const text = `Added attachment to director's note ${target._id}.\n${compact({
       _id: meta._id.toString(),
       filename: meta.filename,
@@ -1623,6 +1626,7 @@ export const HANDLERS = {
 
   async remove_director_note_attachment({ note_id, attachment_id } = {}) {
     const { removed, note: updated } = await DirectorNotes.pullDirectorNoteAttachment(
+      undefined,
       note_id,
       attachment_id,
     );
@@ -2612,6 +2616,7 @@ export const HANDLERS = {
         uploaded_at: file.uploaded_at,
       };
       await DirectorNotes.pushDirectorNoteImage(
+        undefined,
         targetNoteId.toString(),
         noteMeta,
         effectiveSetAsMain,
@@ -2631,6 +2636,7 @@ export const HANDLERS = {
           await Images.deleteImage(srcFile._id);
         } else if (srcOwnerType === 'director_note' && srcOwnerNoteId) {
           await DirectorNotes.pullDirectorNoteImage(
+            undefined,
             srcOwnerNoteId.toString(),
             srcFile._id.toString(),
           );

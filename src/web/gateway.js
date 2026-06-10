@@ -1180,6 +1180,7 @@ export async function attachExistingImageToDirectorNoteViaGateway({
     uploaded_at: file.uploadDate,
   };
   const result = await pushDirectorNoteImage(
+    undefined,
     target._id.toString(),
     meta,
     !!setAsMain,
@@ -1277,7 +1278,7 @@ export async function moveCharacterImageToLibraryViaGateway({ character, imageId
 }
 
 export async function moveDirectorNoteImageToLibraryViaGateway({ noteId, imageId }) {
-  const result = await pullDirectorNoteImage(String(noteId), imageId);
+  const result = await pullDirectorNoteImage(undefined, String(noteId), imageId);
   await setImageOwner(imageId, { ownerType: null, ownerId: null });
   broadcastFieldsUpdated('notes', {
     changed: [`note:${noteId}:images`, `note:${noteId}:main_image_id`],
@@ -1291,7 +1292,7 @@ export async function moveDirectorNoteImageToLibraryViaGateway({ noteId, imageId
 }
 
 export async function addDirectorNoteImageViaGateway({ noteId, imageMeta, setAsMain }) {
-  const result = await pushDirectorNoteImage(String(noteId), imageMeta, !!setAsMain);
+  const result = await pushDirectorNoteImage(undefined, String(noteId), imageMeta, !!setAsMain);
   broadcastFieldsUpdated('notes', {
     changed: [`note:${noteId}:images`, `note:${noteId}:main_image_id`],
     note_id: String(noteId),
@@ -1300,7 +1301,7 @@ export async function addDirectorNoteImageViaGateway({ noteId, imageMeta, setAsM
 }
 
 export async function removeDirectorNoteImageViaGateway({ noteId, imageId }) {
-  const result = await pullDirectorNoteImage(String(noteId), imageId);
+  const result = await pullDirectorNoteImage(undefined, String(noteId), imageId);
   broadcastFieldsUpdated('notes', {
     changed: [`note:${noteId}:images`, `note:${noteId}:main_image_id`],
     note_id: String(noteId),
@@ -1309,7 +1310,7 @@ export async function removeDirectorNoteImageViaGateway({ noteId, imageId }) {
 }
 
 export async function setDirectorNoteMainImageViaGateway({ noteId, imageId }) {
-  const result = await setDirectorNoteMainImage(String(noteId), imageId);
+  const result = await setDirectorNoteMainImage(undefined, String(noteId), imageId);
   broadcastFieldsUpdated('notes', {
     changed: [`note:${noteId}:main_image_id`],
     note_id: String(noteId),
@@ -1318,7 +1319,7 @@ export async function setDirectorNoteMainImageViaGateway({ noteId, imageId }) {
 }
 
 export async function addDirectorNoteAttachmentViaGateway({ noteId, attachmentMeta }) {
-  const result = await pushDirectorNoteAttachment(String(noteId), attachmentMeta);
+  const result = await pushDirectorNoteAttachment(undefined, String(noteId), attachmentMeta);
   broadcastFieldsUpdated('notes', {
     changed: [`note:${noteId}:attachments`],
     note_id: String(noteId),
@@ -1327,7 +1328,7 @@ export async function addDirectorNoteAttachmentViaGateway({ noteId, attachmentMe
 }
 
 export async function removeDirectorNoteAttachmentViaGateway({ noteId, attachmentId }) {
-  const result = await pullDirectorNoteAttachment(String(noteId), attachmentId);
+  const result = await pullDirectorNoteAttachment(undefined, String(noteId), attachmentId);
   broadcastFieldsUpdated('notes', {
     changed: [`note:${noteId}:attachments`],
     note_id: String(noteId),

@@ -10,6 +10,7 @@ vi.mock('../src/mongo/client.js', () => ({
 }));
 
 const Notes = await import('../src/mongo/directorNotes.js');
+const Projects = await import('../src/mongo/projects.js');
 
 beforeEach(() => {
   fakeDb.reset();
@@ -18,7 +19,8 @@ beforeEach(() => {
 describe('director notes singleton', () => {
   it('getDirectorNotes returns an empty notes array when the doc does not exist', async () => {
     const doc = await Notes.getDirectorNotes();
-    expect(doc._id).toBe('director_notes');
+    const def = await Projects.getDefaultProject();
+    expect(doc._id).toBe(`${def._id.toString()}:director_notes`);
     expect(doc.notes).toEqual([]);
     // and does not write the empty doc
     expect(fakeDb.collection('prompts')._docs).toHaveLength(0);
@@ -168,5 +170,26 @@ describe('director notes singleton', () => {
     await Notes.addDirectorNote({ text: 'second' });
     const t2 = (await Notes.getDirectorNotes()).updated_at;
     expect(t2.getTime()).toBeGreaterThan(t1.getTime());
+  });
+});
+
+describe('multi-project director notes', () => {
+  it('keeps notes per project under composite _ids', async () => {
+    const p1 = (await Projects.createProject('Alpha'))._id.toString();
+    const p2 = (await Projects.createProject('Beta'))._id.toString();
+    await Notes.addDirectorNote({ projectId: p1, text: 'alpha note' });
+    const d1 = await Notes.getDirectorNotes(p1);
+    const d2 = await Notes.getDirectorNotes(p2);
+    expect(d1._id).toBe(`${p1}:director_notes`);
+    expect(d1.notes.map((n) => n.text)).toEqual(['alpha note']);
+    expect(d2.notes).toEqual([]);
+  });
+
+  it('writeDirectorNotesArray persists into the project-keyed doc', async () => {
+    const p1 = (await Projects.createProject('Alpha'))._id.toString();
+    const note = await Notes.addDirectorNote({ projectId: p1, text: 'before' });
+    await Notes.writeDirectorNotesArray(p1, [{ ...note, text: 'after' }]);
+    const d1 = await Notes.getDirectorNotes(p1);
+    expect(d1.notes[0].text).toBe('after');
   });
 });

@@ -315,7 +315,7 @@ export async function detachAttachmentFromCurrentOwner(file) {
       const res = await pullCharacterAttachment(ownerId, file._id);
       priorName = res?.character || null;
     } else if (ownerType === 'director_note') {
-      await pullDirectorNoteAttachment(ownerId, file._id);
+      await pullDirectorNoteAttachment(undefined, ownerId, file._id);
     }
   } catch (e) {
     if (!/not attached|not found/i.test(e?.message || '')) throw e;
@@ -411,7 +411,7 @@ export async function attachExistingAttachmentToDirectorNote({ noteId, attachmen
   const movedFrom = await detachAttachmentFromCurrentOwner(file);
   await setAttachmentOwner(attachmentId, { ownerType: 'director_note', ownerId: target._id });
   const meta = buildAttachmentMeta(file, caption);
-  await pushDirectorNoteAttachment(target._id.toString(), meta);
+  await pushDirectorNoteAttachment(undefined, target._id.toString(), meta);
   return { note_id: target._id, ...meta, moved_from: movedFrom };
 }
 

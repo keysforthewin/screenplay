@@ -35,7 +35,7 @@ export async function detachImageFromCurrentOwner(file) {
       const res = await pullCharacterImage(ownerId, file._id);
       priorName = res?.character || null;
     } else if (ownerType === 'director_note') {
-      await pullDirectorNoteImage(ownerId, file._id);
+      await pullDirectorNoteImage(undefined, ownerId, file._id);
     }
   } catch (e) {
     if (!/not attached|not found/i.test(e?.message || '')) throw e;
