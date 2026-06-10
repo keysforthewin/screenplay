@@ -101,9 +101,18 @@ describe('seedDefaults', () => {
 
 describe('seedProjectDefaults', () => {
   it('seeds templates and an empty plot doc for every project on startup', async () => {
+    const defaultProject = await Projects.getDefaultProject();
+    const defaultId = defaultProject._id.toString();
     const p2 = (await Projects.createProject('Second'))._id.toString();
     await seedDefaults();
     const { getCharacterTemplate, getPlotTemplate } = await import('../src/mongo/prompts.js');
+    // Default project
+    expect(await getCharacterTemplate(defaultId)).toBeTruthy();
+    expect(await getPlotTemplate(defaultId)).toBeTruthy();
+    const defaultPlot = await fakeDb.collection('plots').findOne({ project_id: defaultId });
+    expect(defaultPlot).toBeTruthy();
+    expect(defaultPlot.beats).toEqual([]);
+    // Second project
     expect(await getCharacterTemplate(p2)).toBeTruthy();
     expect(await getPlotTemplate(p2)).toBeTruthy();
     const plot = await fakeDb.collection('plots').findOne({ project_id: p2 });
