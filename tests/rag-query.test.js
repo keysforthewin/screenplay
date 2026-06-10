@@ -116,4 +116,37 @@ describe('searchScreenplay', () => {
     expect(res.reason).toBe('unreachable');
     expect(res.message).toMatch(/ChromaDB not reachable/);
   });
+
+  it('returns ok:false reason:bad_project for a malformed projectId', async () => {
+    const res = await searchScreenplay('not-hex', 'something');
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('bad_project');
+    expect(res.message).toMatch(/bad project/);
+  });
+
+  it('clamps k: 999 to 20 (never requests more than 20 results)', async () => {
+    const proj = await Projects.createProject('Clamp Test');
+    const pid = proj._id.toString();
+    // Seed 25 chunks so there are more docs than the max to retrieve.
+    for (let i = 0; i < 25; i++) {
+      await seedChunk({ id: `beat:clamp${i}:body:0`, text: `scene ${i} content`, projectId: pid });
+    }
+    const res = await searchScreenplay(pid, 'scene content', { k: 999 });
+    expect(res.ok).toBe(true);
+    expect(res.hits.length).toBeLessThanOrEqual(20);
+  });
+
+  it('entityTypes: [] behaves like undefined (only project filter applied)', async () => {
+    const proj = await Projects.createProject('Empty Types Test');
+    const pid = proj._id.toString();
+    await seedChunk({ id: 'beat:et:body:0', text: 'forest chase scene', projectId: pid, entityType: 'beat' });
+    await seedChunk({ id: 'character:et:name', text: 'forest chase scene', projectId: pid, entityType: 'character' });
+
+    const res = await searchScreenplay(pid, 'forest chase scene', { entityTypes: [] });
+    expect(res.ok).toBe(true);
+    // Both entity types must be present since [] means no type filter.
+    const ids = res.hits.map((h) => h.id).sort();
+    expect(ids).toContain('beat:et:body:0');
+    expect(ids).toContain('character:et:name');
+  });
 });

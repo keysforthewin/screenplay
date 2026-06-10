@@ -24,6 +24,7 @@ import { getCollection, isRagEnabled } from './chromaClient.js';
 import { setReindexRunner } from './queue.js';
 
 import { resolveProjectId } from '../mongo/projects.js';
+import { findPlotByBeatId } from '../mongo/plots.js';
 import { extractSearchableText } from '../mongo/messages.js';
 import { getDb } from '../mongo/client.js';
 
@@ -165,12 +166,12 @@ async function safeRun(label, fn) {
 
 export async function indexBeat(beatId) {
   return safeRun(`beat:${beatId}`, async (col) => {
-    // Locate the owning plot doc directly (one doc per project) — the queue
-    // key carries no project, so the beat's host doc is the source of truth.
-    const oid = asObjectId(beatId);
-    const plotDoc = oid
-      ? await getDb().collection('plots').findOne({ 'beats._id': oid })
-      : null;
+    // Locate the owning plot doc via the shared helper (plots.js exports
+    // findPlotByBeatId for exactly this use case). We skip getPlot's
+    // ensureBeatIds backfill here, but that is safe: a beat can only be
+    // enqueued for indexing after it has acquired an _id, which requires a
+    // prior getPlot read that already performed the backfill.
+    const plotDoc = await findPlotByBeatId(beatId);
     const beat = plotDoc
       ? (plotDoc.beats || []).find((b) => b._id && idStr(b._id) === idStr(beatId))
       : null;

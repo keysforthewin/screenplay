@@ -8,7 +8,7 @@
 //
 //   searchScreenplay(projectId, query, { k, entityTypes } = {})
 //     → { ok: true,  hits: [{ id, score, entity_type, entity_id, entity_label, field, text }] }
-//     → { ok: false, reason: 'disabled' | 'unreachable' | 'embedding_error' | 'query_error', message }
+//     → { ok: false, reason: 'disabled' | 'unreachable' | 'bad_project' | 'embedding_error' | 'query_error', message }
 //
 // projectId is a 24-hex string; falsy → default project (transitional
 // resolveProjectId semantics, strict after the Phase F flip).
@@ -36,7 +36,16 @@ export async function searchScreenplay(projectId, query, { k, entityTypes } = {}
         'Semantic search is temporarily unavailable: ChromaDB not reachable (run `docker compose up -d chroma`). Falling back: try `search_beats` / `search_characters` / `search_message_history`.',
     };
   }
-  const pid = await resolveProjectId(projectId);
+  let pid;
+  try {
+    pid = await resolveProjectId(projectId);
+  } catch (e) {
+    return {
+      ok: false,
+      reason: 'bad_project',
+      message: `Semantic search failed (bad project): ${e.message}`,
+    };
+  }
   const topK = Math.min(20, Math.max(1, Number(k) || config.rag.defaultK));
   const clauses = [{ project_id: pid }];
   if (Array.isArray(entityTypes) && entityTypes.length) {
