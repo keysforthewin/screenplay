@@ -107,29 +107,12 @@ export async function findAttachmentFile(attachmentId) {
 // uploadAttachmentBuffer). The new file gets a fresh _id — callers can rely on
 // this to break ownership links (e.g. "copy this dialog's audio onto a scene
 // as an independent file, not a reference").
-export async function copyAttachmentBuffer({
-  projectId,
-  sourceFileId,
-  filename,
-  ownerType = null,
-  ownerId = null,
-}) {
-  const read = await readAttachmentBuffer(sourceFileId);
-  if (!read) throw new Error(`Attachment not found: ${sourceFileId}`);
-  const { buffer, file } = read;
-  const ct =
-    file.contentType || file.metadata?.content_type || 'application/octet-stream';
-  const finalFilename =
-    filename?.trim() || file.filename || `copy-${Date.now()}.bin`;
-  // Copies stay in the source attachment's project unless the caller pins one.
-  return uploadAttachmentBuffer(projectId || file.metadata?.project_id || undefined, {
-    buffer,
-    filename: finalFilename,
-    contentType: ct,
-    ownerType,
-    ownerId,
-  });
-}
+//
+// Implementation lives in attachmentCopy.js (separate module boundary) so that
+// readAttachmentBuffer / uploadAttachmentBuffer calls are interceptable in tests
+// — mirrors the imageCopy.js / images.js split. This re-export keeps the public
+// API stable for existing callers (gateway.js, dialog-audio-gateway tests, etc.).
+export { copyAttachmentBuffer } from './attachmentCopy.js';
 
 export async function listLibraryAttachments(projectId) {
   const pid = await resolveProjectId(projectId);
@@ -139,6 +122,13 @@ export async function listLibraryAttachments(projectId) {
     .toArray();
 }
 
+// These per-owner listers are DELIBERATELY unscoped by project. They are
+// id-addressed — the caller supplies an entity id that uniquely identifies the
+// owner — and project gating happens at owner resolution in routes: getBeat and
+// getCharacter already verify that the resolved entity belongs to the active
+// project. Unlike images.js there is no lenient in-module project_id check
+// (no legacy unstamped-file lenience), and these attachment ids are not
+// re-signed or returned to the client as temporary links.
 export async function listAttachmentsForCharacter(characterId) {
   return filesCol()
     .find({ 'metadata.owner_type': 'character', 'metadata.owner_id': toObjectId(characterId) })

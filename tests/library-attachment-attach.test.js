@@ -80,6 +80,16 @@ describe('listLibraryAttachments', () => {
     expect(others).toHaveLength(1);
     expect(others[0].metadata.project_id).toBe(otherPid);
   });
+
+  it('files without metadata.project_id are excluded (strict filter; migration stamps legacy files)', async () => {
+    const stamped = seedLibraryAttachment();
+    const unstamped = seedLibraryAttachment();
+    delete unstamped.metadata.project_id;
+
+    const lib = await Attachments.listLibraryAttachments();
+    expect(lib).toHaveLength(1);
+    expect(lib[0]._id.equals(stamped._id)).toBe(true);
+  });
 });
 
 describe('attachExistingAttachmentToCharacter', () => {
