@@ -93,6 +93,7 @@ export async function connectMongo() {
   logger.info(`Mongo connected: ${config.mongo.db}`);
 
   await db.collection('characters').createIndex({ name_lower: 1 }, { unique: true });
+  await db.collection('projects').createIndex({ title_lower: 1 }, { unique: true });
   await db.collection('messages').createIndex({ channel_id: 1, created_at: 1 });
   await db
     .collection('images.files')
