@@ -11,7 +11,7 @@
 import { logger } from '../log.js';
 import { analyzeLibraryImage } from '../llm/libraryImageMeta.js';
 import { describeReferenceImage } from '../llm/referenceImageDescription.js';
-import { readImageBuffer } from '../mongo/images.js';
+import { readImageBuffer, findImageFile } from '../mongo/images.js';
 import {
   setLibraryImageMetaViaGateway,
   setOwnedImageMetaViaGateway,
@@ -29,9 +29,10 @@ function markDone(imageId) {
   inFlight.delete(imageId);
 }
 
-async function writeMeta({ imageId, ownerType, ownerId, name, description }) {
+async function writeMeta({ projectId, imageId, ownerType, ownerId, name, description }) {
   if (ownerType === 'beat' || ownerType === 'character') {
     await setOwnedImageMetaViaGateway({
+      projectId,
       imageId: String(imageId),
       ownerType,
       ownerId: String(ownerId),
@@ -41,6 +42,7 @@ async function writeMeta({ imageId, ownerType, ownerId, name, description }) {
     return;
   }
   await setLibraryImageMetaViaGateway({
+    projectId,
     imageId: String(imageId),
     name: name || undefined,
     description: description || undefined,
@@ -88,6 +90,7 @@ export function kickoffImageVisionSeed(
     try {
       let buf = buffer;
       let ct = contentType;
+      let projectId = null;
       if (!Buffer.isBuffer(buf) || !ct) {
         const downloaded = await readImageBuffer(idStr);
         if (!downloaded) {
@@ -96,6 +99,18 @@ export function kickoffImageVisionSeed(
         }
         buf = downloaded.buffer;
         ct = downloaded.file?.contentType || ct;
+        projectId = downloaded.file?.metadata?.project_id
+          ? String(downloaded.file.metadata.project_id)
+          : null;
+      } else {
+        // Buffer was supplied directly (e.g. from a fresh upload REST handler).
+        // Read the image's project_id from GridFS metadata so the gateway
+        // can target the correct project-scoped room without an extra
+        // resolveProjectId(undefined) → getDefaultProject() round-trip.
+        const file = await findImageFile(idStr);
+        projectId = file?.metadata?.project_id
+          ? String(file.metadata.project_id)
+          : null;
       }
       const describer = pickDescriber(ownerType, kind);
       const { name, description } = await describer(buf, ct);
@@ -104,6 +119,7 @@ export function kickoffImageVisionSeed(
         return;
       }
       await writeMeta({
+        projectId,
         imageId: idStr,
         ownerType,
         ownerId,

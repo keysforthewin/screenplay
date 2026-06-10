@@ -76,9 +76,11 @@ function seedLibrary() {
 }
 
 async function flushQueue() {
-  // queueMicrotask schedules onto the microtask queue; awaiting a few ticks
-  // here is enough to let it run + the awaited gateway write.
-  for (let i = 0; i < 8; i++) await Promise.resolve();
+  // queueMicrotask schedules onto the microtask queue; awaiting enough ticks
+  // here to let it run + all the awaited gateway writes (name + description).
+  // The count was increased from 8 → 20 after the gateway gained a project-id
+  // resolution step, which adds extra microtask hops per write.
+  for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 
 describe('library vision seed worker', () => {

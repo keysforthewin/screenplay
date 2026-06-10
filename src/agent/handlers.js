@@ -1198,7 +1198,7 @@ export const HANDLERS = {
       } else {
         return `Tool error (set_field): beat field must be one of order, characters, scene_sheet_image_id; got "${field}". For text fields (name, desc, body) use \`edit\` instead.`;
       }
-      const beat = await Gateway.updateBeatViaGateway(identifier, { [field]: value });
+      const beat = await Gateway.updateBeatViaGateway(context?.projectId, identifier, { [field]: value });
       const display =
         field === 'characters'
           ? `[${value.map((s) => JSON.stringify(s)).join(', ')}]`
@@ -1216,7 +1216,7 @@ export const HANDLERS = {
     if (!Array.isArray(value) || value.some((s) => typeof s !== 'string')) {
       return 'Tool error (set_field): character.unset must be an array of custom field name strings.';
     }
-    const c = await Gateway.updateCharacterViaGateway(identifier, { unset: value });
+    const c = await Gateway.updateCharacterViaGateway(context?.projectId, identifier, { unset: value });
     const summary = `Unset ${value.length} field(s) on ${c.name}: [${value.join(', ')}].`;
     return withSpaLink(summary, characterUrl(context?.projectTitle, c));
   },
@@ -1271,7 +1271,7 @@ export const HANDLERS = {
               value = recovered;
             }
           }
-          const updated = await Gateway.updateCharacterViaGateway(row.character, {
+          const updated = await Gateway.updateCharacterViaGateway(context?.projectId, row.character, {
             [patchKey]: value,
           });
           return { input: row.character, name: updated.name, value };

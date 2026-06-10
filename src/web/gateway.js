@@ -32,6 +32,7 @@ import {
 } from './hocuspocus.js';
 import * as Plots from '../mongo/plots.js';
 import { buildRoomName } from './roomRegistry.js';
+import { resolveProjectId } from '../mongo/projects.js';
 
 // Lazy-load the heavy headless-editor module (jsdom + Tiptap). It's only
 // needed when Hocuspocus is actually running, which is never the case in
@@ -206,6 +207,18 @@ function broadcastFieldsUpdated(roomName, payload) {
   });
 }
 
+const SINGLETON_ENTITY_TYPES = new Set(['notes', 'library', 'plot']);
+
+// Room name for a gateway mutation. Singleton rooms are keyed by project id;
+// entity rooms by the entity's own ObjectId hex. `projectId` must already be
+// resolved (24-hex) by the caller via resolveProjectId.
+function roomNameFor(entityType, entityId, projectId) {
+  if (SINGLETON_ENTITY_TYPES.has(entityType)) {
+    return buildRoomName(entityType, projectId);
+  }
+  return buildRoomName(entityType, entityId);
+}
+
 // Map a gateway entityType/field tuple to the RAG reindex key. Used after
 // fallback (non-Yjs) writes — the Yjs path enqueues from roomRegistry
 // persistFields, so we only need this for the !isHocuspocusRunning() branch.
@@ -234,9 +247,9 @@ function enqueueRagAfterFallback({ entityType, entityId, field }) {
 // back to writing Mongo directly via the underlying helpers — same end
 // result, no live broadcast.
 
-async function readEntityField({ entityType, entityId, field }) {
+async function readEntityField({ projectId, entityType, entityId, field }) {
   if (entityType === 'beat') {
-    const beat = await getBeat(undefined, entityId);
+    const beat = await getBeat(projectId, entityId);
     if (!beat) throw new Error(`Beat not found: ${entityId}`);
     if (field === 'body') return String(beat.body || '');
     if (field === 'name') return String(beat.name || '');
@@ -259,7 +272,7 @@ async function readEntityField({ entityType, entityId, field }) {
     throw new Error(`gateway fallback: unknown beat field "${field}"`);
   }
   if (entityType === 'character') {
-    const c = await getCharacter(undefined, entityId);
+    const c = await getCharacter(projectId, entityId);
     if (!c) throw new Error(`Character not found: ${entityId}`);
     if (field === 'name') return String(c.name || '');
     if (field === 'hollywood_actor') return String(c.hollywood_actor || '');
@@ -288,33 +301,33 @@ async function readEntityField({ entityType, entityId, field }) {
   }
   if (entityType === 'notes' && field.startsWith('note:') && field.endsWith(':text')) {
     const noteId = field.slice('note:'.length, -':text'.length);
-    const doc = await getDirectorNotes();
+    const doc = await getDirectorNotes(projectId);
     const note = (doc.notes || []).find((n) => n._id?.toString?.() === String(noteId));
     if (!note) throw new Error(`Director's note not found: ${noteId}`);
     return String(note.text || '');
   }
   if (entityType === 'plot') {
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     return plot[field] != null ? String(plot[field]) : '';
   }
   if (entityType === 'storyboards') {
     const fm = field.match(/^item:([a-f0-9]{24}):frame:([a-f0-9]{24}):prompt$/);
     if (fm) {
-      const sb = await mongoGetStoryboard(undefined, fm[1]);
+      const sb = await mongoGetStoryboard(projectId, fm[1]);
       if (!sb) throw new Error(`Storyboard not found: ${fm[1]}`);
       const frame = (sb.frames || []).find((f) => f._id.toString() === fm[2]);
       return String(frame?.prompt || '');
     }
     const m = field.match(/^item:([a-f0-9]{24}):(text_prompt|summary)$/);
     if (!m) throw new Error(`gateway fallback: unknown storyboards field "${field}"`);
-    const sb = await mongoGetStoryboard(undefined, m[1]);
+    const sb = await mongoGetStoryboard(projectId, m[1]);
     if (!sb) throw new Error(`Storyboard not found: ${m[1]}`);
     return String(sb[m[2]] || '');
   }
   if (entityType === 'dialogs') {
     const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
     if (!m) throw new Error(`gateway fallback: unknown dialogs field "${field}"`);
-    const d = await mongoGetDialog(undefined, m[1]);
+    const d = await mongoGetDialog(projectId, m[1]);
     if (!d) throw new Error(`Dialog not found: ${m[1]}`);
     return String(d[m[2]] || '');
   }
@@ -340,18 +353,18 @@ async function readEntityField({ entityType, entityId, field }) {
   throw new Error(`gateway fallback: cannot read ${entityType}/${field}`);
 }
 
-async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
+async function fallbackTextWrite({ projectId, entityType, entityId, field, op, ...args }) {
   if (entityType === 'beat' && field === 'body') {
-    if (op === 'set') return Plots.setBeatBody(undefined, entityId, args.markdown);
-    if (op === 'edit') return Plots.editBeatBody(undefined, entityId, args.edits);
-    if (op === 'append') return Plots.appendBeatBody(undefined, entityId, args.content);
+    if (op === 'set') return Plots.setBeatBody(projectId, entityId, args.markdown);
+    if (op === 'edit') return Plots.editBeatBody(projectId, entityId, args.edits);
+    if (op === 'append') return Plots.appendBeatBody(projectId, entityId, args.content);
   }
 
   if (op === 'edit') {
     const { applyMarkdownEdits } = await import('../util/textWindow.js');
-    const current = await readEntityField({ entityType, entityId, field });
+    const current = await readEntityField({ projectId, entityType, entityId, field });
     const result = applyMarkdownEdits(current, args.edits, 'edit_field');
-    await fallbackTextWrite({ entityType, entityId, field, op: 'set', markdown: result.body });
+    await fallbackTextWrite({ projectId, entityType, entityId, field, op: 'set', markdown: result.body });
     return {
       edits: result.applied,
       beforeLen: result.beforeLen,
@@ -361,12 +374,12 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
   }
 
   if (op === 'append') {
-    const current = await readEntityField({ entityType, entityId, field });
+    const current = await readEntityField({ projectId, entityType, entityId, field });
     const addition = String(args.content ?? '').trim();
     if (!addition) throw new Error('No content to append.');
     const sep = current.trim() ? '\n\n' : '';
     const next = `${current}${sep}${addition}`;
-    await fallbackTextWrite({ entityType, entityId, field, op: 'set', markdown: next });
+    await fallbackTextWrite({ projectId, entityType, entityId, field, op: 'set', markdown: next });
     return { value: next };
   }
 
@@ -385,13 +398,13 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
     // describeBeatRoom.persistFields reassembles the object (roomRegistry.js).
     if (field.startsWith('scene_bible.')) {
       const key = field.slice('scene_bible.'.length);
-      const beat = await Plots.getBeat(undefined, entityId);
-      return Plots.setBeatSceneBible(undefined, entityId, {
+      const beat = await Plots.getBeat(projectId, entityId);
+      return Plots.setBeatSceneBible(projectId, entityId, {
         ...(beat?.scene_bible || {}),
         [key]: args.markdown,
       });
     }
-    return Plots.updateBeat(undefined, entityId, { [field]: args.markdown });
+    return Plots.updateBeat(projectId, entityId, { [field]: args.markdown });
   }
   if (entityType === 'character') {
     {
@@ -404,34 +417,34 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
     }
     const { updateCharacter } = await import('../mongo/characters.js');
     if (field === 'name' || field === 'hollywood_actor') {
-      return updateCharacter(undefined, entityId, { [field]: args.markdown });
+      return updateCharacter(projectId, entityId, { [field]: args.markdown });
     }
     if (field.startsWith('fields.')) {
-      return updateCharacter(undefined, entityId, { [field]: args.markdown });
+      return updateCharacter(projectId, entityId, { [field]: args.markdown });
     }
   }
   if (entityType === 'notes' && field.startsWith('note:') && field.endsWith(':text')) {
     const noteId = field.slice('note:'.length, -':text'.length);
     const { editDirectorNote } = await import('../mongo/directorNotes.js');
-    return editDirectorNote({ noteId, text: args.markdown });
+    return editDirectorNote({ projectId, noteId, text: args.markdown });
   }
   if (entityType === 'plot') {
-    return Plots.updatePlot(undefined, { [field]: args.markdown });
+    return Plots.updatePlot(projectId, { [field]: args.markdown });
   }
   if (entityType === 'storyboards') {
     const fm = field.match(/^item:([a-f0-9]{24}):frame:([a-f0-9]{24}):prompt$/);
-    if (fm) return mongoSetFramePrompt(undefined, fm[1], fm[2], args.markdown);
+    if (fm) return mongoSetFramePrompt(projectId, fm[1], fm[2], args.markdown);
     const m = field.match(/^item:([a-f0-9]{24}):(text_prompt|summary)$/);
     if (!m) throw new Error(`gateway fallback: unknown storyboards field "${field}"`);
-    return mongoUpdateStoryboard(undefined, m[1], { [m[2]]: args.markdown });
+    return mongoUpdateStoryboard(projectId, m[1], { [m[2]]: args.markdown });
   }
   if (entityType === 'dialogs') {
     if (field === 'dialog_notes') {
-      return Plots.updateBeat(undefined, entityId, { dialog_notes: args.markdown });
+      return Plots.updateBeat(projectId, entityId, { dialog_notes: args.markdown });
     }
     const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
     if (!m) throw new Error(`gateway fallback: unknown dialogs field "${field}"`);
-    return mongoUpdateDialog(undefined, m[1], { [m[2]]: args.markdown });
+    return mongoUpdateDialog(projectId, m[1], { [m[2]]: args.markdown });
   }
   if (entityType === 'library') {
     {
@@ -447,14 +460,15 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
   throw new Error(`gateway fallback not implemented for ${entityType}/${field}`);
 }
 
-export async function setEntityFieldMarkdown({ entityType, entityId, field, markdown }) {
+export async function setEntityFieldMarkdown({ projectId, entityType, entityId, field, markdown }) {
+  projectId = await resolveProjectId(projectId);
   if (!isHocuspocusRunning()) {
-    await fallbackTextWrite({ entityType, entityId, field, op: 'set', markdown });
+    await fallbackTextWrite({ projectId, entityType, entityId, field, op: 'set', markdown });
     enqueueRagAfterFallback({ entityType, entityId, field });
     return;
   }
   const { setFragmentMarkdown } = await he();
-  const roomName = buildRoomName(entityType, entityId);
+  const roomName = roomNameFor(entityType, entityId, projectId);
   await withDirectDocument(roomName, { actor: 'bot' }, (document) => {
     withBotPresence(roomName, field, () => {
       setFragmentMarkdown(document, field, String(markdown ?? ''));
@@ -465,9 +479,10 @@ export async function setEntityFieldMarkdown({ entityType, entityId, field, mark
   );
 }
 
-export async function editEntityFieldMarkdown({ entityType, entityId, field, edits }) {
+export async function editEntityFieldMarkdown({ projectId, entityType, entityId, field, edits }) {
+  projectId = await resolveProjectId(projectId);
   if (!isHocuspocusRunning()) {
-    const result = await fallbackTextWrite({ entityType, entityId, field, op: 'edit', edits });
+    const result = await fallbackTextWrite({ projectId, entityType, entityId, field, op: 'edit', edits });
     enqueueRagAfterFallback({ entityType, entityId, field });
     return {
       applied: (result?.edits || edits).map((e) => ({
@@ -480,7 +495,7 @@ export async function editEntityFieldMarkdown({ entityType, entityId, field, edi
     };
   }
   const { editFragmentMarkdown } = await he();
-  const roomName = buildRoomName(entityType, entityId);
+  const roomName = roomNameFor(entityType, entityId, projectId);
   let outcome;
   await withDirectDocument(roomName, { actor: 'bot' }, (document) => {
     withBotPresence(roomName, field, () => {
@@ -494,14 +509,15 @@ export async function editEntityFieldMarkdown({ entityType, entityId, field, edi
   return outcome;
 }
 
-export async function appendEntityFieldMarkdown({ entityType, entityId, field, content }) {
+export async function appendEntityFieldMarkdown({ projectId, entityType, entityId, field, content }) {
+  projectId = await resolveProjectId(projectId);
   if (!isHocuspocusRunning()) {
-    const result = await fallbackTextWrite({ entityType, entityId, field, op: 'append', content });
+    const result = await fallbackTextWrite({ projectId, entityType, entityId, field, op: 'append', content });
     enqueueRagAfterFallback({ entityType, entityId, field });
     return result?.body ?? '';
   }
   const { appendToFragmentMarkdown } = await he();
-  const roomName = buildRoomName(entityType, entityId);
+  const roomName = roomNameFor(entityType, entityId, projectId);
   let next;
   await withDirectDocument(roomName, { actor: 'bot' }, (document) => {
     withBotPresence(roomName, field, () => {
@@ -516,8 +532,9 @@ export async function appendEntityFieldMarkdown({ entityType, entityId, field, c
 
 // Conveniences for specific entity flavors used by handlers ----------------
 
-export async function setBeatBodyViaGateway(beatId, body) {
+export async function setBeatBodyViaGateway(projectId, beatId, body) {
   return setEntityFieldMarkdown({
+    projectId,
     entityType: 'beat',
     entityId: String(beatId),
     field: 'body',
@@ -525,8 +542,9 @@ export async function setBeatBodyViaGateway(beatId, body) {
   });
 }
 
-export async function editBeatBodyViaGateway(beatId, edits) {
+export async function editBeatBodyViaGateway(projectId, beatId, edits) {
   return editEntityFieldMarkdown({
+    projectId,
     entityType: 'beat',
     entityId: String(beatId),
     field: 'body',
@@ -534,8 +552,9 @@ export async function editBeatBodyViaGateway(beatId, edits) {
   });
 }
 
-export async function appendBeatBodyViaGateway(beatId, content) {
+export async function appendBeatBodyViaGateway(projectId, beatId, content) {
   return appendEntityFieldMarkdown({
+    projectId,
     entityType: 'beat',
     entityId: String(beatId),
     field: 'body',
@@ -545,7 +564,7 @@ export async function appendBeatBodyViaGateway(beatId, content) {
 
 // updateBeat may include text fields (name/body) and order/characters;
 // route text fields through the gateway and the rest through Mongo.
-export async function updateBeatViaGateway(identifier, patch) {
+export async function updateBeatViaGateway(projectId, identifier, patch) {
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new Error(
       `update_beat: \`patch\` must be an object like {body: "..."}, got ${
@@ -563,11 +582,12 @@ export async function updateBeatViaGateway(identifier, patch) {
       `update_beat: \`patch\` has no recognized fields. Expected one of: name, body, order, characters. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
-  const beat = await getBeat(undefined, identifier);
+  const beat = await getBeat(projectId, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   const beatId = beat._id.toString();
   if (patch.name !== undefined) {
     await setEntityFieldMarkdown({
+      projectId,
       entityType: 'beat',
       entityId: beatId,
       field: 'name',
@@ -576,6 +596,7 @@ export async function updateBeatViaGateway(identifier, patch) {
   }
   if (patch.body !== undefined) {
     await setEntityFieldMarkdown({
+      projectId,
       entityType: 'beat',
       entityId: beatId,
       field: 'body',
@@ -588,15 +609,15 @@ export async function updateBeatViaGateway(identifier, patch) {
   if (Array.isArray(patch.characters)) onlyDiscrete.characters = patch.characters;
   if (Object.keys(onlyDiscrete).length) {
     const { updateBeat: mongoUpdateBeat } = await import('../mongo/plots.js');
-    await mongoUpdateBeat(undefined, beatId, onlyDiscrete);
+    await mongoUpdateBeat(projectId, beatId, onlyDiscrete);
     broadcastFieldsUpdated(buildRoomName('beat', beatId), {
       changed: Object.keys(onlyDiscrete),
     });
   }
-  return getBeat(undefined, beatId);
+  return getBeat(projectId, beatId);
 }
 
-export async function updateCharacterViaGateway(identifier, patch) {
+export async function updateCharacterViaGateway(projectId, identifier, patch) {
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new Error(
       `update_character: \`patch\` must be an object like {name: "..."} or {fields: {...}}, got ${
@@ -617,7 +638,7 @@ export async function updateCharacterViaGateway(identifier, patch) {
       `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, hollywood_actor, or unset. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
-  const c = await getCharacter(undefined, identifier);
+  const c = await getCharacter(projectId, identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   const cid = c._id.toString();
   // Text fields (name, hollywood_actor, fields.*) flow through the y-doc;
@@ -639,6 +660,7 @@ export async function updateCharacterViaGateway(identifier, patch) {
   }
   for (const { field, markdown } of textOps) {
     await setEntityFieldMarkdown({
+      projectId,
       entityType: 'character',
       entityId: cid,
       field,
@@ -646,16 +668,18 @@ export async function updateCharacterViaGateway(identifier, patch) {
     });
   }
   if (unset) {
-    await mongoUpdateCharacter(undefined, cid, { unset });
+    await mongoUpdateCharacter(projectId, cid, { unset });
     broadcastFieldsUpdated(buildRoomName('character', cid), {
       changed: unset.map((u) => `-fields.${u}`),
     });
   }
-  return getCharacter(undefined, cid);
+  return getCharacter(projectId, cid);
 }
 
-export async function editDirectorNoteViaGateway({ noteId, text }) {
+export async function editDirectorNoteViaGateway({ projectId, noteId, text }) {
+  projectId = await resolveProjectId(projectId);
   return setEntityFieldMarkdown({
+    projectId,
     entityType: 'notes',
     entityId: 'notes',
     field: `note:${String(noteId)}:text`,
@@ -663,8 +687,10 @@ export async function editDirectorNoteViaGateway({ noteId, text }) {
   });
 }
 
-export async function editDirectorNoteTextViaGateway({ noteId, edits }) {
+export async function editDirectorNoteTextViaGateway({ projectId, noteId, edits }) {
+  projectId = await resolveProjectId(projectId);
   return editEntityFieldMarkdown({
+    projectId,
     entityType: 'notes',
     entityId: 'notes',
     field: `note:${String(noteId)}:text`,
@@ -672,10 +698,11 @@ export async function editDirectorNoteTextViaGateway({ noteId, edits }) {
   });
 }
 
-export async function editCharacterFieldViaGateway({ identifier, field, edits }) {
-  const c = await getCharacter(undefined, identifier);
+export async function editCharacterFieldViaGateway({ projectId, identifier, field, edits }) {
+  const c = await getCharacter(projectId, identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   return editEntityFieldMarkdown({
+    projectId,
     entityType: 'character',
     entityId: c._id.toString(),
     field,
@@ -683,12 +710,13 @@ export async function editCharacterFieldViaGateway({ identifier, field, edits })
   });
 }
 
-export async function addDirectorNoteViaGateway({ text, position }) {
+export async function addDirectorNoteViaGateway({ projectId, text, position }) {
+  projectId = await resolveProjectId(projectId);
   // Add the note in Mongo (it gets a fresh _id), then ping the room so the
   // /notes page renders the new editor for its text fragment. The fragment
   // itself will be seeded from the just-written `text` on first connection.
-  const note = await mongoAddDirectorNote({ text, position });
-  broadcastFieldsUpdated('notes', {
+  const note = await mongoAddDirectorNote({ projectId, text, position });
+  broadcastFieldsUpdated(buildRoomName('notes', projectId), {
     changed: ['notes'],
     added_note_id: note._id.toString(),
   });
@@ -696,9 +724,10 @@ export async function addDirectorNoteViaGateway({ text, position }) {
   return note;
 }
 
-export async function removeDirectorNoteViaGateway({ noteId }) {
-  await mongoRemoveDirectorNote({ noteId });
-  broadcastFieldsUpdated('notes', {
+export async function removeDirectorNoteViaGateway({ projectId, noteId }) {
+  projectId = await resolveProjectId(projectId);
+  await mongoRemoveDirectorNote({ projectId, noteId });
+  broadcastFieldsUpdated(buildRoomName('notes', projectId), {
     changed: ['notes'],
     removed_note_id: String(noteId),
   });
@@ -708,58 +737,58 @@ export async function removeDirectorNoteViaGateway({ noteId }) {
 
 // ─── Non-text mutations ────────────────────────────────────────────────────
 
-export async function addBeatImageViaGateway({ beatId, imageMeta, setAsMain }) {
-  const result = await pushBeatImage(undefined, String(beatId), imageMeta, !!setAsMain);
+export async function addBeatImageViaGateway({ projectId, beatId, imageMeta, setAsMain }) {
+  const result = await pushBeatImage(projectId, String(beatId), imageMeta, !!setAsMain);
   broadcastFieldsUpdated(buildRoomName('beat', String(beatId)), {
     changed: ['images', 'main_image_id'],
   });
   return result;
 }
 
-export async function removeBeatImageViaGateway({ beatId, imageId }) {
-  const result = await pullBeatImage(undefined, String(beatId), imageId);
+export async function removeBeatImageViaGateway({ projectId, beatId, imageId }) {
+  const result = await pullBeatImage(projectId, String(beatId), imageId);
   broadcastFieldsUpdated(buildRoomName('beat', String(beatId)), {
     changed: ['images', 'main_image_id'],
   });
   return result;
 }
 
-export async function setBeatMainImageViaGateway({ beatId, imageId }) {
-  const result = await setBeatMainImage(undefined, String(beatId), imageId);
+export async function setBeatMainImageViaGateway({ projectId, beatId, imageId }) {
+  const result = await setBeatMainImage(projectId, String(beatId), imageId);
   broadcastFieldsUpdated(buildRoomName('beat', String(beatId)), {
     changed: ['main_image_id'],
   });
   return result;
 }
 
-export async function addBeatAttachmentViaGateway({ beatId, attachmentMeta }) {
-  const result = await pushBeatAttachment(undefined, String(beatId), attachmentMeta);
+export async function addBeatAttachmentViaGateway({ projectId, beatId, attachmentMeta }) {
+  const result = await pushBeatAttachment(projectId, String(beatId), attachmentMeta);
   broadcastFieldsUpdated(buildRoomName('beat', String(beatId)), {
     changed: ['attachments'],
   });
   return result;
 }
 
-export async function removeBeatAttachmentViaGateway({ beatId, attachmentId }) {
-  const result = await pullBeatAttachment(undefined, String(beatId), attachmentId);
+export async function removeBeatAttachmentViaGateway({ projectId, beatId, attachmentId }) {
+  const result = await pullBeatAttachment(projectId, String(beatId), attachmentId);
   broadcastFieldsUpdated(buildRoomName('beat', String(beatId)), {
     changed: ['attachments'],
   });
   return result;
 }
 
-export async function addCharacterImageViaGateway({ character, imageMeta, setAsMain }) {
-  const c = await getCharacter(undefined, character);
+export async function addCharacterImageViaGateway({ projectId, character, imageMeta, setAsMain }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
-  const result = await pushCharacterImage(undefined, c._id.toString(), imageMeta, !!setAsMain);
+  const result = await pushCharacterImage(projectId, c._id.toString(), imageMeta, !!setAsMain);
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
     changed: ['images', 'main_image_id'],
   });
   return result;
 }
 
-export async function setCharacterMainImageViaGateway({ character, imageId }) {
-  const c = await getCharacter(undefined, character);
+export async function setCharacterMainImageViaGateway({ projectId, character, imageId }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const result = await setMainCharacterImage({ character: c._id.toString(), imageId });
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
@@ -768,8 +797,8 @@ export async function setCharacterMainImageViaGateway({ character, imageId }) {
   return result;
 }
 
-export async function removeCharacterImageViaGateway({ character, imageId }) {
-  const c = await getCharacter(undefined, character);
+export async function removeCharacterImageViaGateway({ projectId, character, imageId }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const result = await removeCharacterImage({ character: c._id.toString(), imageId });
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
@@ -778,10 +807,10 @@ export async function removeCharacterImageViaGateway({ character, imageId }) {
   return result;
 }
 
-export async function addCharacterAttachmentViaGateway({ character, attachmentMeta }) {
-  const c = await getCharacter(undefined, character);
+export async function addCharacterAttachmentViaGateway({ projectId, character, attachmentMeta }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
-  const result = await pushCharacterAttachment(undefined, c._id.toString(), attachmentMeta);
+  const result = await pushCharacterAttachment(projectId, c._id.toString(), attachmentMeta);
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
     changed: ['attachments'],
   });
@@ -810,6 +839,7 @@ async function tryDeleteImage(imageId, ctx) {
 }
 
 export async function createPendingArtworkViaGateway({
+  projectId,
   hostType,
   hostId,
   prompt,
@@ -819,6 +849,7 @@ export async function createPendingArtworkViaGateway({
   jobId = null,
 }) {
   const result = await mongoCreatePendingArtwork({
+    projectId,
     hostType,
     hostId,
     prompt,
@@ -840,6 +871,7 @@ export async function createPendingArtworkViaGateway({
 // gallery / delete paths rely on. When the source is already owned by this
 // host, the existing id is reused — no copy.
 export async function createArtworkFromImageViaGateway({
+  projectId,
   hostType,
   hostId,
   imageId,
@@ -863,6 +895,7 @@ export async function createArtworkFromImageViaGateway({
     resultImageId = src._id;
   } else {
     const copy = await copyImageToNewOwner({
+      projectId,
       imageId,
       ownerType: hostType,
       ownerId: hostIdStr,
@@ -882,7 +915,7 @@ export async function createArtworkFromImageViaGateway({
   return result;
 }
 
-export async function patchArtworkViaGateway({ hostType, hostId, artworkId, patch }) {
+export async function patchArtworkViaGateway({ projectId, hostType, hostId, artworkId, patch }) {
   const result = await mongoPatchArtwork({ hostType, hostId, artworkId, patch });
   broadcastFieldsUpdated(artworkRoomName(hostType, result.host_id), {
     changed: ['artworks'],
@@ -891,6 +924,7 @@ export async function patchArtworkViaGateway({ hostType, hostId, artworkId, patc
 }
 
 export async function setArtworkStatusViaGateway({
+  projectId,
   hostType,
   hostId,
   artworkId,
@@ -917,6 +951,7 @@ function artworkChangedFields(result) {
 }
 
 export async function setArtworkResultViaGateway({
+  projectId,
   hostType,
   hostId,
   artworkId,
@@ -937,7 +972,7 @@ export async function setArtworkResultViaGateway({
   return result;
 }
 
-export async function undoArtworkEditViaGateway({ hostType, hostId, artworkId }) {
+export async function undoArtworkEditViaGateway({ projectId, hostType, hostId, artworkId }) {
   const result = await mongoUndoArtworkEdit({ hostType, hostId, artworkId });
   await tryDeleteImage(result.orphanedImageId, 'undone artwork');
   broadcastFieldsUpdated(artworkRoomName(hostType, result.host_id), {
@@ -946,7 +981,7 @@ export async function undoArtworkEditViaGateway({ hostType, hostId, artworkId })
   return result;
 }
 
-export async function removeArtworkViaGateway({ hostType, hostId, artworkId }) {
+export async function removeArtworkViaGateway({ projectId, hostType, hostId, artworkId }) {
   const result = await mongoRemoveArtwork({ hostType, hostId, artworkId });
   for (const id of result.removed_image_ids) {
     await tryDeleteImage(id, 'removed artwork');
@@ -957,10 +992,10 @@ export async function removeArtworkViaGateway({ hostType, hostId, artworkId }) {
   return result;
 }
 
-export async function removeCharacterAttachmentViaGateway({ character, attachmentId }) {
-  const c = await getCharacter(undefined, character);
+export async function removeCharacterAttachmentViaGateway({ projectId, character, attachmentId }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
-  const result = await pullCharacterAttachment(undefined, c._id.toString(), attachmentId);
+  const result = await pullCharacterAttachment(projectId, c._id.toString(), attachmentId);
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
     changed: ['attachments'],
   });
@@ -971,8 +1006,8 @@ export async function removeCharacterAttachmentViaGateway({ character, attachmen
 // has already uploaded `newImageMeta` to GridFS; this helper swaps the meta
 // inside beat.images[], updates main_image_id when applicable, deletes the
 // old GridFS bytes, then broadcasts to the room.
-export async function replaceBeatImageViaGateway({ beatId, oldImageId, newImageMeta }) {
-  const result = await replaceBeatImage(undefined, String(beatId), oldImageId, newImageMeta);
+export async function replaceBeatImageViaGateway({ projectId, beatId, oldImageId, newImageMeta }) {
+  const result = await replaceBeatImage(projectId, String(beatId), oldImageId, newImageMeta);
   try {
     await deleteImage(oldImageId);
   } catch (e) {
@@ -984,11 +1019,11 @@ export async function replaceBeatImageViaGateway({ beatId, oldImageId, newImageM
   return result;
 }
 
-export async function replaceCharacterImageViaGateway({ character, oldImageId, newImageMeta }) {
-  const c = await getCharacter(undefined, character);
+export async function replaceCharacterImageViaGateway({ projectId, character, oldImageId, newImageMeta }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const cid = c._id.toString();
-  const result = await replaceCharacterImage(undefined, cid, oldImageId, newImageMeta);
+  const result = await replaceCharacterImage(projectId, cid, oldImageId, newImageMeta);
   try {
     await deleteImage(oldImageId);
   } catch (e) {
@@ -1007,9 +1042,9 @@ export async function replaceCharacterImageViaGateway({ character, oldImageId, n
 // reassigned, so users looking at the prior owner see it disappear without a
 // refetch. `movedFrom` comes from detachImageFromCurrentOwner — null means
 // the image was in the library.
-function broadcastPriorImageOwner(movedFrom) {
+function broadcastPriorImageOwner(projectId, movedFrom) {
   if (!movedFrom) {
-    broadcastFieldsUpdated('library', { changed: ['library_images'] });
+    broadcastFieldsUpdated(buildRoomName('library', projectId), { changed: ['library_images'] });
     return;
   }
   if (movedFrom.prior_owner_type === 'beat') {
@@ -1023,7 +1058,7 @@ function broadcastPriorImageOwner(movedFrom) {
       { changed: ['images', 'main_image_id'] },
     );
   } else if (movedFrom.prior_owner_type === 'director_note') {
-    broadcastFieldsUpdated('notes', {
+    broadcastFieldsUpdated(buildRoomName('notes', projectId), {
       changed: [
         `note:${movedFrom.prior_owner_id}:images`,
         `note:${movedFrom.prior_owner_id}:main_image_id`,
@@ -1033,9 +1068,9 @@ function broadcastPriorImageOwner(movedFrom) {
   }
 }
 
-function broadcastPriorAttachmentOwner(movedFrom) {
+function broadcastPriorAttachmentOwner(projectId, movedFrom) {
   if (!movedFrom) {
-    broadcastFieldsUpdated('library', { changed: ['library_attachments'] });
+    broadcastFieldsUpdated(buildRoomName('library', projectId), { changed: ['library_attachments'] });
     return;
   }
   if (movedFrom.prior_owner_type === 'beat') {
@@ -1049,7 +1084,7 @@ function broadcastPriorAttachmentOwner(movedFrom) {
       { changed: ['attachments'] },
     );
   } else if (movedFrom.prior_owner_type === 'director_note') {
-    broadcastFieldsUpdated('notes', {
+    broadcastFieldsUpdated(buildRoomName('notes', projectId), {
       changed: [`note:${movedFrom.prior_owner_id}:attachments`],
       note_id: String(movedFrom.prior_owner_id),
     });
@@ -1060,13 +1095,15 @@ function broadcastPriorAttachmentOwner(movedFrom) {
 // current owner is detached first (library or another entity), then ownership
 // is reassigned and beat.images[] gets a new entry. Both rooms broadcast.
 export async function attachExistingImageToBeatViaGateway({
+  projectId,
   beatId,
   imageId,
   setAsMain = false,
 }) {
+  projectId = await resolveProjectId(projectId);
   const file = await findImageFile(imageId);
   if (!file) throw new Error(`Image not found: ${imageId}`);
-  const targetBeat = await getBeat(undefined, String(beatId));
+  const targetBeat = await getBeat(projectId, String(beatId));
   if (!targetBeat) throw new Error(`Beat not found: ${beatId}`);
   if (
     file.metadata?.owner_type === 'beat' &&
@@ -1091,7 +1128,7 @@ export async function attachExistingImageToBeatViaGateway({
     uploaded_at: file.uploadDate,
   };
   const result = await pushBeatImage(
-    undefined,
+    projectId,
     targetBeat._id.toString(),
     meta,
     !!setAsMain,
@@ -1100,16 +1137,18 @@ export async function attachExistingImageToBeatViaGateway({
     buildRoomName('beat', targetBeat._id.toString()),
     { changed: ['images', 'main_image_id'] },
   );
-  broadcastPriorImageOwner(movedFrom);
+  broadcastPriorImageOwner(projectId, movedFrom);
   return result;
 }
 
 export async function attachExistingImageToCharacterViaGateway({
+  projectId,
   character,
   imageId,
   setAsMain = false,
 }) {
-  const c = await getCharacter(undefined, character);
+  projectId = await resolveProjectId(projectId);
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const file = await findImageFile(imageId);
   if (!file) throw new Error(`Image not found: ${imageId}`);
@@ -1136,7 +1175,7 @@ export async function attachExistingImageToCharacterViaGateway({
     uploaded_at: file.uploadDate,
   };
   const result = await pushCharacterImage(
-    undefined,
+    projectId,
     c._id.toString(),
     meta,
     !!setAsMain,
@@ -1144,18 +1183,20 @@ export async function attachExistingImageToCharacterViaGateway({
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
     changed: ['images', 'main_image_id'],
   });
-  broadcastPriorImageOwner(movedFrom);
+  broadcastPriorImageOwner(projectId, movedFrom);
   return result;
 }
 
 export async function attachExistingImageToDirectorNoteViaGateway({
+  projectId,
   noteId,
   imageId,
   setAsMain = false,
 }) {
+  projectId = await resolveProjectId(projectId);
   const file = await findImageFile(imageId);
   if (!file) throw new Error(`Image not found: ${imageId}`);
-  const { notes = [] } = (await getDirectorNotes()) || {};
+  const { notes = [] } = (await getDirectorNotes(projectId)) || {};
   const target = notes.find((n) => n._id?.toString() === String(noteId));
   if (!target) throw new Error(`Director note not found: ${noteId}`);
   if (
@@ -1181,20 +1222,21 @@ export async function attachExistingImageToDirectorNoteViaGateway({
     uploaded_at: file.uploadDate,
   };
   const result = await pushDirectorNoteImage(
-    undefined,
+    projectId,
     target._id.toString(),
     meta,
     !!setAsMain,
   );
-  broadcastFieldsUpdated('notes', {
+  broadcastFieldsUpdated(buildRoomName('notes', projectId), {
     changed: [`note:${noteId}:images`, `note:${noteId}:main_image_id`],
     note_id: String(noteId),
   });
-  broadcastPriorImageOwner(movedFrom);
+  broadcastPriorImageOwner(projectId, movedFrom);
   return result;
 }
 
 export async function attachExistingAttachmentToBeatViaGateway({
+  projectId,
   beatId,
   attachmentId,
 }) {
@@ -1207,16 +1249,18 @@ export async function attachExistingAttachmentToBeatViaGateway({
       buildRoomName('beat', String(result?.beat?._id || beatId)),
       { changed: ['attachments'] },
     );
-    broadcastPriorAttachmentOwner(result?.moved_from);
+    broadcastPriorAttachmentOwner(projectId, result?.moved_from);
   }
   return result;
 }
 
 export async function attachExistingAttachmentToCharacterViaGateway({
+  projectId,
   character,
   attachmentId,
 }) {
-  const c = await getCharacter(undefined, character);
+  projectId = await resolveProjectId(projectId);
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const result = await attachExistingAttachmentToCharacter({
     character: c._id.toString(),
@@ -1226,111 +1270,121 @@ export async function attachExistingAttachmentToCharacterViaGateway({
     broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
       changed: ['attachments'],
     });
-    broadcastPriorAttachmentOwner(result?.moved_from);
+    broadcastPriorAttachmentOwner(projectId, result?.moved_from);
   }
   return result;
 }
 
 export async function attachExistingAttachmentToDirectorNoteViaGateway({
+  projectId,
   noteId,
   attachmentId,
 }) {
+  projectId = await resolveProjectId(projectId);
   const result = await attachExistingAttachmentToDirectorNote({
     noteId: String(noteId),
     attachmentId,
   });
   if (!result?.already_attached) {
-    broadcastFieldsUpdated('notes', {
+    broadcastFieldsUpdated(buildRoomName('notes', projectId), {
       changed: [`note:${noteId}:attachments`],
       note_id: String(noteId),
     });
-    broadcastPriorAttachmentOwner(result?.moved_from);
+    broadcastPriorAttachmentOwner(projectId, result?.moved_from);
   }
   return result;
 }
 
-export async function moveBeatImageToLibraryViaGateway({ beatId, imageId }) {
-  const result = await pullBeatImage(undefined, String(beatId), imageId);
+export async function moveBeatImageToLibraryViaGateway({ projectId, beatId, imageId }) {
+  projectId = await resolveProjectId(projectId);
+  const result = await pullBeatImage(projectId, String(beatId), imageId);
   await setImageOwner(imageId, { ownerType: null, ownerId: null });
   broadcastFieldsUpdated(buildRoomName('beat', String(beatId)), {
     changed: ['images', 'main_image_id'],
   });
-  broadcastFieldsUpdated('library', {
+  broadcastFieldsUpdated(buildRoomName('library', projectId), {
     changed: ['library_images'],
     added_image_id: String(imageId),
   });
   return result;
 }
 
-export async function moveCharacterImageToLibraryViaGateway({ character, imageId }) {
-  const c = await getCharacter(undefined, character);
+export async function moveCharacterImageToLibraryViaGateway({ projectId, character, imageId }) {
+  projectId = await resolveProjectId(projectId);
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const cid = c._id.toString();
-  const result = await pullCharacterImage(undefined, cid, imageId);
+  const result = await pullCharacterImage(projectId, cid, imageId);
   await setImageOwner(imageId, { ownerType: null, ownerId: null });
   broadcastFieldsUpdated(buildRoomName('character', cid), {
     changed: ['images', 'main_image_id'],
   });
-  broadcastFieldsUpdated('library', {
+  broadcastFieldsUpdated(buildRoomName('library', projectId), {
     changed: ['library_images'],
     added_image_id: String(imageId),
   });
   return result;
 }
 
-export async function moveDirectorNoteImageToLibraryViaGateway({ noteId, imageId }) {
-  const result = await pullDirectorNoteImage(undefined, String(noteId), imageId);
+export async function moveDirectorNoteImageToLibraryViaGateway({ projectId, noteId, imageId }) {
+  projectId = await resolveProjectId(projectId);
+  const result = await pullDirectorNoteImage(projectId, String(noteId), imageId);
   await setImageOwner(imageId, { ownerType: null, ownerId: null });
-  broadcastFieldsUpdated('notes', {
+  broadcastFieldsUpdated(buildRoomName('notes', projectId), {
     changed: [`note:${noteId}:images`, `note:${noteId}:main_image_id`],
     note_id: String(noteId),
   });
-  broadcastFieldsUpdated('library', {
+  broadcastFieldsUpdated(buildRoomName('library', projectId), {
     changed: ['library_images'],
     added_image_id: String(imageId),
   });
   return result;
 }
 
-export async function addDirectorNoteImageViaGateway({ noteId, imageMeta, setAsMain }) {
-  const result = await pushDirectorNoteImage(undefined, String(noteId), imageMeta, !!setAsMain);
-  broadcastFieldsUpdated('notes', {
+export async function addDirectorNoteImageViaGateway({ projectId, noteId, imageMeta, setAsMain }) {
+  projectId = await resolveProjectId(projectId);
+  const result = await pushDirectorNoteImage(projectId, String(noteId), imageMeta, !!setAsMain);
+  broadcastFieldsUpdated(buildRoomName('notes', projectId), {
     changed: [`note:${noteId}:images`, `note:${noteId}:main_image_id`],
     note_id: String(noteId),
   });
   return result;
 }
 
-export async function removeDirectorNoteImageViaGateway({ noteId, imageId }) {
-  const result = await pullDirectorNoteImage(undefined, String(noteId), imageId);
-  broadcastFieldsUpdated('notes', {
+export async function removeDirectorNoteImageViaGateway({ projectId, noteId, imageId }) {
+  projectId = await resolveProjectId(projectId);
+  const result = await pullDirectorNoteImage(projectId, String(noteId), imageId);
+  broadcastFieldsUpdated(buildRoomName('notes', projectId), {
     changed: [`note:${noteId}:images`, `note:${noteId}:main_image_id`],
     note_id: String(noteId),
   });
   return result;
 }
 
-export async function setDirectorNoteMainImageViaGateway({ noteId, imageId }) {
-  const result = await setDirectorNoteMainImage(undefined, String(noteId), imageId);
-  broadcastFieldsUpdated('notes', {
+export async function setDirectorNoteMainImageViaGateway({ projectId, noteId, imageId }) {
+  projectId = await resolveProjectId(projectId);
+  const result = await setDirectorNoteMainImage(projectId, String(noteId), imageId);
+  broadcastFieldsUpdated(buildRoomName('notes', projectId), {
     changed: [`note:${noteId}:main_image_id`],
     note_id: String(noteId),
   });
   return result;
 }
 
-export async function addDirectorNoteAttachmentViaGateway({ noteId, attachmentMeta }) {
-  const result = await pushDirectorNoteAttachment(undefined, String(noteId), attachmentMeta);
-  broadcastFieldsUpdated('notes', {
+export async function addDirectorNoteAttachmentViaGateway({ projectId, noteId, attachmentMeta }) {
+  projectId = await resolveProjectId(projectId);
+  const result = await pushDirectorNoteAttachment(projectId, String(noteId), attachmentMeta);
+  broadcastFieldsUpdated(buildRoomName('notes', projectId), {
     changed: [`note:${noteId}:attachments`],
     note_id: String(noteId),
   });
   return result;
 }
 
-export async function removeDirectorNoteAttachmentViaGateway({ noteId, attachmentId }) {
-  const result = await pullDirectorNoteAttachment(undefined, String(noteId), attachmentId);
-  broadcastFieldsUpdated('notes', {
+export async function removeDirectorNoteAttachmentViaGateway({ projectId, noteId, attachmentId }) {
+  projectId = await resolveProjectId(projectId);
+  const result = await pullDirectorNoteAttachment(projectId, String(noteId), attachmentId);
+  broadcastFieldsUpdated(buildRoomName('notes', projectId), {
     changed: [`note:${noteId}:attachments`],
     note_id: String(noteId),
   });
@@ -1356,10 +1410,11 @@ function framePromptFragment(storyboardId, frameId) {
   return `item:${storyboardId}:frame:${frameId}:prompt`;
 }
 
-export async function setStoryboardTextPromptViaGateway({ storyboardId, text }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+export async function setStoryboardTextPromptViaGateway({ projectId, storyboardId, text }) {
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   return setEntityFieldMarkdown({
+    projectId,
     entityType: 'storyboards',
     entityId: sb.beat_id.toString(),
     field: storyboardItemField(sb._id.toString(), 'text_prompt'),
@@ -1367,10 +1422,11 @@ export async function setStoryboardTextPromptViaGateway({ storyboardId, text }) 
   });
 }
 
-export async function setStoryboardSummaryViaGateway({ storyboardId, text }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+export async function setStoryboardSummaryViaGateway({ projectId, storyboardId, text }) {
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   return setEntityFieldMarkdown({
+    projectId,
     entityType: 'storyboards',
     entityId: sb.beat_id.toString(),
     field: storyboardItemField(sb._id.toString(), 'summary'),
@@ -1378,13 +1434,14 @@ export async function setStoryboardSummaryViaGateway({ storyboardId, text }) {
   });
 }
 
-export async function setStoryboardFramePromptViaGateway({ storyboardId, frameId, text }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+export async function setStoryboardFramePromptViaGateway({ projectId, storyboardId, frameId, text }) {
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   if (!(sb.frames || []).some((f) => f._id.toString() === String(frameId))) {
     throw new Error(`frame not found: ${frameId}`);
   }
   return setEntityFieldMarkdown({
+    projectId,
     entityType: 'storyboards',
     entityId: sb.beat_id.toString(),
     field: framePromptFragment(sb._id.toString(), String(frameId)),
@@ -1393,6 +1450,7 @@ export async function setStoryboardFramePromptViaGateway({ storyboardId, frameId
 }
 
 export async function createStoryboardViaGateway({
+  projectId,
   beatId,
   textPrompt,
   summary = '',
@@ -1405,6 +1463,7 @@ export async function createStoryboardViaGateway({
   reverseInPost = false,
 }) {
   const sb = await mongoCreateStoryboard({
+    projectId,
     beatId,
     textPrompt,
     summary,
@@ -1424,6 +1483,7 @@ export async function createStoryboardViaGateway({
       if (!STORYBOARD_COLLAB_FIELDS.has(key)) continue;
       try {
         await setEntityFieldMarkdown({
+          projectId,
           entityType: 'storyboards',
           entityId: String(beatId),
           field: storyboardItemField(sb._id.toString(), key),
@@ -1444,9 +1504,9 @@ export async function createStoryboardViaGateway({
 // Persist a shot's critique (prompt_critique or image_critique) and notify the
 // storyboards room so connected SPAs re-render the score. target is
 // 'prompt' | 'image'. critique is the object from critiquePanel (or null).
-export async function setStoryboardCritiqueViaGateway({ storyboardId, beatId, target, critique }) {
+export async function setStoryboardCritiqueViaGateway({ projectId, storyboardId, beatId, target, critique }) {
   const field = target === 'image' ? 'image_critique' : 'prompt_critique';
-  const updated = await mongoUpdateStoryboard(undefined, String(storyboardId), { [field]: critique });
+  const updated = await mongoUpdateStoryboard(projectId, String(storyboardId), { [field]: critique });
   try {
     broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
       changed: ['critique'],
@@ -1459,13 +1519,13 @@ export async function setStoryboardCritiqueViaGateway({ storyboardId, beatId, ta
   return updated;
 }
 
-export async function deleteStoryboardViaGateway({ storyboardId }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+export async function deleteStoryboardViaGateway({ projectId, storyboardId }) {
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const beatId = sb.beat_id.toString();
   await mongoDeleteStoryboard(storyboardId);
   // Recompact orders so the remaining items are 1..N-1 contiguous.
-  const remaining = await listStoryboards({ beatId });
+  const remaining = await listStoryboards({ projectId, beatId });
   await mongoReorderStoryboards(
     beatId,
     remaining.map((s) => s._id.toString()),
@@ -1477,7 +1537,7 @@ export async function deleteStoryboardViaGateway({ storyboardId }) {
   return { ok: true, beat_id: beatId };
 }
 
-export async function reorderStoryboardsViaGateway({ beatId, orderedIds }) {
+export async function reorderStoryboardsViaGateway({ projectId, beatId, orderedIds }) {
   const result = await mongoReorderStoryboards(beatId, orderedIds);
   broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
     changed: ['order'],
@@ -1485,7 +1545,7 @@ export async function reorderStoryboardsViaGateway({ beatId, orderedIds }) {
   return result;
 }
 
-export async function deleteAllStoryboardsForBeatViaGateway({ beatId }) {
+export async function deleteAllStoryboardsForBeatViaGateway({ projectId, beatId }) {
   const removed = await mongoDeleteStoryboardsForBeat(beatId);
   broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
     changed: ['storyboards'],
@@ -1498,10 +1558,10 @@ export async function deleteAllStoryboardsForBeatViaGateway({ beatId }) {
 // undo), free the underlying GridFS blobs, and ping the room so SPAs re-render.
 // Never deletes a blob still used as a frame reference or as the beat's hero
 // image (the codebase "may be shared" guard). Keeps prompts and references.
-export async function clearAllFrameImagesForBeatViaGateway({ beatId }) {
+export async function clearAllFrameImagesForBeatViaGateway({ projectId, beatId }) {
   const { freedImageIds, referencedIds, storyboardIds } =
     await mongoClearAllFrameImagesForBeat(beatId);
-  const beat = await getBeat(undefined, beatId);
+  const beat = await getBeat(projectId, beatId);
   const protectedIds = new Set([
     ...referencedIds.map(String),
     ...(beat?.main_image_id ? [String(beat.main_image_id)] : []),
@@ -1533,12 +1593,13 @@ function broadcastFrames(beatId, storyboardId, extra = {}) {
 // its collaborative y-doc fragment BEFORE broadcasting (mirrors
 // createStoryboardViaGateway) so the SPA mounts its editor on seeded content.
 export async function addStoryboardFrameViaGateway({
+  projectId,
   storyboardId,
   imageId = null,
   prompt = '',
   referenceIds = [],
 }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const { storyboard, frameId } = await mongoAddFrame(storyboardId, {
     imageId,
@@ -1548,6 +1609,7 @@ export async function addStoryboardFrameViaGateway({
   if (prompt) {
     try {
       await setEntityFieldMarkdown({
+        projectId,
         entityType: 'storyboards',
         entityId: sb.beat_id.toString(),
         field: framePromptFragment(sb._id.toString(), frameId.toString()),
@@ -1562,8 +1624,8 @@ export async function addStoryboardFrameViaGateway({
 }
 
 // Remove a frame from the pool, deleting any displaced internal undo image.
-export async function removeStoryboardFrameViaGateway({ storyboardId, frameId }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+export async function removeStoryboardFrameViaGateway({ projectId, storyboardId, frameId }) {
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const { storyboard, orphanedImageIds } = await mongoRemoveFrame(storyboardId, frameId);
   for (const oid of orphanedImageIds || []) {
@@ -1573,8 +1635,8 @@ export async function removeStoryboardFrameViaGateway({ storyboardId, frameId })
   return storyboard;
 }
 
-export async function reorderStoryboardFramesViaGateway({ storyboardId, orderedFrameIds }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+export async function reorderStoryboardFramesViaGateway({ projectId, storyboardId, orderedFrameIds }) {
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const next = await mongoReorderFrames(storyboardId, orderedFrameIds);
   broadcastFrames(sb.beat_id, storyboardId);
@@ -1583,8 +1645,8 @@ export async function reorderStoryboardFramesViaGateway({ storyboardId, orderedF
 
 // Install (or clear) the current image of an existing frame — used by the
 // "Replace" action and single-image install from the Add Frame picker.
-export async function setStoryboardFrameImageViaGateway({ storyboardId, frameId, imageId }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+export async function setStoryboardFrameImageViaGateway({ projectId, storyboardId, frameId, imageId }) {
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const next = await mongoSetFrameImage(storyboardId, frameId, imageId);
   broadcastFrames(sb.beat_id, storyboardId, { frame_id: String(frameId) });
@@ -1632,8 +1694,8 @@ const STORYBOARD_SCALAR_FIELDS = new Set([
   'characters_in_scene',
 ]);
 
-export async function updateStoryboardScalarsViaGateway({ storyboardId, patch }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+export async function updateStoryboardScalarsViaGateway({ projectId, storyboardId, patch }) {
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const filtered = {};
   for (const [k, v] of Object.entries(patch || {})) {
@@ -1642,7 +1704,7 @@ export async function updateStoryboardScalarsViaGateway({ storyboardId, patch })
   if (!Object.keys(filtered).length) {
     throw new Error('updateStoryboardScalars: no recognized fields');
   }
-  const result = await mongoUpdateStoryboard(undefined, storyboardId, filtered);
+  const result = await mongoUpdateStoryboard(projectId, storyboardId, filtered);
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
     changed: Object.keys(filtered),
     storyboard_id: String(storyboardId),
@@ -1651,11 +1713,12 @@ export async function updateStoryboardScalarsViaGateway({ storyboardId, patch })
 }
 
 export async function addStoryboardFrameReferenceImageViaGateway({
+  projectId,
   storyboardId,
   frameId,
   imageId,
 }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const next = await mongoPushFrameReferenceImage(storyboardId, frameId, imageId);
   broadcastFrames(sb.beat_id, storyboardId, { frame_id: String(frameId) });
@@ -1663,11 +1726,12 @@ export async function addStoryboardFrameReferenceImageViaGateway({
 }
 
 export async function removeStoryboardFrameReferenceImageViaGateway({
+  projectId,
   storyboardId,
   frameId,
   imageId,
 }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const next = await mongoPullFrameReferenceImage(storyboardId, frameId, imageId);
   broadcastFrames(sb.beat_id, storyboardId, { frame_id: String(frameId) });
@@ -1678,12 +1742,13 @@ export async function removeStoryboardFrameReferenceImageViaGateway({
 // replace-the-whole-list. Exactly one fields_updated broadcast fires per call,
 // used by the auto-suggest endpoint and the multi-select picker's Apply.
 export async function setStoryboardFrameReferenceImagesViaGateway({
+  projectId,
   storyboardId,
   frameId,
   imageIds,
   mode = 'replace',
 }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const ids = Array.isArray(imageIds) ? imageIds : [];
   let next;
@@ -1698,8 +1763,8 @@ export async function setStoryboardFrameReferenceImagesViaGateway({
   return next;
 }
 
-export async function setStoryboardAudioViaGateway({ storyboardId, audioFileId }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+export async function setStoryboardAudioViaGateway({ projectId, storyboardId, audioFileId }) {
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const patch = {
     audio_file_id: audioFileId == null ? null : String(audioFileId),
@@ -1725,12 +1790,12 @@ export async function setStoryboardAudioViaGateway({ storyboardId, audioFileId }
       patch.audio_duration_seconds = null;
     }
   }
-  await mongoUpdateStoryboard(undefined, storyboardId, patch);
+  await mongoUpdateStoryboard(projectId, storyboardId, patch);
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
     changed: Object.keys(patch),
     storyboard_id: String(storyboardId),
   });
-  return mongoGetStoryboard(undefined, storyboardId);
+  return mongoGetStoryboard(projectId, storyboardId);
 }
 
 // Attach a user-uploaded source video to a storyboard. This is the input
@@ -1739,10 +1804,11 @@ export async function setStoryboardAudioViaGateway({ storyboardId, audioFileId }
 // Duration is probed via the same music-metadata helper that handles audio
 // (works for MP4 containers); failures fall back to null.
 export async function setStoryboardUploadedVideoViaGateway({
+  projectId,
   storyboardId,
   videoFileId,
 }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const patch = {
     video_upload_file_id: videoFileId == null ? null : String(videoFileId),
@@ -1767,12 +1833,12 @@ export async function setStoryboardUploadedVideoViaGateway({
       patch.video_upload_duration_seconds = null;
     }
   }
-  await mongoUpdateStoryboard(undefined, storyboardId, patch);
+  await mongoUpdateStoryboard(projectId, storyboardId, patch);
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
     changed: Object.keys(patch),
     storyboard_id: String(storyboardId),
   });
-  return mongoGetStoryboard(undefined, storyboardId);
+  return mongoGetStoryboard(projectId, storyboardId);
 }
 
 // Attach a generated video to a storyboard. Used by the fal.ai video
@@ -1784,6 +1850,7 @@ export async function setStoryboardUploadedVideoViaGateway({
 // user can tell at a glance which model rendered the clip, with what
 // arguments, and at what cost.
 export async function setStoryboardVideoViaGateway({
+  projectId,
   storyboardId,
   videoFileId,
   durationSeconds = null,
@@ -1796,7 +1863,7 @@ export async function setStoryboardVideoViaGateway({
   parameters = null,
   costUsd = null,
 }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const patch = {
     video_file_id: videoFileId == null ? null : String(videoFileId),
@@ -1837,12 +1904,12 @@ export async function setStoryboardVideoViaGateway({
         ? costUsd
         : null;
   }
-  await mongoUpdateStoryboard(undefined, storyboardId, patch);
+  await mongoUpdateStoryboard(projectId, storyboardId, patch);
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
     changed: Object.keys(patch),
     storyboard_id: String(storyboardId),
   });
-  return mongoGetStoryboard(undefined, storyboardId);
+  return mongoGetStoryboard(projectId, storyboardId);
 }
 
 // Copy an existing GridFS attachment (e.g. one attached to a beat or
@@ -1852,6 +1919,7 @@ export async function setStoryboardVideoViaGateway({
 // one does not affect the other. `kind` is 'audio' or 'video'; the source
 // attachment's content_type must match the kind.
 export async function copyAttachmentToStoryboardMediaViaGateway({
+  projectId,
   storyboardId,
   attachmentId,
   kind,
@@ -1859,7 +1927,7 @@ export async function copyAttachmentToStoryboardMediaViaGateway({
   if (kind !== 'audio' && kind !== 'video') {
     throw new Error(`copyAttachmentToStoryboardMediaViaGateway: invalid kind ${kind}`);
   }
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const source = await findAttachmentFile(attachmentId);
   if (!source) throw new Error(`Attachment not found: ${attachmentId}`);
@@ -1880,10 +1948,12 @@ export async function copyAttachmentToStoryboardMediaViaGateway({
   const storyboard =
     kind === 'audio'
       ? await setStoryboardAudioViaGateway({
+          projectId,
           storyboardId,
           audioFileId: newFile._id,
         })
       : await setStoryboardUploadedVideoViaGateway({
+          projectId,
           storyboardId,
           videoFileId: newFile._id,
         });
@@ -1903,12 +1973,13 @@ export async function copyAttachmentToStoryboardMediaViaGateway({
 // file. The dialog and storyboard end up holding independent copies — deleting
 // or replacing one does not affect the other.
 export async function copyDialogAudioToStoryboardViaGateway({
+  projectId,
   storyboardId,
   dialogId,
 }) {
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const d = await mongoGetDialog(undefined, dialogId);
+  const d = await mongoGetDialog(projectId, dialogId);
   if (!d) throw new Error(`Dialog not found: ${dialogId}`);
   if (!d.audio_file_id) {
     throw new Error(`Dialog ${dialogId} has no audio to copy.`);
@@ -1925,6 +1996,7 @@ export async function copyDialogAudioToStoryboardViaGateway({
     ownerId: sb.beat_id,
   });
   const storyboard = await setStoryboardAudioViaGateway({
+    projectId,
     storyboardId,
     audioFileId: newFile._id,
   });
@@ -1953,13 +2025,14 @@ function dialogItemField(dialogId, field) {
 
 const DIALOG_TEXT_FIELDS = new Set(['body', 'character']);
 
-export async function setDialogTextFieldViaGateway({ dialogId, field, text }) {
+export async function setDialogTextFieldViaGateway({ projectId, dialogId, field, text }) {
   if (!DIALOG_TEXT_FIELDS.has(field)) {
     throw new Error(`unknown dialog field: ${field}`);
   }
-  const d = await mongoGetDialog(undefined, dialogId);
+  const d = await mongoGetDialog(projectId, dialogId);
   if (!d) throw new Error(`Dialog not found: ${dialogId}`);
   await setEntityFieldMarkdown({
+    projectId,
     entityType: 'dialogs',
     entityId: d.beat_id.toString(),
     field: dialogItemField(d._id.toString(), field),
@@ -1982,27 +2055,27 @@ export async function setDialogTextFieldViaGateway({ dialogId, field, text }) {
 // is stored. Otherwise the trimmed value is stored as a free-text speaker
 // (e.g. "radio", "TV ANCHOR", "INTERCOM") — real scripts have non-character
 // sources of dialogue that aren't worth modelling as full character docs.
-export async function setDialogCharacterViaGateway({ dialogId, characterName }) {
-  const d = await mongoGetDialog(undefined, dialogId);
+export async function setDialogCharacterViaGateway({ projectId, dialogId, characterName }) {
+  const d = await mongoGetDialog(projectId, dialogId);
   if (!d) throw new Error(`Dialog not found: ${dialogId}`);
   const raw = String(characterName ?? '').trim();
   if (!raw) {
     throw new Error('character is required');
   }
-  const c = await getCharacter(undefined, raw);
+  const c = await getCharacter(projectId, raw);
   const finalName = c
     ? (stripMarkdown(c.name || '').trim() || raw)
     : raw;
-  await mongoUpdateDialog(undefined, d._id.toString(), { character: finalName });
+  await mongoUpdateDialog(projectId, d._id.toString(), { character: finalName });
   broadcastFieldsUpdated(buildRoomName('dialogs', d.beat_id.toString()), {
     changed: ['character'],
     dialog_id: d._id.toString(),
   });
-  return mongoGetDialog(undefined, d._id.toString());
+  return mongoGetDialog(projectId, d._id.toString());
 }
 
-export async function createDialogViaGateway({ beatId, body, character, order, seedFragments }) {
-  const d = await mongoCreateDialog({ beatId, body, character, order });
+export async function createDialogViaGateway({ projectId, beatId, body, character, order, seedFragments }) {
+  const d = await mongoCreateDialog({ projectId, beatId, body, character, order });
   // Seed body / character y-doc fragments BEFORE broadcasting the ping (see
   // createStoryboardViaGateway for the same reasoning). Without this, the
   // SPA's CollabField for the new dialog mounts against an empty fragment
@@ -2012,6 +2085,7 @@ export async function createDialogViaGateway({ beatId, body, character, order, s
       if (!DIALOG_TEXT_FIELDS.has(field)) continue;
       try {
         await setEntityFieldMarkdown({
+          projectId,
           entityType: 'dialogs',
           entityId: String(beatId),
           field: dialogItemField(d._id.toString(), field),
@@ -2029,13 +2103,13 @@ export async function createDialogViaGateway({ beatId, body, character, order, s
   return d;
 }
 
-export async function deleteDialogViaGateway({ dialogId }) {
-  const d = await mongoGetDialog(undefined, dialogId);
+export async function deleteDialogViaGateway({ projectId, dialogId }) {
+  const d = await mongoGetDialog(projectId, dialogId);
   if (!d) throw new Error(`Dialog not found: ${dialogId}`);
   const beatId = d.beat_id.toString();
   await mongoDeleteDialog(dialogId);
   // Recompact orders so the remaining items are 1..N-1 contiguous.
-  const remaining = await listDialogs({ beatId });
+  const remaining = await listDialogs({ projectId, beatId });
   await mongoReorderDialogs(
     beatId,
     remaining.map((x) => x._id.toString()),
@@ -2047,7 +2121,7 @@ export async function deleteDialogViaGateway({ dialogId }) {
   return { ok: true, beat_id: beatId };
 }
 
-export async function reorderDialogsViaGateway({ beatId, orderedIds }) {
+export async function reorderDialogsViaGateway({ projectId, beatId, orderedIds }) {
   const result = await mongoReorderDialogs(beatId, orderedIds);
   broadcastFieldsUpdated(buildRoomName('dialogs', String(beatId)), {
     changed: ['order'],
@@ -2055,7 +2129,7 @@ export async function reorderDialogsViaGateway({ beatId, orderedIds }) {
   return result;
 }
 
-export async function deleteAllDialogsForBeatViaGateway({ beatId }) {
+export async function deleteAllDialogsForBeatViaGateway({ projectId, beatId }) {
   const removed = await mongoDeleteDialogsForBeat(beatId);
   broadcastFieldsUpdated(buildRoomName('dialogs', String(beatId)), {
     changed: ['dialogs'],
@@ -2067,17 +2141,17 @@ export async function deleteAllDialogsForBeatViaGateway({ beatId }) {
 // Attach or detach a dialog item's recorded audio file. Pass `audioFileId:
 // null` to unlink (the GridFS bytes are left in place, mirroring the
 // storyboard-audio convention).
-export async function setDialogAudioViaGateway({ dialogId, audioFileId }) {
-  const d = await mongoGetDialog(undefined, dialogId);
+export async function setDialogAudioViaGateway({ projectId, dialogId, audioFileId }) {
+  const d = await mongoGetDialog(projectId, dialogId);
   if (!d) throw new Error(`Dialog not found: ${dialogId}`);
-  await mongoUpdateDialog(undefined, dialogId, {
+  await mongoUpdateDialog(projectId, dialogId, {
     audio_file_id: audioFileId == null ? null : String(audioFileId),
   });
   broadcastFieldsUpdated(buildRoomName('dialogs', d.beat_id.toString()), {
     changed: ['audio_file_id'],
     dialog_id: String(dialogId),
   });
-  return mongoGetDialog(undefined, dialogId);
+  return mongoGetDialog(projectId, dialogId);
 }
 
 // ─── Library ───────────────────────────────────────────────────────────────
@@ -2092,10 +2166,12 @@ function libraryFieldName(imageId, field) {
   return `library:${String(imageId)}:${field}`;
 }
 
-export async function setLibraryImageMetaViaGateway({ imageId, name, description }) {
+export async function setLibraryImageMetaViaGateway({ projectId, imageId, name, description }) {
+  projectId = await resolveProjectId(projectId);
   if (name === undefined && description === undefined) return;
   if (name !== undefined) {
     await setEntityFieldMarkdown({
+      projectId,
       entityType: 'library',
       entityId: 'library',
       field: libraryFieldName(imageId, 'name'),
@@ -2104,13 +2180,14 @@ export async function setLibraryImageMetaViaGateway({ imageId, name, description
   }
   if (description !== undefined) {
     await setEntityFieldMarkdown({
+      projectId,
       entityType: 'library',
       entityId: 'library',
       field: libraryFieldName(imageId, 'description'),
       markdown: description,
     });
   }
-  broadcastFieldsUpdated('library', {
+  broadcastFieldsUpdated(buildRoomName('library', projectId), {
     changed: ['library_images'],
     image_id: String(imageId),
   });
@@ -2122,6 +2199,7 @@ export async function setLibraryImageMetaViaGateway({ imageId, name, description
 // values appear live. Falls back to direct Mongo via setOwnedImageMeta when
 // Hocuspocus isn't running (tests, CLI).
 export async function setOwnedImageMetaViaGateway({
+  projectId,
   imageId,
   ownerType,
   ownerId,
@@ -2136,6 +2214,7 @@ export async function setOwnedImageMetaViaGateway({
   if (!idStr) throw new Error('setOwnedImageMetaViaGateway: ownerId required');
   if (name !== undefined) {
     await setEntityFieldMarkdown({
+      projectId,
       entityType: ownerType,
       entityId: idStr,
       field: `image:${String(imageId)}:name`,
@@ -2144,6 +2223,7 @@ export async function setOwnedImageMetaViaGateway({
   }
   if (description !== undefined) {
     await setEntityFieldMarkdown({
+      projectId,
       entityType: ownerType,
       entityId: idStr,
       field: `image:${String(imageId)}:description`,
@@ -2160,10 +2240,12 @@ function libraryAttachmentFieldName(attachmentId, field) {
   return `library_attachment:${String(attachmentId)}:${field}`;
 }
 
-export async function setLibraryAttachmentMetaViaGateway({ attachmentId, name, description }) {
+export async function setLibraryAttachmentMetaViaGateway({ projectId, attachmentId, name, description }) {
+  projectId = await resolveProjectId(projectId);
   if (name === undefined && description === undefined) return;
   if (name !== undefined) {
     await setEntityFieldMarkdown({
+      projectId,
       entityType: 'library',
       entityId: 'library',
       field: libraryAttachmentFieldName(attachmentId, 'name'),
@@ -2172,13 +2254,14 @@ export async function setLibraryAttachmentMetaViaGateway({ attachmentId, name, d
   }
   if (description !== undefined) {
     await setEntityFieldMarkdown({
+      projectId,
       entityType: 'library',
       entityId: 'library',
       field: libraryAttachmentFieldName(attachmentId, 'description'),
       markdown: description,
     });
   }
-  broadcastFieldsUpdated('library', {
+  broadcastFieldsUpdated(buildRoomName('library', projectId), {
     changed: ['library_attachments'],
     attachment_id: String(attachmentId),
   });
@@ -2188,6 +2271,7 @@ export async function setLibraryAttachmentMetaViaGateway({ attachmentId, name, d
 // setOwnedImageMetaViaGateway for attachments. Falls back to direct Mongo via
 // setOwnedAttachmentMeta when Hocuspocus isn't running.
 export async function setOwnedAttachmentMetaViaGateway({
+  projectId,
   attachmentId,
   ownerType,
   ownerId,
@@ -2202,6 +2286,7 @@ export async function setOwnedAttachmentMetaViaGateway({
   if (!idStr) throw new Error('setOwnedAttachmentMetaViaGateway: ownerId required');
   if (name !== undefined) {
     await setEntityFieldMarkdown({
+      projectId,
       entityType: ownerType,
       entityId: idStr,
       field: `attachment:${String(attachmentId)}:name`,
@@ -2210,6 +2295,7 @@ export async function setOwnedAttachmentMetaViaGateway({
   }
   if (description !== undefined) {
     await setEntityFieldMarkdown({
+      projectId,
       entityType: ownerType,
       entityId: idStr,
       field: `attachment:${String(attachmentId)}:description`,
@@ -2225,17 +2311,19 @@ export async function setOwnedAttachmentMetaViaGateway({
 // Called from REST handlers and agent tools after a fresh upload. The
 // library room composition has changed (new fragments exist for the new
 // image's name/description); the broadcast prompts the SPA to refetch.
-export async function addLibraryImageViaGateway({ imageMeta }) {
-  broadcastFieldsUpdated('library', {
+export async function addLibraryImageViaGateway({ projectId, imageMeta }) {
+  projectId = await resolveProjectId(projectId);
+  broadcastFieldsUpdated(buildRoomName('library', projectId), {
     changed: ['library_images'],
     added_image_id: imageMeta?._id ? String(imageMeta._id) : null,
   });
   return imageMeta;
 }
 
-export async function removeLibraryImageViaGateway({ imageId }) {
+export async function removeLibraryImageViaGateway({ projectId, imageId }) {
+  projectId = await resolveProjectId(projectId);
   await deleteImage(imageId);
-  broadcastFieldsUpdated('library', {
+  broadcastFieldsUpdated(buildRoomName('library', projectId), {
     changed: ['library_images'],
     removed_image_id: String(imageId),
   });
@@ -2244,7 +2332,8 @@ export async function removeLibraryImageViaGateway({ imageId }) {
 // Replace one library image with another, copying name/description from the
 // source onto the new image and deleting the source. Both ids must currently
 // be library images (owner_type === null).
-export async function replaceLibraryImageViaGateway({ sourceImageId, newImageId, copyMetadata = true }) {
+export async function replaceLibraryImageViaGateway({ projectId, sourceImageId, newImageId, copyMetadata = true }) {
+  projectId = await resolveProjectId(projectId);
   const src = await findImageFile(sourceImageId);
   if (!src) throw new Error(`Source image not found: ${sourceImageId}`);
   const next = await findImageFile(newImageId);
@@ -2265,7 +2354,7 @@ export async function replaceLibraryImageViaGateway({ sourceImageId, newImageId,
     }
   }
   await deleteImage(sourceImageId);
-  broadcastFieldsUpdated('library', {
+  broadcastFieldsUpdated(buildRoomName('library', projectId), {
     changed: ['library_images'],
     removed_image_id: String(sourceImageId),
     added_image_id: String(newImageId),
@@ -2275,9 +2364,10 @@ export async function replaceLibraryImageViaGateway({ sourceImageId, newImageId,
 
 // ─── Inspection helpers ────────────────────────────────────────────────────
 
-export async function getEntityFieldMarkdown({ entityType, entityId, field }) {
+export async function getEntityFieldMarkdown({ projectId, entityType, entityId, field }) {
+  projectId = await resolveProjectId(projectId);
   const { fragmentToMarkdown } = await he();
-  const roomName = buildRoomName(entityType, entityId);
+  const roomName = roomNameFor(entityType, entityId, projectId);
   let out;
   await withDirectDocument(roomName, { actor: 'bot' }, (document) => {
     out = fragmentToMarkdown(document, field);

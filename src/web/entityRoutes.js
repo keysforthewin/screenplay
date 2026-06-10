@@ -1448,7 +1448,7 @@ export function buildApiRouter() {
       if (Array.isArray(characters)) patch.characters = characters;
       if (typeof order === 'number') patch.order = order;
       if (!Object.keys(patch).length) return res.status(400).json({ error: 'no patch fields' });
-      const result = await updateBeatViaGateway(beatId, patch);
+      const result = await updateBeatViaGateway(req.projectId, beatId, patch);
       res.json({ beat: result });
     } catch (e) {
       next(e);
