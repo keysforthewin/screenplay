@@ -403,6 +403,7 @@ export function buildApiRouter() {
       config.web.hocuspocusPublicUrl ||
       `ws://${'localhost'}:${config.web.hocuspocusPort}`;
     const plot = await getPlot(req.projectId);
+    res.set('Vary', 'X-Project-Id');
     res.json({
       hocuspocus_url: wsUrl,
       bot_color: config.web.botColor,
