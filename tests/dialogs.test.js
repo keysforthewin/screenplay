@@ -194,4 +194,21 @@ describe('multi-project dialogs', () => {
     await expect(Dialogs.updateDialog(p2, d._id, { body: 'x' })).rejects.toThrow(/not found/i);
     expect((await Dialogs.updateDialog(p1, d._id, { body: 'edited' })).body).toBe('edited');
   });
+
+  describe('unverified id-addressed helpers work on non-default-project docs (gating lives at routes/gateway)', () => {
+    it('deleteDialog succeeds when called with bare id on a non-default-project dialog', async () => {
+      // Bootstrap: default project must exist first so resolveProjectId(undefined) works
+      // elsewhere; then create a second project that is NOT the default.
+      await Projects.getDefaultProject();
+      const pOther = (await Projects.createProject('Other'))._id.toString();
+
+      // Create a dialog in the non-default project.
+      const d = await Dialogs.createDialog({ projectId: pOther, beatId: beatA, body: 'A line.' });
+      expect(d.project_id).toBe(pOther);
+
+      // deleteDialog — bare id (no projectId), must succeed and leave no doc.
+      await Dialogs.deleteDialog(d._id);
+      expect(await Dialogs.getDialog(pOther, d._id)).toBe(null);
+    });
+  });
 });

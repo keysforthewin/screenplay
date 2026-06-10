@@ -751,4 +751,46 @@ describe('multi-project storyboards', () => {
       legacy._id.toString(),
     );
   });
+
+  describe('unverified id-addressed helpers work on non-default-project docs (gating lives at routes/gateway)', () => {
+    it('addFrame, reorderFrames, removeFrame and deleteStoryboard succeed when called with bare id on a non-default-project storyboard', async () => {
+      // Bootstrap: default project must exist first so resolveProjectId(undefined) works
+      // elsewhere; then create a second project that is NOT the default.
+      await Projects.getDefaultProject();
+      const pOther = (await Projects.createProject('Other'))._id.toString();
+
+      // Create a storyboard in the non-default project.
+      const sb = await Storyboards.createStoryboard({ projectId: pOther, beatId: beatA });
+      expect(sb.project_id).toBe(pOther);
+
+      // addFrame — bare id (no projectId), valid args per exported signature.
+      const { storyboard: afterAdd, frameId } = await Storyboards.addFrame(sb._id, {
+        prompt: 'Wide on the doorway.',
+      });
+      expect(afterAdd.frames).toHaveLength(1);
+      expect(afterAdd.frames[0].prompt).toBe('Wide on the doorway.');
+
+      // Add a second frame so reorderFrames has two ids to work with.
+      const { frameId: frameId2 } = await Storyboards.addFrame(sb._id, { prompt: 'Close on the handle.' });
+
+      // reorderFrames — bare id, must succeed and re-order correctly.
+      const reordered = await Storyboards.reorderFrames(sb._id, [
+        frameId2.toString(),
+        frameId.toString(),
+      ]);
+      expect(reordered.frames.map((f) => f.prompt)).toEqual([
+        'Close on the handle.',
+        'Wide on the doorway.',
+      ]);
+
+      // removeFrame — bare id, must succeed.
+      const { storyboard: afterRemove } = await Storyboards.removeFrame(sb._id, frameId);
+      expect(afterRemove.frames).toHaveLength(1);
+      expect(afterRemove.frames[0].prompt).toBe('Close on the handle.');
+
+      // deleteStoryboard — bare id, must succeed and leave no doc.
+      await Storyboards.deleteStoryboard(sb._id);
+      expect(await Storyboards.getStoryboard(pOther, sb._id)).toBe(null);
+    });
+  });
 });
