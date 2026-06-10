@@ -23,6 +23,7 @@ vi.mock('../src/log.js', () => ({
 vi.mock('../src/rag/queue.js', () => ({ enqueueReindex: () => {} }));
 vi.mock('../src/rag/indexer.js', () => ({ deleteEntity: () => Promise.resolve() }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Gateway = await import('../src/web/gateway.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
@@ -31,11 +32,16 @@ const Projects = await import('../src/mongo/projects.js');
 const Attachments = await import('../src/mongo/attachments.js');
 
 describe('gateway fallback (no Hocuspocus)', () => {
-  beforeEach(() => fakeDb.reset());
+  let projectId;
+
+beforeEach(async () => {
+  fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
+});
 
   it('setBeatBodyViaGateway writes the beat body via Mongo', async () => {
     const pid = (await Projects.getDefaultProject())._id.toString();
-    const beat = await Plots.createBeat({ name: 'Pilot', desc: 'Opening scene', projectId: pid });
+    const beat = await Plots.createBeat({ projectId, name: 'Pilot', desc: 'Opening scene', projectId: pid });
     await Gateway.setBeatBodyViaGateway(pid, beat._id.toString(), 'Once upon a time...');
     const fresh = await Plots.getBeat(pid, beat._id.toString());
     expect(fresh.body).toBe('Once upon a time...');
@@ -43,7 +49,7 @@ describe('gateway fallback (no Hocuspocus)', () => {
 
   it('appendBeatBodyViaGateway appends to the beat body', async () => {
     const pid = (await Projects.getDefaultProject())._id.toString();
-    const beat = await Plots.createBeat({ name: 'Pilot', desc: 'X', body: 'first', projectId: pid });
+    const beat = await Plots.createBeat({ projectId, name: 'Pilot', desc: 'X', body: 'first', projectId: pid });
     await Gateway.appendBeatBodyViaGateway(pid, beat._id.toString(), 'second');
     const fresh = await Plots.getBeat(pid, beat._id.toString());
     expect(fresh.body).toBe('first\n\nsecond');
@@ -51,7 +57,7 @@ describe('gateway fallback (no Hocuspocus)', () => {
 
   it('editBeatBodyViaGateway applies find/replace edits', async () => {
     const pid = (await Projects.getDefaultProject())._id.toString();
-    const beat = await Plots.createBeat({ name: 'Pilot', desc: 'X', body: 'foo bar baz', projectId: pid });
+    const beat = await Plots.createBeat({ projectId, name: 'Pilot', desc: 'X', body: 'foo bar baz', projectId: pid });
     const result = await Gateway.editBeatBodyViaGateway(pid, beat._id.toString(), [
       { find: 'bar', replace: 'BAZ' },
     ]);
@@ -69,7 +75,7 @@ describe('gateway fallback (no Hocuspocus)', () => {
 
   it('updateCharacterViaGateway writes name + custom field', async () => {
     const pid = (await Projects.getDefaultProject())._id.toString();
-    const c = await Characters.createCharacter({ name: 'Steve', projectId: pid });
+    const c = await Characters.createCharacter({ projectId, name: 'Steve', projectId: pid });
     await Gateway.updateCharacterViaGateway(pid, c._id.toString(), {
       name: 'Steven',
       'fields.background_story': 'Born in 1990.',
@@ -81,7 +87,7 @@ describe('gateway fallback (no Hocuspocus)', () => {
 
   it('updateCharacterViaGateway rejects unrecognized fields', async () => {
     const pid = (await Projects.getDefaultProject())._id.toString();
-    const c = await Characters.createCharacter({ name: 'Bob', projectId: pid });
+    const c = await Characters.createCharacter({ projectId, name: 'Bob', projectId: pid });
     await expect(
       Gateway.updateCharacterViaGateway(pid, c._id.toString(), { totally_made_up: 'x' }),
     ).rejects.toThrow(/no recognized fields/);
@@ -119,21 +125,28 @@ describe('gateway fallback (no Hocuspocus)', () => {
     expect((await DirectorNotes.getDirectorNotes(bid)).notes || []).toHaveLength(0);
   });
 
-  it('attachExistingAttachmentToBeatViaGateway resolves projectId and broadcasts without throwing', async () => {
-    const pid = (await Projects.getDefaultProject())._id.toString();
-    const beat = await Plots.createBeat({ name: 'Rooftop', desc: 'Chase', projectId: pid });
+  it('attachExistingAttachmentToBeatViaGateway requires an explicit projectId (strict mode)', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'Rooftop', desc: 'Chase' });
     const fileDoc = {
       _id: new ObjectId(),
       filename: 'ambience.mp3',
       contentType: 'audio/mpeg',
       length: 1000,
       uploadDate: new Date(),
-      metadata: { project_id: pid, owner_type: null, owner_id: null, source: 'upload', content_type: 'audio/mpeg' },
+      metadata: { project_id: projectId, owner_type: null, owner_id: null, source: 'upload', content_type: 'audio/mpeg' },
     };
     fakeDb.collection('attachments.files')._docs.push(fileDoc);
-    // Omit projectId (undefined) — resolveProjectId must handle it without throwing
+    // Strict mode: an omitted projectId throws...
+    await expect(
+      Gateway.attachExistingAttachmentToBeatViaGateway({
+        projectId: undefined,
+        beatId: beat._id.toString(),
+        attachmentId: fileDoc._id,
+      }),
+    ).rejects.toThrow(/projectId required/);
+    // ...and an explicit one resolves and broadcasts without throwing.
     const res = await Gateway.attachExistingAttachmentToBeatViaGateway({
-      projectId: undefined,
+      projectId,
       beatId: beat._id.toString(),
       attachmentId: fileDoc._id,
     });

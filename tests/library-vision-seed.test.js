@@ -39,14 +39,18 @@ vi.mock('../src/llm/referenceImageDescription.js', () => ({
   REFERENCE_KINDS: ['auto', 'character', 'location', 'prop'],
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Images = await import('../src/mongo/images.js');
 const Projects = await import('../src/mongo/projects.js');
 const { kickoffLibraryVisionSeed, kickoffImageVisionSeed } = await import('../src/web/libraryVisionWorker.js');
 
 let pid;
 
+let projectId;
+
 beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   pid = (await Projects.getDefaultProject())._id.toString();
   analyzeMock.mockClear();
   describeMock.mockClear();
@@ -127,7 +131,7 @@ describe('library vision seed worker', () => {
     kickoffLibraryVisionSeed(doc._id, Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png');
     await flushQueue();
 
-    const found = await Images.searchLibraryImages({ query: 'diner' });
+    const found = await Images.searchLibraryImages({ projectId, query: 'diner' });
     expect(found).toHaveLength(1);
     expect(found[0]._id.toString()).toBe(doc._id.toString());
   });
@@ -141,6 +145,7 @@ describe('library vision seed worker', () => {
       length: 100,
       uploadDate: new Date(),
       metadata: {
+        project_id: projectId,
         owner_type: 'character',
         owner_id: charOwnerId,
         source: 'upload',

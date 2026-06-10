@@ -96,7 +96,7 @@ describe('getDefaultProject', () => {
   });
 });
 
-describe('resolveProjectId (transitional)', () => {
+describe('resolveProjectId (strict)', () => {
   it('accepts a 24-hex string or an ObjectId', async () => {
     const oid = new ObjectId();
     expect(await Projects.resolveProjectId(oid)).toBe(oid.toString());
@@ -108,9 +108,15 @@ describe('resolveProjectId (transitional)', () => {
     await expect(Projects.resolveProjectId('abc')).rejects.toThrow(/invalid projectId/);
   });
 
-  it('falls back to the default project id when falsy', async () => {
-    const id = await Projects.resolveProjectId(undefined);
-    const def = await Projects.getDefaultProject();
-    expect(id).toBe(def._id.toString());
+  it('resolveProjectId throws on a falsy projectId (strict mode)', async () => {
+    await expect(Projects.resolveProjectId(undefined)).rejects.toThrow(/projectId required/);
+    await expect(Projects.resolveProjectId(null)).rejects.toThrow(/projectId required/);
+    await expect(Projects.resolveProjectId('')).rejects.toThrow(/projectId required/);
+  });
+
+  it('resolveProjectId stringifies truthy ids', async () => {
+    const project = await Projects.createProject('Stringify Me');
+    expect(await Projects.resolveProjectId(project._id)).toBe(project._id.toString());
+    expect(await Projects.resolveProjectId(project._id.toString())).toBe(project._id.toString());
   });
 });

@@ -7,17 +7,21 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 async function seedBeats(beats) {
   for (const b of beats) {
-    await Plots.createBeat(b);
+    await Plots.createBeat({ projectId, ...b });
   }
 }
 
@@ -33,7 +37,7 @@ describe('find_repeated_phrases', () => {
       });
     }
     await seedBeats(beats);
-    const out = JSON.parse(await HANDLERS.find_repeated_phrases({}));
+    const out = JSON.parse(await HANDLERS.find_repeated_phrases({}, { projectId }));
     expect(out.status).toBe('ok');
     expect(out.beats_scanned).toBe(12);
     const walked = out.phrases.find((p) => p.gram === 'walked quietly');
@@ -47,14 +51,14 @@ describe('find_repeated_phrases', () => {
       { name: 'A', desc: 'she said quietly while turning to leave' },
       { name: 'B', desc: 'she said quietly while sitting down' },
     ]);
-    const out = JSON.parse(await HANDLERS.find_repeated_phrases({}));
+    const out = JSON.parse(await HANDLERS.find_repeated_phrases({}, { projectId }));
     expect(out.status).toBe('low_signal');
     expect(out.note).toMatch(/unreliable/);
     expect(out.phrases.find((p) => p.gram === 'said quietly')).toBeDefined();
   });
 
   it('returns empty status when no beats exist', async () => {
-    const out = JSON.parse(await HANDLERS.find_repeated_phrases({}));
+    const out = JSON.parse(await HANDLERS.find_repeated_phrases({}, { projectId }));
     expect(out.status).toBe('empty');
   });
 
@@ -64,7 +68,7 @@ describe('find_repeated_phrases', () => {
       { name: 'Beat B', desc: 'forest forest forest', body: 'mountain mountain' },
     ]);
     const out = JSON.parse(
-      await HANDLERS.find_repeated_phrases({ fields: ['body'], sizes: [2] }),
+      await HANDLERS.find_repeated_phrases({ fields: ['body'], sizes: [2] }, { projectId }),
     );
     expect(out.fields_scanned).toEqual(['body']);
     expect(out.phrases.find((p) => p.gram === 'mountain mountain')).toBeDefined();
@@ -74,7 +78,7 @@ describe('find_repeated_phrases', () => {
 
 describe('check_similarity', () => {
   it('finds a near-duplicate character via candidate text', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Marcus',
       plays_self: true,
       own_voice: true,
@@ -83,7 +87,7 @@ describe('check_similarity', () => {
         arc: 'Learns to forgive his enemies through unexpected friendship',
       },
     });
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Beatrice',
       plays_self: true,
       own_voice: true,
@@ -94,7 +98,7 @@ describe('check_similarity', () => {
         target_type: 'character',
         text: 'A grizzled warrior who lost his family in a fire seeking vengeance',
         threshold: 0.5,
-      }),
+      }, { projectId }),
     );
     expect(out.matches.length).toBeGreaterThan(0);
     expect(out.matches[0].label).toBe('Marcus');
@@ -102,13 +106,13 @@ describe('check_similarity', () => {
   });
 
   it('excludes the target when called in existing-mode', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Marcus',
       plays_self: true,
       own_voice: true,
       fields: { background_story: 'a grizzled warrior who lost his family' },
     });
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Twin',
       plays_self: true,
       own_voice: true,
@@ -119,14 +123,14 @@ describe('check_similarity', () => {
         target_type: 'character',
         identifier: 'Marcus',
         threshold: 0.5,
-      }),
+      }, { projectId }),
     );
     expect(out.matches.find((m) => m.label === 'Marcus')).toBeUndefined();
     expect(out.matches.find((m) => m.label === 'Twin')).toBeDefined();
   });
 
   it('returns no_corpus when only one item exists', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Solo',
       plays_self: true,
       own_voice: true,
@@ -136,7 +140,7 @@ describe('check_similarity', () => {
       await HANDLERS.check_similarity({
         target_type: 'character',
         identifier: 'Solo',
-      }),
+      }, { projectId }),
     );
     expect(out.status).toBe('no_corpus');
   });
@@ -146,12 +150,12 @@ describe('check_similarity', () => {
       target_type: 'character',
       identifier: 'whatever',
       text: 'whatever',
-    });
+    }, { projectId });
     expect(out).toMatch(/identifier.*OR.*text/i);
   });
 
   it('rejects missing target_type', async () => {
-    const out = await HANDLERS.check_similarity({ text: 'hi' });
+    const out = await HANDLERS.check_similarity({ text: 'hi' }, { projectId });
     expect(out).toMatch(/target_type/);
   });
 
@@ -165,7 +169,7 @@ describe('check_similarity', () => {
         target_type: 'beat',
         text: 'Alice and Bob argue about the past',
         threshold: 0.4,
-      }),
+      }, { projectId }),
     );
     expect(out.matches.find((m) => /Diner Argument/.test(m.label))).toBeDefined();
   });
@@ -173,7 +177,7 @@ describe('check_similarity', () => {
 
 describe('find_character_phrases', () => {
   it('returns top n-grams across beats featuring the character', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Alice',
       plays_self: true,
       own_voice: true,
@@ -199,7 +203,7 @@ describe('find_character_phrases', () => {
       },
     ]);
     const out = JSON.parse(
-      await HANDLERS.find_character_phrases({ character: 'Alice', sizes: [2] }),
+      await HANDLERS.find_character_phrases({ character: 'Alice', sizes: [2] }, { projectId }),
     );
     expect(out.status).toBe('ok');
     expect(out.beats_featuring).toBe(2);
@@ -208,25 +212,25 @@ describe('find_character_phrases', () => {
   });
 
   it('returns no_beats when character has no associated beats', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Lonely',
       plays_self: true,
       own_voice: true,
       fields: {},
     });
     await seedBeats([{ name: 'Other', desc: 'unrelated', characters: ['Bob'] }]);
-    const out = JSON.parse(await HANDLERS.find_character_phrases({ character: 'Lonely' }));
+    const out = JSON.parse(await HANDLERS.find_character_phrases({ character: 'Lonely' }, { projectId }));
     expect(out.status).toBe('no_beats');
     expect(out.message).toMatch(/link_character_to_beat/);
   });
 
   it('returns friendly error for unknown character', async () => {
-    const out = await HANDLERS.find_character_phrases({ character: 'Ghost' });
+    const out = await HANDLERS.find_character_phrases({ character: 'Ghost' }, { projectId });
     expect(out).toMatch(/No character found/);
   });
 
   it('matches characters case-insensitively against beat.characters', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Marcus',
       plays_self: true,
       own_voice: true,
@@ -247,7 +251,7 @@ describe('find_character_phrases', () => {
       },
     ]);
     const out = JSON.parse(
-      await HANDLERS.find_character_phrases({ character: 'Marcus', sizes: [2] }),
+      await HANDLERS.find_character_phrases({ character: 'Marcus', sizes: [2] }, { projectId }),
     );
     expect(out.beats_featuring).toBe(2);
     expect(out.phrases_by_size.size_2.find((p) => p.gram === 'marcus walks')).toBeDefined();
@@ -263,7 +267,7 @@ describe('analyze_dramatic_arc', () => {
       { name: 'Climax', desc: 'terrible terrible tragic horrible', body: 'awful dreadful disaster' },
       { name: 'Resolution', desc: 'a quiet morning', body: 'a quiet morning' },
     ]);
-    const out = JSON.parse(await HANDLERS.analyze_dramatic_arc({}));
+    const out = JSON.parse(await HANDLERS.analyze_dramatic_arc({}, { projectId }));
     expect(out.status).toBe('ok');
     expect(out.climax.beat.name).toBe('Climax');
     expect(out.climax.normalized_position).toBeCloseTo(0.75, 1);
@@ -272,7 +276,7 @@ describe('analyze_dramatic_arc', () => {
 
   it('returns low_signal for fewer than 3 beats', async () => {
     await seedBeats([{ name: 'A', desc: 'whatever' }, { name: 'B', desc: 'something' }]);
-    const out = JSON.parse(await HANDLERS.analyze_dramatic_arc({}));
+    const out = JSON.parse(await HANDLERS.analyze_dramatic_arc({}, { projectId }));
     expect(out.status).toBe('low_signal');
   });
 
@@ -282,7 +286,7 @@ describe('analyze_dramatic_arc', () => {
       { name: 'B', desc: 'plain neutral text', body: '' },
       { name: 'C', desc: 'plain neutral text', body: '' },
     ]);
-    const out = JSON.parse(await HANDLERS.analyze_dramatic_arc({}));
+    const out = JSON.parse(await HANDLERS.analyze_dramatic_arc({}, { projectId }));
     expect(out.status).toBe('no_signal');
   });
 
@@ -295,7 +299,7 @@ describe('analyze_dramatic_arc', () => {
       { name: 'After', desc: 'a quiet ending' },
     ]);
     const out = JSON.parse(
-      await HANDLERS.analyze_dramatic_arc({ metric: 'steepest_drop' }),
+      await HANDLERS.analyze_dramatic_arc({ metric: 'steepest_drop' }, { projectId }),
     );
     expect(out.status).toBe('ok');
     expect(out.metric).toBe('steepest_drop');
@@ -303,7 +307,7 @@ describe('analyze_dramatic_arc', () => {
   });
 
   it('returns empty when no beats exist', async () => {
-    const out = JSON.parse(await HANDLERS.analyze_dramatic_arc({}));
+    const out = JSON.parse(await HANDLERS.analyze_dramatic_arc({}, { projectId }));
     expect(out.status).toBe('empty');
   });
 });

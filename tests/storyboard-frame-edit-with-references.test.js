@@ -33,12 +33,16 @@ vi.mock('../src/mongo/images.js', () => ({
   })),
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Generate = await import('../src/web/storyboardGenerate.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   imageBlobs.clear();
   Generate._setImageDispatcherForTests(null);
 });
@@ -53,15 +57,15 @@ function registerImage(id, label = null) {
 }
 
 async function setupRow({ imageId = null } = {}) {
-  const beat = await Plots.createBeat({ name: 'Diner', desc: 'd', body: 'b' });
-  const sb = await Storyboards.createStoryboard({
+  const beat = await Plots.createBeat({ projectId, name: 'Diner', desc: 'd', body: 'b' });
+  const sb = await Storyboards.createStoryboard({ projectId,
     beatId: beat._id,
     textPrompt: 'A wide shot.',
     shotType: 'cinematic_wide',
     charactersInScene: ['Alice'],
   });
   const { frameId } = await Storyboards.addFrame(sb._id, { imageId });
-  return { beat, sb: await Storyboards.getStoryboard(undefined, sb._id), frameId };
+  return { beat, sb: await Storyboards.getStoryboard(projectId, sb._id), frameId };
 }
 
 describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
@@ -77,7 +81,7 @@ describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
       return { buffer: Buffer.from('img'), contentType: 'image/png' };
     });
 
-    await Generate.regenerateStoryboardFrame({
+    await Generate.regenerateStoryboardFrame({ projectId,
       storyboardId: sb._id,
       frameId,
       mode: 'edit',
@@ -103,7 +107,7 @@ describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
       return { buffer: Buffer.from('img'), contentType: 'image/png' };
     });
 
-    await Generate.regenerateStoryboardFrame({
+    await Generate.regenerateStoryboardFrame({ projectId,
       storyboardId: sb._id,
       frameId,
       mode: 'edit',
@@ -124,7 +128,7 @@ describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
 
     const missing = new ObjectId();
     await expect(
-      Generate.regenerateStoryboardFrame({
+      Generate.regenerateStoryboardFrame({ projectId,
         storyboardId: sb._id,
         frameId,
         mode: 'edit',
@@ -143,7 +147,7 @@ describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
       contentType: 'image/png',
     }));
 
-    await Generate.regenerateStoryboardFrame({
+    await Generate.regenerateStoryboardFrame({ projectId,
       storyboardId: sb._id,
       frameId,
       mode: 'edit',
@@ -151,7 +155,7 @@ describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
       editReferenceImageIds: [ref1],
     });
 
-    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
+    const fresh = await Storyboards.getStoryboard(projectId, sb._id);
     const frame = fresh.frames.find((f) => f._id.toString() === String(frameId));
     expect(frame.reference_ids || []).toEqual([]);
   });

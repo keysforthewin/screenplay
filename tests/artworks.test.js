@@ -20,27 +20,31 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Artworks = await import('../src/mongo/artworks.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 async function makeCharacter(name = 'Rae') {
-  return Characters.createCharacter({ name });
+  return Characters.createCharacter({ projectId, name });
 }
 
 async function makeBeat(name = 'Cold open') {
-  return Plots.createBeat({ name, desc: 'A test beat for artwork.' });
+  return Plots.createBeat({ projectId, name, desc: 'A test beat for artwork.' });
 }
 
 describe('artworks.js — character host', () => {
   it('createPendingArtwork seeds status=pending with the given fields', async () => {
     const c = await makeCharacter();
     const refA = new ObjectId();
-    const { artwork } = await Artworks.createPendingArtwork({
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       prompt: 'cyberpunk warrior',
@@ -56,21 +60,21 @@ describe('artworks.js — character host', () => {
     expect(artwork.previous_result_image_id).toBeNull();
     expect(artwork.reference_image_ids).toHaveLength(1);
 
-    const fresh = await Characters.getCharacter(undefined, 'Rae');
+    const fresh = await Characters.getCharacter(projectId, 'Rae');
     expect(fresh.artworks).toHaveLength(1);
     expect(fresh.artworks[0]._id.toString()).toBe(artwork._id.toString());
   });
 
   it('setArtworkResult on a pending artwork transitions to done and reports no orphan', async () => {
     const c = await makeCharacter();
-    const { artwork } = await Artworks.createPendingArtwork({
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       prompt: 'p',
       model: 'fal',
     });
     const newResult = new ObjectId();
-    const out = await Artworks.setArtworkResult({
+    const out = await Artworks.setArtworkResult({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
@@ -84,20 +88,20 @@ describe('artworks.js — character host', () => {
   it('regenerate (no rotation) orphans the previous result_image_id', async () => {
     const c = await makeCharacter();
     const oldResult = new ObjectId();
-    const { artwork } = await Artworks.createPendingArtwork({
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       prompt: 'p',
       model: 'fal',
     });
-    await Artworks.setArtworkResult({
+    await Artworks.setArtworkResult({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
       resultImageId: oldResult,
     });
     const newResult = new ObjectId();
-    const out = await Artworks.setArtworkResult({
+    const out = await Artworks.setArtworkResult({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
@@ -114,21 +118,21 @@ describe('artworks.js — character host', () => {
     const r1 = new ObjectId();
     const r2 = new ObjectId();
     const r3 = new ObjectId();
-    const { artwork } = await Artworks.createPendingArtwork({
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       prompt: 'p',
       model: 'fal',
     });
     // First result lands. No previous yet.
-    await Artworks.setArtworkResult({
+    await Artworks.setArtworkResult({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
       resultImageId: r1,
     });
     // First edit: rotate r1 → previous, no orphan yet.
-    const e1 = await Artworks.setArtworkResult({
+    const e1 = await Artworks.setArtworkResult({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
@@ -139,7 +143,7 @@ describe('artworks.js — character host', () => {
     expect(e1.artwork.previous_result_image_id.toString()).toBe(r1.toString());
     expect(e1.orphanedImageId).toBeNull();
     // Second edit: rotate r2 → previous, r1 is orphaned.
-    const e2 = await Artworks.setArtworkResult({
+    const e2 = await Artworks.setArtworkResult({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
@@ -155,26 +159,26 @@ describe('artworks.js — character host', () => {
     const c = await makeCharacter();
     const r1 = new ObjectId();
     const r2 = new ObjectId();
-    const { artwork } = await Artworks.createPendingArtwork({
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       prompt: 'p',
       model: 'fal',
     });
-    await Artworks.setArtworkResult({
+    await Artworks.setArtworkResult({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
       resultImageId: r1,
     });
-    await Artworks.setArtworkResult({
+    await Artworks.setArtworkResult({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
       resultImageId: r2,
       rotateToPrevious: true,
     });
-    const undo = await Artworks.undoArtworkEdit({
+    const undo = await Artworks.undoArtworkEdit({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
@@ -186,14 +190,14 @@ describe('artworks.js — character host', () => {
 
   it('undoArtworkEdit throws 400 when there is nothing to undo', async () => {
     const c = await makeCharacter();
-    const { artwork } = await Artworks.createPendingArtwork({
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       prompt: 'p',
       model: 'fal',
     });
     await expect(
-      Artworks.undoArtworkEdit({
+      Artworks.undoArtworkEdit({ projectId,
         hostType: 'character',
         hostId: c._id.toString(),
         artworkId: artwork._id,
@@ -203,14 +207,14 @@ describe('artworks.js — character host', () => {
 
   it('setArtworkStatus error stores the message and clears job_id', async () => {
     const c = await makeCharacter();
-    const { artwork } = await Artworks.createPendingArtwork({
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       prompt: 'p',
       model: 'fal',
       jobId: 'job-1',
     });
-    const out = await Artworks.setArtworkStatus({
+    const out = await Artworks.setArtworkStatus({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
@@ -224,13 +228,13 @@ describe('artworks.js — character host', () => {
 
   it('patchArtwork updates name and last_edit_prompt but rejects unknown fields', async () => {
     const c = await makeCharacter();
-    const { artwork } = await Artworks.createPendingArtwork({
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       prompt: 'p',
       model: 'fal',
     });
-    const out = await Artworks.patchArtwork({
+    const out = await Artworks.patchArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
@@ -240,7 +244,7 @@ describe('artworks.js — character host', () => {
     expect(out.artwork.last_edit_prompt).toBe('add hat');
 
     await expect(
-      Artworks.patchArtwork({
+      Artworks.patchArtwork({ projectId,
         hostType: 'character',
         hostId: c._id.toString(),
         artworkId: artwork._id,
@@ -253,26 +257,26 @@ describe('artworks.js — character host', () => {
     const c = await makeCharacter();
     const r1 = new ObjectId();
     const r2 = new ObjectId();
-    const { artwork } = await Artworks.createPendingArtwork({
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       prompt: 'p',
       model: 'fal',
     });
-    await Artworks.setArtworkResult({
+    await Artworks.setArtworkResult({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
       resultImageId: r1,
     });
-    await Artworks.setArtworkResult({
+    await Artworks.setArtworkResult({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
       resultImageId: r2,
       rotateToPrevious: true,
     });
-    const out = await Artworks.removeArtwork({
+    const out = await Artworks.removeArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
@@ -280,7 +284,7 @@ describe('artworks.js — character host', () => {
     expect(out.removed_image_ids.map(String).sort()).toEqual(
       [r1.toString(), r2.toString()].sort(),
     );
-    const fresh = await Characters.getCharacter(undefined, 'Rae');
+    const fresh = await Characters.getCharacter(projectId, 'Rae');
     expect(fresh.artworks).toEqual([]);
   });
 });
@@ -288,7 +292,7 @@ describe('artworks.js — character host', () => {
 describe('artworks.js — beat host', () => {
   it('createPendingArtwork on a beat persists into plots.beats[].artworks[]', async () => {
     const b = await makeBeat();
-    const { artwork } = await Artworks.createPendingArtwork({
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'beat',
       hostId: b._id.toString(),
       prompt: 'wide diner exterior',
@@ -296,7 +300,7 @@ describe('artworks.js — beat host', () => {
       model: 'fal',
     });
     expect(artwork.status).toBe('pending');
-    const fresh = await Plots.getBeat(undefined, b._id.toString());
+    const fresh = await Plots.getBeat(projectId, b._id.toString());
     expect(fresh.artworks).toHaveLength(1);
     expect(fresh.artworks[0].name).toBe('establishing');
   });
@@ -305,26 +309,26 @@ describe('artworks.js — beat host', () => {
     const b = await makeBeat();
     const r1 = new ObjectId();
     const r2 = new ObjectId();
-    const { artwork } = await Artworks.createPendingArtwork({
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'beat',
       hostId: b._id.toString(),
       prompt: 'p',
       model: 'fal',
     });
-    await Artworks.setArtworkResult({
+    await Artworks.setArtworkResult({ projectId,
       hostType: 'beat',
       hostId: b._id.toString(),
       artworkId: artwork._id,
       resultImageId: r1,
     });
-    await Artworks.setArtworkResult({
+    await Artworks.setArtworkResult({ projectId,
       hostType: 'beat',
       hostId: b._id.toString(),
       artworkId: artwork._id,
       resultImageId: r2,
       rotateToPrevious: true,
     });
-    const undo = await Artworks.undoArtworkEdit({
+    const undo = await Artworks.undoArtworkEdit({ projectId,
       hostType: 'beat',
       hostId: b._id.toString(),
       artworkId: artwork._id,
@@ -332,7 +336,7 @@ describe('artworks.js — beat host', () => {
     expect(undo.artwork.result_image_id.toString()).toBe(r1.toString());
     expect(undo.orphanedImageId.toString()).toBe(r2.toString());
 
-    const rm = await Artworks.removeArtwork({
+    const rm = await Artworks.removeArtwork({ projectId,
       hostType: 'beat',
       hostId: b._id.toString(),
       artworkId: artwork._id,
@@ -342,34 +346,34 @@ describe('artworks.js — beat host', () => {
 
   it('beat lookup works by _id, order, or name', async () => {
     const b = await makeBeat('Inciting incident');
-    await Artworks.createPendingArtwork({
+    await Artworks.createPendingArtwork({ projectId,
       hostType: 'beat',
       hostId: b._id.toString(),
       prompt: 'p1',
       model: 'gemini',
     });
     // Order
-    await Artworks.createPendingArtwork({
+    await Artworks.createPendingArtwork({ projectId,
       hostType: 'beat',
       hostId: String(b.order),
       prompt: 'p2',
       model: 'gemini',
     });
     // Name
-    await Artworks.createPendingArtwork({
+    await Artworks.createPendingArtwork({ projectId,
       hostType: 'beat',
       hostId: 'Inciting incident',
       prompt: 'p3',
       model: 'gemini',
     });
-    const fresh = await Plots.getBeat(undefined, b._id.toString());
+    const fresh = await Plots.getBeat(projectId, b._id.toString());
     expect(fresh.artworks).toHaveLength(3);
     expect(fresh.artworks.map((a) => a.prompt)).toEqual(['p1', 'p2', 'p3']);
   });
 
   it('rejects unknown host types', async () => {
     await expect(
-      Artworks.createPendingArtwork({
+      Artworks.createPendingArtwork({ projectId,
         hostType: 'storyboard',
         hostId: 'whatever',
         prompt: 'p',

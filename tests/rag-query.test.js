@@ -79,15 +79,11 @@ describe('searchScreenplay', () => {
     expect(typeof res.hits[0].score).toBe('number');
   });
 
-  it('falsy projectId resolves to the default project (transitional)', async () => {
-    const defaultPid = (await Projects.getDefaultProject())._id.toString();
-    const other = await Projects.createProject('Other');
-    await seedChunk({ id: 'beat:def:body:0', text: 'default project beat', projectId: defaultPid });
-    await seedChunk({ id: 'beat:oth:body:0', text: 'default project beat', projectId: other._id.toString() });
-
+  it('falsy projectId returns ok:false reason:bad_project (strict mode)', async () => {
     const res = await searchScreenplay(undefined, 'default project beat');
-    expect(res.ok).toBe(true);
-    expect(res.hits.map((h) => h.id)).toEqual(['beat:def:body:0']);
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('bad_project');
+    expect(res.message).toMatch(/projectId required/);
   });
 
   it('combines the project filter with entityTypes', async () => {
@@ -103,7 +99,7 @@ describe('searchScreenplay', () => {
 
   it('returns ok:false reason:disabled when RAG is not configured', async () => {
     ragEnabled = false;
-    const res = await searchScreenplay(undefined, 'anything');
+    const res = await searchScreenplay('aaaaaaaaaaaaaaaaaaaaaaaa', 'anything');
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('disabled');
     expect(res.message).toMatch(/VOYAGE_API_KEY/);
@@ -111,7 +107,7 @@ describe('searchScreenplay', () => {
 
   it('returns ok:false reason:unreachable when Chroma is down', async () => {
     chromaUp = false;
-    const res = await searchScreenplay(undefined, 'anything');
+    const res = await searchScreenplay('aaaaaaaaaaaaaaaaaaaaaaaa', 'anything');
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('unreachable');
     expect(res.message).toMatch(/ChromaDB not reachable/);

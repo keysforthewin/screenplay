@@ -1245,6 +1245,7 @@ export async function attachExistingAttachmentToBeatViaGateway({
 }) {
   projectId = await resolveProjectId(projectId);
   const result = await attachExistingAttachmentToBeat({
+    projectId,
     beat: String(beatId),
     attachmentId,
   });
@@ -1267,6 +1268,7 @@ export async function attachExistingAttachmentToCharacterViaGateway({
   const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const result = await attachExistingAttachmentToCharacter({
+    projectId,
     character: c._id.toString(),
     attachmentId,
   });
@@ -1286,6 +1288,7 @@ export async function attachExistingAttachmentToDirectorNoteViaGateway({
 }) {
   projectId = await resolveProjectId(projectId);
   const result = await attachExistingAttachmentToDirectorNote({
+    projectId,
     noteId: String(noteId),
     attachmentId,
   });

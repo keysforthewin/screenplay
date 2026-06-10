@@ -8,6 +8,7 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
@@ -15,10 +16,13 @@ const DirectorNotes = await import('../src/mongo/directorNotes.js');
 const Prompts = await import('../src/mongo/prompts.js');
 const { config } = await import('../src/config.js');
 
+let projectId;
+
 beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   // Seed character template so non-core fields are recognized.
-  await Prompts.setCharacterTemplate(undefined, {
+  await Prompts.setCharacterTemplate(projectId, {
     fields: [
       { name: 'name', core: true },
       { name: 'hollywood_actor', core: true },
@@ -39,12 +43,12 @@ function parseHandlerJson(out) {
 
 describe('read_beat_body', () => {
   it('returns a window of numbered lines', async () => {
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: makeBody('Line', 50) });
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: makeBody('Line', 50) });
     const out = await HANDLERS.read_beat_body({
       beat: beat._id.toString(),
       line_start: 10,
       line_count: 5,
-    });
+    }, { projectId });
     const json = parseHandlerJson(out);
     expect(json.total_lines).toBe(50);
     expect(json.range_start).toBe(10);
@@ -56,8 +60,8 @@ describe('read_beat_body', () => {
   });
 
   it('defaults to first 200 lines', async () => {
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: makeBody('Row', 5) });
-    const out = await HANDLERS.read_beat_body({ beat: beat._id.toString() });
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: makeBody('Row', 5) });
+    const out = await HANDLERS.read_beat_body({ beat: beat._id.toString() }, { projectId });
     const json = parseHandlerJson(out);
     expect(json.range_start).toBe(1);
     expect(json.range_end).toBe(5);
@@ -69,12 +73,12 @@ describe('read_beat_body', () => {
 describe('search_in_beat_body', () => {
   it('finds substring matches with context', async () => {
     const body = ['intro', 'INT. DINER', 'Steve enters', 'sits down', 'orders coffee'].join('\n');
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body });
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body });
     const out = await HANDLERS.search_in_beat_body({
       beat: beat._id.toString(),
       pattern: 'Steve',
       context_lines: 1,
-    });
+    }, { projectId });
     const json = parseHandlerJson(out);
     expect(json.total_matches).toBe(1);
     expect(json.matches[0].match_lines).toEqual([3]);
@@ -83,8 +87,8 @@ describe('search_in_beat_body', () => {
   });
 
   it('errors on missing pattern', async () => {
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: 'x' });
-    const out = await HANDLERS.search_in_beat_body({ beat: beat._id.toString() });
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: 'x' });
+    const out = await HANDLERS.search_in_beat_body({ beat: beat._id.toString() }, { projectId });
     expect(out).toMatch(/pattern.*required/);
   });
 });
@@ -92,8 +96,8 @@ describe('search_in_beat_body', () => {
 describe('outline_beat_body', () => {
   it('returns markdown headings with line numbers', async () => {
     const body = ['# Act 1', '', '## Scene 1', 'beat text', '## Scene 2'].join('\n');
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body });
-    const out = await HANDLERS.outline_beat_body({ beat: beat._id.toString() });
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body });
+    const out = await HANDLERS.outline_beat_body({ beat: beat._id.toString() }, { projectId });
     const json = parseHandlerJson(out);
     expect(json.heading_count).toBe(3);
     expect(json.headings).toEqual([
@@ -106,8 +110,8 @@ describe('outline_beat_body', () => {
 
 describe('get_beat auto-truncation', () => {
   it('returns body inline when under threshold', async () => {
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: 'short body' });
-    const out = await HANDLERS.get_beat({ identifier: beat._id.toString() });
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: 'short body' });
+    const out = await HANDLERS.get_beat({ identifier: beat._id.toString() }, { projectId });
     const json = parseHandlerJson(out);
     expect(json.body).toBe('short body');
     expect(json.body_preview).toBeUndefined();
@@ -115,8 +119,8 @@ describe('get_beat auto-truncation', () => {
 
   it('replaces body with body_preview when above threshold', async () => {
     const big = 'x'.repeat(config.agent.bodyPreviewThreshold + 5000);
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: big });
-    const out = await HANDLERS.get_beat({ identifier: beat._id.toString() });
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: big });
+    const out = await HANDLERS.get_beat({ identifier: beat._id.toString() }, { projectId });
     const json = parseHandlerJson(out);
     expect(json.body).toBeUndefined();
     expect(json.body_preview.truncated).toBe(true);
@@ -126,8 +130,8 @@ describe('get_beat auto-truncation', () => {
 
   it('full_body=true bypasses truncation', async () => {
     const big = 'y'.repeat(config.agent.bodyPreviewThreshold + 100);
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: big });
-    const out = await HANDLERS.get_beat({ identifier: beat._id.toString(), full_body: true });
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: big });
+    const out = await HANDLERS.get_beat({ identifier: beat._id.toString(), full_body: true }, { projectId });
     const json = parseHandlerJson(out);
     expect(json.body).toBe(big);
     expect(json.body_preview).toBeUndefined();
@@ -136,7 +140,7 @@ describe('get_beat auto-truncation', () => {
 
 describe('edit (character field)', () => {
   it('applies find/replace edits to a custom field via gateway fallback', async () => {
-    const c = await Characters.createCharacter({
+    const c = await Characters.createCharacter({ projectId,
       name: 'Maya',
       fields: { bio: 'Maya is a rookie. Maya likes coffee.' },
     });
@@ -145,14 +149,14 @@ describe('edit (character field)', () => {
       identifier: 'Maya',
       field: 'bio',
       edits: [{ find: 'rookie', replace: 'veteran' }],
-    });
+    }, { projectId });
     expect(out).toMatch(/Applied 1 edit/);
-    const fresh = await Characters.getCharacter(undefined, c._id.toString());
+    const fresh = await Characters.getCharacter(projectId, c._id.toString());
     expect(fresh.fields.bio).toBe('Maya is a veteran. Maya likes coffee.');
   });
 
   it('applies edits to a core field (hollywood_actor)', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Steve',
       plays_self: false,
       hollywood_actor: 'Steve Mulligan Senior',
@@ -162,14 +166,14 @@ describe('edit (character field)', () => {
       identifier: 'Steve',
       field: 'hollywood_actor',
       edits: [{ find: 'Senior', replace: 'Junior' }],
-    });
+    }, { projectId });
     expect(out).toMatch(/Applied 1 edit/);
-    const fresh = await Characters.getCharacter(undefined, 'Steve');
+    const fresh = await Characters.getCharacter(projectId, 'Steve');
     expect(fresh.hollywood_actor).toBe('Steve Mulligan Junior');
   });
 
   it('errors on ambiguous find', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Maya',
       fields: { bio: 'apple apple apple' },
     });
@@ -179,61 +183,61 @@ describe('edit (character field)', () => {
         identifier: 'Maya',
         field: 'bio',
         edits: [{ find: 'apple', replace: 'orange' }],
-      }),
+      }, { projectId }),
     ).rejects.toThrow(/matched 3 places/);
   });
 
   it('errors on missing find', async () => {
-    await Characters.createCharacter({ name: 'Maya', fields: { bio: 'hello world' } });
+    await Characters.createCharacter({ projectId, name: 'Maya', fields: { bio: 'hello world' } });
     await expect(
       HANDLERS.edit({
         collection: 'character',
         identifier: 'Maya',
         field: 'bio',
         edits: [{ find: 'banana', replace: 'apple' }],
-      }),
+      }, { projectId }),
     ).rejects.toThrow(/not found/);
   });
 });
 
 describe('edit (director note)', () => {
   it('applies find/replace to a director note via gateway fallback', async () => {
-    const note = await DirectorNotes.addDirectorNote({ text: 'Always show Maya wearing red.' });
+    const note = await DirectorNotes.addDirectorNote({ projectId, text: 'Always show Maya wearing red.' });
     const out = await HANDLERS.edit({
       collection: 'director_note',
       identifier: note._id.toString(),
       field: 'text',
       edits: [{ find: 'red', replace: 'blue' }],
-    });
+    }, { projectId });
     expect(out).toMatch(/Applied 1 edit/);
-    const doc = await DirectorNotes.getDirectorNotes();
+    const doc = await DirectorNotes.getDirectorNotes(projectId);
     const updated = doc.notes.find((n) => n._id.equals(note._id));
     expect(updated.text).toBe('Always show Maya wearing blue.');
   });
 
   it('errors on ambiguous find', async () => {
-    const note = await DirectorNotes.addDirectorNote({ text: 'red red red' });
+    const note = await DirectorNotes.addDirectorNote({ projectId, text: 'red red red' });
     await expect(
       HANDLERS.edit({
         collection: 'director_note',
         identifier: note._id.toString(),
         field: 'text',
         edits: [{ find: 'red', replace: 'blue' }],
-      }),
+      }, { projectId }),
     ).rejects.toThrow(/matched 3 places/);
   });
 });
 
 describe('edit (plot field)', () => {
   it('applies find/replace to plot synopsis via Mongo', async () => {
-    await Plots.updatePlot(undefined, { synopsis: 'A story about Steve and Maya.' });
+    await Plots.updatePlot(projectId, { synopsis: 'A story about Steve and Maya.' });
     const out = await HANDLERS.edit({
       collection: 'plot',
       field: 'synopsis',
       edits: [{ find: 'Steve and Maya', replace: 'two friends' }],
-    });
+    }, { projectId });
     expect(out).toMatch(/Applied 1 edit/);
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     expect(plot.synopsis).toBe('A story about two friends.');
   });
 
@@ -242,18 +246,18 @@ describe('edit (plot field)', () => {
       collection: 'plot',
       field: 'bogus',
       edits: [{ find: 'x', replace: 'y' }],
-    });
+    }, { projectId });
     expect(out).toMatch(/title.*synopsis.*notes/);
   });
 
   it('errors on missing find', async () => {
-    await Plots.updatePlot(undefined, { notes: 'Tone is deadpan.' });
+    await Plots.updatePlot(projectId, { notes: 'Tone is deadpan.' });
     await expect(
       HANDLERS.edit({
         collection: 'plot',
         field: 'notes',
         edits: [{ find: 'banana', replace: 'apple' }],
-      }),
+      }, { projectId }),
     ).rejects.toThrow(/not found/);
   });
 });
@@ -261,12 +265,12 @@ describe('edit (plot field)', () => {
 describe('read_director_note', () => {
   it('returns a slice of a long note', async () => {
     const text = makeBody('Note', 30);
-    const note = await DirectorNotes.addDirectorNote({ text });
+    const note = await DirectorNotes.addDirectorNote({ projectId, text });
     const out = await HANDLERS.read_director_note({
       note_id: note._id.toString(),
       line_start: 5,
       line_count: 3,
-    });
+    }, { projectId });
     const json = parseHandlerJson(out);
     expect(json.lines.map((l) => l.text)).toEqual(['Note 5', 'Note 6', 'Note 7']);
     expect(json.has_more).toBe(true);
@@ -276,13 +280,13 @@ describe('read_director_note', () => {
 describe('read_character_field', () => {
   it('returns a slice of a custom field', async () => {
     const big = makeBody('Bio', 25);
-    await Characters.createCharacter({ name: 'Maya', fields: { bio: big } });
+    await Characters.createCharacter({ projectId, name: 'Maya', fields: { bio: big } });
     const out = await HANDLERS.read_character_field({
       character: 'Maya',
       field: 'bio',
       line_start: 1,
       line_count: 3,
-    });
+    }, { projectId });
     const json = parseHandlerJson(out);
     expect(json.field).toBe('bio');
     expect(json.lines.map((l) => l.text)).toEqual(['Bio 1', 'Bio 2', 'Bio 3']);

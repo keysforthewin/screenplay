@@ -47,8 +47,8 @@ describe('buildDialogContext', () => {
   it('includes the previous beat name and its closing dialogue lines', async () => {
     const b1 = await Plots.createBeat({ projectId, name: 'The diner', desc: 'd1', body: 'b1' });
     const b2 = await Plots.createBeat({ projectId, name: 'The road', desc: 'd2', body: 'b2' });
-    await Dialogs.createDialog({ beatId: b1._id, body: 'You sure about this?', character: 'Alice' });
-    await Dialogs.createDialog({ beatId: b1._id, body: 'No. Drive.', character: 'Bob' });
+    await Dialogs.createDialog({ projectId, beatId: b1._id, body: 'You sure about this?', character: 'Alice' });
+    await Dialogs.createDialog({ projectId, beatId: b1._id, body: 'No. Drive.', character: 'Bob' });
 
     const ctx = await buildDialogContext(projectId, b2);
     expect(ctx).toContain('The diner');

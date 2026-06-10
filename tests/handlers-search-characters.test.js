@@ -13,23 +13,27 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Characters = await import('../src/mongo/characters.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 describe('search_characters handler — match context', () => {
   it('reports hollywood_actor as the matching field when an actor name matches', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Alice',
       plays_self: false,
       hollywood_actor: 'Liam Neeson',
       own_voice: true,
     });
 
-    const out = JSON.parse(await HANDLERS.search_characters({ query: 'Liam Neeson' }));
+    const out = JSON.parse(await HANDLERS.search_characters({ query: 'Liam Neeson' }, { projectId }));
 
     expect(out).toHaveLength(1);
     expect(out[0]).toMatchObject({
@@ -40,14 +44,14 @@ describe('search_characters handler — match context', () => {
   });
 
   it('reports the matching template field when the hit is in fields.*', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Bob',
       plays_self: true,
       own_voice: true,
       fields: { background_story: 'Bob met Liam Neeson once at a diner.' },
     });
 
-    const out = JSON.parse(await HANDLERS.search_characters({ query: 'Liam Neeson' }));
+    const out = JSON.parse(await HANDLERS.search_characters({ query: 'Liam Neeson' }, { projectId }));
 
     expect(out).toHaveLength(1);
     expect(out[0]).toMatchObject({
@@ -58,26 +62,26 @@ describe('search_characters handler — match context', () => {
   });
 
   it('distinguishes a casting hit from a lore hit across multiple characters', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Alice',
       plays_self: false,
       hollywood_actor: 'Liam Neeson',
       own_voice: true,
     });
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Bob',
       plays_self: true,
       own_voice: true,
       fields: { background_story: 'Bob met Liam Neeson once.' },
     });
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Carol',
       plays_self: true,
       own_voice: true,
       fields: { background_story: 'Carol works at a flower shop.' },
     });
 
-    const out = JSON.parse(await HANDLERS.search_characters({ query: 'Liam Neeson' }));
+    const out = JSON.parse(await HANDLERS.search_characters({ query: 'Liam Neeson' }, { projectId }));
 
     const byName = Object.fromEntries(out.map((c) => [c.name, c]));
     expect(Object.keys(byName).sort()).toEqual(['Alice', 'Bob']);
@@ -87,39 +91,39 @@ describe('search_characters handler — match context', () => {
   });
 
   it('returns [] when no character matches', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Carol',
       plays_self: true,
       own_voice: true,
       fields: { background_story: 'Carol works at a flower shop.' },
     });
 
-    const out = JSON.parse(await HANDLERS.search_characters({ query: 'Liam Neeson' }));
+    const out = JSON.parse(await HANDLERS.search_characters({ query: 'Liam Neeson' }, { projectId }));
     expect(out).toEqual([]);
   });
 
   it('truncates preview to 200 characters', async () => {
     const longLore = 'word '.repeat(100) + 'Liam Neeson ' + 'word '.repeat(100);
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Dana',
       plays_self: true,
       own_voice: true,
       fields: { background_story: longLore },
     });
 
-    const out = JSON.parse(await HANDLERS.search_characters({ query: 'Liam Neeson' }));
+    const out = JSON.parse(await HANDLERS.search_characters({ query: 'Liam Neeson' }, { projectId }));
     expect(out[0].preview.length).toBeLessThanOrEqual(200);
   });
 
   it('is case-insensitive', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Alice',
       plays_self: false,
       hollywood_actor: 'Liam Neeson',
       own_voice: true,
     });
 
-    const out = JSON.parse(await HANDLERS.search_characters({ query: 'liam NEESON' }));
+    const out = JSON.parse(await HANDLERS.search_characters({ query: 'liam NEESON' }, { projectId }));
     expect(out).toHaveLength(1);
     expect(out[0].name).toBe('Alice');
   });
@@ -138,14 +142,14 @@ describe('searchCharacters (mongo layer) — regression: no JSON-blob matches', 
       fields: {},
     });
 
-    const out = await Characters.searchCharacters(undefined, 'aaaaaa');
+    const out = await Characters.searchCharacters(projectId, 'aaaaaa');
     expect(out).toEqual([]);
   });
 
   it('does not match a character via stringified plays_self/own_voice booleans', async () => {
-    await Characters.createCharacter({ name: 'Frank', plays_self: true, own_voice: true });
+    await Characters.createCharacter({ projectId, name: 'Frank', plays_self: true, own_voice: true });
 
-    const out = await Characters.searchCharacters(undefined, 'true');
+    const out = await Characters.searchCharacters(projectId, 'true');
     expect(out).toEqual([]);
   });
 });

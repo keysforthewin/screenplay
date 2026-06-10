@@ -12,18 +12,22 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Characters = await import('../src/mongo/characters.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 describe('list_characters handler — casting field', () => {
   it('returns "no actor assigned" when hollywood_actor is unset', async () => {
-    await Characters.createCharacter({ name: 'Alice' });
+    await Characters.createCharacter({ projectId, name: 'Alice' });
 
-    const out = JSON.parse(await HANDLERS.list_characters());
+    const out = JSON.parse(await HANDLERS.list_characters({}, { projectId }));
 
     expect(out).toHaveLength(1);
     expect(out[0]).toMatchObject({ name: 'Alice', casting: 'no actor assigned' });
@@ -31,22 +35,22 @@ describe('list_characters handler — casting field', () => {
   });
 
   it('returns "played by <actor>" when hollywood_actor is set', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Bob',
       hollywood_actor: 'Bob Saget',
     });
 
-    const out = JSON.parse(await HANDLERS.list_characters());
+    const out = JSON.parse(await HANDLERS.list_characters({}, { projectId }));
 
     expect(out).toHaveLength(1);
     expect(out[0]).toMatchObject({ name: 'Bob', casting: 'played by Bob Saget' });
   });
 
   it('returns both casting variants together, sorted by name', async () => {
-    await Characters.createCharacter({ name: 'Alice' });
-    await Characters.createCharacter({ name: 'Bob', hollywood_actor: 'Bob Saget' });
+    await Characters.createCharacter({ projectId, name: 'Alice' });
+    await Characters.createCharacter({ projectId, name: 'Bob', hollywood_actor: 'Bob Saget' });
 
-    const out = JSON.parse(await HANDLERS.list_characters());
+    const out = JSON.parse(await HANDLERS.list_characters({}, { projectId }));
 
     expect(out.map((c) => c.name)).toEqual(['Alice', 'Bob']);
     expect(out.map((c) => c.casting)).toEqual([

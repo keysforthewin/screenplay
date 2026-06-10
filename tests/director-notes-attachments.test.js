@@ -9,11 +9,15 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Notes = await import('../src/mongo/directorNotes.js');
 const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 function fakeImageMeta(suffix = '') {
@@ -43,112 +47,112 @@ function fakeAttachmentMeta(suffix = '') {
 
 describe('director note image lifecycle', () => {
   it('new notes have empty images/attachments arrays and null main_image_id', async () => {
-    const a = await Notes.addDirectorNote({ text: 'first rule' });
+    const a = await Notes.addDirectorNote({ projectId, text: 'first rule' });
     expect(a.images).toEqual([]);
     expect(a.attachments).toEqual([]);
     expect(a.main_image_id).toBe(null);
   });
 
   it('pushDirectorNoteImage appends and auto-promotes the first image to main', async () => {
-    const a = await Notes.addDirectorNote({ text: 'rule a' });
+    const a = await Notes.addDirectorNote({ projectId, text: 'rule a' });
     const m1 = fakeImageMeta('1');
-    const { is_main, note } = await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m1);
+    const { is_main, note } = await Notes.pushDirectorNoteImage(projectId, a._id.toString(), m1);
     expect(is_main).toBe(true);
     expect(note.images).toHaveLength(1);
     expect(note.main_image_id.equals(m1._id)).toBe(true);
 
-    const doc = await Notes.getDirectorNotes();
+    const doc = await Notes.getDirectorNotes(projectId);
     expect(doc.notes[0].images).toHaveLength(1);
     expect(doc.notes[0].main_image_id.equals(m1._id)).toBe(true);
   });
 
   it('pushDirectorNoteImage with set_as_main:true overrides existing main', async () => {
-    const a = await Notes.addDirectorNote({ text: 'rule a' });
+    const a = await Notes.addDirectorNote({ projectId, text: 'rule a' });
     const m1 = fakeImageMeta('1');
     const m2 = fakeImageMeta('2');
-    await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m1);
-    const { is_main } = await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m2, true);
+    await Notes.pushDirectorNoteImage(projectId, a._id.toString(), m1);
+    const { is_main } = await Notes.pushDirectorNoteImage(projectId, a._id.toString(), m2, true);
     expect(is_main).toBe(true);
 
-    const doc = await Notes.getDirectorNotes();
+    const doc = await Notes.getDirectorNotes(projectId);
     expect(doc.notes[0].images).toHaveLength(2);
     expect(doc.notes[0].main_image_id.equals(m2._id)).toBe(true);
   });
 
   it('pullDirectorNoteImage promotes the next remaining image when removing main', async () => {
-    const a = await Notes.addDirectorNote({ text: 'rule a' });
+    const a = await Notes.addDirectorNote({ projectId, text: 'rule a' });
     const m1 = fakeImageMeta('1');
     const m2 = fakeImageMeta('2');
-    await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m1);
-    await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m2);
-    const { removed } = await Notes.pullDirectorNoteImage(undefined, a._id.toString(), m1._id);
+    await Notes.pushDirectorNoteImage(projectId, a._id.toString(), m1);
+    await Notes.pushDirectorNoteImage(projectId, a._id.toString(), m2);
+    const { removed } = await Notes.pullDirectorNoteImage(projectId, a._id.toString(), m1._id);
     expect(removed.equals(m1._id)).toBe(true);
 
-    const doc = await Notes.getDirectorNotes();
+    const doc = await Notes.getDirectorNotes(projectId);
     expect(doc.notes[0].images).toHaveLength(1);
     expect(doc.notes[0].main_image_id.equals(m2._id)).toBe(true);
   });
 
   it('pullDirectorNoteImage clears main_image_id when last image is pulled', async () => {
-    const a = await Notes.addDirectorNote({ text: 'rule a' });
+    const a = await Notes.addDirectorNote({ projectId, text: 'rule a' });
     const m1 = fakeImageMeta('1');
-    await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m1);
-    await Notes.pullDirectorNoteImage(undefined, a._id.toString(), m1._id);
+    await Notes.pushDirectorNoteImage(projectId, a._id.toString(), m1);
+    await Notes.pullDirectorNoteImage(projectId, a._id.toString(), m1._id);
 
-    const doc = await Notes.getDirectorNotes();
+    const doc = await Notes.getDirectorNotes(projectId);
     expect(doc.notes[0].images).toHaveLength(0);
     expect(doc.notes[0].main_image_id).toBe(null);
   });
 
   it('setDirectorNoteMainImage rejects an unattached id', async () => {
-    const a = await Notes.addDirectorNote({ text: 'rule a' });
+    const a = await Notes.addDirectorNote({ projectId, text: 'rule a' });
     const stranger = new ObjectId();
     await expect(
-      Notes.setDirectorNoteMainImage(undefined, a._id.toString(), stranger),
+      Notes.setDirectorNoteMainImage(projectId, a._id.toString(), stranger),
     ).rejects.toThrow(/not attached/);
   });
 
   it('setDirectorNoteMainImage promotes an attached image', async () => {
-    const a = await Notes.addDirectorNote({ text: 'rule a' });
+    const a = await Notes.addDirectorNote({ projectId, text: 'rule a' });
     const m1 = fakeImageMeta('1');
     const m2 = fakeImageMeta('2');
-    await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m1);
-    await Notes.pushDirectorNoteImage(undefined, a._id.toString(), m2);
-    const next = await Notes.setDirectorNoteMainImage(undefined, a._id.toString(), m2._id);
+    await Notes.pushDirectorNoteImage(projectId, a._id.toString(), m1);
+    await Notes.pushDirectorNoteImage(projectId, a._id.toString(), m2);
+    const next = await Notes.setDirectorNoteMainImage(projectId, a._id.toString(), m2._id);
     expect(next.main_image_id.equals(m2._id)).toBe(true);
   });
 
   it('pushDirectorNoteAttachment / pullDirectorNoteAttachment round-trip', async () => {
-    const a = await Notes.addDirectorNote({ text: 'rule a' });
+    const a = await Notes.addDirectorNote({ projectId, text: 'rule a' });
     const att = fakeAttachmentMeta('1');
-    await Notes.pushDirectorNoteAttachment(undefined, a._id.toString(), att);
+    await Notes.pushDirectorNoteAttachment(projectId, a._id.toString(), att);
 
-    let doc = await Notes.getDirectorNotes();
+    let doc = await Notes.getDirectorNotes(projectId);
     expect(doc.notes[0].attachments).toHaveLength(1);
     expect(doc.notes[0].attachments[0]._id.equals(att._id)).toBe(true);
 
-    const { removed } = await Notes.pullDirectorNoteAttachment(undefined, a._id.toString(), att._id);
+    const { removed } = await Notes.pullDirectorNoteAttachment(projectId, a._id.toString(), att._id);
     expect(removed.equals(att._id)).toBe(true);
 
-    doc = await Notes.getDirectorNotes();
+    doc = await Notes.getDirectorNotes(projectId);
     expect(doc.notes[0].attachments).toHaveLength(0);
   });
 
   it('pullDirectorNoteAttachment rejects an unattached id', async () => {
-    const a = await Notes.addDirectorNote({ text: 'rule a' });
+    const a = await Notes.addDirectorNote({ projectId, text: 'rule a' });
     const stranger = new ObjectId();
     await expect(
-      Notes.pullDirectorNoteAttachment(undefined, a._id.toString(), stranger),
+      Notes.pullDirectorNoteAttachment(projectId, a._id.toString(), stranger),
     ).rejects.toThrow(/not attached/);
   });
 
   it('helpers reject an unknown note_id', async () => {
     const stranger = new ObjectId();
     await expect(
-      Notes.pushDirectorNoteImage(undefined, stranger.toString(), fakeImageMeta()),
+      Notes.pushDirectorNoteImage(projectId, stranger.toString(), fakeImageMeta()),
     ).rejects.toThrow(/note not found/);
     await expect(
-      Notes.pushDirectorNoteAttachment(undefined, stranger.toString(), fakeAttachmentMeta()),
+      Notes.pushDirectorNoteAttachment(projectId, stranger.toString(), fakeAttachmentMeta()),
     ).rejects.toThrow(/note not found/);
   });
 
@@ -160,7 +164,7 @@ describe('director note image lifecycle', () => {
       notes: [{ _id: new ObjectId(), text: 'old rule', created_at: new Date() }],
       updated_at: new Date(),
     });
-    const doc = await Notes.getDirectorNotes();
+    const doc = await Notes.getDirectorNotes(projectId);
     expect(doc.notes).toHaveLength(1);
     expect(doc.notes[0].images).toEqual([]);
     expect(doc.notes[0].attachments).toEqual([]);

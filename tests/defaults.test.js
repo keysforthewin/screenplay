@@ -7,18 +7,22 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const { seedDefaults } = await import('../src/seed/defaults.js');
 const { getCharacterTemplate, updateCharacterTemplateFields } = await import('../src/mongo/prompts.js');
 const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 describe('seedDefaults', () => {
   it('seeds the full character template on a fresh DB, including alternate_names and name_changes', async () => {
     await seedDefaults();
-    const tpl = await getCharacterTemplate();
+    const tpl = await getCharacterTemplate(projectId);
     const names = tpl.fields.map((f) => f.name);
     expect(names).toContain('alternate_names');
     expect(names).toContain('name_changes');
@@ -36,7 +40,7 @@ describe('seedDefaults', () => {
   it('does not duplicate fields when called twice', async () => {
     await seedDefaults();
     await seedDefaults();
-    const tpl = await getCharacterTemplate();
+    const tpl = await getCharacterTemplate(projectId);
     const names = tpl.fields.map((f) => f.name);
     const dedup = new Set(names);
     expect(names.length).toBe(dedup.size);
@@ -57,7 +61,7 @@ describe('seedDefaults', () => {
 
     await seedDefaults();
 
-    const tpl = await getCharacterTemplate();
+    const tpl = await getCharacterTemplate(projectId);
     const names = tpl.fields.map((f) => f.name);
     expect(names).toContain('alternate_names');
     expect(names).toContain('name_changes');
@@ -79,7 +83,7 @@ describe('seedDefaults', () => {
 
     await seedDefaults();
 
-    const tpl = await getCharacterTemplate();
+    const tpl = await getCharacterTemplate(projectId);
     const names = tpl.fields.map((f) => f.name);
     expect(names).not.toContain('plays_self');
     expect(names).not.toContain('own_voice');
@@ -88,11 +92,11 @@ describe('seedDefaults', () => {
 
   it('preserves user-added custom template fields across re-seeds', async () => {
     await seedDefaults();
-    await updateCharacterTemplateFields({
+    await updateCharacterTemplateFields({ projectId,
       add: [{ name: 'favorite_color', description: 'fav color', required: false }],
     });
     await seedDefaults();
-    const tpl = await getCharacterTemplate();
+    const tpl = await getCharacterTemplate(projectId);
     const names = tpl.fields.map((f) => f.name);
     expect(names).toContain('favorite_color');
     expect(names).toContain('alternate_names');

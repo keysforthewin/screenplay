@@ -31,6 +31,7 @@ vi.mock('../src/web/announceHelpers.js', () => ({
   announceBatchSummary: vi.fn(),
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
@@ -52,8 +53,11 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(() => resolve()));
 });
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 async function postJson(path, body) {
@@ -84,7 +88,7 @@ function seedImage({ ownerType, ownerId }) {
 
 describe('POST /api/:host/:id/artwork/from-image', () => {
   it('imports a host-owned image as a new done artwork on a character', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
     const file = seedImage({ ownerType: 'character', ownerId: c._id });
 
     const { status, json } = await postJson(
@@ -100,12 +104,12 @@ describe('POST /api/:host/:id/artwork/from-image', () => {
     expect(json.artwork.prompt).toBe('');
     expect(json.artwork.reference_image_ids).toEqual([]);
 
-    const fresh = await Characters.getCharacter(undefined, 'Rae');
+    const fresh = await Characters.getCharacter(projectId, 'Rae');
     expect(fresh.artworks).toHaveLength(1);
   });
 
   it('imports a beat-owned image as a new done artwork on the same beat', async () => {
-    const beat = await Plots.createBeat({ name: 'Cold open' });
+    const beat = await Plots.createBeat({ projectId, name: 'Cold open' });
     const file = seedImage({ ownerType: 'beat', ownerId: beat._id });
 
     const { status, json } = await postJson(
@@ -117,13 +121,13 @@ describe('POST /api/:host/:id/artwork/from-image', () => {
     expect(json.artwork.status).toBe('done');
     expect(json.artwork.result_image_id.toString()).toBe(file._id.toString());
 
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     const fresh = plot.beats.find((b) => b._id.equals(beat._id));
     expect(fresh.artworks).toHaveLength(1);
   });
 
   it('400s when image_id is missing or malformed', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
     const { status: missing } = await postJson(
       `/api/character/${c._id.toString()}/artwork/from-image`,
       {},
@@ -137,7 +141,7 @@ describe('POST /api/:host/:id/artwork/from-image', () => {
   });
 
   it('404s when the source image does not exist', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
     const { status } = await postJson(
       `/api/character/${c._id.toString()}/artwork/from-image`,
       { image_id: new ObjectId().toString() },

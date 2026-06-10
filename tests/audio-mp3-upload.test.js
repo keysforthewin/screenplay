@@ -48,6 +48,7 @@ vi.mock('../src/mongo/attachments.js', () => ({
   }),
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const AudioTranscode = await import('../src/web/audioTranscode.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
@@ -71,8 +72,11 @@ afterAll(async () => {
 });
 
 let ffmpegCalls;
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   uploaded.length = 0;
   stored.clear();
   ffmpegCalls = 0;
@@ -100,7 +104,7 @@ describe('POST /storyboard/:id/audio MP3 normalization', () => {
   const beatId = new ObjectId();
 
   it('transcodes a webm recording to MP3 before storing', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId, order: 1 });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId, order: 1 });
     const { status } = await postAudio(`/storyboard/${sb._id}/audio`, {
       bytes: Buffer.from('webm-opus-bytes'),
       type: 'audio/webm',
@@ -115,7 +119,7 @@ describe('POST /storyboard/:id/audio MP3 normalization', () => {
   });
 
   it('stores an already-MP3 upload unchanged (no transcode)', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId, order: 1 });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId, order: 1 });
     const { status } = await postAudio(`/storyboard/${sb._id}/audio`, {
       bytes: Buffer.from('real-mp3-bytes'),
       type: 'audio/mpeg',
@@ -132,7 +136,7 @@ describe('POST /storyboard/:id/audio MP3 normalization', () => {
     AudioTranscode.__setAudioFfmpegImplForTests(async () => {
       throw new AudioTranscode.FfmpegMissingError();
     });
-    const sb = await Storyboards.createStoryboard({ beatId, order: 1 });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId, order: 1 });
     const { status, json } = await postAudio(`/storyboard/${sb._id}/audio`, {
       bytes: Buffer.from('webm-opus-bytes'),
       type: 'audio/webm',
@@ -147,7 +151,7 @@ describe('POST /storyboard/:id/audio MP3 normalization', () => {
     AudioTranscode.__setAudioFfmpegImplForTests(async () => {
       throw new AudioTranscode.AudioTranscodeError('bad input');
     });
-    const sb = await Storyboards.createStoryboard({ beatId, order: 1 });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId, order: 1 });
     const { status, json } = await postAudio(`/storyboard/${sb._id}/audio`, {
       bytes: Buffer.from('garbage'),
       type: 'audio/webm',

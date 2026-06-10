@@ -61,30 +61,34 @@ vi.mock('../src/config.js', async () => {
   };
 });
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   lastUploadOwner = null;
 });
 
 describe('generate_image targeted attachment', () => {
   it('falls back to library when no current beat and no targets', async () => {
-    const out = await HANDLERS.generate_image({ prompt: 'leopard at dusk' });
+    const out = await HANDLERS.generate_image({ prompt: 'leopard at dusk' }, { projectId });
     expect(out).toMatch(/saved to library/);
     expect(lastUploadOwner).toEqual({ ownerType: null, ownerId: null });
   });
 
   it('attaches to attach_to_character and pushes onto character.images[]', async () => {
-    const c = await Characters.createCharacter({ name: 'Bronze Leopard' });
+    const c = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
 
     const out = await HANDLERS.generate_image({
       prompt: 'a sleek bronze leopard portrait',
       attach_to_character: 'Bronze Leopard',
       set_as_main: true,
-    });
+    }, { projectId });
 
     expect(out).toMatch(/attached to character "Bronze Leopard"/);
     expect(lastUploadOwner.ownerType).toBe('character');
@@ -96,20 +100,20 @@ describe('generate_image targeted attachment', () => {
   });
 
   it('attaches to attach_to_beat regardless of current beat', async () => {
-    const a = await Plots.createBeat({ name: 'Diner Showdown', desc: 'tense' });
-    const b = await Plots.createBeat({ name: 'Rooftop', desc: 'storm' });
-    await Plots.setCurrentBeat(undefined, b._id.toString());
+    const a = await Plots.createBeat({ projectId, name: 'Diner Showdown', desc: 'tense' });
+    const b = await Plots.createBeat({ projectId, name: 'Rooftop', desc: 'storm' });
+    await Plots.setCurrentBeat(projectId, b._id.toString());
 
     const out = await HANDLERS.generate_image({
       prompt: 'establishing shot',
       attach_to_beat: 'Diner Showdown',
-    });
+    }, { projectId });
 
     expect(out).toMatch(/attached to beat "Diner Showdown"/);
     expect(lastUploadOwner.ownerType).toBe('beat');
     expect(lastUploadOwner.ownerId.equals(a._id)).toBe(true);
 
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     const targetA = plot.beats.find((bb) => bb._id.equals(a._id));
     const targetB = plot.beats.find((bb) => bb._id.equals(b._id));
     expect(targetA.images).toHaveLength(1);
@@ -117,36 +121,36 @@ describe('generate_image targeted attachment', () => {
   });
 
   it('rejects when both attach_to_character and attach_to_beat are set', async () => {
-    await Characters.createCharacter({ name: 'Bronze Leopard' });
-    await Plots.createBeat({ name: 'Diner', desc: 'd' });
+    await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
+    await Plots.createBeat({ projectId, name: 'Diner', desc: 'd' });
 
     const out = await HANDLERS.generate_image({
       prompt: 'x',
       attach_to_character: 'Bronze Leopard',
       attach_to_beat: 'Diner',
-    });
+    }, { projectId });
     expect(out).toMatch(/at most one of attach_to_character or attach_to_beat/);
     expect(lastUploadOwner).toBeNull();
   });
 
   it('preserves existing behavior: defaults to current beat', async () => {
-    const beat = await Plots.createBeat({ name: 'Cathedral', desc: 'dusk' });
-    await Plots.setCurrentBeat(undefined, beat._id.toString());
+    const beat = await Plots.createBeat({ projectId, name: 'Cathedral', desc: 'dusk' });
+    await Plots.setCurrentBeat(projectId, beat._id.toString());
 
-    const out = await HANDLERS.generate_image({ prompt: 'cathedral at dusk' });
+    const out = await HANDLERS.generate_image({ prompt: 'cathedral at dusk' }, { projectId });
     expect(out).toMatch(/attached to beat "Cathedral"/);
     expect(lastUploadOwner.ownerType).toBe('beat');
     expect(lastUploadOwner.ownerId.equals(beat._id)).toBe(true);
   });
 
   it('respects attach_to_current_beat: false to override current-beat default', async () => {
-    const beat = await Plots.createBeat({ name: 'Cathedral', desc: 'dusk' });
-    await Plots.setCurrentBeat(undefined, beat._id.toString());
+    const beat = await Plots.createBeat({ projectId, name: 'Cathedral', desc: 'dusk' });
+    await Plots.setCurrentBeat(projectId, beat._id.toString());
 
     const out = await HANDLERS.generate_image({
       prompt: 'detached image',
       attach_to_current_beat: false,
-    });
+    }, { projectId });
     expect(out).toMatch(/saved to library/);
     expect(lastUploadOwner).toEqual({ ownerType: null, ownerId: null });
   });
@@ -156,7 +160,7 @@ describe('generate_image targeted attachment', () => {
       HANDLERS.generate_image({
         prompt: 'x',
         attach_to_character: 'Ghost',
-      }),
+      }, { projectId }),
     ).rejects.toThrow(/Character not found/);
   });
 });

@@ -40,12 +40,16 @@ vi.mock('../src/mongo/images.js', () => ({
   })),
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Generate = await import('../src/web/storyboardGenerate.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   // Reset two-pass planner overrides so tests don't leak into each other.
   Generate._setScenePlannerForTests(null);
   Generate._setShotExpanderForTests(null);
@@ -135,14 +139,14 @@ describe('storyboard auto-generation (two-pass)', () => {
   it('plans shots and creates storyboard rows without rendering frame images', async () => {
     installPlanner(TWO_SHOT_PLAN);
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Diner reunion',
       desc: 'Alice meets Bob at the diner.',
       body: 'Alice arrives at the diner. She finds Bob in the back booth.',
       characters: ['Alice', 'Bob'],
     });
 
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -179,13 +183,13 @@ describe('storyboard auto-generation (two-pass)', () => {
   it('returns status=done and persists nothing when the planner returns no shots', async () => {
     Generate._setScenePlannerForTests(async () => ({ sceneBible: null, outline: [] }));
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'E',
       desc: 'e',
       body: '',
       characters: [],
     });
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -198,21 +202,21 @@ describe('storyboard auto-generation (two-pass)', () => {
   it('replaces existing storyboards when the planner produces a non-empty plan', async () => {
     installPlanner(TWO_SHOT_PLAN);
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'R',
       desc: 'r',
       body: 'r',
       characters: [],
     });
     // Seed three pre-existing storyboards on the beat.
-    await Storyboards.createStoryboard({ beatId: beat._id, textPrompt: 'old 1' });
-    await Storyboards.createStoryboard({ beatId: beat._id, textPrompt: 'old 2' });
-    await Storyboards.createStoryboard({ beatId: beat._id, textPrompt: 'old 3' });
+    await Storyboards.createStoryboard({ projectId, beatId: beat._id, textPrompt: 'old 1' });
+    await Storyboards.createStoryboard({ projectId, beatId: beat._id, textPrompt: 'old 2' });
+    await Storyboards.createStoryboard({ projectId, beatId: beat._id, textPrompt: 'old 3' });
     const before = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(before).toHaveLength(3);
     const oldIds = new Set(before.map((s) => s._id.toString()));
 
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -244,13 +248,13 @@ describe('storyboard auto-generation (two-pass)', () => {
       ],
     });
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Clamp',
       desc: 'c',
       body: 'c',
       characters: ['Alice'],
     });
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     await waitForJob(jobId);
@@ -278,13 +282,13 @@ describe('storyboard auto-generation (two-pass)', () => {
       ],
     });
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Crowd',
       desc: 'c',
       body: 'c',
       characters: ['Alice', 'Bob', 'Carol', 'Dave'],
     });
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     await waitForJob(jobId);
@@ -310,13 +314,13 @@ describe('storyboard auto-generation (two-pass)', () => {
       ],
     });
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Talk',
       desc: 't',
       body: 't',
       characters: ['Alice', 'Bob'],
     });
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     await waitForJob(jobId);
@@ -352,13 +356,13 @@ describe('storyboard auto-generation (two-pass)', () => {
       ],
     });
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Atmos',
       desc: 'a',
       body: 'a',
       characters: ['Alice'],
     });
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -375,18 +379,18 @@ describe('storyboard auto-generation (two-pass)', () => {
   it('preserves existing storyboards when the planner returns no shots', async () => {
     Generate._setScenePlannerForTests(async () => ({ sceneBible: null, outline: [] }));
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'P',
       desc: 'p',
       body: 'p',
       characters: [],
     });
-    await Storyboards.createStoryboard({ beatId: beat._id, textPrompt: 'keep 1' });
-    await Storyboards.createStoryboard({ beatId: beat._id, textPrompt: 'keep 2' });
+    await Storyboards.createStoryboard({ projectId, beatId: beat._id, textPrompt: 'keep 1' });
+    await Storyboards.createStoryboard({ projectId, beatId: beat._id, textPrompt: 'keep 2' });
     const before = await Storyboards.listStoryboards({ beatId: beat._id });
     const beforeIds = before.map((s) => s._id.toString()).sort();
 
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -402,13 +406,13 @@ describe('storyboard auto-generation (two-pass)', () => {
   it("stores the expander's video_prompt in text_prompt and seeds the start-frame still prompt", async () => {
     installPlanner(TWO_SHOT_PLAN);
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'D',
       desc: 'd',
       body: 'b',
       characters: ['Alice', 'Bob'],
     });
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -467,13 +471,13 @@ describe('storyboard auto-generation (two-pass)', () => {
       }));
     });
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Dir',
       desc: '',
       body: '',
       characters: [],
     });
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
       direction: 'lean handheld and dirty over-the-shoulders',
     });
@@ -491,13 +495,13 @@ describe('storyboard auto-generation (two-pass)', () => {
   it('records detailed progress events for each generation step', async () => {
     installPlanner(TWO_SHOT_PLAN);
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'P',
       desc: 'd',
       body: 'b',
       characters: ['Alice'],
     });
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -544,13 +548,13 @@ describe('storyboard auto-generation (two-pass)', () => {
       throw new Error('plan boom');
     });
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Crash',
       desc: 'd',
       body: 'b',
       characters: [],
     });
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -568,14 +572,14 @@ describe('storyboard auto-generation (two-pass)', () => {
       return { sceneBible: null, outline: [] };
     });
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'C',
       desc: '',
       body: '',
       characters: [],
     });
     // 999 is above MAX_TARGET_COUNT (30); we expect it clamped to 30.
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
       targetCount: 999,
     });
@@ -595,7 +599,7 @@ describe('auto-populated reference images', () => {
     const sheetB = new ObjectId();
     const beatImg = new ObjectId();
 
-    const a = await Characters.createCharacter({ name: 'Alice' });
+    const a = await Characters.createCharacter({ projectId, name: 'Alice' });
     await fakeDb.collection('characters').updateOne(
       { _id: a._id },
       {
@@ -606,7 +610,7 @@ describe('auto-populated reference images', () => {
         },
       },
     );
-    const b = await Characters.createCharacter({ name: 'Bob' });
+    const b = await Characters.createCharacter({ projectId, name: 'Bob' });
     await fakeDb.collection('characters').updateOne(
       { _id: b._id },
       {
@@ -618,15 +622,15 @@ describe('auto-populated reference images', () => {
       },
     );
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Diner',
       desc: 'd',
       body: 'Alice walks in. Bob is waiting.',
       characters: ['Alice', 'Bob'],
     });
-    await Plots.pushBeatImage(undefined, beat._id, { _id: beatImg }, true);
+    await Plots.pushBeatImage(projectId, beat._id, { _id: beatImg }, true);
 
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -656,13 +660,13 @@ describe('auto-populated reference images', () => {
 
   it('leaves every frame reference list empty when the beat has no images and characters are unknown', async () => {
     installPlanner(TWO_SHOT_PLAN);
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Bare',
       desc: 'd',
       body: 'b',
       characters: [],
     });
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -705,13 +709,13 @@ describe('reverse_in_post override flow', () => {
           expanderReverse !== undefined ? expanderReverse : Boolean(f.reverse_in_post),
       })),
     );
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Reveal',
       desc: 'd',
       body: 'b',
       characters: [],
     });
-    const jobId = await Generate.startStoryboardGenerationJob({
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -740,17 +744,17 @@ describe('reverse_in_post override flow', () => {
 describe('findCharactersInBeat', () => {
   it('resolves every name in beat.characters to its current Mongo doc', async () => {
     const Characters = await import('../src/mongo/characters.js');
-    await Characters.createCharacter({ name: 'Alice' });
-    await Characters.createCharacter({ name: 'Bob' });
+    await Characters.createCharacter({ projectId, name: 'Alice' });
+    await Characters.createCharacter({ projectId, name: 'Bob' });
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'B',
       desc: 'd',
       body: 'b',
       characters: ['Alice', 'Bob', '   ', 'Nonexistent'],
     });
 
-    const docs = await Generate.findCharactersInBeat(undefined, beat);
+    const docs = await Generate.findCharactersInBeat(projectId, beat);
     const names = docs.map((d) => d.name).sort();
     // Empty strings are skipped; unknown names resolve to null and drop.
     expect(names).toEqual(['Alice', 'Bob']);

@@ -22,6 +22,7 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Artworks = await import('../src/mongo/artworks.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
@@ -43,8 +44,11 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(() => resolve()));
 });
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 async function get(path) {
@@ -54,8 +58,8 @@ async function get(path) {
 
 describe('GET /api/beats/with-artwork', () => {
   it('returns every beat with its embedded images and done artworks', async () => {
-    const b1 = await Plots.createBeat({ name: 'Cold open', desc: 'rainy alley' });
-    const b2 = await Plots.createBeat({ name: 'Climax', desc: 'rooftop chase' });
+    const b1 = await Plots.createBeat({ projectId, name: 'Cold open', desc: 'rainy alley' });
+    const b2 = await Plots.createBeat({ projectId, name: 'Climax', desc: 'rooftop chase' });
 
     // Beat 1 gets one image and one done artwork
     const img = {
@@ -65,15 +69,15 @@ describe('GET /api/beats/with-artwork', () => {
       description: 'establishing reference',
       content_type: 'image/png',
     };
-    await Plots.pushBeatImage(undefined, b1._id.toString(), img);
-    const { artwork: a1 } = await Artworks.createPendingArtwork({
+    await Plots.pushBeatImage(projectId, b1._id.toString(), img);
+    const { artwork: a1 } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'beat',
       hostId: b1._id.toString(),
       prompt: 'rainy alley wide shot',
       name: 'Hero establishing',
       model: 'fal',
     });
-    await Artworks.setArtworkResult({
+    await Artworks.setArtworkResult({ projectId,
       hostType: 'beat',
       hostId: b1._id.toString(),
       artworkId: a1._id,
@@ -82,7 +86,7 @@ describe('GET /api/beats/with-artwork', () => {
 
     // Beat 1 also gets one *pending* artwork, which should NOT appear
     // in the picker output (no result image yet).
-    await Artworks.createPendingArtwork({
+    await Artworks.createPendingArtwork({ projectId,
       hostType: 'beat',
       hostId: b1._id.toString(),
       prompt: 'still rendering',

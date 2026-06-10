@@ -37,21 +37,25 @@ vi.mock('../src/mongo/attachments.js', async () => {
   };
 });
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Gateway = await import('../src/web/gateway.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Plots = await import('../src/mongo/plots.js');
 const Attachments = await import('../src/mongo/attachments.js');
 
 describe('copyAttachmentToStoryboardMediaViaGateway', () => {
-  beforeEach(() => {
+  let projectId;
+
+beforeEach(async () => {
     fakeDb.reset();
+    projectId = (await createProject('Test Project'))._id.toString();
     Attachments.copyAttachmentBuffer.mockClear();
     Attachments.findAttachmentFile.mockReset();
   });
 
   it('copies an audio attachment into a fresh file and points the storyboard at it', async () => {
-    const beat = await Plots.createBeat({ name: 'Diner', desc: 'A diner.' });
-    const sb = await Storyboards.createStoryboard({ beatId: beat._id });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner', desc: 'A diner.' });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId: beat._id });
     const sourceId = new ObjectId();
     Attachments.findAttachmentFile.mockResolvedValueOnce({
       _id: sourceId,
@@ -61,7 +65,7 @@ describe('copyAttachmentToStoryboardMediaViaGateway', () => {
       metadata: { content_type: 'audio/mpeg', owner_type: 'beat' },
     });
 
-    const result = await Gateway.copyAttachmentToStoryboardMediaViaGateway({
+    const result = await Gateway.copyAttachmentToStoryboardMediaViaGateway({ projectId,
       storyboardId: sb._id.toString(),
       attachmentId: sourceId.toString(),
       kind: 'audio',
@@ -80,8 +84,8 @@ describe('copyAttachmentToStoryboardMediaViaGateway', () => {
   });
 
   it('copies a video attachment and sets video_upload_file_id', async () => {
-    const beat = await Plots.createBeat({ name: 'Highway', desc: 'A drive.' });
-    const sb = await Storyboards.createStoryboard({ beatId: beat._id });
+    const beat = await Plots.createBeat({ projectId, name: 'Highway', desc: 'A drive.' });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId: beat._id });
     const sourceId = new ObjectId();
     Attachments.findAttachmentFile.mockResolvedValueOnce({
       _id: sourceId,
@@ -91,7 +95,7 @@ describe('copyAttachmentToStoryboardMediaViaGateway', () => {
       metadata: { content_type: 'video/mp4', owner_type: 'character' },
     });
 
-    const result = await Gateway.copyAttachmentToStoryboardMediaViaGateway({
+    const result = await Gateway.copyAttachmentToStoryboardMediaViaGateway({ projectId,
       storyboardId: sb._id.toString(),
       attachmentId: sourceId.toString(),
       kind: 'video',
@@ -104,8 +108,8 @@ describe('copyAttachmentToStoryboardMediaViaGateway', () => {
   });
 
   it('rejects when the source attachment is the wrong content-type family', async () => {
-    const beat = await Plots.createBeat({ name: 'Cafe', desc: 'A cafe.' });
-    const sb = await Storyboards.createStoryboard({ beatId: beat._id });
+    const beat = await Plots.createBeat({ projectId, name: 'Cafe', desc: 'A cafe.' });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId: beat._id });
     const sourceId = new ObjectId();
     Attachments.findAttachmentFile.mockResolvedValueOnce({
       _id: sourceId,
@@ -116,7 +120,7 @@ describe('copyAttachmentToStoryboardMediaViaGateway', () => {
     });
 
     await expect(
-      Gateway.copyAttachmentToStoryboardMediaViaGateway({
+      Gateway.copyAttachmentToStoryboardMediaViaGateway({ projectId,
         storyboardId: sb._id.toString(),
         attachmentId: sourceId.toString(),
         kind: 'audio',
@@ -125,12 +129,12 @@ describe('copyAttachmentToStoryboardMediaViaGateway', () => {
   });
 
   it('rejects when the source attachment is not found', async () => {
-    const beat = await Plots.createBeat({ name: 'Park', desc: 'A park.' });
-    const sb = await Storyboards.createStoryboard({ beatId: beat._id });
+    const beat = await Plots.createBeat({ projectId, name: 'Park', desc: 'A park.' });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId: beat._id });
     Attachments.findAttachmentFile.mockResolvedValueOnce(null);
 
     await expect(
-      Gateway.copyAttachmentToStoryboardMediaViaGateway({
+      Gateway.copyAttachmentToStoryboardMediaViaGateway({ projectId,
         storyboardId: sb._id.toString(),
         attachmentId: new ObjectId().toString(),
         kind: 'audio',
@@ -139,10 +143,10 @@ describe('copyAttachmentToStoryboardMediaViaGateway', () => {
   });
 
   it('rejects invalid kind', async () => {
-    const beat = await Plots.createBeat({ name: 'Hall', desc: 'A hall.' });
-    const sb = await Storyboards.createStoryboard({ beatId: beat._id });
+    const beat = await Plots.createBeat({ projectId, name: 'Hall', desc: 'A hall.' });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId: beat._id });
     await expect(
-      Gateway.copyAttachmentToStoryboardMediaViaGateway({
+      Gateway.copyAttachmentToStoryboardMediaViaGateway({ projectId,
         storyboardId: sb._id.toString(),
         attachmentId: new ObjectId().toString(),
         kind: 'image',

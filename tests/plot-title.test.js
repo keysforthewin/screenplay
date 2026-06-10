@@ -8,15 +8,19 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 describe('plot title', () => {
   it('getPlot initializes title to empty string on a fresh doc', async () => {
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     expect(plot.title).toBe('');
   });
 
@@ -29,40 +33,40 @@ describe('plot title', () => {
       current_beat_id: null,
       updated_at: new Date(),
     });
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     expect(plot.title).toBe('');
     const stored = await fakeDb.collection('plots').findOne({ _id: 'main' });
     expect(stored.title).toBe('');
   });
 
   it('updatePlot persists a new title and returns it', async () => {
-    const updated = await Plots.updatePlot(undefined, { title: 'The Long Drive' });
+    const updated = await Plots.updatePlot(projectId, { title: 'The Long Drive' });
     expect(updated.title).toBe('The Long Drive');
-    const fresh = await Plots.getPlot();
+    const fresh = await Plots.getPlot(projectId);
     expect(fresh.title).toBe('The Long Drive');
   });
 
   it('updatePlot trims surrounding whitespace on title', async () => {
-    const updated = await Plots.updatePlot(undefined, { title: '   Caper   ' });
+    const updated = await Plots.updatePlot(projectId, { title: '   Caper   ' });
     expect(updated.title).toBe('Caper');
   });
 
   it('updatePlot accepts an empty title string to clear the title', async () => {
-    await Plots.updatePlot(undefined, { title: 'Working Title' });
-    const cleared = await Plots.updatePlot(undefined, { title: '' });
+    await Plots.updatePlot(projectId, { title: 'Working Title' });
+    const cleared = await Plots.updatePlot(projectId, { title: '' });
     expect(cleared.title).toBe('');
   });
 
   it('updatePlot rejects non-string title values', async () => {
-    await expect(Plots.updatePlot(undefined, { title: 42 })).rejects.toThrow(/`title` must be a string/);
+    await expect(Plots.updatePlot(projectId, { title: 42 })).rejects.toThrow(/`title` must be a string/);
   });
 
   it('updatePlot still rejects when patch has no recognized fields (regression)', async () => {
-    await expect(Plots.updatePlot(undefined, { foo: 'bar' })).rejects.toThrow(/no recognized fields/);
+    await expect(Plots.updatePlot(projectId, { foo: 'bar' })).rejects.toThrow(/no recognized fields/);
   });
 
   it('updatePlot can update title and synopsis in one call', async () => {
-    const out = await Plots.updatePlot(undefined, { title: 'Caper', synopsis: 'A heist gone right.' });
+    const out = await Plots.updatePlot(projectId, { title: 'Caper', synopsis: 'A heist gone right.' });
     expect(out.title).toBe('Caper');
     expect(out.synopsis).toBe('A heist gone right.');
   });

@@ -72,14 +72,11 @@ export async function getDefaultProject() {
   }
 }
 
-// TRANSITIONAL: falsy projectId resolves to the default project so
-// un-migrated callers stay green during the incremental sweep. Task 20
-// (strict flip) changes this to THROW on falsy.
+// STRICT: every caller must thread an explicit projectId. A throw here means a
+// missed threading site — fix the caller; never re-add a default fallback.
 export async function resolveProjectId(projectId) {
-  if (projectId) {
-    const s = String(projectId);
-    if (!/^[a-f0-9]{24}$/i.test(s)) throw new Error(`invalid projectId: ${s}`);
-    return s;
-  }
-  return (await getDefaultProject())._id.toString();
+  if (!projectId) throw new Error('projectId required');
+  const s = String(projectId);
+  if (!/^[a-f0-9]{24}$/i.test(s)) throw new Error(`invalid projectId: ${s}`);
+  return s;
 }

@@ -7,6 +7,7 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Messages = await import('../src/mongo/messages.js');
 const Projects = await import('../src/mongo/projects.js');
 
@@ -23,11 +24,16 @@ function fakeMsg() {
   };
 }
 
-beforeEach(() => fakeDb.reset());
+let projectId;
+
+beforeEach(async () => {
+  fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
+});
 
 describe('message project stamping', () => {
   it('recordUserMessage stamps project_id (default project when omitted)', async () => {
-    await Messages.recordUserMessage({ msg: fakeMsg(), text: 'hi', attachments: [] });
+    await Messages.recordUserMessage({ projectId, msg: fakeMsg(), text: 'hi', attachments: [] });
     const doc = await fakeDb.collection('messages').findOne({ role: 'user' });
     const def = await Projects.getDefaultProject();
     expect(doc.project_id).toBe(def._id.toString());

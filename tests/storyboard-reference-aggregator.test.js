@@ -16,17 +16,23 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Characters = await import('../src/mongo/characters.js');
 const {
   collectStoryboardReferenceIds,
 } = await import('../src/web/storyboardReferenceAggregator.js');
 
-beforeEach(() => fakeDb.reset());
+let projectId;
+
+beforeEach(async () => {
+  fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
+});
 
 // Synthesize a character with the modern image fields populated. The
 // aggregator reads character_sheet_image_ids, main_image_id, and images[].
 async function makeCharacter(name, { sheets = [], mainId = null, extraImages = [] } = {}) {
-  const c = await Characters.createCharacter({ name });
+  const c = await Characters.createCharacter({ projectId, name });
   await fakeDb.collection('characters').updateOne(
     { _id: c._id },
     {
@@ -37,14 +43,14 @@ async function makeCharacter(name, { sheets = [], mainId = null, extraImages = [
       },
     },
   );
-  return Characters.getCharacter(undefined, name);
+  return Characters.getCharacter(projectId, name);
 }
 
 describe('collectStoryboardReferenceIds', () => {
   it('returns just the beat set image when no characters resolve', async () => {
     const setId = new ObjectId();
     const beat = { _id: new ObjectId(), images: [], main_image_id: setId };
-    const result = await collectStoryboardReferenceIds({
+    const result = await collectStoryboardReferenceIds({ projectId,
       beat,
       charactersInScene: [],
       existingIds: [],
@@ -61,7 +67,7 @@ describe('collectStoryboardReferenceIds', () => {
       images: [{ _id: i1 }, { _id: i2 }],
       main_image_id: i1, // already in images[] — should not duplicate
     };
-    const result = await collectStoryboardReferenceIds({
+    const result = await collectStoryboardReferenceIds({ projectId,
       beat,
       charactersInScene: [],
       existingIds: [],
@@ -80,7 +86,7 @@ describe('collectStoryboardReferenceIds', () => {
       extraImages: [imgA, mainA], // mainA already as main_image_id — dedupe
     });
     const beat = { _id: new ObjectId(), images: [], main_image_id: null };
-    const result = await collectStoryboardReferenceIds({
+    const result = await collectStoryboardReferenceIds({ projectId,
       beat,
       charactersInScene: ['Alice'],
       existingIds: [],
@@ -102,7 +108,7 @@ describe('collectStoryboardReferenceIds', () => {
     await makeCharacter('Alice', { sheets: [sheetA], mainId: portraitA });
     await makeCharacter('Bob', { sheets: [sheetB], mainId: portraitB });
     const beat = { _id: new ObjectId(), images: [], main_image_id: beatMain };
-    const result = await collectStoryboardReferenceIds({
+    const result = await collectStoryboardReferenceIds({ projectId,
       beat,
       charactersInScene: ['Alice', 'Bob'],
       existingIds: [],
@@ -120,7 +126,7 @@ describe('collectStoryboardReferenceIds', () => {
     const sheetB = new ObjectId();
     await makeCharacter('Bob', { sheets: [sheetB] });
     const beat = { _id: new ObjectId(), images: [], main_image_id: null };
-    const result = await collectStoryboardReferenceIds({
+    const result = await collectStoryboardReferenceIds({ projectId,
       beat,
       charactersInScene: ['Nonexistent', 'Bob'],
       existingIds: [],
@@ -132,7 +138,7 @@ describe('collectStoryboardReferenceIds', () => {
     const sheet = new ObjectId();
     await makeCharacter('Alice', { sheets: [sheet] });
     const beat = { _id: new ObjectId(), images: [], main_image_id: null };
-    const result = await collectStoryboardReferenceIds({
+    const result = await collectStoryboardReferenceIds({ projectId,
       beat,
       charactersInScene: ['**Alice**'],
       existingIds: [],
@@ -144,7 +150,7 @@ describe('collectStoryboardReferenceIds', () => {
     const shared = new ObjectId();
     await makeCharacter('Alice', { mainId: shared });
     const beat = { _id: new ObjectId(), images: [{ _id: shared }], main_image_id: null };
-    const result = await collectStoryboardReferenceIds({
+    const result = await collectStoryboardReferenceIds({ projectId,
       beat,
       charactersInScene: ['Alice'],
       existingIds: [],
@@ -160,7 +166,7 @@ describe('collectStoryboardReferenceIds', () => {
       images: [{ _id: i1 }, { _id: i2 }],
       main_image_id: null,
     };
-    const result = await collectStoryboardReferenceIds({
+    const result = await collectStoryboardReferenceIds({ projectId,
       beat,
       charactersInScene: [],
       existingIds: [i1.toString()],
@@ -172,7 +178,7 @@ describe('collectStoryboardReferenceIds', () => {
   it('returns empty added when everything is already attached (idempotent)', async () => {
     const i1 = new ObjectId();
     const beat = { _id: new ObjectId(), images: [{ _id: i1 }], main_image_id: null };
-    const result = await collectStoryboardReferenceIds({
+    const result = await collectStoryboardReferenceIds({ projectId,
       beat,
       charactersInScene: [],
       existingIds: [i1],
@@ -186,7 +192,7 @@ describe('collectStoryboardReferenceIds', () => {
     const sheetB = new ObjectId();
     await makeCharacter('Bob', { sheets: [sheetB] });
     const beat = { _id: new ObjectId(), images: [], main_image_id: null };
-    const result = await collectStoryboardReferenceIds({
+    const result = await collectStoryboardReferenceIds({ projectId,
       beat,
       charactersInScene: ['Alice', 'Bob'],
       existingIds: [],
@@ -196,7 +202,7 @@ describe('collectStoryboardReferenceIds', () => {
 
   it('falls back to legacy character_sheet_image_id when array is empty', async () => {
     const legacy = new ObjectId();
-    const c = await Characters.createCharacter({ name: 'Carol' });
+    const c = await Characters.createCharacter({ projectId, name: 'Carol' });
     await fakeDb.collection('characters').updateOne(
       { _id: c._id },
       {
@@ -208,7 +214,7 @@ describe('collectStoryboardReferenceIds', () => {
       },
     );
     const beat = { _id: new ObjectId(), images: [], main_image_id: null };
-    const result = await collectStoryboardReferenceIds({
+    const result = await collectStoryboardReferenceIds({ projectId,
       beat,
       charactersInScene: ['Carol'],
       existingIds: [],
@@ -217,7 +223,7 @@ describe('collectStoryboardReferenceIds', () => {
   });
 
   it('returns empty result when beat is null and no characters resolve', async () => {
-    const result = await collectStoryboardReferenceIds({
+    const result = await collectStoryboardReferenceIds({ projectId,
       beat: null,
       charactersInScene: ['Ghost'],
       existingIds: [],

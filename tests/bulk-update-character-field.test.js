@@ -12,15 +12,19 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Characters = await import('../src/mongo/characters.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 async function seedCharacter(name, extras = {}) {
-  return Characters.createCharacter({
+  return Characters.createCharacter({ projectId,
     name,
     plays_self: true,
     own_voice: true,
@@ -42,12 +46,12 @@ describe('bulk_update_character_field handler', () => {
         { character: 'bob', value: 'antagonist' },
         { character: 'CAROL', value: 'sidekick' },
       ],
-    });
+    }, { projectId });
 
     expect(out).toMatch(/Updated field "role" on 3\/3 character\(s\)\./);
-    const a = await Characters.getCharacter(undefined, 'Alice');
-    const b = await Characters.getCharacter(undefined, 'Bob');
-    const c = await Characters.getCharacter(undefined, 'Carol');
+    const a = await Characters.getCharacter(projectId, 'Alice');
+    const b = await Characters.getCharacter(projectId, 'Bob');
+    const c = await Characters.getCharacter(projectId, 'Carol');
     expect(a.fields.role).toBe('protagonist');
     expect(b.fields.role).toBe('antagonist');
     expect(c.fields.role).toBe('sidekick');
@@ -59,9 +63,9 @@ describe('bulk_update_character_field handler', () => {
     await HANDLERS.bulk_update_character_field({
       field_name: 'hollywood_actor',
       updates: [{ character: 'Alice', value: 'Idris Elba' }],
-    });
+    }, { projectId });
 
-    const a = await Characters.getCharacter(undefined, 'Alice');
+    const a = await Characters.getCharacter(projectId, 'Alice');
     expect(a.hollywood_actor).toBe('Idris Elba');
     expect(a.fields?.hollywood_actor).toBeUndefined();
   });
@@ -77,14 +81,14 @@ describe('bulk_update_character_field handler', () => {
         { character: 'Bob', value: 'antagonist' }, // does not exist
         { character: 'Carol', value: 'sidekick' },
       ],
-    });
+    }, { projectId });
 
     expect(out).toMatch(/Updated field "role" on 2\/3/);
     expect(out).toMatch(/Failures \(1\):/);
     expect(out).toMatch(/"Bob": Character not found: Bob/);
 
-    const a = await Characters.getCharacter(undefined, 'Alice');
-    const c = await Characters.getCharacter(undefined, 'Carol');
+    const a = await Characters.getCharacter(projectId, 'Alice');
+    const c = await Characters.getCharacter(projectId, 'Carol');
     expect(a.fields.role).toBe('protagonist');
     expect(c.fields.role).toBe('sidekick');
   });
@@ -95,10 +99,10 @@ describe('bulk_update_character_field handler', () => {
     const out = await HANDLERS.bulk_update_character_field({
       field_name: 'role',
       updates: [{ character: a._id.toString(), value: 'lead' }],
-    });
+    }, { projectId });
 
     expect(out).toMatch(/1\/1/);
-    const fresh = await Characters.getCharacter(undefined, 'Alice');
+    const fresh = await Characters.getCharacter(projectId, 'Alice');
     expect(fresh.fields.role).toBe('lead');
   });
 
@@ -114,11 +118,11 @@ describe('bulk_update_character_field handler', () => {
       field_name: 'role',
       updates,
       batch_size: 2,
-    });
+    }, { projectId });
 
     expect(out).toMatch(/7\/7/);
     for (let i = 0; i < 7; i++) {
-      const c = await Characters.getCharacter(undefined, `Char${i}`);
+      const c = await Characters.getCharacter(projectId, `Char${i}`);
       expect(c.fields.role).toBe(`v${i}`);
     }
   });
@@ -127,17 +131,17 @@ describe('bulk_update_character_field handler', () => {
     const out1 = await HANDLERS.bulk_update_character_field({
       field_name: 'role',
       updates: [],
-    });
+    }, { projectId });
     expect(out1).toMatch(/Error/);
 
-    const out2 = await HANDLERS.bulk_update_character_field({ field_name: 'role' });
+    const out2 = await HANDLERS.bulk_update_character_field({ field_name: 'role' }, { projectId });
     expect(out2).toMatch(/Error/);
   });
 
   it('returns an error string when field_name is missing', async () => {
     const out = await HANDLERS.bulk_update_character_field({
       updates: [{ character: 'Alice', value: 'x' }],
-    });
+    }, { projectId });
     expect(out).toMatch(/Error/);
   });
 });

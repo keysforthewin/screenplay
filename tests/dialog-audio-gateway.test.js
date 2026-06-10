@@ -35,6 +35,7 @@ vi.mock('../src/mongo/attachments.js', async () => {
   };
 });
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Gateway = await import('../src/web/gateway.js');
 const Dialogs = await import('../src/mongo/dialogs.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
@@ -42,20 +43,23 @@ const Plots = await import('../src/mongo/plots.js');
 const Attachments = await import('../src/mongo/attachments.js');
 
 describe('dialog audio gateway', () => {
-  beforeEach(() => {
+  let projectId;
+
+beforeEach(async () => {
     fakeDb.reset();
+    projectId = (await createProject('Test Project'))._id.toString();
     Attachments.copyAttachmentBuffer.mockClear();
   });
 
   async function makeBeat() {
-    return Plots.createBeat({ name: 'Diner', desc: 'A diner scene.' });
+    return Plots.createBeat({ projectId, name: 'Diner', desc: 'A diner scene.' });
   }
 
   it('setDialogAudioViaGateway attaches an audio file id', async () => {
     const beat = await makeBeat();
-    const d = await Gateway.createDialogViaGateway({ beatId: beat._id });
+    const d = await Gateway.createDialogViaGateway({ projectId, beatId: beat._id });
     const fileId = new ObjectId();
-    const updated = await Gateway.setDialogAudioViaGateway({
+    const updated = await Gateway.setDialogAudioViaGateway({ projectId,
       dialogId: d._id,
       audioFileId: fileId,
     });
@@ -64,13 +68,13 @@ describe('dialog audio gateway', () => {
 
   it('setDialogAudioViaGateway clears audio when passed null', async () => {
     const beat = await makeBeat();
-    const d = await Gateway.createDialogViaGateway({ beatId: beat._id });
+    const d = await Gateway.createDialogViaGateway({ projectId, beatId: beat._id });
     const fileId = new ObjectId();
-    await Gateway.setDialogAudioViaGateway({
+    await Gateway.setDialogAudioViaGateway({ projectId,
       dialogId: d._id,
       audioFileId: fileId,
     });
-    const cleared = await Gateway.setDialogAudioViaGateway({
+    const cleared = await Gateway.setDialogAudioViaGateway({ projectId,
       dialogId: d._id,
       audioFileId: null,
     });
@@ -79,15 +83,15 @@ describe('dialog audio gateway', () => {
 
   it('copyDialogAudioToStoryboardViaGateway copies bytes into a new GridFS file', async () => {
     const beat = await makeBeat();
-    const d = await Gateway.createDialogViaGateway({ beatId: beat._id });
+    const d = await Gateway.createDialogViaGateway({ projectId, beatId: beat._id });
     const sourceFileId = new ObjectId();
-    await Gateway.setDialogAudioViaGateway({
+    await Gateway.setDialogAudioViaGateway({ projectId,
       dialogId: d._id,
       audioFileId: sourceFileId,
     });
-    const sb = await Storyboards.createStoryboard({ beatId: beat._id });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId: beat._id });
 
-    const result = await Gateway.copyDialogAudioToStoryboardViaGateway({
+    const result = await Gateway.copyDialogAudioToStoryboardViaGateway({ projectId,
       storyboardId: sb._id.toString(),
       dialogId: d._id.toString(),
     });
@@ -107,36 +111,36 @@ describe('dialog audio gateway', () => {
 
   it('copy result is independent — clearing the dialog audio leaves the scene audio intact', async () => {
     const beat = await makeBeat();
-    const d = await Gateway.createDialogViaGateway({ beatId: beat._id });
+    const d = await Gateway.createDialogViaGateway({ projectId, beatId: beat._id });
     const sourceFileId = new ObjectId();
-    await Gateway.setDialogAudioViaGateway({
+    await Gateway.setDialogAudioViaGateway({ projectId,
       dialogId: d._id,
       audioFileId: sourceFileId,
     });
-    const sb = await Storyboards.createStoryboard({ beatId: beat._id });
-    const { storyboard: afterCopy } = await Gateway.copyDialogAudioToStoryboardViaGateway({
+    const sb = await Storyboards.createStoryboard({ projectId, beatId: beat._id });
+    const { storyboard: afterCopy } = await Gateway.copyDialogAudioToStoryboardViaGateway({ projectId,
       storyboardId: sb._id.toString(),
       dialogId: d._id.toString(),
     });
     const sceneAudioId = afterCopy.audio_file_id.toString();
 
-    await Gateway.setDialogAudioViaGateway({
+    await Gateway.setDialogAudioViaGateway({ projectId,
       dialogId: d._id,
       audioFileId: null,
     });
 
-    const scene = await Storyboards.getStoryboard(undefined, sb._id);
-    const dialog = await Dialogs.getDialog(undefined, d._id);
+    const scene = await Storyboards.getStoryboard(projectId, sb._id);
+    const dialog = await Dialogs.getDialog(projectId, d._id);
     expect(scene.audio_file_id.toString()).toBe(sceneAudioId);
     expect(dialog.audio_file_id).toBe(null);
   });
 
   it('copyDialogAudio rejects a dialog with no audio attached', async () => {
     const beat = await makeBeat();
-    const d = await Gateway.createDialogViaGateway({ beatId: beat._id });
-    const sb = await Storyboards.createStoryboard({ beatId: beat._id });
+    const d = await Gateway.createDialogViaGateway({ projectId, beatId: beat._id });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId: beat._id });
     await expect(
-      Gateway.copyDialogAudioToStoryboardViaGateway({
+      Gateway.copyDialogAudioToStoryboardViaGateway({ projectId,
         storyboardId: sb._id.toString(),
         dialogId: d._id.toString(),
       }),
@@ -145,15 +149,15 @@ describe('dialog audio gateway', () => {
 
   it('copyDialogAudio rejects when dialog and storyboard belong to different beats', async () => {
     const beatA = await makeBeat();
-    const beatB = await Plots.createBeat({ name: 'Other', desc: 'elsewhere' });
-    const d = await Gateway.createDialogViaGateway({ beatId: beatA._id });
-    await Gateway.setDialogAudioViaGateway({
+    const beatB = await Plots.createBeat({ projectId, name: 'Other', desc: 'elsewhere' });
+    const d = await Gateway.createDialogViaGateway({ projectId, beatId: beatA._id });
+    await Gateway.setDialogAudioViaGateway({ projectId,
       dialogId: d._id,
       audioFileId: new ObjectId(),
     });
-    const sb = await Storyboards.createStoryboard({ beatId: beatB._id });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId: beatB._id });
     await expect(
-      Gateway.copyDialogAudioToStoryboardViaGateway({
+      Gateway.copyDialogAudioToStoryboardViaGateway({ projectId,
         storyboardId: sb._id.toString(),
         dialogId: d._id.toString(),
       }),

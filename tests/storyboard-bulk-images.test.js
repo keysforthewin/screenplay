@@ -21,13 +21,17 @@ vi.mock('../src/mongo/images.js', () => ({
   })),
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Generate = await import('../src/web/storyboardGenerate.js');
 const BeatLocks = await import('../src/web/beatLocks.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   Generate._setImageDispatcherForTests(null);
   BeatLocks._clearBeatLocksForTests();
 });
@@ -43,17 +47,17 @@ async function waitForJob(jobId) {
 
 // Create a beat with N shots; each gets a start frame unless skipFrame is set.
 async function makeBeat({ shots }) {
-  const beat = await Plots.createBeat({ name: 'Diner', desc: 'd', body: 'b', characters: [] });
+  const beat = await Plots.createBeat({ projectId, name: 'Diner', desc: 'd', body: 'b', characters: [] });
   const out = [];
   for (const s of shots) {
-    const sb = await Storyboards.createStoryboard({
+    const sb = await Storyboards.createStoryboard({ projectId,
       beatId: beat._id, textPrompt: s.text || 'a shot', shotType: 'cinematic_wide',
     });
     let frameId = null;
     if (!s.skipFrame) {
       const r = await Storyboards.addFrame(sb._id, { imageId: s.imageId || null });
       frameId = r.frameId;
-      if (s.prompt) await Storyboards.setFramePrompt(undefined, sb._id, frameId, s.prompt);
+      if (s.prompt) await Storyboards.setFramePrompt(projectId, sb._id, frameId, s.prompt);
     }
     out.push({ sbId: sb._id, frameId });
   }
@@ -87,7 +91,7 @@ describe('startBulkFrameGenerationJob', () => {
       return { buffer: Buffer.from('img'), contentType: 'image/png' };
     });
 
-    const { jobId, planned } = await Generate.startBulkFrameGenerationJob({
+    const { jobId, planned } = await Generate.startBulkFrameGenerationJob({ projectId,
       beatId: beat._id, imageModel: 'gemini',
     });
     expect(planned).toBe(2);
@@ -97,11 +101,11 @@ describe('startBulkFrameGenerationJob', () => {
     expect(job.failed).toBe(0);
     expect(seen.sort()).toEqual(['first shot', 'third shot']);
 
-    const sb0 = await Storyboards.getStoryboard(undefined, out[0].sbId);
+    const sb0 = await Storyboards.getStoryboard(projectId, out[0].sbId);
     expect(sb0.frames[0].image_id).toBeTruthy();
 
     // The already-rendered middle shot must NOT be regenerated/overwritten.
-    const sb1 = await Storyboards.getStoryboard(undefined, out[1].sbId);
+    const sb1 = await Storyboards.getStoryboard(projectId, out[1].sbId);
     expect(sb1.frames[0].image_id.toString()).toBe(midImage.toString());
   });
 
@@ -112,7 +116,7 @@ describe('startBulkFrameGenerationJob', () => {
       captured = args.prompt;
       return { buffer: Buffer.from('img'), contentType: 'image/png' };
     });
-    const { jobId } = await Generate.startBulkFrameGenerationJob({ beatId: beat._id });
+    const { jobId } = await Generate.startBulkFrameGenerationJob({ projectId, beatId: beat._id });
     const job = await waitForJob(jobId);
     expect(job.status).toBe('done');
     expect(typeof captured).toBe('string');
@@ -126,7 +130,7 @@ describe('startBulkFrameGenerationJob', () => {
       if (args.prompt === 'bad') throw new Error('model boom');
       return { buffer: Buffer.from('img'), contentType: 'image/png' };
     });
-    const { jobId } = await Generate.startBulkFrameGenerationJob({ beatId: beat._id });
+    const { jobId } = await Generate.startBulkFrameGenerationJob({ projectId, beatId: beat._id });
     const job = await waitForJob(jobId);
     expect(job.status).toBe('partial');
     expect(job.completed).toBe(1);
@@ -135,7 +139,7 @@ describe('startBulkFrameGenerationJob', () => {
 
   it('finishes immediately as done with planned=0 when nothing is missing', async () => {
     const { beat } = await makeBeat({ shots: [{ imageId: new ObjectId() }] });
-    const { jobId, planned } = await Generate.startBulkFrameGenerationJob({ beatId: beat._id });
+    const { jobId, planned } = await Generate.startBulkFrameGenerationJob({ projectId, beatId: beat._id });
     expect(planned).toBe(0);
     const job = await waitForJob(jobId);
     expect(job.status).toBe('done');
@@ -149,7 +153,7 @@ describe('startBulkFrameGenerationJob', () => {
     const held = new Promise((r) => { release = r; });
     withBeatLock(beat._id, () => held); // hold the lock
     await expect(
-      Generate.startBulkFrameGenerationJob({ beatId: beat._id }),
+      Generate.startBulkFrameGenerationJob({ projectId, beatId: beat._id }),
     ).rejects.toThrow(/in progress/i);
     release();
   });

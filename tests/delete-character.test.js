@@ -9,29 +9,33 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 describe('Characters.deleteCharacter', () => {
   it('removes the character document by name (case-insensitive)', async () => {
-    await Characters.createCharacter({ name: 'Alice' });
-    const res = await Characters.deleteCharacter(undefined, 'alice');
+    await Characters.createCharacter({ projectId, name: 'Alice' });
+    const res = await Characters.deleteCharacter(projectId, 'alice');
     expect(res.name).toBe('Alice');
-    expect(await Characters.getCharacter(undefined, 'Alice')).toBe(null);
+    expect(await Characters.getCharacter(projectId, 'Alice')).toBe(null);
   });
 
   it('removes the character document by _id', async () => {
-    const c = await Characters.createCharacter({ name: 'Bob' });
-    await Characters.deleteCharacter(undefined, c._id.toString());
-    expect(await Characters.getCharacter(undefined, 'Bob')).toBe(null);
+    const c = await Characters.createCharacter({ projectId, name: 'Bob' });
+    await Characters.deleteCharacter(projectId, c._id.toString());
+    expect(await Characters.getCharacter(projectId, 'Bob')).toBe(null);
   });
 
   it('throws when the character does not exist', async () => {
-    await expect(Characters.deleteCharacter(undefined, 'Nobody')).rejects.toThrow(/not found/i);
+    await expect(Characters.deleteCharacter(projectId, 'Nobody')).rejects.toThrow(/not found/i);
   });
 
   it('returns image_ids and attachment_ids for cascade cleanup', async () => {
@@ -54,14 +58,14 @@ describe('Characters.deleteCharacter', () => {
       updated_at: new Date(),
     });
 
-    const res = await Characters.deleteCharacter(undefined, 'Carol');
+    const res = await Characters.deleteCharacter(projectId, 'Carol');
     expect(res.image_ids.map((x) => x.toString())).toEqual([img1.toString(), img2.toString()]);
     expect(res.attachment_ids.map((x) => x.toString())).toEqual([att1.toString()]);
   });
 
   it('returns empty image/attachment arrays when the character had none', async () => {
-    await Characters.createCharacter({ name: 'Dan' });
-    const res = await Characters.deleteCharacter(undefined, 'Dan');
+    await Characters.createCharacter({ projectId, name: 'Dan' });
+    const res = await Characters.deleteCharacter(projectId, 'Dan');
     expect(res.image_ids).toEqual([]);
     expect(res.attachment_ids).toEqual([]);
   });
@@ -69,22 +73,22 @@ describe('Characters.deleteCharacter', () => {
 
 describe('Plots.unlinkCharacterFromAllBeats', () => {
   it('removes the character (case-insensitive) from every beat that references them', async () => {
-    await Plots.createBeat({ name: 'Open', desc: 'd', characters: ['Alice', 'Bob'] });
-    await Plots.createBeat({ name: 'Mid', desc: 'd', characters: ['alice', 'Carol'] });
-    await Plots.createBeat({ name: 'End', desc: 'd', characters: ['Bob'] });
+    await Plots.createBeat({ projectId, name: 'Open', desc: 'd', characters: ['Alice', 'Bob'] });
+    await Plots.createBeat({ projectId, name: 'Mid', desc: 'd', characters: ['alice', 'Carol'] });
+    await Plots.createBeat({ projectId, name: 'End', desc: 'd', characters: ['Bob'] });
 
-    const res = await Plots.unlinkCharacterFromAllBeats(undefined, 'Alice');
+    const res = await Plots.unlinkCharacterFromAllBeats(projectId, 'Alice');
     expect(res.unlinked_from).toBe(2);
 
-    const beats = await Plots.listBeats();
+    const beats = await Plots.listBeats(projectId);
     expect(beats.find((b) => b.name === 'Open').characters).toEqual(['Bob']);
     expect(beats.find((b) => b.name === 'Mid').characters).toEqual(['Carol']);
     expect(beats.find((b) => b.name === 'End').characters).toEqual(['Bob']);
   });
 
   it('reports zero when no beats reference the character', async () => {
-    await Plots.createBeat({ name: 'Open', desc: 'd', characters: ['Bob'] });
-    const res = await Plots.unlinkCharacterFromAllBeats(undefined, 'Alice');
+    await Plots.createBeat({ projectId, name: 'Open', desc: 'd', characters: ['Bob'] });
+    const res = await Plots.unlinkCharacterFromAllBeats(projectId, 'Alice');
     expect(res.unlinked_from).toBe(0);
   });
 });
@@ -92,21 +96,21 @@ describe('Plots.unlinkCharacterFromAllBeats', () => {
 describe('delete_character handler', () => {
   it('returns a friendly error when the character does not exist', async () => {
     const { HANDLERS } = await import('../src/agent/handlers.js');
-    const result = await HANDLERS.delete_character({ identifier: 'Ghost' });
+    const result = await HANDLERS.delete_character({ identifier: 'Ghost' }, { projectId });
     expect(result).toMatch(/no character found/i);
   });
 
   it('deletes the character and unlinks them from beats', async () => {
     const { HANDLERS } = await import('../src/agent/handlers.js');
-    await Characters.createCharacter({ name: 'Eve' });
-    await Plots.createBeat({ name: 'Scene', desc: 'd', characters: ['Eve', 'Frank'] });
+    await Characters.createCharacter({ projectId, name: 'Eve' });
+    await Plots.createBeat({ projectId, name: 'Scene', desc: 'd', characters: ['Eve', 'Frank'] });
 
-    const result = await HANDLERS.delete_character({ identifier: 'eve' });
+    const result = await HANDLERS.delete_character({ identifier: 'eve' }, { projectId });
     expect(result).toMatch(/deleted character "Eve"/i);
     expect(result).toMatch(/unlinked from 1 beat/i);
 
-    expect(await Characters.getCharacter(undefined, 'Eve')).toBe(null);
-    const [beat] = await Plots.listBeats();
+    expect(await Characters.getCharacter(projectId, 'Eve')).toBe(null);
+    const [beat] = await Plots.listBeats(projectId);
     expect(beat.characters).toEqual(['Frank']);
   });
 });

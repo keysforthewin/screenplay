@@ -9,11 +9,15 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Bytes = await import('../src/mongo/attachmentBytes.js');
 const Bucket = await import('../src/mongo/attachments.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 const TEXT_BYTES = Buffer.from('hello world', 'utf8');
@@ -268,7 +272,7 @@ const { HANDLERS } = await import('../src/agent/handlers.js');
 const Plots = await import('../src/mongo/plots.js');
 
 async function seedBeat() {
-  const beat = await Plots.createBeat({ name: 'Diner Scene', desc: 'They meet at the diner.' });
+  const beat = await Plots.createBeat({ projectId, name: 'Diner Scene', desc: 'They meet at the diner.' });
   return beat;
 }
 
@@ -292,9 +296,9 @@ describe('beat attachment handlers', () => {
       beat: beat._id.toString(),
       source_url: 'https://cdn.discord.com/x/recording.ogg',
       caption: 'use at PAULY IS FULL DEEP',
-    });
+    }, { projectId });
     expect(Attachments.uploadAttachmentFromUrl).toHaveBeenCalledWith(
-      undefined,
+      projectId,
       expect.objectContaining({
         sourceUrl: 'https://cdn.discord.com/x/recording.ogg',
         ownerType: 'beat',
@@ -304,7 +308,7 @@ describe('beat attachment handlers', () => {
     expect(out).toContain('recording.ogg');
     expect(out).toContain('use at PAULY IS FULL DEEP');
 
-    const after = await Plots.getBeat(undefined, beat._id.toString());
+    const after = await Plots.getBeat(projectId, beat._id.toString());
     expect(after.attachments).toHaveLength(1);
     expect(after.attachments[0].filename).toBe('recording.ogg');
     expect(after.attachments[0].caption).toBe('use at PAULY IS FULL DEEP');
@@ -323,8 +327,8 @@ describe('beat attachment handlers', () => {
     await HANDLERS.add_beat_attachment({
       beat: beat._id.toString(),
       source_url: 'https://x.test/a.ogg',
-    });
-    const raw = await HANDLERS.list_beat_attachments({ beat: beat._id.toString() });
+    }, { projectId });
+    const raw = await HANDLERS.list_beat_attachments({ beat: beat._id.toString() }, { projectId });
     const out = JSON.parse(raw.replace(/\nEdit in browser:.*$/s, ''));
     expect(out.attachments).toHaveLength(1);
     expect(out.attachments[0].filename).toBe('a.ogg');
@@ -344,14 +348,14 @@ describe('beat attachment handlers', () => {
     await HANDLERS.add_beat_attachment({
       beat: beat._id.toString(),
       source_url: 'https://x.test/a.ogg',
-    });
+    }, { projectId });
     const out = await HANDLERS.remove_beat_attachment({
       beat: beat._id.toString(),
       attachment_id: fakeId.toString(),
-    });
+    }, { projectId });
     expect(out).toMatch(/Removed attachment/);
     expect(Attachments.deleteAttachment).toHaveBeenCalledTimes(1);
-    const after = await Plots.getBeat(undefined, beat._id.toString());
+    const after = await Plots.getBeat(projectId, beat._id.toString());
     expect(after.attachments).toHaveLength(0);
   });
 
@@ -362,7 +366,7 @@ describe('beat attachment handlers', () => {
       HANDLERS.add_beat_attachment({
         beat: beat._id.toString(),
         source_url: 'https://x.test/huge.bin',
-      }),
+      }, { projectId }),
     ).rejects.toThrow(/File too large/);
   });
 });
@@ -389,8 +393,9 @@ describe('character attachment handlers', () => {
       character: 'Pauly',
       source_url: 'https://x.test/pauly.ogg',
       caption: 'voice clip',
-    });
+    }, { projectId });
     expect(Attachments.attachToCharacter).toHaveBeenCalledWith({
+      projectId,
       character: 'Pauly',
       sourceUrl: 'https://x.test/pauly.ogg',
       filename: undefined,
@@ -417,7 +422,7 @@ describe('character attachment handlers', () => {
         },
       ],
     });
-    const raw = await HANDLERS.list_character_attachments({ character: 'Pauly' });
+    const raw = await HANDLERS.list_character_attachments({ character: 'Pauly' }, { projectId });
     const out = JSON.parse(raw.replace(/\nEdit in browser:.*$/s, ''));
     expect(out.character.name).toBe('Pauly');
     expect(out.attachments).toHaveLength(1);
@@ -434,8 +439,9 @@ describe('character attachment handlers', () => {
     const out = await HANDLERS.remove_character_attachment({
       character: 'Pauly',
       attachment_id: removed.toString(),
-    });
+    }, { projectId });
     expect(Attachments.removeCharacterAttachment).toHaveBeenCalledWith({
+      projectId,
       character: 'Pauly',
       attachmentId: removed.toString(),
     });

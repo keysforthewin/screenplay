@@ -87,10 +87,14 @@ vi.mock('../src/config.js', async () => {
   };
 });
 
+const { createProject } = await import('../src/mongo/projects.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   generateCalls.length = 0;
   uploadCalls.length = 0;
   visionSeedCalls.length = 0;
@@ -101,7 +105,7 @@ describe('generate_image with source_image_id', () => {
     const out = await HANDLERS.generate_image({
       prompt: 'lower the sun a bit',
       source_image_id: new ObjectId().toString(),
-    });
+    }, { projectId });
     expect(out).toMatch(/saved to library/);
     expect(generateCalls).toHaveLength(1);
     expect(generateCalls[0].hasInput).toBe(true);
@@ -109,18 +113,18 @@ describe('generate_image with source_image_id', () => {
   });
 
   it('library-bound generations kick off the vision seed', async () => {
-    await HANDLERS.generate_image({ prompt: 'a leopard at dusk' });
+    await HANDLERS.generate_image({ prompt: 'a leopard at dusk' }, { projectId });
     expect(visionSeedCalls).toHaveLength(1);
     expect(visionSeedCalls[0].ct).toBe('image/png');
   });
 
   it('does not kick off the vision seed when the image is attached to a beat', async () => {
     const Plots = await import('../src/mongo/plots.js');
-    const beat = await Plots.createBeat({ name: 'Diner', desc: 'tense' });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner', desc: 'tense' });
     await HANDLERS.generate_image({
       prompt: 'establishing shot',
       attach_to_beat: 'Diner',
-    });
+    }, { projectId });
     expect(uploadCalls[0].ownerType).toBe('beat');
     expect(uploadCalls[0].ownerId.equals(beat._id)).toBe(true);
     expect(visionSeedCalls).toHaveLength(0);

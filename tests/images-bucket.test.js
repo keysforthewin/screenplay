@@ -9,13 +9,17 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Images = await import('../src/mongo/images.js');
 const Projects = await import('../src/mongo/projects.js');
 
 let pid; // default project id (hex string), recreated per test by getDefaultProject
 
+let projectId;
+
 beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   pid = (await Projects.getDefaultProject())._id.toString();
 });
 
@@ -45,7 +49,7 @@ describe('images metadata helpers', () => {
     seedFile({ ownerType: 'beat', ownerId: new ObjectId() });
     seedFile({ ownerType: null });
 
-    const lib = await Images.listLibraryImages();
+    const lib = await Images.listLibraryImages(projectId);
     expect(lib).toHaveLength(2);
     for (const f of lib) expect(f.metadata.owner_type).toBeNull();
   });
@@ -57,7 +61,7 @@ describe('images metadata helpers', () => {
     seedFile({ ownerType: 'beat', ownerId: beatA });
     seedFile({ ownerType: 'beat', ownerId: beatB });
 
-    const aImages = await Images.listImagesForBeat(undefined, beatA);
+    const aImages = await Images.listImagesForBeat(projectId, beatA);
     expect(aImages).toHaveLength(2);
     for (const f of aImages) expect(f.metadata.owner_id.equals(beatA)).toBe(true);
   });
@@ -72,10 +76,10 @@ describe('images metadata helpers', () => {
     expect(after.metadata.owner_type).toBe('beat');
     expect(after.metadata.owner_id.equals(beatId)).toBe(true);
 
-    const lib = await Images.listLibraryImages();
+    const lib = await Images.listLibraryImages(projectId);
     expect(lib).toHaveLength(0);
 
-    const beatImages = await Images.listImagesForBeat(undefined, beatId);
+    const beatImages = await Images.listImagesForBeat(projectId, beatId);
     expect(beatImages).toHaveLength(1);
   });
 
@@ -117,7 +121,7 @@ describe('images project scoping', () => {
     seedFile({ ownerType: null });                       // default project
     seedFile({ ownerType: null, projectId: otherPid });  // other project
 
-    const defaults = await Images.listLibraryImages();   // undefined → default project
+    const defaults = await Images.listLibraryImages(projectId);   // undefined → default project
     expect(defaults).toHaveLength(1);
     expect(defaults[0].metadata.project_id).toBe(pid);
 
@@ -132,7 +136,7 @@ describe('images project scoping', () => {
     seedFile({ ownerType: 'character', ownerId: new ObjectId() });
     seedFile({ ownerType: 'character', ownerId: new ObjectId(), projectId: otherPid });
 
-    const defaults = await Images.listImagesByOwnerType(undefined, 'character');
+    const defaults = await Images.listImagesByOwnerType(projectId, 'character');
     expect(defaults).toHaveLength(1);
     expect(defaults[0].metadata.project_id).toBe(pid);
 
@@ -149,7 +153,7 @@ describe('images project scoping', () => {
     const legacy = seedFile({ ownerType: 'beat', ownerId: beatId });
     delete legacy.metadata.project_id;                                     // pre-migration file
 
-    const defaults = await Images.listImagesForBeat(undefined, beatId);
+    const defaults = await Images.listImagesForBeat(projectId, beatId);
     expect(defaults).toHaveLength(2); // default-project file + legacy file
 
     const others = await Images.listImagesForBeat(otherPid, beatId);
@@ -159,7 +163,7 @@ describe('images project scoping', () => {
   it('files without metadata.project_id are excluded (strict filter; migration stamps legacy files)', async () => {
     const doc = seedFile({ ownerType: null });
     delete doc.metadata.project_id;
-    const lib = await Images.listLibraryImages();
+    const lib = await Images.listLibraryImages(projectId);
     expect(lib).toHaveLength(0);
   });
 });

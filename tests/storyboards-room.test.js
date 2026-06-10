@@ -14,13 +14,17 @@ vi.mock('../src/log.js', () => ({
 vi.mock('../src/rag/queue.js', () => ({ enqueueReindex: () => {} }));
 vi.mock('../src/rag/indexer.js', () => ({}));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const { resolveRoom, buildRoomName } = await import('../src/web/roomRegistry.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Projects = await import('../src/mongo/projects.js');
 
 let beatA;
+let projectId;
+
 beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   const p = await Projects.getDefaultProject();
   beatA = new ObjectId();
   // Insert a minimal plot doc so verifiedProjectIdForBeat resolves this beat.
@@ -33,12 +37,12 @@ beforeEach(async () => {
 
 describe('storyboards room', () => {
   it('emits text_prompt, summary, and a prompt fragment per frame', async () => {
-    const a = await Storyboards.createStoryboard({
+    const a = await Storyboards.createStoryboard({ projectId,
       beatId: beatA,
       textPrompt: 'Wide on the diner.',
       summary: 'Diner exterior at dusk.',
     });
-    const b = await Storyboards.createStoryboard({
+    const b = await Storyboards.createStoryboard({ projectId,
       beatId: beatA,
       textPrompt: 'Close on Alice.',
       summary: 'Alice notices the stranger.',
@@ -73,7 +77,7 @@ describe('storyboards room', () => {
   });
 
   it('persistFields writes text_prompt, summary, and frame prompts back to Mongo', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId: beatA });
     const { frameId } = await Storyboards.addFrame(sb._id, {});
     const id = sb._id.toString();
 
@@ -92,7 +96,7 @@ describe('storyboards room', () => {
       ]),
     );
 
-    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
+    const fresh = await Storyboards.getStoryboard(projectId, sb._id);
     expect(fresh.text_prompt).toBe('New prompt body.');
     expect(fresh.summary).toBe('New one-liner.');
     expect(fresh.frames.find((f) => f._id.equals(frameId)).prompt).toBe(
@@ -101,7 +105,7 @@ describe('storyboards room', () => {
   });
 
   it('persistFields no-ops when nothing changed', async () => {
-    const sb = await Storyboards.createStoryboard({
+    const sb = await Storyboards.createStoryboard({ projectId,
       beatId: beatA,
       textPrompt: 'Same.',
       summary: 'Same summary.',
@@ -117,7 +121,7 @@ describe('storyboards room', () => {
   });
 
   it('persistFields ignores unknown field names', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId: beatA });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId: beatA });
     const id = sb._id.toString();
 
     const desc = await resolveRoom(buildRoomName('storyboards', beatA.toString()));

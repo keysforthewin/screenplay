@@ -251,10 +251,13 @@ export async function indexDirectorNote(noteId) {
       try { await col.delete({ where: { $and: [{ entity_type: 'director_note' }, { entity_id: idStr(noteId) }] } }); } catch {}
       return;
     }
-    // Composite prompts ids are '<projectId>:director_notes'; the legacy
-    // pre-migration id 'director_notes' has no prefix → default project.
+    // Composite prompts ids are '<projectId>:director_notes'. The legacy
+    // pre-migration id 'director_notes' has no prefix — there is no real
+    // project to stamp, so skip it; the migration re-keys the doc and a
+    // post-migration reindex picks the notes up under their real project.
     const docId = String(doc._id);
-    const projectId = await resolveProjectId(docId.includes(':') ? docId.split(':')[0] : null);
+    if (!docId.includes(':')) return;
+    const projectId = await resolveProjectId(docId.split(':')[0]);
     const chunks = buildChunksForField({
       entityType: 'director_note',
       entityId: note._id,

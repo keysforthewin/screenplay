@@ -22,6 +22,7 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
 
@@ -42,8 +43,11 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(() => resolve()));
 });
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 const beatId = new ObjectId();
@@ -65,7 +69,7 @@ async function patch(sbId, body) {
 
 describe('PATCH /api/storyboard/:id', () => {
   it('updates shot_type, duration_seconds, transition_in, characters_in_scene', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId });
     const { status, json } = await patch(sb._id.toString(), {
       shot_type: 'cinematic_wide',
       duration_seconds: 8,
@@ -80,7 +84,7 @@ describe('PATCH /api/storyboard/:id', () => {
   });
 
   it('clamps duration when shot_type is more restrictive', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId });
     const { status, json } = await patch(sb._id.toString(), {
       shot_type: 'close_up',
       duration_seconds: 12,
@@ -91,7 +95,7 @@ describe('PATCH /api/storyboard/:id', () => {
   });
 
   it('returns 400 with a useful message on invalid shot_type', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId });
     const { status, json } = await patch(sb._id.toString(), {
       shot_type: 'epic_montage',
     });
@@ -100,7 +104,7 @@ describe('PATCH /api/storyboard/:id', () => {
   });
 
   it('returns 400 on empty patch body', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId });
     const { status, json } = await patch(sb._id.toString(), {});
     expect(status).toBe(400);
     expect(json.error).toMatch(/no patch fields/);
@@ -114,7 +118,7 @@ describe('PATCH /api/storyboard/:id', () => {
   });
 
   it('ignores unknown fields and only persists recognized ones', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId });
     const { status, json } = await patch(sb._id.toString(), {
       shot_type: 'medium',
       vibes: 'noir',
@@ -125,7 +129,7 @@ describe('PATCH /api/storyboard/:id', () => {
   });
 
   it('accepts null to clear duration_seconds', async () => {
-    const sb = await Storyboards.createStoryboard({
+    const sb = await Storyboards.createStoryboard({ projectId,
       beatId,
       shotType: 'close_up',
       durationSeconds: 5,

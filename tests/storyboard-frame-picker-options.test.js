@@ -25,6 +25,7 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Artworks = await import('../src/mongo/artworks.js');
@@ -47,8 +48,11 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(() => resolve()));
 });
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 function seedImageFile({ ownerId, kind, name }) {
@@ -82,14 +86,14 @@ async function get(path) {
 }
 
 async function newDoneArtwork(beatId, { resultImageId, name, prompt }) {
-  const { artwork } = await Artworks.createPendingArtwork({
+  const { artwork } = await Artworks.createPendingArtwork({ projectId,
     hostType: 'beat',
     hostId: beatId,
     prompt: prompt || 'painted moodboard',
     name: name || '',
     model: 'nano-banana-pro',
   });
-  await Artworks.setArtworkResult({
+  await Artworks.setArtworkResult({ projectId,
     hostType: 'beat',
     hostId: beatId,
     artworkId: artwork._id,
@@ -105,10 +109,10 @@ async function addFrame(sbId, imageId) {
 
 describe('GET /api/storyboard/:id/frame/:frameId/picker-options', () => {
   it('returns the other frames, beat artwork, and beat images', async () => {
-    const beat = await Plots.createBeat({ name: 'Diner', desc: 'd', body: 'b' });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner', desc: 'd', body: 'b' });
     const img1 = new ObjectId();
     const img2 = new ObjectId();
-    const sb = await Storyboards.createStoryboard({
+    const sb = await Storyboards.createStoryboard({ projectId,
       beatId: beat._id,
       textPrompt: 'A wide shot.',
       shotType: 'cinematic_wide',
@@ -148,8 +152,8 @@ describe('GET /api/storyboard/:id/frame/:frameId/picker-options', () => {
   });
 
   it('omits frames without an image from other_frames', async () => {
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: 'b' });
-    const sb = await Storyboards.createStoryboard({
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: 'b' });
+    const sb = await Storyboards.createStoryboard({ projectId,
       beatId: beat._id,
       textPrompt: 'x',
       shotType: 'medium',
@@ -166,8 +170,8 @@ describe('GET /api/storyboard/:id/frame/:frameId/picker-options', () => {
   });
 
   it('filters out pending and errored artworks', async () => {
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: 'b' });
-    const sb = await Storyboards.createStoryboard({
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: 'b' });
+    const sb = await Storyboards.createStoryboard({ projectId,
       beatId: beat._id,
       textPrompt: 'x',
       shotType: 'medium',
@@ -176,7 +180,7 @@ describe('GET /api/storyboard/:id/frame/:frameId/picker-options', () => {
 
     const doneId = new ObjectId();
     await newDoneArtwork(beat._id, { resultImageId: doneId, name: 'kept' });
-    await Artworks.createPendingArtwork({
+    await Artworks.createPendingArtwork({ projectId,
       hostType: 'beat',
       hostId: beat._id,
       prompt: 'pending',
@@ -192,8 +196,8 @@ describe('GET /api/storyboard/:id/frame/:frameId/picker-options', () => {
   });
 
   it('skips thumbnail-kind images in beat_images', async () => {
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: 'b' });
-    const sb = await Storyboards.createStoryboard({
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: 'b' });
+    const sb = await Storyboards.createStoryboard({ projectId,
       beatId: beat._id,
       textPrompt: 'x',
       shotType: 'medium',
@@ -212,8 +216,8 @@ describe('GET /api/storyboard/:id/frame/:frameId/picker-options', () => {
   });
 
   it('returns 400 for an invalid frame id', async () => {
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: 'b' });
-    const sb = await Storyboards.createStoryboard({
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: 'b' });
+    const sb = await Storyboards.createStoryboard({ projectId,
       beatId: beat._id,
       textPrompt: 'x',
       shotType: 'medium',

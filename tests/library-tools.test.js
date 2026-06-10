@@ -38,13 +38,17 @@ vi.mock('../src/mongo/images.js', async () => {
   };
 });
 
+const { createProject } = await import('../src/mongo/projects.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 const Projects = await import('../src/mongo/projects.js');
 
 let pid;
 
+let projectId;
+
 beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   pid = (await Projects.getDefaultProject())._id.toString();
 });
 
@@ -76,7 +80,7 @@ describe('search_library_images handler', () => {
     seedLibrary({ name: 'Diner at dusk', description: 'neon, purple sky' });
     seedLibrary({ name: 'Sheriff with hat', description: 'a stoic lawman' });
 
-    const out = await HANDLERS.search_library_images({ query: 'diner' });
+    const out = await HANDLERS.search_library_images({ query: 'diner' }, { projectId });
     const parsed = JSON.parse(out);
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed).toHaveLength(1);
@@ -88,20 +92,20 @@ describe('search_library_images handler', () => {
 
   it('matches description text when name does not match', async () => {
     seedLibrary({ name: 'Untitled', description: 'rainy rooftop chase' });
-    const out = await HANDLERS.search_library_images({ query: 'rooftop' });
+    const out = await HANDLERS.search_library_images({ query: 'rooftop' }, { projectId });
     const parsed = JSON.parse(out);
     expect(parsed).toHaveLength(1);
     expect(parsed[0].description).toMatch(/rooftop/);
   });
 
   it('rejects empty query', async () => {
-    const out = await HANDLERS.search_library_images({ query: '' });
+    const out = await HANDLERS.search_library_images({ query: '' }, { projectId });
     expect(out).toMatch(/query.*required/i);
   });
 
   it('returns [] when nothing matches', async () => {
     seedLibrary({ name: 'a', description: 'b' });
-    const out = await HANDLERS.search_library_images({ query: 'zzz' });
+    const out = await HANDLERS.search_library_images({ query: 'zzz' }, { projectId });
     expect(JSON.parse(out)).toEqual([]);
   });
 });
@@ -109,7 +113,7 @@ describe('search_library_images handler', () => {
 describe('show_library_image handler', () => {
   it('returns the IMAGE_PATH sentinel with the stored name as caption fallback', async () => {
     const doc = seedLibrary({ name: 'Diner at dusk' });
-    const out = await HANDLERS.show_library_image({ image_id: doc._id.toString() });
+    const out = await HANDLERS.show_library_image({ image_id: doc._id.toString() }, { projectId });
     expect(out.startsWith('__IMAGE_PATH__:')).toBe(true);
     const [, caption, idStr] = out.split('|');
     expect(caption).toBe('Diner at dusk');
@@ -121,7 +125,7 @@ describe('show_library_image handler', () => {
     const out = await HANDLERS.show_library_image({
       image_id: doc._id.toString(),
       note: 'Here is the diner you asked for',
-    });
+    }, { projectId });
     const [, caption] = out.split('|');
     expect(caption).toBe('Here is the diner you asked for');
   });
@@ -136,7 +140,7 @@ describe('show_library_image handler', () => {
       metadata: { owner_type: 'beat', owner_id: new ObjectId() },
     };
     fakeDb.collection('images.files')._docs.push(doc);
-    const out = await HANDLERS.show_library_image({ image_id: doc._id.toString() });
+    const out = await HANDLERS.show_library_image({ image_id: doc._id.toString() }, { projectId });
     expect(out).toMatch(/owned by beat/);
   });
 });
@@ -149,7 +153,7 @@ describe('replace_library_image handler', () => {
     const out = await HANDLERS.replace_library_image({
       source_image_id: src._id.toString(),
       new_image_id: next._id.toString(),
-    });
+    }, { projectId });
     const parsed = JSON.parse(out);
     expect(parsed.ok).toBe(true);
     expect(parsed.new_image_id).toBe(next._id.toString());
@@ -171,7 +175,7 @@ describe('replace_library_image handler', () => {
       source_image_id: src._id.toString(),
       new_image_id: next._id.toString(),
       copy_metadata: false,
-    });
+    }, { projectId });
 
     const nextAfter = await fakeDb.collection('images.files').findOne({ _id: next._id });
     expect(nextAfter.metadata.name).toBe('KEEP');
@@ -193,13 +197,13 @@ describe('replace_library_image handler', () => {
     const a = await HANDLERS.replace_library_image({
       source_image_id: beat._id.toString(),
       new_image_id: lib._id.toString(),
-    });
+    }, { projectId });
     expect(a).toMatch(/not in the library/);
 
     const b = await HANDLERS.replace_library_image({
       source_image_id: lib._id.toString(),
       new_image_id: beat._id.toString(),
-    });
+    }, { projectId });
     expect(b).toMatch(/not in the library/);
   });
 
@@ -208,7 +212,7 @@ describe('replace_library_image handler', () => {
     const out = await HANDLERS.replace_library_image({
       source_image_id: lib._id.toString(),
       new_image_id: lib._id.toString(),
-    });
+    }, { projectId });
     expect(out).toMatch(/must differ/);
   });
 });

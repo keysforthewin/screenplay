@@ -30,14 +30,18 @@ vi.mock('../src/mongo/images.js', () => ({
   }),
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Generate = await import('../src/web/storyboardGenerate.js');
 const BeatLocks = await import('../src/web/beatLocks.js');
 const { _setAnthropicClientForTests, _resetAnthropicClientForTests } =
   await import('../src/anthropic/client.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   uploadCounter.n = 0;
   BeatLocks._clearBeatLocksForTests();
   _resetAnthropicClientForTests();
@@ -134,11 +138,11 @@ describe('generation rejects concurrent jobs for the same beat', () => {
       contentType: 'image/png',
     }));
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'L', desc: '', body: '', characters: [],
     });
 
-    const jobIdP = Generate.startStoryboardGenerationJob({
+    const jobIdP = Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     // Wait for the lock to actually be claimed.
@@ -147,7 +151,7 @@ describe('generation rejects concurrent jobs for the same beat', () => {
 
     let err;
     try {
-      await Generate.startStoryboardGenerationJob({
+      await Generate.startStoryboardGenerationJob({ projectId,
         beatId: beat._id.toString(),
       });
     } catch (e) {

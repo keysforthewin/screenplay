@@ -23,6 +23,7 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
 const Artworks = await import('../src/mongo/artworks.js');
@@ -45,8 +46,11 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(() => resolve()));
 });
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 async function get(path) {
@@ -56,12 +60,12 @@ async function get(path) {
 
 describe('GET /api/beats-featuring-character', () => {
   it('returns only beats whose characters list resolves to the given character', async () => {
-    const rae = await Characters.createCharacter({ name: 'Rae' });
-    await Characters.createCharacter({ name: 'Wei' });
+    const rae = await Characters.createCharacter({ projectId, name: 'Rae' });
+    await Characters.createCharacter({ projectId, name: 'Wei' });
 
-    const b1 = await Plots.createBeat({ name: 'Cold open', characters: ['Rae'] });
-    await Plots.createBeat({ name: 'Middle', characters: ['Wei'] });
-    await Plots.createBeat({ name: 'Climax', characters: ['Rae', 'Wei'] });
+    const b1 = await Plots.createBeat({ projectId, name: 'Cold open', characters: ['Rae'] });
+    await Plots.createBeat({ projectId, name: 'Middle', characters: ['Wei'] });
+    await Plots.createBeat({ projectId, name: 'Climax', characters: ['Rae', 'Wei'] });
 
     // Give b1 an image + a done artwork so the response shape is exercised.
     const img = {
@@ -71,14 +75,14 @@ describe('GET /api/beats-featuring-character', () => {
       description: 'establishing',
       content_type: 'image/png',
     };
-    await Plots.pushBeatImage(undefined, b1._id.toString(), img);
-    const { artwork: a1 } = await Artworks.createPendingArtwork({
+    await Plots.pushBeatImage(projectId, b1._id.toString(), img);
+    const { artwork: a1 } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'beat',
       hostId: b1._id.toString(),
       prompt: 'rainy alley',
       model: 'fal',
     });
-    await Artworks.setArtworkResult({
+    await Artworks.setArtworkResult({ projectId,
       hostType: 'beat',
       hostId: b1._id.toString(),
       artworkId: a1._id,
@@ -116,8 +120,8 @@ describe('GET /api/beats-featuring-character', () => {
   });
 
   it('returns an empty list when the character is in no beats', async () => {
-    const lonely = await Characters.createCharacter({ name: 'Lonely' });
-    await Plots.createBeat({ name: 'Solo' });
+    const lonely = await Characters.createCharacter({ projectId, name: 'Lonely' });
+    await Plots.createBeat({ projectId, name: 'Solo' });
 
     const { status, json } = await get(
       `/api/beats-featuring-character?character_id=${lonely._id.toString()}`,

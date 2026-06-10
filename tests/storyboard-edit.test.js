@@ -17,14 +17,18 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Edit = await import('../src/web/storyboardEdit.js');
 const { _setAnthropicClientForTests, _resetAnthropicClientForTests } =
   await import('../src/anthropic/client.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   _resetAnthropicClientForTests();
 });
 
@@ -43,14 +47,14 @@ function fakeAnthropicEmitting(ops) {
 }
 
 async function seedBeat(prompts) {
-  const beat = await Plots.createBeat({
+  const beat = await Plots.createBeat({ projectId,
     name: 'B',
     desc: 'd',
     body: 'b',
     characters: [],
   });
   for (const p of prompts) {
-    await Storyboards.createStoryboard({ beatId: beat._id, textPrompt: p });
+    await Storyboards.createStoryboard({ projectId, beatId: beat._id, textPrompt: p });
   }
   return beat;
 }
@@ -61,7 +65,7 @@ describe('storyboard LLM edit', () => {
       messages: { create: vi.fn(async () => ({ content: [{ type: 'text', text: 'looks great' }] })) },
     }));
     const beat = await seedBeat(['a', 'b', 'c']);
-    const result = await Edit.editStoryboard({
+    const result = await Edit.editStoryboard({ projectId,
       beatId: beat._id,
       instructions: 'do nothing',
     });
@@ -83,7 +87,7 @@ describe('storyboard LLM edit', () => {
       ]),
     );
     const beat = await seedBeat(['a', 'b', 'c', 'd']);
-    const result = await Edit.editStoryboard({
+    const result = await Edit.editStoryboard({ projectId,
       beatId: beat._id,
       instructions: 'delete 2, change 3',
     });
@@ -112,7 +116,7 @@ describe('storyboard LLM edit', () => {
       ]),
     );
     const beat = await seedBeat(['a', 'b', 'c', 'd', 'e']);
-    const result = await Edit.editStoryboard({
+    const result = await Edit.editStoryboard({ projectId,
       beatId: beat._id,
       instructions: 'mixed batch',
     });
@@ -131,7 +135,7 @@ describe('storyboard LLM edit', () => {
       ]),
     );
     const beat = await seedBeat(['x', 'y', 'z']);
-    await Edit.editStoryboard({ beatId: beat._id, instructions: 'add two' });
+    await Edit.editStoryboard({ projectId, beatId: beat._id, instructions: 'add two' });
     const after = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(after.map((s) => s.text_prompt)).toEqual(['x', 'y', 'A', 'B', 'z']);
   });
@@ -143,7 +147,7 @@ describe('storyboard LLM edit', () => {
       ]),
     );
     let beat = await seedBeat(['a', 'b', 'c', 'd']);
-    await Edit.editStoryboard({ beatId: beat._id, instructions: 'move 3 to start' });
+    await Edit.editStoryboard({ projectId, beatId: beat._id, instructions: 'move 3 to start' });
     let after = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(after.map((s) => s.text_prompt)).toEqual(['c', 'a', 'b', 'd']);
 
@@ -154,7 +158,7 @@ describe('storyboard LLM edit', () => {
       ]),
     );
     beat = await seedBeat(['a', 'b', 'c', 'd']);
-    await Edit.editStoryboard({ beatId: beat._id, instructions: 'move 1 to end' });
+    await Edit.editStoryboard({ projectId, beatId: beat._id, instructions: 'move 1 to end' });
     after = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(after.map((s) => s.text_prompt)).toEqual(['b', 'c', 'd', 'a']);
   });
@@ -168,7 +172,7 @@ describe('storyboard LLM edit', () => {
     );
     const beat = await seedBeat(['a', 'b', 'c']);
     await expect(
-      Edit.editStoryboard({ beatId: beat._id, instructions: 'invalid' }),
+      Edit.editStoryboard({ projectId, beatId: beat._id, instructions: 'invalid' }),
     ).rejects.toMatchObject({ code: 'INVALID_OPS' });
     // Original storyboards untouched — nothing was applied partially.
     const after = await Storyboards.listStoryboards({ beatId: beat._id });
@@ -185,7 +189,7 @@ describe('storyboard LLM edit', () => {
     const beat = await seedBeat(['a', 'b', 'c']);
     let err;
     try {
-      await Edit.editStoryboard({ beatId: beat._id, instructions: 'conflict' });
+      await Edit.editStoryboard({ projectId, beatId: beat._id, instructions: 'conflict' });
     } catch (e) {
       err = e;
     }
@@ -204,7 +208,7 @@ describe('storyboard LLM edit', () => {
     );
     const beat = await seedBeat(['a', 'b', 'c']);
     await expect(
-      Edit.editStoryboard({ beatId: beat._id, instructions: 'self-move' }),
+      Edit.editStoryboard({ projectId, beatId: beat._id, instructions: 'self-move' }),
     ).rejects.toMatchObject({ code: 'INVALID_OPS' });
   });
 
@@ -215,7 +219,7 @@ describe('storyboard LLM edit', () => {
       ]),
     );
     const beat = await seedBeat([]);
-    const result = await Edit.editStoryboard({
+    const result = await Edit.editStoryboard({ projectId,
       beatId: beat._id,
       instructions: 'add first',
     });

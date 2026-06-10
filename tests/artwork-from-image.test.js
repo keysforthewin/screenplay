@@ -24,13 +24,17 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Artworks = await import('../src/mongo/artworks.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
 const Gateway = await import('../src/web/gateway.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 function seedImage({ ownerType, ownerId, contentType = 'image/png' }) {
@@ -52,10 +56,10 @@ function seedImage({ ownerType, ownerId, contentType = 'image/png' }) {
 
 describe('appendDoneArtwork (mongo helper)', () => {
   it('appends a done artwork on a character with source=imported', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
     const resultId = new ObjectId();
 
-    const { artwork, host_id } = await Artworks.appendDoneArtwork({
+    const { artwork, host_id } = await Artworks.appendDoneArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       resultImageId: resultId,
@@ -72,16 +76,16 @@ describe('appendDoneArtwork (mongo helper)', () => {
     expect(artwork.name).toBe('Imported portrait');
     expect(artwork.result_image_id.equals(resultId)).toBe(true);
 
-    const fresh = await Characters.getCharacter(undefined, 'Rae');
+    const fresh = await Characters.getCharacter(projectId, 'Rae');
     expect(fresh.artworks).toHaveLength(1);
     expect(fresh.artworks[0]._id.equals(artwork._id)).toBe(true);
   });
 
   it('appends a done artwork on a beat', async () => {
-    const beat = await Plots.createBeat({ name: 'Cold open' });
+    const beat = await Plots.createBeat({ projectId, name: 'Cold open' });
     const resultId = new ObjectId();
 
-    const { artwork } = await Artworks.appendDoneArtwork({
+    const { artwork } = await Artworks.appendDoneArtwork({ projectId,
       hostType: 'beat',
       hostId: beat._id.toString(),
       resultImageId: resultId,
@@ -91,27 +95,27 @@ describe('appendDoneArtwork (mongo helper)', () => {
     expect(artwork.source).toBe('imported');
     expect(artwork.result_image_id.equals(resultId)).toBe(true);
 
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     const fresh = plot.beats.find((b) => b._id.equals(beat._id));
     expect(fresh.artworks).toHaveLength(1);
   });
 
   it('preserves prior artworks when appending another import', async () => {
-    const c = await Characters.createCharacter({ name: 'Iris' });
-    await Artworks.appendDoneArtwork({
+    const c = await Characters.createCharacter({ projectId, name: 'Iris' });
+    await Artworks.appendDoneArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       resultImageId: new ObjectId(),
       name: 'first',
     });
-    await Artworks.appendDoneArtwork({
+    await Artworks.appendDoneArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       resultImageId: new ObjectId(),
       name: 'second',
     });
 
-    const fresh = await Characters.getCharacter(undefined, 'Iris');
+    const fresh = await Characters.getCharacter(projectId, 'Iris');
     expect(fresh.artworks).toHaveLength(2);
     expect(fresh.artworks[0].name).toBe('first');
     expect(fresh.artworks[1].name).toBe('second');
@@ -120,10 +124,10 @@ describe('appendDoneArtwork (mongo helper)', () => {
 
 describe('createArtworkFromImageViaGateway (same-owner, no copy)', () => {
   it('reuses the existing image id when the source is already character-owned', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
     const file = seedImage({ ownerType: 'character', ownerId: c._id });
 
-    const { artwork } = await Gateway.createArtworkFromImageViaGateway({
+    const { artwork } = await Gateway.createArtworkFromImageViaGateway({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       imageId: file._id,
@@ -142,10 +146,10 @@ describe('createArtworkFromImageViaGateway (same-owner, no copy)', () => {
   });
 
   it('reuses the existing image id when the source is already beat-owned', async () => {
-    const beat = await Plots.createBeat({ name: 'Climax' });
+    const beat = await Plots.createBeat({ projectId, name: 'Climax' });
     const file = seedImage({ ownerType: 'beat', ownerId: beat._id });
 
-    const { artwork } = await Gateway.createArtworkFromImageViaGateway({
+    const { artwork } = await Gateway.createArtworkFromImageViaGateway({ projectId,
       hostType: 'beat',
       hostId: beat._id.toString(),
       imageId: file._id,
@@ -156,9 +160,9 @@ describe('createArtworkFromImageViaGateway (same-owner, no copy)', () => {
   });
 
   it('throws status=404 when the source image does not exist', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
     await expect(
-      Gateway.createArtworkFromImageViaGateway({
+      Gateway.createArtworkFromImageViaGateway({ projectId,
         hostType: 'character',
         hostId: c._id.toString(),
         imageId: new ObjectId(),

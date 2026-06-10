@@ -15,14 +15,18 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Dialogs = await import('../src/mongo/dialogs.js');
 const { generateAlternatives } = await import('../src/web/dialogRegenerate.js');
 const { _setAnthropicClientForTests, _resetAnthropicClientForTests } =
   await import('../src/anthropic/client.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   _resetAnthropicClientForTests();
 });
 
@@ -37,10 +41,10 @@ function fakeClient(toolInput) {
 }
 
 async function seedBeat() {
-  const beat = await Plots.createBeat({ name: 'Standoff', desc: 'd', body: 'b', characters: ['Alice', 'Bob'] });
-  await Dialogs.createDialog({ beatId: beat._id, body: 'You sure about this?', character: 'Alice' });
-  const mid = await Dialogs.createDialog({ beatId: beat._id, body: 'No. Drive.', character: 'Bob' });
-  await Dialogs.createDialog({ beatId: beat._id, body: 'Then drive.', character: 'Alice' });
+  const beat = await Plots.createBeat({ projectId, name: 'Standoff', desc: 'd', body: 'b', characters: ['Alice', 'Bob'] });
+  await Dialogs.createDialog({ projectId, beatId: beat._id, body: 'You sure about this?', character: 'Alice' });
+  const mid = await Dialogs.createDialog({ projectId, beatId: beat._id, body: 'No. Drive.', character: 'Bob' });
+  await Dialogs.createDialog({ projectId, beatId: beat._id, body: 'Then drive.', character: 'Alice' });
   return { beat, mid };
 }
 
@@ -51,7 +55,7 @@ describe('generateAlternatives', () => {
     );
     const { mid } = await seedBeat();
 
-    const result = await generateAlternatives({ dialogId: mid._id.toString() });
+    const result = await generateAlternatives({ projectId, dialogId: mid._id.toString() });
     expect(result.alternatives).toEqual(['Just go.', 'Drive, Alice.', "We're not talking about it."]);
   });
 
@@ -60,7 +64,7 @@ describe('generateAlternatives', () => {
     _setAnthropicClientForTests(client);
     const { mid } = await seedBeat();
 
-    await generateAlternatives({ dialogId: mid._id.toString() });
+    await generateAlternatives({ projectId, dialogId: mid._id.toString() });
     const userText = client.messages.create.mock.calls[0][0].messages[0].content[0].text;
     expect(userText).toContain('You sure about this?'); // line before
     expect(userText).toContain('Then drive.'); // line after
@@ -71,7 +75,7 @@ describe('generateAlternatives', () => {
   it('drops empty alternatives', async () => {
     _setAnthropicClientForTests(fakeClient({ alternatives: ['keep', '', '   ', 'also'] }));
     const { mid } = await seedBeat();
-    const result = await generateAlternatives({ dialogId: mid._id.toString() });
+    const result = await generateAlternatives({ projectId, dialogId: mid._id.toString() });
     expect(result.alternatives).toEqual(['keep', 'also']);
   });
 });

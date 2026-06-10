@@ -12,13 +12,17 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Images = await import('../src/mongo/images.js');
 const Projects = await import('../src/mongo/projects.js');
 
 let pid;
 
+let projectId;
+
 beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   pid = (await Projects.getDefaultProject())._id.toString();
 });
 
@@ -87,22 +91,22 @@ describe('library image metadata helpers', () => {
     seedLibrary({ name: 'Sheriff with hat', description: 'a stoic lawman' });
     seedLibrary({ name: 'Rooftop chase', description: 'night, rain' });
 
-    const a = await Images.searchLibraryImages({ query: 'diner' });
+    const a = await Images.searchLibraryImages({ projectId, query: 'diner' });
     expect(a.map((f) => f.metadata.name)).toEqual(['Diner at dusk']);
 
-    const b = await Images.searchLibraryImages({ query: 'NEON' });
+    const b = await Images.searchLibraryImages({ projectId, query: 'NEON' });
     expect(b.map((f) => f.metadata.name)).toEqual(['Diner at dusk']);
 
-    const c = await Images.searchLibraryImages({ query: 'rain' });
+    const c = await Images.searchLibraryImages({ projectId, query: 'rain' });
     expect(c.map((f) => f.metadata.name)).toEqual(['Rooftop chase']);
 
-    const empty = await Images.searchLibraryImages({ query: 'nothing-matches' });
+    const empty = await Images.searchLibraryImages({ projectId, query: 'nothing-matches' });
     expect(empty).toEqual([]);
   });
 
   it('searchLibraryImages caps results by limit', async () => {
     for (let i = 0; i < 5; i++) seedLibrary({ name: `cat ${i}` });
-    const out = await Images.searchLibraryImages({ query: 'cat', limit: 2 });
+    const out = await Images.searchLibraryImages({ projectId, query: 'cat', limit: 2 });
     expect(out).toHaveLength(2);
   });
 

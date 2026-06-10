@@ -27,6 +27,7 @@ vi.mock('../src/mongo/images.js', () => ({
   uploadGeneratedImage: vi.fn(async () => ({})),
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
@@ -48,8 +49,11 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(() => resolve()));
 });
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 async function postJson(path, body) {
@@ -69,12 +73,12 @@ async function postJson(path, body) {
 
 describe('POST /api/storyboards/preview-prompt', () => {
   it('returns the Stage A system + user messages for a beat', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Alice',
       fields: { role: 'protagonist' },
     });
-    await Characters.createCharacter({ name: 'Bob' });
-    const beat = await Plots.createBeat({
+    await Characters.createCharacter({ projectId, name: 'Bob' });
+    const beat = await Plots.createBeat({ projectId,
       name: 'Diner reunion',
       desc: 'Alice meets Bob at the diner.',
       body: 'Alice arrives at the diner. She finds Bob in the back booth.',
@@ -104,7 +108,7 @@ describe('POST /api/storyboards/preview-prompt', () => {
   });
 
   it("includes the director's commentary when provided", async () => {
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'B',
       desc: 'd',
       body: 'b',
@@ -121,7 +125,7 @@ describe('POST /api/storyboards/preview-prompt', () => {
   });
 
   it('defaults to DEFAULT_TARGET_COUNT (11) when count is omitted', async () => {
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'B',
       desc: 'd',
       body: 'b',
@@ -141,13 +145,13 @@ describe('POST /api/storyboards/preview-prompt', () => {
 
   it("embeds every director's note in the user message when notes exist", async () => {
     const DirectorNotes = await import('../src/mongo/directorNotes.js');
-    await DirectorNotes.addDirectorNote({
+    await DirectorNotes.addDirectorNote({ projectId,
       text: 'Visual rule: keep the palette desaturated except for the color red.',
     });
-    await DirectorNotes.addDirectorNote({
+    await DirectorNotes.addDirectorNote({ projectId,
       text: 'Tone: dry comedy in the foreground, dread in the background.',
     });
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'B',
       desc: 'd',
       body: 'b',
@@ -165,7 +169,7 @@ describe('POST /api/storyboards/preview-prompt', () => {
   });
 
   it('omits the director-notes section when no notes exist', async () => {
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'B',
       desc: 'd',
       body: 'b',
