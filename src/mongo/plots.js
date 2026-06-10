@@ -116,9 +116,16 @@ export async function getPlot(projectId) {
     if (projectId === defaultId) {
       const legacy = await col().findOne({ _id: 'main', project_id: { $exists: false } });
       if (legacy) {
-        await col().updateOne({ _id: 'main' }, { $set: { project_id: projectId } });
-        existing = { ...legacy, project_id: projectId };
-        logger.info('mongo: plot lazy-claimed legacy {_id:"main"} doc for default project');
+        const claim = await col().updateOne(
+          { _id: 'main', project_id: { $exists: false } },
+          { $set: { project_id: projectId } },
+        );
+        if (claim.matchedCount === 0) {
+          existing = await col().findOne({ project_id: projectId });
+        } else {
+          existing = { ...legacy, project_id: projectId };
+          logger.info('mongo: plot lazy-claimed legacy {_id:"main"} doc for default project');
+        }
       }
     }
   }

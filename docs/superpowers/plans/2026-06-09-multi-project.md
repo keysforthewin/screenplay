@@ -9232,6 +9232,8 @@ git commit -m "🔧 Add idempotent multi-project migration script"
 
 ### Task 20: Thread remaining modules, strict resolveProjectId flip + cross-project isolation suite
 
+**Enumeration note:** the `undefined,` bridge marker only exists at positional-arg call sites. Zero-arg reads (`getPlot()`, `listBeats()`, `getCurrentBeat()`, `clearCurrentBeat()`), `createBeat({...})` calls without a `projectId` key, the artworks.js options-object callers, and `attachExistingAttachmentToBeat` callers carry NO marker — enumerate them **by function name** (the Step-17 greps do this) before the strict flip, or they surface only as runtime throws.
+
 Two halves. **Pre-flip threading (Steps 4–13)**: the intermediate `src/web/*` and
 `src/pdf/*` modules that Phases A–E deliberately left on the transitional fallback
 (their call sites carry the literal `undefined` first args the Phase A/B sweeps
