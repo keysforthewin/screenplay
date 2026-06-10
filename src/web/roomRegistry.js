@@ -95,10 +95,6 @@ export function buildRoomName(type, id) {
   return `${type}:${id}`;
 }
 
-export function isManagedRoom(roomName) {
-  return parseRoomName(roomName) !== null;
-}
-
 // Throws when the room name is unparseable or names a project that doesn't
 // exist. Used by the Hocuspocus onAuthenticate hook so stale SPA tabs fail
 // closed instead of joining a dead room.

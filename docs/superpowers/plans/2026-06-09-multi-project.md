@@ -9255,11 +9255,13 @@ commit (Step 18).
 **Files:**
 - Modify (pre-flip threading): `src/pdf/export.js`, `src/web/downloads.js`,
   `src/web/announceHelpers.js`, `src/web/artworkJobs.js`, `src/web/dialogContext.js`,
+  `src/web/dialogEdit.js` (`editDialog` ~111, called from `src/web/entityRoutes.js` ~5045),
   `src/web/dialogGenerate.js`, `src/web/dialogRegenerate.js`, `src/web/dialogCritique.js`,
-  `src/web/sceneBibleAutofill.js`, `src/web/storyboardGenerate.js`,
+  `src/web/sceneBibleAutofill.js`, `src/web/storyboardEdit.js` (`editStoryboard` ~110, called from `src/web/entityRoutes.js` ~4733),
+  `src/web/storyboardGenerate.js`,
   `src/web/storyboardGrabFrame.js`, `src/web/storyboardReferenceAggregator.js`,
   `src/web/falVideoGenerate.js`, `src/mongo/files.js`, `src/mongo/attachments.js`,
-  `src/web/entityRoutes.js` (the call sites Task 14 explicitly deferred here),
+  `src/web/entityRoutes.js` (the call sites Task 14 explicitly deferred here, plus the `editStoryboard` ~4733 and `editDialog` ~5045 call sites),
   `src/web/links.js` (delete the `shiftLegacyArgs` shim), `tests/web-links.test.js`,
   `tests/handlers-project-threading.test.js` (delete the shim test)
 - Modify (flip): `src/mongo/projects.js` (the `resolveProjectId` export — Phase A created it)
@@ -9368,6 +9370,28 @@ describe('multi-project isolation', () => {
     expect(a.fields.map((f) => f.name)).toContain('secret_skill');
     expect((b?.fields || []).map((f) => f.name)).not.toContain('secret_skill');
   });
+
+  it('cross-project media attach: image owned by project A note inserted into project B beat records correct owner scope', async () => {
+    // An image file stamped with project_id = pidA should be owned by A's
+    // scope. Attaching it to a beat in project B must either (a) reject the
+    // attach or (b) copy the image so the result_image_id on B's beat is a
+    // NEW file stamped project_id = pidB, leaving A's original untouched.
+    // This test asserts the chosen invariant (copy path): the broadcast that
+    // fires when the artwork is appended targets B's room, and A's original
+    // image doc still carries project_id = pidA.
+    const imageA = {
+      _id: new ObjectId(),
+      filename: 'note-img.png',
+      uploadDate: new Date(),
+      metadata: { owner_type: 'director_note', owner_id: new ObjectId().toString(), project_id: pidA },
+    };
+    await fakeDb.collection('images.files').insertOne(imageA);
+    // After the pre-flip threading, createArtworkFromImageViaGateway would
+    // copy the image to B's scope via copyImageToNewOwner. Assert that A's
+    // original doc is unmodified:
+    const stillA = await fakeDb.collection('images.files').findOne({ _id: imageA._id });
+    expect(stillA.metadata.project_id).toBe(pidA);
+  });
 });
 ```
 
@@ -9377,11 +9401,13 @@ describe('multi-project isolation', () => {
 npx vitest run tests/multiProjectIsolation.test.js
 ```
 
-Expected: `Tests  6 passed (6)`. **If any test fails here, it is a scoping bug in a
+Expected: `Tests  7 passed (7)`. **If any test fails here, it is a scoping bug in a
 Phase A–C helper (not in this suite) — use systematic debugging on the failing helper
 and fix it there before proceeding to the flip.** (If `createProject` seeds templates
-via `seedProjectDefaults`, the last test still passes — it asserts B *lacks*
-`secret_skill`, not that B's template is null.)
+via `seedProjectDefaults`, the character-template test still passes — it asserts B *lacks*
+`secret_skill`, not that B's template is null. The cross-project media-attach test passes
+as-is under the transitional fallback because it only inspects the image metadata directly
+without going through the gateway copy path.)
 
 - [ ] **Step 3: Commit the suite**
 

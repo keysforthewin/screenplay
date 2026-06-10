@@ -904,6 +904,7 @@ export async function createArtworkFromImageViaGateway({
     resultImageId = copy._id;
   }
   const result = await mongoAppendDoneArtwork({
+    projectId,
     hostType,
     hostId,
     resultImageId,
@@ -916,7 +917,7 @@ export async function createArtworkFromImageViaGateway({
 }
 
 export async function patchArtworkViaGateway({ projectId, hostType, hostId, artworkId, patch }) {
-  const result = await mongoPatchArtwork({ hostType, hostId, artworkId, patch });
+  const result = await mongoPatchArtwork({ projectId, hostType, hostId, artworkId, patch });
   broadcastFieldsUpdated(artworkRoomName(hostType, result.host_id), {
     changed: ['artworks'],
   });
@@ -932,6 +933,7 @@ export async function setArtworkStatusViaGateway({
   errorMessage = null,
 }) {
   const result = await mongoSetArtworkStatus({
+    projectId,
     hostType,
     hostId,
     artworkId,
@@ -959,6 +961,7 @@ export async function setArtworkResultViaGateway({
   rotateToPrevious = false,
 }) {
   const result = await mongoSetArtworkResult({
+    projectId,
     hostType,
     hostId,
     artworkId,
@@ -973,7 +976,7 @@ export async function setArtworkResultViaGateway({
 }
 
 export async function undoArtworkEditViaGateway({ projectId, hostType, hostId, artworkId }) {
-  const result = await mongoUndoArtworkEdit({ hostType, hostId, artworkId });
+  const result = await mongoUndoArtworkEdit({ projectId, hostType, hostId, artworkId });
   await tryDeleteImage(result.orphanedImageId, 'undone artwork');
   broadcastFieldsUpdated(artworkRoomName(hostType, result.host_id), {
     changed: artworkChangedFields(result),
@@ -982,7 +985,7 @@ export async function undoArtworkEditViaGateway({ projectId, hostType, hostId, a
 }
 
 export async function removeArtworkViaGateway({ projectId, hostType, hostId, artworkId }) {
-  const result = await mongoRemoveArtwork({ hostType, hostId, artworkId });
+  const result = await mongoRemoveArtwork({ projectId, hostType, hostId, artworkId });
   for (const id of result.removed_image_ids) {
     await tryDeleteImage(id, 'removed artwork');
   }
