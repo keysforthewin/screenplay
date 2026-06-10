@@ -58,6 +58,19 @@ describe('GET /api/projects', () => {
       expect(p.created_at).toBeTruthy();
     }
   });
+
+  it('200s with project list even when X-Project-Id is unknown (middleware exemption)', async () => {
+    // Pins that projectMiddleware skips /api/projects — a stale or unknown
+    // X-Project-Id header must NOT block the recovery fetch that the SPA uses
+    // to rebuild its project list.
+    await Projects.createProject('Noir');
+    const unknownId = new ObjectId().toString();
+    const r = await get('/projects', { 'X-Project-Id': unknownId });
+    expect(r.status).toBe(200);
+    const body = await r.json();
+    expect(Array.isArray(body.projects)).toBe(true);
+    expect(body.projects.map((p) => p.title)).toContain('Noir');
+  });
 });
 
 describe('POST /api/projects', () => {
@@ -97,7 +110,7 @@ describe('GET /api/info', () => {
     expect(body.project_id).toMatch(/^[a-f0-9]{24}$/);
     expect(body.project_title).toBe('Screenplay'); // lazily created default
     expect(body).toHaveProperty('hocuspocus_url');
-    expect(body).toHaveProperty('screenplay_title');
+    expect(body).not.toHaveProperty('screenplay_title'); // field was removed — no consumers
   });
 
   it('scopes to the X-Project-Id header project', async () => {

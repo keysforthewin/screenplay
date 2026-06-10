@@ -1,12 +1,14 @@
 import { useNavigate } from 'react-router-dom';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
+import { useProject } from '../project/ProjectContext.jsx';
 
 // Project-level "About" page: the project name, synopsis, and GLOBAL dialogue
 // style, all edited collaboratively through the singleton `plot` y-doc room.
 // (Per-beat dialogue notes live on each /dialog/:order page instead.)
 export function About({ session }) {
   const navigate = useNavigate();
+  const { id: projectId } = useProject();
 
   return (
     <main className="app">
@@ -19,7 +21,7 @@ export function About({ session }) {
         sync automatically.
       </p>
 
-      <CollabSurface room="plot" session={session}>
+      <CollabSurface room={`plot:${projectId}`} session={session}>
         <CollabField label="Project name" field="title" />
 
         <div style={{ marginTop: 20 }}>

@@ -36,6 +36,9 @@ export function ProjectProvider({ children }) {
     // holds a project with a title that matches :projectTitle case-insensitively,
     // skip the /api/projects round-trip and go ready immediately. This kills the
     // per-navigation RTT + loading flash for in-app navigation.
+    // NOTE: revisit together with project rename/delete (v2) — a rename would
+    // strand a tab that holds the old title in the module store, causing this
+    // short-circuit to resolve the stale title rather than fetching the new one.
     const wanted = String(projectTitle || '').trim().toLowerCase();
     const cached = getCurrentProject();
     if (cached && String(cached.title).trim().toLowerCase() === wanted) {

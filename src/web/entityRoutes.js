@@ -401,16 +401,16 @@ export function buildApiRouter() {
   router.use(requireSession());
 
   // Connection metadata for the SPA so it knows where to open WebSockets.
+  // screenplay_title was dropped (no SPA consumers remain; project title is
+  // available via project_title and via GET /api/projects).
   router.get('/info', async (req, res) => {
     const wsUrl =
       config.web.hocuspocusPublicUrl ||
       `ws://${'localhost'}:${config.web.hocuspocusPort}`;
-    const plot = await getPlot(req.projectId);
     res.set('Vary', 'X-Project-Id');
     res.json({
       hocuspocus_url: wsUrl,
       bot_color: config.web.botColor,
-      screenplay_title: stripMarkdown(plot?.title || ''),
       project_id: req.projectId,
       project_title: req.projectTitle,
     });

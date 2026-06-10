@@ -3,6 +3,7 @@ import { apiDelete, apiPostMultipart, imageUrl, thumbUrl } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
 import { AttachmentList } from './AttachmentList.jsx';
+import { useProject } from '../project/ProjectContext.jsx';
 
 // Tiny client-side stripper — used to apply the TOC filter against
 // rendered-text values of the markdown name field. Mirrors the spirit of
@@ -18,6 +19,7 @@ function stripMd(s) {
 }
 
 export function LibraryPanel({ data, session, onChange, query }) {
+  const { id: projectId } = useProject();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const imgInput = useRef(null);
@@ -69,7 +71,7 @@ export function LibraryPanel({ data, session, onChange, query }) {
   }
 
   return (
-    <CollabSurface room="library" session={session} onPing={onChange}>
+    <CollabSurface room={`library:${projectId}`} session={session} onPing={onChange}>
       {error && <div className="error-banner">{error}</div>}
 
       <section className="field-block">

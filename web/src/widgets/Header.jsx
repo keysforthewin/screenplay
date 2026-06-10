@@ -43,6 +43,7 @@ export function Header({ session, onLogout }) {
       <button
         type="button"
         className="brand"
+        aria-haspopup="dialog"
         title={`${brand} — switch or create projects`}
         onClick={() => setManagerOpen(true)}
       >
