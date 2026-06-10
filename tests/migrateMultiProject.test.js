@@ -243,4 +243,88 @@ describe('migrate-multi-project', () => {
     expect(summary.title).toBe('Screenplay');
     expect(summary.createdProject).toBe(true);
   });
+
+  it('restart-first scenario: renames "Screenplay" project even when the main plot is already stamped to it (boot seedDefaults ran before migration)', async () => {
+    // Simulate: the restarted bot fully booted, seedDefaults() ran, and stamped
+    // the main plot doc with the lazy project's id (restart-first window). The
+    // legacy singletons still exist with the user's customizations.
+    const lazyId = new ObjectId();
+    const lazyPid = lazyId.toString();
+    await fakeDb.collection('projects').insertOne({
+      _id: lazyId,
+      title: 'Screenplay',
+      title_lower: 'screenplay',
+      created_at: new Date(),
+    });
+    // Stamp the main plot to the lazy project (boot did this before the script).
+    await fakeDb
+      .collection('plots')
+      .updateOne({ _id: 'main' }, { $set: { project_id: lazyPid } });
+
+    const summary = await migrate(fakeDb, { channelId: CHANNEL_ID });
+    expect(summary.createdProject).toBe(false);
+    expect(summary.renamedProject).toBe(true);
+    expect(summary.projectId).toBe(lazyPid);
+    expect(summary.title).toBe('The Heist');
+    const projects = await fakeDb.collection('projects').find({}).toArray();
+    expect(projects).toHaveLength(1);
+    expect(projects[0].title).toBe('The Heist');
+    expect(projects[0].title_lower).toBe('the heist');
+
+    // Idempotent from the recovered state.
+    const second = await migrate(fakeDb, { channelId: CHANNEL_ID });
+    expect(second.renamedProject).toBe(false);
+    expect(second.projectId).toBe(lazyPid);
+    expect(await fakeDb.collection('projects').find({}).toArray()).toHaveLength(1);
+  });
+
+  it('yjs existence-wins: composite room with newer edits survives; legacy singleton is deleted', async () => {
+    // Seed a divergent composite notes room that was written post-restart
+    // (carries newer user edits), alongside the legacy 'notes' singleton.
+    // The legacy should be deleted; the composite should survive unchanged.
+    const { projectId } = await migrate(fakeDb, { channelId: CHANNEL_ID });
+
+    // After migration, verify the legacy 'notes' row was deleted and the
+    // pre-migration composite 'notes:<pid>' (inserted by the migration from the
+    // legacy) exists with the legacy state — confirms existence-wins path.
+    // Now seed the post-restart divergent composite scenario from scratch.
+    fakeDb.reset();
+    await seedLegacy();
+    const postRestartId = new ObjectId();
+    const postRestartPid = postRestartId.toString();
+    await fakeDb.collection('projects').insertOne({
+      _id: postRestartId,
+      title: 'Screenplay',
+      title_lower: 'screenplay',
+      created_at: new Date(),
+    });
+    // Simulate a user writing notes via the UI after restart, creating a
+    // composite room with newer state before the migration script ran.
+    await fakeDb.collection('yjs_docs').insertOne({
+      _id: `notes:${postRestartPid}`,
+      state: 'BIN_NOTES_NEWER',
+      updated_at: new Date(),
+    });
+
+    const summary2 = await migrate(fakeDb, { channelId: CHANNEL_ID });
+    expect(summary2.projectId).toBe(postRestartPid);
+
+    // Legacy 'notes' singleton must be gone.
+    expect(await fakeDb.collection('yjs_docs').findOne({ _id: 'notes' })).toBeNull();
+    // Composite room survives with the NEWER state (existence-wins).
+    const composite = await fakeDb.collection('yjs_docs').findOne({
+      _id: `notes:${postRestartPid}`,
+    });
+    expect(composite).not.toBeNull();
+    expect(composite.state).toBe('BIN_NOTES_NEWER');
+
+    // Other singleton rooms (plot, library) that had no composite are renamed
+    // from legacy as normal.
+    expect(await fakeDb.collection('yjs_docs').findOne({ _id: 'plot' })).toBeNull();
+    const plotComposite = await fakeDb
+      .collection('yjs_docs')
+      .findOne({ _id: `plot:${postRestartPid}` });
+    expect(plotComposite).not.toBeNull();
+    expect(plotComposite.state).toBe('BIN_PLOT');
+  });
 });

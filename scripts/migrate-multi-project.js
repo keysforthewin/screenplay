@@ -7,11 +7,19 @@
  *   1. Create the default project, titled from the current screenplay title
  *      (stripMarkdown(plot.title), fallback "Screenplay"). Idempotency anchor:
  *      if a project already exists, the oldest one (by created_at) is adopted.
- *      Hardening: if the NEW code restarted before this script ran, its first
- *      request lazily created a project titled "Screenplay" — when the main
- *      plot doc is still un-stamped and that adopted project has no stamped
- *      data, it is RENAMED from the plot title instead of staying generic
- *      (and instead of a duplicate project being created).
+ *      Hardening: if the NEW code restarted before this script ran, two timing
+ *      windows exist:
+ *        a) CRASH-MID-SEED: the new code started, created a lazy "Screenplay"
+ *           project, then crashed before stamping the main plot. The main plot
+ *           doc is UNSTAMPED (project_id missing).
+ *        b) RESTART-FIRST: the new code fully booted, ran seedDefaults(), and
+ *           stamped the main plot to the lazy project before the operator ran
+ *           this script. The main plot doc IS stamped to the lazy project's id.
+ *      In both windows: if the main-keyed plot doc (claimed-legacy marker)
+ *      exists with project_id absent or equal to the candidate project's id,
+ *      AND the adopted project is titled "Screenplay" with no other stamped
+ *      data, it is RENAMED from the real plot title rather than staying generic
+ *      (and rather than creating a duplicate project).
  *   2. Stamp project_id on plots/characters/messages/storyboards/dialogs docs
  *      and metadata.project_id on images/attachments GridFS files; ensure the
  *      plots {project_id:1} partial unique index (same as startup creates in
@@ -26,6 +34,11 @@
  *   4. Rename the three yjs_docs singleton rows (plot/notes/library ->
  *      <name>:<projectId>) preserving the CRDT binary state bytes. Entity rooms
  *      (beat:/character:/storyboards:/dialogs:<hex>) are untouched.
+ *      Existence-wins policy is DELIBERATE: if a composite room (e.g.
+ *      notes:<pid>) already exists from a post-restart write, it may carry
+ *      newer user edits than the legacy singleton — the composite survives and
+ *      the legacy is deleted; content is preserved via Mongo; only the legacy
+ *      CRDT history is sacrificed.
  *   5. Swap the characters unique index: drop {name_lower:1}, create
  *      {project_id:1, name_lower:1}. Guarded behind a dropIndex capability
  *      check so the in-memory test fake skips it.
@@ -55,16 +68,29 @@ const PROMPT_KEYS = ['character_template', 'plot_template', 'director_notes'];
 const SINGLETON_ROOMS = ['plot', 'notes', 'library'];
 
 // Project titles are plain text: trimmed, non-empty, max 120 chars, no '/'.
+// Guards '.' and '..' (file-system sentinels) by falling back to 'Screenplay',
+// matching normalizeProjectTitle's rules.
 function deriveProjectTitle(plot) {
   const raw = stripMarkdown(String(plot?.title || '')).replace(/\//g, ' ').trim();
   const title = raw.slice(0, 120).trim();
-  return title || 'Screenplay';
+  if (!title || title === '.' || title === '..') return 'Screenplay';
+  return title;
 }
 
 // True when any content doc / GridFS file is already stamped with this
 // project id — i.e. the project genuinely owns data and must not be renamed.
+// Prompts composites, yjs rooms, and channel_state are deliberately excluded:
+// they may exist as freshly-seeded/empty defaults and should not block a rename
+// that replaces them with the real legacy content.
+// The main plot doc (_id 'main') is also excluded from the plots check: being
+// stamped there is exactly the restart-first trigger marker, not independent
+// evidence of user data.
 async function projectHasStampedData(db, projectId) {
-  for (const name of STAMPED_COLLECTIONS) {
+  const plotStamped = await db
+    .collection('plots')
+    .findOne({ project_id: projectId, _id: { $ne: 'main' } });
+  if (plotStamped) return true;
+  for (const name of STAMPED_COLLECTIONS.filter((n) => n !== 'plots')) {
     if (await db.collection(name).findOne({ project_id: projectId })) return true;
   }
   for (const name of GRIDFS_FILE_COLLECTIONS) {
@@ -86,16 +112,8 @@ export async function migrate(db, { channelId = null } = {}) {
   };
 
   // --- 1. Default project (idempotency anchor: oldest existing project wins).
-  //
-  // Hardening for the "restart ran before the migration" deploy mistake: the
-  // NEW code's getDefaultProject() lazily creates a project titled
-  // "Screenplay" on its first request. If the legacy plot is still un-stamped
-  // (so the screenplay's real title hasn't been claimed by anyone) and the
-  // adopted oldest project is that empty lazy "Screenplay", rename it from the
-  // plot title rather than leaving the generic name or creating a duplicate.
   const projects = db.collection('projects');
   const plot = await db.collection('plots').findOne({ _id: 'main' });
-  const unstampedLegacyPlot = plot && !plot.project_id ? plot : null;
   const existing = await projects.find({}).sort({ created_at: 1 }).limit(1).toArray();
   let project = existing[0] || null;
   if (!project) {
@@ -109,30 +127,41 @@ export async function migrate(db, { channelId = null } = {}) {
     await projects.insertOne(project);
     summary.createdProject = true;
     console.log(`Created default project "${title}" (${project._id})`);
-  } else if (
-    unstampedLegacyPlot &&
-    project.title === 'Screenplay' &&
-    !(await projectHasStampedData(db, project._id.toString()))
-  ) {
-    const title = deriveProjectTitle(unstampedLegacyPlot);
-    const collides =
-      title.toLowerCase() !== 'screenplay' &&
-      (await projects.findOne({ title_lower: title.toLowerCase() }));
-    if (title !== 'Screenplay' && !collides) {
-      await projects.updateOne(
-        { _id: project._id },
-        { $set: { title, title_lower: title.toLowerCase() } },
-      );
-      project = { ...project, title, title_lower: title.toLowerCase() };
-      summary.renamedProject = true;
-      console.log(
-        `Renamed lazily-created default project "Screenplay" -> "${title}" (${project._id})`,
-      );
+  } else {
+    // Rename hardening: check whether the main-keyed plot doc is the
+    // claimed-legacy marker for either timing window (see file-level comment).
+    // Eligible if: _id 'main' plot exists, its project_id is absent (crash-
+    // mid-seed) or equals the candidate project id (restart-first), the
+    // adopted project is still titled "Screenplay", and no content has been
+    // stamped yet.
+    const candidatePid = project._id.toString();
+    const claimedLegacyPlot =
+      plot && (!plot.project_id || plot.project_id === candidatePid) ? plot : null;
+    if (
+      claimedLegacyPlot &&
+      project.title === 'Screenplay' &&
+      !(await projectHasStampedData(db, candidatePid))
+    ) {
+      const title = deriveProjectTitle(claimedLegacyPlot);
+      const collides =
+        title.toLowerCase() !== 'screenplay' &&
+        (await projects.findOne({ title_lower: title.toLowerCase() }));
+      if (title !== 'Screenplay' && !collides) {
+        await projects.updateOne(
+          { _id: project._id },
+          { $set: { title, title_lower: title.toLowerCase() } },
+        );
+        project = { ...project, title, title_lower: title.toLowerCase() };
+        summary.renamedProject = true;
+        console.log(
+          `Renamed lazily-created default project "Screenplay" -> "${title}" (${project._id})`,
+        );
+      } else {
+        console.log(`Default project already present: "${project.title}" (${project._id})`);
+      }
     } else {
       console.log(`Default project already present: "${project.title}" (${project._id})`);
     }
-  } else {
-    console.log(`Default project already present: "${project.title}" (${project._id})`);
   }
   const projectId = project._id.toString();
   summary.projectId = projectId;
@@ -169,6 +198,11 @@ export async function migrate(db, { channelId = null } = {}) {
     );
   console.log('plots index: {project_id:1} unique (partial) ensured');
 
+  // Ensure projects title_lower unique index alongside plots/characters (same
+  // restored-dump rationale: startup may not have run yet after a dump restore).
+  await db.collection('projects').createIndex({ title_lower: 1 }, { unique: true });
+  console.log('projects index: {title_lower:1} unique ensured');
+
   // --- 3. Re-key prompts singletons to composite ids (insert-new + delete-old).
   // The legacy singleton is AUTHORITATIVE while it exists: if a composite doc
   // is already present, it is either a freshly-seeded default (the new code
@@ -192,6 +226,10 @@ export async function migrate(db, { channelId = null } = {}) {
   }
 
   // --- 4. Rename the three yjs singleton rows preserving CRDT state bytes.
+  // Existence-wins: if a composite room (e.g. notes:<pid>) already exists from
+  // a post-restart write, it may carry newer user edits — the composite
+  // survives and the legacy is deleted; content is preserved via Mongo; only
+  // the legacy CRDT history is sacrificed. This is DELIBERATE.
   const yjs = db.collection('yjs_docs');
   for (const room of SINGLETON_ROOMS) {
     const legacy = await yjs.findOne({ _id: room });
@@ -208,11 +246,15 @@ export async function migrate(db, { channelId = null } = {}) {
 
   // --- 5. Swap the characters unique index. dropIndex is guarded behind a
   // capability check so the in-memory test fake (no dropIndex) skips it; on
-  // real Mongo a missing legacy index is a warning, not a failure.
+  // real Mongo a missing legacy index is a warning, not a failure (code 27/26).
   const characters = db.collection('characters');
   if (typeof characters.dropIndex === 'function') {
     await characters.dropIndex('name_lower_1').catch((e) => {
-      console.warn(`dropIndex name_lower_1 skipped: ${e.message}`);
+      if (e?.code === 27 || e?.code === 26 || /index not found/i.test(e?.message || '')) {
+        console.warn(`dropIndex name_lower_1 skipped (already absent): ${e.message}`);
+      } else {
+        throw e;
+      }
     });
   }
   await characters.createIndex({ project_id: 1, name_lower: 1 }, { unique: true });
@@ -263,4 +305,12 @@ if (invokedDirectly) {
     .finally(async () => {
       await closeMongo();
     });
+} else if (process.argv[1] && process.argv[1].includes('migrate-multi-project')) {
+  // Module was loaded via a path containing our script name (e.g. a symlink or
+  // wrapper that changed argv[1] so the URL guard rejected it). Log a warning
+  // so the operator knows the migration did not run; do not exit non-zero.
+  console.warn(
+    `[migrate-multi-project] Loaded via ${process.argv[1]} but import.meta.url did not match — ` +
+      'running as a library import. Call migrate() directly or invoke the canonical script path.',
+  );
 }
