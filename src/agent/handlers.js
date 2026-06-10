@@ -1220,7 +1220,7 @@ export const HANDLERS = {
   },
 
   async create_character(input, context = null) {
-    const c = await Characters.createCharacter({ projectId: context?.projectId, ...input });
+    const c = await Characters.createCharacter({ ...input, projectId: context?.projectId });
     const note = await maybeAutoFetchActorPortrait(context?.projectId, c._id.toString());
     const base = `Created character ${c.name} (_id ${c._id}).${note || ''}`;
     return withSpaLink(
@@ -2385,7 +2385,7 @@ export const HANDLERS = {
     if (!ownerType) {
       kickoffLibraryVisionSeed(file._id, buffer, contentType);
       try {
-        await Gateway.addLibraryImageViaGateway({ imageMeta: file });
+        await Gateway.addLibraryImageViaGateway({ projectId: context?.projectId, imageMeta: file });
       } catch (e) {
         logger.warn(`generate_image: library broadcast failed: ${e.message}`);
       }
@@ -2598,7 +2598,7 @@ export const HANDLERS = {
     if (!targetOwnerType) {
       kickoffLibraryVisionSeed(file._id, buffer, contentType);
       try {
-        await Gateway.addLibraryImageViaGateway({ imageMeta: file });
+        await Gateway.addLibraryImageViaGateway({ projectId: context?.projectId, imageMeta: file });
       } catch (e) {
         logger.warn(`edit_image: library broadcast failed: ${e.message}`);
       }

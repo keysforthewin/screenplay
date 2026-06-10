@@ -385,11 +385,11 @@ export async function attachExistingAttachmentToBeat({ projectId, beat, attachme
   return { beat: { _id: beatDoc._id, name: beatDoc.name }, ...meta, moved_from: movedFrom };
 }
 
-export async function attachExistingAttachmentToDirectorNote({ noteId, attachmentId, caption }) {
+export async function attachExistingAttachmentToDirectorNote({ projectId, noteId, attachmentId, caption }) {
   const file = await findAttachmentFile(attachmentId);
   if (!file) throw new Error(`Attachment not found: ${attachmentId}`);
 
-  const { notes = [] } = (await getDirectorNotes()) || {};
+  const { notes = [] } = (await getDirectorNotes(projectId)) || {};
   const target = notes.find((n) => n._id?.toString() === String(noteId));
   if (!target) throw new Error(`Director note not found: ${noteId}`);
 
@@ -409,7 +409,7 @@ export async function attachExistingAttachmentToDirectorNote({ noteId, attachmen
   const movedFrom = await detachAttachmentFromCurrentOwner(file);
   await setAttachmentOwner(attachmentId, { ownerType: 'director_note', ownerId: target._id });
   const meta = buildAttachmentMeta(file, caption);
-  await pushDirectorNoteAttachment(undefined, target._id.toString(), meta);
+  await pushDirectorNoteAttachment(projectId, target._id.toString(), meta);
   return { note_id: target._id, ...meta, moved_from: movedFrom };
 }
 

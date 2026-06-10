@@ -6232,6 +6232,8 @@ git commit -m "♻️ Thread req.projectId through every /api route helper and g
 
 > **Bridge-arg rule for this task's before-quotes:** after the Phase A/B sweeps, positional Mongo-helper call sites in the real files carry a literal `undefined` first argument (e.g. `setFramePrompt(undefined, sbId, frameId, value)`, `getBeat(undefined, beatId)`, `updateBeat(undefined, beatId, …)`) even where a before-quote below shows the original one-arg shape. The transformation REPLACES that `undefined` with `projectId` — never insert a second leading argument. Options-object helpers gain a `projectId` key instead.
 
+Also exclude the by-id helper names (deleteImage, deleteImages, deleteAttachment, findImageFile, streamImageToTmp, streamAttachmentToTmp, readImageBuffer, readAttachmentBuffer, setImageOwner, detachImageFromCurrentOwner, loadHistoryForLlm) — they take no projectId by design; without these exclusions ~30 false positives hide real misses.
+
 Files:
 
 - Modify: `src/web/roomRegistry.js`
