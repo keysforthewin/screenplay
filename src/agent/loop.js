@@ -9,6 +9,7 @@ import {
   resolveEntityLinks,
   appendEntityLinks,
   createTouchedEntities,
+  clearTouchedEntities,
 } from './entityLinks.js';
 import { buildSystemPrompt } from './systemPrompt.js';
 import { detectReviewIntent, reviewInterceptText } from './reviewMode.js';
@@ -136,14 +137,16 @@ async function buildSystem({
   cache = config.cache.enabled,
   senderName = null,
   reviewMode = false,
+  projectId = null,
+  projectTitle = null,
 } = {}) {
   const [characters, characterTemplate, plotTemplate, plot, directorNotes] =
     await Promise.all([
-      listCharacters(),
-      getCharacterTemplate(),
-      getPlotTemplate(),
-      getPlot(),
-      getDirectorNotes(),
+      listCharacters(projectId),
+      getCharacterTemplate(projectId),
+      getPlotTemplate(projectId),
+      getPlot(projectId),
+      getDirectorNotes(projectId),
     ]);
   return buildSystemPrompt({
     characters,
@@ -155,6 +158,7 @@ async function buildSystem({
     botName: getBotDisplayName(),
     senderName,
     reviewMode,
+    projectTitle,
   });
 }
 
@@ -405,6 +409,8 @@ export async function runAgent({
   discordUser = null,
   channelId = null,
   enhancementNotes = null,
+  projectId = null,
+  projectTitle = null,
 }) {
   const senderName =
     typeof discordUser?.displayName === 'string' && discordUser.displayName.trim()
@@ -425,7 +431,7 @@ export async function runAgent({
   const attachmentPaths = [];
   const attachmentLinks = [];
   const touchedEntities = createTouchedEntities();
-  const context = { discordUser, channelId };
+  const context = { discordUser, channelId, projectId, projectTitle };
   const model = config.anthropic.model;
 
   const anthropicTotals = {
@@ -485,12 +491,22 @@ export async function runAgent({
   };
 
   try {
-    let cachedSystem = await buildSystem({ senderName, reviewMode });
+    let cachedSystem = await buildSystem({
+      senderName,
+      reviewMode,
+      projectId: context.projectId,
+      projectTitle: context.projectTitle,
+    });
     let systemDirty = false;
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
       if (systemDirty) {
-        cachedSystem = await buildSystem({ senderName, reviewMode });
+        cachedSystem = await buildSystem({
+          senderName,
+          reviewMode,
+          projectId: context.projectId,
+          projectTitle: context.projectTitle,
+        });
         systemDirty = false;
       }
       const system = cachedSystem;
@@ -499,7 +515,13 @@ export async function runAgent({
       const currentTools = withToolsCache(toolDefsForApi(loadedToolNames));
 
       if (i === 0) {
-        const systemNoDirectorNotes = await buildSystem({ omitDirectorNotes: true, senderName, reviewMode });
+        const systemNoDirectorNotes = await buildSystem({
+          omitDirectorNotes: true,
+          senderName,
+          reviewMode,
+          projectId: context.projectId,
+          projectTitle: context.projectTitle,
+        });
         sectionTokensPromise = measureSectionTokens({
           model,
           system,
@@ -563,12 +585,13 @@ export async function runAgent({
         } else if (truncated) {
           text = `${text}\n\n(Response truncated — output token limit reached. Ask me to continue.)`.trim();
         }
-        const entityUrls = await resolveEntityLinks(touchedEntities);
+        const entityUrls = await resolveEntityLinks(touchedEntities, context);
         const finalText = appendEntityLinks(text, entityUrls);
         return {
           text: finalText,
           attachmentPaths,
           attachmentLinks,
+          projectId: context.projectId,
           agentMessages: messages.slice(agentStart),
         };
       }
@@ -626,6 +649,28 @@ export async function runAgent({
           )
         : [];
 
+      // A successful set_project invalidates every entity touched so far this
+      // turn: those refs belong to the pre-switch project. Drop them so the
+      // end-of-turn link resolution can't mislink into the new project.
+      // (Touches recorded below for THIS batch resolve against the final
+      // project at end of turn; pre-switch ids simply fail as not-found and
+      // are dropped by resolveEntityLinks' safeCall.)
+      const switchedProject = realToolUses.some((tu) => {
+        if (tu.name !== 'set_project') return false;
+        const res = realResults.find((r) => r.tool_use_id === tu.id);
+        return !!res && !res.is_error;
+      });
+      if (switchedProject) {
+        const dropped =
+          touchedEntities.beats.size +
+          touchedEntities.characters.size +
+          (touchedEntities.notes ? 1 : 0);
+        if (dropped) {
+          logger.info(`set_project: dropped ${dropped} pre-switch touched entity ref(s)`);
+        }
+        clearTouchedEntities(touchedEntities);
+      }
+
       for (const tu of realToolUses) {
         recordEntityTouch(tu.name, tu.input, touchedEntities);
       }
@@ -646,12 +691,13 @@ export async function runAgent({
     }
 
     logger.warn(`max iterations hit (${MAX_TOOL_ITERATIONS}) — returning fallback`);
-    const entityUrls = await resolveEntityLinks(touchedEntities);
+    const entityUrls = await resolveEntityLinks(touchedEntities, context);
     const finalText = appendEntityLinks('(Agent hit max tool iterations.)', entityUrls);
     return {
       text: finalText,
       attachmentPaths,
       attachmentLinks,
+      projectId: context.projectId,
       agentMessages: messages.slice(agentStart),
     };
   } finally {

@@ -251,7 +251,7 @@ You are not yet writing the screenplay prose. The current phase is character + b
   return text;
 }
 
-function buildVolatileText({ characters, plot, directorNotes, senderName }) {
+function buildVolatileText({ characters, plot, directorNotes, senderName, projectTitle }) {
   const charList = characters.length
     ? characters.map((c) => `- ${c.name} (${formatCasting(c)})`).join('\n')
     : '(none yet)';
@@ -308,8 +308,12 @@ function buildVolatileText({ characters, plot, directorNotes, senderName }) {
       ? `\nCurrent message sender: **${senderName.trim()}** — every user message in your context is prefixed with \`[<name>]\` so you can verify the speaker, and the most recent one (the message you are responding to right now) starts with \`[${senderName.trim()}]\`. When the user refers to themselves ("I", "me", "my", "who am I"), they mean ${senderName.trim()}.\n`
       : '';
 
+  const projectLine = projectTitle
+    ? `Current project: "${projectTitle}". Every read and write below applies to this project only.\n`
+    : '';
+
   return `# Current state
-${titleLine}${senderLine}
+${projectLine}${titleLine}${senderLine}
 Characters on file:
 ${charList}
 
@@ -332,9 +336,10 @@ export function buildSystemPrompt({
   senderName = null,
   webBaseUrl = spaBaseUrl(),
   reviewMode = false,
+  projectTitle = null,
 }) {
   const stable = buildStableText({ characterTemplate, plotTemplate, botName, webBaseUrl });
-  const volatile = buildVolatileText({ characters, plot, directorNotes, senderName });
+  const volatile = buildVolatileText({ characters, plot, directorNotes, senderName, projectTitle });
 
   const stableBlock = { type: 'text', text: stable };
   const volatileBlock = { type: 'text', text: volatile };

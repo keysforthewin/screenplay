@@ -68,11 +68,11 @@ function summarizeBeat(b, currentBeatId) {
   };
 }
 
-export async function buildOverview() {
+export async function buildOverview(projectId = null) {
   const [characters, plot, template] = await Promise.all([
-    findAllCharacters(),
-    getPlot(),
-    getCharacterTemplate(),
+    findAllCharacters(projectId),
+    getPlot(projectId),
+    getCharacterTemplate(projectId),
   ]);
 
   const templateFieldNames = (template?.fields || [])
