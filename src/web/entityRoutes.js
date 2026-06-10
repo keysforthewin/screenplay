@@ -12,7 +12,7 @@ import { contentTypeFromFilename } from '../util/contentType.js';
 import { convertToMp3 } from './audioTranscode.js';
 import { requireSession } from './auth.js';
 import { resolveProject } from './projectMiddleware.js';
-import { createProject, getProjectByTitle, listProjects } from '../mongo/projects.js';
+import { createProject, getProjectByTitle, listProjects, normalizeProjectTitle } from '../mongo/projects.js';
 import { seedProjectDefaults } from '../seed/defaults.js';
 import { ALLOWED_IMAGE_MODELS } from './imageReplaceDispatch.js';
 
@@ -433,11 +433,13 @@ export function buildApiRouter() {
 
   router.post('/projects', async (req, res, next) => {
     try {
-      const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
-      if (!title || title.length > 120 || title.includes('/')) {
-        return res
-          .status(400)
-          .json({ error: 'title must be 1–120 characters and must not contain "/"' });
+      // Pre-validate with normalizeProjectTitle so validation errors always
+      // map to 400 (covers empty, slash, >120-char, and "."/"..").
+      let title;
+      try {
+        title = normalizeProjectTitle(req.body?.title ?? '');
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
       }
       if (await getProjectByTitle(title)) {
         return res.status(409).json({ error: 'a project with that title already exists' });
@@ -450,7 +452,7 @@ export function buildApiRouter() {
         // fake Mongo never throws this — the getProjectByTitle pre-check above
         // is what the test suite exercises.
         if (e?.code === 11000) {
-          return res.status(409).json({ error: 'a project with that title already exists' });
+          return res.status(409).json({ error: 'duplicate project title' });
         }
         throw e;
       }
@@ -463,7 +465,7 @@ export function buildApiRouter() {
 
   // ── reads ────────────────────────────────────────────────────────────────
 
-  router.get('/toc', async (_req, res) => {
+  router.get('/toc', async (req, res) => {
     // findAllCharacters (not listCharacters) — we need fields.{...} content for
     // the deep filter to match on description/body-style template fields.
     // listDialogs() / listStoryboards() unfiltered return every row; we group
@@ -471,13 +473,13 @@ export function buildApiRouter() {
     // filter without forcing N+1 round trips here.
     const [characters, beatList, notes, storyboardCounts, dialogCounts, allDialogs, allStoryboards] =
       await Promise.all([
-        findAllCharacters(),
-        listBeats(),
-        getDirectorNotes(),
-        countStoryboardsByBeat(),
-        countDialogsByBeat(),
-        listDialogs(),
-        listStoryboards(),
+        findAllCharacters(req.projectId),
+        listBeats(req.projectId),
+        getDirectorNotes(req.projectId),
+        countStoryboardsByBeat(req.projectId),
+        countDialogsByBeat(req.projectId),
+        listDialogs({ projectId: req.projectId }),
+        listStoryboards({ projectId: req.projectId }),
       ]);
     res.json(
       buildTocResponse(
@@ -491,10 +493,10 @@ export function buildApiRouter() {
     );
   });
 
-  router.get('/template', async (_req, res) => {
+  router.get('/template', async (req, res) => {
     const [character_template, plot_template] = await Promise.all([
-      getCharacterTemplate(),
-      getPlotTemplate(),
+      getCharacterTemplate(req.projectId),
+      getPlotTemplate(req.projectId),
     ]);
     res.json({
       character_template: character_template || { fields: [] },
@@ -523,9 +525,9 @@ export function buildApiRouter() {
     const { order, id } = req.query;
     let beat = null;
     if (id && isOidHex(String(id))) {
-      beat = await getBeat(undefined, String(id));
+      beat = await getBeat(req.projectId, String(id));
     } else if (order != null) {
-      beat = await getBeat(undefined, String(order));
+      beat = await getBeat(req.projectId, String(order));
     }
     if (!beat) return res.status(404).json({ error: 'beat not found' });
     res.json({ beat });
@@ -541,7 +543,7 @@ export function buildApiRouter() {
     try {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
-      const beat = await getBeat(undefined, beatId);
+      const beat = await getBeat(req.projectId, beatId);
       const { findCharactersInBeat } = await import('./storyboardGenerate.js');
       const docs = await findCharactersInBeat(undefined, beat);
       const out = [];
@@ -585,7 +587,7 @@ export function buildApiRouter() {
     try {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
-      const beat = await getBeat(undefined, beatId);
+      const beat = await getBeat(req.projectId, beatId);
       const { findCharactersInBeat } = await import('./storyboardGenerate.js');
       const charDocs = await findCharactersInBeat(undefined, beat);
 
@@ -646,8 +648,8 @@ export function buildApiRouter() {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const [files, beat] = await Promise.all([
-        listImagesForBeat(undefined, beatId),
-        getBeat(undefined, beatId),
+        listImagesForBeat(req.projectId, beatId),
+        getBeat(req.projectId, beatId),
       ]);
       const artworkImageIds = new Set(
         (beat?.artworks || [])
@@ -672,9 +674,9 @@ export function buildApiRouter() {
   // tab stays disjoint from the Artwork tab.
   router.get('/character/:id/images', async (req, res, next) => {
     try {
-      const c = await getCharacter(undefined, req.params.id);
+      const c = await getCharacter(req.projectId, req.params.id);
       if (!c) return res.status(404).json({ error: 'character not found' });
-      const files = await listImagesForCharacter(undefined, c._id);
+      const files = await listImagesForCharacter(req.projectId, c._id);
       const artworkImageIds = new Set(
         (c.artworks || [])
           .flatMap((a) => [a?.result_image_id, a?.previous_result_image_id])
@@ -695,14 +697,14 @@ export function buildApiRouter() {
   router.get('/character', async (req, res) => {
     const name = String(req.query.name || '');
     if (!name) return res.status(400).json({ error: 'name required' });
-    const c = await getCharacter(undefined, name);
+    const c = await getCharacter(req.projectId, name);
     if (!c) return res.status(404).json({ error: 'character not found' });
     res.json({ character: c });
     backfillOwnedImageCaptions('character', c._id?.toString?.(), c.images).catch(() => {});
   });
 
-  router.get('/notes', async (_req, res) => {
-    const doc = await getDirectorNotes();
+  router.get('/notes', async (req, res) => {
+    const doc = await getDirectorNotes(req.projectId);
     res.json({
       notes: (doc.notes || []).map((n) => ({
         _id: n._id,
@@ -715,10 +717,10 @@ export function buildApiRouter() {
     });
   });
 
-  router.get('/library', async (_req, res) => {
+  router.get('/library', async (req, res) => {
     const [images, attachments] = await Promise.all([
-      listLibraryImages(),
-      listLibraryAttachments(),
+      listLibraryImages(req.projectId),
+      listLibraryAttachments(req.projectId),
     ]);
     res.json({
       images: images.map(imageFileToMeta),
@@ -733,7 +735,7 @@ export function buildApiRouter() {
   router.get('/images/by-owner/characters', async (req, res, next) => {
     try {
       const exclude = String(req.query?.exclude_id || '').trim();
-      const files = await listImagesByOwnerType(undefined, 'character');
+      const files = await listImagesByOwnerType(req.projectId, 'character');
       const ids = [];
       const seen = new Set();
       for (const f of files) {
@@ -746,7 +748,7 @@ export function buildApiRouter() {
       }
       const nameById = new Map();
       if (ids.length) {
-        const all = await findAllCharacters();
+        const all = await findAllCharacters(req.projectId);
         const wantedKeys = new Set(ids.map((x) => x.toString()));
         for (const c of all) {
           const key = c._id.toString();
@@ -779,8 +781,8 @@ export function buildApiRouter() {
     try {
       const exclude = String(req.query?.exclude_id || '').trim();
       const [files, plot] = await Promise.all([
-        listImagesByOwnerType(undefined, 'beat'),
-        getPlot(),
+        listImagesByOwnerType(req.projectId, 'beat'),
+        getPlot(req.projectId),
       ]);
       const beatById = new Map();
       for (const b of plot?.beats || []) {
@@ -854,7 +856,7 @@ export function buildApiRouter() {
       const buffer = req.file.buffer;
       const contentType = req.file.mimetype;
       const sniffed = validateImageBuffer(buffer);
-      const meta = await uploadGeneratedImage(undefined, {
+      const meta = await uploadGeneratedImage(req.projectId, {
         buffer,
         contentType,
         prompt: null,
@@ -863,7 +865,7 @@ export function buildApiRouter() {
         ownerId: null,
         filename: safeFilename(req.file.originalname, `library-${Date.now()}.png`),
       });
-      await addLibraryImageViaGateway({ imageMeta: meta });
+      await addLibraryImageViaGateway({ projectId: req.projectId, imageMeta: meta });
       res.json({ image: { ...meta, _id: meta._id, content_type: meta.content_type } });
       announceLibraryMedia({
         req,
@@ -885,7 +887,7 @@ export function buildApiRouter() {
       if (file.metadata?.owner_type !== null && file.metadata?.owner_type !== undefined) {
         return res.status(409).json({ error: 'image is attached to an entity' });
       }
-      await removeLibraryImageViaGateway({ imageId: id });
+      await removeLibraryImageViaGateway({ projectId: req.projectId, imageId: id });
       res.json({ ok: true });
       announceLibraryMedia({ req, verb: 'deleted a library image from' });
     } catch (e) {
@@ -896,7 +898,7 @@ export function buildApiRouter() {
   router.post('/library/attachment', upload.single('file'), async (req, res, next) => {
     try {
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      const meta = await uploadAttachmentBuffer(undefined, {
+      const meta = await uploadAttachmentBuffer(req.projectId, {
         buffer: req.file.buffer,
         filename: safeFilename(req.file.originalname, `attachment-${Date.now()}.bin`),
         contentType: req.file.mimetype,
@@ -935,7 +937,7 @@ export function buildApiRouter() {
   async function resolveBeatId(req) {
     const { id } = req.params;
     if (isOidHex(id)) return id;
-    const beat = await getBeat(undefined, id);
+    const beat = await getBeat(req.projectId, id);
     return beat?._id?.toString() || null;
   }
 
@@ -945,7 +947,7 @@ export function buildApiRouter() {
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
       const sniffed = validateImageBuffer(req.file.buffer);
-      const file = await uploadGeneratedImage(undefined, {
+      const file = await uploadGeneratedImage(req.projectId, {
         buffer: req.file.buffer,
         contentType: req.file.mimetype,
         ownerType: 'beat',
@@ -954,6 +956,7 @@ export function buildApiRouter() {
       });
       const setAsMain = req.body?.set_as_main === 'true' || req.query.set_as_main === '1';
       const result = await addBeatImageViaGateway({
+        projectId: req.projectId,
         beatId,
         imageMeta: {
           _id: file._id,
@@ -968,7 +971,7 @@ export function buildApiRouter() {
       res.json({ ...result, image_id: String(file._id) });
       announceBeatMedia({
         req,
-        beat: await getBeat(undefined, beatId),
+        beat: await getBeat(req.projectId, beatId),
         verb: 'uploaded an image to',
         imageFileId: file._id,
       });
@@ -985,11 +988,11 @@ export function buildApiRouter() {
     try {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
-      const result = await removeBeatImageViaGateway({ beatId, imageId: req.params.imageId });
+      const result = await removeBeatImageViaGateway({ projectId: req.projectId, beatId, imageId: req.params.imageId });
       res.json(result);
       announceBeatMedia({
         req,
-        beat: await getBeat(undefined, beatId),
+        beat: await getBeat(req.projectId, beatId),
         verb: 'deleted an image from',
       });
     } catch (e) {
@@ -1014,7 +1017,7 @@ export function buildApiRouter() {
       if (ownerType !== 'beat' || ownerId !== String(beatId)) {
         return res.status(409).json({ error: 'image is not owned by this beat' });
       }
-      const beat = await getBeat(undefined, beatId);
+      const beat = await getBeat(req.projectId, beatId);
       const inGallery = (beat?.images || []).some(
         (i) => (i._id?.toString?.() || String(i._id)) === String(imageId),
       );
@@ -1028,7 +1031,7 @@ export function buildApiRouter() {
       res.json({ ok: true });
       announceBeatMedia({
         req,
-        beat: await getBeat(undefined, beatId),
+        beat: await getBeat(req.projectId, beatId),
         verb: 'deleted an image from',
       });
     } catch (e) {
@@ -1094,7 +1097,7 @@ export function buildApiRouter() {
         throw e;
       }
 
-      const file = await uploadGeneratedImage(undefined, {
+      const file = await uploadGeneratedImage(req.projectId, {
         buffer: result.buffer,
         contentType: result.contentType,
         prompt,
@@ -1115,6 +1118,7 @@ export function buildApiRouter() {
         ...(refs.ids.length ? { reference_image_ids: refs.ids } : {}),
       };
       const replaceResult = await replaceBeatImageViaGateway({
+        projectId: req.projectId,
         beatId,
         oldImageId,
         newImageMeta: newMeta,
@@ -1128,7 +1132,7 @@ export function buildApiRouter() {
       });
       announceBeatMedia({
         req,
-        beat: replaceResult.beat || (await getBeat(undefined, beatId)),
+        beat: replaceResult.beat || (await getBeat(req.projectId, beatId)),
         verb: mode === 'edit' ? 'edited an image on' : 'regenerated an image on',
         imageFileId: file._id,
         prompt,
@@ -1157,6 +1161,7 @@ export function buildApiRouter() {
       const setAsMain = !!req.body?.set_as_main;
       try {
         const result = await attachExistingImageToBeatViaGateway({
+          projectId: req.projectId,
           beatId,
           imageId,
           setAsMain,
@@ -1164,7 +1169,7 @@ export function buildApiRouter() {
         res.json(result);
         announceBeatMedia({
           req,
-          beat: result?.beat || (await getBeat(undefined, beatId)),
+          beat: result?.beat || (await getBeat(req.projectId, beatId)),
           verb: 'attached an image to',
           imageFileId: imageId,
         });
@@ -1192,12 +1197,14 @@ export function buildApiRouter() {
       const setAsMain = !!req.body?.set_as_main;
       try {
         const imageMeta = await copyImageToNewOwner({
+          projectId: req.projectId,
           imageId,
           ownerType: 'beat',
           ownerId: beatId,
           filenameBase: `beat-${beatId}`,
         });
         const result = await addBeatImageViaGateway({
+          projectId: req.projectId,
           beatId,
           imageMeta,
           setAsMain,
@@ -1205,7 +1212,7 @@ export function buildApiRouter() {
         res.json(result);
         announceBeatMedia({
           req,
-          beat: result?.beat || (await getBeat(undefined, beatId)),
+          beat: result?.beat || (await getBeat(req.projectId, beatId)),
           verb: 'copied an image to',
           imageFileId: imageMeta._id,
         });
@@ -1250,7 +1257,7 @@ export function buildApiRouter() {
         referenceImages: refs.images,
         discordUser: webDiscordUser(req),
       });
-      const file = await uploadGeneratedImage(undefined, {
+      const file = await uploadGeneratedImage(req.projectId, {
         buffer: result.buffer,
         contentType: result.contentType,
         prompt,
@@ -1260,6 +1267,7 @@ export function buildApiRouter() {
         filename: `beat-${beatId}-gen-${Date.now()}.png`,
       });
       const updated = await addBeatImageViaGateway({
+        projectId: req.projectId,
         beatId,
         imageMeta: {
           _id: file._id,
@@ -1280,7 +1288,7 @@ export function buildApiRouter() {
       });
       announceBeatMedia({
         req,
-        beat: updated.beat || (await getBeat(undefined, beatId)),
+        beat: updated.beat || (await getBeat(req.projectId, beatId)),
         verb:
           refs.ids.length >= 2
             ? 'composited images on'
@@ -1309,7 +1317,7 @@ export function buildApiRouter() {
       const imageId = req.params.imageId;
       if (!isOidHex(imageId)) return res.status(400).json({ error: 'invalid image id' });
       try {
-        const result = await moveBeatImageToLibraryViaGateway({ beatId, imageId });
+        const result = await moveBeatImageToLibraryViaGateway({ projectId: req.projectId, beatId, imageId });
         res.json({ ok: true, image_id: imageId, beat: result.beat });
       } catch (e) {
         if (/not attached/i.test(e?.message || '')) {
@@ -1328,7 +1336,7 @@ export function buildApiRouter() {
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const imageId = req.body?.image_id;
       if (!isOidHex(String(imageId))) return res.status(400).json({ error: 'image_id required' });
-      const result = await setBeatMainImageViaGateway({ beatId, imageId });
+      const result = await setBeatMainImageViaGateway({ projectId: req.projectId, beatId, imageId });
       res.json(result);
     } catch (e) {
       next(e);
@@ -1340,7 +1348,7 @@ export function buildApiRouter() {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      const file = await uploadAttachmentBuffer(undefined, {
+      const file = await uploadAttachmentBuffer(req.projectId, {
         buffer: req.file.buffer,
         filename: safeFilename(req.file.originalname, `attach-${Date.now()}.bin`),
         contentType: req.file.mimetype,
@@ -1348,6 +1356,7 @@ export function buildApiRouter() {
         ownerId: beatId,
       });
       const result = await addBeatAttachmentViaGateway({
+        projectId: req.projectId,
         beatId,
         attachmentMeta: {
           _id: file._id,
@@ -1361,7 +1370,7 @@ export function buildApiRouter() {
       res.json(result);
       announceBeatMedia({
         req,
-        beat: await getBeat(undefined, beatId),
+        beat: await getBeat(req.projectId, beatId),
         verb: (file.content_type || '').startsWith('audio/')
           ? 'added audio to'
           : (file.content_type || '').startsWith('video/')
@@ -1380,13 +1389,14 @@ export function buildApiRouter() {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const result = await removeBeatAttachmentViaGateway({
+        projectId: req.projectId,
         beatId,
         attachmentId: req.params.attachId,
       });
       res.json(result);
       announceBeatMedia({
         req,
-        beat: await getBeat(undefined, beatId),
+        beat: await getBeat(req.projectId, beatId),
         verb: 'deleted a file from',
       });
     } catch (e) {
@@ -1406,13 +1416,14 @@ export function buildApiRouter() {
       }
       try {
         const result = await attachExistingAttachmentToBeatViaGateway({
+          projectId: req.projectId,
           beatId,
           attachmentId,
         });
         res.json(result);
         announceBeatMedia({
           req,
-          beat: await getBeat(undefined, beatId),
+          beat: await getBeat(req.projectId, beatId),
           verb: 'attached a file to',
           mediaFileId: attachmentId,
           mediaLabel: 'file',
@@ -1449,7 +1460,7 @@ export function buildApiRouter() {
   async function resolveCharacterId(req) {
     const { id } = req.params;
     if (isOidHex(id)) return id;
-    const c = await getCharacter(undefined, id);
+    const c = await getCharacter(req.projectId, id);
     return c?._id?.toString() || null;
   }
 
@@ -1459,7 +1470,7 @@ export function buildApiRouter() {
       if (!cid) return res.status(404).json({ error: 'character not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
       const sniffed = validateImageBuffer(req.file.buffer);
-      const file = await uploadGeneratedImage(undefined, {
+      const file = await uploadGeneratedImage(req.projectId, {
         buffer: req.file.buffer,
         contentType: req.file.mimetype,
         ownerType: 'character',
@@ -1468,6 +1479,7 @@ export function buildApiRouter() {
       });
       const setAsMain = req.body?.set_as_main === 'true' || req.query.set_as_main === '1';
       const result = await addCharacterImageViaGateway({
+        projectId: req.projectId,
         character: cid,
         imageMeta: {
           _id: file._id,
@@ -1482,7 +1494,7 @@ export function buildApiRouter() {
       res.json({ ...result, image_id: String(file._id) });
       announceCharacterMedia({
         req,
-        character: await getCharacter(undefined, cid),
+        character: await getCharacter(req.projectId, cid),
         verb: 'uploaded an image to',
         imageFileId: file._id,
       });
@@ -1500,13 +1512,14 @@ export function buildApiRouter() {
       const cid = await resolveCharacterId(req);
       if (!cid) return res.status(404).json({ error: 'character not found' });
       const result = await removeCharacterImageViaGateway({
+        projectId: req.projectId,
         character: cid,
         imageId: req.params.imageId,
       });
       res.json(result);
       announceCharacterMedia({
         req,
-        character: await getCharacter(undefined, cid),
+        character: await getCharacter(req.projectId, cid),
         verb: 'deleted an image from',
       });
     } catch (e) {
@@ -1531,7 +1544,7 @@ export function buildApiRouter() {
       if (ownerType !== 'character' || ownerId !== String(cid)) {
         return res.status(409).json({ error: 'image is not owned by this character' });
       }
-      const character = await getCharacter(undefined, cid);
+      const character = await getCharacter(req.projectId, cid);
       const inGallery = (character?.images || []).some(
         (i) => (i._id?.toString?.() || String(i._id)) === String(imageId),
       );
@@ -1545,7 +1558,7 @@ export function buildApiRouter() {
       res.json({ ok: true });
       announceCharacterMedia({
         req,
-        character: await getCharacter(undefined, cid),
+        character: await getCharacter(req.projectId, cid),
         verb: 'deleted an image from',
       });
     } catch (e) {
@@ -1606,7 +1619,7 @@ export function buildApiRouter() {
         throw e;
       }
 
-      const file = await uploadGeneratedImage(undefined, {
+      const file = await uploadGeneratedImage(req.projectId, {
         buffer: result.buffer,
         contentType: result.contentType,
         prompt,
@@ -1627,6 +1640,7 @@ export function buildApiRouter() {
         ...(refs.ids.length ? { reference_image_ids: refs.ids } : {}),
       };
       const replaceResult = await replaceCharacterImageViaGateway({
+        projectId: req.projectId,
         character: cid,
         oldImageId,
         newImageMeta: newMeta,
@@ -1640,7 +1654,7 @@ export function buildApiRouter() {
       });
       announceCharacterMedia({
         req,
-        character: replaceResult.character || (await getCharacter(undefined, cid)),
+        character: replaceResult.character || (await getCharacter(req.projectId, cid)),
         verb: mode === 'edit' ? 'edited an image on' : 'regenerated an image on',
         imageFileId: file._id,
         prompt,
@@ -1667,6 +1681,7 @@ export function buildApiRouter() {
       const setAsMain = !!req.body?.set_as_main;
       try {
         const result = await attachExistingImageToCharacterViaGateway({
+          projectId: req.projectId,
           character: cid,
           imageId,
           setAsMain,
@@ -1674,7 +1689,7 @@ export function buildApiRouter() {
         res.json(result);
         announceCharacterMedia({
           req,
-          character: result?.character || (await getCharacter(undefined, cid)),
+          character: result?.character || (await getCharacter(req.projectId, cid)),
           verb: 'attached an image to',
           imageFileId: imageId,
         });
@@ -1703,12 +1718,14 @@ export function buildApiRouter() {
       const setAsMain = !!req.body?.set_as_main;
       try {
         const imageMeta = await copyImageToNewOwner({
+          projectId: req.projectId,
           imageId,
           ownerType: 'character',
           ownerId: cid,
           filenameBase: `character-${cid}`,
         });
         const result = await addCharacterImageViaGateway({
+          projectId: req.projectId,
           character: cid,
           imageMeta,
           setAsMain,
@@ -1716,7 +1733,7 @@ export function buildApiRouter() {
         res.json(result);
         announceCharacterMedia({
           req,
-          character: result?.character || (await getCharacter(undefined, cid)),
+          character: result?.character || (await getCharacter(req.projectId, cid)),
           verb: 'copied an image to',
           imageFileId: imageMeta._id,
         });
@@ -1761,7 +1778,7 @@ export function buildApiRouter() {
         referenceImages: refs.images,
         discordUser: webDiscordUser(req),
       });
-      const file = await uploadGeneratedImage(undefined, {
+      const file = await uploadGeneratedImage(req.projectId, {
         buffer: result.buffer,
         contentType: result.contentType,
         prompt,
@@ -1771,6 +1788,7 @@ export function buildApiRouter() {
         filename: `character-${cid}-gen-${Date.now()}.png`,
       });
       const updated = await addCharacterImageViaGateway({
+        projectId: req.projectId,
         character: cid,
         imageMeta: {
           _id: file._id,
@@ -1791,7 +1809,7 @@ export function buildApiRouter() {
       });
       announceCharacterMedia({
         req,
-        character: updated.character || (await getCharacter(undefined, cid)),
+        character: updated.character || (await getCharacter(req.projectId, cid)),
         verb:
           refs.ids.length >= 2
             ? 'composited images on'
@@ -1821,6 +1839,7 @@ export function buildApiRouter() {
       if (!isOidHex(imageId)) return res.status(400).json({ error: 'invalid image id' });
       try {
         const result = await moveCharacterImageToLibraryViaGateway({
+          projectId: req.projectId,
           character: cid,
           imageId,
         });
@@ -1842,7 +1861,7 @@ export function buildApiRouter() {
       if (!cid) return res.status(404).json({ error: 'character not found' });
       const imageId = req.body?.image_id;
       if (!isOidHex(String(imageId))) return res.status(400).json({ error: 'image_id required' });
-      const result = await setCharacterMainImageViaGateway({ character: cid, imageId });
+      const result = await setCharacterMainImageViaGateway({ projectId: req.projectId, character: cid, imageId });
       res.json(result);
     } catch (e) {
       next(e);
@@ -1854,7 +1873,7 @@ export function buildApiRouter() {
       const cid = await resolveCharacterId(req);
       if (!cid) return res.status(404).json({ error: 'character not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      const file = await uploadAttachmentBuffer(undefined, {
+      const file = await uploadAttachmentBuffer(req.projectId, {
         buffer: req.file.buffer,
         filename: safeFilename(req.file.originalname, `attach-${Date.now()}.bin`),
         contentType: req.file.mimetype,
@@ -1862,6 +1881,7 @@ export function buildApiRouter() {
         ownerId: cid,
       });
       const result = await addCharacterAttachmentViaGateway({
+        projectId: req.projectId,
         character: cid,
         attachmentMeta: {
           _id: file._id,
@@ -1875,7 +1895,7 @@ export function buildApiRouter() {
       res.json(result);
       announceCharacterMedia({
         req,
-        character: await getCharacter(undefined, cid),
+        character: await getCharacter(req.projectId, cid),
         verb: (file.content_type || '').startsWith('audio/')
           ? 'added audio to'
           : (file.content_type || '').startsWith('video/')
@@ -1894,13 +1914,14 @@ export function buildApiRouter() {
       const cid = await resolveCharacterId(req);
       if (!cid) return res.status(404).json({ error: 'character not found' });
       const result = await removeCharacterAttachmentViaGateway({
+        projectId: req.projectId,
         character: cid,
         attachmentId: req.params.attachId,
       });
       res.json(result);
       announceCharacterMedia({
         req,
-        character: await getCharacter(undefined, cid),
+        character: await getCharacter(req.projectId, cid),
         verb: 'deleted a file from',
       });
     } catch (e) {
@@ -1920,13 +1941,14 @@ export function buildApiRouter() {
       }
       try {
         const result = await attachExistingAttachmentToCharacterViaGateway({
+          projectId: req.projectId,
           character: cid,
           attachmentId,
         });
         res.json(result);
         announceCharacterMedia({
           req,
-          character: await getCharacter(undefined, cid),
+          character: await getCharacter(req.projectId, cid),
           verb: 'attached a file to',
           mediaFileId: attachmentId,
           mediaLabel: 'file',
@@ -2010,6 +2032,7 @@ export function buildApiRouter() {
         const refs = await validateArtworkRefs(req, res);
         if (!refs) return;
         const artwork = await startGenerateArtworkJob({
+          projectId: req.projectId,
           hostType,
           hostId,
           prompt: body.prompt,
@@ -2039,6 +2062,7 @@ export function buildApiRouter() {
         }
         const name = String(req.body?.name || '').slice(0, 200);
         const { artwork } = await createArtworkFromImageViaGateway({
+          projectId: req.projectId,
           hostType,
           hostId,
           imageId,
@@ -2048,13 +2072,13 @@ export function buildApiRouter() {
         if (hostType === 'beat') {
           announceBeatMedia({
             req,
-            beat: await getBeat(undefined, hostId),
+            beat: await getBeat(req.projectId, hostId),
             verb: 'imported artwork to',
           });
         } else if (hostType === 'character') {
           announceCharacterMedia({
             req,
-            character: await getCharacter(undefined, hostId),
+            character: await getCharacter(req.projectId, hostId),
             verb: 'imported artwork to',
           });
         }
@@ -2076,7 +2100,7 @@ export function buildApiRouter() {
           if (!req.file) return res.status(400).json({ error: 'file required' });
           validateImageBuffer(req.file.buffer);
           const name = String(req.body?.name || '').slice(0, 200);
-          const file = await uploadGeneratedImage(undefined, {
+          const file = await uploadGeneratedImage(req.projectId, {
             buffer: req.file.buffer,
             contentType: req.file.mimetype,
             ownerType: hostType,
@@ -2088,6 +2112,7 @@ export function buildApiRouter() {
             name,
           });
           const { artwork } = await createArtworkFromImageViaGateway({
+            projectId: req.projectId,
             hostType,
             hostId,
             imageId: file._id,
@@ -2097,13 +2122,13 @@ export function buildApiRouter() {
           if (hostType === 'beat') {
             announceBeatMedia({
               req,
-              beat: await getBeat(undefined, hostId),
+              beat: await getBeat(req.projectId, hostId),
               verb: 'imported artwork to',
             });
           } else if (hostType === 'character') {
             announceCharacterMedia({
               req,
-              character: await getCharacter(undefined, hostId),
+              character: await getCharacter(req.projectId, hostId),
               verb: 'imported artwork to',
             });
           }
@@ -2126,6 +2151,7 @@ export function buildApiRouter() {
         const refs = await validateArtworkRefs(req, res);
         if (!refs) return;
         const artwork = await startRegenerateArtworkJob({
+          projectId: req.projectId,
           hostType,
           hostId,
           artworkId,
@@ -2168,6 +2194,7 @@ export function buildApiRouter() {
           return res.status(refs.status || 400).json({ error: refs.error });
         }
         const artwork = await startEditArtworkJob({
+          projectId: req.projectId,
           hostType,
           hostId,
           artworkId,
@@ -2191,7 +2218,7 @@ export function buildApiRouter() {
         if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
         const artworkId = req.params.artworkId;
         if (!isOidHex(artworkId)) return res.status(400).json({ error: 'invalid artwork id' });
-        const artwork = await undoArtworkEdit({ hostType, hostId, artworkId });
+        const artwork = await undoArtworkEdit({ projectId: req.projectId, hostType, hostId, artworkId });
         res.json({ artwork });
       } catch (e) {
         handleArtworkError(e, res, next);
@@ -2211,6 +2238,7 @@ export function buildApiRouter() {
           return res.status(400).json({ error: 'no recognized fields to patch (expected: name)' });
         }
         const { artwork } = await patchArtworkViaGateway({
+          projectId: req.projectId,
           hostType,
           hostId,
           artworkId,
@@ -2230,18 +2258,18 @@ export function buildApiRouter() {
         if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
         const artworkId = req.params.artworkId;
         if (!isOidHex(artworkId)) return res.status(400).json({ error: 'invalid artwork id' });
-        await deleteArtwork({ hostType, hostId, artworkId });
+        await deleteArtwork({ projectId: req.projectId, hostType, hostId, artworkId });
         res.json({ ok: true, removed: artworkId });
         if (hostType === 'beat') {
           announceBeatMedia({
             req,
-            beat: await getBeat(undefined, hostId),
+            beat: await getBeat(req.projectId, hostId),
             verb: 'deleted artwork from',
           });
         } else if (hostType === 'character') {
           announceCharacterMedia({
             req,
-            character: await getCharacter(undefined, hostId),
+            character: await getCharacter(req.projectId, hostId),
             verb: 'deleted artwork from',
           });
         }
@@ -2267,7 +2295,7 @@ export function buildApiRouter() {
   // loads this lazily when the user clicks the "Beats" tab.
   router.get('/beats/with-artwork', async (req, res, next) => {
     try {
-      const beats = await listBeats();
+      const beats = await listBeats(req.projectId);
       const out = beats.map((b) => ({
         _id: b._id,
         order: b.order,
@@ -2305,11 +2333,11 @@ export function buildApiRouter() {
       if (!isOidHex(characterId)) {
         return res.status(400).json({ error: 'character_id (24-hex) required' });
       }
-      const target = await getCharacter(undefined, characterId);
+      const target = await getCharacter(req.projectId, characterId);
       if (!target) return res.status(404).json({ error: 'character not found' });
       const targetIdStr = target._id?.toString?.() || String(target._id);
       const { findCharactersInBeat } = await import('./storyboardGenerate.js');
-      const beats = await listBeats();
+      const beats = await listBeats(req.projectId);
       const out = [];
       for (const b of beats) {
         const chars = await findCharactersInBeat(undefined, b);
@@ -2347,9 +2375,9 @@ export function buildApiRouter() {
 
   // ── notes mutations (non-text) ───────────────────────────────────────────
 
-  async function fetchDirectorNote(noteId) {
+  async function fetchDirectorNote(noteId, projectId) {
     try {
-      const doc = await getDirectorNotes();
+      const doc = await getDirectorNotes(projectId);
       const notes = doc?.notes || [];
       return notes.find((n) => String(n._id) === String(noteId)) || null;
     } catch {
@@ -2360,7 +2388,7 @@ export function buildApiRouter() {
   router.post('/notes', async (req, res, next) => {
     try {
       const text = String(req.body?.text || '').trim() || '_New note_';
-      const note = await addDirectorNoteViaGateway({ text });
+      const note = await addDirectorNoteViaGateway({ projectId: req.projectId, text });
       res.json({ note });
     } catch (e) {
       next(e);
@@ -2370,7 +2398,7 @@ export function buildApiRouter() {
   router.delete('/notes/:noteId', async (req, res, next) => {
     try {
       if (!isOidHex(req.params.noteId)) return res.status(400).json({ error: 'invalid id' });
-      await removeDirectorNoteViaGateway({ noteId: req.params.noteId });
+      await removeDirectorNoteViaGateway({ projectId: req.projectId, noteId: req.params.noteId });
       res.json({ ok: true });
     } catch (e) {
       next(e);
@@ -2382,7 +2410,7 @@ export function buildApiRouter() {
       if (!isOidHex(req.params.noteId)) return res.status(400).json({ error: 'invalid id' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
       validateImageBuffer(req.file.buffer);
-      const file = await uploadGeneratedImage(undefined, {
+      const file = await uploadGeneratedImage(req.projectId, {
         buffer: req.file.buffer,
         contentType: req.file.mimetype,
         ownerType: 'director_note',
@@ -2391,6 +2419,7 @@ export function buildApiRouter() {
       });
       const setAsMain = req.body?.set_as_main === 'true' || req.query.set_as_main === '1';
       const result = await addDirectorNoteImageViaGateway({
+        projectId: req.projectId,
         noteId: req.params.noteId,
         imageMeta: {
           _id: file._id,
@@ -2404,7 +2433,7 @@ export function buildApiRouter() {
       res.json(result);
       announceNoteMedia({
         req,
-        note: await fetchDirectorNote(req.params.noteId),
+        note: await fetchDirectorNote(req.params.noteId, req.projectId),
         verb: 'uploaded an image to',
         imageFileId: file._id,
       });
@@ -2416,13 +2445,14 @@ export function buildApiRouter() {
   router.delete('/notes/:noteId/image/:imageId', async (req, res, next) => {
     try {
       const result = await removeDirectorNoteImageViaGateway({
+        projectId: req.projectId,
         noteId: req.params.noteId,
         imageId: req.params.imageId,
       });
       res.json(result);
       announceNoteMedia({
         req,
-        note: await fetchDirectorNote(req.params.noteId),
+        note: await fetchDirectorNote(req.params.noteId, req.projectId),
         verb: 'deleted an image from',
       });
     } catch (e) {
@@ -2443,12 +2473,14 @@ export function buildApiRouter() {
       const setAsMain = !!req.body?.set_as_main;
       try {
         const imageMeta = await copyImageToNewOwner({
+          projectId: req.projectId,
           imageId,
           ownerType: 'director_note',
           ownerId: noteId,
           filenameBase: `note-${noteId}`,
         });
         const result = await addDirectorNoteImageViaGateway({
+          projectId: req.projectId,
           noteId,
           imageMeta,
           setAsMain,
@@ -2456,7 +2488,7 @@ export function buildApiRouter() {
         res.json(result);
         announceNoteMedia({
           req,
-          note: await fetchDirectorNote(noteId),
+          note: await fetchDirectorNote(noteId, req.projectId),
           verb: 'copied an image to',
           imageFileId: imageMeta._id,
         });
@@ -2474,6 +2506,7 @@ export function buildApiRouter() {
       const imageId = req.body?.image_id;
       if (!isOidHex(String(imageId))) return res.status(400).json({ error: 'image_id required' });
       const result = await setDirectorNoteMainImageViaGateway({
+        projectId: req.projectId,
         noteId: req.params.noteId,
         imageId,
       });
@@ -2487,7 +2520,7 @@ export function buildApiRouter() {
     try {
       if (!isOidHex(req.params.noteId)) return res.status(400).json({ error: 'invalid id' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      const file = await uploadAttachmentBuffer(undefined, {
+      const file = await uploadAttachmentBuffer(req.projectId, {
         buffer: req.file.buffer,
         filename: safeFilename(req.file.originalname, `note-attach-${Date.now()}.bin`),
         contentType: req.file.mimetype,
@@ -2495,6 +2528,7 @@ export function buildApiRouter() {
         ownerId: req.params.noteId,
       });
       const result = await addDirectorNoteAttachmentViaGateway({
+        projectId: req.projectId,
         noteId: req.params.noteId,
         attachmentMeta: {
           _id: file._id,
@@ -2508,7 +2542,7 @@ export function buildApiRouter() {
       res.json(result);
       announceNoteMedia({
         req,
-        note: await fetchDirectorNote(req.params.noteId),
+        note: await fetchDirectorNote(req.params.noteId, req.projectId),
         verb: (file.content_type || '').startsWith('audio/')
           ? 'added audio to'
           : (file.content_type || '').startsWith('video/')
@@ -2525,13 +2559,14 @@ export function buildApiRouter() {
   router.delete('/notes/:noteId/attachment/:attachId', async (req, res, next) => {
     try {
       const result = await removeDirectorNoteAttachmentViaGateway({
+        projectId: req.projectId,
         noteId: req.params.noteId,
         attachmentId: req.params.attachId,
       });
       res.json(result);
       announceNoteMedia({
         req,
-        note: await fetchDirectorNote(req.params.noteId),
+        note: await fetchDirectorNote(req.params.noteId, req.projectId),
         verb: 'deleted a file from',
       });
     } catch (e) {
@@ -2544,7 +2579,7 @@ export function buildApiRouter() {
   async function resolveStoryboardId(req) {
     const { id } = req.params;
     if (!isOidHex(id)) return null;
-    const sb = await getStoryboard(undefined, id);
+    const sb = await getStoryboard(req.projectId, id);
     return sb?._id?.toString() || null;
   }
 
@@ -2556,7 +2591,7 @@ export function buildApiRouter() {
       if (beatRef == null || beatRef === '') {
         return res.status(400).json({ error: 'beat_id required' });
       }
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const items = await listStoryboards({ beatId: beat._id });
       res.json({
@@ -2580,9 +2615,10 @@ export function buildApiRouter() {
     try {
       const beatRef = req.body?.beat_id;
       if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const sb = await createStoryboardViaGateway({
+        projectId: req.projectId,
         beatId: beat._id,
         textPrompt: String(req.body?.text_prompt || ''),
       });
@@ -2596,7 +2632,7 @@ export function buildApiRouter() {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const result = await deleteStoryboardViaGateway({ storyboardId: sbId });
+      const result = await deleteStoryboardViaGateway({ projectId: req.projectId, storyboardId: sbId });
       res.json(result);
     } catch (e) {
       next(e);
@@ -2628,6 +2664,7 @@ export function buildApiRouter() {
         return res.status(400).json({ error: 'no patch fields' });
       try {
         const result = await updateStoryboardScalarsViaGateway({
+          projectId: req.projectId,
           storyboardId: sbId,
           patch,
         });
@@ -2652,7 +2689,7 @@ export function buildApiRouter() {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const sb = await getStoryboard(undefined, sbId);
+      const sb = await getStoryboard(req.projectId, sbId);
       if (!sb) return res.status(404).json({ error: 'storyboard not found' });
       if (!sb.text_prompt || !String(sb.text_prompt).trim()) {
         return res.status(400).json({ error: 'text_prompt is empty; nothing to summarize' });
@@ -2660,7 +2697,7 @@ export function buildApiRouter() {
       const { summarizeStoryboardPrompt } = await import('../llm/storyboardSummarize.js');
       const summary = await summarizeStoryboardPrompt(sb.text_prompt);
       const { setStoryboardSummaryViaGateway } = await import('./gateway.js');
-      await setStoryboardSummaryViaGateway({ storyboardId: sb._id, text: summary });
+      await setStoryboardSummaryViaGateway({ projectId: req.projectId, storyboardId: sb._id, text: summary });
       res.json({ summary });
     } catch (e) {
       next(e);
@@ -2676,9 +2713,10 @@ export function buildApiRouter() {
       if (!Array.isArray(orderedIds)) {
         return res.status(400).json({ error: 'ordered_ids must be an array' });
       }
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const result = await reorderStoryboardsViaGateway({
+        projectId: req.projectId,
         beatId: beat._id,
         orderedIds,
       });
@@ -2696,8 +2734,8 @@ export function buildApiRouter() {
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
       const sniffed = validateImageBuffer(req.file.buffer);
-      const sb = await getStoryboard(undefined, sbId);
-      const file = await uploadGeneratedImage(undefined, {
+      const sb = await getStoryboard(req.projectId, sbId);
+      const file = await uploadGeneratedImage(req.projectId, {
         buffer: req.file.buffer,
         contentType: req.file.mimetype,
         ownerType: 'beat',
@@ -2711,6 +2749,7 @@ export function buildApiRouter() {
       let frameId;
       try {
         ({ storyboard: result, frameId } = await addStoryboardFrameViaGateway({
+          projectId: req.projectId,
           storyboardId: sbId,
           imageId: file._id,
         }));
@@ -2725,7 +2764,7 @@ export function buildApiRouter() {
       });
       announceStoryboardMedia({
         req,
-        beat: await getBeat(undefined, String(sb.beat_id)),
+        beat: await getBeat(req.projectId, String(sb.beat_id)),
         storyboard: result || sb,
         verb: 'added a frame to',
         imageFileId: file._id,
@@ -2751,7 +2790,7 @@ export function buildApiRouter() {
       }
       let result;
       try {
-        result = await removeStoryboardFrameViaGateway({ storyboardId: sbId, frameId });
+        result = await removeStoryboardFrameViaGateway({ projectId: req.projectId, storyboardId: sbId, frameId });
       } catch (e) {
         if (/frame not found/i.test(e.message)) {
           return res.status(404).json({ error: e.message });
@@ -2762,7 +2801,7 @@ export function buildApiRouter() {
       if (result?.beat_id) {
         announceStoryboardMedia({
           req,
-          beat: await getBeat(undefined, String(result.beat_id)),
+          beat: await getBeat(req.projectId, String(result.beat_id)),
           storyboard: result,
           verb: 'removed a frame from',
         });
@@ -2790,6 +2829,7 @@ export function buildApiRouter() {
       }
       try {
         const storyboard = await reorderStoryboardFramesViaGateway({
+          projectId: req.projectId,
           storyboardId: sbId,
           orderedFrameIds: cleaned,
         });
@@ -2812,8 +2852,8 @@ export function buildApiRouter() {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const sb = await getStoryboard(undefined, sbId);
-      const prev = await getPreviousStoryboardInBeat(undefined, sb.beat_id, sb.order);
+      const sb = await getStoryboard(req.projectId, sbId);
+      const prev = await getPreviousStoryboardInBeat(req.projectId, sb.beat_id, sb.order);
       if (!prev) {
         return res.status(400).json({ error: 'no previous storyboard in this beat' });
       }
@@ -2821,7 +2861,7 @@ export function buildApiRouter() {
         return res.status(400).json({ error: 'previous shot has no generated video' });
       }
       try {
-        const result = await grabFrameFromPrevious({ currentSbId: sbId, prev });
+        const result = await grabFrameFromPrevious({ projectId: req.projectId, currentSbId: sbId, prev });
         res.json({
           storyboard: result.storyboard,
           frame_id: result.frame_id,
@@ -2830,7 +2870,7 @@ export function buildApiRouter() {
         if (result?.storyboard?.beat_id) {
           announceStoryboardMedia({
             req,
-            beat: await getBeat(undefined, String(result.storyboard.beat_id)),
+            beat: await getBeat(req.projectId, String(result.storyboard.beat_id)),
             storyboard: result.storyboard,
             verb: 'grabbed a frame from the previous shot in',
             imageFileId: result?.image?._id,
@@ -3010,6 +3050,7 @@ export function buildApiRouter() {
       }
       try {
         const storyboard = await undoStoryboardFrameEditViaGateway({
+          projectId: req.projectId,
           storyboardId: sbId,
           frameId,
         });
@@ -3087,6 +3128,7 @@ export function buildApiRouter() {
       let result;
       try {
         result = await setStoryboardFrameImageViaGateway({
+          projectId: req.projectId,
           storyboardId: sbId,
           frameId,
           imageId,
@@ -3120,8 +3162,8 @@ export function buildApiRouter() {
         }
         if (!req.file) return res.status(400).json({ error: 'file required' });
         const sniffed = validateImageBuffer(req.file.buffer);
-        const sb = await getStoryboard(undefined, sbId);
-        const file = await uploadGeneratedImage(undefined, {
+        const sb = await getStoryboard(req.projectId, sbId);
+        const file = await uploadGeneratedImage(req.projectId, {
           buffer: req.file.buffer,
           contentType: req.file.mimetype,
           ownerType: 'beat',
@@ -3134,6 +3176,7 @@ export function buildApiRouter() {
         let result;
         try {
           result = await setStoryboardFrameImageViaGateway({
+            projectId: req.projectId,
             storyboardId: sbId,
             frameId,
             imageId: file._id,
@@ -3174,9 +3217,9 @@ export function buildApiRouter() {
         if (!isOidHex(frameId)) {
           return res.status(400).json({ error: 'invalid frame id' });
         }
-        const sb = await getStoryboard(undefined, sbId);
+        const sb = await getStoryboard(req.projectId, sbId);
         if (!sb) return res.status(404).json({ error: 'storyboard not found' });
-        const beat = await getBeat(undefined, String(sb.beat_id));
+        const beat = await getBeat(req.projectId, String(sb.beat_id));
         if (!beat) return res.status(404).json({ error: 'beat not found' });
 
         const otherFrames = (sb.frames || [])
@@ -3198,7 +3241,7 @@ export function buildApiRouter() {
             artwork_id: String(a._id),
           }));
 
-        const files = await listImagesForBeat(undefined, beat._id);
+        const files = await listImagesForBeat(req.projectId, beat._id);
         const beatImages = files
           .filter((f) => f.metadata?.kind !== 'thumbnail')
           .map(imageFileToMeta);
@@ -3233,6 +3276,7 @@ export function buildApiRouter() {
       }
       try {
         const storyboard = await setStoryboardFramePromptViaGateway({
+          projectId: req.projectId,
           storyboardId: sbId,
           frameId,
           text: raw,
@@ -3274,7 +3318,7 @@ export function buildApiRouter() {
       if (!guidance && req.body?.use_critique) {
         const { getStoryboard } = await import('../mongo/storyboards.js');
         const { mergeCritiqueComments } = await import('./storyboardGenerate.js');
-        const sb = await getStoryboard(undefined, sbId);
+        const sb = await getStoryboard(req.projectId, sbId);
         guidance = mergeCritiqueComments(sb?.prompt_critique) || '';
       }
       const { reExpandShot, BeatBusyError } = await import('./storyboardGenerate.js');
@@ -3294,7 +3338,7 @@ export function buildApiRouter() {
   // by any 2-segment id-param route (there is no `GET /beat/:id`).
   router.post('/beat/:beatId/reexpand-shots', async (req, res, next) => {
     try {
-      const beat = await getBeat(undefined, String(req.params.beatId));
+      const beat = await getBeat(req.projectId, String(req.params.beatId));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const { startReExpandAllJob, BeatBusyError } = await import('./storyboardGenerate.js');
       try {
@@ -3311,7 +3355,7 @@ export function buildApiRouter() {
   // seconds — like the dialogue critic), unlike the polling reexpand job above.
   router.post('/beat/:beatId/scene-bible/autofill', async (req, res, next) => {
     try {
-      const beat = await getBeat(undefined, String(req.params.beatId));
+      const beat = await getBeat(req.projectId, String(req.params.beatId));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const { autofillSceneBible } = await import('./sceneBibleAutofill.js');
       const result = await autofillSceneBible({ beatId: beat._id.toString() });
@@ -3365,8 +3409,8 @@ export function buildApiRouter() {
         }
         if (!req.file) return res.status(400).json({ error: 'file required' });
         const sniffed = validateImageBuffer(req.file.buffer);
-        const sb = await getStoryboard(undefined, sbId);
-        const file = await uploadGeneratedImage(undefined, {
+        const sb = await getStoryboard(req.projectId, sbId);
+        const file = await uploadGeneratedImage(req.projectId, {
           buffer: req.file.buffer,
           contentType: req.file.mimetype,
           ownerType: 'beat',
@@ -3379,6 +3423,7 @@ export function buildApiRouter() {
         let result;
         try {
           result = await addStoryboardFrameReferenceImageViaGateway({
+            projectId: req.projectId,
             storyboardId: sbId,
             frameId,
             imageId: file._id,
@@ -3415,6 +3460,7 @@ export function buildApiRouter() {
           return res.status(400).json({ error: 'invalid image_id' });
         }
         const result = await removeStoryboardFrameReferenceImageViaGateway({
+          projectId: req.projectId,
           storyboardId: sbId,
           frameId,
           imageId: req.params.imageId,
@@ -3449,6 +3495,7 @@ export function buildApiRouter() {
         let result;
         try {
           result = await addStoryboardFrameReferenceImageViaGateway({
+            projectId: req.projectId,
             storyboardId: sbId,
             frameId,
             imageId,
@@ -3482,18 +3529,20 @@ export function buildApiRouter() {
         if (!isOidHex(frameId)) {
           return res.status(400).json({ error: 'invalid frame id' });
         }
-        const sb = await getStoryboard(undefined, sbId);
+        const sb = await getStoryboard(req.projectId, sbId);
         if (!sb) return res.status(404).json({ error: 'storyboard not found' });
         const frame = (sb.frames || []).find((f) => f._id.toString() === frameId);
         if (!frame) return res.status(404).json({ error: 'frame not found' });
-        const beat = await getBeat(undefined, String(sb.beat_id));
+        const beat = await getBeat(req.projectId, String(sb.beat_id));
         const { ids, added } = await collectStoryboardReferenceIds({
+          projectId: req.projectId,
           beat,
           charactersInScene: sb.characters_in_scene || [],
           existingIds: frame.reference_ids || [],
         });
         const storyboard = added.length
           ? await setStoryboardFrameReferenceImagesViaGateway({
+              projectId: req.projectId,
               storyboardId: sbId,
               frameId,
               imageIds: ids,
@@ -3535,6 +3584,7 @@ export function buildApiRouter() {
         let storyboard;
         try {
           storyboard = await setStoryboardFrameReferenceImagesViaGateway({
+            projectId: req.projectId,
             storyboardId: sbId,
             frameId,
             imageIds: cleaned,
@@ -3576,7 +3626,7 @@ export function buildApiRouter() {
         if (!isValidImageModel(model)) {
           return res.status(400).json({ error: IMAGE_MODEL_ERROR });
         }
-        const sb = await getStoryboard(undefined, sbId);
+        const sb = await getStoryboard(req.projectId, sbId);
         const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
         const result = await dispatchImageReplace({
           prompt,
@@ -3584,7 +3634,7 @@ export function buildApiRouter() {
           model,
           discordUser: webDiscordUser(req),
         });
-        const file = await uploadGeneratedImage(undefined, {
+        const file = await uploadGeneratedImage(req.projectId, {
           buffer: result.buffer,
           contentType: result.contentType,
           prompt,
@@ -3596,6 +3646,7 @@ export function buildApiRouter() {
         let updated;
         try {
           updated = await addStoryboardFrameReferenceImageViaGateway({
+            projectId: req.projectId,
             storyboardId: sbId,
             frameId,
             imageId: file._id,
@@ -3641,6 +3692,7 @@ export function buildApiRouter() {
       let frameId;
       try {
         ({ storyboard: result, frameId } = await addStoryboardFrameViaGateway({
+          projectId: req.projectId,
           storyboardId: sbId,
           imageId,
         }));
@@ -3656,7 +3708,7 @@ export function buildApiRouter() {
       if (result?.beat_id) {
         announceStoryboardMedia({
           req,
-          beat: await getBeat(undefined, String(result.beat_id)),
+          beat: await getBeat(req.projectId, String(result.beat_id)),
           storyboard: result,
           verb: 'added a frame to',
           imageFileId: imageId,
@@ -3685,7 +3737,7 @@ export function buildApiRouter() {
       if (!isValidImageModel(model)) {
         return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
-      const sb = await getStoryboard(undefined, sbId);
+      const sb = await getStoryboard(req.projectId, sbId);
       const { dispatchStoryboardImage } = await import('./storyboardImageDispatch.js');
       const result = await dispatchStoryboardImage({
         prompt,
@@ -3693,7 +3745,7 @@ export function buildApiRouter() {
         inputImages: [],
         mode: 'generate',
       });
-      const file = await uploadGeneratedImage(undefined, {
+      const file = await uploadGeneratedImage(req.projectId, {
         buffer: result.buffer,
         contentType: result.contentType,
         prompt,
@@ -3706,6 +3758,7 @@ export function buildApiRouter() {
       let frameId;
       try {
         ({ storyboard: updated, frameId } = await addStoryboardFrameViaGateway({
+          projectId: req.projectId,
           storyboardId: sbId,
           imageId: file._id,
           prompt,
@@ -3721,7 +3774,7 @@ export function buildApiRouter() {
       });
       announceStoryboardMedia({
         req,
-        beat: await getBeat(undefined, String(sb.beat_id)),
+        beat: await getBeat(req.projectId, String(sb.beat_id)),
         storyboard: updated || sb,
         verb: 'generated a frame on',
         imageFileId: file._id,
@@ -3753,7 +3806,7 @@ export function buildApiRouter() {
         if (inferred?.startsWith('audio/')) ct = inferred;
         else return res.status(400).json({ error: 'file must be audio/*' });
       }
-      const sb = await getStoryboard(undefined, sbId);
+      const sb = await getStoryboard(req.projectId, sbId);
       let audio;
       try {
         audio = await normalizeUploadedAudioToMp3({
@@ -3766,7 +3819,7 @@ export function buildApiRouter() {
         if (handled) return handled;
         throw e;
       }
-      const file = await uploadAttachmentBuffer(undefined, {
+      const file = await uploadAttachmentBuffer(req.projectId, {
         buffer: audio.buffer,
         filename: audio.filename,
         contentType: audio.contentType,
@@ -3774,6 +3827,7 @@ export function buildApiRouter() {
         ownerId: sb.beat_id,
       });
       const result = await setStoryboardAudioViaGateway({
+        projectId: req.projectId,
         storyboardId: sbId,
         audioFileId: file._id,
       });
@@ -3788,7 +3842,7 @@ export function buildApiRouter() {
       });
       announceStoryboardMedia({
         req,
-        beat: await getBeat(undefined, String(sb.beat_id)),
+        beat: await getBeat(req.projectId, String(sb.beat_id)),
         storyboard: result || sb,
         verb: 'added audio to',
         mediaFileId: file._id,
@@ -3804,6 +3858,7 @@ export function buildApiRouter() {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
       const result = await setStoryboardAudioViaGateway({
+        projectId: req.projectId,
         storyboardId: sbId,
         audioFileId: null,
       });
@@ -3811,7 +3866,7 @@ export function buildApiRouter() {
       if (result?.beat_id) {
         announceStoryboardMedia({
           req,
-          beat: await getBeat(undefined, String(result.beat_id)),
+          beat: await getBeat(req.projectId, String(result.beat_id)),
           storyboard: result,
           verb: 'deleted audio from',
         });
@@ -3841,8 +3896,8 @@ export function buildApiRouter() {
         if (inferred?.startsWith('video/')) ct = inferred;
         else return res.status(400).json({ error: 'file must be video/*' });
       }
-      const sb = await getStoryboard(undefined, sbId);
-      const file = await uploadAttachmentBuffer(undefined, {
+      const sb = await getStoryboard(req.projectId, sbId);
+      const file = await uploadAttachmentBuffer(req.projectId, {
         buffer: req.file.buffer,
         filename: safeFilename(
           req.file.originalname,
@@ -3853,6 +3908,7 @@ export function buildApiRouter() {
         ownerId: sb.beat_id,
       });
       const result = await setStoryboardUploadedVideoViaGateway({
+        projectId: req.projectId,
         storyboardId: sbId,
         videoFileId: file._id,
       });
@@ -3867,7 +3923,7 @@ export function buildApiRouter() {
       });
       announceStoryboardMedia({
         req,
-        beat: await getBeat(undefined, String(sb.beat_id)),
+        beat: await getBeat(req.projectId, String(sb.beat_id)),
         storyboard: result || sb,
         verb: 'uploaded source video to',
         mediaFileId: file._id,
@@ -3883,6 +3939,7 @@ export function buildApiRouter() {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
       const result = await setStoryboardUploadedVideoViaGateway({
+        projectId: req.projectId,
         storyboardId: sbId,
         videoFileId: null,
       });
@@ -3890,7 +3947,7 @@ export function buildApiRouter() {
       if (result?.beat_id) {
         announceStoryboardMedia({
           req,
-          beat: await getBeat(undefined, String(result.beat_id)),
+          beat: await getBeat(req.projectId, String(result.beat_id)),
           storyboard: result,
           verb: 'removed uploaded source video from',
         });
@@ -3910,7 +3967,7 @@ export function buildApiRouter() {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const sb = await getStoryboard(undefined, sbId);
+      const sb = await getStoryboard(req.projectId, sbId);
       const type = String(req.query?.type || '').toLowerCase();
       if (type !== 'audio' && type !== 'video') {
         return res.status(400).json({ error: 'type must be "audio" or "video"' });
@@ -3920,8 +3977,8 @@ export function buildApiRouter() {
       const excludeStr = currentFileId ? String(currentFileId) : null;
       const prefix = `${type}/`;
 
-      const plot = await getPlot();
-      const characters = await listCharacters();
+      const plot = await getPlot(req.projectId);
+      const characters = await listCharacters(req.projectId);
       const refs = [];
 
       for (const beat of plot?.beats || []) {
@@ -3996,9 +4053,9 @@ export function buildApiRouter() {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const currentSb = await getStoryboard(undefined, sbId);
+      const currentSb = await getStoryboard(req.projectId, sbId);
 
-      const plot = await getPlot();
+      const plot = await getPlot(req.projectId);
       const beatMetaById = new Map();
       for (const b of plot?.beats || []) {
         if (b._id) {
@@ -4012,7 +4069,7 @@ export function buildApiRouter() {
       }
 
       // 1. Generated videos on every shot, including the current one.
-      const all = await listStoryboards();
+      const all = await listStoryboards({ projectId: req.projectId });
       const generated = [];
       for (const sb of all) {
         if (!sb.video_file_id) continue;
@@ -4056,7 +4113,7 @@ export function buildApiRouter() {
       const excludeStr = currentSb?.video_upload_file_id
         ? String(currentSb.video_upload_file_id)
         : null;
-      const characters = await listCharacters();
+      const characters = await listCharacters(req.projectId);
       const references = [];
       for (const beat of plot?.beats || []) {
         const beatName =
@@ -4129,6 +4186,7 @@ export function buildApiRouter() {
       }
       try {
         const result = await copyAttachmentToStoryboardMediaViaGateway({
+          projectId: req.projectId,
           storyboardId: sbId,
           attachmentId: String(attachmentId),
           kind: 'audio',
@@ -4138,7 +4196,7 @@ export function buildApiRouter() {
         if (sb?.beat_id) {
           announceStoryboardMedia({
             req,
-            beat: await getBeat(undefined, String(sb.beat_id)),
+            beat: await getBeat(req.projectId, String(sb.beat_id)),
             storyboard: sb,
             verb: 'added audio (from a reference) to',
             mediaFileId: sb.audio_file_id || null,
@@ -4167,6 +4225,7 @@ export function buildApiRouter() {
       }
       try {
         const result = await copyAttachmentToStoryboardMediaViaGateway({
+          projectId: req.projectId,
           storyboardId: sbId,
           attachmentId: String(attachmentId),
           kind: 'video',
@@ -4176,7 +4235,7 @@ export function buildApiRouter() {
         if (sb?.beat_id) {
           announceStoryboardMedia({
             req,
-            beat: await getBeat(undefined, String(sb.beat_id)),
+            beat: await getBeat(req.projectId, String(sb.beat_id)),
             storyboard: sb,
             verb: 'added source video (from a reference) to',
             mediaFileId: sb.video_upload_file_id || null,
@@ -4243,6 +4302,7 @@ export function buildApiRouter() {
       if (fps === ERR) return; // response already sent
       try {
         const preview = await buildVideoPayloadPreview({
+          projectId: req.projectId,
           storyboardId: sbId,
           modelId,
           prompt,
@@ -4309,6 +4369,7 @@ export function buildApiRouter() {
       if (fps === ERR) return; // response already sent
       try {
         const { job_id } = await startVideoGenerationJob({
+          projectId: req.projectId,
           storyboardId: sbId,
           modelId,
           prompt,
@@ -4369,9 +4430,10 @@ export function buildApiRouter() {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const sb = await getStoryboard(undefined, sbId);
+      const sb = await getStoryboard(req.projectId, sbId);
       const oldId = sb?.video_file_id || null;
       const result = await setStoryboardVideoViaGateway({
+        projectId: req.projectId,
         storyboardId: sbId,
         videoFileId: null,
       });
@@ -4386,7 +4448,7 @@ export function buildApiRouter() {
       if (result?.beat_id) {
         announceStoryboardMedia({
           req,
-          beat: await getBeat(undefined, String(result.beat_id)),
+          beat: await getBeat(req.projectId, String(result.beat_id)),
           storyboard: result,
           verb: 'deleted video from',
         });
@@ -4409,6 +4471,7 @@ export function buildApiRouter() {
       }
       try {
         const result = await copyDialogAudioToStoryboardViaGateway({
+          projectId: req.projectId,
           storyboardId: sbId,
           dialogId: String(dialogId),
         });
@@ -4417,7 +4480,7 @@ export function buildApiRouter() {
         if (sb?.beat_id) {
           announceStoryboardMedia({
             req,
-            beat: await getBeat(undefined, String(sb.beat_id)),
+            beat: await getBeat(req.projectId, String(sb.beat_id)),
             storyboard: sb,
             verb: 'added audio (from a dialog) to',
             mediaFileId: sb.audio_file_id || null,
@@ -4444,7 +4507,7 @@ export function buildApiRouter() {
     try {
       const beatRef = req.body?.beat_id;
       if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const target = Number(req.body?.count) > 0 ? Number(req.body.count) : null;
       const imageModel = normalizeImageModel(req.body?.image_model);
@@ -4483,7 +4546,7 @@ export function buildApiRouter() {
     try {
       const beatRef = req.body?.beat_id;
       if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const direction =
         typeof req.body?.direction === 'string' ? req.body.direction : '';
@@ -4509,7 +4572,7 @@ export function buildApiRouter() {
     try {
       const beatRef = req.body?.beat_id;
       if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const direction =
         typeof req.body?.direction === 'string' ? req.body.direction : '';
@@ -4560,7 +4623,7 @@ export function buildApiRouter() {
     try {
       const beatRef = req.body?.beat_id;
       if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const { isBeatLocked } = await import('./beatLocks.js');
       if (isBeatLocked(beat._id)) {
@@ -4569,7 +4632,7 @@ export function buildApiRouter() {
           .json({ error: 'Storyboard work in progress for this beat; try again' });
       }
       const { deleteAllStoryboardsForBeatViaGateway } = await import('./gateway.js');
-      const result = await deleteAllStoryboardsForBeatViaGateway({ beatId: beat._id });
+      const result = await deleteAllStoryboardsForBeatViaGateway({ projectId: req.projectId, beatId: beat._id });
       res.json({ ...result, beat_id: beat._id.toString() });
     } catch (e) {
       next(e);
@@ -4583,7 +4646,7 @@ export function buildApiRouter() {
     try {
       const beatRef = req.body?.beat_id;
       if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const imageModel = normalizeImageModel(req.body?.image_model);
       if (!isValidImageModel(imageModel)) {
@@ -4630,7 +4693,7 @@ export function buildApiRouter() {
     try {
       const beatRef = req.body?.beat_id;
       if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const { isBeatLocked } = await import('./beatLocks.js');
       if (isBeatLocked(beat._id)) {
@@ -4639,7 +4702,7 @@ export function buildApiRouter() {
           .json({ error: 'Storyboard work in progress for this beat; try again' });
       }
       const { clearAllFrameImagesForBeatViaGateway } = await import('./gateway.js');
-      const result = await clearAllFrameImagesForBeatViaGateway({ beatId: beat._id });
+      const result = await clearAllFrameImagesForBeatViaGateway({ projectId: req.projectId, beatId: beat._id });
       res.json({ ...result, beat_id: beat._id.toString() });
     } catch (e) {
       next(e);
@@ -4656,7 +4719,7 @@ export function buildApiRouter() {
       if (!instructions || typeof instructions !== 'string' || !instructions.trim()) {
         return res.status(400).json({ error: 'instructions (non-empty string) required' });
       }
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const { isBeatLocked, withBeatLock } = await import('./beatLocks.js');
       if (isBeatLocked(beat._id)) {
@@ -4686,7 +4749,7 @@ export function buildApiRouter() {
   async function resolveDialogId(req) {
     const { id } = req.params;
     if (!isOidHex(id)) return null;
-    const d = await getDialog(undefined, id);
+    const d = await getDialog(req.projectId, id);
     return d?._id?.toString() || null;
   }
 
@@ -4696,7 +4759,7 @@ export function buildApiRouter() {
       if (beatRef == null || beatRef === '') {
         return res.status(400).json({ error: 'beat_id required' });
       }
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const items = await listDialogs({ beatId: beat._id });
       res.json({
@@ -4718,9 +4781,10 @@ export function buildApiRouter() {
     try {
       const beatRef = req.body?.beat_id;
       if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const d = await createDialogViaGateway({
+        projectId: req.projectId,
         beatId: beat._id,
         body: String(req.body?.body || ''),
         character: String(req.body?.character || ''),
@@ -4735,7 +4799,7 @@ export function buildApiRouter() {
     try {
       const dId = await resolveDialogId(req);
       if (!dId) return res.status(404).json({ error: 'dialog not found' });
-      const result = await deleteDialogViaGateway({ dialogId: dId });
+      const result = await deleteDialogViaGateway({ projectId: req.projectId, dialogId: dId });
       res.json(result);
     } catch (e) {
       next(e);
@@ -4765,16 +4829,17 @@ export function buildApiRouter() {
       } = await import('./gateway.js');
       try {
         if (hasBody) {
-          await setDialogTextFieldViaGateway({ dialogId: dId, field: 'body', text: body });
+          await setDialogTextFieldViaGateway({ projectId: req.projectId, dialogId: dId, field: 'body', text: body });
         }
         let dialog;
         if (hasCharacter) {
           dialog = await setDialogCharacterViaGateway({
+            projectId: req.projectId,
             dialogId: dId,
             characterName: character,
           });
         } else {
-          dialog = await getDialog(undefined, dId);
+          dialog = await getDialog(req.projectId, dId);
         }
         res.json({ dialog });
       } catch (e) {
@@ -4805,7 +4870,7 @@ export function buildApiRouter() {
         if (inferred?.startsWith('audio/')) ct = inferred;
         else return res.status(400).json({ error: 'file must be audio/*' });
       }
-      const dialog = await getDialog(undefined, dId);
+      const dialog = await getDialog(req.projectId, dId);
       let audio;
       try {
         audio = await normalizeUploadedAudioToMp3({
@@ -4818,7 +4883,7 @@ export function buildApiRouter() {
         if (handled) return handled;
         throw e;
       }
-      const file = await uploadAttachmentBuffer(undefined, {
+      const file = await uploadAttachmentBuffer(req.projectId, {
         buffer: audio.buffer,
         filename: audio.filename,
         contentType: audio.contentType,
@@ -4826,6 +4891,7 @@ export function buildApiRouter() {
         ownerId: dialog._id,
       });
       const result = await setDialogAudioViaGateway({
+        projectId: req.projectId,
         dialogId: dId,
         audioFileId: file._id,
       });
@@ -4841,7 +4907,7 @@ export function buildApiRouter() {
       if (dialog?.beat_id) {
         announceBeatMedia({
           req,
-          beat: await getBeat(undefined, String(dialog.beat_id)),
+          beat: await getBeat(req.projectId, String(dialog.beat_id)),
           verb: 'added dialog audio in',
           mediaFileId: file._id,
           mediaLabel: file.filename || 'audio',
@@ -4857,6 +4923,7 @@ export function buildApiRouter() {
       const dId = await resolveDialogId(req);
       if (!dId) return res.status(404).json({ error: 'dialog not found' });
       const result = await setDialogAudioViaGateway({
+        projectId: req.projectId,
         dialogId: dId,
         audioFileId: null,
       });
@@ -4864,7 +4931,7 @@ export function buildApiRouter() {
       if (result?.beat_id) {
         announceBeatMedia({
           req,
-          beat: await getBeat(undefined, String(result.beat_id)),
+          beat: await getBeat(req.projectId, String(result.beat_id)),
           verb: 'deleted dialog audio from',
         });
       }
@@ -4881,9 +4948,10 @@ export function buildApiRouter() {
       if (!Array.isArray(orderedIds)) {
         return res.status(400).json({ error: 'ordered_ids must be an array' });
       }
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const result = await reorderDialogsViaGateway({
+        projectId: req.projectId,
         beatId: beat._id,
         orderedIds,
       });
@@ -4900,7 +4968,7 @@ export function buildApiRouter() {
     try {
       const beatRef = req.body?.beat_id;
       if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const { startDialogGenerationJob, BeatBusyError } = await import(
         './dialogGenerate.js'
@@ -4937,7 +5005,7 @@ export function buildApiRouter() {
     try {
       const beatRef = req.body?.beat_id;
       if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const { isBeatLocked } = await import('./beatLocks.js');
       if (isBeatLocked(beat._id)) {
@@ -4946,7 +5014,7 @@ export function buildApiRouter() {
           .json({ error: 'Dialog work in progress for this beat; try again' });
       }
       const { deleteAllDialogsForBeatViaGateway } = await import('./gateway.js');
-      const result = await deleteAllDialogsForBeatViaGateway({ beatId: beat._id });
+      const result = await deleteAllDialogsForBeatViaGateway({ projectId: req.projectId, beatId: beat._id });
       res.json({ ...result, beat_id: beat._id.toString() });
     } catch (e) {
       next(e);
@@ -4963,7 +5031,7 @@ export function buildApiRouter() {
       if (!instructions || typeof instructions !== 'string' || !instructions.trim()) {
         return res.status(400).json({ error: 'instructions (non-empty string) required' });
       }
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const { isBeatLocked, withBeatLock } = await import('./beatLocks.js');
       if (isBeatLocked(beat._id)) {
@@ -5009,7 +5077,7 @@ export function buildApiRouter() {
     try {
       const beatRef = req.body?.beat_id;
       if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(undefined, String(beatRef));
+      const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const { critiqueDialog } = await import('./dialogCritique.js');
       const result = await critiqueDialog({ beatId: beat._id.toString() });
@@ -5020,10 +5088,10 @@ export function buildApiRouter() {
   });
 
   // Project-level dialogue style / influences (steers every dialogue op).
-  router.get('/plot/dialogue-style', async (_req, res, next) => {
+  router.get('/plot/dialogue-style', async (req, res, next) => {
     try {
       const { getPlot } = await import('../mongo/plots.js');
-      const plot = await getPlot();
+      const plot = await getPlot(req.projectId);
       res.json({ dialogue_style: plot.dialogue_style || '' });
     } catch (e) {
       next(e);

@@ -49,6 +49,22 @@ vi.mock('../src/web/auth.js', () => ({
   requireSession: () => (_req, _res, next) => next(),
 }));
 
+// resolveProject() middleware needs Mongo to look up projects. Mock the
+// projects module to return a fixed default so tests that don't care about
+// multi-project scoping don't need a real (or fake) DB connection.
+vi.mock('../src/mongo/projects.js', () => ({
+  getProjectById: async () => null,
+  getDefaultProject: async () => ({
+    _id: { toString: () => '000000000000000000000001' },
+    title: 'Screenplay',
+  }),
+  normalizeProjectTitle: (t) => {
+    const s = String(t ?? '').trim();
+    if (!s) throw new Error('project title must be a non-empty string');
+    return s;
+  },
+}));
+
 vi.mock('../src/mongo/plots.js', () => ({
   getBeat: async (_projectId, idOrOrder) => {
     if (idOrOrder === beatId.toString() || idOrOrder === '7') {
