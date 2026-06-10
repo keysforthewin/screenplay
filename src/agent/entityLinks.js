@@ -104,7 +104,7 @@ export async function resolveEntityLinks(touched, context = null) {
   };
 
   if (touched.notes) {
-    push(notesUrl());
+    push(notesUrl(context?.projectTitle));
   }
 
   let currentBeatPromise = null;
@@ -127,13 +127,13 @@ export async function resolveEntityLinks(touched, context = null) {
     } else {
       beat = await safeCall(() => getBeat(context?.projectId, ref));
     }
-    push(beatUrl(beat));
+    push(beatUrl(context?.projectTitle, beat));
   }
 
   for (const ref of touched.characters || []) {
     if (urls.length >= MAX_URLS) break;
     const character = await safeCall(() => getCharacter(context?.projectId, ref));
-    push(characterUrl(character));
+    push(characterUrl(context?.projectTitle, character));
   }
 
   return urls.slice(0, MAX_URLS);

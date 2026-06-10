@@ -356,10 +356,10 @@ function serializeBeat(b, { fullBody = false } = {}) {
   return out;
 }
 
-async function maybeAutoFetchActorPortrait(characterIdentifier) {
+async function maybeAutoFetchActorPortrait(projectId, characterIdentifier) {
   let c;
   try {
-    c = await Characters.getCharacter(undefined, characterIdentifier);
+    c = await Characters.getCharacter(projectId, characterIdentifier);
   } catch (e) {
     return ` (Note: could not re-read character to auto-fetch portrait: ${e.message})`;
   }
@@ -374,6 +374,7 @@ async function maybeAutoFetchActorPortrait(characterIdentifier) {
 
   try {
     await Files.attachImageToCharacter({
+      projectId,
       character: c._id.toString(),
       sourceUrl: lookup.url,
       filename: null,
@@ -387,25 +388,25 @@ async function maybeAutoFetchActorPortrait(characterIdentifier) {
   }
 }
 
-async function resolveBeat(identifier, { allowCurrent = true } = {}) {
+async function resolveBeat(projectId, identifier, { allowCurrent = true } = {}) {
   if (identifier === undefined || identifier === null || identifier === '') {
     if (!allowCurrent) throw new Error('A beat identifier is required.');
-    const cur = await Plots.getCurrentBeat();
+    const cur = await Plots.getCurrentBeat(projectId);
     if (!cur) {
       throw new Error('No current beat is set. Pass an explicit `beat` identifier or call set_current_beat first.');
     }
     return cur;
   }
-  const b = await Plots.getBeat(undefined, String(identifier));
+  const b = await Plots.getBeat(projectId, String(identifier));
   if (!b) throw new Error(`Beat not found: ${identifier}`);
   return b;
 }
 
-async function resolveDirectorNote(noteId) {
+async function resolveDirectorNote(projectId, noteId) {
   if (!noteId || typeof noteId !== 'string') {
     throw new Error('A note_id is required.');
   }
-  const doc = await DirectorNotes.getDirectorNotes();
+  const doc = await DirectorNotes.getDirectorNotes(projectId);
   const note = DirectorNotes.getDirectorNote(doc.notes || [], noteId);
   if (!note) throw new Error(`Director's note not found: ${noteId}`);
   return note;
@@ -414,14 +415,14 @@ async function resolveDirectorNote(noteId) {
 const CHARACTER_TEXT_FIELDS = ['background_story', 'origin_story', 'arc', 'events', 'memes'];
 const BEAT_TEXT_FIELDS = ['name', 'desc', 'body'];
 
-async function appendSimilarityHeadsUp(type, item, baseMessage) {
+async function appendSimilarityHeadsUp(projectId, type, item, baseMessage) {
   try {
     const selfId = item?._id ? item._id.toString() : null;
     let corpus;
     let targetText;
 
     if (type === 'character') {
-      const all = await Characters.findAllCharacters();
+      const all = await Characters.findAllCharacters(projectId);
       corpus = all.map((c) => {
         const fields = {};
         for (const f of CHARACTER_TEXT_FIELDS) fields[f] = String(c.fields?.[f] || '');
@@ -431,7 +432,7 @@ async function appendSimilarityHeadsUp(type, item, baseMessage) {
         .filter(Boolean)
         .join('\n');
     } else if (type === 'beat') {
-      const beats = await Plots.listBeats();
+      const beats = await Plots.listBeats(projectId);
       corpus = beats.map((b) => {
         const fields = {};
         for (const f of BEAT_TEXT_FIELDS) fields[f] = String(b[f] || '');
@@ -744,6 +745,7 @@ function csvGroupKey(values) {
 }
 
 async function runCsvExport({
+  projectId,
   entity,
   docs,
   columns,
@@ -774,7 +776,7 @@ async function runCsvExport({
   if (entity === 'characters') {
     const refs = collectCsvFieldRefs({ columns, filter, group_by: groupBy, sort });
     if (refs.has('appears_in_beats')) {
-      const beats = await Plots.listBeats();
+      const beats = await Plots.listBeats(projectId);
       const m = new Map();
       for (const b of beats) {
         for (const n of b.characters || []) {
@@ -905,9 +907,9 @@ async function runSimilaritySearch({ query, maxResults = 8, rawContentTopN = 3 }
 // Helpers used by the unified `edit` handler. Throw to signal user-facing
 // errors — dispatchTool wraps them into the canonical "Tool error (edit): ..."
 // shape, and dispatchToolUses tags the tool_result with is_error: true.
-async function resolveEditTarget({ collection, identifier, field }) {
+async function resolveEditTarget(context, { collection, identifier, field }) {
   if (collection === 'beat') {
-    const target = await resolveBeat(identifier);
+    const target = await resolveBeat(context?.projectId, identifier);
     let gatewayField;
     let currentValue;
     if (field === 'name' || field === 'desc' || field === 'body') {
@@ -922,14 +924,14 @@ async function resolveEditTarget({ collection, identifier, field }) {
       gatewayField,
       currentValue,
       displayName: `beat "${target.name}".${gatewayField}`,
-      urlForLink: beatUrl(target),
+      urlForLink: beatUrl(context?.projectTitle, target),
     };
   }
   if (collection === 'character') {
     if (typeof identifier !== 'string' || !identifier.trim()) {
       throw new Error('`identifier` is required for character.');
     }
-    const c = await Characters.getCharacter(undefined, identifier);
+    const c = await Characters.getCharacter(context?.projectId, identifier);
     if (!c) throw new Error(`No character found for "${identifier}".`);
     let gatewayField;
     let currentValue;
@@ -955,7 +957,7 @@ async function resolveEditTarget({ collection, identifier, field }) {
       gatewayField,
       currentValue,
       displayName: `${c.name}.${gatewayField}`,
-      urlForLink: characterUrl(c),
+      urlForLink: characterUrl(context?.projectTitle, c),
     };
   }
   if (collection === 'director_note') {
@@ -965,14 +967,14 @@ async function resolveEditTarget({ collection, identifier, field }) {
     if (typeof identifier !== 'string' || !identifier.trim()) {
       throw new Error('`identifier` is required for director_note.');
     }
-    const note = await resolveDirectorNote(identifier);
+    const note = await resolveDirectorNote(context?.projectId, identifier);
     return {
       entityType: 'notes',
       entityId: 'notes',
       gatewayField: `note:${note._id.toString()}:text`,
       currentValue: String(note.text || ''),
       displayName: `director's note ${note._id}.text`,
-      urlForLink: notesUrl(),
+      urlForLink: notesUrl(context?.projectTitle),
     };
   }
   throw new Error(`Unsupported collection: ${collection}`);
@@ -994,14 +996,15 @@ function formatPerEditSummary(applied) {
 // style (each beat also has its own `dialog_notes`, edited via the dialogs room).
 const PLOT_EDIT_FIELDS = ['title', 'synopsis', 'dialogue_style', 'notes'];
 
-async function editPlotEntity({ field, edits, isWholeReplace }) {
+async function editPlotEntity(context, { field, edits, isWholeReplace }) {
   if (!PLOT_EDIT_FIELDS.includes(field)) {
     return `Tool error (edit): plot field must be one of ${PLOT_EDIT_FIELDS.join(', ')}; got "${field}".`;
   }
-  const current = String((await Plots.getPlot())[field] || '');
+  const current = String((await Plots.getPlot(context?.projectId))[field] || '');
   if (isWholeReplace) {
     const newText = String(edits[0].replace ?? '');
     await Gateway.setEntityFieldMarkdown({
+      projectId: context?.projectId,
       entityType: 'plot',
       entityId: 'plot',
       field,
@@ -1011,10 +1014,11 @@ async function editPlotEntity({ field, edits, isWholeReplace }) {
     const sign = delta >= 0 ? '+' : '';
     return withSpaLink(
       `Replaced plot.${field}. Was ${current.length} chars; now ${newText.length} chars (${sign}${delta}).`,
-      aboutUrl(),
+      aboutUrl(context?.projectTitle),
     );
   }
   const result = await Gateway.editEntityFieldMarkdown({
+    projectId: context?.projectId,
     entityType: 'plot',
     entityId: 'plot',
     field,
@@ -1024,17 +1028,17 @@ async function editPlotEntity({ field, edits, isWholeReplace }) {
     `Applied ${result.applied?.length ?? 0} edit(s) to plot.${field}. ` +
       `Value: ${result.beforeLen} → ${result.afterLen} chars.\n` +
       formatPerEditSummary(result.applied),
-    aboutUrl(),
+    aboutUrl(context?.projectTitle),
   );
 }
 
 export const HANDLERS = {
-  async get_overview() {
-    return compact(await buildOverview());
+  async get_overview(_input = {}, context = null) {
+    return compact(await buildOverview(context?.projectId));
   },
 
-  async list_characters() {
-    const list = await Characters.listCharacters();
+  async list_characters(_input = {}, context = null) {
+    const list = await Characters.listCharacters(context?.projectId);
     return compact(
       list.map((c) => ({
         _id: c._id.toString(),
@@ -1044,18 +1048,18 @@ export const HANDLERS = {
     );
   },
 
-  async get_character({ identifier, full_fields } = {}) {
-    const c = await Characters.getCharacter(undefined, identifier);
+  async get_character({ identifier, full_fields } = {}, context = null) {
+    const c = await Characters.getCharacter(context?.projectId, identifier);
     if (!c) return `No character found for "${identifier}".`;
     return withSpaLink(
       compact(withTruncatedCharacterFields(withoutImageFilenames(c), { fullFields: !!full_fields })),
-      characterUrl(c),
+      characterUrl(context?.projectTitle, c),
     );
   },
 
   // Universal find/replace on any text field. Empty `find` (single-edit calls
   // only) means whole-field replace.
-  async edit(input = {}) {
+  async edit(input = {}, context = null) {
     if (typeof input === 'string') {
       const recovered = coerceStringifiedJson(input);
       if (recovered) {
@@ -1094,15 +1098,16 @@ export const HANDLERS = {
     }
 
     if (collection === 'plot') {
-      return await editPlotEntity({ field, edits, isWholeReplace });
+      return await editPlotEntity(context, { field, edits, isWholeReplace });
     }
 
-    const target = await resolveEditTarget({ collection, identifier, field });
+    const target = await resolveEditTarget(context, { collection, identifier, field });
 
     let summary;
     if (isWholeReplace) {
       const newText = String(edits[0].replace ?? '');
       await Gateway.setEntityFieldMarkdown({
+        projectId: context?.projectId,
         entityType: target.entityType,
         entityId: target.entityId,
         field: target.gatewayField,
@@ -1115,6 +1120,7 @@ export const HANDLERS = {
       summary = `Replaced ${target.displayName}. Was ${before} chars; now ${after} chars (${sign}${delta}).`;
     } else {
       const result = await Gateway.editEntityFieldMarkdown({
+        projectId: context?.projectId,
         entityType: target.entityType,
         entityId: target.entityId,
         field: target.gatewayField,
@@ -1130,12 +1136,12 @@ export const HANDLERS = {
     if (collection === 'character') {
       // Similarity heads-up when name or any custom field changed.
       if (target.gatewayField === 'name' || target.gatewayField.startsWith('fields.')) {
-        const fresh = await Characters.getCharacter(undefined, target.entityId);
-        if (fresh) summary = await appendSimilarityHeadsUp('character', fresh, summary);
+        const fresh = await Characters.getCharacter(context?.projectId, target.entityId);
+        if (fresh) summary = await appendSimilarityHeadsUp(context?.projectId, 'character', fresh, summary);
       }
       // Auto-attach a TMDB portrait when the character has a hollywood_actor
       // set and no main image.
-      const note = await maybeAutoFetchActorPortrait(target.entityId);
+      const note = await maybeAutoFetchActorPortrait(context?.projectId, target.entityId);
       if (note) summary = `${summary}${note}`;
     } else if (collection === 'beat') {
       if (
@@ -1143,15 +1149,15 @@ export const HANDLERS = {
         target.gatewayField === 'desc' ||
         target.gatewayField === 'body'
       ) {
-        const fresh = await Plots.getBeat(undefined, target.entityId);
-        if (fresh) summary = await appendSimilarityHeadsUp('beat', fresh, summary);
+        const fresh = await Plots.getBeat(context?.projectId, target.entityId);
+        if (fresh) summary = await appendSimilarityHeadsUp(context?.projectId, 'beat', fresh, summary);
       }
     }
     return withSpaLink(summary, target.urlForLink);
   },
 
   // Atomic value assignment for non-text fields. For text fields use `edit`.
-  async set_field(input = {}) {
+  async set_field(input = {}, context = null) {
     if (typeof input === 'string') {
       const recovered = coerceStringifiedJson(input);
       if (recovered) {
@@ -1197,7 +1203,7 @@ export const HANDLERS = {
           : JSON.stringify(value);
       return withSpaLink(
         `Set beat "${beat.name}".${field} = ${display}.`,
-        beatUrl(beat),
+        beatUrl(context?.projectTitle, beat),
       );
     }
 
@@ -1210,17 +1216,20 @@ export const HANDLERS = {
     }
     const c = await Gateway.updateCharacterViaGateway(identifier, { unset: value });
     const summary = `Unset ${value.length} field(s) on ${c.name}: [${value.join(', ')}].`;
-    return withSpaLink(summary, characterUrl(c));
+    return withSpaLink(summary, characterUrl(context?.projectTitle, c));
   },
 
-  async create_character(input) {
-    const c = await Characters.createCharacter(input);
-    const note = await maybeAutoFetchActorPortrait(c._id.toString());
+  async create_character(input, context = null) {
+    const c = await Characters.createCharacter({ projectId: context?.projectId, ...input });
+    const note = await maybeAutoFetchActorPortrait(context?.projectId, c._id.toString());
     const base = `Created character ${c.name} (_id ${c._id}).${note || ''}`;
-    return withSpaLink(await appendSimilarityHeadsUp('character', c, base), characterUrl(c));
+    return withSpaLink(
+      await appendSimilarityHeadsUp(context?.projectId, 'character', c, base),
+      characterUrl(context?.projectTitle, c),
+    );
   },
 
-  async bulk_update_character_field({ field_name, updates, batch_size } = {}) {
+  async bulk_update_character_field({ field_name, updates, batch_size } = {}, context = null) {
     if (!field_name || typeof field_name !== 'string') {
       return 'Error: field_name is required.';
     }
@@ -1301,14 +1310,14 @@ export const HANDLERS = {
     return lines.join('\n');
   },
 
-  async revise_character({ identifier, instructions } = {}) {
+  async revise_character({ identifier, instructions } = {}, context = null) {
     if (!identifier || typeof identifier !== 'string') {
       return 'Error: identifier is required.';
     }
     if (!instructions || typeof instructions !== 'string' || !instructions.trim()) {
       return 'Error: instructions is required.';
     }
-    const character = await Characters.getCharacter(undefined, identifier);
+    const character = await Characters.getCharacter(context?.projectId, identifier);
     if (!character) return `Character not found: ${identifier}`;
 
     const fields = character.fields || {};
@@ -1316,7 +1325,7 @@ export const HANDLERS = {
     if (fieldNames.length === 0) {
       return withSpaLink(
         `${character.name} has no custom fields to revise.`,
-        characterUrl(character),
+        characterUrl(context?.projectTitle, character),
       );
     }
 
@@ -1363,20 +1372,20 @@ export const HANDLERS = {
     if (Object.keys(patch).length === 0) {
       return withSpaLink(
         `Revised ${character.name}: no changes (all ${fieldNames.length} field(s) kept).`,
-        characterUrl(character),
+        characterUrl(context?.projectTitle, character),
       );
     }
-    const fresh = await Characters.updateCharacter(undefined, character._id.toString(), patch);
+    const fresh = await Characters.updateCharacter(context?.projectId, character._id.toString(), patch);
 
     const lines = [`Revised ${fresh.name}:`];
     if (edited.length) lines.push(`- edited: ${edited.join(', ')}`);
     if (deleted.length) lines.push(`- removed: ${deleted.join(', ')}`);
     if (kept.length) lines.push(`- unchanged: ${kept.length} field(s)`);
-    return withSpaLink(lines.join('\n'), characterUrl(fresh));
+    return withSpaLink(lines.join('\n'), characterUrl(context?.projectTitle, fresh));
   },
 
-  async search_characters({ query }) {
-    const results = await Characters.searchCharacters(undefined, query);
+  async search_characters({ query }, context = null) {
+    const results = await Characters.searchCharacters(context?.projectId, query);
     return compact(
       results.map((c) => ({
         _id: c._id.toString(),
@@ -1387,27 +1396,27 @@ export const HANDLERS = {
     );
   },
 
-  async delete_character({ identifier }) {
-    const existing = await Characters.getCharacter(undefined, identifier);
+  async delete_character({ identifier }, context = null) {
+    const existing = await Characters.getCharacter(context?.projectId, identifier);
     if (!existing) return `No character found for "${identifier}".`;
-    const { unlinked_from } = await Plots.unlinkCharacterFromAllBeats(undefined, existing.name);
-    const res = await Characters.deleteCharacter(undefined, existing._id.toString());
+    const { unlinked_from } = await Plots.unlinkCharacterFromAllBeats(context?.projectId, existing.name);
+    const res = await Characters.deleteCharacter(context?.projectId, existing._id.toString());
     await Images.deleteImages(res.image_ids);
     await Attachments.deleteAttachments(res.attachment_ids);
     return `Deleted character "${res.name}" — unlinked from ${unlinked_from} beat(s), removed ${res.image_ids.length} image(s) and ${res.attachment_ids.length} attachment(s).`;
   },
 
-  async get_character_template() {
-    return compact(await Prompts.getCharacterTemplate());
+  async get_character_template(_input = {}, context = null) {
+    return compact(await Prompts.getCharacterTemplate(context?.projectId));
   },
 
-  async update_character_template({ add = [], remove = [] }) {
-    const tpl = await Prompts.updateCharacterTemplateFields({ add, remove });
+  async update_character_template({ add = [], remove = [] }, context = null) {
+    const tpl = await Prompts.updateCharacterTemplateFields({ projectId: context?.projectId, add, remove });
     return `Template updated. New fields:\n${compact(tpl.fields)}`;
   },
 
-  async list_director_notes() {
-    const doc = await DirectorNotes.getDirectorNotes();
+  async list_director_notes(_input = {}, context = null) {
+    const doc = await DirectorNotes.getDirectorNotes(context?.projectId);
     const threshold = config.agent?.bodyPreviewThreshold ?? 8000;
     const text = compact(
       (doc.notes || []).map((n) => {
@@ -1427,18 +1436,21 @@ export const HANDLERS = {
         };
       }),
     );
-    return withSpaLink(text, notesUrl());
+    return withSpaLink(text, notesUrl(context?.projectTitle));
   },
 
-  async add_director_note({ text, position } = {}) {
-    const note = await Gateway.addDirectorNoteViaGateway({ text, position });
-    return withSpaLink(`Added director's note ${note._id}: ${preview(note.text)}`, notesUrl());
+  async add_director_note({ text, position } = {}, context = null) {
+    const note = await Gateway.addDirectorNoteViaGateway({ projectId: context?.projectId, text, position });
+    return withSpaLink(
+      `Added director's note ${note._id}: ${preview(note.text)}`,
+      notesUrl(context?.projectTitle),
+    );
   },
 
   // Append a representative dialogue sample from a named film — recalled from
   // the model's own knowledge — to the project's GLOBAL dialogue style, so it
   // steers Generate/Regenerate/Critique across every beat.
-  async add_film_dialogue_sample({ film, sample, note } = {}) {
+  async add_film_dialogue_sample({ film, sample, note } = {}, context = null) {
     if (typeof film !== 'string' || !film.trim()) {
       return 'Tool error (add_film_dialogue_sample): `film` is required.';
     }
@@ -1448,6 +1460,7 @@ export const HANDLERS = {
     const noteLine = typeof note === 'string' && note.trim() ? `\n_${note.trim()}_` : '';
     const content = `**Sample — ${film.trim()}:**\n${sample.trim()}${noteLine}`;
     await Gateway.appendEntityFieldMarkdown({
+      projectId: context?.projectId,
       entityType: 'plot',
       entityId: 'plot',
       field: 'dialogue_style',
@@ -1455,23 +1468,23 @@ export const HANDLERS = {
     });
     return withSpaLink(
       `Added a dialogue sample from "${film.trim()}" to the global dialogue style.`,
-      aboutUrl(),
+      aboutUrl(context?.projectTitle),
     );
   },
 
-  async remove_director_note({ note_id } = {}) {
-    await Gateway.removeDirectorNoteViaGateway({ noteId: note_id });
-    return withSpaLink(`Removed director's note ${note_id}.`, notesUrl());
+  async remove_director_note({ note_id } = {}, context = null) {
+    await Gateway.removeDirectorNoteViaGateway({ projectId: context?.projectId, noteId: note_id });
+    return withSpaLink(`Removed director's note ${note_id}.`, notesUrl(context?.projectTitle));
   },
 
-  async reorder_director_notes({ note_ids } = {}) {
-    const reordered = await DirectorNotes.reorderDirectorNotes({ noteIds: note_ids });
-    return withSpaLink(`Reordered ${reordered.length} director's note(s).`, notesUrl());
+  async reorder_director_notes({ note_ids } = {}, context = null) {
+    const reordered = await DirectorNotes.reorderDirectorNotes({ projectId: context?.projectId, noteIds: note_ids });
+    return withSpaLink(`Reordered ${reordered.length} director's note(s).`, notesUrl(context?.projectTitle));
   },
 
-  async add_director_note_image({ note_id, source_url, filename, caption, set_as_main } = {}) {
-    const target = await resolveDirectorNote(note_id);
-    const file = await Images.uploadImageFromUrl(undefined, {
+  async add_director_note_image({ note_id, source_url, filename, caption, set_as_main } = {}, context = null) {
+    const target = await resolveDirectorNote(context?.projectId, note_id);
+    const file = await Images.uploadImageFromUrl(context?.projectId, {
       sourceUrl: source_url,
       filename,
       ownerType: 'director_note',
@@ -1489,7 +1502,7 @@ export const HANDLERS = {
       uploaded_at: file.uploaded_at,
     };
     const { is_main } = await DirectorNotes.pushDirectorNoteImage(
-      undefined,
+      context?.projectId,
       target._id.toString(),
       meta,
       set_as_main,
@@ -1500,11 +1513,11 @@ export const HANDLERS = {
       size: meta.size,
       is_main,
     })}`;
-    return withSpaLink(text, notesUrl());
+    return withSpaLink(text, notesUrl(context?.projectTitle));
   },
 
-  async list_director_note_images({ note_id } = {}) {
-    const target = await resolveDirectorNote(note_id);
+  async list_director_note_images({ note_id } = {}, context = null) {
+    const target = await resolveDirectorNote(context?.projectId, note_id);
     const text = compact({
       note_id: target._id.toString(),
       main_image_id: target.main_image_id ? target.main_image_id.toString() : null,
@@ -1518,20 +1531,20 @@ export const HANDLERS = {
         uploaded_at: i.uploaded_at,
       })),
     });
-    return withSpaLink(text, notesUrl());
+    return withSpaLink(text, notesUrl(context?.projectTitle));
   },
 
-  async set_main_director_note_image({ note_id, image_id } = {}) {
-    const updated = await DirectorNotes.setDirectorNoteMainImage(undefined, note_id, image_id);
+  async set_main_director_note_image({ note_id, image_id } = {}, context = null) {
+    const updated = await DirectorNotes.setDirectorNoteMainImage(context?.projectId, note_id, image_id);
     return withSpaLink(
       `Main image for director's note ${updated._id} set to ${updated.main_image_id.toString()}.`,
-      notesUrl(),
+      notesUrl(context?.projectTitle),
     );
   },
 
-  async remove_director_note_image({ note_id, image_id } = {}) {
+  async remove_director_note_image({ note_id, image_id } = {}, context = null) {
     const { removed, note: updated } = await DirectorNotes.pullDirectorNoteImage(
-      undefined,
+      context?.projectId,
       note_id,
       image_id,
     );
@@ -1540,12 +1553,12 @@ export const HANDLERS = {
       `Removed image ${removed.toString()} from director's note ${updated._id}. Main image is now ${
         updated.main_image_id ? updated.main_image_id.toString() : 'none'
       }.`,
-      notesUrl(),
+      notesUrl(context?.projectTitle),
     );
   },
 
-  async attach_library_image_to_director_note({ image_id, note_id, set_as_main } = {}) {
-    const target = await resolveDirectorNote(note_id);
+  async attach_library_image_to_director_note({ image_id, note_id, set_as_main } = {}, context = null) {
+    const target = await resolveDirectorNote(context?.projectId, note_id);
     const file = await Images.findImageFile(image_id);
     if (!file) throw new Error(`Image not found: ${image_id}`);
     if (
@@ -1553,7 +1566,7 @@ export const HANDLERS = {
       file.metadata?.owner_id &&
       file.metadata.owner_id.equals(target._id)
     ) {
-      return withSpaLink(`Image ${image_id} is already attached to this note.`, notesUrl());
+      return withSpaLink(`Image ${image_id} is already attached to this note.`, notesUrl(context?.projectTitle));
     }
     const movedFrom = await Files.detachImageFromCurrentOwner(file);
     await Images.setImageOwner(image_id, { ownerType: 'director_note', ownerId: target._id });
@@ -1569,7 +1582,7 @@ export const HANDLERS = {
       uploaded_at: file.uploadDate,
     };
     const { is_main } = await DirectorNotes.pushDirectorNoteImage(
-      undefined,
+      context?.projectId,
       target._id.toString(),
       meta,
       set_as_main,
@@ -1577,13 +1590,13 @@ export const HANDLERS = {
     const moveSuffix = formatMovedFromSuffix(movedFrom);
     return withSpaLink(
       `Attached image to director's note ${target._id}${is_main ? ' (now main image)' : ''}${moveSuffix}.`,
-      notesUrl(),
+      notesUrl(context?.projectTitle),
     );
   },
 
-  async add_director_note_attachment({ note_id, source_url, filename, caption } = {}) {
-    const target = await resolveDirectorNote(note_id);
-    const file = await Attachments.uploadAttachmentFromUrl(undefined, {
+  async add_director_note_attachment({ note_id, source_url, filename, caption } = {}, context = null) {
+    const target = await resolveDirectorNote(context?.projectId, note_id);
+    const file = await Attachments.uploadAttachmentFromUrl(context?.projectId, {
       sourceUrl: source_url,
       filename,
       ownerType: 'director_note',
@@ -1597,7 +1610,7 @@ export const HANDLERS = {
       caption: caption?.trim() || null,
       uploaded_at: file.uploaded_at,
     };
-    await DirectorNotes.pushDirectorNoteAttachment(undefined, target._id.toString(), meta);
+    await DirectorNotes.pushDirectorNoteAttachment(context?.projectId, target._id.toString(), meta);
     const text = `Added attachment to director's note ${target._id}.\n${compact({
       _id: meta._id.toString(),
       filename: meta.filename,
@@ -1605,11 +1618,11 @@ export const HANDLERS = {
       size: meta.size,
       caption: meta.caption,
     })}`;
-    return withSpaLink(text, notesUrl());
+    return withSpaLink(text, notesUrl(context?.projectTitle));
   },
 
-  async list_director_note_attachments({ note_id } = {}) {
-    const target = await resolveDirectorNote(note_id);
+  async list_director_note_attachments({ note_id } = {}, context = null) {
+    const target = await resolveDirectorNote(context?.projectId, note_id);
     const text = compact({
       note_id: target._id.toString(),
       attachments: (target.attachments || []).map((a) => ({
@@ -1621,24 +1634,24 @@ export const HANDLERS = {
         uploaded_at: a.uploaded_at,
       })),
     });
-    return withSpaLink(text, notesUrl());
+    return withSpaLink(text, notesUrl(context?.projectTitle));
   },
 
-  async remove_director_note_attachment({ note_id, attachment_id } = {}) {
+  async remove_director_note_attachment({ note_id, attachment_id } = {}, context = null) {
     const { removed, note: updated } = await DirectorNotes.pullDirectorNoteAttachment(
-      undefined,
+      context?.projectId,
       note_id,
       attachment_id,
     );
     await Attachments.deleteAttachment(removed);
     return withSpaLink(
       `Removed attachment ${removed.toString()} from director's note ${updated._id}.`,
-      notesUrl(),
+      notesUrl(context?.projectTitle),
     );
   },
 
-  async get_plot() {
-    const plot = await Plots.getPlot();
+  async get_plot(_input = {}, context = null) {
+    const plot = await Plots.getPlot(context?.projectId);
     return compact({
       title: plot.title || '',
       synopsis: plot.synopsis,
@@ -1648,30 +1661,36 @@ export const HANDLERS = {
     });
   },
 
-  async list_beats() {
-    const plot = await Plots.getPlot();
+  async list_beats(_input = {}, context = null) {
+    const plot = await Plots.getPlot(context?.projectId);
     const beats = [...(plot.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
     return compact(beats.map((b) => serializeBeatSummary(b, plot.current_beat_id)));
   },
 
-  async get_beat({ identifier, full_body } = {}) {
-    const b = await Plots.getBeat(undefined, identifier);
+  async get_beat({ identifier, full_body } = {}, context = null) {
+    const b = await Plots.getBeat(context?.projectId, identifier);
     if (!b) {
       return identifier
         ? `No beat found for "${identifier}".`
         : 'No current beat is set.';
     }
-    return withSpaLink(compact(serializeBeat(b, { fullBody: !!full_body })), beatUrl(b));
+    return withSpaLink(
+      compact(serializeBeat(b, { fullBody: !!full_body })),
+      beatUrl(context?.projectTitle, b),
+    );
   },
 
-  async create_beat({ name, desc, body, characters, order }) {
-    const b = await Plots.createBeat({ name, desc, body, characters, order });
+  async create_beat({ name, desc, body, characters, order }, context = null) {
+    const b = await Plots.createBeat({ projectId: context?.projectId, name, desc, body, characters, order });
     const base = `Created beat "${b.name}" (order ${b.order}, _id ${b._id}). It is now the current beat if none was set.`;
-    return withSpaLink(await appendSimilarityHeadsUp('beat', b, base), beatUrl(b));
+    return withSpaLink(
+      await appendSimilarityHeadsUp(context?.projectId, 'beat', b, base),
+      beatUrl(context?.projectTitle, b),
+    );
   },
 
-  async read_beat_body({ beat, line_start, line_count } = {}) {
-    const target = await resolveBeat(beat);
+  async read_beat_body({ beat, line_start, line_count } = {}, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
     const out = sliceLines(String(target.body || ''), line_start ?? 1, line_count ?? 200);
     return withSpaLink(
       compact({
@@ -1684,7 +1703,7 @@ export const HANDLERS = {
         has_more: out.hasMore,
         lines: out.lines,
       }),
-      beatUrl(target),
+      beatUrl(context?.projectTitle, target),
     );
   },
 
@@ -1695,11 +1714,11 @@ export const HANDLERS = {
     case_insensitive,
     context_lines,
     max_matches,
-  } = {}) {
+  } = {}, context = null) {
     if (typeof pattern !== 'string' || !pattern) {
       return 'Tool error (search_in_beat_body): `pattern` is required (non-empty string).';
     }
-    const target = await resolveBeat(beat);
+    const target = await resolveBeat(context?.projectId, beat);
     let out;
     try {
       out = searchLines(String(target.body || ''), pattern, {
@@ -1720,12 +1739,12 @@ export const HANDLERS = {
         truncated: out.truncated,
         matches: out.matches,
       }),
-      beatUrl(target),
+      beatUrl(context?.projectTitle, target),
     );
   },
 
-  async outline_beat_body({ beat } = {}) {
-    const target = await resolveBeat(beat);
+  async outline_beat_body({ beat } = {}, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
     const headings = extractOutline(String(target.body || ''));
     return withSpaLink(
       compact({
@@ -1734,12 +1753,12 @@ export const HANDLERS = {
         heading_count: headings.length,
         headings,
       }),
-      beatUrl(target),
+      beatUrl(context?.projectTitle, target),
     );
   },
 
-  async read_director_note({ note_id, line_start, line_count } = {}) {
-    const note = await resolveDirectorNote(note_id);
+  async read_director_note({ note_id, line_start, line_count } = {}, context = null) {
+    const note = await resolveDirectorNote(context?.projectId, note_id);
     const out = sliceLines(String(note.text || ''), line_start ?? 1, line_count ?? 200);
     return withSpaLink(
       compact({
@@ -1751,18 +1770,18 @@ export const HANDLERS = {
         has_more: out.hasMore,
         lines: out.lines,
       }),
-      notesUrl(),
+      notesUrl(context?.projectTitle),
     );
   },
 
-  async read_character_field({ character, field, line_start, line_count } = {}) {
+  async read_character_field({ character, field, line_start, line_count } = {}, context = null) {
     if (typeof character !== 'string' || !character.trim()) {
       return 'Tool error (read_character_field): `character` is required.';
     }
     if (typeof field !== 'string' || !field.trim()) {
       return 'Tool error (read_character_field): `field` is required.';
     }
-    const c = await Characters.getCharacter(undefined, character);
+    const c = await Characters.getCharacter(context?.projectId, character);
     if (!c) return `No character found for "${character}".`;
     const CORE = new Set(['name', 'hollywood_actor']);
     let value = '';
@@ -1784,12 +1803,12 @@ export const HANDLERS = {
         has_more: out.hasMore,
         lines: out.lines,
       }),
-      characterUrl(c),
+      characterUrl(context?.projectTitle, c),
     );
   },
 
-  async search_beats({ query }) {
-    const matches = await Plots.searchBeats(undefined, query);
+  async search_beats({ query }, context = null) {
+    const matches = await Plots.searchBeats(context?.projectId, query);
     return compact({
       query,
       result_count: matches.length,
@@ -1804,49 +1823,49 @@ export const HANDLERS = {
     });
   },
 
-  async delete_beat({ identifier }) {
-    const res = await Plots.deleteBeat(undefined, identifier);
+  async delete_beat({ identifier }, context = null) {
+    const res = await Plots.deleteBeat(context?.projectId, identifier);
     await Images.deleteImages(res.image_ids);
     return `Deleted beat "${res.name}" and ${res.image_ids.length} image(s).`;
   },
 
-  async link_character_to_beat({ beat, character }) {
-    const target = await resolveBeat(beat);
-    const updated = await Plots.linkCharacterToBeat(undefined, target._id.toString(), character);
+  async link_character_to_beat({ beat, character }, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
+    const updated = await Plots.linkCharacterToBeat(context?.projectId, target._id.toString(), character);
     return withSpaLink(
       `Linked ${character} to beat "${updated.name}". Characters now: ${updated.characters.join(', ') || '(none)'}.`,
-      beatUrl(updated),
+      beatUrl(context?.projectTitle, updated),
     );
   },
 
-  async unlink_character_from_beat({ beat, character }) {
-    const target = await resolveBeat(beat);
-    const updated = await Plots.unlinkCharacterFromBeat(undefined, target._id.toString(), character);
+  async unlink_character_from_beat({ beat, character }, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
+    const updated = await Plots.unlinkCharacterFromBeat(context?.projectId, target._id.toString(), character);
     return withSpaLink(
       `Unlinked ${character} from beat "${updated.name}". Characters now: ${updated.characters.join(', ') || '(none)'}.`,
-      beatUrl(updated),
+      beatUrl(context?.projectTitle, updated),
     );
   },
 
-  async set_current_beat({ identifier }) {
-    const b = await Plots.setCurrentBeat(undefined, identifier);
+  async set_current_beat({ identifier }, context = null) {
+    const b = await Plots.setCurrentBeat(context?.projectId, identifier);
     return `Current beat is now "${b.name}" (_id ${b._id}).`;
   },
 
-  async get_current_beat() {
-    const b = await Plots.getCurrentBeat();
+  async get_current_beat(_input = {}, context = null) {
+    const b = await Plots.getCurrentBeat(context?.projectId);
     if (!b) return 'No current beat is set.';
     return compact(serializeBeat(b));
   },
 
-  async clear_current_beat() {
-    await Plots.clearCurrentBeat();
+  async clear_current_beat(_input = {}, context = null) {
+    await Plots.clearCurrentBeat(context?.projectId);
     return 'Current beat cleared.';
   },
 
-  async add_beat_image({ beat, source_url, filename, caption, set_as_main }) {
-    const target = await resolveBeat(beat);
-    const file = await Images.uploadImageFromUrl(undefined, {
+  async add_beat_image({ beat, source_url, filename, caption, set_as_main }, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
+    const file = await Images.uploadImageFromUrl(context?.projectId, {
       sourceUrl: source_url,
       filename,
       ownerType: 'beat',
@@ -1864,6 +1883,7 @@ export const HANDLERS = {
       uploaded_at: file.uploaded_at,
     };
     const { is_main } = await Gateway.addBeatImageViaGateway({
+      projectId: context?.projectId,
       beatId: target._id.toString(),
       imageMeta: meta,
       setAsMain: set_as_main,
@@ -1874,11 +1894,11 @@ export const HANDLERS = {
       size: meta.size,
       is_main,
     })}`;
-    return withSpaLink(text, beatUrl(target));
+    return withSpaLink(text, beatUrl(context?.projectTitle, target));
   },
 
-  async list_beat_images({ beat } = {}) {
-    const target = await resolveBeat(beat);
+  async list_beat_images({ beat } = {}, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
     const text = compact({
       beat: { _id: target._id.toString(), name: target.name },
       main_image_id: target.main_image_id ? target.main_image_id.toString() : null,
@@ -1892,24 +1912,26 @@ export const HANDLERS = {
         uploaded_at: i.uploaded_at,
       })),
     });
-    return withSpaLink(text, beatUrl(target));
+    return withSpaLink(text, beatUrl(context?.projectTitle, target));
   },
 
-  async set_main_beat_image({ beat, image_id }) {
-    const target = await resolveBeat(beat);
+  async set_main_beat_image({ beat, image_id }, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
     const updated = await Gateway.setBeatMainImageViaGateway({
+      projectId: context?.projectId,
       beatId: target._id.toString(),
       imageId: image_id,
     });
     return withSpaLink(
       `Main image for beat "${updated.name}" set to ${updated.main_image_id.toString()}.`,
-      beatUrl(updated),
+      beatUrl(context?.projectTitle, updated),
     );
   },
 
-  async remove_beat_image({ beat, image_id }) {
-    const target = await resolveBeat(beat);
+  async remove_beat_image({ beat, image_id }, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
     const { removed, beat: updated } = await Gateway.removeBeatImageViaGateway({
+      projectId: context?.projectId,
       beatId: target._id.toString(),
       imageId: image_id,
     });
@@ -1918,12 +1940,12 @@ export const HANDLERS = {
       `Removed image ${removed.toString()} from beat "${updated.name}". Main image is now ${
         updated.main_image_id ? updated.main_image_id.toString() : 'none'
       }.`,
-      beatUrl(updated),
+      beatUrl(context?.projectTitle, updated),
     );
   },
 
-  async list_library_images() {
-    const files = await Images.listLibraryImages();
+  async list_library_images(_input = {}, context = null) {
+    const files = await Images.listLibraryImages(context?.projectId);
     return compact(
       files.map((f) => {
         const m = Images.imageFileToMeta(f);
@@ -1932,11 +1954,11 @@ export const HANDLERS = {
     );
   },
 
-  async search_library_images({ query, limit } = {}) {
+  async search_library_images({ query, limit } = {}, context = null) {
     if (typeof query !== 'string' || !query.trim()) {
       return 'Error: query (non-empty string) required.';
     }
-    const files = await Images.searchLibraryImages({ query, limit });
+    const files = await Images.searchLibraryImages({ projectId: context?.projectId, query, limit });
     return compact(
       files.map((f) => {
         const m = Images.imageFileToMeta(f);
@@ -1958,7 +1980,7 @@ export const HANDLERS = {
     return `__IMAGE_PATH__:${filepath}|${caption}|${file._id.toString()}`;
   },
 
-  async replace_library_image({ source_image_id, new_image_id, copy_metadata } = {}) {
+  async replace_library_image({ source_image_id, new_image_id, copy_metadata } = {}, context = null) {
     if (!source_image_id) return 'Error: source_image_id required.';
     if (!new_image_id) return 'Error: new_image_id required.';
     if (String(source_image_id) === String(new_image_id)) {
@@ -1966,6 +1988,7 @@ export const HANDLERS = {
     }
     try {
       const result = await Gateway.replaceLibraryImageViaGateway({
+        projectId: context?.projectId,
         sourceImageId: source_image_id,
         newImageId: new_image_id,
         copyMetadata: copy_metadata !== false,
@@ -1981,8 +2004,8 @@ export const HANDLERS = {
     }
   },
 
-  async attach_library_image_to_beat({ image_id, beat, set_as_main }) {
-    const target = await resolveBeat(beat);
+  async attach_library_image_to_beat({ image_id, beat, set_as_main }, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
     const file = await Images.findImageFile(image_id);
     if (!file) throw new Error(`Image not found: ${image_id}`);
     if (
@@ -1992,7 +2015,7 @@ export const HANDLERS = {
     ) {
       return withSpaLink(
         `Image ${image_id} is already attached to beat "${target.name}".`,
-        beatUrl(target),
+        beatUrl(context?.projectTitle, target),
       );
     }
     const movedFrom = await Files.detachImageFromCurrentOwner(file);
@@ -2008,15 +2031,15 @@ export const HANDLERS = {
       caption: null,
       uploaded_at: file.uploadDate,
     };
-    const { is_main } = await Plots.pushBeatImage(undefined, target._id.toString(), meta, set_as_main);
+    const { is_main } = await Plots.pushBeatImage(context?.projectId, target._id.toString(), meta, set_as_main);
     const moveSuffix = formatMovedFromSuffix(movedFrom);
     return withSpaLink(
       `Attached image to beat "${target.name}"${is_main ? ' (now main image)' : ''}${moveSuffix}.`,
-      beatUrl(target),
+      beatUrl(context?.projectTitle, target),
     );
   },
 
-  async move_image_to_library({ image_id } = {}) {
+  async move_image_to_library({ image_id } = {}, context = null) {
     if (!image_id) return 'Error: image_id required.';
     const file = await Images.findImageFile(image_id);
     if (!file) return `Error: image not found: ${image_id}`;
@@ -2027,39 +2050,42 @@ export const HANDLERS = {
     }
     try {
       if (ownerType === 'beat') {
-        const beat = await Plots.getBeat(undefined, String(ownerId));
+        const beat = await Plots.getBeat(context?.projectId, String(ownerId));
         if (!beat) {
           return `Error: image's owner beat ${ownerId} was not found.`;
         }
         await Gateway.moveBeatImageToLibraryViaGateway({
+          projectId: context?.projectId,
           beatId: beat._id.toString(),
           imageId: image_id,
         });
         return withSpaLink(
           `Moved image ${image_id} from beat "${beat.name}" to the library.`,
-          beatUrl(beat),
+          beatUrl(context?.projectTitle, beat),
         );
       }
       if (ownerType === 'character') {
-        const c = await Characters.getCharacter(undefined, String(ownerId));
+        const c = await Characters.getCharacter(context?.projectId, String(ownerId));
         if (!c) return `Error: image's owner character ${ownerId} was not found.`;
         await Gateway.moveCharacterImageToLibraryViaGateway({
+          projectId: context?.projectId,
           character: c._id.toString(),
           imageId: image_id,
         });
         return withSpaLink(
           `Moved image ${image_id} from character "${c.name}" to the library.`,
-          characterUrl({ name: c.name }),
+          characterUrl(context?.projectTitle, { name: c.name }),
         );
       }
       if (ownerType === 'director_note') {
         await Gateway.moveDirectorNoteImageToLibraryViaGateway({
+          projectId: context?.projectId,
           noteId: String(ownerId),
           imageId: image_id,
         });
         return withSpaLink(
           `Moved image ${image_id} from director note ${ownerId} to the library.`,
-          notesUrl(),
+          notesUrl(context?.projectTitle),
         );
       }
       return `Error: image ${image_id} has unsupported owner_type "${ownerType}".`;
@@ -2068,14 +2094,15 @@ export const HANDLERS = {
     }
   },
 
-  async attach_library_image_to_character({ image_id, character, set_as_main, caption } = {}) {
+  async attach_library_image_to_character({ image_id, character, set_as_main, caption } = {}, context = null) {
     const res = await Files.attachExistingImageToCharacter({
+      projectId: context?.projectId,
       character,
       imageId: image_id,
       caption,
       setAsMain: set_as_main,
     });
-    const url = characterUrl({ name: res.character });
+    const url = characterUrl(context?.projectTitle, { name: res.character });
     if (res.already_attached) {
       return withSpaLink(
         `Image ${image_id} is already attached to character "${res.character}".`,
@@ -2091,8 +2118,8 @@ export const HANDLERS = {
     );
   },
 
-  async add_library_attachment({ source_url, filename, caption } = {}) {
-    const file = await Attachments.uploadAttachmentFromUrl(undefined, {
+  async add_library_attachment({ source_url, filename, caption } = {}, context = null) {
+    const file = await Attachments.uploadAttachmentFromUrl(context?.projectId, {
       sourceUrl: source_url,
       filename,
       ownerType: null,
@@ -2107,8 +2134,8 @@ export const HANDLERS = {
     })}`;
   },
 
-  async list_library_attachments() {
-    const files = await Attachments.listLibraryAttachments();
+  async list_library_attachments(_input = {}, context = null) {
+    const files = await Attachments.listLibraryAttachments(context?.projectId);
     return compact(
       files.map((f) => {
         const m = Attachments.attachmentFileToMeta(f);
@@ -2117,9 +2144,10 @@ export const HANDLERS = {
     );
   },
 
-  async attach_library_attachment_to_beat({ attachment_id, beat, caption } = {}) {
-    const target = await resolveBeat(beat);
+  async attach_library_attachment_to_beat({ attachment_id, beat, caption } = {}, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
     const res = await Attachments.attachExistingAttachmentToBeat({
+      projectId: context?.projectId,
       beat: target._id.toString(),
       attachmentId: attachment_id,
       caption,
@@ -2127,23 +2155,24 @@ export const HANDLERS = {
     if (res.already_attached) {
       return withSpaLink(
         `Attachment ${attachment_id} is already attached to beat "${target.name}".`,
-        beatUrl(target),
+        beatUrl(context?.projectTitle, target),
       );
     }
     const moveSuffix = formatMovedFromSuffix(res.moved_from);
     return withSpaLink(
       `Attached attachment to beat "${target.name}"${moveSuffix}.`,
-      beatUrl(target),
+      beatUrl(context?.projectTitle, target),
     );
   },
 
-  async attach_library_attachment_to_character({ attachment_id, character, caption } = {}) {
+  async attach_library_attachment_to_character({ attachment_id, character, caption } = {}, context = null) {
     const res = await Attachments.attachExistingAttachmentToCharacter({
+      projectId: context?.projectId,
       character,
       attachmentId: attachment_id,
       caption,
     });
-    const url = characterUrl({ name: res.character });
+    const url = characterUrl(context?.projectTitle, { name: res.character });
     if (res.already_attached) {
       return withSpaLink(
         `Attachment ${attachment_id} is already attached to character "${res.character}".`,
@@ -2157,9 +2186,10 @@ export const HANDLERS = {
     );
   },
 
-  async attach_library_attachment_to_director_note({ attachment_id, note_id, caption } = {}) {
-    const target = await resolveDirectorNote(note_id);
+  async attach_library_attachment_to_director_note({ attachment_id, note_id, caption } = {}, context = null) {
+    const target = await resolveDirectorNote(context?.projectId, note_id);
     const res = await Attachments.attachExistingAttachmentToDirectorNote({
+      projectId: context?.projectId,
       noteId: target._id.toString(),
       attachmentId: attachment_id,
       caption,
@@ -2167,13 +2197,13 @@ export const HANDLERS = {
     if (res.already_attached) {
       return withSpaLink(
         `Attachment ${attachment_id} is already attached to director's note ${target._id}.`,
-        notesUrl(),
+        notesUrl(context?.projectTitle),
       );
     }
     const moveSuffix = formatMovedFromSuffix(res.moved_from);
     return withSpaLink(
       `Attached attachment to director's note ${target._id}${moveSuffix}.`,
-      notesUrl(),
+      notesUrl(context?.projectTitle),
     );
   },
 
@@ -2278,7 +2308,7 @@ export const HANDLERS = {
     let beatDoc = null;
     if (include_beat || beat) {
       try {
-        beatDoc = await resolveBeat(beat);
+        beatDoc = await resolveBeat(context?.projectId, beat);
       } catch (e) {
         if (include_beat) throw e;
       }
@@ -2286,7 +2316,7 @@ export const HANDLERS = {
 
     let targetCharacter = null;
     if (attach_to_character) {
-      targetCharacter = await Characters.getCharacter(undefined, attach_to_character);
+      targetCharacter = await Characters.getCharacter(context?.projectId, attach_to_character);
       if (!targetCharacter) {
         throw new Error(`Character not found: ${attach_to_character}`);
       }
@@ -2294,12 +2324,12 @@ export const HANDLERS = {
 
     let explicitTargetBeat = null;
     if (attach_to_beat) {
-      explicitTargetBeat = await resolveBeat(attach_to_beat);
+      explicitTargetBeat = await resolveBeat(context?.projectId, attach_to_beat);
     }
 
     let recentMessages = [];
     if (include_recent_chat) {
-      const history = await Messages.loadHistoryForLlm(config.discord.movieChannelId);
+      const history = await Messages.loadHistoryForLlm(context?.channelId || config.discord.movieChannelId);
       recentMessages = history.slice(-10);
     }
 
@@ -2332,7 +2362,7 @@ export const HANDLERS = {
       ownerId = explicitTargetBeat._id;
       targetBeatDoc = explicitTargetBeat;
     } else {
-      const current = beatDoc || (await Plots.getCurrentBeat());
+      const current = beatDoc || (await Plots.getCurrentBeat(context?.projectId));
       const shouldAttachCurrent =
         attach_to_current_beat === undefined ? !!current : !!attach_to_current_beat;
       if (shouldAttachCurrent && current) {
@@ -2342,7 +2372,7 @@ export const HANDLERS = {
       }
     }
 
-    const file = await Images.uploadGeneratedImage(undefined, {
+    const file = await Images.uploadGeneratedImage(context?.projectId, {
       buffer,
       contentType,
       prompt: finalPrompt,
@@ -2372,7 +2402,7 @@ export const HANDLERS = {
         caption: null,
       };
       await Characters.pushCharacterImage(
-        undefined,
+        context?.projectId,
         targetCharacter._id.toString(),
         charMeta,
         set_as_main,
@@ -2390,7 +2420,7 @@ export const HANDLERS = {
         caption: null,
         uploaded_at: file.uploaded_at,
       };
-      await Plots.pushBeatImage(undefined, targetBeatDoc._id.toString(), beatMeta, set_as_main);
+      await Plots.pushBeatImage(context?.projectId, targetBeatDoc._id.toString(), beatMeta, set_as_main);
       where = `attached to beat "${targetBeatDoc.name}"`;
     }
 
@@ -2485,18 +2515,18 @@ export const HANDLERS = {
     let srcOwnerBeat = null;
     let srcOwnerNoteId = null;
     if (srcOwnerType === 'character' && srcOwnerId) {
-      srcOwnerCharacter = await Characters.getCharacter(undefined, srcOwnerId.toString());
+      srcOwnerCharacter = await Characters.getCharacter(context?.projectId, srcOwnerId.toString());
       sourceWasMain = !!(
         srcOwnerCharacter?.main_image_id && srcOwnerCharacter.main_image_id.equals(srcFile._id)
       );
     } else if (srcOwnerType === 'beat' && srcOwnerId) {
-      const plot = await Plots.getPlot();
+      const plot = await Plots.getPlot(context?.projectId);
       srcOwnerBeat = (plot.beats || []).find((b) => b._id && b._id.equals(srcOwnerId)) || null;
       sourceWasMain = !!(
         srcOwnerBeat?.main_image_id && srcOwnerBeat.main_image_id.equals(srcFile._id)
       );
     } else if (srcOwnerType === 'director_note' && srcOwnerId) {
-      const dn = await DirectorNotes.getDirectorNotes();
+      const dn = await DirectorNotes.getDirectorNotes(context?.projectId);
       const note = (dn.notes || []).find((n) => n._id && n._id.equals(srcOwnerId));
       if (note) {
         srcOwnerNoteId = note._id;
@@ -2508,10 +2538,10 @@ export const HANDLERS = {
     let targetBeat = null;
     let targetNoteId = null;
     if (attach_to_character) {
-      targetCharacter = await Characters.getCharacter(undefined, attach_to_character);
+      targetCharacter = await Characters.getCharacter(context?.projectId, attach_to_character);
       if (!targetCharacter) throw new Error(`Character not found: ${attach_to_character}`);
     } else if (attach_to_beat) {
-      targetBeat = await resolveBeat(attach_to_beat);
+      targetBeat = await resolveBeat(context?.projectId, attach_to_beat);
     } else if (srcOwnerType === 'character' && srcOwnerCharacter) {
       targetCharacter = srcOwnerCharacter;
     } else if (srcOwnerType === 'beat' && srcOwnerBeat) {
@@ -2556,7 +2586,7 @@ export const HANDLERS = {
       channelId: context?.channelId || null,
     });
 
-    const file = await Images.uploadGeneratedImage(undefined, {
+    const file = await Images.uploadGeneratedImage(context?.projectId, {
       buffer,
       contentType,
       prompt: editPrompt,
@@ -2585,7 +2615,7 @@ export const HANDLERS = {
         caption: null,
       };
       await Characters.pushCharacterImage(
-        undefined,
+        context?.projectId,
         targetCharacter._id.toString(),
         charMeta,
         effectiveSetAsMain,
@@ -2603,7 +2633,7 @@ export const HANDLERS = {
         caption: null,
         uploaded_at: file.uploaded_at,
       };
-      await Plots.pushBeatImage(undefined, targetBeat._id.toString(), beatMeta, effectiveSetAsMain);
+      await Plots.pushBeatImage(context?.projectId, targetBeat._id.toString(), beatMeta, effectiveSetAsMain);
       where = `attached to beat "${targetBeat.name}"`;
     } else if (targetNoteId) {
       const noteMeta = {
@@ -2618,7 +2648,7 @@ export const HANDLERS = {
         uploaded_at: file.uploaded_at,
       };
       await DirectorNotes.pushDirectorNoteImage(
-        undefined,
+        context?.projectId,
         targetNoteId.toString(),
         noteMeta,
         effectiveSetAsMain,
@@ -2630,15 +2660,16 @@ export const HANDLERS = {
       try {
         if (srcOwnerType === 'character' && srcOwnerCharacter) {
           await Files.removeCharacterImage({
+            projectId: context?.projectId,
             character: srcOwnerCharacter._id.toString(),
             imageId: srcFile._id.toString(),
           });
         } else if (srcOwnerType === 'beat' && srcOwnerBeat) {
-          await Plots.pullBeatImage(undefined, srcOwnerBeat._id.toString(), srcFile._id.toString());
+          await Plots.pullBeatImage(context?.projectId, srcOwnerBeat._id.toString(), srcFile._id.toString());
           await Images.deleteImage(srcFile._id);
         } else if (srcOwnerType === 'director_note' && srcOwnerNoteId) {
           await DirectorNotes.pullDirectorNoteImage(
-            undefined,
+            context?.projectId,
             srcOwnerNoteId.toString(),
             srcFile._id.toString(),
           );
@@ -2659,7 +2690,7 @@ export const HANDLERS = {
     return `__IMAGE_PATH__:${filepath}|Edited image (${file._id.toString()}) ${where}${replacedNote}.|${file._id.toString()}`;
   },
 
-  async export_pdf({ title, characters, beats_query, dossier_character } = {}) {
+  async export_pdf({ title, characters, beats_query, dossier_character } = {}, context = null) {
     const provided = [
       ['characters', Array.isArray(characters) && characters.length > 0],
       ['beats_query', !!beats_query],
@@ -2668,25 +2699,26 @@ export const HANDLERS = {
     if (provided.length > 1) {
       return `Tool error (export_pdf): pass at most one of characters, beats_query, dossier_character (got: ${provided.join(', ')}).`;
     }
-    const result = await exportToPdf({ title, characters, beats_query, dossier_character });
+    const result = await exportToPdf({ projectId: context?.projectId, title, characters, beats_query, dossier_character });
     if (result?.error) return `Tool error (export_pdf): ${result.error}`;
     return `__PDF_PATH__:${result.path}`;
   },
 
-  async export_csv({ entity, columns, filter, group_by, sort, limit, filename } = {}) {
+  async export_csv({ entity, columns, filter, group_by, sort, limit, filename } = {}, context = null) {
     if (entity === 'characters') {
-      const docs = await Characters.findAllCharacters();
-      return runCsvExport({ entity, docs, columns, filter, group_by, sort, limit, filename });
+      const docs = await Characters.findAllCharacters(context?.projectId);
+      return runCsvExport({ projectId: context?.projectId, entity, docs, columns, filter, group_by, sort, limit, filename });
     }
     if (entity === 'beats') {
-      const docs = await Plots.listBeats();
-      return runCsvExport({ entity, docs, columns, filter, group_by, sort, limit, filename });
+      const docs = await Plots.listBeats(context?.projectId);
+      return runCsvExport({ projectId: context?.projectId, entity, docs, columns, filter, group_by, sort, limit, filename });
     }
     return `Tool error (export_csv): unknown entity '${entity}'. Must be 'characters' or 'beats'.`;
   },
 
-  async add_character_image({ character, source_url, filename, caption, set_as_main }) {
+  async add_character_image({ character, source_url, filename, caption, set_as_main }, context = null) {
     const meta = await Files.attachImageToCharacter({
+      projectId: context?.projectId,
       character,
       sourceUrl: source_url,
       filename,
@@ -2699,11 +2731,11 @@ export const HANDLERS = {
       size: meta.size,
       is_main: meta.is_main,
     })}`;
-    return withSpaLink(text, characterUrl({ name: meta.character }));
+    return withSpaLink(text, characterUrl(context?.projectTitle, { name: meta.character }));
   },
 
-  async list_character_images({ character }) {
-    const { character: name, images, main_image_id } = await Files.listCharacterImages(undefined, character);
+  async list_character_images({ character }, context = null) {
+    const { character: name, images, main_image_id } = await Files.listCharacterImages(context?.projectId, character);
     const text = compact({
       main_image_id: main_image_id ? main_image_id.toString() : null,
       images: images.map((i) => ({
@@ -2714,30 +2746,30 @@ export const HANDLERS = {
         uploaded_at: i.uploaded_at,
       })),
     });
-    return withSpaLink(text, characterUrl({ name }));
+    return withSpaLink(text, characterUrl(context?.projectTitle, { name }));
   },
 
-  async set_main_character_image({ character, image_id }) {
-    const res = await Files.setMainCharacterImage({ character, imageId: image_id });
+  async set_main_character_image({ character, image_id }, context = null) {
+    const res = await Files.setMainCharacterImage({ projectId: context?.projectId, character, imageId: image_id });
     return withSpaLink(
       `Main image for ${res.character} set to ${res.main_image_id.toString()}.`,
-      characterUrl({ name: res.character }),
+      characterUrl(context?.projectTitle, { name: res.character }),
     );
   },
 
-  async remove_character_image({ character, image_id }) {
-    const res = await Files.removeCharacterImage({ character, imageId: image_id });
+  async remove_character_image({ character, image_id }, context = null) {
+    const res = await Files.removeCharacterImage({ projectId: context?.projectId, character, imageId: image_id });
     return withSpaLink(
       `Removed image ${res.removed.toString()} from ${res.character}. Main image is now ${
         res.main_image_id ? res.main_image_id.toString() : 'none'
       }.`,
-      characterUrl({ name: res.character }),
+      characterUrl(context?.projectTitle, { name: res.character }),
     );
   },
 
-  async add_beat_attachment({ beat, source_url, filename, caption }) {
-    const target = await resolveBeat(beat);
-    const file = await Attachments.uploadAttachmentFromUrl(undefined, {
+  async add_beat_attachment({ beat, source_url, filename, caption }, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
+    const file = await Attachments.uploadAttachmentFromUrl(context?.projectId, {
       sourceUrl: source_url,
       filename,
       ownerType: 'beat',
@@ -2751,7 +2783,7 @@ export const HANDLERS = {
       caption: caption?.trim() || null,
       uploaded_at: file.uploaded_at,
     };
-    await Plots.pushBeatAttachment(undefined, target._id.toString(), meta);
+    await Plots.pushBeatAttachment(context?.projectId, target._id.toString(), meta);
     const text = `Added attachment to beat "${target.name}".\n${compact({
       _id: meta._id.toString(),
       filename: meta.filename,
@@ -2759,11 +2791,11 @@ export const HANDLERS = {
       size: meta.size,
       caption: meta.caption,
     })}`;
-    return withSpaLink(text, beatUrl(target));
+    return withSpaLink(text, beatUrl(context?.projectTitle, target));
   },
 
-  async list_beat_attachments({ beat } = {}) {
-    const target = await resolveBeat(beat);
+  async list_beat_attachments({ beat } = {}, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
     const text = compact({
       beat: { _id: target._id.toString(), name: target.name },
       attachments: (target.attachments || []).map((a) => ({
@@ -2775,25 +2807,26 @@ export const HANDLERS = {
         uploaded_at: a.uploaded_at,
       })),
     });
-    return withSpaLink(text, beatUrl(target));
+    return withSpaLink(text, beatUrl(context?.projectTitle, target));
   },
 
-  async remove_beat_attachment({ beat, attachment_id }) {
-    const target = await resolveBeat(beat);
+  async remove_beat_attachment({ beat, attachment_id }, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
     const { removed, beat: updated } = await Plots.pullBeatAttachment(
-      undefined,
+      context?.projectId,
       target._id.toString(),
       attachment_id,
     );
     await Attachments.deleteAttachment(removed);
     return withSpaLink(
       `Removed attachment ${removed.toString()} from beat "${updated.name}".`,
-      beatUrl(updated),
+      beatUrl(context?.projectTitle, updated),
     );
   },
 
-  async add_character_attachment({ character, source_url, filename, caption }) {
+  async add_character_attachment({ character, source_url, filename, caption }, context = null) {
     const meta = await Attachments.attachToCharacter({
+      projectId: context?.projectId,
       character,
       sourceUrl: source_url,
       filename,
@@ -2806,12 +2839,12 @@ export const HANDLERS = {
       size: meta.size,
       caption: meta.caption,
     })}`;
-    return withSpaLink(text, characterUrl({ name: meta.character }));
+    return withSpaLink(text, characterUrl(context?.projectTitle, { name: meta.character }));
   },
 
-  async list_character_attachments({ character }) {
+  async list_character_attachments({ character }, context = null) {
     const { character: name, _id, attachments } =
-      await Attachments.listCharacterAttachments(undefined, character);
+      await Attachments.listCharacterAttachments(context?.projectId, character);
     const text = compact({
       character: { _id: _id.toString(), name },
       attachments: attachments.map((a) => ({
@@ -2823,17 +2856,18 @@ export const HANDLERS = {
         uploaded_at: a.uploaded_at,
       })),
     });
-    return withSpaLink(text, characterUrl({ name }));
+    return withSpaLink(text, characterUrl(context?.projectTitle, { name }));
   },
 
-  async remove_character_attachment({ character, attachment_id }) {
+  async remove_character_attachment({ character, attachment_id }, context = null) {
     const res = await Attachments.removeCharacterAttachment({
+      projectId: context?.projectId,
       character,
       attachmentId: attachment_id,
     });
     return withSpaLink(
       `Removed attachment ${res.removed.toString()} from ${res.character}.`,
-      characterUrl({ name: res.character }),
+      characterUrl(context?.projectTitle, { name: res.character }),
     );
   },
 
@@ -2985,13 +3019,13 @@ export const HANDLERS = {
     return `__IMAGE_PATH__:${filepath}|${note}`;
   },
 
-  async find_repeated_phrases({ fields, sizes, min_count, top_k } = {}) {
+  async find_repeated_phrases({ fields, sizes, min_count, top_k } = {}, context = null) {
     const fieldSet = Array.isArray(fields) && fields.length ? fields : ['desc', 'body'];
     const ns = Array.isArray(sizes) && sizes.length ? sizes : [2, 3, 4];
     const minCount = Math.max(2, Number(min_count) || 2);
     const k = Math.min(100, Math.max(1, Number(top_k) || 25));
 
-    const beats = await Plots.listBeats();
+    const beats = await Plots.listBeats(context?.projectId);
     if (beats.length === 0) {
       return compact({ status: 'empty', message: 'No beats yet — nothing to scan.' });
     }
@@ -3029,7 +3063,7 @@ export const HANDLERS = {
     });
   },
 
-  async check_similarity({ target_type, identifier, text, threshold, top_k } = {}) {
+  async check_similarity({ target_type, identifier, text, threshold, top_k } = {}, context = null) {
     if (target_type !== 'character' && target_type !== 'beat') {
       return 'Error: target_type must be "character" or "beat".';
     }
@@ -3048,14 +3082,14 @@ export const HANDLERS = {
     let mode = identifier ? 'existing' : 'candidate_text';
 
     if (target_type === 'character') {
-      const all = await Characters.findAllCharacters();
+      const all = await Characters.findAllCharacters(context?.projectId);
       corpus = all.map((c) => {
         const fields = {};
         for (const f of CHARACTER_TEXT_FIELDS) fields[f] = String(c.fields?.[f] || '');
         return { id: c._id.toString(), label: c.name, fields };
       });
       if (identifier) {
-        const t = await Characters.getCharacter(undefined, identifier);
+        const t = await Characters.getCharacter(context?.projectId, identifier);
         if (!t) return `No character found for "${identifier}".`;
         excludeId = t._id.toString();
         const targetText = CHARACTER_TEXT_FIELDS.map((f) => t.fields?.[f] || '')
@@ -3066,14 +3100,14 @@ export const HANDLERS = {
         targetTokens = bagOfWords(text);
       }
     } else {
-      const beats = await Plots.listBeats();
+      const beats = await Plots.listBeats(context?.projectId);
       corpus = beats.map((b) => {
         const fields = {};
         for (const f of BEAT_TEXT_FIELDS) fields[f] = String(b[f] || '');
         return { id: b._id.toString(), label: `#${b.order} ${b.name}`, fields };
       });
       if (identifier) {
-        const t = await Plots.getBeat(undefined, identifier);
+        const t = await Plots.getBeat(context?.projectId, identifier);
         if (!t) return `No beat found for "${identifier}".`;
         excludeId = t._id.toString();
         const targetText = BEAT_TEXT_FIELDS.map((f) => t[f] || '').filter(Boolean).join('\n');
@@ -3107,17 +3141,17 @@ export const HANDLERS = {
     });
   },
 
-  async find_character_phrases({ character, sizes, fields, top_k } = {}) {
+  async find_character_phrases({ character, sizes, fields, top_k } = {}, context = null) {
     if (!character) return 'Error: `character` is required.';
     const ns = Array.isArray(sizes) && sizes.length ? sizes : [1, 2, 3];
     const fieldSet = Array.isArray(fields) && fields.length ? fields : ['desc', 'body'];
     const k = Math.min(50, Math.max(1, Number(top_k) || 15));
 
-    const c = await Characters.getCharacter(undefined, character);
+    const c = await Characters.getCharacter(context?.projectId, character);
     if (!c) return `No character found for "${character}". Use list_characters to see options.`;
     const targetName = c.name.toLowerCase();
 
-    const beats = await Plots.listBeats();
+    const beats = await Plots.listBeats(context?.projectId);
     const featuring = beats.filter((b) =>
       (b.characters || []).some((n) => String(n).toLowerCase() === targetName),
     );
@@ -3159,9 +3193,9 @@ export const HANDLERS = {
     });
   },
 
-  async similar_character({ character, focus, max_works } = {}) {
+  async similar_character({ character, focus, max_works } = {}, context = null) {
     if (!character) return 'Error: `character` is required.';
-    const c = await Characters.getCharacter(undefined, character);
+    const c = await Characters.getCharacter(context?.projectId, character);
     if (!c) return `No character found for "${character}".`;
     if (!config.tavily.apiKey) {
       return 'Error: TAVILY_API_KEY is not configured. Cannot run external similarity search.';
@@ -3191,7 +3225,7 @@ export const HANDLERS = {
     }`;
   },
 
-  async similar_works({ scope, beat, focus, max_works } = {}) {
+  async similar_works({ scope, beat, focus, max_works } = {}, context = null) {
     const s = scope === 'beat' ? 'beat' : 'plot';
     if (!config.tavily.apiKey) {
       return 'Error: TAVILY_API_KEY is not configured. Cannot run external similarity search.';
@@ -3202,7 +3236,7 @@ export const HANDLERS = {
     let label;
 
     if (s === 'plot') {
-      const plot = await Plots.getPlot();
+      const plot = await Plots.getPlot(context?.projectId);
       const synopsis = String(plot.synopsis || '').trim();
       const beats = [...(plot.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
       if (!synopsis && beats.length === 0) {
@@ -3212,7 +3246,7 @@ export const HANDLERS = {
       profile = { synopsis, beats };
       label = 'the current plot';
     } else {
-      const target = await resolveBeat(beat);
+      const target = await resolveBeat(context?.projectId, beat);
       if (!String(target.desc || '').trim() && !String(target.body || '').trim()) {
         return `Error: beat "${target.name}" has no desc or body to analyze yet.`;
       }
@@ -3243,7 +3277,7 @@ export const HANDLERS = {
     role,
     limit,
     context_chars,
-  } = {}) {
+  } = {}, context = null) {
     if (!pattern || typeof pattern !== 'string') {
       return 'Error: `pattern` is required.';
     }
@@ -3255,7 +3289,8 @@ export const HANDLERS = {
       return `Error: invalid regex /${pattern}/${safeFlags}: ${e.message}`;
     }
     const { results, scanned, scan_limit_hit } = await Messages.searchMessages({
-      channelId: config.discord.movieChannelId,
+      projectId: context?.projectId,
+      channelId: context?.channelId || config.discord.movieChannelId,
       regex,
       sinceDays: since_days,
       untilDays: until_days,
@@ -3281,70 +3316,22 @@ export const HANDLERS = {
     });
   },
 
-  async screenplay_search({ query, k, entity_types } = {}) {
+  async screenplay_search({ query, k, entity_types } = {}, context = null) {
     if (!query || typeof query !== 'string') return 'Error: `query` is required.';
-    const { isRagEnabled, getCollection } = await import('../rag/chromaClient.js');
-    const { embedTexts } = await import('../rag/embeddings.js');
-    if (!isRagEnabled()) {
-      return 'Semantic search is unavailable: VOYAGE_API_KEY is not configured. Use `search_beats` / `search_characters` / `search_message_history` as alternatives.';
-    }
-    const col = await getCollection();
-    if (!col) {
-      return 'Semantic search is temporarily unavailable: ChromaDB not reachable (run `docker compose up -d chroma`). Falling back: try `search_beats` / `search_characters` / `search_message_history`.';
-    }
-    const topK = Math.min(20, Math.max(1, Number(k) || config.rag.defaultK));
-    let where;
-    if (Array.isArray(entity_types) && entity_types.length) {
-      where = entity_types.length === 1
-        ? { entity_type: entity_types[0] }
-        : { entity_type: { $in: entity_types } };
-    }
-    let queryVec;
-    try {
-      [queryVec] = await embedTexts([query], { inputType: 'query' });
-    } catch (e) {
-      return `Semantic search failed (embedding error): ${e.message}`;
-    }
-    let res;
-    try {
-      res = await col.query({
-        queryEmbeddings: [queryVec],
-        nResults: topK,
-        where,
-      });
-    } catch (e) {
-      return `Semantic search failed (chroma query error): ${e.message}`;
-    }
-    const ids = (res?.ids?.[0] || []);
-    const distances = (res?.distances?.[0] || []);
-    const metadatas = (res?.metadatas?.[0] || []);
-    const documents = (res?.documents?.[0] || []);
-    const hits = ids.map((id, i) => {
-      const m = metadatas[i] || {};
-      const dist = typeof distances[i] === 'number' ? distances[i] : null;
-      const score = dist == null ? null : Math.max(0, Math.min(1, 1 - dist));
-      return {
-        id,
-        score: score == null ? null : Number(score.toFixed(4)),
-        entity_type: m.entity_type || null,
-        entity_id: m.entity_id || null,
-        entity_label: m.entity_label || null,
-        field: m.field || null,
-        text: m.text_md || documents[i] || '',
-      };
+    const { searchScreenplay } = await import('../rag/query.js');
+    const res = await searchScreenplay(context?.projectId, query, {
+      k,
+      entityTypes: Array.isArray(entity_types) ? entity_types : undefined,
     });
-    return compact({
-      query,
-      match_count: hits.length,
-      results: hits,
-    });
+    if (!res.ok) return res.message;
+    return compact({ query, match_count: res.hits.length, results: res.hits });
   },
 
-  async analyze_dramatic_arc({ metric, fields } = {}) {
+  async analyze_dramatic_arc({ metric, fields } = {}, context = null) {
     const m = metric === 'steepest_drop' ? 'steepest_drop' : 'max_deviation';
     const fieldSet = Array.isArray(fields) && fields.length ? fields : ['desc', 'body'];
 
-    const beats = await Plots.listBeats();
+    const beats = await Plots.listBeats(context?.projectId);
     if (beats.length === 0) {
       return compact({ status: 'empty', message: 'No beats yet.' });
     }
