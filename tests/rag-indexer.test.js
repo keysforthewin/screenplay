@@ -39,6 +39,7 @@ const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const DirectorNotes = await import('../src/mongo/directorNotes.js');
 const Indexer = await import('../src/rag/indexer.js');
+const Projects = await import('../src/mongo/projects.js');
 
 beforeEach(() => {
   fakeDb.reset();
@@ -162,6 +163,93 @@ describe('rag indexer — director notes & messages', () => {
     expect(meta.entity_label).toBe('steve');
     expect(meta.role).toBe('user');
     expect(meta.channel_id).toBe('0');
+  });
+});
+
+describe('rag indexer — project metadata', () => {
+  it('indexBeat stamps project_id from the owning plot doc and re-keys the rag_indexed_at stamp', async () => {
+    const project = await Projects.createProject('Project A');
+    const pidA = project._id.toString();
+    const beatId = new ObjectId();
+    const plotId = new ObjectId();
+    fakeDb.collection('plots')._docs.push({
+      _id: plotId,
+      project_id: pidA,
+      beats: [{ _id: beatId, order: 0, name: 'Diner', desc: 'They meet.', body: 'A short body.', images: [] }],
+    });
+
+    await Indexer.indexBeat(beatId);
+
+    const meta = fakeChroma._store.get(`beat:${beatId.toString()}:name`).metadata;
+    expect(meta.project_id).toBe(pidA);
+    const plotAfter = await fakeDb.collection('plots').findOne({ _id: plotId });
+    expect(plotAfter.beats[0].rag_indexed_at).toBeInstanceOf(Date);
+  });
+
+  it('indexCharacter stamps project_id from the character doc', async () => {
+    const project = await Projects.createProject('Project A');
+    const pidA = project._id.toString();
+    const charId = new ObjectId();
+    fakeDb.collection('characters')._docs.push({
+      _id: charId,
+      project_id: pidA,
+      name: 'Alice',
+      name_lower: 'alice',
+      hollywood_actor: '',
+      fields: {},
+    });
+
+    await Indexer.indexCharacter(charId);
+
+    const meta = fakeChroma._store.get(`character:${charId.toString()}:name`).metadata;
+    expect(meta.project_id).toBe(pidA);
+  });
+
+  it('indexDirectorNote stamps project_id from the composite prompts _id', async () => {
+    const project = await Projects.createProject('Project A');
+    const pidA = project._id.toString();
+    const noteId = new ObjectId();
+    fakeDb.collection('prompts')._docs.push({
+      _id: `${pidA}:director_notes`,
+      notes: [{ _id: noteId, text: 'No fast cuts under 90 seconds.' }],
+    });
+
+    await Indexer.indexDirectorNote(noteId);
+
+    const meta = fakeChroma._store.get(`director_note:${noteId.toString()}:text:0`).metadata;
+    expect(meta.project_id).toBe(pidA);
+  });
+
+  it('legacy entities without project info index into the default project', async () => {
+    const defaultPid = (await Projects.getDefaultProject())._id.toString();
+    const noteId = new ObjectId();
+    fakeDb.collection('prompts')._docs.push({
+      _id: 'director_notes',
+      notes: [{ _id: noteId, text: 'Legacy note before re-key.' }],
+    });
+
+    await Indexer.indexDirectorNote(noteId);
+
+    const meta = fakeChroma._store.get(`director_note:${noteId.toString()}:text:0`).metadata;
+    expect(meta.project_id).toBe(defaultPid);
+  });
+
+  it('indexMessage stamps project_id from the message doc', async () => {
+    const project = await Projects.createProject('Project A');
+    const pidA = project._id.toString();
+    const oid = new ObjectId();
+    await Indexer.indexMessage({
+      _id: oid,
+      role: 'user',
+      channel_id: '0',
+      project_id: pidA,
+      content: 'Hello from project A.',
+      author: { tag: 'steve' },
+      created_at: new Date('2026-06-01T00:00:00Z'),
+    });
+
+    const meta = fakeChroma._store.get(`message:${oid.toString()}`).metadata;
+    expect(meta.project_id).toBe(pidA);
   });
 });
 
