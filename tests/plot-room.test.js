@@ -15,18 +15,26 @@ vi.mock('../src/rag/indexer.js', () => ({}));
 
 const { resolveRoom, parseRoomName, buildRoomName } = await import('../src/web/roomRegistry.js');
 const Plots = await import('../src/mongo/plots.js');
+const Projects = await import('../src/mongo/projects.js');
+
+async function pid() {
+  return (await Projects.getDefaultProject())._id.toString();
+}
 
 beforeEach(() => {
   fakeDb.reset();
 });
 
 describe('plot room', () => {
-  it('parseRoomName recognizes the literal "plot" room', () => {
-    expect(parseRoomName('plot')).toEqual({ type: 'plot' });
+  it('parseRoomName recognizes the project-scoped "plot" room', async () => {
+    const p = await pid();
+    expect(parseRoomName(`plot:${p}`)).toEqual({ type: 'plot', projectId: p });
+    expect(parseRoomName('plot')).toBeNull();
   });
 
-  it('buildRoomName returns "plot" for type:plot', () => {
-    expect(buildRoomName('plot')).toBe('plot');
+  it('buildRoomName returns "plot:<pid>" for type:plot', async () => {
+    const p = await pid();
+    expect(buildRoomName('plot', p)).toBe(`plot:${p}`);
   });
 
   it('describePlotRoom exposes title/synopsis/dialogue_style seeded from Mongo', async () => {
@@ -36,7 +44,7 @@ describe('plot room', () => {
       dialogue_style: '1970s neo-noir.',
     });
 
-    const desc = await resolveRoom('plot');
+    const desc = await resolveRoom(`plot:${await pid()}`);
     expect(desc.type).toBe('plot');
     expect(desc.fields).toEqual(['title', 'synopsis', 'dialogue_style']);
     expect(desc.seed.title).toBe('Neon City');
@@ -47,7 +55,7 @@ describe('plot room', () => {
   it('persistFields writes only changed fields back to Mongo', async () => {
     await Plots.updatePlot(undefined, { title: 'Old', synopsis: 'keep', dialogue_style: 'keep too' });
 
-    const desc = await resolveRoom('plot');
+    const desc = await resolveRoom(`plot:${await pid()}`);
     const result = await desc.persistFields({
       title: 'New Title',
       synopsis: 'keep', // unchanged
@@ -63,7 +71,7 @@ describe('plot room', () => {
 
   it('persistFields is a no-op when nothing changed', async () => {
     await Plots.updatePlot(undefined, { title: 'Same', synopsis: 'same', dialogue_style: 'same' });
-    const desc = await resolveRoom('plot');
+    const desc = await resolveRoom(`plot:${await pid()}`);
     const result = await desc.persistFields({
       title: 'Same',
       synopsis: 'same',

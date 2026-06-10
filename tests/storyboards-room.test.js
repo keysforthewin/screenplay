@@ -16,12 +16,20 @@ vi.mock('../src/rag/indexer.js', () => ({}));
 
 const { resolveRoom, buildRoomName } = await import('../src/web/roomRegistry.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
+const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let beatA;
+beforeEach(async () => {
   fakeDb.reset();
+  const p = await Projects.getDefaultProject();
+  beatA = new ObjectId();
+  // Insert a minimal plot doc so verifiedProjectIdForBeat resolves this beat.
+  fakeDb.collection('plots')._docs.push({
+    _id: 'main',
+    project_id: p._id.toString(),
+    beats: [{ _id: beatA, order: 1, name: '', desc: '', body: '' }],
+  });
 });
-
-const beatA = new ObjectId();
 
 describe('storyboards room', () => {
   it('emits text_prompt, summary, and a prompt fragment per frame', async () => {

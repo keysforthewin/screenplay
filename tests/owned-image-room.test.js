@@ -17,9 +17,12 @@ vi.mock('../src/rag/queue.js', () => ({
 vi.mock('../src/rag/indexer.js', () => ({}));
 
 const { resolveRoom } = await import('../src/web/roomRegistry.js');
+const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let pid;
+beforeEach(async () => {
   fakeDb.reset();
+  pid = (await Projects.getDefaultProject())._id;
 });
 
 function seedImageFile({ id, ownerType, ownerId, name = '', description = '' }) {
@@ -51,6 +54,7 @@ describe('owned-image fragments on character/beat rooms', () => {
     const imgB = new ObjectId();
     fakeDb.collection('characters')._docs.push({
       _id: charId,
+      project_id: pid.toString(),
       name: 'Sheriff',
       name_lower: 'sheriff',
       hollywood_actor: '',
@@ -83,6 +87,7 @@ describe('owned-image fragments on character/beat rooms', () => {
     const imgA = new ObjectId();
     fakeDb.collection('characters')._docs.push({
       _id: charId,
+      project_id: pid.toString(),
       name: 'Sheriff',
       name_lower: 'sheriff',
       hollywood_actor: '',
@@ -111,6 +116,7 @@ describe('owned-image fragments on character/beat rooms', () => {
     const imgA = new ObjectId();
     fakeDb.collection('plots')._docs.push({
       _id: plotId,
+      project_id: pid.toString(),
       title: 'P',
       synopsis: '',
       beats: [
@@ -150,6 +156,7 @@ describe('owned-image fragments on character/beat rooms', () => {
     const beatId = new ObjectId();
     fakeDb.collection('plots')._docs.push({
       _id: 'main',
+      project_id: pid.toString(),
       title: 'P',
       synopsis: '',
       beats: [

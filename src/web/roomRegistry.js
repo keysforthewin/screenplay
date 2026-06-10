@@ -44,6 +44,7 @@ import {
   findAttachmentFile,
 } from '../mongo/attachments.js';
 import { getDb } from '../mongo/client.js';
+import { getProjectById } from '../mongo/projects.js';
 import { getCharacterTemplate } from '../mongo/prompts.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { logger } from '../log.js';
@@ -57,14 +58,20 @@ function isOidHex(s) {
   return typeof s === 'string' && HEX24.test(s);
 }
 
+const SINGLETON_ROOM_TYPES = new Set(['notes', 'library', 'plot']);
+
 export function parseRoomName(roomName) {
   if (typeof roomName !== 'string') return null;
-  if (roomName === 'notes') return { type: 'notes' };
-  if (roomName === 'library') return { type: 'library' };
-  if (roomName === 'plot') return { type: 'plot' };
   const m = roomName.match(/^([a-z_]+):(.+)$/);
   if (!m) return null;
   const [, type, rest] = m;
+  // Singleton rooms are keyed by project: notes:<projectId>, library:<...>,
+  // plot:<...>. The bare legacy names ('notes', 'library', 'plot') are no
+  // longer managed — the multi-project migration renames the yjs_docs rows.
+  if (SINGLETON_ROOM_TYPES.has(type)) {
+    if (!isOidHex(rest)) return null;
+    return { type, projectId: rest };
+  }
   if (
     type === 'beat' ||
     type === 'character' ||
@@ -78,15 +85,60 @@ export function parseRoomName(roomName) {
 }
 
 export function buildRoomName(type, id) {
-  if (type === 'notes') return 'notes';
-  if (type === 'library') return 'library';
-  if (type === 'plot') return 'plot';
+  if (SINGLETON_ROOM_TYPES.has(type)) {
+    if (!isOidHex(String(id))) {
+      throw new Error(`invalid projectId for ${type} room: ${id}`);
+    }
+    return `${type}:${id}`;
+  }
   if (!isOidHex(String(id))) throw new Error(`invalid id for room: ${id}`);
   return `${type}:${id}`;
 }
 
 export function isManagedRoom(roomName) {
   return parseRoomName(roomName) !== null;
+}
+
+// Throws when the room name is unparseable or names a project that doesn't
+// exist. Used by the Hocuspocus onAuthenticate hook so stale SPA tabs fail
+// closed instead of joining a dead room.
+export async function assertRoomProjectKnown(roomName) {
+  const parsed = parseRoomName(roomName);
+  if (!parsed) throw new Error(`Unknown room: ${roomName}`);
+  if (parsed.projectId && !(await getProjectById(parsed.projectId))) {
+    throw new Error(`Unknown project for room: ${roomName}`);
+  }
+  return parsed;
+}
+
+// Owning-project resolution for entity rooms. The room name only carries the
+// entity ObjectId; the project comes from the entity doc itself.
+async function projectIdForBeat(beatIdHex) {
+  const doc = await getDb()
+    .collection('plots')
+    .findOne({ 'beats._id': new ObjectId(beatIdHex) });
+  return doc?.project_id ? String(doc.project_id) : null;
+}
+
+async function projectIdForCharacter(charIdHex) {
+  const doc = await getDb()
+    .collection('characters')
+    .findOne({ _id: new ObjectId(charIdHex) });
+  return doc?.project_id ? String(doc.project_id) : null;
+}
+
+// Resolve + verify in one go: null when the entity is unknown, carries no
+// project, or names a project that no longer exists.
+async function verifiedProjectIdForBeat(beatIdHex) {
+  const pid = await projectIdForBeat(beatIdHex);
+  if (!pid || !(await getProjectById(pid))) return null;
+  return pid;
+}
+
+async function verifiedProjectIdForCharacter(charIdHex) {
+  const pid = await projectIdForCharacter(charIdHex);
+  if (!pid || !(await getProjectById(pid))) return null;
+  return pid;
 }
 
 // Per-image text fragments shared between beat and character rooms.
@@ -216,7 +268,9 @@ async function persistOwnedAttachmentFragments(snapshot, seed) {
 const BEAT_TOP_FIELDS = ['name', 'desc', 'body'];
 
 async function describeBeatRoom(id) {
-  const plot = await getPlot();
+  const projectId = await verifiedProjectIdForBeat(id);
+  if (!projectId) return null;
+  const plot = await getPlot(projectId);
   const beat = (plot.beats || []).find((b) => b._id?.toString?.() === id);
   if (!beat) return null;
   const bibleFieldNames = SCENE_BIBLE_FIELDS.map((f) => `scene_bible.${f}`);
@@ -269,7 +323,7 @@ async function describeBeatRoom(id) {
           const frag = `scene_bible.${f}`;
           bible[f] = snapshot[frag] !== undefined ? snapshot[frag] : readMongoValue(frag);
         }
-        await setBeatSceneBible(undefined, id, bible);
+        await setBeatSceneBible(projectId, id, bible);
       }
 
       const imgPersist = await persistOwnedImageFragments(snapshot, imageFragments.seed);
@@ -279,7 +333,7 @@ async function describeBeatRoom(id) {
       );
       const entityChangedKeys = Object.keys(patch);
       if (entityChangedKeys.length) {
-        await updateBeat(undefined, id, patch);
+        await updateBeat(projectId, id, patch);
         enqueueReindex('beat', id);
       }
       const allChanged = [
@@ -297,9 +351,11 @@ async function describeBeatRoom(id) {
 // Character -----------------------------------------------------------------
 
 async function describeCharacterRoom(id) {
-  const c = await getCharacter(undefined, id);
+  const projectId = await verifiedProjectIdForCharacter(id);
+  if (!projectId) return null;
+  const c = await getCharacter(projectId, id);
   if (!c) return null;
-  const template = (await getCharacterTemplate())?.fields || [];
+  const template = (await getCharacterTemplate(projectId))?.fields || [];
   // Editable text fields: name + hollywood_actor (top-level) + every non-core
   // template field stored under `fields.<name>`.
   const customFieldNames = template.filter((t) => !t.core).map((t) => t.name);
@@ -363,7 +419,7 @@ async function describeCharacterRoom(id) {
             { $set: { name_lower: stripped.toLowerCase() } },
           );
         }
-        await updateCharacter(undefined, id, patch);
+        await updateCharacter(projectId, id, patch);
         enqueueReindex('character', id);
       }
       const allChanged = [
@@ -386,8 +442,9 @@ function noteFieldName(noteId) {
   return `note:${noteId}:text`;
 }
 
-async function describeNotesRoom() {
-  const doc = await getDirectorNotes();
+async function describeNotesRoom(projectId) {
+  if (!(await getProjectById(projectId))) return null;
+  const doc = await getDirectorNotes(projectId);
   const notes = doc.notes || [];
   const fields = notes.map((n) => noteFieldName(n._id.toString()));
   const seed = {};
@@ -400,7 +457,7 @@ async function describeNotesRoom() {
     seed,
     persistFields: async (snapshot) => {
       let changed = false;
-      const fresh = await getDirectorNotes();
+      const fresh = await getDirectorNotes(projectId);
       const nextNotes = (fresh.notes || []).map((n) => {
         const field = noteFieldName(n._id.toString());
         const newText = snapshot[field];
@@ -411,7 +468,7 @@ async function describeNotesRoom() {
         return n;
       });
       if (!changed) return { changed: false };
-      await writeDirectorNotesArray(undefined, nextNotes);
+      await writeDirectorNotesArray(projectId, nextNotes);
       logger.info(`mongo: director_notes batch update fields=${Object.keys(snapshot).length}`);
       for (const fieldName of Object.keys(snapshot)) {
         const m = fieldName.match(/^note:([a-f0-9]{24}):text$/);
@@ -442,7 +499,9 @@ function frameFragmentName(storyboardId, frameId) {
 }
 
 async function describeStoryboardsRoom(beatId) {
-  const sbs = await listStoryboards({ beatId });
+  const projectId = await verifiedProjectIdForBeat(beatId);
+  if (!projectId) return null;
+  const sbs = await listStoryboards({ projectId, beatId });
   const fields = [];
   const seed = {};
   const sbById = new Map();
@@ -477,7 +536,7 @@ async function describeStoryboardsRoom(beatId) {
           if (!frame) continue;
           if (value === (frame.prompt || '')) continue;
           try {
-            await setFramePrompt(undefined, sbId, frameId, value);
+            await setFramePrompt(projectId, sbId, frameId, value);
             changedFields.push(field);
           } catch (e) {
             logger.warn(
@@ -495,7 +554,7 @@ async function describeStoryboardsRoom(beatId) {
         if (!current) continue;
         if (value === (current[fieldName] || '')) continue;
         try {
-          await updateStoryboard(undefined, sbId, { [fieldName]: value });
+          await updateStoryboard(projectId, sbId, { [fieldName]: value });
           changedFields.push(field);
         } catch (e) {
           logger.warn(`storyboards persist failed sb=${sbId} field=${fieldName}: ${e.message}`);
@@ -522,10 +581,12 @@ function dialogFieldName(dialogId, field) {
 }
 
 async function describeDialogsRoom(beatId) {
-  const dialogs = await listDialogs({ beatId });
+  const projectId = await verifiedProjectIdForBeat(beatId);
+  if (!projectId) return null;
+  const dialogs = await listDialogs({ projectId, beatId });
   // The beat itself carries a shared "Dialogue Notes" fragment, alongside the
   // per-item body/character fragments. It steers generation/regeneration/critique.
-  const beat = await getBeat(undefined, beatId).catch(() => null);
+  const beat = await getBeat(projectId, beatId).catch(() => null);
   const fields = ['dialog_notes'];
   const seed = { dialog_notes: beat?.dialog_notes || '' };
   const dialogById = new Map();
@@ -552,7 +613,7 @@ async function describeDialogsRoom(beatId) {
         snapshot.dialog_notes !== notesSeed
       ) {
         try {
-          await updateBeat(undefined, beatId, { dialog_notes: snapshot.dialog_notes });
+          await updateBeat(projectId, beatId, { dialog_notes: snapshot.dialog_notes });
           changedFields.push('dialog_notes');
         } catch (e) {
           logger.warn(`dialogs persist failed beat=${beatId} field=dialog_notes: ${e.message}`);
@@ -567,7 +628,7 @@ async function describeDialogsRoom(beatId) {
         if (!current) continue;
         if (value === (current[fieldName] || '')) continue;
         try {
-          await updateDialog(undefined, dId, { [fieldName]: value });
+          await updateDialog(projectId, dId, { [fieldName]: value });
           changedFields.push(field);
         } catch (e) {
           logger.warn(`dialogs persist failed dialog=${dId} field=${fieldName}: ${e.message}`);
@@ -606,10 +667,11 @@ function libraryAttachmentFieldName(attachmentId, field) {
 
 const LIBRARY_ATTACH_FIELD_RE = /^library_attachment:([a-f0-9]{24}):(name|description)$/;
 
-async function describeLibraryRoom() {
+async function describeLibraryRoom(projectId) {
+  if (!(await getProjectById(projectId))) return null;
   const [files, attachmentFiles] = await Promise.all([
-    listLibraryImages(),
-    listLibraryAttachments(),
+    listLibraryImages(projectId),
+    listLibraryAttachments(projectId),
   ]);
   const fields = [];
   const seed = {};
@@ -705,8 +767,9 @@ async function describeLibraryRoom() {
 
 const PLOT_FIELDS = ['title', 'synopsis', 'dialogue_style'];
 
-async function describePlotRoom() {
-  const plot = await getPlot();
+async function describePlotRoom(projectId) {
+  if (!(await getProjectById(projectId))) return null;
+  const plot = await getPlot(projectId);
   const readMongoValue = (field) => (plot[field] != null ? String(plot[field]) : '');
   const seed = PLOT_FIELDS.reduce((acc, f) => {
     acc[f] = readMongoValue(f);
@@ -727,7 +790,7 @@ async function describePlotRoom() {
       }
       const changed = Object.keys(patch);
       if (!changed.length) return { changed: false };
-      await updatePlot(undefined, patch);
+      await updatePlot(projectId, patch);
       return { changed: true, fields: changed };
     },
   };
@@ -744,11 +807,11 @@ export async function resolveRoom(roomName) {
     case 'character':
       return describeCharacterRoom(parsed.id);
     case 'notes':
-      return describeNotesRoom();
+      return describeNotesRoom(parsed.projectId);
     case 'plot':
-      return describePlotRoom();
+      return describePlotRoom(parsed.projectId);
     case 'library':
-      return describeLibraryRoom();
+      return describeLibraryRoom(parsed.projectId);
     case 'storyboards':
       return describeStoryboardsRoom(parsed.id);
     case 'dialogs':
