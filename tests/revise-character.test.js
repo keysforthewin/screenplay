@@ -55,7 +55,7 @@ describe('revise_character handler', () => {
     expect(out).toMatch(/removed: Pre-beat-5/);
     expect(out).toMatch(/unchanged: 1 field/);
 
-    const fresh = await Characters.getCharacter('Baezil');
+    const fresh = await Characters.getCharacter(undefined, 'Baezil');
     expect(fresh.fields.bio).toBe('Baezil joined the crew last winter.');
     expect('Pre-beat-5 (South Pole Heist)' in fresh.fields).toBe(false);
     expect(fresh.fields.role).toBe('antagonist');
@@ -74,7 +74,7 @@ describe('revise_character handler', () => {
       instructions: 'rewrite the bio',
     });
     expect(out).toMatch(/edited: bio/);
-    const fresh = await Characters.getCharacter('Alice');
+    const fresh = await Characters.getCharacter(undefined, 'Alice');
     expect(fresh.fields.bio).toBe('new text');
   });
 
@@ -95,7 +95,7 @@ describe('revise_character handler', () => {
       instructions: 'do nothing harmful',
     });
     expect(out).toMatch(/no changes/);
-    const fresh = await Characters.getCharacter('Alice');
+    const fresh = await Characters.getCharacter(undefined, 'Alice');
     expect(fresh.fields).toEqual({ bio: 'x' });
     expect('some_made_up_field' in fresh.fields).toBe(false);
   });

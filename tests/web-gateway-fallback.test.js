@@ -65,7 +65,7 @@ describe('gateway fallback (no Hocuspocus)', () => {
       name: 'Steven',
       'fields.background_story': 'Born in 1990.',
     });
-    const fresh = await Characters.getCharacter(c._id.toString());
+    const fresh = await Characters.getCharacter(undefined, c._id.toString());
     expect(fresh.name).toBe('Steven');
     expect(fresh.fields?.background_story).toBe('Born in 1990.');
   });

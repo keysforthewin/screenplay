@@ -32,7 +32,7 @@ export async function detachImageFromCurrentOwner(file) {
       const res = await pullBeatImage(hostPlot?.project_id, ownerId, file._id);
       priorName = res?.beat?.name || null;
     } else if (ownerType === 'character') {
-      const res = await pullCharacterImage(ownerId, file._id);
+      const res = await pullCharacterImage(undefined, ownerId, file._id);
       priorName = res?.character || null;
     } else if (ownerType === 'director_note') {
       await pullDirectorNoteImage(undefined, ownerId, file._id);
@@ -43,8 +43,8 @@ export async function detachImageFromCurrentOwner(file) {
   return { prior_owner_type: ownerType, prior_owner_id: ownerId, prior_owner_name: priorName };
 }
 
-export async function attachImageToCharacter({ character, sourceUrl, filename, caption, setAsMain }) {
-  const c = await getCharacter(character);
+export async function attachImageToCharacter({ projectId, character, sourceUrl, filename, caption, setAsMain }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
 
   const file = await uploadImageFromUrl({
@@ -63,12 +63,12 @@ export async function attachImageToCharacter({ character, sourceUrl, filename, c
     caption: caption?.trim() || null,
   };
 
-  const { is_main } = await pushCharacterImage(c._id.toString(), meta, setAsMain);
+  const { is_main } = await pushCharacterImage(projectId, c._id.toString(), meta, setAsMain);
   return { character: c.name, ...meta, is_main };
 }
 
-export async function attachExistingImageToCharacter({ character, imageId, caption, setAsMain }) {
-  const c = await getCharacter(character);
+export async function attachExistingImageToCharacter({ projectId, character, imageId, caption, setAsMain }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
 
   const file = await findImageFile(imageId);
@@ -102,12 +102,12 @@ export async function attachExistingImageToCharacter({ character, imageId, capti
     caption: caption?.trim() || null,
   };
 
-  const { is_main } = await pushCharacterImage(c._id.toString(), meta, setAsMain);
+  const { is_main } = await pushCharacterImage(projectId, c._id.toString(), meta, setAsMain);
   return { character: c.name, ...meta, is_main, moved_from: movedFrom };
 }
 
-export async function listCharacterImages(character) {
-  const c = await getCharacter(character);
+export async function listCharacterImages(projectId, character) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   return {
     character: c.name,
@@ -116,8 +116,8 @@ export async function listCharacterImages(character) {
   };
 }
 
-export async function setMainCharacterImage({ character, imageId }) {
-  const c = await getCharacter(character);
+export async function setMainCharacterImage({ projectId, character, imageId }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const oid = toObjectId(imageId);
   const inImages = (c.images || []).some((img) => img._id.equals(oid));
@@ -137,8 +137,8 @@ export async function readCharacterImageBuffer(imageId) {
   return readImageBuffer(imageId);
 }
 
-export async function removeCharacterImage({ character, imageId }) {
-  const c = await getCharacter(character);
+export async function removeCharacterImage({ projectId, character, imageId }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const oid = toObjectId(imageId);
   const images = c.images || [];

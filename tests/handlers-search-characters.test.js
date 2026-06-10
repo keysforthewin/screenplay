@@ -138,14 +138,14 @@ describe('searchCharacters (mongo layer) — regression: no JSON-blob matches', 
       fields: {},
     });
 
-    const out = await Characters.searchCharacters('aaaaaa');
+    const out = await Characters.searchCharacters(undefined, 'aaaaaa');
     expect(out).toEqual([]);
   });
 
   it('does not match a character via stringified plays_self/own_voice booleans', async () => {
     await Characters.createCharacter({ name: 'Frank', plays_self: true, own_voice: true });
 
-    const out = await Characters.searchCharacters('true');
+    const out = await Characters.searchCharacters(undefined, 'true');
     expect(out).toEqual([]);
   });
 });

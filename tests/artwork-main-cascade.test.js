@@ -81,7 +81,7 @@ describe('Artwork → main_image_id cascade (character)', () => {
     expect(out.orphanedImageId.equals(r1)).toBe(true);
     expect(out.mainImageIdChange?.changed).toBe(true);
     expect(out.mainImageIdChange.value.equals(r2)).toBe(true);
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(undefined, 'Rae');
     expect(fresh.main_image_id.equals(r2)).toBe(true);
   });
 
@@ -97,7 +97,7 @@ describe('Artwork → main_image_id cascade (character)', () => {
     });
     expect(out.mainImageIdChange?.changed).toBe(true);
     expect(out.mainImageIdChange.value.equals(r2)).toBe(true);
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(undefined, 'Rae');
     expect(fresh.main_image_id.equals(r2)).toBe(true);
   });
 
@@ -120,7 +120,7 @@ describe('Artwork → main_image_id cascade (character)', () => {
     });
     expect(out.mainImageIdChange?.changed).toBe(true);
     expect(out.mainImageIdChange.value.equals(r1)).toBe(true);
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(undefined, 'Rae');
     expect(fresh.main_image_id.equals(r1)).toBe(true);
   });
 
@@ -133,7 +133,7 @@ describe('Artwork → main_image_id cascade (character)', () => {
     });
     expect(out.mainImageIdChange?.changed).toBe(true);
     expect(out.mainImageIdChange.value).toBeNull();
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(undefined, 'Rae');
     expect(fresh.main_image_id).toBeNull();
   });
 
@@ -161,7 +161,7 @@ describe('Artwork → main_image_id cascade (character)', () => {
       resultImageId: r3,
     });
     expect(out.mainImageIdChange).toBeNull();
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(undefined, 'Rae');
     expect(fresh.main_image_id.equals(r1)).toBe(true);
   });
 
@@ -186,7 +186,7 @@ describe('Artwork → main_image_id cascade (character)', () => {
       artworkId: a2._id,
     });
     expect(out.mainImageIdChange).toBeNull();
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(undefined, 'Rae');
     expect(fresh.main_image_id.equals(r1)).toBe(true);
   });
 });

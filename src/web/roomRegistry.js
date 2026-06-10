@@ -297,7 +297,7 @@ async function describeBeatRoom(id) {
 // Character -----------------------------------------------------------------
 
 async function describeCharacterRoom(id) {
-  const c = await getCharacter(id);
+  const c = await getCharacter(undefined, id);
   if (!c) return null;
   const template = (await getCharacterTemplate())?.fields || [];
   // Editable text fields: name + hollywood_actor (top-level) + every non-core
@@ -363,7 +363,7 @@ async function describeCharacterRoom(id) {
             { $set: { name_lower: stripped.toLowerCase() } },
           );
         }
-        await updateCharacter(id, patch);
+        await updateCharacter(undefined, id, patch);
         enqueueReindex('character', id);
       }
       const allChanged = [

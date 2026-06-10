@@ -31,7 +31,7 @@ describe('rapid-fire brainstorm: stub character + beats + rename', () => {
     expect(beat.characters).toEqual(['Nully', 'Streamer Kid']);
 
     // Later turn: user reveals the kid's actual name.
-    const renamed = await Characters.updateCharacter(kid._id.toString(), { name: 'Marcus' });
+    const renamed = await Characters.updateCharacter(undefined, kid._id.toString(),{ name: 'Marcus' });
     expect(renamed.name).toBe('Marcus');
     expect(renamed.name_lower).toBe('marcus');
 
@@ -80,16 +80,16 @@ describe('rapid-fire brainstorm: stub character + beats + rename', () => {
 
   it('character search by name still works after rename (sanity for stub-then-rename flow)', async () => {
     await Characters.createCharacter({ name: 'Streamer Kid' });
-    const got1 = await Characters.getCharacter('streamer kid');
+    const got1 = await Characters.getCharacter(undefined, 'streamer kid');
     expect(got1).toBeTruthy();
 
-    await Characters.updateCharacter('Streamer Kid', { name: 'Marcus' });
-    const got2 = await Characters.getCharacter('marcus');
+    await Characters.updateCharacter(undefined, 'Streamer Kid', { name: 'Marcus' });
+    const got2 = await Characters.getCharacter(undefined, 'marcus');
     expect(got2).toBeTruthy();
     expect(got2.name).toBe('Marcus');
 
     // Old name no longer resolves — good, it's been renamed.
-    const got3 = await Characters.getCharacter('streamer kid');
+    const got3 = await Characters.getCharacter(undefined, 'streamer kid');
     expect(got3).toBeNull();
   });
 });

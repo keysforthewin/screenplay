@@ -275,8 +275,8 @@ async function pushCharacterAttachment(characterId, attachmentMeta) {
     );
 }
 
-export async function attachToCharacter({ character, sourceUrl, filename, caption }) {
-  const c = await getCharacter(character);
+export async function attachToCharacter({ projectId, character, sourceUrl, filename, caption }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const file = await uploadAttachmentFromUrl({
     sourceUrl,
@@ -312,7 +312,7 @@ export async function detachAttachmentFromCurrentOwner(file) {
       const res = await pullBeatAttachment(hostPlot?.project_id, ownerId, file._id);
       priorName = res?.beat?.name || null;
     } else if (ownerType === 'character') {
-      const res = await pullCharacterAttachment(ownerId, file._id);
+      const res = await pullCharacterAttachment(undefined, ownerId, file._id);
       priorName = res?.character || null;
     } else if (ownerType === 'director_note') {
       await pullDirectorNoteAttachment(undefined, ownerId, file._id);
@@ -334,8 +334,8 @@ function buildAttachmentMeta(file, caption) {
   };
 }
 
-export async function attachExistingAttachmentToCharacter({ character, attachmentId, caption }) {
-  const c = await getCharacter(character);
+export async function attachExistingAttachmentToCharacter({ projectId, character, attachmentId, caption }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const file = await findAttachmentFile(attachmentId);
   if (!file) throw new Error(`Attachment not found: ${attachmentId}`);
@@ -415,14 +415,14 @@ export async function attachExistingAttachmentToDirectorNote({ noteId, attachmen
   return { note_id: target._id, ...meta, moved_from: movedFrom };
 }
 
-export async function listCharacterAttachments(character) {
-  const c = await getCharacter(character);
+export async function listCharacterAttachments(projectId, character) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   return { character: c.name, _id: c._id, attachments: c.attachments || [] };
 }
 
-export async function removeCharacterAttachment({ character, attachmentId }) {
-  const c = await getCharacter(character);
+export async function removeCharacterAttachment({ projectId, character, attachmentId }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const oid = toObjectId(attachmentId);
   const has = (c.attachments || []).some((a) => a._id && a._id.equals(oid));

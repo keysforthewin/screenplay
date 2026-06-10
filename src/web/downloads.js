@@ -158,7 +158,7 @@ export async function streamBeatZip(req, res) {
 
 export async function streamCharacterZip(req, res) {
   const idOrName = req.params.id;
-  const character = await getCharacter(idOrName);
+  const character = await getCharacter(undefined, idOrName);
   if (!character) return res.status(404).json({ error: 'character not found' });
 
   const cidHex = character._id.toString();

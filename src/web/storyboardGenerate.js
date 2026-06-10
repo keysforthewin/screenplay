@@ -589,7 +589,7 @@ async function runStoryboardGenerationJob({
     step: 'plan_start',
     message: `Planning scene with ${job.model}…`,
   });
-  const characterDocs = await findCharactersInBeat(beat);
+  const characterDocs = await findCharactersInBeat(undefined, beat);
   // Director's notes are project-wide guidance; fetch once and pass to both
   // passes so every shot sees the same notes without re-querying.
   const directorNotes = await loadDirectorNotesForPlanner();
@@ -727,13 +727,13 @@ async function runStoryboardGenerationJob({
 // Mongo doc. Exported so the SPA's pre-generation sheet picker hits the same
 // resolution path that the renderer uses — guaranteeing the dropdown reflects
 // what the renderer will actually pick up.
-export async function findCharactersInBeat(beat) {
+export async function findCharactersInBeat(projectId, beat) {
   const out = [];
   for (const raw of beat?.characters || []) {
     const stripped = stripMarkdown(raw || '').trim();
     if (!stripped) continue;
     try {
-      const c = await getCharacter(stripped);
+      const c = await getCharacter(projectId, stripped);
       if (c) out.push(c);
     } catch (e) {
       logger.warn(`storyboard gen: character lookup "${stripped}" failed: ${e.message}`);
@@ -1135,7 +1135,7 @@ export function mergeCritiqueComments(critique) {
 // Lock-free core of a single-shot re-expansion. Caller must already hold the
 // beat lock (reExpandShot acquires it per-call; the bulk job holds it once).
 export async function reExpandShotInner({ sb, beat, critiqueGuidance = '' }) {
-  const characters = await findCharactersInBeat(beat);
+  const characters = await findCharactersInBeat(undefined, beat);
   const directorNotes = await loadDirectorNotesForPlanner();
   const outlineFrame = {
     description: stripMarkdown(sb.summary || '').trim(),

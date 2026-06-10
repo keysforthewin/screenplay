@@ -158,7 +158,7 @@ describe('set_field handler — character', () => {
       value: ['bio'],
     });
     expect(out).toMatch(/Unset 1 field\(s\) on Alice: \[bio\]/);
-    const fresh = await Characters.getCharacter('Alice');
+    const fresh = await Characters.getCharacter(undefined, 'Alice');
     expect('bio' in fresh.fields).toBe(false);
     expect(fresh.fields.role).toBe('lead');
   });

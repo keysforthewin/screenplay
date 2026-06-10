@@ -482,7 +482,7 @@ export function buildApiRouter() {
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const beat = await getBeat(undefined, beatId);
       const { findCharactersInBeat } = await import('./storyboardGenerate.js');
-      const docs = await findCharactersInBeat(beat);
+      const docs = await findCharactersInBeat(undefined, beat);
       const out = [];
       for (const c of docs) {
         const sheetIds = Array.isArray(c.character_sheet_image_ids)
@@ -526,7 +526,7 @@ export function buildApiRouter() {
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const beat = await getBeat(undefined, beatId);
       const { findCharactersInBeat } = await import('./storyboardGenerate.js');
-      const charDocs = await findCharactersInBeat(beat);
+      const charDocs = await findCharactersInBeat(undefined, beat);
 
       const items = [];
       const seen = new Set(); // dedupe by result_image_id
@@ -611,7 +611,7 @@ export function buildApiRouter() {
   // tab stays disjoint from the Artwork tab.
   router.get('/character/:id/images', async (req, res, next) => {
     try {
-      const c = await getCharacter(req.params.id);
+      const c = await getCharacter(undefined, req.params.id);
       if (!c) return res.status(404).json({ error: 'character not found' });
       const files = await listImagesForCharacter(c._id);
       const artworkImageIds = new Set(
@@ -634,7 +634,7 @@ export function buildApiRouter() {
   router.get('/character', async (req, res) => {
     const name = String(req.query.name || '');
     if (!name) return res.status(400).json({ error: 'name required' });
-    const c = await getCharacter(name);
+    const c = await getCharacter(undefined, name);
     if (!c) return res.status(404).json({ error: 'character not found' });
     res.json({ character: c });
     backfillOwnedImageCaptions('character', c._id?.toString?.(), c.images).catch(() => {});
@@ -1388,7 +1388,7 @@ export function buildApiRouter() {
   async function resolveCharacterId(req) {
     const { id } = req.params;
     if (isOidHex(id)) return id;
-    const c = await getCharacter(id);
+    const c = await getCharacter(undefined, id);
     return c?._id?.toString() || null;
   }
 
@@ -1421,7 +1421,7 @@ export function buildApiRouter() {
       res.json({ ...result, image_id: String(file._id) });
       announceCharacterMedia({
         req,
-        character: await getCharacter(cid),
+        character: await getCharacter(undefined, cid),
         verb: 'uploaded an image to',
         imageFileId: file._id,
       });
@@ -1445,7 +1445,7 @@ export function buildApiRouter() {
       res.json(result);
       announceCharacterMedia({
         req,
-        character: await getCharacter(cid),
+        character: await getCharacter(undefined, cid),
         verb: 'deleted an image from',
       });
     } catch (e) {
@@ -1470,7 +1470,7 @@ export function buildApiRouter() {
       if (ownerType !== 'character' || ownerId !== String(cid)) {
         return res.status(409).json({ error: 'image is not owned by this character' });
       }
-      const character = await getCharacter(cid);
+      const character = await getCharacter(undefined, cid);
       const inGallery = (character?.images || []).some(
         (i) => (i._id?.toString?.() || String(i._id)) === String(imageId),
       );
@@ -1484,7 +1484,7 @@ export function buildApiRouter() {
       res.json({ ok: true });
       announceCharacterMedia({
         req,
-        character: await getCharacter(cid),
+        character: await getCharacter(undefined, cid),
         verb: 'deleted an image from',
       });
     } catch (e) {
@@ -1579,7 +1579,7 @@ export function buildApiRouter() {
       });
       announceCharacterMedia({
         req,
-        character: replaceResult.character || (await getCharacter(cid)),
+        character: replaceResult.character || (await getCharacter(undefined, cid)),
         verb: mode === 'edit' ? 'edited an image on' : 'regenerated an image on',
         imageFileId: file._id,
         prompt,
@@ -1613,7 +1613,7 @@ export function buildApiRouter() {
         res.json(result);
         announceCharacterMedia({
           req,
-          character: result?.character || (await getCharacter(cid)),
+          character: result?.character || (await getCharacter(undefined, cid)),
           verb: 'attached an image to',
           imageFileId: imageId,
         });
@@ -1655,7 +1655,7 @@ export function buildApiRouter() {
         res.json(result);
         announceCharacterMedia({
           req,
-          character: result?.character || (await getCharacter(cid)),
+          character: result?.character || (await getCharacter(undefined, cid)),
           verb: 'copied an image to',
           imageFileId: imageMeta._id,
         });
@@ -1730,7 +1730,7 @@ export function buildApiRouter() {
       });
       announceCharacterMedia({
         req,
-        character: updated.character || (await getCharacter(cid)),
+        character: updated.character || (await getCharacter(undefined, cid)),
         verb:
           refs.ids.length >= 2
             ? 'composited images on'
@@ -1814,7 +1814,7 @@ export function buildApiRouter() {
       res.json(result);
       announceCharacterMedia({
         req,
-        character: await getCharacter(cid),
+        character: await getCharacter(undefined, cid),
         verb: (file.content_type || '').startsWith('audio/')
           ? 'added audio to'
           : (file.content_type || '').startsWith('video/')
@@ -1839,7 +1839,7 @@ export function buildApiRouter() {
       res.json(result);
       announceCharacterMedia({
         req,
-        character: await getCharacter(cid),
+        character: await getCharacter(undefined, cid),
         verb: 'deleted a file from',
       });
     } catch (e) {
@@ -1865,7 +1865,7 @@ export function buildApiRouter() {
         res.json(result);
         announceCharacterMedia({
           req,
-          character: await getCharacter(cid),
+          character: await getCharacter(undefined, cid),
           verb: 'attached a file to',
           mediaFileId: attachmentId,
           mediaLabel: 'file',
@@ -1993,7 +1993,7 @@ export function buildApiRouter() {
         } else if (hostType === 'character') {
           announceCharacterMedia({
             req,
-            character: await getCharacter(hostId),
+            character: await getCharacter(undefined, hostId),
             verb: 'imported artwork to',
           });
         }
@@ -2042,7 +2042,7 @@ export function buildApiRouter() {
           } else if (hostType === 'character') {
             announceCharacterMedia({
               req,
-              character: await getCharacter(hostId),
+              character: await getCharacter(undefined, hostId),
               verb: 'imported artwork to',
             });
           }
@@ -2180,7 +2180,7 @@ export function buildApiRouter() {
         } else if (hostType === 'character') {
           announceCharacterMedia({
             req,
-            character: await getCharacter(hostId),
+            character: await getCharacter(undefined, hostId),
             verb: 'deleted artwork from',
           });
         }
@@ -2244,14 +2244,14 @@ export function buildApiRouter() {
       if (!isOidHex(characterId)) {
         return res.status(400).json({ error: 'character_id (24-hex) required' });
       }
-      const target = await getCharacter(characterId);
+      const target = await getCharacter(undefined, characterId);
       if (!target) return res.status(404).json({ error: 'character not found' });
       const targetIdStr = target._id?.toString?.() || String(target._id);
       const { findCharactersInBeat } = await import('./storyboardGenerate.js');
       const beats = await listBeats();
       const out = [];
       for (const b of beats) {
-        const chars = await findCharactersInBeat(b);
+        const chars = await findCharactersInBeat(undefined, b);
         const features = chars.some(
           (c) => (c._id?.toString?.() || String(c._id)) === targetIdStr,
         );
@@ -4427,7 +4427,7 @@ export function buildApiRouter() {
       const direction =
         typeof req.body?.direction === 'string' ? req.body.direction : '';
       const { findCharactersInBeat } = await import('./storyboardGenerate.js');
-      const characters = await findCharactersInBeat(beat);
+      const characters = await findCharactersInBeat(undefined, beat);
       const { analyzeStoryboardCount } = await import(
         '../llm/storyboardCountAnalyze.js'
       );
@@ -4461,7 +4461,7 @@ export function buildApiRouter() {
         SCENE_PLAN_SYSTEM_PROMPT,
         SHOT_EXPAND_SYSTEM_PROMPT,
       } = await import('./storyboardGenerate.js');
-      const characters = await findCharactersInBeat(beat);
+      const characters = await findCharactersInBeat(undefined, beat);
       const directorNotes = await loadDirectorNotesForPlanner();
       const user = buildScenePlanUserText({
         beat,

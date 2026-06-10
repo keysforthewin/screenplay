@@ -122,7 +122,7 @@ describe('rag indexer — characters', () => {
       k.includes('field:background_story'),
     ).length;
     expect(before).toBeGreaterThan(0);
-    await Characters.updateCharacter(c._id.toString(), {
+    await Characters.updateCharacter(undefined, c._id.toString(), {
       fields: { background_story: 'short' },
     });
     await Indexer.indexCharacter(c._id);

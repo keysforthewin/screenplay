@@ -148,7 +148,7 @@ describe('edit handler — character', () => {
       edits: [{ find: 'short', replace: 'long' }],
     });
     expect(out).toMatch(/Applied 1 edit/);
-    expect((await Characters.getCharacter('Alice')).fields.bio).toBe('long bio here');
+    expect((await Characters.getCharacter(undefined, 'Alice')).fields.bio).toBe('long bio here');
   });
 
   it('edits a core field', async () => {
@@ -164,7 +164,7 @@ describe('edit handler — character', () => {
       edits: [{ find: 'Old', replace: 'New' }],
     });
     expect(out).toMatch(/Applied 1 edit/);
-    expect((await Characters.getCharacter('Alice')).hollywood_actor).toBe('New Actor');
+    expect((await Characters.getCharacter(undefined, 'Alice')).hollywood_actor).toBe('New Actor');
   });
 });
 

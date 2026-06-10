@@ -106,7 +106,7 @@ describe('GET /api/storyboard/:id/video-source-storyboards', () => {
 
     const char = await Characters.createCharacter({ name: 'Bronze Leopard' });
     const attChar = videoAtt('character-reel.mp4'); // should appear
-    await Characters.pushCharacterAttachment(char._id, attChar);
+    await Characters.pushCharacterAttachment(undefined, char._id, attChar);
 
     await setVideoFields(current._id, {
       video_file_id: genCurrent,

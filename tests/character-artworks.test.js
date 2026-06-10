@@ -26,7 +26,7 @@ describe('character artwork helpers', () => {
     const resultId = new ObjectId();
     const refA = new ObjectId();
 
-    await Characters.pushCharacterArtwork(c._id.toString(), {
+    await Characters.pushCharacterArtwork(undefined, c._id.toString(), {
       _id: artworkId,
       prompt: 'cyberpunk warrior',
       model: 'fal',
@@ -36,7 +36,7 @@ describe('character artwork helpers', () => {
       updated_at: new Date(),
     });
 
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(undefined, 'Rae');
     expect(fresh.artworks).toHaveLength(1);
     expect(fresh.artworks[0].prompt).toBe('cyberpunk warrior');
     expect(fresh.artworks[0].model).toBe('fal');
@@ -46,7 +46,7 @@ describe('character artwork helpers', () => {
   it('replaceCharacterArtwork patches prompt, refs, and result_image_id in place', async () => {
     const c = await Characters.createCharacter({ name: 'Rae' });
     const artworkId = new ObjectId();
-    await Characters.pushCharacterArtwork(c._id.toString(), {
+    await Characters.pushCharacterArtwork(undefined, c._id.toString(), {
       _id: artworkId,
       prompt: 'first try',
       model: 'gemini',
@@ -58,7 +58,7 @@ describe('character artwork helpers', () => {
 
     const newResultId = new ObjectId();
     const ref = new ObjectId();
-    const updated = await Characters.replaceCharacterArtwork(c._id.toString(), artworkId, {
+    const updated = await Characters.replaceCharacterArtwork(undefined, c._id.toString(), artworkId, {
       prompt: 'second try, more vibes',
       model: 'fal',
       reference_image_ids: [ref],
@@ -68,7 +68,7 @@ describe('character artwork helpers', () => {
     expect(updated.prompt).toBe('second try, more vibes');
     expect(updated.model).toBe('fal');
     expect(updated.result_image_id.toString()).toBe(newResultId.toString());
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(undefined, 'Rae');
     expect(fresh.artworks).toHaveLength(1);
     expect(fresh.artworks[0].reference_image_ids).toHaveLength(1);
   });
@@ -76,7 +76,7 @@ describe('character artwork helpers', () => {
   it('replaceCharacterArtwork throws when the artwork is not attached', async () => {
     const c = await Characters.createCharacter({ name: 'Rae' });
     await expect(
-      Characters.replaceCharacterArtwork(c._id.toString(), new ObjectId(), { prompt: 'x' }),
+      Characters.replaceCharacterArtwork(undefined, c._id.toString(), new ObjectId(), { prompt: 'x' }),
     ).rejects.toThrow(/not attached/);
   });
 
@@ -84,7 +84,7 @@ describe('character artwork helpers', () => {
     const c = await Characters.createCharacter({ name: 'Rae' });
     const artworkId = new ObjectId();
     const resultId = new ObjectId();
-    await Characters.pushCharacterArtwork(c._id.toString(), {
+    await Characters.pushCharacterArtwork(undefined, c._id.toString(), {
       _id: artworkId,
       prompt: 'p',
       model: 'gemini',
@@ -94,16 +94,16 @@ describe('character artwork helpers', () => {
       updated_at: new Date(),
     });
 
-    const out = await Characters.pullCharacterArtwork(c._id.toString(), artworkId);
+    const out = await Characters.pullCharacterArtwork(undefined, c._id.toString(), artworkId);
     expect(out.result_image_id.toString()).toBe(resultId.toString());
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(undefined, 'Rae');
     expect(fresh.artworks).toEqual([]);
   });
 
   it('pullCharacterArtwork throws when the artwork is not attached', async () => {
     const c = await Characters.createCharacter({ name: 'Rae' });
     await expect(
-      Characters.pullCharacterArtwork(c._id.toString(), new ObjectId()),
+      Characters.pullCharacterArtwork(undefined, c._id.toString(), new ObjectId()),
     ).rejects.toThrow(/not attached/);
   });
 });

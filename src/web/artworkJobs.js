@@ -50,7 +50,7 @@ async function announceArtwork({ hostType, hostId, username, verb, fileId, promp
         entityUrl = beatUrl(beat);
       }
     } else if (hostType === 'character') {
-      const character = await getCharacter(String(hostId));
+      const character = await getCharacter(undefined, String(hostId));
       if (character) {
         const name = stripMarkdown(character.name || '').trim() || 'character';
         entityLabel = `Character: ${name}`;

@@ -153,7 +153,7 @@ describe('plots concurrency — beat mutations must not clobber each other', () 
       }),
     ]);
 
-    const fresh = await Characters.getCharacter(c._id.toString());
+    const fresh = await Characters.getCharacter(undefined, c._id.toString());
     const ids = (fresh.artworks || []).map((aw) => aw._id.toString()).sort();
     const expected = [a.artwork._id.toString(), b.artwork._id.toString()].sort();
     expect(ids).toEqual(expected);

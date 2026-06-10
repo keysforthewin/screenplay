@@ -259,7 +259,7 @@ async function readEntityField({ entityType, entityId, field }) {
     throw new Error(`gateway fallback: unknown beat field "${field}"`);
   }
   if (entityType === 'character') {
-    const c = await getCharacter(entityId);
+    const c = await getCharacter(undefined, entityId);
     if (!c) throw new Error(`Character not found: ${entityId}`);
     if (field === 'name') return String(c.name || '');
     if (field === 'hollywood_actor') return String(c.hollywood_actor || '');
@@ -404,10 +404,10 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
     }
     const { updateCharacter } = await import('../mongo/characters.js');
     if (field === 'name' || field === 'hollywood_actor') {
-      return updateCharacter(entityId, { [field]: args.markdown });
+      return updateCharacter(undefined, entityId, { [field]: args.markdown });
     }
     if (field.startsWith('fields.')) {
-      return updateCharacter(entityId, { [field]: args.markdown });
+      return updateCharacter(undefined, entityId, { [field]: args.markdown });
     }
   }
   if (entityType === 'notes' && field.startsWith('note:') && field.endsWith(':text')) {
@@ -617,7 +617,7 @@ export async function updateCharacterViaGateway(identifier, patch) {
       `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, hollywood_actor, or unset. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
-  const c = await getCharacter(identifier);
+  const c = await getCharacter(undefined, identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   const cid = c._id.toString();
   // Text fields (name, hollywood_actor, fields.*) flow through the y-doc;
@@ -646,12 +646,12 @@ export async function updateCharacterViaGateway(identifier, patch) {
     });
   }
   if (unset) {
-    await mongoUpdateCharacter(cid, { unset });
+    await mongoUpdateCharacter(undefined, cid, { unset });
     broadcastFieldsUpdated(buildRoomName('character', cid), {
       changed: unset.map((u) => `-fields.${u}`),
     });
   }
-  return getCharacter(cid);
+  return getCharacter(undefined, cid);
 }
 
 export async function editDirectorNoteViaGateway({ noteId, text }) {
@@ -673,7 +673,7 @@ export async function editDirectorNoteTextViaGateway({ noteId, edits }) {
 }
 
 export async function editCharacterFieldViaGateway({ identifier, field, edits }) {
-  const c = await getCharacter(identifier);
+  const c = await getCharacter(undefined, identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   return editEntityFieldMarkdown({
     entityType: 'character',
@@ -749,9 +749,9 @@ export async function removeBeatAttachmentViaGateway({ beatId, attachmentId }) {
 }
 
 export async function addCharacterImageViaGateway({ character, imageMeta, setAsMain }) {
-  const c = await getCharacter(character);
+  const c = await getCharacter(undefined, character);
   if (!c) throw new Error(`Character not found: ${character}`);
-  const result = await pushCharacterImage(c._id.toString(), imageMeta, !!setAsMain);
+  const result = await pushCharacterImage(undefined, c._id.toString(), imageMeta, !!setAsMain);
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
     changed: ['images', 'main_image_id'],
   });
@@ -759,7 +759,7 @@ export async function addCharacterImageViaGateway({ character, imageMeta, setAsM
 }
 
 export async function setCharacterMainImageViaGateway({ character, imageId }) {
-  const c = await getCharacter(character);
+  const c = await getCharacter(undefined, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const result = await setMainCharacterImage({ character: c._id.toString(), imageId });
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
@@ -769,7 +769,7 @@ export async function setCharacterMainImageViaGateway({ character, imageId }) {
 }
 
 export async function removeCharacterImageViaGateway({ character, imageId }) {
-  const c = await getCharacter(character);
+  const c = await getCharacter(undefined, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const result = await removeCharacterImage({ character: c._id.toString(), imageId });
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
@@ -779,9 +779,9 @@ export async function removeCharacterImageViaGateway({ character, imageId }) {
 }
 
 export async function addCharacterAttachmentViaGateway({ character, attachmentMeta }) {
-  const c = await getCharacter(character);
+  const c = await getCharacter(undefined, character);
   if (!c) throw new Error(`Character not found: ${character}`);
-  const result = await pushCharacterAttachment(c._id.toString(), attachmentMeta);
+  const result = await pushCharacterAttachment(undefined, c._id.toString(), attachmentMeta);
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
     changed: ['attachments'],
   });
@@ -958,9 +958,9 @@ export async function removeArtworkViaGateway({ hostType, hostId, artworkId }) {
 }
 
 export async function removeCharacterAttachmentViaGateway({ character, attachmentId }) {
-  const c = await getCharacter(character);
+  const c = await getCharacter(undefined, character);
   if (!c) throw new Error(`Character not found: ${character}`);
-  const result = await pullCharacterAttachment(c._id.toString(), attachmentId);
+  const result = await pullCharacterAttachment(undefined, c._id.toString(), attachmentId);
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
     changed: ['attachments'],
   });
@@ -985,10 +985,10 @@ export async function replaceBeatImageViaGateway({ beatId, oldImageId, newImageM
 }
 
 export async function replaceCharacterImageViaGateway({ character, oldImageId, newImageMeta }) {
-  const c = await getCharacter(character);
+  const c = await getCharacter(undefined, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const cid = c._id.toString();
-  const result = await replaceCharacterImage(cid, oldImageId, newImageMeta);
+  const result = await replaceCharacterImage(undefined, cid, oldImageId, newImageMeta);
   try {
     await deleteImage(oldImageId);
   } catch (e) {
@@ -1109,7 +1109,7 @@ export async function attachExistingImageToCharacterViaGateway({
   imageId,
   setAsMain = false,
 }) {
-  const c = await getCharacter(character);
+  const c = await getCharacter(undefined, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const file = await findImageFile(imageId);
   if (!file) throw new Error(`Image not found: ${imageId}`);
@@ -1136,6 +1136,7 @@ export async function attachExistingImageToCharacterViaGateway({
     uploaded_at: file.uploadDate,
   };
   const result = await pushCharacterImage(
+    undefined,
     c._id.toString(),
     meta,
     !!setAsMain,
@@ -1215,7 +1216,7 @@ export async function attachExistingAttachmentToCharacterViaGateway({
   character,
   attachmentId,
 }) {
-  const c = await getCharacter(character);
+  const c = await getCharacter(undefined, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const result = await attachExistingAttachmentToCharacter({
     character: c._id.toString(),
@@ -1262,10 +1263,10 @@ export async function moveBeatImageToLibraryViaGateway({ beatId, imageId }) {
 }
 
 export async function moveCharacterImageToLibraryViaGateway({ character, imageId }) {
-  const c = await getCharacter(character);
+  const c = await getCharacter(undefined, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const cid = c._id.toString();
-  const result = await pullCharacterImage(cid, imageId);
+  const result = await pullCharacterImage(undefined, cid, imageId);
   await setImageOwner(imageId, { ownerType: null, ownerId: null });
   broadcastFieldsUpdated(buildRoomName('character', cid), {
     changed: ['images', 'main_image_id'],
@@ -1988,7 +1989,7 @@ export async function setDialogCharacterViaGateway({ dialogId, characterName }) 
   if (!raw) {
     throw new Error('character is required');
   }
-  const c = await getCharacter(raw);
+  const c = await getCharacter(undefined, raw);
   const finalName = c
     ? (stripMarkdown(c.name || '').trim() || raw)
     : raw;

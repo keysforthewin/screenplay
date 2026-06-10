@@ -55,7 +55,7 @@ export async function collectStoryboardReferenceIds({
     if (!stripped) continue;
     let c = null;
     try {
-      c = await getCharacter(stripped);
+      c = await getCharacter(undefined, stripped);
     } catch (e) {
       logger.warn(
         `storyboard refs: character lookup "${stripped}" failed: ${e.message}`,

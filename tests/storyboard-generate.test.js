@@ -750,7 +750,7 @@ describe('findCharactersInBeat', () => {
       characters: ['Alice', 'Bob', '   ', 'Nonexistent'],
     });
 
-    const docs = await Generate.findCharactersInBeat(beat);
+    const docs = await Generate.findCharactersInBeat(undefined, beat);
     const names = docs.map((d) => d.name).sort();
     // Empty strings are skipped; unknown names resolve to null and drop.
     expect(names).toEqual(['Alice', 'Bob']);

@@ -132,7 +132,7 @@ export async function resolveEntityLinks(touched) {
 
   for (const ref of touched.characters || []) {
     if (urls.length >= MAX_URLS) break;
-    const character = await safeCall(() => getCharacter(ref));
+    const character = await safeCall(() => getCharacter(undefined, ref));
     push(characterUrl(character));
   }
 

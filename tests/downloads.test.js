@@ -61,7 +61,7 @@ vi.mock('../src/mongo/plots.js', () => ({
 }));
 
 vi.mock('../src/mongo/characters.js', () => ({
-  getCharacter: async (idOrName) => {
+  getCharacter: async (_projectId, idOrName) => {
     if (idOrName === charId.toString() || idOrName === 'Steve') {
       return {
         _id: charId,

@@ -105,7 +105,7 @@ describe('mongo: replaceCharacterImage', () => {
         },
       );
     const newId = new ObjectId();
-    const result = await Characters.replaceCharacterImage(c._id.toString(), old, {
+    const result = await Characters.replaceCharacterImage(undefined, c._id.toString(), old, {
       _id: newId,
       filename: 'new.png',
       content_type: 'image/png',

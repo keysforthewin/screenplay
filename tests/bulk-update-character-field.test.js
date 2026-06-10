@@ -45,9 +45,9 @@ describe('bulk_update_character_field handler', () => {
     });
 
     expect(out).toMatch(/Updated field "role" on 3\/3 character\(s\)\./);
-    const a = await Characters.getCharacter('Alice');
-    const b = await Characters.getCharacter('Bob');
-    const c = await Characters.getCharacter('Carol');
+    const a = await Characters.getCharacter(undefined, 'Alice');
+    const b = await Characters.getCharacter(undefined, 'Bob');
+    const c = await Characters.getCharacter(undefined, 'Carol');
     expect(a.fields.role).toBe('protagonist');
     expect(b.fields.role).toBe('antagonist');
     expect(c.fields.role).toBe('sidekick');
@@ -61,7 +61,7 @@ describe('bulk_update_character_field handler', () => {
       updates: [{ character: 'Alice', value: 'Idris Elba' }],
     });
 
-    const a = await Characters.getCharacter('Alice');
+    const a = await Characters.getCharacter(undefined, 'Alice');
     expect(a.hollywood_actor).toBe('Idris Elba');
     expect(a.fields?.hollywood_actor).toBeUndefined();
   });
@@ -83,8 +83,8 @@ describe('bulk_update_character_field handler', () => {
     expect(out).toMatch(/Failures \(1\):/);
     expect(out).toMatch(/"Bob": Character not found: Bob/);
 
-    const a = await Characters.getCharacter('Alice');
-    const c = await Characters.getCharacter('Carol');
+    const a = await Characters.getCharacter(undefined, 'Alice');
+    const c = await Characters.getCharacter(undefined, 'Carol');
     expect(a.fields.role).toBe('protagonist');
     expect(c.fields.role).toBe('sidekick');
   });
@@ -98,7 +98,7 @@ describe('bulk_update_character_field handler', () => {
     });
 
     expect(out).toMatch(/1\/1/);
-    const fresh = await Characters.getCharacter('Alice');
+    const fresh = await Characters.getCharacter(undefined, 'Alice');
     expect(fresh.fields.role).toBe('lead');
   });
 
@@ -118,7 +118,7 @@ describe('bulk_update_character_field handler', () => {
 
     expect(out).toMatch(/7\/7/);
     for (let i = 0; i < 7; i++) {
-      const c = await Characters.getCharacter(`Char${i}`);
+      const c = await Characters.getCharacter(undefined, `Char${i}`);
       expect(c.fields.role).toBe(`v${i}`);
     }
   });

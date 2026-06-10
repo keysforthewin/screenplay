@@ -56,7 +56,7 @@ describe('artworks.js — character host', () => {
     expect(artwork.previous_result_image_id).toBeNull();
     expect(artwork.reference_image_ids).toHaveLength(1);
 
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(undefined, 'Rae');
     expect(fresh.artworks).toHaveLength(1);
     expect(fresh.artworks[0]._id.toString()).toBe(artwork._id.toString());
   });
@@ -280,7 +280,7 @@ describe('artworks.js — character host', () => {
     expect(out.removed_image_ids.map(String).sort()).toEqual(
       [r1.toString(), r2.toString()].sort(),
     );
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(undefined, 'Rae');
     expect(fresh.artworks).toEqual([]);
   });
 });

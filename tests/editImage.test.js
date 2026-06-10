@@ -160,6 +160,7 @@ async function seedCharacterWithImage(name, { setAsMain = true } = {}) {
     ownerId: c._id,
   });
   await Characters.pushCharacterImage(
+    undefined,
     c._id.toString(),
     {
       _id: file._id,
@@ -249,6 +250,7 @@ describe('edit_image', () => {
       ownerId: c._id,
     });
     await Characters.pushCharacterImage(
+      undefined,
       c._id.toString(),
       { _id: fileA._id, filename: fileA.filename, content_type: 'image/png', size: 5, uploaded_at: new Date(), caption: null },
       true,
@@ -260,6 +262,7 @@ describe('edit_image', () => {
       ownerId: c._id,
     });
     await Characters.pushCharacterImage(
+      undefined,
       c._id.toString(),
       { _id: fileB._id, filename: fileB.filename, content_type: 'image/png', size: 5, uploaded_at: new Date(), caption: null },
       false,

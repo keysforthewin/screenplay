@@ -72,7 +72,7 @@ describe('appendDoneArtwork (mongo helper)', () => {
     expect(artwork.name).toBe('Imported portrait');
     expect(artwork.result_image_id.equals(resultId)).toBe(true);
 
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(undefined, 'Rae');
     expect(fresh.artworks).toHaveLength(1);
     expect(fresh.artworks[0]._id.equals(artwork._id)).toBe(true);
   });
@@ -111,7 +111,7 @@ describe('appendDoneArtwork (mongo helper)', () => {
       name: 'second',
     });
 
-    const fresh = await Characters.getCharacter('Iris');
+    const fresh = await Characters.getCharacter(undefined, 'Iris');
     expect(fresh.artworks).toHaveLength(2);
     expect(fresh.artworks[0].name).toBe('first');
     expect(fresh.artworks[1].name).toBe('second');

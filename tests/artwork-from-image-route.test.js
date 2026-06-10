@@ -100,7 +100,7 @@ describe('POST /api/:host/:id/artwork/from-image', () => {
     expect(json.artwork.prompt).toBe('');
     expect(json.artwork.reference_image_ids).toEqual([]);
 
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(undefined, 'Rae');
     expect(fresh.artworks).toHaveLength(1);
   });
 

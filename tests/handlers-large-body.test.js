@@ -147,7 +147,7 @@ describe('edit (character field)', () => {
       edits: [{ find: 'rookie', replace: 'veteran' }],
     });
     expect(out).toMatch(/Applied 1 edit/);
-    const fresh = await Characters.getCharacter(c._id.toString());
+    const fresh = await Characters.getCharacter(undefined, c._id.toString());
     expect(fresh.fields.bio).toBe('Maya is a veteran. Maya likes coffee.');
   });
 
@@ -164,7 +164,7 @@ describe('edit (character field)', () => {
       edits: [{ find: 'Senior', replace: 'Junior' }],
     });
     expect(out).toMatch(/Applied 1 edit/);
-    const fresh = await Characters.getCharacter('Steve');
+    const fresh = await Characters.getCharacter(undefined, 'Steve');
     expect(fresh.hollywood_actor).toBe('Steve Mulligan Junior');
   });
 

@@ -183,7 +183,7 @@ export async function indexBeat(beatId) {
 
 export async function indexCharacter(characterId) {
   return safeRun(`character:${characterId}`, async (col) => {
-    const c = await getCharacter(idStr(characterId));
+    const c = await getCharacter(undefined, idStr(characterId));
     if (!c) {
       try { await col.delete({ where: { $and: [{ entity_type: 'character' }, { entity_id: idStr(characterId) }] } }); } catch {}
       return;

@@ -21,6 +21,7 @@ import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../log.js';
 import { getPlot } from './plots.js';
+import { getCharacter } from './characters.js';
 
 const VALID_HOST_TYPES = new Set(['character', 'beat']);
 const VALID_STATUSES = new Set(['pending', 'done', 'error']);
@@ -49,17 +50,6 @@ function assertHostType(hostType) {
 // every subsequent write is keyed off that _id with positional/arrayFilter
 // operators so concurrent callers don't fight over a shared snapshot.
 
-async function loadCharacter(hostId) {
-  const c = getDb().collection('characters');
-  const oid = maybeOid(hostId);
-  if (oid) {
-    const byId = await c.findOne({ _id: oid });
-    if (byId) return byId;
-  }
-  const lc = String(hostId).toLowerCase();
-  return c.findOne({ name_lower: lc });
-}
-
 function findBeatInPlot(plot, hostId) {
   const beats = plot?.beats || [];
   const oid = maybeOid(hostId);
@@ -79,7 +69,7 @@ function findBeatInPlot(plot, hostId) {
 async function loadHost(projectId, hostType, hostId) {
   assertHostType(hostType);
   if (hostType === 'character') {
-    const c = await loadCharacter(hostId); // scoped in Task 4
+    const c = await getCharacter(projectId, String(hostId));
     if (!c) throw new Error(`Character not found: ${hostId}`);
     return { kind: 'character', doc: c, _id: c._id };
   }

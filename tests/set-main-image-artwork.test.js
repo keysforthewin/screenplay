@@ -60,7 +60,7 @@ describe('setMainCharacterImage — artwork source', () => {
     });
     expect(out.main_image_id.equals(resultId)).toBe(true);
 
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(undefined, 'Rae');
     expect(fresh.main_image_id.equals(resultId)).toBe(true);
   });
 
@@ -88,7 +88,7 @@ describe('setMainCharacterImage — artwork source', () => {
   it('still accepts a regular images[] entry (no regression)', async () => {
     const c = await Characters.createCharacter({ name: 'Rae' });
     const meta = makeMeta();
-    await Characters.pushCharacterImage(c._id.toString(), meta, false);
+    await Characters.pushCharacterImage(undefined, c._id.toString(), meta, false);
     const out = await Files.setMainCharacterImage({
       character: c._id.toString(),
       imageId: meta._id.toString(),

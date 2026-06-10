@@ -37,7 +37,7 @@ async function makeCharacter(name, { sheets = [], mainId = null, extraImages = [
       },
     },
   );
-  return Characters.getCharacter(name);
+  return Characters.getCharacter(undefined, name);
 }
 
 describe('collectStoryboardReferenceIds', () => {

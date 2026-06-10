@@ -27,7 +27,7 @@ describe('bulk_update_character_field stringified-value recovery', () => {
       updates: [{ character: 'Alice', value: '{"a":1,"b":"x"}' }],
     });
     expect(out).toMatch(/Updated field "profile" on 1\/1/);
-    const fresh = await Characters.getCharacter('Alice');
+    const fresh = await Characters.getCharacter(undefined, 'Alice');
     expect(fresh.fields.profile).toEqual({ a: 1, b: 'x' });
   });
 
@@ -38,7 +38,7 @@ describe('bulk_update_character_field stringified-value recovery', () => {
       updates: [{ character: 'Alice', value: 'protagonist' }],
     });
     expect(out).toMatch(/1\/1/);
-    const fresh = await Characters.getCharacter('Alice');
+    const fresh = await Characters.getCharacter(undefined, 'Alice');
     expect(fresh.fields.role).toBe('protagonist');
   });
 
@@ -49,7 +49,7 @@ describe('bulk_update_character_field stringified-value recovery', () => {
       updates: [{ character: 'Alice', value: '{"name":"someone"}' }],
     });
     expect(out).toMatch(/1\/1/);
-    const fresh = await Characters.getCharacter('Alice');
+    const fresh = await Characters.getCharacter(undefined, 'Alice');
     expect(fresh.hollywood_actor).toBe('{"name":"someone"}');
   });
 });

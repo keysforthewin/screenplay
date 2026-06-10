@@ -359,7 +359,7 @@ function serializeBeat(b, { fullBody = false } = {}) {
 async function maybeAutoFetchActorPortrait(characterIdentifier) {
   let c;
   try {
-    c = await Characters.getCharacter(characterIdentifier);
+    c = await Characters.getCharacter(undefined, characterIdentifier);
   } catch (e) {
     return ` (Note: could not re-read character to auto-fetch portrait: ${e.message})`;
   }
@@ -929,7 +929,7 @@ async function resolveEditTarget({ collection, identifier, field }) {
     if (typeof identifier !== 'string' || !identifier.trim()) {
       throw new Error('`identifier` is required for character.');
     }
-    const c = await Characters.getCharacter(identifier);
+    const c = await Characters.getCharacter(undefined, identifier);
     if (!c) throw new Error(`No character found for "${identifier}".`);
     let gatewayField;
     let currentValue;
@@ -1045,7 +1045,7 @@ export const HANDLERS = {
   },
 
   async get_character({ identifier, full_fields } = {}) {
-    const c = await Characters.getCharacter(identifier);
+    const c = await Characters.getCharacter(undefined, identifier);
     if (!c) return `No character found for "${identifier}".`;
     return withSpaLink(
       compact(withTruncatedCharacterFields(withoutImageFilenames(c), { fullFields: !!full_fields })),
@@ -1130,7 +1130,7 @@ export const HANDLERS = {
     if (collection === 'character') {
       // Similarity heads-up when name or any custom field changed.
       if (target.gatewayField === 'name' || target.gatewayField.startsWith('fields.')) {
-        const fresh = await Characters.getCharacter(target.entityId);
+        const fresh = await Characters.getCharacter(undefined, target.entityId);
         if (fresh) summary = await appendSimilarityHeadsUp('character', fresh, summary);
       }
       // Auto-attach a TMDB portrait when the character has a hollywood_actor
@@ -1308,7 +1308,7 @@ export const HANDLERS = {
     if (!instructions || typeof instructions !== 'string' || !instructions.trim()) {
       return 'Error: instructions is required.';
     }
-    const character = await Characters.getCharacter(identifier);
+    const character = await Characters.getCharacter(undefined, identifier);
     if (!character) return `Character not found: ${identifier}`;
 
     const fields = character.fields || {};
@@ -1366,7 +1366,7 @@ export const HANDLERS = {
         characterUrl(character),
       );
     }
-    const fresh = await Characters.updateCharacter(character._id.toString(), patch);
+    const fresh = await Characters.updateCharacter(undefined, character._id.toString(), patch);
 
     const lines = [`Revised ${fresh.name}:`];
     if (edited.length) lines.push(`- edited: ${edited.join(', ')}`);
@@ -1376,7 +1376,7 @@ export const HANDLERS = {
   },
 
   async search_characters({ query }) {
-    const results = await Characters.searchCharacters(query);
+    const results = await Characters.searchCharacters(undefined, query);
     return compact(
       results.map((c) => ({
         _id: c._id.toString(),
@@ -1388,10 +1388,10 @@ export const HANDLERS = {
   },
 
   async delete_character({ identifier }) {
-    const existing = await Characters.getCharacter(identifier);
+    const existing = await Characters.getCharacter(undefined, identifier);
     if (!existing) return `No character found for "${identifier}".`;
     const { unlinked_from } = await Plots.unlinkCharacterFromAllBeats(undefined, existing.name);
-    const res = await Characters.deleteCharacter(existing._id.toString());
+    const res = await Characters.deleteCharacter(undefined, existing._id.toString());
     await Images.deleteImages(res.image_ids);
     await Attachments.deleteAttachments(res.attachment_ids);
     return `Deleted character "${res.name}" — unlinked from ${unlinked_from} beat(s), removed ${res.image_ids.length} image(s) and ${res.attachment_ids.length} attachment(s).`;
@@ -1762,7 +1762,7 @@ export const HANDLERS = {
     if (typeof field !== 'string' || !field.trim()) {
       return 'Tool error (read_character_field): `field` is required.';
     }
-    const c = await Characters.getCharacter(character);
+    const c = await Characters.getCharacter(undefined, character);
     if (!c) return `No character found for "${character}".`;
     const CORE = new Set(['name', 'hollywood_actor']);
     let value = '';
@@ -2041,7 +2041,7 @@ export const HANDLERS = {
         );
       }
       if (ownerType === 'character') {
-        const c = await Characters.getCharacter(String(ownerId));
+        const c = await Characters.getCharacter(undefined, String(ownerId));
         if (!c) return `Error: image's owner character ${ownerId} was not found.`;
         await Gateway.moveCharacterImageToLibraryViaGateway({
           character: c._id.toString(),
@@ -2286,7 +2286,7 @@ export const HANDLERS = {
 
     let targetCharacter = null;
     if (attach_to_character) {
-      targetCharacter = await Characters.getCharacter(attach_to_character);
+      targetCharacter = await Characters.getCharacter(undefined, attach_to_character);
       if (!targetCharacter) {
         throw new Error(`Character not found: ${attach_to_character}`);
       }
@@ -2372,6 +2372,7 @@ export const HANDLERS = {
         caption: null,
       };
       await Characters.pushCharacterImage(
+        undefined,
         targetCharacter._id.toString(),
         charMeta,
         set_as_main,
@@ -2484,7 +2485,7 @@ export const HANDLERS = {
     let srcOwnerBeat = null;
     let srcOwnerNoteId = null;
     if (srcOwnerType === 'character' && srcOwnerId) {
-      srcOwnerCharacter = await Characters.getCharacter(srcOwnerId.toString());
+      srcOwnerCharacter = await Characters.getCharacter(undefined, srcOwnerId.toString());
       sourceWasMain = !!(
         srcOwnerCharacter?.main_image_id && srcOwnerCharacter.main_image_id.equals(srcFile._id)
       );
@@ -2507,7 +2508,7 @@ export const HANDLERS = {
     let targetBeat = null;
     let targetNoteId = null;
     if (attach_to_character) {
-      targetCharacter = await Characters.getCharacter(attach_to_character);
+      targetCharacter = await Characters.getCharacter(undefined, attach_to_character);
       if (!targetCharacter) throw new Error(`Character not found: ${attach_to_character}`);
     } else if (attach_to_beat) {
       targetBeat = await resolveBeat(attach_to_beat);
@@ -2584,6 +2585,7 @@ export const HANDLERS = {
         caption: null,
       };
       await Characters.pushCharacterImage(
+        undefined,
         targetCharacter._id.toString(),
         charMeta,
         effectiveSetAsMain,
@@ -2701,7 +2703,7 @@ export const HANDLERS = {
   },
 
   async list_character_images({ character }) {
-    const { character: name, images, main_image_id } = await Files.listCharacterImages(character);
+    const { character: name, images, main_image_id } = await Files.listCharacterImages(undefined, character);
     const text = compact({
       main_image_id: main_image_id ? main_image_id.toString() : null,
       images: images.map((i) => ({
@@ -2809,7 +2811,7 @@ export const HANDLERS = {
 
   async list_character_attachments({ character }) {
     const { character: name, _id, attachments } =
-      await Attachments.listCharacterAttachments(character);
+      await Attachments.listCharacterAttachments(undefined, character);
     const text = compact({
       character: { _id: _id.toString(), name },
       attachments: attachments.map((a) => ({
@@ -3053,7 +3055,7 @@ export const HANDLERS = {
         return { id: c._id.toString(), label: c.name, fields };
       });
       if (identifier) {
-        const t = await Characters.getCharacter(identifier);
+        const t = await Characters.getCharacter(undefined, identifier);
         if (!t) return `No character found for "${identifier}".`;
         excludeId = t._id.toString();
         const targetText = CHARACTER_TEXT_FIELDS.map((f) => t.fields?.[f] || '')
@@ -3111,7 +3113,7 @@ export const HANDLERS = {
     const fieldSet = Array.isArray(fields) && fields.length ? fields : ['desc', 'body'];
     const k = Math.min(50, Math.max(1, Number(top_k) || 15));
 
-    const c = await Characters.getCharacter(character);
+    const c = await Characters.getCharacter(undefined, character);
     if (!c) return `No character found for "${character}". Use list_characters to see options.`;
     const targetName = c.name.toLowerCase();
 
@@ -3159,7 +3161,7 @@ export const HANDLERS = {
 
   async similar_character({ character, focus, max_works } = {}) {
     if (!character) return 'Error: `character` is required.';
-    const c = await Characters.getCharacter(character);
+    const c = await Characters.getCharacter(undefined, character);
     if (!c) return `No character found for "${character}".`;
     if (!config.tavily.apiKey) {
       return 'Error: TAVILY_API_KEY is not configured. Cannot run external similarity search.';

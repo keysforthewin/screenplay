@@ -564,7 +564,7 @@ async function loadLibrary() {
 
 async function buildExportData({ characters: charNames, beats_query, dossier_character }) {
   if (Array.isArray(charNames) && charNames.length) {
-    const resolved = await Promise.all(charNames.map((n) => getCharacter(n)));
+    const resolved = await Promise.all(charNames.map((n) => getCharacter(undefined, n)));
     const missing = charNames.filter((_, i) => !resolved[i]);
     if (missing.length) return { error: `No such character(s): ${missing.join(', ')}.` };
     const characterImages = await loadCharacterImages(resolved);
@@ -604,7 +604,7 @@ async function buildExportData({ characters: charNames, beats_query, dossier_cha
   }
 
   if (dossier_character) {
-    const character = await getCharacter(dossier_character);
+    const character = await getCharacter(undefined, dossier_character);
     if (!character) return { error: `Character not found: ${dossier_character}.` };
     const plot = await getPlot();
     const target = String(character.name || '').toLowerCase();

@@ -19,19 +19,19 @@ beforeEach(() => {
 describe('Characters.deleteCharacter', () => {
   it('removes the character document by name (case-insensitive)', async () => {
     await Characters.createCharacter({ name: 'Alice' });
-    const res = await Characters.deleteCharacter('alice');
+    const res = await Characters.deleteCharacter(undefined, 'alice');
     expect(res.name).toBe('Alice');
-    expect(await Characters.getCharacter('Alice')).toBe(null);
+    expect(await Characters.getCharacter(undefined, 'Alice')).toBe(null);
   });
 
   it('removes the character document by _id', async () => {
     const c = await Characters.createCharacter({ name: 'Bob' });
-    await Characters.deleteCharacter(c._id.toString());
-    expect(await Characters.getCharacter('Bob')).toBe(null);
+    await Characters.deleteCharacter(undefined, c._id.toString());
+    expect(await Characters.getCharacter(undefined, 'Bob')).toBe(null);
   });
 
   it('throws when the character does not exist', async () => {
-    await expect(Characters.deleteCharacter('Nobody')).rejects.toThrow(/not found/i);
+    await expect(Characters.deleteCharacter(undefined, 'Nobody')).rejects.toThrow(/not found/i);
   });
 
   it('returns image_ids and attachment_ids for cascade cleanup', async () => {
@@ -54,14 +54,14 @@ describe('Characters.deleteCharacter', () => {
       updated_at: new Date(),
     });
 
-    const res = await Characters.deleteCharacter('Carol');
+    const res = await Characters.deleteCharacter(undefined, 'Carol');
     expect(res.image_ids.map((x) => x.toString())).toEqual([img1.toString(), img2.toString()]);
     expect(res.attachment_ids.map((x) => x.toString())).toEqual([att1.toString()]);
   });
 
   it('returns empty image/attachment arrays when the character had none', async () => {
     await Characters.createCharacter({ name: 'Dan' });
-    const res = await Characters.deleteCharacter('Dan');
+    const res = await Characters.deleteCharacter(undefined, 'Dan');
     expect(res.image_ids).toEqual([]);
     expect(res.attachment_ids).toEqual([]);
   });
@@ -105,7 +105,7 @@ describe('delete_character handler', () => {
     expect(result).toMatch(/deleted character "Eve"/i);
     expect(result).toMatch(/unlinked from 1 beat/i);
 
-    expect(await Characters.getCharacter('Eve')).toBe(null);
+    expect(await Characters.getCharacter(undefined, 'Eve')).toBe(null);
     const [beat] = await Plots.listBeats();
     expect(beat.characters).toEqual(['Frank']);
   });
