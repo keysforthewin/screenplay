@@ -11,6 +11,9 @@ import { logger } from '../log.js';
 import { contentTypeFromFilename } from '../util/contentType.js';
 import { convertToMp3 } from './audioTranscode.js';
 import { requireSession } from './auth.js';
+import { resolveProject } from './projectMiddleware.js';
+import { createProject, getProjectByTitle, listProjects } from '../mongo/projects.js';
+import { seedProjectDefaults } from '../seed/defaults.js';
 import { ALLOWED_IMAGE_MODELS } from './imageReplaceDispatch.js';
 
 // Default model the SPA falls back to when the request omits `image_model`/`model`.
@@ -316,6 +319,13 @@ export function buildApiRouter() {
   const router = express.Router();
   router.use(express.json({ limit: '1mb' }));
 
+  // Resolve the viewer's project for every /api route. Mounted BEFORE the SSE
+  // route below (not next to requireSession) because EventSource cannot set
+  // custom headers — the SSE route relies on this middleware's ?project_id=
+  // query fallback. resolveProject never reads the session, so the early
+  // mount grants nothing to unauthenticated callers beyond a 404 oracle.
+  router.use(resolveProject());
+
   // Server-Sent Events stream of fal video-generation job status. Registered
   // BEFORE requireSession() because EventSource cannot set custom headers —
   // so this route validates a session id from the query string instead.
@@ -388,16 +398,67 @@ export function buildApiRouter() {
   router.use(requireSession());
 
   // Connection metadata for the SPA so it knows where to open WebSockets.
-  router.get('/info', async (_req, res) => {
+  router.get('/info', async (req, res) => {
     const wsUrl =
       config.web.hocuspocusPublicUrl ||
       `ws://${'localhost'}:${config.web.hocuspocusPort}`;
-    const plot = await getPlot();
+    const plot = await getPlot(req.projectId);
     res.json({
       hocuspocus_url: wsUrl,
       bot_color: config.web.botColor,
       screenplay_title: stripMarkdown(plot?.title || ''),
+      project_id: req.projectId,
+      project_title: req.projectTitle,
     });
+  });
+
+  // ── projects ─────────────────────────────────────────────────────────────
+
+  // {projects:[...]} envelope deliberately wraps the spec's bare array for
+  // forward-compat; SPA consumers read data.projects.
+  router.get('/projects', async (_req, res, next) => {
+    try {
+      const projects = await listProjects();
+      res.json({
+        projects: projects.map((p) => ({
+          id: p._id.toString(),
+          title: p.title,
+          created_at: p.created_at || null,
+        })),
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/projects', async (req, res, next) => {
+    try {
+      const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+      if (!title || title.length > 120 || title.includes('/')) {
+        return res
+          .status(400)
+          .json({ error: 'title must be 1–120 characters and must not contain "/"' });
+      }
+      if (await getProjectByTitle(title)) {
+        return res.status(409).json({ error: 'a project with that title already exists' });
+      }
+      let project;
+      try {
+        project = await createProject(title);
+      } catch (e) {
+        // Unique-index race on title_lower (two simultaneous creates). The
+        // fake Mongo never throws this — the getProjectByTitle pre-check above
+        // is what the test suite exercises.
+        if (e?.code === 11000) {
+          return res.status(409).json({ error: 'a project with that title already exists' });
+        }
+        throw e;
+      }
+      await seedProjectDefaults(project._id.toString());
+      res.status(201).json({ id: project._id.toString(), title: project.title });
+    } catch (e) {
+      next(e);
+    }
   });
 
   // ── reads ────────────────────────────────────────────────────────────────
