@@ -53,7 +53,7 @@ async function makeBeat({ shots }) {
     if (!s.skipFrame) {
       const r = await Storyboards.addFrame(sb._id, { imageId: s.imageId || null });
       frameId = r.frameId;
-      if (s.prompt) await Storyboards.setFramePrompt(sb._id, frameId, s.prompt);
+      if (s.prompt) await Storyboards.setFramePrompt(undefined, sb._id, frameId, s.prompt);
     }
     out.push({ sbId: sb._id, frameId });
   }
@@ -97,11 +97,11 @@ describe('startBulkFrameGenerationJob', () => {
     expect(job.failed).toBe(0);
     expect(seen.sort()).toEqual(['first shot', 'third shot']);
 
-    const sb0 = await Storyboards.getStoryboard(out[0].sbId);
+    const sb0 = await Storyboards.getStoryboard(undefined, out[0].sbId);
     expect(sb0.frames[0].image_id).toBeTruthy();
 
     // The already-rendered middle shot must NOT be regenerated/overwritten.
-    const sb1 = await Storyboards.getStoryboard(out[1].sbId);
+    const sb1 = await Storyboards.getStoryboard(undefined, out[1].sbId);
     expect(sb1.frames[0].image_id.toString()).toBe(midImage.toString());
   });
 

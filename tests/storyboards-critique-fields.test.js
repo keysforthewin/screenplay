@@ -29,23 +29,23 @@ describe('storyboard critique fields', () => {
 
   it('updateStoryboard accepts a prompt_critique object and persists it', async () => {
     const sb = await createStoryboard({ beatId: '0'.repeat(24), order: 1 });
-    const updated = await updateStoryboard(sb._id, { prompt_critique: SAMPLE });
+    const updated = await updateStoryboard(undefined, sb._id, { prompt_critique: SAMPLE });
     expect(updated.prompt_critique.overall).toBe(7);
     expect(updated.prompt_critique.lenses[0].lens).toBe('bible');
-    const reread = await getStoryboard(sb._id);
+    const reread = await getStoryboard(undefined, sb._id);
     expect(reread.prompt_critique.overall).toBe(7);
   });
 
   it('updateStoryboard accepts null to clear image_critique', async () => {
     const sb = await createStoryboard({ beatId: '0'.repeat(24), order: 1 });
-    await updateStoryboard(sb._id, { image_critique: SAMPLE });
-    const cleared = await updateStoryboard(sb._id, { image_critique: null });
+    await updateStoryboard(undefined, sb._id, { image_critique: SAMPLE });
+    const cleared = await updateStoryboard(undefined, sb._id, { image_critique: null });
     expect(cleared.image_critique).toBeNull();
   });
 
   it('updateStoryboard rejects a non-object prompt_critique', async () => {
     const sb = await createStoryboard({ beatId: '0'.repeat(24), order: 1 });
-    await expect(updateStoryboard(sb._id, { prompt_critique: 'nope' })).rejects.toThrow(
+    await expect(updateStoryboard(undefined, sb._id, { prompt_critique: 'nope' })).rejects.toThrow(
       /prompt_critique/,
     );
   });

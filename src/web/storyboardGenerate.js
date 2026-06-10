@@ -447,7 +447,7 @@ export function getCritiqueJob(jobId) {
 }
 
 export async function startCritiqueJob({ storyboardId, target = 'prompt' }) {
-  const sb = await getStoryboard(storyboardId);
+  const sb = await getStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const beat = await getBeat(undefined, sb.beat_id.toString());
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
@@ -1196,7 +1196,7 @@ export async function reExpandShotInner({ sb, beat, critiqueGuidance = '' }) {
 // beat's scene bible and optionally steered by critique guidance. Writes the new
 // start-frame prompt + text_prompt via the gateway. Does NOT re-render the image.
 export async function reExpandShot({ storyboardId, critiqueGuidance = '' }) {
-  const sb = await getStoryboard(storyboardId);
+  const sb = await getStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const beat = await getBeat(undefined, sb.beat_id.toString());
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
@@ -1592,7 +1592,7 @@ export async function regenerateStoryboardFrame({
   if (!['generate', 'edit'].includes(mode)) {
     throw new EditModeError(`Unknown regen mode "${mode}".`);
   }
-  const sb = await getStoryboard(storyboardId);
+  const sb = await getStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const frame = getFrame(sb, frameId);
   if (!frame) throw new FrameNotFoundError(frameId);
@@ -1618,7 +1618,7 @@ export async function regenerateStoryboardFrame({
 // generate modal on open so the user gets a sensible starting draft when the
 // stored prompt is empty.
 export async function previewFrameGenerationPrompt({ storyboardId, frameId }) {
-  const sb = await getStoryboard(storyboardId);
+  const sb = await getStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const frame = getFrame(sb, frameId);
   if (!frame) throw new FrameNotFoundError(frameId);
@@ -1750,7 +1750,7 @@ export async function startFrameGenerationJob({
   if (!['generate', 'edit'].includes(mode)) {
     throw new EditModeError(`Unknown regen mode "${mode}".`);
   }
-  const sb = await getStoryboard(storyboardId);
+  const sb = await getStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const frame = getFrame(sb, frameId);
   if (!frame) throw new FrameNotFoundError(frameId);

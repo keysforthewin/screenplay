@@ -222,7 +222,7 @@ describe('DELETE /api/beat/:id/orphan-image/:imageId', () => {
     expect(status).toBe(200);
     expect(json.ok).toBe(true);
     expect(deletedImageIds).toContain(String(orphan._id));
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     const img = fresh.frames.find((f) => f._id.toString() === String(imgFrame));
     const ref = fresh.frames.find((f) => f._id.toString() === String(refFrame));
     expect(img.image_id).toBe(null);

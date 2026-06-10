@@ -88,6 +88,7 @@ import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../log.js';
 import { stripMarkdown } from '../util/markdown.js';
+import { resolveProjectId } from './projects.js';
 
 // Shot framing classes the planner is allowed to pick. Each maps to a
 // duration cap in SHOT_TYPE_DURATION_CAP. The list is intentionally short —
@@ -252,7 +253,7 @@ function frameIndexOrThrow(sb, frameId) {
 // Read-modify-write one frame. `fn(frame, frames, idx)` mutates a shallow clone
 // of the located frame; the whole array is then persisted via $set.
 async function mutateFrame(id, frameId, fn) {
-  const sb = await getStoryboard(id);
+  const sb = await getStoryboardAnyProject(id);
   if (!sb) throw new Error(`Storyboard not found: ${id}`);
   const idx = frameIndexOrThrow(sb, frameId);
   const frames = sb.frames.map((f) => ({ ...f, reference_ids: [...(f.reference_ids || [])] }));
@@ -261,7 +262,7 @@ async function mutateFrame(id, frameId, fn) {
     { _id: sb._id },
     { $set: { frames, updated_at: new Date() } },
   );
-  return getStoryboard(sb._id);
+  return getStoryboardAnyProject(sb._id);
 }
 
 function backfill(doc) {
@@ -347,18 +348,30 @@ function backfill(doc) {
   };
 }
 
-export async function listStoryboards({ beatId } = {}) {
-  const filter = beatId ? { beat_id: toOid(beatId) } : {};
-  const docs = await col().find(filter).sort({ order: 1 }).toArray();
+export async function listStoryboards({ projectId, beatId } = {}) {
+  let docs;
+  if (beatId) {
+    docs = await col().find({ beat_id: toOid(beatId) }).sort({ order: 1 }).toArray();
+  } else {
+    const pid = await resolveProjectId(projectId);
+    // Lenient toward legacy rows with no project_id (pre-migration).
+    docs = (await col().find({}).sort({ order: 1 }).toArray()).filter(
+      (d) => !d.project_id || d.project_id === pid,
+    );
+  }
   const out = [];
   for (const d of docs) out.push(backfill(await ensureFrames(d)));
   return out;
 }
 
-export async function countStoryboardsByBeat() {
-  const docs = await col().find({}, { projection: { beat_id: 1 } }).toArray();
+export async function countStoryboardsByBeat(projectId) {
+  const pid = await resolveProjectId(projectId);
+  const docs = await col()
+    .find({}, { projection: { beat_id: 1, project_id: 1 } })
+    .toArray();
   const counts = new Map();
   for (const d of docs) {
+    if (d.project_id && d.project_id !== pid) continue;
     const k = d.beat_id?.toString?.();
     if (!k) continue;
     counts.set(k, (counts.get(k) || 0) + 1);
@@ -366,17 +379,29 @@ export async function countStoryboardsByBeat() {
   return counts;
 }
 
-export async function getStoryboard(id) {
+// Unverified internal loader. The id-addressed helpers that did not gain a
+// projectId param locate through this — same any-project behavior as today.
+async function getStoryboardAnyProject(id) {
   const oid = maybeOid(id);
   if (!oid) return null;
   const doc = await col().findOne({ _id: oid });
   return backfill(await ensureFrames(doc));
 }
 
+export async function getStoryboard(projectId, id) {
+  const doc = await getStoryboardAnyProject(id);
+  if (!doc) return null;
+  // Verify-after-locate: a stale id from another project's history reads as
+  // not-found. Unstamped legacy docs are in-project (lenient until migration).
+  const pid = await resolveProjectId(projectId);
+  if (doc.project_id && doc.project_id !== pid) return null;
+  return doc;
+}
+
 // Find the storyboard immediately preceding `currentOrder` in the same beat,
 // i.e. the highest `order` value strictly less than the given one. Returns
 // null when the caller is the first shot.
-export async function getPreviousStoryboardInBeat(beatId, currentOrder) {
+export async function getPreviousStoryboardInBeat(projectId, beatId, currentOrder) {
   const beatOid = maybeOid(beatId);
   if (!beatOid) return null;
   if (!Number.isFinite(Number(currentOrder))) return null;
@@ -385,10 +410,14 @@ export async function getPreviousStoryboardInBeat(beatId, currentOrder) {
     .sort({ order: -1 })
     .limit(1)
     .toArray();
-  return docs[0] ? backfill(await ensureFrames(docs[0])) : null;
+  if (!docs[0]) return null;
+  const pid = await resolveProjectId(projectId);
+  if (docs[0].project_id && docs[0].project_id !== pid) return null;
+  return backfill(await ensureFrames(docs[0]));
 }
 
 export async function createStoryboard({
+  projectId,
   beatId,
   order,
   textPrompt = '',
@@ -400,6 +429,7 @@ export async function createStoryboard({
   reverseInPost = false,
 } = {}) {
   if (!beatId) throw new Error('beatId required');
+  const pid = await resolveProjectId(projectId);
   const beatOid = toOid(beatId);
   let nextOrder = order;
   if (nextOrder === undefined || nextOrder === null) {
@@ -422,6 +452,7 @@ export async function createStoryboard({
   const now = new Date();
   const doc = {
     _id: new ObjectId(),
+    project_id: pid,
     beat_id: beatOid,
     order: Number(nextOrder),
     text_prompt: String(textPrompt || ''),
@@ -466,11 +497,11 @@ const ID_FIELDS = new Set([
   'video_upload_file_id',
 ]);
 
-export async function updateStoryboard(id, patch) {
+export async function updateStoryboard(projectId, id, patch) {
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new Error(`update_storyboard: \`patch\` must be an object.`);
   }
-  const existing = await getStoryboard(id);
+  const existing = await getStoryboard(projectId, id);
   if (!existing) throw new Error(`Storyboard not found: ${id}`);
   const set = { updated_at: new Date() };
 
@@ -606,11 +637,11 @@ export async function updateStoryboard(id, patch) {
       .filter((k) => k !== 'updated_at')
       .join(',')}]`,
   );
-  return getStoryboard(existing._id);
+  return getStoryboard(projectId, existing._id);
 }
 
 export async function deleteStoryboard(id) {
-  const sb = await getStoryboard(id);
+  const sb = await getStoryboardAnyProject(id);
   if (!sb) throw new Error(`Storyboard not found: ${id}`);
   await col().deleteOne({ _id: sb._id });
   logger.info(`mongo: storyboard delete id=${sb._id}`);
@@ -670,7 +701,7 @@ export async function addFrame(
   id,
   { imageId = null, prompt = '', referenceIds = [] } = {},
 ) {
-  const sb = await getStoryboard(id);
+  const sb = await getStoryboardAnyProject(id);
   if (!sb) throw new Error(`Storyboard not found: ${id}`);
   if (sb.frames.length >= MAX_FRAMES) {
     throw new Error(
@@ -693,14 +724,14 @@ export async function addFrame(
     { $set: { frames, updated_at: new Date() } },
   );
   logger.info(`mongo: storyboard add frame id=${sb._id} frame=${frame._id}`);
-  return { storyboard: await getStoryboard(sb._id), frameId: frame._id };
+  return { storyboard: await getStoryboardAnyProject(sb._id), frameId: frame._id };
 }
 
 // Drop a frame from the pool. Returns the displaced internal undo image (if any)
 // as an orphan for GridFS cleanup; the current image is left untouched since it
 // may be a shared artwork/library/character image.
 export async function removeFrame(id, frameId) {
-  const sb = await getStoryboard(id);
+  const sb = await getStoryboardAnyProject(id);
   if (!sb) throw new Error(`Storyboard not found: ${id}`);
   const idx = frameIndexOrThrow(sb, frameId);
   const frame = sb.frames[idx];
@@ -711,7 +742,7 @@ export async function removeFrame(id, frameId) {
     { $set: { frames, updated_at: new Date() } },
   );
   logger.info(`mongo: storyboard remove frame id=${sb._id} frame=${frameId}`);
-  return { storyboard: await getStoryboard(sb._id), orphanedImageIds };
+  return { storyboard: await getStoryboardAnyProject(sb._id), orphanedImageIds };
 }
 
 // Reorder the frame pool. `orderedFrameIds` must be exactly the existing ids.
@@ -719,7 +750,7 @@ export async function reorderFrames(id, orderedFrameIds) {
   if (!Array.isArray(orderedFrameIds)) {
     throw new Error('reorderFrames: orderedFrameIds must be an array');
   }
-  const sb = await getStoryboard(id);
+  const sb = await getStoryboardAnyProject(id);
   if (!sb) throw new Error(`Storyboard not found: ${id}`);
   if (orderedFrameIds.length !== sb.frames.length) {
     throw new Error(
@@ -741,7 +772,7 @@ export async function reorderFrames(id, orderedFrameIds) {
     { _id: sb._id },
     { $set: { frames, updated_at: new Date() } },
   );
-  return getStoryboard(sb._id);
+  return getStoryboardAnyProject(sb._id);
 }
 
 // Install (or clear) a frame's current image directly — no rotation/undo.
@@ -756,7 +787,7 @@ export async function setFrameImage(id, frameId, imageId) {
 // becomes current, and the prior `previous_image_id` is reported as an orphan
 // for GridFS cleanup. Mirrors `setArtworkResult({rotateToPrevious})`.
 export async function rotateFrameImageEdit({ id, frameId, newImageId, editPrompt }) {
-  const sb = await getStoryboard(id);
+  const sb = await getStoryboardAnyProject(id);
   if (!sb) throw new Error(`Storyboard not found: ${id}`);
   const idx = frameIndexOrThrow(sb, frameId);
   const frame = sb.frames[idx];
@@ -782,7 +813,7 @@ export async function rotateFrameImageEdit({ id, frameId, newImageId, editPrompt
 // Swap previous_image_id → image_id. The image that was current is reported as
 // an orphan for GridFS cleanup (no redo, per spec).
 export async function undoFrameImageEdit({ id, frameId }) {
-  const sb = await getStoryboard(id);
+  const sb = await getStoryboardAnyProject(id);
   if (!sb) throw new Error(`Storyboard not found: ${id}`);
   const idx = frameIndexOrThrow(sb, frameId);
   const frame = sb.frames[idx];
@@ -808,8 +839,10 @@ export async function undoFrameImageEdit({ id, frameId }) {
 
 // Persist a frame's generation prompt (the Mongo-fallback path; the live SPA
 // edits it as a collaborative y-doc fragment — see roomRegistry.js).
-export async function setFramePrompt(id, frameId, prompt) {
-  return mutateFrame(id, frameId, (frame) => {
+export async function setFramePrompt(projectId, storyboardId, frameId, prompt) {
+  const sb = await getStoryboard(projectId, storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  return mutateFrame(sb._id, frameId, (frame) => {
     frame.prompt = String(prompt ?? '');
   });
 }
@@ -948,4 +981,5 @@ export async function reorderStoryboardsForBeat(beatId, orderedIds) {
 
 export async function ensureIndexes() {
   await col().createIndex({ beat_id: 1, order: 1 });
+  await col().createIndex({ project_id: 1, beat_id: 1 });
 }

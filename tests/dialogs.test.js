@@ -10,6 +10,7 @@ vi.mock('../src/mongo/client.js', () => ({
 }));
 
 const Dialogs = await import('../src/mongo/dialogs.js');
+const Projects = await import('../src/mongo/projects.js');
 
 beforeEach(() => {
   fakeDb.reset();
@@ -66,7 +67,7 @@ describe('dialogs mongo helpers', () => {
 
   it('updateDialog accepts body and character fields', async () => {
     const d = await Dialogs.createDialog({ beatId: beatA });
-    const updated = await Dialogs.updateDialog(d._id, {
+    const updated = await Dialogs.updateDialog(undefined, d._id, {
       body: "Don't go in there.",
       character: 'Bob',
     });
@@ -77,7 +78,7 @@ describe('dialogs mongo helpers', () => {
   it('updateDialog rejects unknown fields', async () => {
     const d = await Dialogs.createDialog({ beatId: beatA });
     await expect(
-      Dialogs.updateDialog(d._id, { random_field: 'nope' }),
+      Dialogs.updateDialog(undefined, d._id, { random_field: 'nope' }),
     ).rejects.toThrow(/unknown field/);
   });
 
@@ -89,7 +90,7 @@ describe('dialogs mongo helpers', () => {
   it('updateDialog accepts audio_file_id as a 24-hex string', async () => {
     const d = await Dialogs.createDialog({ beatId: beatA });
     const fileId = new ObjectId();
-    const updated = await Dialogs.updateDialog(d._id, {
+    const updated = await Dialogs.updateDialog(undefined, d._id, {
       audio_file_id: fileId.toString(),
     });
     expect(updated.audio_file_id.toString()).toBe(fileId.toString());
@@ -98,15 +99,15 @@ describe('dialogs mongo helpers', () => {
   it('updateDialog clears audio_file_id when set to null', async () => {
     const d = await Dialogs.createDialog({ beatId: beatA });
     const fileId = new ObjectId();
-    await Dialogs.updateDialog(d._id, { audio_file_id: fileId.toString() });
-    const cleared = await Dialogs.updateDialog(d._id, { audio_file_id: null });
+    await Dialogs.updateDialog(undefined, d._id, { audio_file_id: fileId.toString() });
+    const cleared = await Dialogs.updateDialog(undefined, d._id, { audio_file_id: null });
     expect(cleared.audio_file_id).toBe(null);
   });
 
   it('updateDialog rejects non-hex audio_file_id', async () => {
     const d = await Dialogs.createDialog({ beatId: beatA });
     await expect(
-      Dialogs.updateDialog(d._id, { audio_file_id: 'not-an-id' }),
+      Dialogs.updateDialog(undefined, d._id, { audio_file_id: 'not-an-id' }),
     ).rejects.toThrow(/invalid file id/);
   });
 
@@ -169,5 +170,28 @@ describe('dialogs mongo helpers', () => {
     const b = await Dialogs.listDialogs({ beatId: beatB });
     expect(a).toHaveLength(0);
     expect(b).toHaveLength(1);
+  });
+});
+
+describe('multi-project dialogs', () => {
+  it('createDialog stamps project_id and listing/counting are scoped', async () => {
+    const p1 = (await Projects.createProject('Alpha'))._id.toString();
+    const p2 = (await Projects.createProject('Beta'))._id.toString();
+    const d = await Dialogs.createDialog({ projectId: p1, beatId: beatA });
+    expect(d.project_id).toBe(p1);
+    expect(await Dialogs.listDialogs({ projectId: p1 })).toHaveLength(1);
+    expect(await Dialogs.listDialogs({ projectId: p2 })).toHaveLength(0);
+    expect((await Dialogs.countDialogsByBeat(p1)).get(beatA.toString())).toBe(1);
+    expect((await Dialogs.countDialogsByBeat(p2)).size).toBe(0);
+  });
+
+  it('getDialog/updateDialog verify project after locate — stale id ⇒ not-found', async () => {
+    const p1 = (await Projects.createProject('Alpha'))._id.toString();
+    const p2 = (await Projects.createProject('Beta'))._id.toString();
+    const d = await Dialogs.createDialog({ projectId: p1, beatId: beatA, body: 'hi' });
+    expect((await Dialogs.getDialog(p1, d._id)).body).toBe('hi');
+    expect(await Dialogs.getDialog(p2, d._id)).toBe(null);
+    await expect(Dialogs.updateDialog(p2, d._id, { body: 'x' })).rejects.toThrow(/not found/i);
+    expect((await Dialogs.updateDialog(p1, d._id, { body: 'edited' })).body).toBe('edited');
   });
 });

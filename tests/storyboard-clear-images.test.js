@@ -41,13 +41,13 @@ describe('clearAllFrameImagesForBeat', () => {
     const ref = new ObjectId();
     const sb = await Storyboards.createStoryboard({ beatId: beat._id, textPrompt: 'one' });
     const { frameId } = await Storyboards.addFrame(sb._id, { imageId: original, referenceIds: [ref] });
-    await Storyboards.setFramePrompt(sb._id, frameId, 'keep me');
+    await Storyboards.setFramePrompt(undefined, sb._id, frameId, 'keep me');
     // Rotate: image_id = edited (current), previous_image_id = original, last_edit_prompt = 'tweak'.
     await Storyboards.rotateFrameImageEdit({ id: sb._id, frameId, newImageId: edited, editPrompt: 'tweak' });
 
     const result = await Storyboards.clearAllFrameImagesForBeat(beat._id);
 
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     const f = frameOf(fresh, frameId);
     expect(f.image_id).toBe(null);
     expect(f.previous_image_id).toBe(null);
@@ -72,9 +72,9 @@ describe('clearAllFrameImagesForBeat', () => {
 
     await Storyboards.clearAllFrameImagesForBeat(beatB._id);
 
-    const freshA = await Storyboards.getStoryboard(sbA._id);
+    const freshA = await Storyboards.getStoryboard(undefined, sbA._id);
     expect(freshA.frames[0].image_id.toString()).toBe(imgA.toString());
-    const freshB = await Storyboards.getStoryboard(sbB._id);
+    const freshB = await Storyboards.getStoryboard(undefined, sbB._id);
     expect(freshB.frames[0].image_id).toBe(null);
   });
 
@@ -93,7 +93,7 @@ describe('clearAllFrameImagesForBeat', () => {
 
     expect(result.freedImageIds).toEqual([]);
     expect(result.storyboardIds).toEqual([]);
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     expect(fresh.frames[0].image_id).toBe(null); // still present, just untouched
   });
 });
@@ -118,7 +118,7 @@ describe('clearAllFrameImagesForBeatViaGateway', () => {
     expect(deletedImageIds).not.toContain(shared.toString());
     expect(result.freed).toBe(deletedImageIds.length);
 
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     expect(fresh.frames[0].image_id).toBe(null);
     expect(fresh.frames[0].reference_ids.map(String)).toEqual([ref.toString()]);
   });

@@ -61,7 +61,7 @@ async function setupRow({ imageId = null } = {}) {
     charactersInScene: ['Alice'],
   });
   const { frameId } = await Storyboards.addFrame(sb._id, { imageId });
-  return { beat, sb: await Storyboards.getStoryboard(sb._id), frameId };
+  return { beat, sb: await Storyboards.getStoryboard(undefined, sb._id), frameId };
 }
 
 describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
@@ -151,7 +151,7 @@ describe('regenerateStoryboardFrame (edit mode, editReferenceImageIds)', () => {
       editReferenceImageIds: [ref1],
     });
 
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     const frame = fresh.frames.find((f) => f._id.toString() === String(frameId));
     expect(frame.reference_ids || []).toEqual([]);
   });

@@ -477,7 +477,7 @@ async function describeStoryboardsRoom(beatId) {
           if (!frame) continue;
           if (value === (frame.prompt || '')) continue;
           try {
-            await setFramePrompt(sbId, frameId, value);
+            await setFramePrompt(undefined, sbId, frameId, value);
             changedFields.push(field);
           } catch (e) {
             logger.warn(
@@ -495,7 +495,7 @@ async function describeStoryboardsRoom(beatId) {
         if (!current) continue;
         if (value === (current[fieldName] || '')) continue;
         try {
-          await updateStoryboard(sbId, { [fieldName]: value });
+          await updateStoryboard(undefined, sbId, { [fieldName]: value });
           changedFields.push(field);
         } catch (e) {
           logger.warn(`storyboards persist failed sb=${sbId} field=${fieldName}: ${e.message}`);
@@ -567,7 +567,7 @@ async function describeDialogsRoom(beatId) {
         if (!current) continue;
         if (value === (current[fieldName] || '')) continue;
         try {
-          await updateDialog(dId, { [fieldName]: value });
+          await updateDialog(undefined, dId, { [fieldName]: value });
           changedFields.push(field);
         } catch (e) {
           logger.warn(`dialogs persist failed dialog=${dId} field=${fieldName}: ${e.message}`);

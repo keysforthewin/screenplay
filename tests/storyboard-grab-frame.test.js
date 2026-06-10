@@ -110,15 +110,15 @@ describe('getPreviousStoryboardInBeat', () => {
     const a = await Storyboards.createStoryboard({ beatId, order: 1 });
     const b = await Storyboards.createStoryboard({ beatId, order: 2 });
     const c = await Storyboards.createStoryboard({ beatId, order: 3 });
-    const prevOfC = await Storyboards.getPreviousStoryboardInBeat(beatId, c.order);
+    const prevOfC = await Storyboards.getPreviousStoryboardInBeat(undefined, beatId, c.order);
     expect(prevOfC._id.toString()).toBe(b._id.toString());
-    const prevOfB = await Storyboards.getPreviousStoryboardInBeat(beatId, b.order);
+    const prevOfB = await Storyboards.getPreviousStoryboardInBeat(undefined, beatId, b.order);
     expect(prevOfB._id.toString()).toBe(a._id.toString());
   });
 
   it('returns null when current is the first shot in the beat', async () => {
     const a = await Storyboards.createStoryboard({ beatId, order: 1 });
-    const prev = await Storyboards.getPreviousStoryboardInBeat(beatId, a.order);
+    const prev = await Storyboards.getPreviousStoryboardInBeat(undefined, beatId, a.order);
     expect(prev).toBe(null);
   });
 
@@ -126,7 +126,7 @@ describe('getPreviousStoryboardInBeat', () => {
     const otherBeat = new ObjectId();
     await Storyboards.createStoryboard({ beatId: otherBeat, order: 1 });
     const a = await Storyboards.createStoryboard({ beatId, order: 1 });
-    const prev = await Storyboards.getPreviousStoryboardInBeat(beatId, a.order);
+    const prev = await Storyboards.getPreviousStoryboardInBeat(undefined, beatId, a.order);
     expect(prev).toBe(null);
   });
 });
@@ -157,7 +157,7 @@ describe('POST /storyboard/:id/grab-frame-from-previous', () => {
   it('adds a new frame holding the grabbed image on success', async () => {
     const prevVideoId = new ObjectId();
     const prev = await Storyboards.createStoryboard({ beatId, order: 1 });
-    await Storyboards.updateStoryboard(prev._id, {
+    await Storyboards.updateStoryboard(undefined, prev._id, {
       video_file_id: prevVideoId,
     });
     const cur = await Storyboards.createStoryboard({ beatId, order: 2 });
@@ -171,7 +171,7 @@ describe('POST /storyboard/:id/grab-frame-from-previous', () => {
     expect(json.frame_id).toBeDefined();
 
     // The gateway should have added a frame holding the grabbed image.
-    const fresh = await Storyboards.getStoryboard(cur._id);
+    const fresh = await Storyboards.getStoryboard(undefined, cur._id);
     expect(fresh.frames).toHaveLength(1);
     expect(fresh.frames[0].image_id.toString()).toBe(json.image._id.toString());
     expect(fresh.frames[0]._id.toString()).toBe(json.frame_id);
@@ -189,7 +189,7 @@ describe('POST /storyboard/:id/grab-frame-from-previous', () => {
     });
     const prevVideoId = new ObjectId();
     const prev = await Storyboards.createStoryboard({ beatId, order: 1 });
-    await Storyboards.updateStoryboard(prev._id, { video_file_id: prevVideoId });
+    await Storyboards.updateStoryboard(undefined, prev._id, { video_file_id: prevVideoId });
     const cur = await Storyboards.createStoryboard({ beatId, order: 2 });
     const { status, json } = await post(
       `/storyboard/${cur._id}/grab-frame-from-previous`,

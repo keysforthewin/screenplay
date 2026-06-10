@@ -14,6 +14,7 @@
 import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../log.js';
+import { resolveProjectId } from './projects.js';
 
 const col = () => getDb().collection('dialogs');
 
@@ -48,16 +49,27 @@ function backfill(doc) {
   };
 }
 
-export async function listDialogs({ beatId } = {}) {
-  const filter = beatId ? { beat_id: toOid(beatId) } : {};
-  const docs = await col().find(filter).sort({ order: 1 }).toArray();
+export async function listDialogs({ projectId, beatId } = {}) {
+  if (beatId) {
+    const docs = await col().find({ beat_id: toOid(beatId) }).sort({ order: 1 }).toArray();
+    return docs.map(backfill);
+  }
+  const pid = await resolveProjectId(projectId);
+  // Lenient toward legacy rows with no project_id stamp (pre-migration).
+  const docs = (await col().find({}).sort({ order: 1 }).toArray()).filter(
+    (d) => !d.project_id || d.project_id === pid,
+  );
   return docs.map(backfill);
 }
 
-export async function countDialogsByBeat() {
-  const docs = await col().find({}, { projection: { beat_id: 1 } }).toArray();
+export async function countDialogsByBeat(projectId) {
+  const pid = await resolveProjectId(projectId);
+  const docs = await col()
+    .find({}, { projection: { beat_id: 1, project_id: 1 } })
+    .toArray();
   const counts = new Map();
   for (const d of docs) {
+    if (d.project_id && d.project_id !== pid) continue;
     const k = d.beat_id?.toString?.();
     if (!k) continue;
     counts.set(k, (counts.get(k) || 0) + 1);
@@ -65,15 +77,27 @@ export async function countDialogsByBeat() {
   return counts;
 }
 
-export async function getDialog(id) {
+// Unverified internal loader — deleteDialog locates through this, keeping its
+// single-id signature and any-project behavior.
+async function getDialogAnyProject(id) {
   const oid = maybeOid(id);
   if (!oid) return null;
   const doc = await col().findOne({ _id: oid });
   return backfill(doc);
 }
 
-export async function createDialog({ beatId, order, body = '', character = '' } = {}) {
+export async function getDialog(projectId, id) {
+  const doc = await getDialogAnyProject(id);
+  if (!doc) return null;
+  // Verify-after-locate: cross-project id ⇒ not-found; unstamped ⇒ in-project.
+  const pid = await resolveProjectId(projectId);
+  if (doc.project_id && doc.project_id !== pid) return null;
+  return doc;
+}
+
+export async function createDialog({ projectId, beatId, order, body = '', character = '' } = {}) {
   if (!beatId) throw new Error('beatId required');
+  const pid = await resolveProjectId(projectId);
   const beatOid = toOid(beatId);
   let nextOrder = order;
   if (nextOrder === undefined || nextOrder === null) {
@@ -87,6 +111,7 @@ export async function createDialog({ beatId, order, body = '', character = '' } 
   const now = new Date();
   const doc = {
     _id: new ObjectId(),
+    project_id: pid,
     beat_id: beatOid,
     order: Number(nextOrder),
     body: String(body || ''),
@@ -105,11 +130,11 @@ export async function createDialog({ beatId, order, body = '', character = '' } 
 const TEXT_FIELDS = new Set(['body', 'character']);
 const ID_FIELDS = new Set(['audio_file_id']);
 
-export async function updateDialog(id, patch) {
+export async function updateDialog(projectId, id, patch) {
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new Error(`update_dialog: \`patch\` must be an object.`);
   }
-  const existing = await getDialog(id);
+  const existing = await getDialog(projectId, id);
   if (!existing) throw new Error(`Dialog not found: ${id}`);
   const set = { updated_at: new Date() };
   for (const [k, v] of Object.entries(patch)) {
@@ -135,11 +160,11 @@ export async function updateDialog(id, patch) {
       .filter((k) => k !== 'updated_at')
       .join(',')}]`,
   );
-  return getDialog(existing._id);
+  return getDialog(projectId, existing._id);
 }
 
 export async function deleteDialog(id) {
-  const d = await getDialog(id);
+  const d = await getDialogAnyProject(id);
   if (!d) throw new Error(`Dialog not found: ${id}`);
   await col().deleteOne({ _id: d._id });
   logger.info(`mongo: dialog delete id=${d._id}`);
@@ -187,4 +212,5 @@ export async function reorderDialogsForBeat(beatId, orderedIds) {
 
 export async function ensureIndexes() {
   await col().createIndex({ beat_id: 1, order: 1 });
+  await col().createIndex({ project_id: 1, beat_id: 1 });
 }

@@ -48,7 +48,7 @@ describe('storyboard gateway (fallback)', () => {
       storyboardId: sb._id,
       text: 'Wide shot of the diner interior.',
     });
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     expect(fresh.text_prompt).toBe('Wide shot of the diner interior.');
   });
 
@@ -59,7 +59,7 @@ describe('storyboard gateway (fallback)', () => {
       storyboardId: sb._id,
       text: 'Diner exterior, dusk.',
     });
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     expect(fresh.summary).toBe('Diner exterior, dusk.');
   });
 
@@ -212,7 +212,7 @@ describe('storyboard gateway (fallback)', () => {
       frameId,
       text: 'Wide on the diner doorway.',
     });
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     expect(frame(fresh, frameId).prompt).toBe('Wide on the diner doorway.');
   });
 
@@ -356,16 +356,16 @@ describe('storyboard gateway (fallback)', () => {
         reverseInPost: true,
       });
       expect(sb.reverse_in_post).toBe(true);
-      const fresh = await Storyboards.getStoryboard(sb._id);
+      const fresh = await Storyboards.getStoryboard(undefined, sb._id);
       expect(fresh.reverse_in_post).toBe(true);
     });
 
     it('updateStoryboard can toggle reverse_in_post on and off', async () => {
       const beat = await makeBeat();
       const sb = await Gateway.createStoryboardViaGateway({ beatId: beat._id });
-      let next = await Storyboards.updateStoryboard(sb._id, { reverse_in_post: true });
+      let next = await Storyboards.updateStoryboard(undefined, sb._id, { reverse_in_post: true });
       expect(next.reverse_in_post).toBe(true);
-      next = await Storyboards.updateStoryboard(sb._id, { reverse_in_post: false });
+      next = await Storyboards.updateStoryboard(undefined, sb._id, { reverse_in_post: false });
       expect(next.reverse_in_post).toBe(false);
     });
   });

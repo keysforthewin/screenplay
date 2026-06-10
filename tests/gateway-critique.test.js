@@ -30,7 +30,7 @@ describe('setStoryboardCritiqueViaGateway', () => {
       target: 'prompt',
       critique: CRIT,
     });
-    const reread = await getStoryboard(sb._id);
+    const reread = await getStoryboard(undefined, sb._id);
     expect(reread.prompt_critique.overall).toBe(6);
     expect(reread.image_critique).toBeNull();
   });
@@ -43,7 +43,7 @@ describe('setStoryboardCritiqueViaGateway', () => {
       target: 'image',
       critique: { ...CRIT, target: 'image' },
     });
-    const reread = await getStoryboard(sb._id);
+    const reread = await getStoryboard(undefined, sb._id);
     expect(reread.image_critique.overall).toBe(6);
     expect(reread.prompt_critique).toBeNull();
   });
@@ -52,7 +52,7 @@ describe('setStoryboardCritiqueViaGateway', () => {
     const sb = await createStoryboard({ beatId: '0'.repeat(24), order: 1 });
     await setStoryboardCritiqueViaGateway({ storyboardId: sb._id.toString(), beatId: '0'.repeat(24), target: 'prompt', critique: CRIT });
     await setStoryboardCritiqueViaGateway({ storyboardId: sb._id.toString(), beatId: '0'.repeat(24), target: 'prompt', critique: null });
-    const reread = await getStoryboard(sb._id);
+    const reread = await getStoryboard(undefined, sb._id);
     expect(reread.prompt_critique).toBeNull();
   });
 });

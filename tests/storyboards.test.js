@@ -10,6 +10,7 @@ vi.mock('../src/mongo/client.js', () => ({
 }));
 
 const Storyboards = await import('../src/mongo/storyboards.js');
+const Projects = await import('../src/mongo/projects.js');
 
 beforeEach(() => {
   fakeDb.reset();
@@ -94,7 +95,7 @@ describe('storyboards mongo helpers', () => {
 
   it('updateStoryboard accepts text_prompt and summary', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    const updated = await Storyboards.updateStoryboard(sb._id, {
+    const updated = await Storyboards.updateStoryboard(undefined, sb._id, {
       text_prompt: 'A wide shot of the diner at dusk.',
       summary: 'Diner, dusk.',
     });
@@ -105,14 +106,14 @@ describe('storyboards mongo helpers', () => {
   it('updateStoryboard rejects the retired start_frame_id field', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
     await expect(
-      Storyboards.updateStoryboard(sb._id, { start_frame_id: new ObjectId() }),
+      Storyboards.updateStoryboard(undefined, sb._id, { start_frame_id: new ObjectId() }),
     ).rejects.toThrow(/unknown field/);
   });
 
   it('updateStoryboard rejects unknown fields', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
     await expect(
-      Storyboards.updateStoryboard(sb._id, { random_field: 'nope' }),
+      Storyboards.updateStoryboard(undefined, sb._id, { random_field: 'nope' }),
     ).rejects.toThrow(/unknown field/);
   });
 
@@ -212,7 +213,7 @@ describe('frames pool', () => {
       editPrompt: 'tweak',
     });
     // Re-read to get the real previous id, then remove.
-    const reloaded = await Storyboards.getStoryboard(sb._id);
+    const reloaded = await Storyboards.getStoryboard(undefined, sb._id);
     const before = reloaded.frames.find((f) => f._id.equals(frameId));
     const prevId = before.previous_image_id;
     const { storyboard, orphanedImageIds } = await Storyboards.removeFrame(
@@ -444,7 +445,7 @@ describe('per-frame prompt', () => {
   it('setFramePrompt round-trips a frame prompt', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
     const { frameId } = await Storyboards.addFrame(sb._id, {});
-    const out = await Storyboards.setFramePrompt(sb._id, frameId, 'Door swings open.');
+    const out = await Storyboards.setFramePrompt(undefined, sb._id, frameId, 'Door swings open.');
     expect(out.frames[0].prompt).toBe('Door swings open.');
   });
 });
@@ -461,8 +462,8 @@ describe('cleanupBeatImageReferences over frames', () => {
     const touched = await Storyboards.cleanupBeatImageReferences(beatA, target);
     expect(touched).toBe(2);
 
-    const r1 = await Storyboards.getStoryboard(sb1._id);
-    const r2 = await Storyboards.getStoryboard(sb2._id);
+    const r1 = await Storyboards.getStoryboard(undefined, sb1._id);
+    const r2 = await Storyboards.getStoryboard(undefined, sb2._id);
     expect(r1.frames.find((f) => f._id.equals(f1)).image_id).toBe(null);
     expect(r2.frames.find((f) => f._id.equals(f2)).reference_ids).toEqual([]);
   });
@@ -480,7 +481,7 @@ describe('legacy backfill → frames', () => {
       end_frame_id: endImg,
       end_frame_prompt: 'Close.',
     });
-    const sb = await Storyboards.getStoryboard(doc._id);
+    const sb = await Storyboards.getStoryboard(undefined, doc._id);
     expect(sb.frames).toHaveLength(2);
     expect(sb.frames[0].image_id.toString()).toBe(startImg.toString());
     expect(sb.frames[0].prompt).toBe('Wide.');
@@ -493,14 +494,14 @@ describe('legacy backfill → frames', () => {
 
   it('maps an empty legacy doc to an empty frames array', async () => {
     const doc = await insertLegacy({});
-    const sb = await Storyboards.getStoryboard(doc._id);
+    const sb = await Storyboards.getStoryboard(undefined, doc._id);
     expect(sb.frames).toEqual([]);
   });
 
   it('synthesizes a single frame when only the end frame existed', async () => {
     const endImg = new ObjectId();
     const doc = await insertLegacy({ end_frame_id: endImg });
-    const sb = await Storyboards.getStoryboard(doc._id);
+    const sb = await Storyboards.getStoryboard(undefined, doc._id);
     expect(sb.frames).toHaveLength(1);
     expect(sb.frames[0].image_id.toString()).toBe(endImg.toString());
   });
@@ -508,8 +509,8 @@ describe('legacy backfill → frames', () => {
   it('persists synthesized frames so frame ids are stable across reloads', async () => {
     const startImg = new ObjectId();
     const doc = await insertLegacy({ start_frame_id: startImg });
-    const first = await Storyboards.getStoryboard(doc._id);
-    const second = await Storyboards.getStoryboard(doc._id);
+    const first = await Storyboards.getStoryboard(undefined, doc._id);
+    const second = await Storyboards.getStoryboard(undefined, doc._id);
     expect(first.frames[0]._id.toString()).toBe(second.frames[0]._id.toString());
     // The raw doc now carries a frames array.
     const raw = await fakeDb.collection('storyboards').findOne({ _id: doc._id });
@@ -574,7 +575,7 @@ describe('storyboard scalar metadata', () => {
 
   it('updateStoryboard accepts a valid shot_type + duration combination', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    const updated = await Storyboards.updateStoryboard(sb._id, {
+    const updated = await Storyboards.updateStoryboard(undefined, sb._id, {
       shot_type: 'cinematic_wide',
       duration_seconds: 12,
     });
@@ -584,7 +585,7 @@ describe('storyboard scalar metadata', () => {
 
   it('updateStoryboard clamps duration_seconds to the cap for the new shot_type', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    const updated = await Storyboards.updateStoryboard(sb._id, {
+    const updated = await Storyboards.updateStoryboard(undefined, sb._id, {
       shot_type: 'close_up',
       duration_seconds: 12,
     });
@@ -597,7 +598,7 @@ describe('storyboard scalar metadata', () => {
       beatId: beatA,
       shotType: 'two_shot',
     });
-    const updated = await Storyboards.updateStoryboard(sb._id, {
+    const updated = await Storyboards.updateStoryboard(undefined, sb._id, {
       duration_seconds: 30,
     });
     expect(updated.duration_seconds).toBe(5);
@@ -606,14 +607,14 @@ describe('storyboard scalar metadata', () => {
   it('updateStoryboard rejects an unknown shot_type', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
     await expect(
-      Storyboards.updateStoryboard(sb._id, { shot_type: 'epic_montage' }),
+      Storyboards.updateStoryboard(undefined, sb._id, { shot_type: 'epic_montage' }),
     ).rejects.toThrow(/shot_type must be one of/);
   });
 
   it('updateStoryboard rejects a non-numeric duration_seconds', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
     await expect(
-      Storyboards.updateStoryboard(sb._id, { duration_seconds: 'lots' }),
+      Storyboards.updateStoryboard(undefined, sb._id, { duration_seconds: 'lots' }),
     ).rejects.toThrow(/duration_seconds must be/);
   });
 
@@ -623,7 +624,7 @@ describe('storyboard scalar metadata', () => {
       durationSeconds: 5,
       shotType: 'close_up',
     });
-    const cleared = await Storyboards.updateStoryboard(sb._id, {
+    const cleared = await Storyboards.updateStoryboard(undefined, sb._id, {
       duration_seconds: null,
     });
     expect(cleared.duration_seconds).toBe(null);
@@ -632,7 +633,7 @@ describe('storyboard scalar metadata', () => {
   it('updateStoryboard truncates transition_in to MAX_TRANSITION_LEN', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
     const longString = 'a'.repeat(500);
-    const updated = await Storyboards.updateStoryboard(sb._id, {
+    const updated = await Storyboards.updateStoryboard(undefined, sb._id, {
       transition_in: longString,
     });
     expect(updated.transition_in).toHaveLength(Storyboards.MAX_TRANSITION_LEN);
@@ -643,7 +644,7 @@ describe('storyboard scalar metadata', () => {
       beatId: beatA,
       transitionIn: 'a continuity note',
     });
-    const cleared = await Storyboards.updateStoryboard(sb._id, {
+    const cleared = await Storyboards.updateStoryboard(undefined, sb._id, {
       transition_in: null,
     });
     expect(cleared.transition_in).toBe(null);
@@ -651,7 +652,7 @@ describe('storyboard scalar metadata', () => {
 
   it('updateStoryboard keeps all characters_in_scene and dedupes', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    const updated = await Storyboards.updateStoryboard(sb._id, {
+    const updated = await Storyboards.updateStoryboard(undefined, sb._id, {
       characters_in_scene: ['Alice', 'Bob', 'Carol', 'Dave', 'alice'],
     });
     expect(updated.characters_in_scene).toEqual(['Alice', 'Bob', 'Carol', 'Dave']);
@@ -660,7 +661,7 @@ describe('storyboard scalar metadata', () => {
   it('updateStoryboard rejects non-array characters_in_scene', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
     await expect(
-      Storyboards.updateStoryboard(sb._id, { characters_in_scene: 'Alice' }),
+      Storyboards.updateStoryboard(undefined, sb._id, { characters_in_scene: 'Alice' }),
     ).rejects.toThrow(/characters_in_scene must be/);
   });
 
@@ -699,15 +700,55 @@ describe('storyboard summary field', () => {
       { _id: doc._id },
       { $unset: { summary: '' } },
     );
-    const reloaded = await Storyboards.getStoryboard(doc._id);
+    const reloaded = await Storyboards.getStoryboard(undefined, doc._id);
     expect(reloaded.summary).toBe('');
   });
 
   it('updateStoryboard round-trips the summary field', async () => {
     const sb = await Storyboards.createStoryboard({ beatId: beatA });
-    const updated = await Storyboards.updateStoryboard(sb._id, {
+    const updated = await Storyboards.updateStoryboard(undefined, sb._id, {
       summary: 'A wide shot of the diner at dusk.',
     });
     expect(updated.summary).toBe('A wide shot of the diner at dusk.');
+  });
+});
+
+describe('multi-project storyboards', () => {
+  it('createStoryboard stamps project_id and listing/counting are scoped', async () => {
+    const p1 = (await Projects.createProject('Alpha'))._id.toString();
+    const p2 = (await Projects.createProject('Beta'))._id.toString();
+    const sb = await Storyboards.createStoryboard({ projectId: p1, beatId: beatA });
+    expect(sb.project_id).toBe(p1);
+    expect(await Storyboards.listStoryboards({ projectId: p1 })).toHaveLength(1);
+    expect(await Storyboards.listStoryboards({ projectId: p2 })).toHaveLength(0);
+    expect((await Storyboards.countStoryboardsByBeat(p1)).get(beatA.toString())).toBe(1);
+    expect((await Storyboards.countStoryboardsByBeat(p2)).size).toBe(0);
+  });
+
+  it('id-addressed helpers verify project after locate — stale id ⇒ not-found', async () => {
+    const p1 = (await Projects.createProject('Alpha'))._id.toString();
+    const p2 = (await Projects.createProject('Beta'))._id.toString();
+    const sb = await Storyboards.createStoryboard({ projectId: p1, beatId: beatA });
+    expect((await Storyboards.getStoryboard(p1, sb._id)).project_id).toBe(p1);
+    expect(await Storyboards.getStoryboard(p2, sb._id)).toBe(null);
+    await expect(
+      Storyboards.updateStoryboard(p2, sb._id, { summary: 'cross-project write' }),
+    ).rejects.toThrow(/not found/i);
+    expect((await Storyboards.updateStoryboard(p1, sb._id, { summary: 'ok' })).summary).toBe('ok');
+    await expect(
+      Storyboards.setFramePrompt(p2, sb._id, 'frame-x', 'nope'),
+    ).rejects.toThrow(/not found/i);
+    expect(
+      (await Storyboards.getPreviousStoryboardInBeat(p1, beatA, sb.order + 1))._id.toString(),
+    ).toBe(sb._id.toString());
+    expect(await Storyboards.getPreviousStoryboardInBeat(p2, beatA, sb.order + 1)).toBe(null);
+  });
+
+  it('legacy storyboards without project_id stay reachable from any project', async () => {
+    const p1 = (await Projects.createProject('Alpha'))._id.toString();
+    const legacy = await insertLegacy();
+    expect((await Storyboards.getStoryboard(p1, legacy._id))._id.toString()).toBe(
+      legacy._id.toString(),
+    );
   });
 });

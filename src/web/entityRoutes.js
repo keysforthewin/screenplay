@@ -2483,7 +2483,7 @@ export function buildApiRouter() {
   async function resolveStoryboardId(req) {
     const { id } = req.params;
     if (!isOidHex(id)) return null;
-    const sb = await getStoryboard(id);
+    const sb = await getStoryboard(undefined, id);
     return sb?._id?.toString() || null;
   }
 
@@ -2591,7 +2591,7 @@ export function buildApiRouter() {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const sb = await getStoryboard(sbId);
+      const sb = await getStoryboard(undefined, sbId);
       if (!sb) return res.status(404).json({ error: 'storyboard not found' });
       if (!sb.text_prompt || !String(sb.text_prompt).trim()) {
         return res.status(400).json({ error: 'text_prompt is empty; nothing to summarize' });
@@ -2635,7 +2635,7 @@ export function buildApiRouter() {
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
       const sniffed = validateImageBuffer(req.file.buffer);
-      const sb = await getStoryboard(sbId);
+      const sb = await getStoryboard(undefined, sbId);
       const file = await uploadGeneratedImage({
         buffer: req.file.buffer,
         contentType: req.file.mimetype,
@@ -2751,8 +2751,8 @@ export function buildApiRouter() {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const sb = await getStoryboard(sbId);
-      const prev = await getPreviousStoryboardInBeat(sb.beat_id, sb.order);
+      const sb = await getStoryboard(undefined, sbId);
+      const prev = await getPreviousStoryboardInBeat(undefined, sb.beat_id, sb.order);
       if (!prev) {
         return res.status(400).json({ error: 'no previous storyboard in this beat' });
       }
@@ -3059,7 +3059,7 @@ export function buildApiRouter() {
         }
         if (!req.file) return res.status(400).json({ error: 'file required' });
         const sniffed = validateImageBuffer(req.file.buffer);
-        const sb = await getStoryboard(sbId);
+        const sb = await getStoryboard(undefined, sbId);
         const file = await uploadGeneratedImage({
           buffer: req.file.buffer,
           contentType: req.file.mimetype,
@@ -3113,7 +3113,7 @@ export function buildApiRouter() {
         if (!isOidHex(frameId)) {
           return res.status(400).json({ error: 'invalid frame id' });
         }
-        const sb = await getStoryboard(sbId);
+        const sb = await getStoryboard(undefined, sbId);
         if (!sb) return res.status(404).json({ error: 'storyboard not found' });
         const beat = await getBeat(undefined, String(sb.beat_id));
         if (!beat) return res.status(404).json({ error: 'beat not found' });
@@ -3213,7 +3213,7 @@ export function buildApiRouter() {
       if (!guidance && req.body?.use_critique) {
         const { getStoryboard } = await import('../mongo/storyboards.js');
         const { mergeCritiqueComments } = await import('./storyboardGenerate.js');
-        const sb = await getStoryboard(sbId);
+        const sb = await getStoryboard(undefined, sbId);
         guidance = mergeCritiqueComments(sb?.prompt_critique) || '';
       }
       const { reExpandShot, BeatBusyError } = await import('./storyboardGenerate.js');
@@ -3304,7 +3304,7 @@ export function buildApiRouter() {
         }
         if (!req.file) return res.status(400).json({ error: 'file required' });
         const sniffed = validateImageBuffer(req.file.buffer);
-        const sb = await getStoryboard(sbId);
+        const sb = await getStoryboard(undefined, sbId);
         const file = await uploadGeneratedImage({
           buffer: req.file.buffer,
           contentType: req.file.mimetype,
@@ -3421,7 +3421,7 @@ export function buildApiRouter() {
         if (!isOidHex(frameId)) {
           return res.status(400).json({ error: 'invalid frame id' });
         }
-        const sb = await getStoryboard(sbId);
+        const sb = await getStoryboard(undefined, sbId);
         if (!sb) return res.status(404).json({ error: 'storyboard not found' });
         const frame = (sb.frames || []).find((f) => f._id.toString() === frameId);
         if (!frame) return res.status(404).json({ error: 'frame not found' });
@@ -3515,7 +3515,7 @@ export function buildApiRouter() {
         if (!isValidImageModel(model)) {
           return res.status(400).json({ error: IMAGE_MODEL_ERROR });
         }
-        const sb = await getStoryboard(sbId);
+        const sb = await getStoryboard(undefined, sbId);
         const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
         const result = await dispatchImageReplace({
           prompt,
@@ -3624,7 +3624,7 @@ export function buildApiRouter() {
       if (!isValidImageModel(model)) {
         return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
-      const sb = await getStoryboard(sbId);
+      const sb = await getStoryboard(undefined, sbId);
       const { dispatchStoryboardImage } = await import('./storyboardImageDispatch.js');
       const result = await dispatchStoryboardImage({
         prompt,
@@ -3692,7 +3692,7 @@ export function buildApiRouter() {
         if (inferred?.startsWith('audio/')) ct = inferred;
         else return res.status(400).json({ error: 'file must be audio/*' });
       }
-      const sb = await getStoryboard(sbId);
+      const sb = await getStoryboard(undefined, sbId);
       let audio;
       try {
         audio = await normalizeUploadedAudioToMp3({
@@ -3780,7 +3780,7 @@ export function buildApiRouter() {
         if (inferred?.startsWith('video/')) ct = inferred;
         else return res.status(400).json({ error: 'file must be video/*' });
       }
-      const sb = await getStoryboard(sbId);
+      const sb = await getStoryboard(undefined, sbId);
       const file = await uploadAttachmentBuffer({
         buffer: req.file.buffer,
         filename: safeFilename(
@@ -3849,7 +3849,7 @@ export function buildApiRouter() {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const sb = await getStoryboard(sbId);
+      const sb = await getStoryboard(undefined, sbId);
       const type = String(req.query?.type || '').toLowerCase();
       if (type !== 'audio' && type !== 'video') {
         return res.status(400).json({ error: 'type must be "audio" or "video"' });
@@ -3935,7 +3935,7 @@ export function buildApiRouter() {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const currentSb = await getStoryboard(sbId);
+      const currentSb = await getStoryboard(undefined, sbId);
 
       const plot = await getPlot();
       const beatMetaById = new Map();
@@ -4308,7 +4308,7 @@ export function buildApiRouter() {
     try {
       const sbId = await resolveStoryboardId(req);
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const sb = await getStoryboard(sbId);
+      const sb = await getStoryboard(undefined, sbId);
       const oldId = sb?.video_file_id || null;
       const result = await setStoryboardVideoViaGateway({
         storyboardId: sbId,
@@ -4625,7 +4625,7 @@ export function buildApiRouter() {
   async function resolveDialogId(req) {
     const { id } = req.params;
     if (!isOidHex(id)) return null;
-    const d = await getDialog(id);
+    const d = await getDialog(undefined, id);
     return d?._id?.toString() || null;
   }
 
@@ -4713,7 +4713,7 @@ export function buildApiRouter() {
             characterName: character,
           });
         } else {
-          dialog = await getDialog(dId);
+          dialog = await getDialog(undefined, dId);
         }
         res.json({ dialog });
       } catch (e) {
@@ -4744,7 +4744,7 @@ export function buildApiRouter() {
         if (inferred?.startsWith('audio/')) ct = inferred;
         else return res.status(400).json({ error: 'file must be audio/*' });
       }
-      const dialog = await getDialog(dId);
+      const dialog = await getDialog(undefined, dId);
       let audio;
       try {
         audio = await normalizeUploadedAudioToMp3({

@@ -100,7 +100,7 @@ describe('POST /api/storyboard/:id/generate-summary', () => {
     expect(callArgs.user).not.toMatch(/\*\*/);
     expect(callArgs.user).toMatch(/diner/);
 
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     expect(fresh.summary).toBe('Alice arrives at the dusk diner.');
   });
 

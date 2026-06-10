@@ -125,8 +125,8 @@ describe('dialog audio gateway', () => {
       audioFileId: null,
     });
 
-    const scene = await Storyboards.getStoryboard(sb._id);
-    const dialog = await Dialogs.getDialog(d._id);
+    const scene = await Storyboards.getStoryboard(undefined, sb._id);
+    const dialog = await Dialogs.getDialog(undefined, d._id);
     expect(scene.audio_file_id.toString()).toBe(sceneAudioId);
     expect(dialog.audio_file_id).toBe(null);
   });

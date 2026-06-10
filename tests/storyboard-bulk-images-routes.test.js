@@ -130,7 +130,7 @@ describe('POST /storyboards/clear-images', () => {
     expect(r.status).toBe(200);
     const body = await r.json();
     expect(body.cleared).toBe(1);
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     expect(fresh.frames[0].image_id).toBe(null);
   });
 });

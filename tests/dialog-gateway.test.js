@@ -54,7 +54,7 @@ describe('dialog gateway (fallback)', () => {
       field: 'body',
       text: 'Get out of my house.',
     });
-    const fresh = await Dialogs.getDialog(d._id);
+    const fresh = await Dialogs.getDialog(undefined, d._id);
     expect(fresh.body).toBe('Get out of my house.');
   });
 
@@ -66,7 +66,7 @@ describe('dialog gateway (fallback)', () => {
       field: 'character',
       text: 'Detective Bob',
     });
-    const fresh = await Dialogs.getDialog(d._id);
+    const fresh = await Dialogs.getDialog(undefined, d._id);
     expect(fresh.character).toBe('Detective Bob');
   });
 
@@ -108,7 +108,7 @@ describe('dialog gateway (fallback)', () => {
       characterName: 'alice',
     });
     expect(updated.character).toBe('Alice');
-    const fresh = await Dialogs.getDialog(d._id);
+    const fresh = await Dialogs.getDialog(undefined, d._id);
     expect(fresh.character).toBe('Alice');
   });
 
@@ -120,7 +120,7 @@ describe('dialog gateway (fallback)', () => {
       dialogId: d._id,
       characterName: 'bob',
     });
-    const fresh = await Dialogs.getDialog(d._id);
+    const fresh = await Dialogs.getDialog(undefined, d._id);
     expect(fresh.character).toBe('Bob');
   });
 
@@ -133,7 +133,7 @@ describe('dialog gateway (fallback)', () => {
       characterName: 'radio',
     });
     expect(updated.character).toBe('radio');
-    const fresh = await Dialogs.getDialog(d._id);
+    const fresh = await Dialogs.getDialog(undefined, d._id);
     expect(fresh.character).toBe('radio');
   });
 
@@ -144,7 +144,7 @@ describe('dialog gateway (fallback)', () => {
       dialogId: d._id,
       characterName: 'TV ANCHOR',
     });
-    const fresh = await Dialogs.getDialog(d._id);
+    const fresh = await Dialogs.getDialog(undefined, d._id);
     expect(fresh.character).toBe('TV ANCHOR');
   });
 
@@ -155,7 +155,7 @@ describe('dialog gateway (fallback)', () => {
       dialogId: d._id,
       characterName: '   intercom   ',
     });
-    const fresh = await Dialogs.getDialog(d._id);
+    const fresh = await Dialogs.getDialog(undefined, d._id);
     expect(fresh.character).toBe('intercom');
   });
 

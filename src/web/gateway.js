@@ -300,21 +300,21 @@ async function readEntityField({ entityType, entityId, field }) {
   if (entityType === 'storyboards') {
     const fm = field.match(/^item:([a-f0-9]{24}):frame:([a-f0-9]{24}):prompt$/);
     if (fm) {
-      const sb = await mongoGetStoryboard(fm[1]);
+      const sb = await mongoGetStoryboard(undefined, fm[1]);
       if (!sb) throw new Error(`Storyboard not found: ${fm[1]}`);
       const frame = (sb.frames || []).find((f) => f._id.toString() === fm[2]);
       return String(frame?.prompt || '');
     }
     const m = field.match(/^item:([a-f0-9]{24}):(text_prompt|summary)$/);
     if (!m) throw new Error(`gateway fallback: unknown storyboards field "${field}"`);
-    const sb = await mongoGetStoryboard(m[1]);
+    const sb = await mongoGetStoryboard(undefined, m[1]);
     if (!sb) throw new Error(`Storyboard not found: ${m[1]}`);
     return String(sb[m[2]] || '');
   }
   if (entityType === 'dialogs') {
     const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
     if (!m) throw new Error(`gateway fallback: unknown dialogs field "${field}"`);
-    const d = await mongoGetDialog(m[1]);
+    const d = await mongoGetDialog(undefined, m[1]);
     if (!d) throw new Error(`Dialog not found: ${m[1]}`);
     return String(d[m[2]] || '');
   }
@@ -420,10 +420,10 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
   }
   if (entityType === 'storyboards') {
     const fm = field.match(/^item:([a-f0-9]{24}):frame:([a-f0-9]{24}):prompt$/);
-    if (fm) return mongoSetFramePrompt(fm[1], fm[2], args.markdown);
+    if (fm) return mongoSetFramePrompt(undefined, fm[1], fm[2], args.markdown);
     const m = field.match(/^item:([a-f0-9]{24}):(text_prompt|summary)$/);
     if (!m) throw new Error(`gateway fallback: unknown storyboards field "${field}"`);
-    return mongoUpdateStoryboard(m[1], { [m[2]]: args.markdown });
+    return mongoUpdateStoryboard(undefined, m[1], { [m[2]]: args.markdown });
   }
   if (entityType === 'dialogs') {
     if (field === 'dialog_notes') {
@@ -431,7 +431,7 @@ async function fallbackTextWrite({ entityType, entityId, field, op, ...args }) {
     }
     const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
     if (!m) throw new Error(`gateway fallback: unknown dialogs field "${field}"`);
-    return mongoUpdateDialog(m[1], { [m[2]]: args.markdown });
+    return mongoUpdateDialog(undefined, m[1], { [m[2]]: args.markdown });
   }
   if (entityType === 'library') {
     {
@@ -1357,7 +1357,7 @@ function framePromptFragment(storyboardId, frameId) {
 }
 
 export async function setStoryboardTextPromptViaGateway({ storyboardId, text }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   return setEntityFieldMarkdown({
     entityType: 'storyboards',
@@ -1368,7 +1368,7 @@ export async function setStoryboardTextPromptViaGateway({ storyboardId, text }) 
 }
 
 export async function setStoryboardSummaryViaGateway({ storyboardId, text }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   return setEntityFieldMarkdown({
     entityType: 'storyboards',
@@ -1379,7 +1379,7 @@ export async function setStoryboardSummaryViaGateway({ storyboardId, text }) {
 }
 
 export async function setStoryboardFramePromptViaGateway({ storyboardId, frameId, text }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   if (!(sb.frames || []).some((f) => f._id.toString() === String(frameId))) {
     throw new Error(`frame not found: ${frameId}`);
@@ -1446,7 +1446,7 @@ export async function createStoryboardViaGateway({
 // 'prompt' | 'image'. critique is the object from critiquePanel (or null).
 export async function setStoryboardCritiqueViaGateway({ storyboardId, beatId, target, critique }) {
   const field = target === 'image' ? 'image_critique' : 'prompt_critique';
-  const updated = await mongoUpdateStoryboard(String(storyboardId), { [field]: critique });
+  const updated = await mongoUpdateStoryboard(undefined, String(storyboardId), { [field]: critique });
   try {
     broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
       changed: ['critique'],
@@ -1460,7 +1460,7 @@ export async function setStoryboardCritiqueViaGateway({ storyboardId, beatId, ta
 }
 
 export async function deleteStoryboardViaGateway({ storyboardId }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const beatId = sb.beat_id.toString();
   await mongoDeleteStoryboard(storyboardId);
@@ -1538,7 +1538,7 @@ export async function addStoryboardFrameViaGateway({
   prompt = '',
   referenceIds = [],
 }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const { storyboard, frameId } = await mongoAddFrame(storyboardId, {
     imageId,
@@ -1563,7 +1563,7 @@ export async function addStoryboardFrameViaGateway({
 
 // Remove a frame from the pool, deleting any displaced internal undo image.
 export async function removeStoryboardFrameViaGateway({ storyboardId, frameId }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const { storyboard, orphanedImageIds } = await mongoRemoveFrame(storyboardId, frameId);
   for (const oid of orphanedImageIds || []) {
@@ -1574,7 +1574,7 @@ export async function removeStoryboardFrameViaGateway({ storyboardId, frameId })
 }
 
 export async function reorderStoryboardFramesViaGateway({ storyboardId, orderedFrameIds }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const next = await mongoReorderFrames(storyboardId, orderedFrameIds);
   broadcastFrames(sb.beat_id, storyboardId);
@@ -1584,7 +1584,7 @@ export async function reorderStoryboardFramesViaGateway({ storyboardId, orderedF
 // Install (or clear) the current image of an existing frame — used by the
 // "Replace" action and single-image install from the Add Frame picker.
 export async function setStoryboardFrameImageViaGateway({ storyboardId, frameId, imageId }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const next = await mongoSetFrameImage(storyboardId, frameId, imageId);
   broadcastFrames(sb.beat_id, storyboardId, { frame_id: String(frameId) });
@@ -1633,7 +1633,7 @@ const STORYBOARD_SCALAR_FIELDS = new Set([
 ]);
 
 export async function updateStoryboardScalarsViaGateway({ storyboardId, patch }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const filtered = {};
   for (const [k, v] of Object.entries(patch || {})) {
@@ -1642,7 +1642,7 @@ export async function updateStoryboardScalarsViaGateway({ storyboardId, patch })
   if (!Object.keys(filtered).length) {
     throw new Error('updateStoryboardScalars: no recognized fields');
   }
-  const result = await mongoUpdateStoryboard(storyboardId, filtered);
+  const result = await mongoUpdateStoryboard(undefined, storyboardId, filtered);
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
     changed: Object.keys(filtered),
     storyboard_id: String(storyboardId),
@@ -1655,7 +1655,7 @@ export async function addStoryboardFrameReferenceImageViaGateway({
   frameId,
   imageId,
 }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const next = await mongoPushFrameReferenceImage(storyboardId, frameId, imageId);
   broadcastFrames(sb.beat_id, storyboardId, { frame_id: String(frameId) });
@@ -1667,7 +1667,7 @@ export async function removeStoryboardFrameReferenceImageViaGateway({
   frameId,
   imageId,
 }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const next = await mongoPullFrameReferenceImage(storyboardId, frameId, imageId);
   broadcastFrames(sb.beat_id, storyboardId, { frame_id: String(frameId) });
@@ -1683,7 +1683,7 @@ export async function setStoryboardFrameReferenceImagesViaGateway({
   imageIds,
   mode = 'replace',
 }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const ids = Array.isArray(imageIds) ? imageIds : [];
   let next;
@@ -1699,7 +1699,7 @@ export async function setStoryboardFrameReferenceImagesViaGateway({
 }
 
 export async function setStoryboardAudioViaGateway({ storyboardId, audioFileId }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const patch = {
     audio_file_id: audioFileId == null ? null : String(audioFileId),
@@ -1725,12 +1725,12 @@ export async function setStoryboardAudioViaGateway({ storyboardId, audioFileId }
       patch.audio_duration_seconds = null;
     }
   }
-  await mongoUpdateStoryboard(storyboardId, patch);
+  await mongoUpdateStoryboard(undefined, storyboardId, patch);
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
     changed: Object.keys(patch),
     storyboard_id: String(storyboardId),
   });
-  return mongoGetStoryboard(storyboardId);
+  return mongoGetStoryboard(undefined, storyboardId);
 }
 
 // Attach a user-uploaded source video to a storyboard. This is the input
@@ -1742,7 +1742,7 @@ export async function setStoryboardUploadedVideoViaGateway({
   storyboardId,
   videoFileId,
 }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const patch = {
     video_upload_file_id: videoFileId == null ? null : String(videoFileId),
@@ -1767,12 +1767,12 @@ export async function setStoryboardUploadedVideoViaGateway({
       patch.video_upload_duration_seconds = null;
     }
   }
-  await mongoUpdateStoryboard(storyboardId, patch);
+  await mongoUpdateStoryboard(undefined, storyboardId, patch);
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
     changed: Object.keys(patch),
     storyboard_id: String(storyboardId),
   });
-  return mongoGetStoryboard(storyboardId);
+  return mongoGetStoryboard(undefined, storyboardId);
 }
 
 // Attach a generated video to a storyboard. Used by the fal.ai video
@@ -1796,7 +1796,7 @@ export async function setStoryboardVideoViaGateway({
   parameters = null,
   costUsd = null,
 }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const patch = {
     video_file_id: videoFileId == null ? null : String(videoFileId),
@@ -1837,12 +1837,12 @@ export async function setStoryboardVideoViaGateway({
         ? costUsd
         : null;
   }
-  await mongoUpdateStoryboard(storyboardId, patch);
+  await mongoUpdateStoryboard(undefined, storyboardId, patch);
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
     changed: Object.keys(patch),
     storyboard_id: String(storyboardId),
   });
-  return mongoGetStoryboard(storyboardId);
+  return mongoGetStoryboard(undefined, storyboardId);
 }
 
 // Copy an existing GridFS attachment (e.g. one attached to a beat or
@@ -1859,7 +1859,7 @@ export async function copyAttachmentToStoryboardMediaViaGateway({
   if (kind !== 'audio' && kind !== 'video') {
     throw new Error(`copyAttachmentToStoryboardMediaViaGateway: invalid kind ${kind}`);
   }
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const source = await findAttachmentFile(attachmentId);
   if (!source) throw new Error(`Attachment not found: ${attachmentId}`);
@@ -1906,9 +1906,9 @@ export async function copyDialogAudioToStoryboardViaGateway({
   storyboardId,
   dialogId,
 }) {
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const d = await mongoGetDialog(dialogId);
+  const d = await mongoGetDialog(undefined, dialogId);
   if (!d) throw new Error(`Dialog not found: ${dialogId}`);
   if (!d.audio_file_id) {
     throw new Error(`Dialog ${dialogId} has no audio to copy.`);
@@ -1957,7 +1957,7 @@ export async function setDialogTextFieldViaGateway({ dialogId, field, text }) {
   if (!DIALOG_TEXT_FIELDS.has(field)) {
     throw new Error(`unknown dialog field: ${field}`);
   }
-  const d = await mongoGetDialog(dialogId);
+  const d = await mongoGetDialog(undefined, dialogId);
   if (!d) throw new Error(`Dialog not found: ${dialogId}`);
   await setEntityFieldMarkdown({
     entityType: 'dialogs',
@@ -1983,7 +1983,7 @@ export async function setDialogTextFieldViaGateway({ dialogId, field, text }) {
 // (e.g. "radio", "TV ANCHOR", "INTERCOM") — real scripts have non-character
 // sources of dialogue that aren't worth modelling as full character docs.
 export async function setDialogCharacterViaGateway({ dialogId, characterName }) {
-  const d = await mongoGetDialog(dialogId);
+  const d = await mongoGetDialog(undefined, dialogId);
   if (!d) throw new Error(`Dialog not found: ${dialogId}`);
   const raw = String(characterName ?? '').trim();
   if (!raw) {
@@ -1993,12 +1993,12 @@ export async function setDialogCharacterViaGateway({ dialogId, characterName }) 
   const finalName = c
     ? (stripMarkdown(c.name || '').trim() || raw)
     : raw;
-  await mongoUpdateDialog(d._id.toString(), { character: finalName });
+  await mongoUpdateDialog(undefined, d._id.toString(), { character: finalName });
   broadcastFieldsUpdated(buildRoomName('dialogs', d.beat_id.toString()), {
     changed: ['character'],
     dialog_id: d._id.toString(),
   });
-  return mongoGetDialog(d._id.toString());
+  return mongoGetDialog(undefined, d._id.toString());
 }
 
 export async function createDialogViaGateway({ beatId, body, character, order, seedFragments }) {
@@ -2030,7 +2030,7 @@ export async function createDialogViaGateway({ beatId, body, character, order, s
 }
 
 export async function deleteDialogViaGateway({ dialogId }) {
-  const d = await mongoGetDialog(dialogId);
+  const d = await mongoGetDialog(undefined, dialogId);
   if (!d) throw new Error(`Dialog not found: ${dialogId}`);
   const beatId = d.beat_id.toString();
   await mongoDeleteDialog(dialogId);
@@ -2068,16 +2068,16 @@ export async function deleteAllDialogsForBeatViaGateway({ beatId }) {
 // null` to unlink (the GridFS bytes are left in place, mirroring the
 // storyboard-audio convention).
 export async function setDialogAudioViaGateway({ dialogId, audioFileId }) {
-  const d = await mongoGetDialog(dialogId);
+  const d = await mongoGetDialog(undefined, dialogId);
   if (!d) throw new Error(`Dialog not found: ${dialogId}`);
-  await mongoUpdateDialog(dialogId, {
+  await mongoUpdateDialog(undefined, dialogId, {
     audio_file_id: audioFileId == null ? null : String(audioFileId),
   });
   broadcastFieldsUpdated(buildRoomName('dialogs', d.beat_id.toString()), {
     changed: ['audio_file_id'],
     dialog_id: String(dialogId),
   });
-  return mongoGetDialog(dialogId);
+  return mongoGetDialog(undefined, dialogId);
 }
 
 // ─── Library ───────────────────────────────────────────────────────────────

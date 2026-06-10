@@ -186,9 +186,9 @@ async function seedScene({
   if (audio) {
     const id = new ObjectId();
     fakeAttachmentStore.set(id.toString(), { buffer: Buffer.from('audio'), contentType: 'audio/mpeg' });
-    await Storyboards.updateStoryboard(sb._id, { audio_file_id: id });
+    await Storyboards.updateStoryboard(undefined, sb._id, { audio_file_id: id });
   }
-  return { beat, sb: await Storyboards.getStoryboard(sb._id) };
+  return { beat, sb: await Storyboards.getStoryboard(undefined, sb._id) };
 }
 
 async function seedCharacter(name, { sheetCount = 1 } = {}) {
@@ -279,7 +279,7 @@ describe('startVideoGenerationJob', () => {
     expect(persisted.metadata.owner_id?.toString?.()).toBe(beat._id.toString());
 
     // Storyboard row updated via the gateway.
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     expect(fresh.video_file_id?.toString()).toBe(job.video_file_id);
     expect(fresh.video_duration_seconds).toBe(7);
     // Enriched metadata: model identification, params, and cost are all
@@ -481,7 +481,7 @@ describe('startVideoGenerationJob', () => {
     expect(falStubs.submitCalls[0].args.input.resolution).toBe('1080p');
 
     // 1080p on Sora 2 Pro is $0.50/s. 8s × $0.50 = $4.00.
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     expect(fresh.video_parameters?.resolution).toBe('1080p');
     expect(fresh.video_cost_usd).toBeCloseTo(8 * 0.5, 6);
   });
@@ -545,7 +545,7 @@ describe('frame-pool → reference-image mapping for slot-less models', () => {
 
     const { sb } = await seedScene({ start: true, end: true });
     await addFrame(sb._id, 'thirdframe');
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     const frameImageIds = fresh.frames.map((f) => f.image_id.toString());
 
     const preview = await Falgen.buildVideoPayloadPreview({
@@ -574,7 +574,7 @@ describe('frame-pool → reference-image mapping for slot-less models', () => {
     const { beat, sb } = await seedScene({ start: true, end: false });
     const videoId = new ObjectId();
     fakeAttachmentStore.set(videoId.toString(), { buffer: Buffer.from('srcvideo'), contentType: 'video/mp4' });
-    await Storyboards.updateStoryboard(sb._id, { video_upload_file_id: videoId });
+    await Storyboards.updateStoryboard(undefined, sb._id, { video_upload_file_id: videoId });
 
     const { job_id } = await Falgen.startVideoGenerationJob({
       storyboardId: sb._id.toString(),

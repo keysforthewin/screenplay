@@ -182,7 +182,7 @@ export async function startVideoGenerationJob({
   const model = await getVideoModelOrCatalog(chosenId);
   if (!model) throw new UnknownVideoModelError(chosenId);
 
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
 
   const assignment = resolveFrameAssignment(model, sb, frameAssignment);
@@ -437,7 +437,7 @@ export async function buildVideoPayloadPreview({
   const model = await getVideoModelOrCatalog(chosenId);
   if (!model) throw new UnknownVideoModelError(chosenId);
 
-  const sb = await mongoGetStoryboard(storyboardId);
+  const sb = await mongoGetStoryboard(undefined, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
 
   const assignment = resolveFrameAssignment(model, sb, frameAssignment);

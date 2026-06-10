@@ -64,7 +64,7 @@ async function setupRow({ imageId = null, referenceIds = [] } = {}) {
     charactersInScene: ['Alice'],
   });
   const { frameId } = await Storyboards.addFrame(sb._id, { imageId, referenceIds });
-  return { beat, sb: await Storyboards.getStoryboard(sb._id), frameId };
+  return { beat, sb: await Storyboards.getStoryboard(undefined, sb._id), frameId };
 }
 
 function frameOf(sb, frameId) {
@@ -97,7 +97,7 @@ describe('regenerateStoryboardFrame (generate mode)', () => {
     expect(captured.prompt).toBe('A wide shot of the diner at dusk.');
     expect(captured.inputImages).toHaveLength(2);
 
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     expect(frameOf(fresh, frameId).prompt).toBe('A wide shot of the diner at dusk.');
     expect(frameOf(fresh, frameId).image_id).toBeTruthy();
   });
@@ -137,7 +137,7 @@ describe('regenerateStoryboardFrame (generate mode)', () => {
       captured[1].inputImages[0].buffer.toString(),
     );
 
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     expect(frameOf(fresh, f1).prompt).toBe('first prompt');
     expect(frameOf(fresh, f2).prompt).toBe('second prompt');
   });
@@ -186,7 +186,7 @@ describe('regenerateStoryboardFrame (edit mode)', () => {
   it('does NOT save the edit prompt into the stored frame prompt', async () => {
     const startId = registerImage(new ObjectId());
     const { sb, frameId } = await setupRow({ imageId: startId });
-    await Storyboards.setFramePrompt(sb._id, frameId, 'original stored prompt');
+    await Storyboards.setFramePrompt(undefined, sb._id, frameId, 'original stored prompt');
     Generate._setImageDispatcherForTests(async () => ({
       buffer: Buffer.from('img'),
       contentType: 'image/png',
@@ -199,7 +199,7 @@ describe('regenerateStoryboardFrame (edit mode)', () => {
       editPrompt: 'tweak',
     });
 
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     expect(frameOf(fresh, frameId).prompt).toBe('original stored prompt');
   });
 
@@ -258,7 +258,7 @@ describe('regenerateStoryboardFrame error gates', () => {
 describe('previewFrameGenerationPrompt', () => {
   it('returns the stored prompt when set, plus a freshly built suggestion', async () => {
     const { sb, frameId } = await setupRow();
-    await Storyboards.setFramePrompt(sb._id, frameId, 'user-typed prompt');
+    await Storyboards.setFramePrompt(undefined, sb._id, frameId, 'user-typed prompt');
     const r = await Generate.previewFrameGenerationPrompt({
       storyboardId: sb._id,
       frameId,
@@ -348,7 +348,7 @@ describe('startFrameGenerationJob', () => {
     }
     const job = Generate.getFrameGenerationJob(jobId);
     expect(job.status).toBe('done');
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     const f = frameOf(fresh, frameId);
     expect(f.previous_image_id.toString()).toBe(startId.toString());
     expect(f.image_id.toString()).not.toBe(startId.toString());
@@ -373,7 +373,7 @@ describe('startFrameGenerationJob', () => {
       if (job && (job.status === 'done' || job.status === 'error')) break;
       await new Promise((r) => setTimeout(r, 5));
     }
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     const f = frameOf(fresh, frameId);
     expect(f.previous_image_id).toBe(null);
     expect(f.last_edit_prompt).toBe('');

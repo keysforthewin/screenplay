@@ -99,7 +99,7 @@ describe('on-demand critique job', () => {
     }
     const j = gen.getCritiqueJob(jobId);
     expect(j.status).toBe('done');
-    const reread = await getStoryboard(sb._id);
+    const reread = await getStoryboard(undefined, sb._id);
     expect(reread.prompt_critique.overall).toBe(5);
   });
 
@@ -141,7 +141,7 @@ describe('reExpandShot (regenerate prompt from critique)', () => {
 
     await gen.reExpandShot({ storyboardId: sb._id.toString(), critiqueGuidance: 'colder light' });
     expect(sawNotes).toContain('colder light');
-    const reread = await getStoryboard(sb._id);
+    const reread = await getStoryboard(undefined, sb._id);
     expect(reread.frames[0].prompt).toBe('NEW start');
     expect(reread.text_prompt).toContain('NEW video');
     gen._setShotExpanderForTests(null);

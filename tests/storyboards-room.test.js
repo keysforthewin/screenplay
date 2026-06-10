@@ -84,7 +84,7 @@ describe('storyboards room', () => {
       ]),
     );
 
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(undefined, sb._id);
     expect(fresh.text_prompt).toBe('New prompt body.');
     expect(fresh.summary).toBe('New one-liner.');
     expect(fresh.frames.find((f) => f._id.equals(frameId)).prompt).toBe(
