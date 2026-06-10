@@ -8,6 +8,8 @@ import * as DirectorNotes from '../mongo/directorNotes.js';
 import * as Files from '../mongo/files.js';
 import * as Images from '../mongo/images.js';
 import * as Attachments from '../mongo/attachments.js';
+import { getProjectByTitle, listProjects } from '../mongo/projects.js';
+import { setCurrentProjectId } from '../mongo/channelState.js';
 import * as Gateway from '../web/gateway.js';
 import { kickoffLibraryVisionSeed } from '../web/libraryVisionWorker.js';
 import { aboutUrl, beatUrl, characterUrl, notesUrl, withSpaLink } from '../web/links.js';
@@ -3529,6 +3531,34 @@ export const HANDLERS = {
     }
     if (!paths.length) return textBody;
     return `__IMAGE_PATHS__:${paths.join('\t')}|${textBody}`;
+  },
+
+  async set_project({ title } = {}, context = null) {
+    if (typeof title !== 'string' || !title.trim()) {
+      return 'Tool error (set_project): `title` is required.';
+    }
+    const project = await getProjectByTitle(title);
+    if (!project) {
+      const all = await listProjects();
+      const titles = all.map((p) => `"${p.title}"`).join(', ');
+      return `Tool error (set_project): no project titled "${title.trim()}". Available projects: ${titles || '(none)'}.`;
+    }
+    const projectId = project._id.toString();
+    // Mutate the shared per-turn context IN PLACE so every later tool call in
+    // this turn — and the end-of-turn recordAgentTurns stamp — uses the new
+    // project. The loop's MUTATING_PREFIXES ('set_') rebuilds the system
+    // prompt on the next iteration, and the loop drops pre-switch touched
+    // entities (see entityLinks.clearTouchedEntities).
+    if (context && typeof context === 'object') {
+      context.projectId = projectId;
+      context.projectTitle = project.title;
+    }
+    if (context?.channelId) {
+      await setCurrentProjectId(context.channelId, projectId);
+    } else {
+      logger.warn('set_project: no channelId in context — switch not persisted to channel_state');
+    }
+    return `Switched to project "${project.title}".`;
   },
 };
 

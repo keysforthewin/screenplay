@@ -1694,6 +1694,23 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'set_project',
+    keywords: ['project', 'switch', 'workspace', 'open'],
+    description:
+      'Switch this Discord channel\'s active screenplay project by title (case-insensitive). All subsequent reads and writes — characters, beats, director\'s notes, images, exports, searches — apply to the newly selected project, and the choice persists across restarts. On an unknown title the tool returns the list of available project titles; relay them to the user. Projects are created in the web UI only (click the project title in the browser header) — never invent a project by retrying with a new title.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: {
+          type: 'string',
+          description: 'The project title to switch to (case-insensitive, as shown in the project list).',
+        },
+      },
+      required: ['title'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 // Tools always present in the model's tools list, regardless of any
