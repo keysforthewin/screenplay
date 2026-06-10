@@ -18,12 +18,16 @@ vi.mock('../src/llm/analyze.js', () => ({
   analyzeText: analyzeTextMock,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 const Plots = await import('../src/mongo/plots.js');
 const { config } = await import('../src/config.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   tavilySearch.mockReset();
   analyzeTextMock.mockReset();
   config.tavily.apiKey = 'test-key';
@@ -32,24 +36,24 @@ beforeEach(() => {
 describe('similar_works', () => {
   it('returns error when TAVILY_API_KEY is unset', async () => {
     config.tavily.apiKey = null;
-    const out = await HANDLERS.similar_works({});
+    const out = await HANDLERS.similar_works({}, { projectId });
     expect(out).toMatch(/TAVILY_API_KEY/);
     expect(tavilySearch).not.toHaveBeenCalled();
   });
 
   it('returns error when plot is empty', async () => {
-    const out = await HANDLERS.similar_works({});
+    const out = await HANDLERS.similar_works({}, { projectId });
     expect(out).toMatch(/no synopsis/i);
     expect(tavilySearch).not.toHaveBeenCalled();
     expect(analyzeTextMock).not.toHaveBeenCalled();
   });
 
   it('uses synopsis + beat outlines for plot scope', async () => {
-    await Plots.updatePlot({
+    await Plots.updatePlot(projectId, {
       synopsis: 'A young wizard discovers he is destined to defeat a dark lord at school.',
     });
-    await Plots.createBeat({ name: 'Letter Arrives', desc: 'Mysterious letter arrives by owl post.' });
-    await Plots.createBeat({ name: 'Magical School', desc: 'Boy travels to a school for wizards.' });
+    await Plots.createBeat({ projectId, name: 'Letter Arrives', desc: 'Mysterious letter arrives by owl post.' });
+    await Plots.createBeat({ projectId, name: 'Magical School', desc: 'Boy travels to a school for wizards.' });
     tavilySearch.mockResolvedValue({
       results: [
         {
@@ -62,7 +66,7 @@ describe('similar_works', () => {
       ],
     });
     analyzeTextMock.mockResolvedValue('1. **Harry Potter** ...');
-    const out = await HANDLERS.similar_works({});
+    const out = await HANDLERS.similar_works({}, { projectId });
     expect(tavilySearch).toHaveBeenCalledTimes(1);
     const tavilyArg = tavilySearch.mock.calls[0][0];
     expect(tavilyArg.query).toMatch(/^story plot similar to:/);
@@ -73,15 +77,15 @@ describe('similar_works', () => {
   });
 
   it('uses one beat for beat scope', async () => {
-    await Plots.updatePlot({ synopsis: 'something' });
-    const beat = await Plots.createBeat({
+    await Plots.updatePlot(projectId, { synopsis: 'something' });
+    const beat = await Plots.createBeat({ projectId,
       name: 'Diner Showdown',
       desc: 'Two former lovers argue at the diner.',
       body: 'Long form body of the diner scene.',
     });
     tavilySearch.mockResolvedValue({ results: [] });
     analyzeTextMock.mockResolvedValue('No strong parallels.');
-    const out = await HANDLERS.similar_works({ scope: 'beat', beat: beat._id.toString() });
+    const out = await HANDLERS.similar_works({ scope: 'beat', beat: beat._id.toString() }, { projectId });
     const arg = tavilySearch.mock.calls[0][0];
     expect(arg.query).toMatch(/^scene similar to:/);
     expect(arg.query).toMatch(/argue/);
@@ -90,31 +94,31 @@ describe('similar_works', () => {
   });
 
   it('falls back to current beat when scope=beat and beat omitted', async () => {
-    await Plots.updatePlot({ synopsis: 'x' });
-    await Plots.createBeat({ name: 'First', desc: 'first beat unique-token-alpha' });
-    await Plots.createBeat({ name: 'Second', desc: 'second beat unique-token-beta' });
-    await Plots.setCurrentBeat('First');
+    await Plots.updatePlot(projectId, { synopsis: 'x' });
+    await Plots.createBeat({ projectId, name: 'First', desc: 'first beat unique-token-alpha' });
+    await Plots.createBeat({ projectId, name: 'Second', desc: 'second beat unique-token-beta' });
+    await Plots.setCurrentBeat(projectId, 'First');
     tavilySearch.mockResolvedValue({ results: [] });
     analyzeTextMock.mockResolvedValue('none');
-    await HANDLERS.similar_works({ scope: 'beat' });
+    await HANDLERS.similar_works({ scope: 'beat' }, { projectId });
     const arg = tavilySearch.mock.calls[0][0];
     expect(arg.query).toMatch(/unique-token-alpha/);
     expect(arg.query).not.toMatch(/unique-token-beta/);
   });
 
   it('errors when scope=beat and target has no desc/body', async () => {
-    const empty = await Plots.createBeat({ name: 'Empty Beat', desc: '' });
-    const out = await HANDLERS.similar_works({ scope: 'beat', beat: empty._id.toString() });
+    const empty = await Plots.createBeat({ projectId, name: 'Empty Beat', desc: '' });
+    const out = await HANDLERS.similar_works({ scope: 'beat', beat: empty._id.toString() }, { projectId });
     expect(out).toMatch(/no desc or body/i);
     expect(tavilySearch).not.toHaveBeenCalled();
     expect(analyzeTextMock).not.toHaveBeenCalled();
   });
 
   it('appends focus to the query', async () => {
-    await Plots.updatePlot({ synopsis: 'A heist crew plans one last score.' });
+    await Plots.updatePlot(projectId, { synopsis: 'A heist crew plans one last score.' });
     tavilySearch.mockResolvedValue({ results: [] });
     analyzeTextMock.mockResolvedValue('none');
-    await HANDLERS.similar_works({ focus: 'heist films' });
+    await HANDLERS.similar_works({ focus: 'heist films' }, { projectId });
     const arg = tavilySearch.mock.calls[0][0];
     expect(arg.query).toMatch(/heist films/);
   });

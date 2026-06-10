@@ -20,11 +20,12 @@ vi.mock('../src/mongo/images.js', () => ({
   readImageBuffer: vi.fn(async () => null),
   deleteImage: vi.fn(async () => {}),
   deleteImages: vi.fn(async () => {}),
-  uploadGeneratedImage: vi.fn(async ({ filename }) => ({
+  uploadGeneratedImage: vi.fn(async (_projectId, { filename }) => ({
     _id: new ObjectId(), filename, contentType: 'image/png', metadata: {},
   })),
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Generate = await import('../src/web/storyboardGenerate.js');
@@ -42,8 +43,11 @@ beforeAll(async () => {
 });
 afterAll(async () => { await new Promise((r) => server.close(() => r())); });
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   BeatLocks._clearBeatLocksForTests();
   Generate._setImageDispatcherForTests(async () => ({
     buffer: Buffer.from('img'), contentType: 'image/png',
@@ -59,8 +63,8 @@ const post = (path, body) =>
 const get = (path) => fetch(`${baseUrl}/api${path}`);
 
 async function beatWithMissingStart() {
-  const beat = await Plots.createBeat({ name: 'B', desc: '', body: '', characters: [] });
-  const sb = await Storyboards.createStoryboard({ beatId: beat._id, textPrompt: 'shot', shotType: 'cinematic_wide' });
+  const beat = await Plots.createBeat({ projectId, name: 'B', desc: '', body: '', characters: [] });
+  const sb = await Storyboards.createStoryboard({ projectId, beatId: beat._id, textPrompt: 'shot', shotType: 'cinematic_wide' });
   await Storyboards.addFrame(sb._id, {});
   return beat;
 }
@@ -123,14 +127,14 @@ describe('POST /storyboards/clear-images', () => {
     expect(r.status).toBe(400);
   });
   it('clears images and returns counts', async () => {
-    const beat = await Plots.createBeat({ name: 'B', desc: '', body: '', characters: [] });
-    const sb = await Storyboards.createStoryboard({ beatId: beat._id, textPrompt: 'shot' });
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: '', body: '', characters: [] });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId: beat._id, textPrompt: 'shot' });
     await Storyboards.addFrame(sb._id, { imageId: new ObjectId() });
     const r = await post('/storyboards/clear-images', { beat_id: beat._id.toString() });
     expect(r.status).toBe(200);
     const body = await r.json();
     expect(body.cleared).toBe(1);
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(projectId, sb._id);
     expect(fresh.frames[0].image_id).toBe(null);
   });
 });

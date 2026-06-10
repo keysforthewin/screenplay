@@ -56,7 +56,7 @@ vi.mock('../src/mongo/images.js', async () => {
       const key = id instanceof ObjectId ? id.toString() : String(id);
       return fakeBucket.get(key) || null;
     },
-    uploadGeneratedImage: async ({ buffer, contentType, prompt, generatedBy, ownerType, ownerId }) => {
+    uploadGeneratedImage: async (_projectId, { buffer, contentType, prompt, generatedBy, ownerType, ownerId }) => {
       const _id = new ObjectId();
       uploads.push({ _id, ownerType, ownerId, prompt, generatedBy, contentType });
       const file = {
@@ -97,6 +97,7 @@ vi.mock('../src/config.js', async () => {
   };
 });
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const Images = await import('../src/mongo/images.js');
@@ -106,8 +107,8 @@ const { HANDLERS } = await import('../src/agent/handlers.js');
 // metadata to the named character (mirroring what generate_image would have
 // done previously).
 async function seedBeatWithImage(beatName, { setAsMain = true } = {}) {
-  const b = await Plots.createBeat({ name: beatName, desc: 'd' });
-  const file = await Images.uploadGeneratedImage({
+  const b = await Plots.createBeat({ projectId, name: beatName, desc: 'd' });
+  const file = await Images.uploadGeneratedImage(projectId, {
     buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x02]),
     contentType: 'image/png',
     prompt: 'seed-beat',
@@ -115,7 +116,7 @@ async function seedBeatWithImage(beatName, { setAsMain = true } = {}) {
     ownerType: 'beat',
     ownerId: b._id,
   });
-  await Plots.pushBeatImage(
+  await Plots.pushBeatImage(projectId, 
     b._id.toString(),
     {
       _id: file._id,
@@ -135,7 +136,7 @@ async function seedBeatWithImage(beatName, { setAsMain = true } = {}) {
 }
 
 async function seedLibraryImage() {
-  const file = await Images.uploadGeneratedImage({
+  const file = await Images.uploadGeneratedImage(projectId, {
     buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x03]),
     contentType: 'image/png',
     prompt: 'seed-library',
@@ -150,8 +151,8 @@ async function seedLibraryImage() {
 }
 
 async function seedCharacterWithImage(name, { setAsMain = true } = {}) {
-  const c = await Characters.createCharacter({ name });
-  const file = await Images.uploadGeneratedImage({
+  const c = await Characters.createCharacter({ projectId, name });
+  const file = await Images.uploadGeneratedImage(projectId, {
     buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]),
     contentType: 'image/png',
     prompt: 'seed',
@@ -160,6 +161,7 @@ async function seedCharacterWithImage(name, { setAsMain = true } = {}) {
     ownerId: c._id,
   });
   await Characters.pushCharacterImage(
+    projectId,
     c._id.toString(),
     {
       _id: file._id,
@@ -178,8 +180,11 @@ async function seedCharacterWithImage(name, { setAsMain = true } = {}) {
   return { character: c, imageId: file._id };
 }
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   fakeBucket.clear();
   uploads.length = 0;
   deletions.length = 0;
@@ -194,7 +199,7 @@ describe('edit_image', () => {
       source_image_id: imageId.toString(),
       prompt: 'give him blonde hair',
       replace_source: false,
-    });
+    }, { projectId });
 
     // Sentinel return shape lets the loop attach the file + emit a clickable link
     expect(out).toMatch(/^__IMAGE_PATH__:/);
@@ -229,7 +234,7 @@ describe('edit_image', () => {
       source_image_id: imageId.toString(),
       prompt: 'give him blonde hair',
       replace_source: true,
-    });
+    }, { projectId });
 
     const updated = await fakeDb.collection('characters').findOne({ _id: character._id });
     expect(updated.images).toHaveLength(1);
@@ -241,25 +246,27 @@ describe('edit_image', () => {
 
   it('editing a non-main character image leaves main_image_id alone', async () => {
     // Seed a character with a main image first, then add a second image (non-main)
-    const c = await Characters.createCharacter({ name: 'Foxglove' });
-    const fileA = await Images.uploadGeneratedImage({
+    const c = await Characters.createCharacter({ projectId, name: 'Foxglove' });
+    const fileA = await Images.uploadGeneratedImage(projectId, {
       buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xa]),
       contentType: 'image/png',
       ownerType: 'character',
       ownerId: c._id,
     });
     await Characters.pushCharacterImage(
+      projectId,
       c._id.toString(),
       { _id: fileA._id, filename: fileA.filename, content_type: 'image/png', size: 5, uploaded_at: new Date(), caption: null },
       true,
     );
-    const fileB = await Images.uploadGeneratedImage({
+    const fileB = await Images.uploadGeneratedImage(projectId, {
       buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xb]),
       contentType: 'image/png',
       ownerType: 'character',
       ownerId: c._id,
     });
     await Characters.pushCharacterImage(
+      projectId,
       c._id.toString(),
       { _id: fileB._id, filename: fileB.filename, content_type: 'image/png', size: 5, uploaded_at: new Date(), caption: null },
       false,
@@ -272,7 +279,7 @@ describe('edit_image', () => {
       source_image_id: fileB._id.toString(),
       prompt: 'add a hat',
       replace_source: false,
-    });
+    }, { projectId });
 
     const updated = await fakeDb.collection('characters').findOne({ _id: c._id });
     expect(updated.images).toHaveLength(3);
@@ -286,13 +293,13 @@ describe('edit_image', () => {
       source_image_id: imageId.toString(),
       prompt: 'add neon signage',
       replace_source: false,
-    });
+    }, { projectId });
 
     expect(out).toMatch(/attached to beat "Diner Showdown"/);
     expect(uploads[0].ownerType).toBe('beat');
     expect(uploads[0].ownerId.equals(beat._id)).toBe(true);
 
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     const updated = plot.beats.find((b) => b._id.equals(beat._id));
     expect(updated.images).toHaveLength(2);
     expect(updated.main_image_id.equals(uploads[0]._id)).toBe(true);
@@ -305,9 +312,9 @@ describe('edit_image', () => {
       source_image_id: imageId.toString(),
       prompt: 'add rain',
       replace_source: true,
-    });
+    }, { projectId });
 
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     const updated = plot.beats.find((b) => b._id.equals(beat._id));
     expect(updated.images).toHaveLength(1);
     expect(updated.main_image_id.equals(uploads[0]._id)).toBe(true);
@@ -321,7 +328,7 @@ describe('edit_image', () => {
       source_image_id: imageId.toString(),
       prompt: 'desaturate',
       replace_source: false,
-    });
+    }, { projectId });
 
     expect(out).toMatch(/saved to library/);
     expect(uploads[0].ownerType).toBe(null);
@@ -329,7 +336,7 @@ describe('edit_image', () => {
   });
 
   it('edits a library image with attach_to_character override, attaching the result to the character', async () => {
-    const c = await Characters.createCharacter({ name: 'Marsh Wren' });
+    const c = await Characters.createCharacter({ projectId, name: 'Marsh Wren' });
     const { imageId } = await seedLibraryImage();
 
     const out = await HANDLERS.edit_image({
@@ -337,7 +344,7 @@ describe('edit_image', () => {
       prompt: 'tighter framing',
       replace_source: false,
       attach_to_character: 'Marsh Wren',
-    });
+    }, { projectId });
 
     expect(out).toMatch(/attached to character "Marsh Wren"/);
     expect(uploads[0].ownerType).toBe('character');
@@ -348,7 +355,7 @@ describe('edit_image', () => {
 
   it('cross-owner override + replace_source: true puts result on new owner and removes source from original', async () => {
     const { character, imageId } = await seedCharacterWithImage('Old Bramble');
-    const beat = await Plots.createBeat({ name: 'Cathedral', desc: 'dusk' });
+    const beat = await Plots.createBeat({ projectId, name: 'Cathedral', desc: 'dusk' });
     uploads.length = 0;
     deletions.length = 0;
 
@@ -357,7 +364,7 @@ describe('edit_image', () => {
       prompt: 'pull back to a wide shot',
       replace_source: true,
       attach_to_beat: 'Cathedral',
-    });
+    }, { projectId });
 
     expect(out).toMatch(/attached to beat "Cathedral"/);
     expect(uploads[0].ownerType).toBe('beat');
@@ -367,7 +374,7 @@ describe('edit_image', () => {
     expect(updatedChar.images).toHaveLength(0);
     expect(updatedChar.main_image_id).toBeFalsy();
 
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     const updatedBeat = plot.beats.find((b) => b._id.equals(beat._id));
     expect(updatedBeat.images).toHaveLength(1);
     expect(deletions).toContain(imageId.toString());
@@ -378,7 +385,7 @@ describe('edit_image', () => {
     const out = await HANDLERS.edit_image({
       source_image_id: imageId.toString(),
       prompt: 'darker mood',
-    });
+    }, { projectId });
     expect(out).toMatch(/replace_source is required/);
     expect(geminiCalls).toHaveLength(0);
     expect(uploads).toHaveLength(0);
@@ -386,14 +393,14 @@ describe('edit_image', () => {
 
   it('returns an error when both attach_to_character and attach_to_beat are set', async () => {
     const { imageId } = await seedCharacterWithImage('Twin Peaks');
-    await Plots.createBeat({ name: 'Diner', desc: 'd' });
+    await Plots.createBeat({ projectId, name: 'Diner', desc: 'd' });
     const out = await HANDLERS.edit_image({
       source_image_id: imageId.toString(),
       prompt: 'x',
       replace_source: false,
       attach_to_character: 'Twin Peaks',
       attach_to_beat: 'Diner',
-    });
+    }, { projectId });
     expect(out).toMatch(/at most one of attach_to_character or attach_to_beat/);
     expect(geminiCalls).toHaveLength(0);
   });
@@ -404,14 +411,14 @@ describe('edit_image', () => {
       source_image_id: fakeId,
       prompt: 'x',
       replace_source: false,
-    });
+    }, { projectId });
     expect(out).toMatch(/source image not found/);
     expect(geminiCalls).toHaveLength(0);
   });
 
   it('returns an error when source content_type is unsupported', async () => {
-    const c = await Characters.createCharacter({ name: 'Tinkerbell' });
-    const file = await Images.uploadGeneratedImage({
+    const c = await Characters.createCharacter({ projectId, name: 'Tinkerbell' });
+    const file = await Images.uploadGeneratedImage(projectId, {
       buffer: Buffer.from([0x00, 0x01]),
       contentType: 'image/gif',
       ownerType: 'character',
@@ -423,7 +430,7 @@ describe('edit_image', () => {
       source_image_id: file._id.toString(),
       prompt: 'x',
       replace_source: false,
-    });
+    }, { projectId });
     expect(out).toMatch(/unsupported source type/);
     expect(geminiCalls).toHaveLength(0);
   });

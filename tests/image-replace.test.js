@@ -24,39 +24,43 @@ vi.mock('../src/mongo/images.js', async (importOriginal) => {
   };
 });
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const Gateway = await import('../src/web/gateway.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   deletedImageIds.length = 0;
 });
 
 describe('mongo: replaceBeatImage', () => {
   it('swaps the meta in place and preserves slot order; promotes new image to main if old was main', async () => {
-    const b = await Plots.createBeat({ name: 'Diner', desc: 'd' });
+    const b = await Plots.createBeat({ projectId, name: 'Diner', desc: 'd' });
     const old1 = new ObjectId();
     const old2 = new ObjectId();
-    await Plots.pushBeatImage(b._id.toString(), {
+    await Plots.pushBeatImage(projectId, b._id.toString(), {
       _id: old1,
       filename: 'a.png',
       content_type: 'image/png',
       size: 1,
     });
-    await Plots.pushBeatImage(b._id.toString(), {
+    await Plots.pushBeatImage(projectId, b._id.toString(), {
       _id: old2,
       filename: 'b.png',
       content_type: 'image/png',
       size: 1,
     });
     // First image is auto-promoted to main.
-    let plot = await Plots.getPlot();
+    let plot = await Plots.getPlot(projectId);
     let beat = plot.beats.find((x) => x._id.equals(b._id));
     expect(beat.main_image_id.equals(old1)).toBe(true);
 
     const newId = new ObjectId();
-    const result = await Plots.replaceBeatImage(b._id.toString(), old1, {
+    const result = await Plots.replaceBeatImage(projectId, b._id.toString(), old1, {
       _id: newId,
       filename: 'new.png',
       content_type: 'image/png',
@@ -65,7 +69,7 @@ describe('mongo: replaceBeatImage', () => {
     expect(result.was_main).toBe(true);
     expect(result.new_image_id.equals(newId)).toBe(true);
 
-    plot = await Plots.getPlot();
+    plot = await Plots.getPlot(projectId);
     beat = plot.beats.find((x) => x._id.equals(b._id));
     expect(beat.images.map((i) => i._id.toString())).toEqual([
       newId.toString(),
@@ -75,9 +79,9 @@ describe('mongo: replaceBeatImage', () => {
   });
 
   it('throws when the old image is not on the beat', async () => {
-    const b = await Plots.createBeat({ name: 'Diner', desc: 'd' });
+    const b = await Plots.createBeat({ projectId, name: 'Diner', desc: 'd' });
     await expect(
-      Plots.replaceBeatImage(b._id.toString(), new ObjectId(), {
+      Plots.replaceBeatImage(projectId, b._id.toString(), new ObjectId(), {
         _id: new ObjectId(),
         filename: 'x.png',
         content_type: 'image/png',
@@ -89,7 +93,7 @@ describe('mongo: replaceBeatImage', () => {
 
 describe('mongo: replaceCharacterImage', () => {
   it('swaps the meta in place and carries main-image status', async () => {
-    const c = await Characters.createCharacter({ name: 'Bronze Leopard' });
+    const c = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
     const old = new ObjectId();
     await fakeDb
       .collection('characters')
@@ -105,7 +109,7 @@ describe('mongo: replaceCharacterImage', () => {
         },
       );
     const newId = new ObjectId();
-    const result = await Characters.replaceCharacterImage(c._id.toString(), old, {
+    const result = await Characters.replaceCharacterImage(projectId, c._id.toString(), old, {
       _id: newId,
       filename: 'new.png',
       content_type: 'image/png',
@@ -121,16 +125,16 @@ describe('mongo: replaceCharacterImage', () => {
 
 describe('gateway: replaceBeatImageViaGateway deletes old gridfs bytes', () => {
   it('passes through to mongo replace, then drops the old image bytes', async () => {
-    const b = await Plots.createBeat({ name: 'Diner', desc: 'd' });
+    const b = await Plots.createBeat({ projectId, name: 'Diner', desc: 'd' });
     const old = new ObjectId();
-    await Plots.pushBeatImage(b._id.toString(), {
+    await Plots.pushBeatImage(projectId, b._id.toString(), {
       _id: old,
       filename: 'a.png',
       content_type: 'image/png',
       size: 1,
     });
     const newId = new ObjectId();
-    await Gateway.replaceBeatImageViaGateway({
+    await Gateway.replaceBeatImageViaGateway({ projectId,
       beatId: b._id.toString(),
       oldImageId: old,
       newImageMeta: {
@@ -146,7 +150,7 @@ describe('gateway: replaceBeatImageViaGateway deletes old gridfs bytes', () => {
 
 describe('gateway: replaceCharacterImageViaGateway deletes old gridfs bytes', () => {
   it('passes through to mongo replace, then drops the old image bytes', async () => {
-    const c = await Characters.createCharacter({ name: 'Bronze Leopard' });
+    const c = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
     const old = new ObjectId();
     await fakeDb
       .collection('characters')
@@ -155,7 +159,7 @@ describe('gateway: replaceCharacterImageViaGateway deletes old gridfs bytes', ()
         { $set: { images: [{ _id: old, filename: 'a.png', content_type: 'image/png' }], main_image_id: old } },
       );
     const newId = new ObjectId();
-    await Gateway.replaceCharacterImageViaGateway({
+    await Gateway.replaceCharacterImageViaGateway({ projectId,
       character: c._id.toString(),
       oldImageId: old,
       newImageMeta: {

@@ -25,7 +25,7 @@ vi.mock('../src/mongo/prompts.js', () => ({
 const fakeBeat = { _id: 'abc', order: 2, name: 'Mid' };
 vi.mock('../src/mongo/plots.js', () => ({
   getPlot: async () => ({ _id: 'main', beats: [fakeBeat] }),
-  getBeat: async (identifier) => {
+  getBeat: async (_projectId, identifier) => {
     if (identifier === '2' || identifier === 2 || identifier === 'Mid') return fakeBeat;
     return null;
   },

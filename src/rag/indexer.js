@@ -23,14 +23,22 @@ import { embedTexts, RagDisabledError } from './embeddings.js';
 import { getCollection, isRagEnabled } from './chromaClient.js';
 import { setReindexRunner } from './queue.js';
 
-import { getPlot } from '../mongo/plots.js';
-import { getCharacter } from '../mongo/characters.js';
-import { getDirectorNotes } from '../mongo/directorNotes.js';
+import { resolveProjectId } from '../mongo/projects.js';
+import { findPlotByBeatId } from '../mongo/plots.js';
 import { extractSearchableText } from '../mongo/messages.js';
 import { getDb } from '../mongo/client.js';
 
 function idStr(id) {
   return id?.toString ? id.toString() : String(id);
+}
+
+function asObjectId(id) {
+  if (id instanceof ObjectId) return id;
+  try {
+    return new ObjectId(String(id));
+  } catch {
+    return null;
+  }
 }
 
 function entityLabelOf(entityType, entity) {
@@ -42,7 +50,7 @@ function entityLabelOf(entityType, entity) {
   return '';
 }
 
-function buildChunksForField({ entityType, entityId, entityLabel, field, markdown }) {
+function buildChunksForField({ entityType, entityId, entityLabel, field, markdown, projectId }) {
   const md = String(markdown ?? '');
   if (!md.trim()) return [];
   // For short single-string fields (name, hollywood_actor, desc) we want one
@@ -63,6 +71,7 @@ function buildChunksForField({ entityType, entityId, entityLabel, field, markdow
         entity_type: entityType,
         entity_id: idStr(entityId),
         entity_label: entityLabel,
+        project_id: projectId || null,
         field,
         chunk_index: i,
         text_md: c.text_md,
@@ -157,24 +166,32 @@ async function safeRun(label, fn) {
 
 export async function indexBeat(beatId) {
   return safeRun(`beat:${beatId}`, async (col) => {
-    const plot = await getPlot();
-    const beat = (plot.beats || []).find((b) => b._id && idStr(b._id) === idStr(beatId));
+    // Locate the owning plot doc via the shared helper (plots.js exports
+    // findPlotByBeatId for exactly this use case). We skip getPlot's
+    // ensureBeatIds backfill here, but that is safe: a beat can only be
+    // enqueued for indexing after it has acquired an _id, which requires a
+    // prior getPlot read that already performed the backfill.
+    const plotDoc = await findPlotByBeatId(beatId);
+    const beat = plotDoc
+      ? (plotDoc.beats || []).find((b) => b._id && idStr(b._id) === idStr(beatId))
+      : null;
     if (!beat) {
       // Entity gone — clean up any chunks for it.
       try { await col.delete({ where: { $and: [{ entity_type: 'beat' }, { entity_id: idStr(beatId) }] } }); } catch {}
       return;
     }
+    const projectId = await resolveProjectId(plotDoc.project_id);
     const label = entityLabelOf('beat', beat);
     const chunks = [
-      ...buildChunksForField({ entityType: 'beat', entityId: beat._id, entityLabel: label, field: 'name', markdown: beat.name }),
-      ...buildChunksForField({ entityType: 'beat', entityId: beat._id, entityLabel: label, field: 'desc', markdown: beat.desc }),
-      ...buildChunksForField({ entityType: 'beat', entityId: beat._id, entityLabel: label, field: 'body', markdown: beat.body }),
+      ...buildChunksForField({ entityType: 'beat', entityId: beat._id, entityLabel: label, field: 'name', markdown: beat.name, projectId }),
+      ...buildChunksForField({ entityType: 'beat', entityId: beat._id, entityLabel: label, field: 'desc', markdown: beat.desc, projectId }),
+      ...buildChunksForField({ entityType: 'beat', entityId: beat._id, entityLabel: label, field: 'body', markdown: beat.body, projectId }),
     ];
     await syncEntityChunks(col, 'beat', beat._id, chunks);
     // Stamp rag_indexed_at into the embedded beat for resumable backfill.
     try {
       await getDb().collection('plots').updateOne(
-        { _id: 'main', 'beats._id': beat._id },
+        { _id: plotDoc._id, 'beats._id': beat._id },
         { $set: { 'beats.$.rag_indexed_at': new Date() } },
       );
     } catch {}
@@ -183,15 +200,19 @@ export async function indexBeat(beatId) {
 
 export async function indexCharacter(characterId) {
   return safeRun(`character:${characterId}`, async (col) => {
-    const c = await getCharacter(idStr(characterId));
+    // Id-only lookup (every caller passes an _id); the doc's own project_id
+    // is the source of truth for chunk metadata.
+    const oid = asObjectId(characterId);
+    const c = oid ? await getDb().collection('characters').findOne({ _id: oid }) : null;
     if (!c) {
       try { await col.delete({ where: { $and: [{ entity_type: 'character' }, { entity_id: idStr(characterId) }] } }); } catch {}
       return;
     }
+    const projectId = await resolveProjectId(c.project_id);
     const label = entityLabelOf('character', c);
     const chunks = [
-      ...buildChunksForField({ entityType: 'character', entityId: c._id, entityLabel: label, field: 'name', markdown: c.name }),
-      ...buildChunksForField({ entityType: 'character', entityId: c._id, entityLabel: label, field: 'hollywood_actor', markdown: c.hollywood_actor }),
+      ...buildChunksForField({ entityType: 'character', entityId: c._id, entityLabel: label, field: 'name', markdown: c.name, projectId }),
+      ...buildChunksForField({ entityType: 'character', entityId: c._id, entityLabel: label, field: 'hollywood_actor', markdown: c.hollywood_actor, projectId }),
     ];
     const fields = (c.fields && typeof c.fields === 'object') ? c.fields : {};
     for (const [k, v] of Object.entries(fields)) {
@@ -203,6 +224,7 @@ export async function indexCharacter(characterId) {
           entityLabel: label,
           field: `fields.${k}`,
           markdown: text,
+          projectId,
         }),
       );
     }
@@ -218,18 +240,34 @@ export async function indexCharacter(characterId) {
 
 export async function indexDirectorNote(noteId) {
   return safeRun(`director_note:${noteId}`, async (col) => {
-    const doc = await getDirectorNotes();
-    const note = (doc.notes || []).find((n) => n._id && idStr(n._id) === idStr(noteId));
+    const oid = asObjectId(noteId);
+    const doc = oid
+      ? await getDb().collection('prompts').findOne({ 'notes._id': oid })
+      : null;
+    const note = doc
+      ? (doc.notes || []).find((n) => n._id && idStr(n._id) === idStr(noteId))
+      : null;
     if (!note) {
       try { await col.delete({ where: { $and: [{ entity_type: 'director_note' }, { entity_id: idStr(noteId) }] } }); } catch {}
       return;
     }
+    // Composite prompts ids are '<projectId>:director_notes'. The legacy
+    // pre-migration id 'director_notes' has no prefix — there is no real
+    // project to stamp, so skip it; the migration re-keys the doc and a
+    // post-migration reindex picks the notes up under their real project.
+    const docId = String(doc._id);
+    if (!docId.includes(':')) {
+      logger.info(`rag: indexDirectorNote skipping legacy unstamped doc _id=${docId} noteId=${String(note._id)} — run migrate-multi-project.js to re-key`);
+      return;
+    }
+    const projectId = await resolveProjectId(docId.split(':')[0]);
     const chunks = buildChunksForField({
       entityType: 'director_note',
       entityId: note._id,
       entityLabel: 'note',
       field: 'text',
       markdown: note.text,
+      projectId,
     });
     await syncEntityChunks(col, 'director_note', note._id, chunks);
   });
@@ -243,10 +281,12 @@ export async function indexMessage(messageDoc) {
     const text_plain = stripMarkdown(text_md);
     if (!text_plain.trim()) return;
     const id = `message:${idStr(messageDoc._id)}`;
+    const projectId = await resolveProjectId(messageDoc.project_id);
     const metadata = {
       entity_type: 'message',
       entity_id: idStr(messageDoc._id),
       entity_label: entityLabelOf('message', messageDoc),
+      project_id: projectId,
       field: 'content',
       chunk_index: 0,
       text_md,

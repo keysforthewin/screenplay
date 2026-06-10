@@ -7,6 +7,7 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const gen = await import('../src/web/storyboardGenerate.js');
 
 afterEach(() => {
@@ -25,13 +26,18 @@ async function drain(jobId) {
   return gen.getStoryboardGenerationJob(jobId);
 }
 
+let projectId;
+
 describe('auto prompt-critique (Pass 4)', () => {
-  beforeEach(() => fakeDb.reset());
+  beforeEach(async () => {
+    fakeDb.reset();
+    projectId = (await createProject('Test Project'))._id.toString();
+  });
 
   it('critiques each generated row and persists prompt_critique', async () => {
     const { createBeat, getBeat } = await import('../src/mongo/plots.js');
-    await createBeat({ name: 'CritBeat', desc: 'scene', characters: [] });
-    const beat = await getBeat('CritBeat');
+    await createBeat({ projectId, name: 'CritBeat', desc: 'scene', characters: [] });
+    const beat = await getBeat(projectId, 'CritBeat');
 
     gen._setScenePlannerForTests(() => ({
       sceneBible: { location: 'Diner' },
@@ -54,7 +60,7 @@ describe('auto prompt-critique (Pass 4)', () => {
       };
     });
 
-    const jobId = await gen.startStoryboardGenerationJob({ beatId: beat._id.toString(), targetCount: 2 });
+    const jobId = await gen.startStoryboardGenerationJob({ projectId, beatId: beat._id.toString(), targetCount: 2 });
     const job = await drain(jobId);
     expect(job.status).not.toBe('error');
     expect(panelCalls).toBe(2);
@@ -75,15 +81,18 @@ describe('auto prompt-critique (Pass 4)', () => {
 });
 
 describe('on-demand critique job', () => {
-  beforeEach(() => fakeDb.reset());
+  beforeEach(async () => {
+    fakeDb.reset();
+    projectId = (await createProject('Test Project'))._id.toString();
+  });
 
   it('prompt-tier: critiques a single row on demand', async () => {
     const { createBeat, getBeat, setBeatSceneBible } = await import('../src/mongo/plots.js');
     const { createStoryboard, getStoryboard } = await import('../src/mongo/storyboards.js');
-    await createBeat({ name: 'OnDemand', desc: 'x', characters: [] });
-    const beat = await getBeat('OnDemand');
-    await setBeatSceneBible('OnDemand', { location: 'Diner' });
-    const sb = await createStoryboard({ beatId: beat._id, order: 1, textPrompt: 'tp', summary: 'a shot' });
+    await createBeat({ projectId, name: 'OnDemand', desc: 'x', characters: [] });
+    const beat = await getBeat(projectId, 'OnDemand');
+    await setBeatSceneBible(projectId, 'OnDemand', { location: 'Diner' });
+    const sb = await createStoryboard({ projectId, beatId: beat._id, order: 1, textPrompt: 'tp', summary: 'a shot' });
 
     gen._setCritiquePanelForTests(async ({ target }) => ({
       overall: 5, lowest_lens: 'continuity',
@@ -91,7 +100,7 @@ describe('on-demand critique job', () => {
       model: 'test', created_at: new Date(), target,
     }));
 
-    const jobId = await gen.startCritiqueJob({ storyboardId: sb._id.toString(), target: 'prompt' });
+    const jobId = await gen.startCritiqueJob({ projectId, storyboardId: sb._id.toString(), target: 'prompt' });
     for (let i = 0; i < 100; i++) {
       const j = gen.getCritiqueJob(jobId);
       if (j && ['done', 'error'].includes(j.status)) break;
@@ -99,18 +108,18 @@ describe('on-demand critique job', () => {
     }
     const j = gen.getCritiqueJob(jobId);
     expect(j.status).toBe('done');
-    const reread = await getStoryboard(sb._id);
+    const reread = await getStoryboard(projectId, sb._id);
     expect(reread.prompt_critique.overall).toBe(5);
   });
 
   it('image-tier errors cleanly when the row has no rendered image', async () => {
     const { createBeat, getBeat } = await import('../src/mongo/plots.js');
     const { createStoryboard } = await import('../src/mongo/storyboards.js');
-    await createBeat({ name: 'NoImg', desc: 'x', characters: [] });
-    const beat = await getBeat('NoImg');
-    const sb = await createStoryboard({ beatId: beat._id, order: 1, summary: 's' });
+    await createBeat({ projectId, name: 'NoImg', desc: 'x', characters: [] });
+    const beat = await getBeat(projectId, 'NoImg');
+    const sb = await createStoryboard({ projectId, beatId: beat._id, order: 1, summary: 's' });
 
-    const jobId = await gen.startCritiqueJob({ storyboardId: sb._id.toString(), target: 'image' });
+    const jobId = await gen.startCritiqueJob({ projectId, storyboardId: sb._id.toString(), target: 'image' });
     for (let i = 0; i < 100; i++) {
       const j = gen.getCritiqueJob(jobId);
       if (j && ['done', 'error'].includes(j.status)) break;
@@ -123,15 +132,18 @@ describe('on-demand critique job', () => {
 });
 
 describe('reExpandShot (regenerate prompt from critique)', () => {
-  beforeEach(() => fakeDb.reset());
+  beforeEach(async () => {
+    fakeDb.reset();
+    projectId = (await createProject('Test Project'))._id.toString();
+  });
 
   it('re-expands one shot using critique guidance and updates the prompts', async () => {
     const { createBeat, getBeat, setBeatSceneBible } = await import('../src/mongo/plots.js');
     const { createStoryboard, getStoryboard } = await import('../src/mongo/storyboards.js');
-    await createBeat({ name: 'ReExp', desc: 'x', characters: [] });
-    const beat = await getBeat('ReExp');
-    await setBeatSceneBible('ReExp', { location: 'Diner' });
-    const sb = await createStoryboard({ beatId: beat._id, order: 1, textPrompt: 'OLD', summary: 'Sarah at counter', shotType: 'close_up', durationSeconds: 3 });
+    await createBeat({ projectId, name: 'ReExp', desc: 'x', characters: [] });
+    const beat = await getBeat(projectId, 'ReExp');
+    await setBeatSceneBible(projectId, 'ReExp', { location: 'Diner' });
+    const sb = await createStoryboard({ projectId, beatId: beat._id, order: 1, textPrompt: 'OLD', summary: 'Sarah at counter', shotType: 'close_up', durationSeconds: 3 });
 
     let sawNotes = null;
     gen._setShotExpanderForTests(({ revisionNotes, outline }) => {
@@ -139,9 +151,9 @@ describe('reExpandShot (regenerate prompt from critique)', () => {
       return outline.map(() => ({ start_frame_prompt: 'NEW start', video_prompt: 'NEW video', reverse_in_post: false }));
     });
 
-    await gen.reExpandShot({ storyboardId: sb._id.toString(), critiqueGuidance: 'colder light' });
+    await gen.reExpandShot({ projectId, storyboardId: sb._id.toString(), critiqueGuidance: 'colder light' });
     expect(sawNotes).toContain('colder light');
-    const reread = await getStoryboard(sb._id);
+    const reread = await getStoryboard(projectId, sb._id);
     expect(reread.frames[0].prompt).toBe('NEW start');
     expect(reread.text_prompt).toContain('NEW video');
     gen._setShotExpanderForTests(null);

@@ -13,13 +13,21 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
 const DirectorNotes = await import('../src/mongo/directorNotes.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
+const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let pid;
+
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
+  pid = (await Projects.getDefaultProject())._id.toString();
 });
 
 const TMDB_FILENAME = 'iYdeP6K0qz44Wg2Nw9LPJGMBkQ5.jpg';
@@ -39,23 +47,23 @@ function fakeImageMeta({ filename = TMDB_FILENAME, source = 'upload' } = {}) {
 }
 
 async function seedCharacterWithImage(name = 'Flikk') {
-  const c = await Characters.createCharacter({ name });
+  const c = await Characters.createCharacter({ projectId, name });
   const meta = fakeImageMeta();
-  await Characters.pushCharacterImage(c._id.toString(), meta, true);
+  await Characters.pushCharacterImage(projectId, c._id.toString(), meta, true);
   return { character: c, imageMeta: meta };
 }
 
 async function seedBeatWithImage() {
-  const beat = await Plots.createBeat({ name: 'Diner', desc: 'A scene at the diner.' });
+  const beat = await Plots.createBeat({ projectId, name: 'Diner', desc: 'A scene at the diner.' });
   const meta = fakeImageMeta({ filename: 'beat-leak-name.jpg' });
-  await Plots.pushBeatImage(beat._id.toString(), meta, true);
+  await Plots.pushBeatImage(projectId, beat._id.toString(), meta, true);
   return { beat, imageMeta: meta };
 }
 
 async function seedDirectorNoteWithImage() {
-  const note = await DirectorNotes.addDirectorNote({ text: 'Always show, never tell.' });
+  const note = await DirectorNotes.addDirectorNote({ projectId, text: 'Always show, never tell.' });
   const meta = fakeImageMeta({ filename: 'note-leak-name.png' });
-  await DirectorNotes.pushDirectorNoteImage(note._id.toString(), meta, true);
+  await DirectorNotes.pushDirectorNoteImage(projectId, note._id.toString(), meta, true);
   return { note, imageMeta: meta };
 }
 
@@ -66,7 +74,7 @@ function seedLibraryImage(filename = 'lib-leak-name.png') {
     contentType: 'image/png',
     length: 1234,
     uploadDate: new Date(),
-    metadata: { owner_type: null, owner_id: null, source: 'generated' },
+    metadata: { project_id: pid, owner_type: null, owner_id: null, source: 'generated' },
   };
   fakeDb.collection('images.files')._docs.push(doc);
   return doc;
@@ -84,7 +92,7 @@ describe('image-listing handlers do not leak GridFS filename', () => {
   it('list_character_images omits filename and does not include the leaked string', async () => {
     await seedCharacterWithImage('Flikk');
 
-    const out = await HANDLERS.list_character_images({ character: 'Flikk' });
+    const out = await HANDLERS.list_character_images({ character: 'Flikk' }, { projectId });
 
     expect(out).not.toContain(TMDB_FILENAME);
     const parsed = parseTrailingJson(out);
@@ -97,7 +105,7 @@ describe('image-listing handlers do not leak GridFS filename', () => {
   it('list_beat_images omits filename', async () => {
     const { beat } = await seedBeatWithImage();
 
-    const out = await HANDLERS.list_beat_images({ beat: beat._id.toString() });
+    const out = await HANDLERS.list_beat_images({ beat: beat._id.toString() }, { projectId });
 
     expect(out).not.toContain('beat-leak-name.jpg');
     const parsed = parseTrailingJson(out);
@@ -109,7 +117,7 @@ describe('image-listing handlers do not leak GridFS filename', () => {
   it('list_director_note_images omits filename', async () => {
     const { note } = await seedDirectorNoteWithImage();
 
-    const out = await HANDLERS.list_director_note_images({ note_id: note._id.toString() });
+    const out = await HANDLERS.list_director_note_images({ note_id: note._id.toString() }, { projectId });
 
     expect(out).not.toContain('note-leak-name.png');
     const parsed = parseTrailingJson(out);
@@ -121,7 +129,7 @@ describe('image-listing handlers do not leak GridFS filename', () => {
   it('list_library_images omits filename', async () => {
     seedLibraryImage('lib-leak-name.png');
 
-    const out = await HANDLERS.list_library_images();
+    const out = await HANDLERS.list_library_images({}, { projectId });
 
     expect(out).not.toContain('lib-leak-name.png');
     const parsed = JSON.parse(out);
@@ -133,7 +141,7 @@ describe('image-listing handlers do not leak GridFS filename', () => {
   it('get_character does not leak the filename of an embedded image', async () => {
     await seedCharacterWithImage('Flikk');
 
-    const out = await HANDLERS.get_character({ identifier: 'Flikk' });
+    const out = await HANDLERS.get_character({ identifier: 'Flikk' }, { projectId });
 
     expect(out).not.toContain(TMDB_FILENAME);
     const parsed = parseTrailingJson(out);
@@ -144,7 +152,7 @@ describe('image-listing handlers do not leak GridFS filename', () => {
   it('get_beat does not leak the filename of an embedded image', async () => {
     const { beat } = await seedBeatWithImage();
 
-    const out = await HANDLERS.get_beat({ identifier: beat._id.toString() });
+    const out = await HANDLERS.get_beat({ identifier: beat._id.toString() }, { projectId });
 
     expect(out).not.toContain('beat-leak-name.jpg');
     const parsed = parseTrailingJson(out);

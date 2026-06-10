@@ -14,6 +14,7 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Dialogs = await import('../src/mongo/dialogs.js');
 const Characters = await import('../src/mongo/characters.js');
@@ -22,8 +23,11 @@ const BeatLocks = await import('../src/web/beatLocks.js');
 const { _setAnthropicClientForTests, _resetAnthropicClientForTests } =
   await import('../src/anthropic/client.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   BeatLocks._clearBeatLocksForTests();
   _resetAnthropicClientForTests();
 });
@@ -66,14 +70,14 @@ describe('dialog auto-generation', () => {
   it('extracts spoken lines and persists them in story order', async () => {
     _setAnthropicClientForTests(fakeAnthropicClient(TWO_LINE_RESULT));
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Diner reunion',
       desc: 'Alice meets Bob at the diner.',
       body: 'Alice arrives. "Where is Bob?" she asks. Bob: "I\'m right here."',
       characters: ['Alice', 'Bob'],
     });
 
-    const jobId = await Generate.startDialogGenerationJob({
+    const jobId = await Generate.startDialogGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -92,10 +96,10 @@ describe('dialog auto-generation', () => {
   it('returns immediately with status=done when the model returns no entries', async () => {
     _setAnthropicClientForTests(fakeAnthropicClient({ entries: [] }));
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'E', desc: 'e', body: '', characters: [],
     });
-    const jobId = await Generate.startDialogGenerationJob({
+    const jobId = await Generate.startDialogGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -108,16 +112,16 @@ describe('dialog auto-generation', () => {
   it('replaces existing dialogs when extraction returns a non-empty list', async () => {
     _setAnthropicClientForTests(fakeAnthropicClient(TWO_LINE_RESULT));
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'R', desc: 'r', body: 'r', characters: [],
     });
-    await Dialogs.createDialog({ beatId: beat._id, body: 'old 1', character: 'X' });
-    await Dialogs.createDialog({ beatId: beat._id, body: 'old 2', character: 'Y' });
+    await Dialogs.createDialog({ projectId, beatId: beat._id, body: 'old 1', character: 'X' });
+    await Dialogs.createDialog({ projectId, beatId: beat._id, body: 'old 2', character: 'Y' });
     const before = await Dialogs.listDialogs({ beatId: beat._id });
     expect(before).toHaveLength(2);
     const oldIds = new Set(before.map((s) => s._id.toString()));
 
-    const jobId = await Generate.startDialogGenerationJob({
+    const jobId = await Generate.startDialogGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -134,15 +138,15 @@ describe('dialog auto-generation', () => {
   it('preserves existing dialogs when extraction returns no entries', async () => {
     _setAnthropicClientForTests(fakeAnthropicClient({ entries: [] }));
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'P', desc: 'p', body: 'p', characters: [],
     });
-    await Dialogs.createDialog({ beatId: beat._id, body: 'keep 1', character: 'A' });
-    await Dialogs.createDialog({ beatId: beat._id, body: 'keep 2', character: 'B' });
+    await Dialogs.createDialog({ projectId, beatId: beat._id, body: 'keep 1', character: 'A' });
+    await Dialogs.createDialog({ projectId, beatId: beat._id, body: 'keep 2', character: 'B' });
     const before = await Dialogs.listDialogs({ beatId: beat._id });
     const beforeIds = before.map((s) => s._id.toString()).sort();
 
-    const jobId = await Generate.startDialogGenerationJob({
+    const jobId = await Generate.startDialogGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -159,7 +163,7 @@ describe('dialog auto-generation', () => {
     const client = fakeAnthropicClient(TWO_LINE_RESULT);
     _setAnthropicClientForTests(client);
 
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Alice',
       fields: {
         background_story: 'Former diner waitress turned private investigator.',
@@ -167,20 +171,20 @@ describe('dialog auto-generation', () => {
         arc: 'Learns to trust her partner.',
       },
     });
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Bob',
       hollywood_actor: 'Sam Smith',
       fields: { background_story: 'Recently widowed mechanic.' },
     });
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Diner meeting',
       desc: 'Alice confronts Bob about the missing car.',
       body: 'They meet at the diner.',
       characters: ['Alice', 'Bob'],
     });
 
-    const jobId = await Generate.startDialogGenerationJob({
+    const jobId = await Generate.startDialogGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);
@@ -204,8 +208,8 @@ describe('dialog auto-generation', () => {
   it('declares a required plan field in the populate_dialog tool schema', async () => {
     const client = fakeAnthropicClient(TWO_LINE_RESULT);
     _setAnthropicClientForTests(client);
-    const beat = await Plots.createBeat({ name: 'P', desc: 'p', body: 'p', characters: [] });
-    const jobId = await Generate.startDialogGenerationJob({ beatId: beat._id.toString() });
+    const beat = await Plots.createBeat({ projectId, name: 'P', desc: 'p', body: 'p', characters: [] });
+    const jobId = await Generate.startDialogGenerationJob({ projectId, beatId: beat._id.toString() });
     await waitForJob(jobId);
 
     const callArg = client.messages.create.mock.calls[0][0];
@@ -218,12 +222,12 @@ describe('dialog auto-generation', () => {
   it('includes story context (logline + previous beat dialogue) in the prompt', async () => {
     const client = fakeAnthropicClient(TWO_LINE_RESULT);
     _setAnthropicClientForTests(client);
-    await Plots.updatePlot({ title: 'Nightfall', synopsis: 'A courier crosses a dead country.' });
-    const b1 = await Plots.createBeat({ name: 'The diner', desc: 'd1', body: 'b1' });
-    await Dialogs.createDialog({ beatId: b1._id, body: 'No. Drive.', character: 'Bob' });
-    const b2 = await Plots.createBeat({ name: 'The road', desc: 'd2', body: 'b2' });
+    await Plots.updatePlot(projectId, { title: 'Nightfall', synopsis: 'A courier crosses a dead country.' });
+    const b1 = await Plots.createBeat({ projectId, name: 'The diner', desc: 'd1', body: 'b1' });
+    await Dialogs.createDialog({ projectId, beatId: b1._id, body: 'No. Drive.', character: 'Bob' });
+    const b2 = await Plots.createBeat({ projectId, name: 'The road', desc: 'd2', body: 'b2' });
 
-    const jobId = await Generate.startDialogGenerationJob({ beatId: b2._id.toString() });
+    const jobId = await Generate.startDialogGenerationJob({ projectId, beatId: b2._id.toString() });
     await waitForJob(jobId);
 
     const userText = client.messages.create.mock.calls[0][0].messages[0].content[0].text;
@@ -243,10 +247,10 @@ describe('dialog auto-generation', () => {
         ],
       }),
     );
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'D', desc: 'd', body: 'b', characters: [],
     });
-    const jobId = await Generate.startDialogGenerationJob({
+    const jobId = await Generate.startDialogGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     const job = await waitForJob(jobId);

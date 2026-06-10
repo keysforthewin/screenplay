@@ -352,6 +352,26 @@ function makeCollection() {
       }
       return { matchedCount: 1 };
     },
+    async updateMany(query, update, options = {}) {
+      const matched = docs.filter((d) => matchQuery(d, query));
+      const arrayFilters = options.arrayFilters || [];
+      for (const target of matched) {
+        const positional = findPositionalIndex(target, query);
+        if (update.$set) {
+          for (const [path, value] of Object.entries(update.$set)) {
+            const resolved = resolveUpdatePath(target, path, positional, arrayFilters);
+            for (const parts of resolved) setAtPath(target, parts, deepClone(value));
+          }
+        }
+        if (update.$unset) {
+          for (const path of Object.keys(update.$unset)) {
+            const resolved = resolveUpdatePath(target, path, positional, arrayFilters);
+            for (const parts of resolved) deleteAtPath(target, parts);
+          }
+        }
+      }
+      return { matchedCount: matched.length, modifiedCount: matched.length };
+    },
     async deleteOne(query) {
       const idx = docs.findIndex((d) => matchQuery(d, query));
       if (idx < 0) return { deletedCount: 0 };

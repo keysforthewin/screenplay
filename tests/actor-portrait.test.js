@@ -33,13 +33,17 @@ vi.mock('../src/mongo/files.js', () => ({
   readCharacterImageBuffer: vi.fn(),
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 const Tmdb = await import('../src/tmdb/client.js');
 const Files = await import('../src/mongo/files.js');
 const { config } = await import('../src/config.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   config.tmdb.readAccessToken = 'test-token';
   Tmdb.findActorPortraitUrl.mockReset();
   Files.attachImageToCharacter.mockReset();
@@ -81,7 +85,7 @@ describe('create_character auto-portrait', () => {
       name: 'J. Robert Oppenheimer',
       plays_self: false,
       hollywood_actor: 'Cillian Murphy',
-    });
+    }, { projectId });
     expect(Tmdb.findActorPortraitUrl).toHaveBeenCalledWith('Cillian Murphy');
     expect(Files.attachImageToCharacter).toHaveBeenCalledTimes(1);
     expect(Files.attachImageToCharacter.mock.calls[0][0]).toMatchObject({
@@ -93,7 +97,7 @@ describe('create_character auto-portrait', () => {
   });
 
   it('does not fetch when plays_self is true', async () => {
-    const out = await HANDLERS.create_character({ name: 'Self Played', plays_self: true });
+    const out = await HANDLERS.create_character({ name: 'Self Played', plays_self: true }, { projectId });
     expect(Tmdb.findActorPortraitUrl).not.toHaveBeenCalled();
     expect(Files.attachImageToCharacter).not.toHaveBeenCalled();
     expect(out).not.toMatch(/Auto-attached/);
@@ -106,7 +110,7 @@ describe('create_character auto-portrait', () => {
       name: 'Bob',
       plays_self: false,
       hollywood_actor: 'Nobody Real',
-    });
+    }, { projectId });
     expect(out).toMatch(/Created character Bob/);
     expect(out).toMatch(/Note: TMDB portrait lookup for "Nobody Real" failed: no_match/);
     expect(Files.attachImageToCharacter).not.toHaveBeenCalled();
@@ -118,7 +122,7 @@ describe('create_character auto-portrait', () => {
       name: 'Charlie',
       plays_self: false,
       hollywood_actor: 'Some Actor',
-    });
+    }, { projectId });
     expect(out).toMatch(/Note: TMDB portrait lookup for "Some Actor" failed: tmdb_not_configured/);
     expect(Files.attachImageToCharacter).not.toHaveBeenCalled();
   });
@@ -135,7 +139,7 @@ describe('create_character auto-portrait', () => {
       name: 'Diane',
       plays_self: false,
       hollywood_actor: 'Test Person',
-    });
+    }, { projectId });
     expect(out).toMatch(/Created character Diane/);
     expect(out).toMatch(/Note: TMDB portrait found but attach failed: image too large/);
   });
@@ -155,7 +159,7 @@ describe('edit (character) auto-portrait', () => {
       identifier: 'Bob',
       field: 'hollywood_actor',
       edits: [{ find: '', replace: 'Bob Odenkirk' }],
-    });
+    }, { projectId });
     expect(Tmdb.findActorPortraitUrl).toHaveBeenCalledWith('Bob Odenkirk');
     expect(Files.attachImageToCharacter).toHaveBeenCalledTimes(1);
     expect(out).toMatch(/Auto-attached TMDB portrait for "Bob Odenkirk"/);
@@ -173,7 +177,7 @@ describe('edit (character) auto-portrait', () => {
       identifier: 'Alice',
       field: 'hollywood_actor',
       edits: [{ find: '', replace: 'New Actor' }],
-    });
+    }, { projectId });
     expect(Tmdb.findActorPortraitUrl).not.toHaveBeenCalled();
     expect(Files.attachImageToCharacter).not.toHaveBeenCalled();
     expect(out).toMatch(/Replaced Alice\.hollywood_actor/);
@@ -191,7 +195,7 @@ describe('edit (character) auto-portrait', () => {
       identifier: 'Real Person',
       field: 'fields.background_story',
       edits: [{ find: '', replace: 'born in 1970' }],
-    });
+    }, { projectId });
     expect(Tmdb.findActorPortraitUrl).not.toHaveBeenCalled();
     expect(Files.attachImageToCharacter).not.toHaveBeenCalled();
   });

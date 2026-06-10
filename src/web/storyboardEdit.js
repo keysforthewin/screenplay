@@ -107,7 +107,7 @@ export class InvalidOpsError extends Error {
   }
 }
 
-export async function editStoryboard({ beatId, instructions }) {
+export async function editStoryboard({ projectId, beatId, instructions }) {
   const originals = await listStoryboards({ beatId });
   const N = originals.length;
 
@@ -167,11 +167,12 @@ export async function editStoryboard({ beatId, instructions }) {
   // Phase 3: commit. Order matters because each gateway call broadcasts.
   // (1) Deletes first so the SPA's count drops before adds arrive.
   for (const entry of result.deletes) {
-    await deleteStoryboardViaGateway({ storyboardId: entry.id });
+    await deleteStoryboardViaGateway({ projectId, storyboardId: entry.id });
   }
   // (2) Updates on surviving originals.
   for (const entry of result.updates) {
     await setStoryboardTextPromptViaGateway({
+      projectId,
       storyboardId: entry.id,
       text: entry.text,
     });
@@ -182,6 +183,7 @@ export async function editStoryboard({ beatId, instructions }) {
   const newIdsByToken = new Map(); // tokenIndex → new sb _id
   for (const entry of result.creates) {
     const sb = await createStoryboardViaGateway({
+      projectId,
       beatId,
       textPrompt: entry.text,
       seedFragments: { text_prompt: entry.text },
@@ -195,7 +197,7 @@ export async function editStoryboard({ beatId, instructions }) {
       if (t.kind === 'new') return newIdsByToken.get(t.tokenIndex);
       throw new Error('unreachable');
     });
-    await reorderStoryboardsViaGateway({ beatId, orderedIds });
+    await reorderStoryboardsViaGateway({ projectId, beatId, orderedIds });
   }
 
   const fresh = await listStoryboards({ beatId });

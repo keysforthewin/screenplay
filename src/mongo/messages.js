@@ -2,6 +2,7 @@ import { getDb } from './client.js';
 import { ALLOWED_IMAGE_TYPES } from './imageBytes.js';
 import { logger } from '../log.js';
 import { config } from '../config.js';
+import { resolveProjectId } from './projects.js';
 
 const HISTORY_LIMIT = 60;
 const DEFAULT_HISTORY_WINDOW_MS = 60 * 60 * 1000;
@@ -27,8 +28,10 @@ async function ragIndexInserted(doc) {
   }
 }
 
-export async function recordUserMessage({ msg, text, attachments, displayName = null }) {
+export async function recordUserMessage({ projectId, msg, text, attachments, displayName = null }) {
+  const project_id = await resolveProjectId(projectId);
   const doc = {
+    project_id,
     channel_id: msg.channelId,
     guild_id: msg.guildId || null,
     thread_id: msg.thread?.id || null,
@@ -57,8 +60,10 @@ export async function recordUserMessage({ msg, text, attachments, displayName = 
   ragIndexInserted(doc);
 }
 
-export async function recordAssistantMessage({ channelId, guildId = null, threadId = null, text }) {
+export async function recordAssistantMessage({ projectId, channelId, guildId = null, threadId = null, text }) {
+  const project_id = await resolveProjectId(projectId);
   const doc = {
+    project_id,
     channel_id: channelId,
     guild_id: guildId,
     thread_id: threadId,
@@ -101,10 +106,12 @@ function stripBase64ImagesForPersist(content) {
   });
 }
 
-export async function recordAgentTurns({ channelId, guildId = null, threadId = null, turns }) {
+export async function recordAgentTurns({ projectId, channelId, guildId = null, threadId = null, turns }) {
   if (!turns || !turns.length) return;
+  const project_id = await resolveProjectId(projectId);
   const now = Date.now();
   const docs = turns.map(({ role, content }, i) => ({
+    project_id,
     channel_id: channelId,
     guild_id: guildId,
     thread_id: threadId,
@@ -283,6 +290,7 @@ function makeExcerpt(text, start, len, contextChars) {
 }
 
 export async function searchMessages({
+  projectId,
   channelId,
   regex,
   sinceDays,
@@ -292,6 +300,7 @@ export async function searchMessages({
   contextChars,
 }) {
   const query = { channel_id: channelId };
+  if (projectId) query.project_id = String(projectId);
   if (role === 'user' || role === 'assistant') query.role = role;
 
   const now = Date.now();

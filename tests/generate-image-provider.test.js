@@ -99,7 +99,7 @@ vi.mock('../src/mongo/images.js', async () => ({
     const key = id instanceof ObjectId ? id.toString() : String(id);
     return fakeBucket.get(key) || null;
   },
-  uploadGeneratedImage: async ({ buffer, contentType, prompt, generatedBy, ownerType, ownerId }) => {
+  uploadGeneratedImage: async (_projectId, { buffer, contentType, prompt, generatedBy, ownerType, ownerId }) => {
     const _id = new ObjectId();
     uploads.push({ _id, ownerType, ownerId, prompt, generatedBy, contentType });
     const file = {
@@ -157,9 +157,13 @@ vi.mock('../src/config.js', async () => {
 });
 
 const { HANDLERS } = await import('../src/agent/handlers.js');
+const { createProject } = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   fakeBucket.clear();
   uploads.length = 0;
   falNanoBananaProCalls.length = 0;
@@ -191,8 +195,7 @@ describe('generate_image provider routing', () => {
   it('defaults to nano-banana-pro (FAL) when provider is omitted', async () => {
     const out = await HANDLERS.generate_image(
       { prompt: 'a cathedral at dusk' },
-      { discordUser: { id: 'u1', displayName: 'U1' }, channelId: 'c1' },
-    );
+      { projectId, discordUser: { id: 'u1', displayName: 'U1' }, channelId: 'c1' });
     expect(out).toMatch(/^__IMAGE_PATH__:/);
     expect(falNanoBananaProCalls).toHaveLength(1);
     expect(openaiGenerateCalls).toHaveLength(0);
@@ -207,8 +210,7 @@ describe('generate_image provider routing', () => {
   it("routes provider: 'openai' to gpt-image-2 generate endpoint", async () => {
     const out = await HANDLERS.generate_image(
       { prompt: 'a cathedral at dusk', provider: 'openai' },
-      { discordUser: { id: 'u1', displayName: 'U1' }, channelId: 'c1' },
-    );
+      { projectId, discordUser: { id: 'u1', displayName: 'U1' }, channelId: 'c1' });
     expect(out).toMatch(/^__IMAGE_PATH__:/);
     expect(falNanoBananaProCalls).toHaveLength(0);
     expect(openaiGenerateCalls).toHaveLength(1);
@@ -235,8 +237,7 @@ describe('generate_image provider routing', () => {
         provider: 'openai',
         source_image_id: sourceId.toString(),
       },
-      { discordUser: { id: 'u1', displayName: 'U1' }, channelId: 'c1' },
-    );
+      { projectId, discordUser: { id: 'u1', displayName: 'U1' }, channelId: 'c1' });
     expect(out).toMatch(/^__IMAGE_PATH__:/);
     expect(openaiGenerateCalls).toHaveLength(0);
     expect(openaiEditCalls).toHaveLength(1);
@@ -247,23 +248,20 @@ describe('generate_image provider routing', () => {
   it('maps aspect_ratio to the closest gpt-image-2 size', async () => {
     await HANDLERS.generate_image(
       { prompt: 'wide shot', provider: 'openai', aspect_ratio: '9:16' },
-      null,
-    );
+      { projectId });
     expect(openaiGenerateCalls[0].size).toBe('1024x1536');
 
     openaiGenerateCalls.length = 0;
     await HANDLERS.generate_image(
       { prompt: 'square', provider: 'openai', aspect_ratio: '1:1' },
-      null,
-    );
+      { projectId });
     expect(openaiGenerateCalls[0].size).toBe('1024x1024');
   });
 
   it("routes provider: 'flux-2-pro' to the flux-2-pro client", async () => {
     await HANDLERS.generate_image(
       { prompt: 'misty diner', provider: 'flux-2-pro' },
-      null,
-    );
+      { projectId });
     expect(falFlux2ProCalls).toHaveLength(1);
     expect(falNanoBananaProCalls).toHaveLength(0);
     expect(uploads[0].generatedBy).toBe('fal-ai/flux-2-pro');
@@ -272,8 +270,7 @@ describe('generate_image provider routing', () => {
   it("routes provider: 'flux-pro-kontext' to the kontext client", async () => {
     await HANDLERS.generate_image(
       { prompt: 'misty diner', provider: 'flux-pro-kontext' },
-      null,
-    );
+      { projectId });
     expect(falKontextCalls).toHaveLength(1);
     expect(falNanoBananaProCalls).toHaveLength(0);
     expect(uploads[0].generatedBy).toBe('fal-ai/flux-pro/kontext');
@@ -284,8 +281,7 @@ describe('generate_image provider routing', () => {
 
     const out = await HANDLERS.generate_image(
       { prompt: 'anything', provider: 'openai' },
-      null,
-    );
+      { projectId });
     expect(out).toMatch(/OpenAI is not configured/);
     expect(openaiGenerateCalls).toHaveLength(0);
     expect(openaiEditCalls).toHaveLength(0);
@@ -311,8 +307,7 @@ describe('generate_image provider routing', () => {
         prompt: 'mix these two together',
         source_image_ids: [a.toString(), b.toString()],
       },
-      null,
-    );
+      { projectId });
 
     expect(falFlux2ProCalls).toHaveLength(1);
     expect(falNanoBananaProCalls).toHaveLength(0);
@@ -328,8 +323,7 @@ describe('generate_image provider routing', () => {
         prompt: 'remix this',
         source_image_ids: [a.toString()],
       },
-      null,
-    );
+      { projectId });
 
     expect(falNanoBananaProCalls).toHaveLength(1);
     expect(falFlux2ProCalls).toHaveLength(0);
@@ -346,8 +340,7 @@ describe('generate_image provider routing', () => {
         provider: 'nano-banana-pro',
         source_image_ids: [a.toString(), b.toString()],
       },
-      null,
-    );
+      { projectId });
 
     expect(falNanoBananaProCalls).toHaveLength(1);
     expect(falFlux2ProCalls).toHaveLength(0);
@@ -364,8 +357,7 @@ describe('generate_image provider routing', () => {
         source_image_id: a.toString(),
         source_image_ids: [a.toString(), b.toString()],
       },
-      null,
-    );
+      { projectId });
 
     // a appears in both fields but should only feed one ref through.
     expect(falFlux2ProCalls).toHaveLength(1);
@@ -381,8 +373,7 @@ describe('generate_image provider routing', () => {
         prompt: 'mix',
         source_image_ids: [a.toString(), ghost],
       },
-      null,
-    );
+      { projectId });
 
     expect(out).toMatch(/source image not found/);
     expect(falFlux2ProCalls).toHaveLength(0);
@@ -401,8 +392,7 @@ describe('edit_image provider routing', () => {
         replace_source: false,
         provider: 'openai',
       },
-      { discordUser: { id: 'u1', displayName: 'U1' }, channelId: 'c1' },
-    );
+      { projectId, discordUser: { id: 'u1', displayName: 'U1' }, channelId: 'c1' });
     expect(out).toMatch(/^__IMAGE_PATH__:/);
     expect(falNanoBananaProCalls).toHaveLength(0);
     expect(openaiEditCalls).toHaveLength(1);
@@ -428,8 +418,7 @@ describe('edit_image provider routing', () => {
         prompt: 'add neon signage',
         replace_source: false,
       },
-      null,
-    );
+      { projectId });
     expect(falNanoBananaProCalls).toHaveLength(1);
     expect(openaiEditCalls).toHaveLength(0);
     // Default-edit on nano-banana-pro routes through the /edit endpoint since
@@ -448,8 +437,7 @@ describe('edit_image provider routing', () => {
         replace_source: false,
         provider: 'openai',
       },
-      null,
-    );
+      { projectId });
     expect(out).toMatch(/OpenAI is not configured/);
     expect(openaiEditCalls).toHaveLength(0);
     expect(falNanoBananaProCalls).toHaveLength(0);
@@ -466,8 +454,7 @@ describe('edit_image provider routing', () => {
         prompt: 'put this outfit on him',
         replace_source: false,
       },
-      null,
-    );
+      { projectId });
 
     expect(falFlux2ProCalls).toHaveLength(1);
     expect(falNanoBananaProCalls).toHaveLength(0);
@@ -487,8 +474,7 @@ describe('edit_image provider routing', () => {
         prompt: 'blend',
         replace_source: false,
       },
-      null,
-    );
+      { projectId });
 
     expect(falFlux2ProCalls).toHaveLength(1);
     // primary (counted once) + extraId = 2 distinct refs.
@@ -507,8 +493,7 @@ describe('edit_image provider routing', () => {
         replace_source: false,
         provider: 'nano-banana-pro',
       },
-      null,
-    );
+      { projectId });
 
     expect(falNanoBananaProCalls).toHaveLength(1);
     expect(falFlux2ProCalls).toHaveLength(0);

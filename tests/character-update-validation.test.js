@@ -8,63 +8,67 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Characters = await import('../src/mongo/characters.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 describe('updateCharacter input validation', () => {
   it('throws when patch is a string (the model-passed-value-as-patch bug)', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
-    await expect(Characters.updateCharacter(c._id.toString(), 'a long memes value')).rejects.toThrow(
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
+    await expect(Characters.updateCharacter(projectId, c._id.toString(),'a long memes value')).rejects.toThrow(
       /must be an object/,
     );
   });
 
   it('throws when patch is an array', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
-    await expect(Characters.updateCharacter(c._id.toString(), ['name', 'New'])).rejects.toThrow(
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
+    await expect(Characters.updateCharacter(projectId, c._id.toString(),['name', 'New'])).rejects.toThrow(
       /must be an object.*array/,
     );
   });
 
   it('throws when patch is null', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
-    await expect(Characters.updateCharacter(c._id.toString(), null)).rejects.toThrow(
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
+    await expect(Characters.updateCharacter(projectId, c._id.toString(),null)).rejects.toThrow(
       /must be an object/,
     );
   });
 
   it('throws when patch has no recognized fields', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
-    await expect(Characters.updateCharacter(c._id.toString(), { foo: 'bar' })).rejects.toThrow(
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
+    await expect(Characters.updateCharacter(projectId, c._id.toString(),{ foo: 'bar' })).rejects.toThrow(
       /no recognized fields/,
     );
   });
 
   it('valid patch.name still updates end-to-end', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
-    const updated = await Characters.updateCharacter(c._id.toString(), { name: 'Renamed' });
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
+    const updated = await Characters.updateCharacter(projectId, c._id.toString(),{ name: 'Renamed' });
     expect(updated.name).toBe('Renamed');
     expect(updated.name_lower).toBe('renamed');
   });
 
   it('valid patch.fields.memes still updates end-to-end', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
-    const updated = await Characters.updateCharacter(c._id.toString(), {
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
+    const updated = await Characters.updateCharacter(projectId, c._id.toString(),{
       fields: { memes: 'doge' },
     });
     expect(updated.fields.memes).toBe('doge');
   });
 
   it('updateCharacter throws when the doc disappears mid-write', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
     const col = fakeDb.collection('characters');
     const spy = vi.spyOn(col, 'updateOne').mockResolvedValue({ matchedCount: 0 });
     try {
       await expect(
-        Characters.updateCharacter(c._id.toString(), { name: 'Newer' }),
+        Characters.updateCharacter(projectId, c._id.toString(),{ name: 'Newer' }),
       ).rejects.toThrow(/updateCharacter:.*not found/);
     } finally {
       spy.mockRestore();
@@ -74,11 +78,11 @@ describe('updateCharacter input validation', () => {
 
 describe('updateCharacter unset support', () => {
   it('removes a custom field via unset (key gone, not null)', async () => {
-    const c = await Characters.createCharacter({
+    const c = await Characters.createCharacter({ projectId,
       name: 'Rae',
       fields: { memes: 'doge', role: 'lead' },
     });
-    const updated = await Characters.updateCharacter(c._id.toString(), {
+    const updated = await Characters.updateCharacter(projectId, c._id.toString(),{
       unset: ['memes'],
     });
     expect(updated.fields).toBeDefined();
@@ -87,11 +91,11 @@ describe('updateCharacter unset support', () => {
   });
 
   it('combines $set and $unset in one call (edit one field, delete another)', async () => {
-    const c = await Characters.createCharacter({
+    const c = await Characters.createCharacter({ projectId,
       name: 'Rae',
       fields: { memes: 'doge', role: 'lead' },
     });
-    const updated = await Characters.updateCharacter(c._id.toString(), {
+    const updated = await Characters.updateCharacter(projectId, c._id.toString(),{
       fields: { role: 'antagonist' },
       unset: ['memes'],
     });
@@ -100,35 +104,35 @@ describe('updateCharacter unset support', () => {
   });
 
   it('rejects unset when not an array', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
     await expect(
-      Characters.updateCharacter(c._id.toString(), { unset: 'memes' }),
+      Characters.updateCharacter(projectId, c._id.toString(),{ unset: 'memes' }),
     ).rejects.toThrow(/`unset` must be an array/);
   });
 
   it('rejects unset entries that are not non-empty strings', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
     await expect(
-      Characters.updateCharacter(c._id.toString(), { unset: ['ok', ''] }),
+      Characters.updateCharacter(projectId, c._id.toString(),{ unset: ['ok', ''] }),
     ).rejects.toThrow(/`unset` entries must be non-empty strings/);
     await expect(
-      Characters.updateCharacter(c._id.toString(), { unset: [123] }),
+      Characters.updateCharacter(projectId, c._id.toString(),{ unset: [123] }),
     ).rejects.toThrow(/`unset` entries must be non-empty strings/);
   });
 
   it('rejects when unset is empty and no other recognized changes', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
     await expect(
-      Characters.updateCharacter(c._id.toString(), { unset: [] }),
+      Characters.updateCharacter(projectId, c._id.toString(),{ unset: [] }),
     ).rejects.toThrow(/produced no field changes/);
   });
 
   it('unset of a missing field is a no-op (does not throw)', async () => {
-    const c = await Characters.createCharacter({
+    const c = await Characters.createCharacter({ projectId,
       name: 'Rae',
       fields: { role: 'lead' },
     });
-    const updated = await Characters.updateCharacter(c._id.toString(), {
+    const updated = await Characters.updateCharacter(projectId, c._id.toString(),{
       unset: ['never_existed'],
     });
     expect(updated.fields.role).toBe('lead');

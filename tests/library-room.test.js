@@ -18,9 +18,13 @@ vi.mock('../src/rag/queue.js', () => ({
 vi.mock('../src/rag/indexer.js', () => ({}));
 
 const { resolveRoom, parseRoomName, buildRoomName } = await import('../src/web/roomRegistry.js');
+const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let pid;
+
+beforeEach(async () => {
   fakeDb.reset();
+  pid = (await Projects.getDefaultProject())._id.toString();
 });
 
 function seedLibrary({ id, name = '', description = '' } = {}) {
@@ -31,6 +35,7 @@ function seedLibrary({ id, name = '', description = '' } = {}) {
     length: 100,
     uploadDate: new Date(),
     metadata: {
+      project_id: pid,
       owner_type: null,
       owner_id: null,
       source: 'upload',
@@ -46,19 +51,20 @@ function seedLibrary({ id, name = '', description = '' } = {}) {
 }
 
 describe('library room', () => {
-  it('parseRoomName recognizes the literal "library" room', () => {
-    expect(parseRoomName('library')).toEqual({ type: 'library' });
+  it('parseRoomName recognizes the project-scoped "library" room', () => {
+    expect(parseRoomName(`library:${pid}`)).toEqual({ type: 'library', projectId: pid });
+    expect(parseRoomName('library')).toBeNull();
   });
 
-  it('buildRoomName returns "library" for type:library', () => {
-    expect(buildRoomName('library')).toBe('library');
+  it('buildRoomName returns "library:<pid>" for type:library', () => {
+    expect(buildRoomName('library', pid)).toBe(`library:${pid}`);
   });
 
   it('describeLibraryRoom yields two fragments per image, seeded from Mongo', async () => {
     const a = seedLibrary({ name: 'Diner', description: 'neon' });
     const b = seedLibrary({ name: 'Rooftop', description: 'storm' });
 
-    const desc = await resolveRoom('library');
+    const desc = await resolveRoom(`library:${pid}`);
     expect(desc.type).toBe('library');
     expect(desc.fields).toEqual(
       expect.arrayContaining([
@@ -75,7 +81,7 @@ describe('library room', () => {
   it('persistFields writes only changed fragments back to Mongo and updates name_lower', async () => {
     const a = seedLibrary({ name: 'Old', description: 'orig' });
 
-    const desc = await resolveRoom('library');
+    const desc = await resolveRoom(`library:${pid}`);
     const result = await desc.persistFields({
       [`library:${a._id}:name`]: 'NEW NAME',
       [`library:${a._id}:description`]: 'orig', // unchanged
@@ -91,7 +97,7 @@ describe('library room', () => {
 
   it('persistFields is a no-op when nothing changed', async () => {
     const a = seedLibrary({ name: 'Same', description: 'same' });
-    const desc = await resolveRoom('library');
+    const desc = await resolveRoom(`library:${pid}`);
     const result = await desc.persistFields({
       [`library:${a._id}:name`]: 'Same',
       [`library:${a._id}:description`]: 'same',
@@ -107,6 +113,7 @@ describe('library room', () => {
       length: 555,
       uploadDate: new Date(),
       metadata: {
+        project_id: pid,
         owner_type: null,
         owner_id: null,
         source: 'upload',
@@ -122,7 +129,7 @@ describe('library room', () => {
   it('describeLibraryRoom exposes library_attachment fragments seeded from GridFS metadata', async () => {
     const a = seedLibraryAttachment({ name: 'Treatment', description: 'first draft' });
 
-    const desc = await resolveRoom('library');
+    const desc = await resolveRoom(`library:${pid}`);
     expect(desc.fields).toEqual(
       expect.arrayContaining([
         `library_attachment:${a._id}:name`,
@@ -136,7 +143,7 @@ describe('library room', () => {
   it('persistFields routes library_attachment:<id>:name back to attachments GridFS metadata', async () => {
     const a = seedLibraryAttachment({ name: 'old', description: 'desc' });
 
-    const desc = await resolveRoom('library');
+    const desc = await resolveRoom(`library:${pid}`);
     const result = await desc.persistFields({
       [`library_attachment:${a._id}:name`]: 'NEW',
       [`library_attachment:${a._id}:description`]: 'desc',

@@ -45,6 +45,7 @@ vi.mock('../src/mongo/images.js', async (importOriginal) => {
   };
 });
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const Artworks = await import('../src/mongo/artworks.js');
@@ -68,8 +69,11 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(() => resolve()));
 });
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   deletedImageIds.length = 0;
 });
 
@@ -108,10 +112,10 @@ async function del(path) {
 
 describe('GET /api/beat/:id/images', () => {
   it('returns all non-thumbnail beat-owned GridFS images, excluding artwork results', async () => {
-    const beat = await Plots.createBeat({ name: 'Diner' });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner' });
     // In the embedded gallery (typical reference image).
     const gallery = seedImage({ ownerType: 'beat', ownerId: beat._id, name: 'gallery' });
-    await Plots.pushBeatImage(beat._id, {
+    await Plots.pushBeatImage(projectId, beat._id, {
       _id: gallery._id,
       filename: gallery.filename,
       content_type: 'image/png',
@@ -125,13 +129,13 @@ describe('GET /api/beat/:id/images', () => {
     seedImage({ ownerType: 'beat', ownerId: beat._id, name: 'thumb', kind: 'thumbnail' });
     // Artwork result image — owned by beat but tracked under beat.artworks[].
     const artworkResult = seedImage({ ownerType: 'beat', ownerId: beat._id, name: 'artwork' });
-    const { artwork } = await Artworks.createPendingArtwork({
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'beat',
       hostId: beat._id,
       prompt: 'whatever',
       model: 'gemini',
     });
-    await Artworks.setArtworkResult({
+    await Artworks.setArtworkResult({ projectId,
       hostType: 'beat',
       hostId: beat._id,
       artworkId: artwork._id,
@@ -150,7 +154,7 @@ describe('GET /api/beat/:id/images', () => {
 
 describe('GET /api/character/:id/images', () => {
   it('returns all non-thumbnail character-owned GridFS images, excluding artwork results', async () => {
-    const c = await Characters.createCharacter({ name: 'Bronze Leopard' });
+    const c = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
     const gallery = seedImage({ ownerType: 'character', ownerId: c._id, name: 'sheet' });
     await fakeDb.collection('characters').updateOne(
       { _id: c._id },
@@ -171,13 +175,13 @@ describe('GET /api/character/:id/images', () => {
     const orphan = seedImage({ ownerType: 'character', ownerId: c._id, name: 'orphan' });
     seedImage({ ownerType: 'character', ownerId: c._id, name: 'thumb', kind: 'thumbnail' });
     const artworkResult = seedImage({ ownerType: 'character', ownerId: c._id, name: 'artwork' });
-    const { artwork } = await Artworks.createPendingArtwork({
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'character',
       hostId: c._id,
       prompt: 'whatever',
       model: 'gemini',
     });
-    await Artworks.setArtworkResult({
+    await Artworks.setArtworkResult({ projectId,
       hostType: 'character',
       hostId: c._id,
       artworkId: artwork._id,
@@ -194,7 +198,7 @@ describe('GET /api/character/:id/images', () => {
   });
 
   it('accepts a name in place of an id', async () => {
-    const c = await Characters.createCharacter({ name: 'Silver Wolf' });
+    const c = await Characters.createCharacter({ projectId, name: 'Silver Wolf' });
     seedImage({ ownerType: 'character', ownerId: c._id, name: 'a' });
     const { status, json } = await get(`/api/character/Silver%20Wolf/images`);
     expect(status).toBe(200);
@@ -204,11 +208,11 @@ describe('GET /api/character/:id/images', () => {
 
 describe('DELETE /api/beat/:id/orphan-image/:imageId', () => {
   it('deletes a beat-owned GridFS image that is not in beat.images[] and clears storyboard refs', async () => {
-    const beat = await Plots.createBeat({ name: 'Diner' });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner' });
     const orphan = seedImage({ ownerType: 'beat', ownerId: beat._id, name: 'orphan' });
     // Storyboard with the orphan as a frame's current image, and also in
     // another frame's reference list.
-    const sb = await Storyboards.createStoryboard({
+    const sb = await Storyboards.createStoryboard({ projectId,
       beatId: beat._id,
       textPrompt: 'Wide shot',
     });
@@ -222,7 +226,7 @@ describe('DELETE /api/beat/:id/orphan-image/:imageId', () => {
     expect(status).toBe(200);
     expect(json.ok).toBe(true);
     expect(deletedImageIds).toContain(String(orphan._id));
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(projectId, sb._id);
     const img = fresh.frames.find((f) => f._id.toString() === String(imgFrame));
     const ref = fresh.frames.find((f) => f._id.toString() === String(refFrame));
     expect(img.image_id).toBe(null);
@@ -230,9 +234,9 @@ describe('DELETE /api/beat/:id/orphan-image/:imageId', () => {
   });
 
   it('refuses to delete an image that lives in beat.images[]', async () => {
-    const beat = await Plots.createBeat({ name: 'Diner' });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner' });
     const gallery = seedImage({ ownerType: 'beat', ownerId: beat._id, name: 'gallery' });
-    await Plots.pushBeatImage(beat._id, {
+    await Plots.pushBeatImage(projectId, beat._id, {
       _id: gallery._id,
       filename: gallery.filename,
       content_type: 'image/png',
@@ -247,8 +251,8 @@ describe('DELETE /api/beat/:id/orphan-image/:imageId', () => {
   });
 
   it('refuses to delete an image owned by a different beat', async () => {
-    const beatA = await Plots.createBeat({ name: 'A' });
-    const beatB = await Plots.createBeat({ name: 'B' });
+    const beatA = await Plots.createBeat({ projectId, name: 'A' });
+    const beatB = await Plots.createBeat({ projectId, name: 'B' });
     const img = seedImage({ ownerType: 'beat', ownerId: beatB._id, name: 'b-img' });
     const { status } = await del(
       `/api/beat/${beatA._id}/orphan-image/${img._id}`,
@@ -260,7 +264,7 @@ describe('DELETE /api/beat/:id/orphan-image/:imageId', () => {
 
 describe('DELETE /api/character/:id/orphan-image/:imageId', () => {
   it('deletes a character-owned GridFS image that is not in character.images[]', async () => {
-    const c = await Characters.createCharacter({ name: 'Bronze Leopard' });
+    const c = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
     const orphan = seedImage({ ownerType: 'character', ownerId: c._id, name: 'orphan' });
     const { status, json } = await del(
       `/api/character/${c._id}/orphan-image/${orphan._id}`,
@@ -271,7 +275,7 @@ describe('DELETE /api/character/:id/orphan-image/:imageId', () => {
   });
 
   it('refuses to delete an image that lives in character.images[]', async () => {
-    const c = await Characters.createCharacter({ name: 'Bronze Leopard' });
+    const c = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
     const gallery = seedImage({ ownerType: 'character', ownerId: c._id, name: 'sheet' });
     await fakeDb.collection('characters').updateOne(
       { _id: c._id },

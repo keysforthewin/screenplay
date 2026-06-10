@@ -38,10 +38,10 @@ export function formatCharacterBio(c) {
 
 // Resolve character docs for the speakers named on the beat, beat-listed names
 // first then everyone else, deduped case-insensitively on the stripped name.
-export async function loadCharacterDocs(characterNames) {
+export async function loadCharacterDocs(projectId, characterNames) {
   const seen = new Set();
   const out = [];
-  const all = await listCharacters().catch(() => []);
+  const all = await listCharacters(projectId).catch(() => []);
   const allByKey = new Map();
   for (const c of all || []) {
     const key = stripMarkdown(c.name || '').toLowerCase();
@@ -72,8 +72,8 @@ function previousBeat(plot, beat) {
   return earlier[0] || null;
 }
 
-export async function buildDialogContext(beat) {
-  const plot = await getPlot().catch(() => null);
+export async function buildDialogContext(projectId, beat) {
+  const plot = await getPlot(projectId).catch(() => null);
   const sections = [];
 
   // Logline.
@@ -119,7 +119,7 @@ export async function buildDialogContext(beat) {
   }
 
   // Character bios.
-  const characters = await loadCharacterDocs(beat?.characters || []);
+  const characters = await loadCharacterDocs(projectId, beat?.characters || []);
   const bios = characters.map(formatCharacterBio).filter(Boolean);
   if (bios.length) {
     sections.push(

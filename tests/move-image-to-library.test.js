@@ -12,13 +12,17 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const Gateway = await import('../src/web/gateway.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 function seedOwnedImage({ ownerType, ownerId, _id }) {
@@ -45,22 +49,22 @@ function seedOwnedImage({ ownerType, ownerId, _id }) {
 
 describe('gateway: moveBeatImageToLibraryViaGateway', () => {
   it('detaches the image from the beat and clears the owner metadata', async () => {
-    const b = await Plots.createBeat({ name: 'Diner', desc: 'd' });
+    const b = await Plots.createBeat({ projectId, name: 'Diner', desc: 'd' });
     const imageId = new ObjectId();
     seedOwnedImage({ ownerType: 'beat', ownerId: b._id, _id: imageId });
-    await Plots.pushBeatImage(b._id.toString(), {
+    await Plots.pushBeatImage(projectId, b._id.toString(), {
       _id: imageId,
       filename: 'a.png',
       content_type: 'image/png',
       size: 1,
     });
 
-    await Gateway.moveBeatImageToLibraryViaGateway({
+    await Gateway.moveBeatImageToLibraryViaGateway({ projectId,
       beatId: b._id.toString(),
       imageId: imageId.toString(),
     });
 
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     const beat = plot.beats.find((x) => x._id.equals(b._id));
     expect(beat.images).toHaveLength(0);
     expect(beat.main_image_id).toBeNull();
@@ -75,7 +79,7 @@ describe('gateway: moveBeatImageToLibraryViaGateway', () => {
 
 describe('gateway: moveCharacterImageToLibraryViaGateway', () => {
   it('detaches the image from the character and clears the owner metadata', async () => {
-    const c = await Characters.createCharacter({ name: 'Iris' });
+    const c = await Characters.createCharacter({ projectId, name: 'Iris' });
     const imageId = new ObjectId();
     seedOwnedImage({ ownerType: 'character', ownerId: c._id, _id: imageId });
     await fakeDb.collection('characters').updateOne(
@@ -90,7 +94,7 @@ describe('gateway: moveCharacterImageToLibraryViaGateway', () => {
       },
     );
 
-    await Gateway.moveCharacterImageToLibraryViaGateway({
+    await Gateway.moveCharacterImageToLibraryViaGateway({ projectId,
       character: c._id.toString(),
       imageId: imageId.toString(),
     });
@@ -109,10 +113,10 @@ describe('gateway: moveCharacterImageToLibraryViaGateway', () => {
 
 describe('handler: move_image_to_library', () => {
   it('moves a beat-owned image to the library', async () => {
-    const b = await Plots.createBeat({ name: 'Diner', desc: 'd' });
+    const b = await Plots.createBeat({ projectId, name: 'Diner', desc: 'd' });
     const imageId = new ObjectId();
     seedOwnedImage({ ownerType: 'beat', ownerId: b._id, _id: imageId });
-    await Plots.pushBeatImage(b._id.toString(), {
+    await Plots.pushBeatImage(projectId, b._id.toString(), {
       _id: imageId,
       filename: 'a.png',
       content_type: 'image/png',
@@ -121,7 +125,7 @@ describe('handler: move_image_to_library', () => {
 
     const result = await HANDLERS.move_image_to_library({
       image_id: imageId.toString(),
-    });
+    }, { projectId });
     expect(result).toMatch(/Moved image .* to the library/);
 
     const fileAfter = await fakeDb
@@ -131,7 +135,7 @@ describe('handler: move_image_to_library', () => {
   });
 
   it('moves a character-owned image to the library', async () => {
-    const c = await Characters.createCharacter({ name: 'Iris' });
+    const c = await Characters.createCharacter({ projectId, name: 'Iris' });
     const imageId = new ObjectId();
     seedOwnedImage({ ownerType: 'character', ownerId: c._id, _id: imageId });
     await fakeDb.collection('characters').updateOne(
@@ -146,7 +150,7 @@ describe('handler: move_image_to_library', () => {
 
     const result = await HANDLERS.move_image_to_library({
       image_id: imageId.toString(),
-    });
+    }, { projectId });
     expect(result).toMatch(/Moved image .* to the library/);
 
     const fileAfter = await fakeDb
@@ -167,19 +171,19 @@ describe('handler: move_image_to_library', () => {
     });
     const result = await HANDLERS.move_image_to_library({
       image_id: imageId.toString(),
-    });
+    }, { projectId });
     expect(result).toMatch(/already in the library/);
   });
 
   it('returns an error when the image_id is unknown', async () => {
     const result = await HANDLERS.move_image_to_library({
       image_id: new ObjectId().toString(),
-    });
+    }, { projectId });
     expect(result).toMatch(/image not found/i);
   });
 
   it('returns an error when image_id is missing', async () => {
-    const result = await HANDLERS.move_image_to_library({});
+    const result = await HANDLERS.move_image_to_library({}, { projectId });
     expect(result).toMatch(/image_id required/);
   });
 });

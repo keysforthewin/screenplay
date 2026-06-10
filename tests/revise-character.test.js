@@ -17,17 +17,21 @@ vi.mock('../src/llm/analyze.js', () => ({
   analyzeText: (...args) => analyzeTextMock(...args),
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Characters = await import('../src/mongo/characters.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   analyzeTextMock.mockReset();
 });
 
 describe('revise_character handler', () => {
   it('applies edits and deletes from the LLM response in one updateCharacter call', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Baezil',
       fields: {
         bio: 'Baezil joined the Pre-beat-5 (South Pole Heist) crew last winter.',
@@ -48,21 +52,21 @@ describe('revise_character handler', () => {
     const out = await HANDLERS.revise_character({
       identifier: 'Baezil',
       instructions: 'Remove all references to Pre-beat-5 (South Pole Heist).',
-    });
+    }, { projectId });
 
     expect(out).toMatch(/Revised Baezil/);
     expect(out).toMatch(/edited: bio/);
     expect(out).toMatch(/removed: Pre-beat-5/);
     expect(out).toMatch(/unchanged: 1 field/);
 
-    const fresh = await Characters.getCharacter('Baezil');
+    const fresh = await Characters.getCharacter(projectId, 'Baezil');
     expect(fresh.fields.bio).toBe('Baezil joined the crew last winter.');
     expect('Pre-beat-5 (South Pole Heist)' in fresh.fields).toBe(false);
     expect(fresh.fields.role).toBe('antagonist');
   });
 
   it('tolerates a code-fenced JSON response from the LLM', async () => {
-    await Characters.createCharacter({ name: 'Alice', fields: { bio: 'old text' } });
+    await Characters.createCharacter({ projectId, name: 'Alice', fields: { bio: 'old text' } });
     analyzeTextMock.mockResolvedValue(
       '```json\n' +
         JSON.stringify({ actions: [{ field: 'bio', action: 'edit', new_value: 'new text' }] }) +
@@ -72,14 +76,14 @@ describe('revise_character handler', () => {
     const out = await HANDLERS.revise_character({
       identifier: 'Alice',
       instructions: 'rewrite the bio',
-    });
+    }, { projectId });
     expect(out).toMatch(/edited: bio/);
-    const fresh = await Characters.getCharacter('Alice');
+    const fresh = await Characters.getCharacter(projectId, 'Alice');
     expect(fresh.fields.bio).toBe('new text');
   });
 
   it('ignores hallucinated field names not present on the character', async () => {
-    await Characters.createCharacter({ name: 'Alice', fields: { bio: 'x' } });
+    await Characters.createCharacter({ projectId, name: 'Alice', fields: { bio: 'x' } });
     analyzeTextMock.mockResolvedValue(
       JSON.stringify({
         actions: [
@@ -93,15 +97,15 @@ describe('revise_character handler', () => {
     const out = await HANDLERS.revise_character({
       identifier: 'Alice',
       instructions: 'do nothing harmful',
-    });
+    }, { projectId });
     expect(out).toMatch(/no changes/);
-    const fresh = await Characters.getCharacter('Alice');
+    const fresh = await Characters.getCharacter(projectId, 'Alice');
     expect(fresh.fields).toEqual({ bio: 'x' });
     expect('some_made_up_field' in fresh.fields).toBe(false);
   });
 
   it('returns "no changes" when every action is keep', async () => {
-    await Characters.createCharacter({ name: 'Alice', fields: { bio: 'x', role: 'y' } });
+    await Characters.createCharacter({ projectId, name: 'Alice', fields: { bio: 'x', role: 'y' } });
     analyzeTextMock.mockResolvedValue(
       JSON.stringify({
         actions: [
@@ -113,45 +117,45 @@ describe('revise_character handler', () => {
     const out = await HANDLERS.revise_character({
       identifier: 'Alice',
       instructions: 'leave it alone',
-    });
+    }, { projectId });
     expect(out).toMatch(/no changes/);
     expect(out).toMatch(/all 2 field/);
   });
 
   it('returns the no-fields message when character has no custom fields', async () => {
-    await Characters.createCharacter({ name: 'Alice' });
+    await Characters.createCharacter({ projectId, name: 'Alice' });
     const out = await HANDLERS.revise_character({
       identifier: 'Alice',
       instructions: 'try anything',
-    });
+    }, { projectId });
     expect(out).toMatch(/no custom fields to revise/);
     expect(analyzeTextMock).not.toHaveBeenCalled();
   });
 
   it('returns a parse-error message on malformed LLM JSON', async () => {
-    await Characters.createCharacter({ name: 'Alice', fields: { bio: 'x' } });
+    await Characters.createCharacter({ projectId, name: 'Alice', fields: { bio: 'x' } });
     analyzeTextMock.mockResolvedValue('this is not JSON at all');
     const out = await HANDLERS.revise_character({
       identifier: 'Alice',
       instructions: 'try',
-    });
+    }, { projectId });
     expect(out).toMatch(/could not parse LLM response/);
   });
 
   it('returns a friendly error string when analyzeText throws', async () => {
-    await Characters.createCharacter({ name: 'Alice', fields: { bio: 'x' } });
+    await Characters.createCharacter({ projectId, name: 'Alice', fields: { bio: 'x' } });
     analyzeTextMock.mockRejectedValue(new Error('API key missing'));
     const out = await HANDLERS.revise_character({
       identifier: 'Alice',
       instructions: 'try',
-    });
+    }, { projectId });
     expect(out).toMatch(/LLM call failed: API key missing/);
   });
 
   it('rejects missing identifier or instructions', async () => {
-    expect(await HANDLERS.revise_character({ instructions: 'x' })).toMatch(/identifier is required/);
-    expect(await HANDLERS.revise_character({ identifier: 'A' })).toMatch(/instructions is required/);
-    expect(await HANDLERS.revise_character({ identifier: 'A', instructions: '   ' })).toMatch(
+    expect(await HANDLERS.revise_character({ instructions: 'x' }, { projectId })).toMatch(/identifier is required/);
+    expect(await HANDLERS.revise_character({ identifier: 'A' }, { projectId })).toMatch(/instructions is required/);
+    expect(await HANDLERS.revise_character({ identifier: 'A', instructions: '   ' }, { projectId })).toMatch(
       /instructions is required/,
     );
   });
@@ -160,7 +164,7 @@ describe('revise_character handler', () => {
     const out = await HANDLERS.revise_character({
       identifier: 'Nobody',
       instructions: 'x',
-    });
+    }, { projectId });
     expect(out).toMatch(/Character not found: Nobody/);
   });
 });

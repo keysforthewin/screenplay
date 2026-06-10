@@ -31,6 +31,7 @@ vi.mock('../src/web/announceHelpers.js', () => ({
   announceBatchSummary: vi.fn(),
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
@@ -53,8 +54,11 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(() => resolve()));
 });
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 async function get(path) {
@@ -80,23 +84,23 @@ async function setVideoFields(sbId, fields) {
 
 describe('GET /api/storyboard/:id/video-source-storyboards', () => {
   it('merges generated videos (incl. current shot) with beat/character references', async () => {
-    const beatA = await Plots.createBeat({ name: 'Diner' });
-    const beatB = await Plots.createBeat({ name: 'Highway' });
+    const beatA = await Plots.createBeat({ projectId, name: 'Diner' });
+    const beatB = await Plots.createBeat({ projectId, name: 'Highway' });
 
     // The current shot: has its own generated video, plus an attached source
     // upload (attCurrentSource) that lives on beatA's attachments.
-    const current = await Storyboards.createStoryboard({ beatId: beatA._id });
-    const otherShot = await Storyboards.createStoryboard({ beatId: beatB._id });
+    const current = await Storyboards.createStoryboard({ projectId, beatId: beatA._id });
+    const otherShot = await Storyboards.createStoryboard({ projectId, beatId: beatB._id });
 
     const genCurrent = new ObjectId();
     const genOther = new ObjectId();
 
     const attCurrentSource = videoAtt('current-source.mp4'); // excluded from refs
     const attBeatB = videoAtt('beatB-clip.mp4'); // should appear
-    await Plots.pushBeatAttachment(beatA._id, attCurrentSource);
-    await Plots.pushBeatAttachment(beatB._id, attBeatB);
+    await Plots.pushBeatAttachment(projectId, beatA._id, attCurrentSource);
+    await Plots.pushBeatAttachment(projectId, beatB._id, attBeatB);
     // A non-video attachment must be filtered out.
-    await Plots.pushBeatAttachment(beatB._id, {
+    await Plots.pushBeatAttachment(projectId, beatB._id, {
       _id: new ObjectId(),
       filename: 'poster.png',
       content_type: 'image/png',
@@ -104,9 +108,9 @@ describe('GET /api/storyboard/:id/video-source-storyboards', () => {
       uploaded_at: new Date(),
     });
 
-    const char = await Characters.createCharacter({ name: 'Bronze Leopard' });
+    const char = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
     const attChar = videoAtt('character-reel.mp4'); // should appear
-    await Characters.pushCharacterAttachment(char._id, attChar);
+    await Characters.pushCharacterAttachment(projectId, char._id, attChar);
 
     await setVideoFields(current._id, {
       video_file_id: genCurrent,

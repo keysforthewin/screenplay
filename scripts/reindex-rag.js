@@ -25,6 +25,7 @@ import { getPlot } from '../src/mongo/plots.js';
 import { findAllCharacters } from '../src/mongo/characters.js';
 import { getDirectorNotes } from '../src/mongo/directorNotes.js';
 import { getDb } from '../src/mongo/client.js';
+import { listProjects, getDefaultProject } from '../src/mongo/projects.js';
 
 function parseArgs(argv) {
   const out = { types: null, since: null, messages: null };
@@ -86,38 +87,47 @@ async function main() {
   const want = (t) => !types || types.has(t);
   const messageCap = Number(args.messages) || config.rag.messageWindow;
 
-  if (want('beat')) {
-    const plot = await getPlot();
-    const beats = plot.beats || [];
-    console.log(`beats: ${beats.length} candidates`);
-    const stats = await runConcurrent(beats, async (b) => {
-      if (args.since && isAfter(b.rag_indexed_at, args.since)) return 'skip';
-      await indexBeat(b._id);
-      return 'ok';
-    });
-    console.log(`beats: ok=${stats.ok} skipped=${stats.skip} err=${stats.err}`);
-  }
+  const projects = await listProjects();
+  if (!projects.length) projects.push(await getDefaultProject());
+  console.log(`projects: ${projects.length}`);
 
-  if (want('character')) {
-    const chars = await findAllCharacters();
-    console.log(`characters: ${chars.length} candidates`);
-    const stats = await runConcurrent(chars, async (c) => {
-      if (args.since && isAfter(c.rag_indexed_at, args.since)) return 'skip';
-      await indexCharacter(c._id);
-      return 'ok';
-    });
-    console.log(`characters: ok=${stats.ok} skipped=${stats.skip} err=${stats.err}`);
-  }
+  for (const project of projects) {
+    const pid = project._id.toString();
+    console.log(`\n=== project "${project.title}" (${pid}) ===`);
 
-  if (want('director_note')) {
-    const doc = await getDirectorNotes();
-    const notes = doc.notes || [];
-    console.log(`director_notes: ${notes.length} candidates`);
-    const stats = await runConcurrent(notes, async (n) => {
-      await indexDirectorNote(n._id);
-      return 'ok';
-    });
-    console.log(`director_notes: ok=${stats.ok} err=${stats.err}`);
+    if (want('beat')) {
+      const plot = await getPlot(pid);
+      const beats = plot.beats || [];
+      console.log(`beats: ${beats.length} candidates`);
+      const stats = await runConcurrent(beats, async (b) => {
+        if (args.since && isAfter(b.rag_indexed_at, args.since)) return 'skip';
+        await indexBeat(b._id);
+        return 'ok';
+      });
+      console.log(`beats: ok=${stats.ok} skipped=${stats.skip} err=${stats.err}`);
+    }
+
+    if (want('character')) {
+      const chars = await findAllCharacters(pid);
+      console.log(`characters: ${chars.length} candidates`);
+      const stats = await runConcurrent(chars, async (c) => {
+        if (args.since && isAfter(c.rag_indexed_at, args.since)) return 'skip';
+        await indexCharacter(c._id);
+        return 'ok';
+      });
+      console.log(`characters: ok=${stats.ok} skipped=${stats.skip} err=${stats.err}`);
+    }
+
+    if (want('director_note')) {
+      const doc = await getDirectorNotes(pid);
+      const notes = doc.notes || [];
+      console.log(`director_notes: ${notes.length} candidates`);
+      const stats = await runConcurrent(notes, async (n) => {
+        await indexDirectorNote(n._id);
+        return 'ok';
+      });
+      console.log(`director_notes: ok=${stats.ok} err=${stats.err}`);
+    }
   }
 
   if (want('message')) {

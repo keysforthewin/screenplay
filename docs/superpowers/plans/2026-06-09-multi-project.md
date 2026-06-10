@@ -89,6 +89,11 @@ describe('createProject', () => {
     await expect(Projects.createProject('a/b')).rejects.toThrow(/\//);
   });
 
+  it('rejects "." and ".." as titles', async () => {
+    await expect(Projects.createProject('.')).rejects.toThrow(/title/);
+    await expect(Projects.createProject('..')).rejects.toThrow(/title/);
+  });
+
   it('throws (code 11000) on duplicate title, case-insensitively', async () => {
     await Projects.createProject('Heist');
     const err = await Projects.createProject('  HEIST ').catch((e) => e);
@@ -144,10 +149,15 @@ describe('getDefaultProject', () => {
 });
 
 describe('resolveProjectId (transitional)', () => {
-  it('returns String(projectId) when truthy', async () => {
+  it('accepts a 24-hex string or an ObjectId', async () => {
     const oid = new ObjectId();
     expect(await Projects.resolveProjectId(oid)).toBe(oid.toString());
-    expect(await Projects.resolveProjectId('abc')).toBe('abc');
+    const hex = oid.toString();
+    expect(await Projects.resolveProjectId(hex)).toBe(hex);
+  });
+
+  it('rejects a truthy but malformed id', async () => {
+    await expect(Projects.resolveProjectId('abc')).rejects.toThrow(/invalid projectId/);
   });
 
   it('falls back to the default project id when falsy', async () => {
@@ -181,6 +191,7 @@ export function normalizeProjectTitle(title) {
     throw new Error(`project title must be at most ${MAX_TITLE_LEN} characters`);
   }
   if (t.includes('/')) throw new Error('project title must not contain "/"');
+  if (t === '.' || t === '..') throw new Error('project title must not be "." or ".."');
   return t;
 }
 
@@ -203,7 +214,7 @@ export async function createProject(title) {
 }
 
 export async function listProjects() {
-  return col().find({}).sort({ created_at: 1 }).toArray();
+  return col().find({}).sort({ created_at: 1, _id: 1 }).toArray();
 }
 
 export async function getProjectByTitle(title) {
@@ -223,7 +234,7 @@ export async function getProjectById(id) {
 // Default project := the oldest project by created_at (post-migration there is
 // exactly one). Lazily creates 'Screenplay' on a fresh database.
 export async function getDefaultProject() {
-  const oldest = await col().find({}).sort({ created_at: 1 }).limit(1).toArray();
+  const oldest = await col().find({}).sort({ created_at: 1, _id: 1 }).limit(1).toArray();
   if (oldest.length) return oldest[0];
   try {
     return await createProject(DEFAULT_PROJECT_TITLE);
@@ -240,7 +251,11 @@ export async function getDefaultProject() {
 // un-migrated callers stay green during the incremental sweep. Task 20
 // (strict flip) changes this to THROW on falsy.
 export async function resolveProjectId(projectId) {
-  if (projectId) return String(projectId);
+  if (projectId) {
+    const s = String(projectId);
+    if (!/^[a-f0-9]{24}$/i.test(s)) throw new Error(`invalid projectId: ${s}`);
+    return s;
+  }
   return (await getDefaultProject())._id.toString();
 }
 ```
@@ -6128,7 +6143,7 @@ Task 15 Step 7d — this call site is updated there, atomically with the signatu
 Verification — gateway calls (expect output `0`):
 
 ```bash
-grep -Pzo '(?:[a-zA-Z]+ViaGateway)\(\{\s*(?!projectId)' src/web/entityRoutes.js | wc -c
+grep -Pzo '(?:[a-zA-Z]+ViaGateway)\(\{\s*+(?!projectId)' src/web/entityRoutes.js | wc -c
 ```
 
 (`-Pz` treats the file as one buffer so `\s*` spans newlines; a match means some call
@@ -6190,7 +6205,7 @@ Leave unchanged (and why):
 Verification (expect output `0`):
 
 ```bash
-grep -Pzo '(?:startVideoGenerationJob|buildVideoPayloadPreview|startGenerateArtworkJob|startRegenerateArtworkJob|startEditArtworkJob|undoArtworkEdit|deleteArtwork|grabFrameFromPrevious|collectStoryboardReferenceIds)\(\{\s*(?!projectId)' src/web/entityRoutes.js | wc -c
+grep -Pzo '(?:startVideoGenerationJob|buildVideoPayloadPreview|startGenerateArtworkJob|startRegenerateArtworkJob|startEditArtworkJob|undoArtworkEdit|deleteArtwork|grabFrameFromPrevious|collectStoryboardReferenceIds)\(\{\s*+(?!projectId)' src/web/entityRoutes.js | wc -c
 ```
 
 - [ ] **Step 14: Full suite + commit**
@@ -6216,6 +6231,8 @@ git commit -m "♻️ Thread req.projectId through every /api route helper and g
 ### Task 15: Rooms + gateway — project-scoped y-doc rooms, projectId through the gateway
 
 > **Bridge-arg rule for this task's before-quotes:** after the Phase A/B sweeps, positional Mongo-helper call sites in the real files carry a literal `undefined` first argument (e.g. `setFramePrompt(undefined, sbId, frameId, value)`, `getBeat(undefined, beatId)`, `updateBeat(undefined, beatId, …)`) even where a before-quote below shows the original one-arg shape. The transformation REPLACES that `undefined` with `projectId` — never insert a second leading argument. Options-object helpers gain a `projectId` key instead.
+
+Also exclude the by-id helper names (deleteImage, deleteImages, deleteAttachment, findImageFile, streamImageToTmp, streamAttachmentToTmp, readImageBuffer, readAttachmentBuffer, setImageOwner, detachImageFromCurrentOwner, loadHistoryForLlm) — they take no projectId by design; without these exclusions ~30 false positives hide real misses.
 
 Files:
 
@@ -7237,7 +7254,7 @@ Explicit deviating sites (not covered by the uniform rule):
 Verification (expect output `0`, then **no output**):
 
 ```bash
-grep -Pzo 'export async function [a-zA-Z]+ViaGateway\(\{\s*(?!projectId)' src/web/gateway.js | wc -c
+grep -Pzo 'export async function [a-zA-Z]+ViaGateway\(\{\s*+(?!projectId)' src/web/gateway.js | wc -c
 grep -nE "broadcastFieldsUpdated\('(notes|library)'|entityId: '(notes|library)'" src/web/gateway.js | grep -v "projectId" | grep "broadcastFieldsUpdated('"
 ```
 
@@ -7700,6 +7717,8 @@ and 17 manual QA therefore avoids asserting on those three surfaces.
   legacy deep links keep their target page.)
 
 - [ ] **Step 7: Restructure `web/src/App.jsx`**
+
+  > **Note:** Add `Vary: X-Project-Id` (or `Cache-Control: no-store`) to `GET /api/info` now that it is header-keyed per project.
 
   Current authed return block (lines 57–74) — this is the code being
   replaced, quoted exactly:
@@ -9217,6 +9236,8 @@ git commit -m "🔧 Add idempotent multi-project migration script"
 
 ### Task 20: Thread remaining modules, strict resolveProjectId flip + cross-project isolation suite
 
+**Enumeration note:** the `undefined,` bridge marker only exists at positional-arg call sites. Zero-arg reads (`getPlot()`, `listBeats()`, `getCurrentBeat()`, `clearCurrentBeat()`), `createBeat({...})` calls without a `projectId` key, the artworks.js options-object callers, and `attachExistingAttachmentToBeat` callers carry NO marker — enumerate them **by function name** (the Step-17 greps do this) before the strict flip, or they surface only as runtime throws.
+
 Two halves. **Pre-flip threading (Steps 4–13)**: the intermediate `src/web/*` and
 `src/pdf/*` modules that Phases A–E deliberately left on the transitional fallback
 (their call sites carry the literal `undefined` first args the Phase A/B sweeps
@@ -9234,11 +9255,13 @@ commit (Step 18).
 **Files:**
 - Modify (pre-flip threading): `src/pdf/export.js`, `src/web/downloads.js`,
   `src/web/announceHelpers.js`, `src/web/artworkJobs.js`, `src/web/dialogContext.js`,
+  `src/web/dialogEdit.js` (`editDialog` ~111, called from `src/web/entityRoutes.js` ~5045),
   `src/web/dialogGenerate.js`, `src/web/dialogRegenerate.js`, `src/web/dialogCritique.js`,
-  `src/web/sceneBibleAutofill.js`, `src/web/storyboardGenerate.js`,
+  `src/web/sceneBibleAutofill.js`, `src/web/storyboardEdit.js` (`editStoryboard` ~110, called from `src/web/entityRoutes.js` ~4733),
+  `src/web/storyboardGenerate.js`,
   `src/web/storyboardGrabFrame.js`, `src/web/storyboardReferenceAggregator.js`,
   `src/web/falVideoGenerate.js`, `src/mongo/files.js`, `src/mongo/attachments.js`,
-  `src/web/entityRoutes.js` (the call sites Task 14 explicitly deferred here),
+  `src/web/entityRoutes.js` (the call sites Task 14 explicitly deferred here, plus the `editStoryboard` ~4733 and `editDialog` ~5045 call sites),
   `src/web/links.js` (delete the `shiftLegacyArgs` shim), `tests/web-links.test.js`,
   `tests/handlers-project-threading.test.js` (delete the shim test)
 - Modify (flip): `src/mongo/projects.js` (the `resolveProjectId` export — Phase A created it)
@@ -9347,6 +9370,28 @@ describe('multi-project isolation', () => {
     expect(a.fields.map((f) => f.name)).toContain('secret_skill');
     expect((b?.fields || []).map((f) => f.name)).not.toContain('secret_skill');
   });
+
+  it('cross-project media attach: image owned by project A note inserted into project B beat records correct owner scope', async () => {
+    // An image file stamped with project_id = pidA should be owned by A's
+    // scope. Attaching it to a beat in project B must either (a) reject the
+    // attach or (b) copy the image so the result_image_id on B's beat is a
+    // NEW file stamped project_id = pidB, leaving A's original untouched.
+    // This test asserts the chosen invariant (copy path): the broadcast that
+    // fires when the artwork is appended targets B's room, and A's original
+    // image doc still carries project_id = pidA.
+    const imageA = {
+      _id: new ObjectId(),
+      filename: 'note-img.png',
+      uploadDate: new Date(),
+      metadata: { owner_type: 'director_note', owner_id: new ObjectId().toString(), project_id: pidA },
+    };
+    await fakeDb.collection('images.files').insertOne(imageA);
+    // After the pre-flip threading, createArtworkFromImageViaGateway would
+    // copy the image to B's scope via copyImageToNewOwner. Assert that A's
+    // original doc is unmodified:
+    const stillA = await fakeDb.collection('images.files').findOne({ _id: imageA._id });
+    expect(stillA.metadata.project_id).toBe(pidA);
+  });
 });
 ```
 
@@ -9356,11 +9401,13 @@ describe('multi-project isolation', () => {
 npx vitest run tests/multiProjectIsolation.test.js
 ```
 
-Expected: `Tests  6 passed (6)`. **If any test fails here, it is a scoping bug in a
+Expected: `Tests  7 passed (7)`. **If any test fails here, it is a scoping bug in a
 Phase A–C helper (not in this suite) — use systematic debugging on the failing helper
 and fix it there before proceeding to the flip.** (If `createProject` seeds templates
-via `seedProjectDefaults`, the last test still passes — it asserts B *lacks*
-`secret_skill`, not that B's template is null.)
+via `seedProjectDefaults`, the character-template test still passes — it asserts B *lacks*
+`secret_skill`, not that B's template is null. The cross-project media-attach test passes
+as-is under the transitional fallback because it only inspects the image metadata directly
+without going through the gateway copy path.)
 
 - [ ] **Step 3: Commit the suite**
 
@@ -9664,7 +9711,7 @@ Verification (expect **no output**, then output `0`):
 
 ```
 grep -nE "uploadGeneratedImage\(undefined|\(undefined, " src/web/artworkJobs.js
-grep -Pzo '(?:[a-zA-Z]+ViaGateway|announceArtwork)\(\{\s*(?!projectId)' src/web/artworkJobs.js | wc -c
+grep -Pzo '(?:[a-zA-Z]+ViaGateway|announceArtwork)\(\{\s*+(?!projectId)' src/web/artworkJobs.js | wc -c
 ```
 
 - [ ] **Step 8: Pre-flip threading — dialog modules + `sceneBibleAutofill.js` (+ their route call sites)**
@@ -9756,7 +9803,7 @@ Verification (expect **no output**, then output `0`):
 
 ```
 grep -nE "\(undefined, |getPlot\(\)|listCharacters\(\)|getDirectorNotes\(\)" src/web/dialogContext.js src/web/dialogGenerate.js src/web/dialogRegenerate.js src/web/dialogCritique.js src/web/sceneBibleAutofill.js
-grep -Pzo '(?:startDialogGenerationJob|generateAlternatives|critiqueDialog|autofillSceneBible)\(\{\s*(?!projectId)' src/web/entityRoutes.js | wc -c
+grep -Pzo '(?:startDialogGenerationJob|generateAlternatives|critiqueDialog|autofillSceneBible)\(\{\s*+(?!projectId)' src/web/entityRoutes.js | wc -c
 ```
 
 - [ ] **Step 9: Pre-flip threading — `src/web/storyboardGenerate.js`, `storyboardGrabFrame.js`, `storyboardReferenceAggregator.js` (+ route call sites)**
@@ -9890,8 +9937,8 @@ Verification (expect **no output**, then `0` twice):
 
 ```
 grep -nE "\(undefined, |getDirectorNotes\(\)|loadDirectorNotesForPlanner\(\)" src/web/storyboardGenerate.js src/web/storyboardGrabFrame.js src/web/storyboardReferenceAggregator.js src/web/entityRoutes.js
-grep -Pzo '(?:startFrameGenerationJob|previewFrameGenerationPrompt|startCritiqueJob|reExpandShot|startReExpandAllJob|startStoryboardGenerationJob|startBulkFrameGenerationJob)\(\{\s*(?!projectId)' src/web/entityRoutes.js | wc -c
-grep -Pzo '(?:[a-zA-Z]+ViaGateway|collectStoryboardReferenceIds|persistFrameImage|createPlannedStoryboardEntry|critiqueShotsForBeat)\(\{\s*(?!projectId)' src/web/storyboardGenerate.js | wc -c
+grep -Pzo '(?:startFrameGenerationJob|previewFrameGenerationPrompt|startCritiqueJob|reExpandShot|startReExpandAllJob|startStoryboardGenerationJob|startBulkFrameGenerationJob)\(\{\s*+(?!projectId)' src/web/entityRoutes.js | wc -c
+grep -Pzo '(?:[a-zA-Z]+ViaGateway|collectStoryboardReferenceIds|persistFrameImage|createPlannedStoryboardEntry|critiqueShotsForBeat)\(\{\s*+(?!projectId)' src/web/storyboardGenerate.js | wc -c
 ```
 
 - [ ] **Step 10: Pre-flip threading — `src/web/falVideoGenerate.js`**
@@ -10143,10 +10190,15 @@ In `src/mongo/projects.js`, the transitional version (quoted from the Phase A
 conventions — Section 1 wrote exactly this shape):
 
 ```js
-// TRANSITIONAL: falls back to the default project so un-migrated callers keep
-// working during the threading sweep. Task 20 flips this to throw.
+// TRANSITIONAL: falsy projectId resolves to the default project so
+// un-migrated callers stay green during the incremental sweep. Task 20
+// (strict flip) changes this to THROW on falsy.
 export async function resolveProjectId(projectId) {
-  if (projectId) return String(projectId);
+  if (projectId) {
+    const s = String(projectId);
+    if (!/^[a-f0-9]{24}$/i.test(s)) throw new Error(`invalid projectId: ${s}`);
+    return s;
+  }
   return (await getDefaultProject())._id.toString();
 }
 ```
@@ -10158,14 +10210,15 @@ Replace with the strict version:
 // missed threading site — fix the caller; never re-add a default fallback.
 export async function resolveProjectId(projectId) {
   if (!projectId) throw new Error('projectId required');
-  return String(projectId);
+  const s = String(projectId);
+  if (!/^[a-f0-9]{24}$/i.test(s)) throw new Error(`invalid projectId: ${s}`);
+  return s;
 }
 ```
 
 (Keep it `async` — every helper awaits it, and the strict version must stay drop-in.)
-If Phase A's comment text differs slightly, match on the function body — the
-`if (projectId) return String(projectId);` / `getDefaultProject()` pair is the
-load-bearing part.
+Match on the function body — the hex-validation block and the `getDefaultProject()`
+fallback are the load-bearing parts.
 
 - [ ] **Step 17: Run the project tests, then the FULL suite — fix stragglers by threading, never by defaulting**
 
@@ -10207,7 +10260,7 @@ should have consumed — restricted to the re-signed helper names so an unrelate
 `undefined` argument elsewhere can't false-positive:
 
 ```
-grep -rnE "\b(getPlot|getBeat|searchBeats|getCharacter|listCharacters|findAllCharacters|getDirectorNotes|getCharacterTemplate|getPlotTemplate|getStoryboard|updateStoryboard|setFramePrompt|getPreviousStoryboardInBeat|getDialog|updateDialog|listImagesForBeat|listImagesForCharacter|listImagesForDirectorNote|listAttachmentsForBeat|listAttachmentsForCharacter|listAttachmentsForDirectorNote|listImagesByOwnerType|uploadGeneratedImage|uploadImageFromUrl|uploadAttachmentBuffer|uploadAttachmentFromUrl|findCharactersInBeat|setBeatSceneBible|linkCharacterToBeat|unlinkCharacterFromBeat|pushBeatImage|pullBeatImage|pushBeatAttachment|pullBeatAttachment|pushCharacterImage|pullCharacterImage|pullCharacterAttachment|pullDirectorNoteImage|pullDirectorNoteAttachment|updateBeatViaGateway|updateCharacterViaGateway)\(undefined, " src/ scripts/
+grep -rnE "\b(getPlot|updatePlot|getBeat|searchBeats|getCharacter|listCharacters|findAllCharacters|getDirectorNotes|getCharacterTemplate|getPlotTemplate|getStoryboard|updateStoryboard|setFramePrompt|getPreviousStoryboardInBeat|getDialog|updateDialog|listImagesForBeat|listImagesForCharacter|listImagesForDirectorNote|listAttachmentsForBeat|listAttachmentsForCharacter|listAttachmentsForDirectorNote|listImagesByOwnerType|uploadGeneratedImage|uploadImageFromUrl|uploadAttachmentBuffer|uploadAttachmentFromUrl|findCharactersInBeat|setBeatSceneBible|linkCharacterToBeat|unlinkCharacterFromBeat|pushBeatImage|pullBeatImage|pushBeatAttachment|pullBeatAttachment|pushCharacterImage|pullCharacterImage|pullCharacterAttachment|pullDirectorNoteImage|pullDirectorNoteAttachment|updateBeatViaGateway|updateCharacterViaGateway)\(undefined, " src/ scripts/
 ```
 
 Expected output: **zero matches.** Any hit is a threading site the pre-flip steps (or

@@ -22,6 +22,7 @@ vi.mock('../src/anthropic/client.js', () => ({
   getAnthropic: () => ({ messages: { create: async () => anthropicState.resp } }),
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const gen = await import('../src/web/storyboardGenerate.js');
 const { SCENE_PLAN_SYSTEM_PROMPT, SHOT_EXPAND_SYSTEM_PROMPT } = gen;
 
@@ -260,8 +261,9 @@ describe('expandShots revisionNotes', () => {
 describe('end-to-end generation job (overrides)', () => {
   it('persists the bible on the beat and seeds exactly one start-frame prompt per row', async () => {
     const { createBeat, getBeat } = await import('../src/mongo/plots.js');
-    await createBeat({ name: 'DinerE2', desc: 'A diner scene', characters: [] });
-    const beat = await getBeat('DinerE2');
+    const projectId = (await createProject('Test Project'))._id.toString();
+    await createBeat({ projectId, name: 'DinerE2', desc: 'A diner scene', characters: [] });
+    const beat = await getBeat(projectId, 'DinerE2');
 
     gen._setScenePlannerForTests(() => ({
       sceneBible: normalizeBibleForTest({ location: 'Diner' }),
@@ -272,7 +274,7 @@ describe('end-to-end generation job (overrides)', () => {
     );
     gen._setImageDispatcherForTests(() => { throw new Error('should not render during generation'); });
 
-    const jobId = await gen.startStoryboardGenerationJob({ beatId: beat._id.toString(), targetCount: 1 });
+    const jobId = await gen.startStoryboardGenerationJob({ projectId, beatId: beat._id.toString(), targetCount: 1 });
     for (let i = 0; i < 100; i++) {
       const job = gen.getStoryboardGenerationJob(jobId);
       if (job && ['done', 'partial', 'error'].includes(job.status)) break;
@@ -281,7 +283,7 @@ describe('end-to-end generation job (overrides)', () => {
     const job = gen.getStoryboardGenerationJob(jobId);
     expect(job.status).not.toBe('error');
 
-    const updatedBeat = await getBeat('DinerE2');
+    const updatedBeat = await getBeat(projectId, 'DinerE2');
     expect(updatedBeat.scene_bible.location).toBe('Diner');
 
     const { listStoryboards } = await import('../src/mongo/storyboards.js');

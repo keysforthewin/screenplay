@@ -19,6 +19,7 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
@@ -40,8 +41,15 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(() => resolve()));
 });
 
-beforeEach(() => {
+let pid;
+
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
+  const Projects = await import('../src/mongo/projects.js');
+  pid = (await Projects.getDefaultProject())._id.toString();
 });
 
 function seedImageFile({ ownerType, ownerId, kind, name, description, prompt }) {
@@ -52,6 +60,7 @@ function seedImageFile({ ownerType, ownerId, kind, name, description, prompt }) 
     length: 4096,
     uploadDate: new Date(),
     metadata: {
+      project_id: pid,
       owner_type: ownerType ?? null,
       owner_id: ownerId ?? null,
       source: 'generated',
@@ -73,8 +82,8 @@ async function get(path) {
 
 describe('GET /api/images/by-owner/characters', () => {
   it('returns every character-owned image joined with owner_name', async () => {
-    const a = await Characters.createCharacter({ name: 'Bronze Leopard' });
-    const b = await Characters.createCharacter({ name: 'Silver Wolf' });
+    const a = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
+    const b = await Characters.createCharacter({ projectId, name: 'Silver Wolf' });
     const img1 = seedImageFile({ ownerType: 'character', ownerId: a._id, name: 'portrait' });
     const img2 = seedImageFile({ ownerType: 'character', ownerId: b._id, name: 'closeup' });
     // an unrelated library image and a beat image — neither should appear
@@ -91,8 +100,8 @@ describe('GET /api/images/by-owner/characters', () => {
   });
 
   it('filters out the excluded character', async () => {
-    const a = await Characters.createCharacter({ name: 'Bronze Leopard' });
-    const b = await Characters.createCharacter({ name: 'Silver Wolf' });
+    const a = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
+    const b = await Characters.createCharacter({ projectId, name: 'Silver Wolf' });
     const keep = seedImageFile({ ownerType: 'character', ownerId: b._id });
     seedImageFile({ ownerType: 'character', ownerId: a._id });
 
@@ -103,7 +112,7 @@ describe('GET /api/images/by-owner/characters', () => {
   });
 
   it('skips thumbnail-kind images', async () => {
-    const a = await Characters.createCharacter({ name: 'Bronze Leopard' });
+    const a = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
     const real = seedImageFile({ ownerType: 'character', ownerId: a._id });
     seedImageFile({ ownerType: 'character', ownerId: a._id, kind: 'thumbnail' });
 
@@ -113,7 +122,7 @@ describe('GET /api/images/by-owner/characters', () => {
   });
 
   it('returns an empty list when no character images exist', async () => {
-    await Characters.createCharacter({ name: 'Bronze Leopard' });
+    await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
     seedImageFile({ ownerType: null, ownerId: null });
 
     const { status, json } = await get('/api/images/by-owner/characters');
@@ -124,8 +133,8 @@ describe('GET /api/images/by-owner/characters', () => {
 
 describe('GET /api/images/by-owner/beats', () => {
   it('returns every beat-owned image joined with owner_name and owner_order', async () => {
-    const beat1 = await Plots.createBeat({ name: 'Cold open' });
-    const beat2 = await Plots.createBeat({ name: 'Climax' });
+    const beat1 = await Plots.createBeat({ projectId, name: 'Cold open' });
+    const beat2 = await Plots.createBeat({ projectId, name: 'Climax' });
     const img1 = seedImageFile({ ownerType: 'beat', ownerId: beat1._id, name: 'wide shot' });
     const img2 = seedImageFile({ ownerType: 'beat', ownerId: beat2._id, name: 'closeup' });
     seedImageFile({ ownerType: null, ownerId: null });
@@ -142,8 +151,8 @@ describe('GET /api/images/by-owner/beats', () => {
   });
 
   it('filters out the excluded beat', async () => {
-    const beat1 = await Plots.createBeat({ name: 'Cold open' });
-    const beat2 = await Plots.createBeat({ name: 'Climax' });
+    const beat1 = await Plots.createBeat({ projectId, name: 'Cold open' });
+    const beat2 = await Plots.createBeat({ projectId, name: 'Climax' });
     seedImageFile({ ownerType: 'beat', ownerId: beat1._id });
     const keep = seedImageFile({ ownerType: 'beat', ownerId: beat2._id });
 
@@ -154,7 +163,7 @@ describe('GET /api/images/by-owner/beats', () => {
   });
 
   it('skips thumbnail-kind images', async () => {
-    const beat = await Plots.createBeat({ name: 'Diner' });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner' });
     const real = seedImageFile({ ownerType: 'beat', ownerId: beat._id });
     seedImageFile({ ownerType: 'beat', ownerId: beat._id, kind: 'thumbnail' });
 

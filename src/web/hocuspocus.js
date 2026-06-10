@@ -16,7 +16,7 @@ import { config } from '../config.js';
 import { logger } from '../log.js';
 import { fetchYjsState, storeYjsState } from '../mongo/yjsDocs.js';
 import { getSession, touchSession } from '../mongo/auth.js';
-import { isManagedRoom, resolveRoom } from './roomRegistry.js';
+import { assertRoomProjectKnown, parseRoomName, resolveRoom } from './roomRegistry.js';
 
 let server;
 
@@ -28,9 +28,10 @@ async function makeServer() {
     port: config.web.hocuspocusPort,
 
     async onAuthenticate({ token, documentName }) {
-      if (!isManagedRoom(documentName)) {
-        throw new Error(`Unknown room: ${documentName}`);
-      }
+      // Throws "Unknown room" for unparseable names and "Unknown project" for
+      // singleton rooms whose project id no longer resolves — stale SPA tabs
+      // fail closed at connect time.
+      await assertRoomProjectKnown(documentName);
       const session = await getSession(token);
       if (!session) throw new Error('invalid session');
       // Refresh last_seen but don't await — auth check should be fast.
@@ -56,7 +57,14 @@ async function makeServer() {
             logger.warn(`hocuspocus afterLoad resolve failed for ${documentName}: ${e.message}`);
             return null;
           });
-          if (!desc) return;
+          if (!desc) {
+            if (parseRoomName(documentName)) {
+              logger.warn(
+                `hocuspocus afterLoad: parseable room resolves to null (deleted entity or unknown project) — ${documentName}`,
+              );
+            }
+            return;
+          }
           for (const field of desc.fields) {
             const fragment = document.getXmlFragment(field);
             // length === 0 → fresh fragment; safe to seed without trampling.
@@ -77,7 +85,14 @@ async function makeServer() {
         // the last Mongo read.
         async onStoreDocument({ documentName, document }) {
           const desc = await resolveRoom(documentName).catch(() => null);
-          if (!desc) return;
+          if (!desc) {
+            if (parseRoomName(documentName)) {
+              logger.warn(
+                `hocuspocus onStore: parseable room resolves to null (deleted entity or unknown project) — ${documentName}`,
+              );
+            }
+            return;
+          }
           const snapshot = {};
           for (const field of desc.fields) {
             try {

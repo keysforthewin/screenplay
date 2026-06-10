@@ -9,17 +9,23 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
+const Projects = await import('../src/mongo/projects.js');
 const { buildOverview } = await import('../src/agent/overview.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 async function seedTemplate() {
+  const def = await Projects.getDefaultProject();
   await fakeDb.collection('prompts').insertOne({
-    _id: 'character_template',
+    _id: `${def._id.toString()}:character_template`,
     fields: [
       { name: 'name', description: 'name', required: true, core: true },
       { name: 'hollywood_actor', description: 'actor', required: false, core: true },
@@ -34,7 +40,7 @@ async function seedTemplate() {
 describe('buildOverview', () => {
   it('handles fully empty state', async () => {
     await seedTemplate();
-    const o = await buildOverview();
+    const o = await buildOverview(projectId);
     expect(o.plot.synopsis).toBe('');
     expect(o.plot.synopsis_filled).toBe(false);
     expect(o.plot.current_beat).toBe(null);
@@ -52,23 +58,23 @@ describe('buildOverview', () => {
 
   it('summarizes a populated screenplay', async () => {
     await seedTemplate();
-    await Plots.updatePlot({ synopsis: 'A test story.', notes: 'some notes' });
+    await Plots.updatePlot(projectId, { synopsis: 'A test story.', notes: 'some notes' });
 
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Alice',
       fields: { background_story: 'A long backstory about Alice.', arc: 'Grows.' },
     });
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Bob',
       hollywood_actor: 'Cillian Murphy',
       fields: {},
     });
 
-    const beat1 = await Plots.createBeat({ name: 'Open', desc: 'Opening scene', body: 'lots of words' });
-    await Plots.createBeat({ name: 'Climax', desc: 'They fight.', characters: ['Alice', 'Bob'] });
-    await Plots.setCurrentBeat(beat1._id.toString());
+    const beat1 = await Plots.createBeat({ projectId, name: 'Open', desc: 'Opening scene', body: 'lots of words' });
+    await Plots.createBeat({ projectId, name: 'Climax', desc: 'They fight.', characters: ['Alice', 'Bob'] });
+    await Plots.setCurrentBeat(projectId, beat1._id.toString());
 
-    const o = await buildOverview();
+    const o = await buildOverview(projectId);
 
     expect(o.plot.synopsis).toBe('A test story.');
     expect(o.plot.synopsis_filled).toBe(true);
@@ -107,17 +113,17 @@ describe('buildOverview', () => {
 
   it('counts main images on both characters and beats', async () => {
     await seedTemplate();
-    const alice = await Characters.createCharacter({
+    const alice = await Characters.createCharacter({ projectId,
       name: 'Alice', fields: {},
     });
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd' });
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd' });
 
     const charImgId = new ObjectId();
     await fakeDb.collection('characters').updateOne(
       { _id: alice._id },
       { $set: { main_image_id: charImgId, images: [{ _id: charImgId }] } },
     );
-    await Plots.pushBeatImage(beat._id.toString(), {
+    await Plots.pushBeatImage(projectId, beat._id.toString(), {
       _id: new ObjectId(),
       filename: 'x.png',
       content_type: 'image/png',
@@ -125,7 +131,7 @@ describe('buildOverview', () => {
       uploaded_at: new Date(),
     });
 
-    const o = await buildOverview();
+    const o = await buildOverview(projectId);
     expect(o.counts.characters_with_main_image).toBe(1);
     expect(o.counts.beats_with_main_image).toBe(1);
     expect(o.characters[0].has_main_image).toBe(true);

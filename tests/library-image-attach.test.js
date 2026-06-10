@@ -12,13 +12,17 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Files = await import('../src/mongo/files.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
 const DirectorNotes = await import('../src/mongo/directorNotes.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 function seedLibraryImage(extra = {}) {
@@ -29,6 +33,7 @@ function seedLibraryImage(extra = {}) {
     length: 1234,
     uploadDate: new Date(),
     metadata: {
+      project_id: projectId,
       owner_type: null,
       owner_id: null,
       source: 'generated',
@@ -42,7 +47,7 @@ function seedLibraryImage(extra = {}) {
 }
 
 async function seedCharacter(name) {
-  const c = await Characters.createCharacter({ name });
+  const c = await Characters.createCharacter({ projectId, name });
   return c;
 }
 
@@ -51,7 +56,7 @@ describe('attach_library_image_to_character', () => {
     const c = await seedCharacter('Bronze Leopard');
     const file = seedLibraryImage();
 
-    const res = await Files.attachExistingImageToCharacter({
+    const res = await Files.attachExistingImageToCharacter({ projectId,
       character: 'Bronze Leopard',
       imageId: file._id,
     });
@@ -92,7 +97,7 @@ describe('attach_library_image_to_character', () => {
     );
     const file = seedLibraryImage();
 
-    const res = await Files.attachExistingImageToCharacter({
+    const res = await Files.attachExistingImageToCharacter({ projectId,
       character: 'Iris',
       imageId: file._id,
     });
@@ -127,7 +132,7 @@ describe('attach_library_image_to_character', () => {
     );
     const file = seedLibraryImage();
 
-    const res = await Files.attachExistingImageToCharacter({
+    const res = await Files.attachExistingImageToCharacter({ projectId,
       character: 'Owen',
       imageId: file._id,
       setAsMain: true,
@@ -142,12 +147,12 @@ describe('attach_library_image_to_character', () => {
     const c = await seedCharacter('Polly');
     const file = seedLibraryImage();
 
-    await Files.attachExistingImageToCharacter({
+    await Files.attachExistingImageToCharacter({ projectId,
       character: 'Polly',
       imageId: file._id,
     });
 
-    const second = await Files.attachExistingImageToCharacter({
+    const second = await Files.attachExistingImageToCharacter({ projectId,
       character: 'Polly',
       imageId: file._id,
     });
@@ -162,12 +167,12 @@ describe('attach_library_image_to_character', () => {
     const cB = await seedCharacter('Silver Wolf');
     const file = seedLibraryImage();
 
-    await Files.attachExistingImageToCharacter({
+    await Files.attachExistingImageToCharacter({ projectId,
       character: 'Bronze Leopard',
       imageId: file._id,
     });
 
-    const res = await Files.attachExistingImageToCharacter({
+    const res = await Files.attachExistingImageToCharacter({ projectId,
       character: 'Silver Wolf',
       imageId: file._id,
     });
@@ -191,11 +196,11 @@ describe('attach_library_image_to_character', () => {
 
   it('moves the image off a real beat when attaching to a character', async () => {
     const c = await seedCharacter('Bronze Leopard');
-    const beat = await Plots.createBeat({ name: 'Diner Showdown' });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner Showdown' });
     const file = seedLibraryImage({
-      metadata: { owner_type: 'beat', owner_id: beat._id },
+      metadata: { project_id: projectId, owner_type: 'beat', owner_id: beat._id },
     });
-    await Plots.pushBeatImage(beat._id.toString(), {
+    await Plots.pushBeatImage(projectId, beat._id.toString(), {
       _id: file._id,
       filename: file.filename,
       content_type: file.contentType,
@@ -203,7 +208,7 @@ describe('attach_library_image_to_character', () => {
       uploaded_at: file.uploadDate,
     });
 
-    const res = await Files.attachExistingImageToCharacter({
+    const res = await Files.attachExistingImageToCharacter({ projectId,
       character: 'Bronze Leopard',
       imageId: file._id,
     });
@@ -211,7 +216,7 @@ describe('attach_library_image_to_character', () => {
     expect(res.moved_from?.prior_owner_type).toBe('beat');
     expect(res.moved_from?.prior_owner_name).toBe('Diner Showdown');
 
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     const updatedBeat = plot.beats.find((b) => b._id.equals(beat._id));
     expect(updatedBeat.images || []).toHaveLength(0);
 
@@ -221,11 +226,11 @@ describe('attach_library_image_to_character', () => {
 
   it('moves the image off a real director note when attaching to a character', async () => {
     await seedCharacter('Bronze Leopard');
-    const note = await DirectorNotes.addDirectorNote({ text: 'noir tone' });
+    const note = await DirectorNotes.addDirectorNote({ projectId, text: 'noir tone' });
     const file = seedLibraryImage({
-      metadata: { owner_type: 'director_note', owner_id: note._id },
+      metadata: { project_id: projectId, owner_type: 'director_note', owner_id: note._id },
     });
-    await DirectorNotes.pushDirectorNoteImage(note._id.toString(), {
+    await DirectorNotes.pushDirectorNoteImage(projectId, note._id.toString(), {
       _id: file._id,
       filename: file.filename,
       content_type: file.contentType,
@@ -233,14 +238,14 @@ describe('attach_library_image_to_character', () => {
       uploaded_at: file.uploadDate,
     });
 
-    const res = await Files.attachExistingImageToCharacter({
+    const res = await Files.attachExistingImageToCharacter({ projectId,
       character: 'Bronze Leopard',
       imageId: file._id,
     });
 
     expect(res.moved_from?.prior_owner_type).toBe('director_note');
 
-    const dn = await DirectorNotes.getDirectorNotes();
+    const dn = await DirectorNotes.getDirectorNotes(projectId);
     const updatedNote = dn.notes.find((n) => n._id.equals(note._id));
     expect(updatedNote.images || []).toHaveLength(0);
   });
@@ -248,10 +253,10 @@ describe('attach_library_image_to_character', () => {
   it('succeeds when prior owner metadata points at a deleted entity', async () => {
     await seedCharacter('Bronze Leopard');
     const file = seedLibraryImage({
-      metadata: { owner_type: 'beat', owner_id: new ObjectId() },
+      metadata: { project_id: projectId, owner_type: 'beat', owner_id: new ObjectId() },
     });
 
-    const res = await Files.attachExistingImageToCharacter({
+    const res = await Files.attachExistingImageToCharacter({ projectId,
       character: 'Bronze Leopard',
       imageId: file._id,
     });
@@ -267,7 +272,7 @@ describe('attach_library_image_to_character', () => {
   it('throws when the image_id does not exist', async () => {
     await seedCharacter('Bronze Leopard');
     await expect(
-      Files.attachExistingImageToCharacter({
+      Files.attachExistingImageToCharacter({ projectId,
         character: 'Bronze Leopard',
         imageId: new ObjectId(),
       }),
@@ -277,7 +282,7 @@ describe('attach_library_image_to_character', () => {
   it('throws when the character does not exist', async () => {
     const file = seedLibraryImage();
     await expect(
-      Files.attachExistingImageToCharacter({
+      Files.attachExistingImageToCharacter({ projectId,
         character: 'Nonexistent',
         imageId: file._id,
       }),
@@ -295,7 +300,7 @@ describe('attach_library_image_to_character handler', () => {
       image_id: file._id.toString(),
       character: 'Bronze Leopard',
       set_as_main: true,
-    });
+    }, { projectId });
     expect(out).toMatch(/Attached image to character "Bronze Leopard"/);
     expect(out).toMatch(/now main image/);
   });
@@ -308,22 +313,22 @@ describe('attach_library_image_to_character handler', () => {
     await HANDLERS.attach_library_image_to_character({
       image_id: file._id.toString(),
       character: 'Polly',
-    });
+    }, { projectId });
     const second = await HANDLERS.attach_library_image_to_character({
       image_id: file._id.toString(),
       character: 'Polly',
-    });
+    }, { projectId });
     expect(second).toMatch(/already attached/);
   });
 
   it('surfaces a "(moved from beat ...)" suffix when the image was beat-owned', async () => {
     const { HANDLERS } = await import('../src/agent/handlers.js');
     await seedCharacter('Bronze Leopard');
-    const beat = await Plots.createBeat({ name: 'Diner Showdown' });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner Showdown' });
     const file = seedLibraryImage({
-      metadata: { owner_type: 'beat', owner_id: beat._id },
+      metadata: { project_id: projectId, owner_type: 'beat', owner_id: beat._id },
     });
-    await Plots.pushBeatImage(beat._id.toString(), {
+    await Plots.pushBeatImage(projectId, beat._id.toString(), {
       _id: file._id,
       filename: file.filename,
       content_type: file.contentType,
@@ -334,7 +339,7 @@ describe('attach_library_image_to_character handler', () => {
     const out = await HANDLERS.attach_library_image_to_character({
       image_id: file._id.toString(),
       character: 'Bronze Leopard',
-    });
+    }, { projectId });
     expect(out).toMatch(/Attached image to character "Bronze Leopard"/);
     expect(out).toMatch(/moved from beat "Diner Showdown"/);
   });

@@ -7,60 +7,60 @@ async function loadLinks() {
 describe('characterUrl', () => {
   it('builds a URL from a plain name', async () => {
     const { characterUrl } = await loadLinks();
-    expect(characterUrl({ name: 'Steve' })).toBe('http://localhost:3000/character/Steve');
+    expect(characterUrl(null, { name: 'Steve' })).toBe('http://localhost:3000/character/Steve');
   });
 
   it('strips markdown from the name', async () => {
     const { characterUrl } = await loadLinks();
-    expect(characterUrl({ name: '**Steve**' })).toBe('http://localhost:3000/character/Steve');
+    expect(characterUrl(null, { name: '**Steve**' })).toBe('http://localhost:3000/character/Steve');
   });
 
   it('URL-encodes spaces and special chars', async () => {
     const { characterUrl } = await loadLinks();
-    expect(characterUrl({ name: 'Anne Hathaway' })).toBe(
+    expect(characterUrl(null, { name: 'Anne Hathaway' })).toBe(
       'http://localhost:3000/character/Anne%20Hathaway',
     );
-    expect(characterUrl({ name: 'Renée Z.' })).toBe(
+    expect(characterUrl(null, { name: 'Renée Z.' })).toBe(
       `http://localhost:3000/character/${encodeURIComponent('Renée Z.')}`,
     );
   });
 
   it('returns null for missing or empty names', async () => {
     const { characterUrl } = await loadLinks();
-    expect(characterUrl(null)).toBeNull();
-    expect(characterUrl(undefined)).toBeNull();
-    expect(characterUrl({})).toBeNull();
-    expect(characterUrl({ name: '' })).toBeNull();
-    expect(characterUrl({ name: '   ' })).toBeNull();
-    expect(characterUrl({ name: '**  **' })).toBeNull();
+    expect(characterUrl(null, null)).toBeNull();
+    expect(characterUrl(null, undefined)).toBeNull();
+    expect(characterUrl(null, {})).toBeNull();
+    expect(characterUrl(null, { name: '' })).toBeNull();
+    expect(characterUrl(null, { name: '   ' })).toBeNull();
+    expect(characterUrl(null, { name: '**  **' })).toBeNull();
   });
 });
 
 describe('beatUrl', () => {
   it('builds a URL from numeric order', async () => {
     const { beatUrl } = await loadLinks();
-    expect(beatUrl({ order: 3 })).toBe('http://localhost:3000/beat/3');
+    expect(beatUrl(null, { order: 3 })).toBe('http://localhost:3000/beat/3');
   });
 
   it('accepts order=0 as valid', async () => {
     const { beatUrl } = await loadLinks();
-    expect(beatUrl({ order: 0 })).toBe('http://localhost:3000/beat/0');
+    expect(beatUrl(null, { order: 0 })).toBe('http://localhost:3000/beat/0');
   });
 
   it('returns null when order is missing or not a number', async () => {
     const { beatUrl } = await loadLinks();
-    expect(beatUrl(null)).toBeNull();
-    expect(beatUrl(undefined)).toBeNull();
-    expect(beatUrl({})).toBeNull();
-    expect(beatUrl({ order: '3' })).toBeNull();
-    expect(beatUrl({ order: NaN })).toBeNull();
+    expect(beatUrl(null, null)).toBeNull();
+    expect(beatUrl(null, undefined)).toBeNull();
+    expect(beatUrl(null, {})).toBeNull();
+    expect(beatUrl(null, { order: '3' })).toBeNull();
+    expect(beatUrl(null, { order: NaN })).toBeNull();
   });
 });
 
 describe('notesUrl', () => {
   it('returns the shared notes URL', async () => {
     const { notesUrl } = await loadLinks();
-    expect(notesUrl()).toBe('http://localhost:3000/notes');
+    expect(notesUrl(null)).toBe('http://localhost:3000/notes');
   });
 });
 
@@ -102,8 +102,8 @@ describe('with WEB_PUBLIC_BASE_URL set', () => {
 
   it('uses the configured base and trims trailing slash', async () => {
     const { characterUrl, beatUrl, notesUrl } = await loadLinks();
-    expect(characterUrl({ name: 'Steve' })).toBe('https://app.example.com/character/Steve');
-    expect(beatUrl({ order: 2 })).toBe('https://app.example.com/beat/2');
-    expect(notesUrl()).toBe('https://app.example.com/notes');
+    expect(characterUrl(null, { name: 'Steve' })).toBe('https://app.example.com/character/Steve');
+    expect(beatUrl(null, { order: 2 })).toBe('https://app.example.com/beat/2');
+    expect(notesUrl(null)).toBe('https://app.example.com/notes');
   });
 });

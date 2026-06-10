@@ -34,27 +34,30 @@ import { announceMediaEvent } from '../discord/announcer.js';
 import { beatUrl, characterUrl } from './links.js';
 import { getBeat } from '../mongo/plots.js';
 import { getCharacter } from '../mongo/characters.js';
+import { getProjectById } from '../mongo/projects.js';
 import { stripMarkdown } from '../util/markdown.js';
 
-async function announceArtwork({ hostType, hostId, username, verb, fileId, prompt }) {
+async function announceArtwork({ projectId, hostType, hostId, username, verb, fileId, prompt }) {
   try {
     if (!username) return;
+    const project = projectId ? await getProjectById(projectId) : null;
+    const projectTitle = project?.title ?? null;
     let entityLabel = null;
     let entityUrl = null;
     if (hostType === 'beat') {
-      const beat = await getBeat(String(hostId));
+      const beat = await getBeat(projectId, String(hostId));
       if (beat) {
         const name = stripMarkdown(beat.name || '').trim();
         const order = Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
         entityLabel = name ? `${order}: ${name}` : order;
-        entityUrl = beatUrl(beat);
+        entityUrl = beatUrl(projectTitle, beat);
       }
     } else if (hostType === 'character') {
-      const character = await getCharacter(String(hostId));
+      const character = await getCharacter(projectId, String(hostId));
       if (character) {
         const name = stripMarkdown(character.name || '').trim() || 'character';
         entityLabel = `Character: ${name}`;
-        entityUrl = characterUrl(character);
+        entityUrl = characterUrl(projectTitle, character);
       }
     }
     announceMediaEvent({
@@ -128,6 +131,7 @@ async function runProviderForEdit({ prompt, model, existingImage, referenceImage
 // Creates a pending artwork on the host and kicks off the provider call.
 // Returns the pending artwork immediately.
 export async function startGenerateArtworkJob({
+  projectId = null,
   hostType,
   hostId,
   prompt,
@@ -140,6 +144,7 @@ export async function startGenerateArtworkJob({
 }) {
   validateArtworkModel(model);
   const { artwork } = await createPendingArtworkViaGateway({
+    projectId,
     hostType,
     hostId,
     prompt,
@@ -149,6 +154,7 @@ export async function startGenerateArtworkJob({
   });
   setImmediate(() => {
     runGenerate({
+      projectId,
       hostType,
       hostId,
       artworkId: artwork._id,
@@ -166,6 +172,7 @@ export async function startGenerateArtworkJob({
 
 async function runGenerate(opts) {
   const {
+    projectId,
     hostType,
     hostId,
     artworkId,
@@ -186,7 +193,7 @@ async function runGenerate(opts) {
       discordUser,
       channelId,
     });
-    const file = await uploadGeneratedImage({
+    const file = await uploadGeneratedImage(projectId, {
       buffer: result.buffer,
       contentType: result.contentType,
       prompt,
@@ -197,6 +204,7 @@ async function runGenerate(opts) {
     });
     if (result.model && result.model !== model) {
       await patchArtworkViaGateway({
+        projectId,
         hostType,
         hostId,
         artworkId,
@@ -204,6 +212,7 @@ async function runGenerate(opts) {
       });
     }
     await setArtworkResultViaGateway({
+      projectId,
       hostType,
       hostId,
       artworkId,
@@ -212,6 +221,7 @@ async function runGenerate(opts) {
     });
     if (announceUsername) {
       announceArtwork({
+        projectId,
         hostType,
         hostId,
         username: announceUsername,
@@ -223,6 +233,7 @@ async function runGenerate(opts) {
   } catch (err) {
     logger.warn(`artwork generate ${hostType}:${hostId} ${artworkId} failed: ${err.message}`);
     await setArtworkStatusViaGateway({
+      projectId,
       hostType,
       hostId,
       artworkId,
@@ -238,6 +249,7 @@ async function runGenerate(opts) {
 // orphaned (deleted from GridFS) only after the new upload succeeds —
 // handled by setArtworkResultViaGateway with rotateToPrevious=false.
 export async function startRegenerateArtworkJob({
+  projectId = null,
   hostType,
   hostId,
   artworkId,
@@ -252,8 +264,9 @@ export async function startRegenerateArtworkJob({
   validateArtworkModel(model);
   const patch = { prompt, model, reference_image_ids: referenceImageIds };
   if (typeof name === 'string') patch.name = name;
-  await patchArtworkViaGateway({ hostType, hostId, artworkId, patch });
+  await patchArtworkViaGateway({ projectId, hostType, hostId, artworkId, patch });
   const { artwork } = await setArtworkStatusViaGateway({
+    projectId,
     hostType,
     hostId,
     artworkId,
@@ -261,6 +274,7 @@ export async function startRegenerateArtworkJob({
   });
   setImmediate(() => {
     runGenerate({
+      projectId,
       hostType,
       hostId,
       artworkId,
@@ -283,6 +297,7 @@ export async function startRegenerateArtworkJob({
 // previous_result_image_id; older previous images are deleted from GridFS by
 // setArtworkResultViaGateway.
 export async function startEditArtworkJob({
+  projectId = null,
   hostType,
   hostId,
   artworkId,
@@ -295,12 +310,14 @@ export async function startEditArtworkJob({
 }) {
   validateArtworkModel(model);
   await patchArtworkViaGateway({
+    projectId,
     hostType,
     hostId,
     artworkId,
     patch: { last_edit_prompt: prompt },
   });
   const { artwork } = await setArtworkStatusViaGateway({
+    projectId,
     hostType,
     hostId,
     artworkId,
@@ -308,6 +325,7 @@ export async function startEditArtworkJob({
   });
   setImmediate(() => {
     runEdit({
+      projectId,
       hostType,
       hostId,
       artworkId,
@@ -325,6 +343,7 @@ export async function startEditArtworkJob({
 
 async function runEdit(opts) {
   const {
+    projectId,
     hostType,
     hostId,
     artworkId,
@@ -354,7 +373,7 @@ async function runEdit(opts) {
       discordUser,
       channelId,
     });
-    const file = await uploadGeneratedImage({
+    const file = await uploadGeneratedImage(projectId, {
       buffer: result.buffer,
       contentType: result.contentType,
       prompt,
@@ -364,6 +383,7 @@ async function runEdit(opts) {
       filename: `${hostType}-${hostId}-artwork-edit-${Date.now()}.png`,
     });
     await setArtworkResultViaGateway({
+      projectId,
       hostType,
       hostId,
       artworkId,
@@ -372,6 +392,7 @@ async function runEdit(opts) {
     });
     if (announceUsername) {
       announceArtwork({
+        projectId,
         hostType,
         hostId,
         username: announceUsername,
@@ -383,6 +404,7 @@ async function runEdit(opts) {
   } catch (err) {
     logger.warn(`artwork edit ${hostType}:${hostId} ${artworkId} failed: ${err.message}`);
     await setArtworkStatusViaGateway({
+      projectId,
       hostType,
       hostId,
       artworkId,
@@ -395,14 +417,14 @@ async function runEdit(opts) {
 // ── Undo (synchronous) ────────────────────────────────────────────────────
 // Swap previous_result_image_id → result_image_id. The image that was
 // current is deleted from GridFS by undoArtworkEditViaGateway.
-export async function undoArtworkEdit({ hostType, hostId, artworkId }) {
-  const { artwork } = await undoArtworkEditViaGateway({ hostType, hostId, artworkId });
+export async function undoArtworkEdit({ projectId, hostType, hostId, artworkId }) {
+  const { artwork } = await undoArtworkEditViaGateway({ projectId, hostType, hostId, artworkId });
   return artwork;
 }
 
 // ── Delete ────────────────────────────────────────────────────────────────
 // Removes the artwork and purges its current + previous result images from
 // GridFS. Returns the removed artwork doc.
-export async function deleteArtwork({ hostType, hostId, artworkId }) {
-  return removeArtworkViaGateway({ hostType, hostId, artworkId });
+export async function deleteArtwork({ projectId, hostType, hostId, artworkId }) {
+  return removeArtworkViaGateway({ projectId, hostType, hostId, artworkId });
 }

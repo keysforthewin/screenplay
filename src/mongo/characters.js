@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../log.js';
 import { stripMarkdown } from '../util/markdown.js';
+import { resolveProjectId } from './projects.js';
 
 const col = () => getDb().collection('characters');
 
@@ -9,15 +10,23 @@ function maybeId(s) {
   return /^[a-f0-9]{24}$/i.test(s) ? new ObjectId(s) : null;
 }
 
-export async function listCharacters() {
-  return col()
-    .find({}, { projection: { name: 1, hollywood_actor: 1, main_image_id: 1 } })
-    .sort({ name: 1 })
-    .toArray();
+function inProject(doc, projectId) {
+  return !doc.project_id || doc.project_id === projectId;
 }
 
-export async function findAllCharacters() {
-  return col().find({}).sort({ name: 1 }).toArray();
+export async function listCharacters(projectId) {
+  projectId = await resolveProjectId(projectId);
+  const all = await col()
+    .find({}, { projection: { name: 1, hollywood_actor: 1, main_image_id: 1, project_id: 1 } })
+    .sort({ name: 1 })
+    .toArray();
+  return all.filter((c) => inProject(c, projectId));
+}
+
+export async function findAllCharacters(projectId) {
+  projectId = await resolveProjectId(projectId);
+  const all = await col().find({}).sort({ name: 1 }).toArray();
+  return all.filter((c) => inProject(c, projectId));
 }
 
 // Synthesize `character_sheet_image_ids: ObjectId[]` on legacy docs that only
@@ -31,31 +40,41 @@ function backfillSheetIds(doc) {
   return doc;
 }
 
-export async function getCharacter(identifier) {
+export async function getCharacter(projectId, identifier) {
+  projectId = await resolveProjectId(projectId);
   const c = col();
   const id = maybeId(identifier);
   if (id) {
     const byId = await c.findOne({ _id: id });
-    if (byId) return backfillSheetIds(byId);
+    // Locate by globally-unique id, then VERIFY project — a stale id from
+    // another project's chat history must fail as not-found, not leak.
+    if (byId && inProject(byId, projectId)) return backfillSheetIds(byId);
+    if (byId) return null;
   }
   const lc = String(identifier).toLowerCase();
-  const direct = await c.findOne({ name_lower: lc });
+  const direct = await c.findOne({ project_id: projectId, name_lower: lc });
   if (direct) return backfillSheetIds(direct);
+  const legacy = await c.findOne({ name_lower: lc, project_id: { $exists: false } });
+  if (legacy) return backfillSheetIds(legacy);
   // Tolerate markdown/whitespace drift in the stored `name_lower`: legacy
   // createCharacter wrote raw `name.toLowerCase()` (preserving newlines and
   // markdown chars), but URLs and most callers use the stripped plain text.
   // If the direct lookup misses, scan for a record whose `stripMarkdown(name)`
-  // matches the stripped identifier.
+  // matches the stripped identifier — but stay inside the project.
   const stripped = stripMarkdown(String(identifier)).toLowerCase();
   if (!stripped) return null;
   const all = await c.find({}).toArray();
-  const match = all.find((d) => stripMarkdown(d.name || '').toLowerCase() === stripped);
+  const match = all.find(
+    (d) => inProject(d, projectId) && stripMarkdown(d.name || '').toLowerCase() === stripped,
+  );
   return match ? backfillSheetIds(match) : null;
 }
 
-export async function createCharacter({ name, hollywood_actor, fields = {} }) {
+export async function createCharacter({ projectId, name, hollywood_actor, fields = {} }) {
+  projectId = await resolveProjectId(projectId);
   const now = new Date();
   const doc = {
+    project_id: projectId,
     name,
     name_lower: stripMarkdown(name).toLowerCase(),
     hollywood_actor: hollywood_actor || null,
@@ -68,7 +87,8 @@ export async function createCharacter({ name, hollywood_actor, fields = {} }) {
   return { _id: res.insertedId, ...doc };
 }
 
-export async function updateCharacter(identifier, patch) {
+export async function updateCharacter(projectId, identifier, patch) {
+  projectId = await resolveProjectId(projectId);
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new Error(
       `update_character: \`patch\` must be an object like {name: "..."} or {fields: {...}}, got ${
@@ -92,7 +112,7 @@ export async function updateCharacter(identifier, patch) {
       `update_character: \`patch\` has no recognized fields. Expected name, fields, fields.<key>, hollywood_actor, character_sheet_image_id, fal_character_id, fal_character_image_hash, or unset. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
-  const existing = await getCharacter(identifier);
+  const existing = await getCharacter(projectId, identifier);
   if (!existing) throw new Error(`Character not found: ${identifier}`);
   const set = { updated_at: new Date() };
   const unset = {};
@@ -168,14 +188,15 @@ export async function updateCharacter(identifier, patch) {
   logger.info(
     `mongo: character update name=${existing.name} fields=[${fieldList.join(',')}]`,
   );
-  return getCharacter(existing._id.toString());
+  return getCharacter(projectId, existing._id.toString());
 }
 
 const SEARCHABLE_CORE_FIELDS = ['name', 'hollywood_actor'];
 
-export async function searchCharacters(query) {
+export async function searchCharacters(projectId, query) {
+  projectId = await resolveProjectId(projectId);
   const q = String(query).toLowerCase();
-  const all = await col().find({}).toArray();
+  const all = (await col().find({}).toArray()).filter((c) => inProject(c, projectId));
   const out = [];
   for (const c of all) {
     const matched_fields = [];
@@ -206,8 +227,9 @@ export async function searchCharacters(query) {
   return out;
 }
 
-export async function deleteCharacter(identifier) {
-  const c = await getCharacter(identifier);
+export async function deleteCharacter(projectId, identifier) {
+  projectId = await resolveProjectId(projectId);
+  const c = await getCharacter(projectId, identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   await col().deleteOne({ _id: c._id });
   logger.info(`mongo: character delete id=${c._id} name="${c.name}"`);
@@ -219,8 +241,9 @@ export async function deleteCharacter(identifier) {
   };
 }
 
-export async function pushCharacterImage(identifier, imageMeta, setAsMain = false) {
-  const c = await getCharacter(identifier);
+export async function pushCharacterImage(projectId, identifier, imageMeta, setAsMain = false) {
+  projectId = await resolveProjectId(projectId);
+  const c = await getCharacter(projectId, identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   const promote = !!setAsMain || !c.images || c.images.length === 0;
   const update = {
@@ -242,8 +265,9 @@ export async function pushCharacterImage(identifier, imageMeta, setAsMain = fals
 // the new image becomes the main image. Throws if the old image isn't
 // attached. Does NOT touch GridFS — the caller is responsible for deleting
 // the old bytes.
-export async function replaceCharacterImage(identifier, oldImageId, newImageMeta) {
-  const c = await getCharacter(identifier);
+export async function replaceCharacterImage(projectId, identifier, oldImageId, newImageMeta) {
+  projectId = await resolveProjectId(projectId);
+  const c = await getCharacter(projectId, identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   const oldOid = oldImageId instanceof ObjectId ? oldImageId : new ObjectId(String(oldImageId));
   const images = c.images || [];
@@ -278,8 +302,9 @@ export async function replaceCharacterImage(identifier, oldImageId, newImageMeta
 // Remove an image from a character's embedded images[] array WITHOUT deleting
 // the GridFS file. Used by the move-on-attach path; callers that want full
 // deletion should use Files.removeCharacterImage instead.
-export async function pullCharacterImage(identifier, imageId) {
-  const c = await getCharacter(identifier);
+export async function pullCharacterImage(projectId, identifier, imageId) {
+  projectId = await resolveProjectId(projectId);
+  const c = await getCharacter(projectId, identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   const oid = imageId instanceof ObjectId ? imageId : new ObjectId(String(imageId));
   const images = c.images || [];
@@ -300,8 +325,9 @@ export async function pullCharacterImage(identifier, imageId) {
   return { character: c.name, _id: c._id, removed: oid, main_image_id: newMain };
 }
 
-export async function pushCharacterAttachment(identifier, attachmentMeta) {
-  const c = await getCharacter(identifier);
+export async function pushCharacterAttachment(projectId, identifier, attachmentMeta) {
+  projectId = await resolveProjectId(projectId);
+  const c = await getCharacter(projectId, identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   await col().updateOne(
     { _id: c._id },
@@ -323,8 +349,9 @@ export async function pushCharacterAttachment(identifier, attachmentMeta) {
 // 'character', owner_id=this character) and is referenced by result_image_id.
 // References come from this character's images[] array.
 
-export async function pushCharacterArtwork(identifier, artworkMeta) {
-  const c = await getCharacter(identifier);
+export async function pushCharacterArtwork(projectId, identifier, artworkMeta) {
+  projectId = await resolveProjectId(projectId);
+  const c = await getCharacter(projectId, identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   await col().updateOne(
     { _id: c._id },
@@ -339,8 +366,9 @@ export async function pushCharacterArtwork(identifier, artworkMeta) {
   return { character: c.name, _id: c._id, artwork_id: artworkMeta._id };
 }
 
-export async function replaceCharacterArtwork(identifier, artworkId, patch) {
-  const c = await getCharacter(identifier);
+export async function replaceCharacterArtwork(projectId, identifier, artworkId, patch) {
+  projectId = await resolveProjectId(projectId);
+  const c = await getCharacter(projectId, identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   const oid = artworkId instanceof ObjectId ? artworkId : new ObjectId(String(artworkId));
   const artworks = c.artworks || [];
@@ -362,8 +390,9 @@ export async function replaceCharacterArtwork(identifier, artworkId, patch) {
   return next;
 }
 
-export async function pullCharacterArtwork(identifier, artworkId) {
-  const c = await getCharacter(identifier);
+export async function pullCharacterArtwork(projectId, identifier, artworkId) {
+  projectId = await resolveProjectId(projectId);
+  const c = await getCharacter(projectId, identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   const oid = artworkId instanceof ObjectId ? artworkId : new ObjectId(String(artworkId));
   const artworks = c.artworks || [];
@@ -389,8 +418,9 @@ export async function pullCharacterArtwork(identifier, artworkId) {
 // deleting the GridFS file. Used by the move-on-attach path AND by the SPA's
 // delete button (which expects the GridFS bytes to be cleaned up by the
 // gateway wrapper).
-export async function pullCharacterAttachment(identifier, attachmentId) {
-  const c = await getCharacter(identifier);
+export async function pullCharacterAttachment(projectId, identifier, attachmentId) {
+  projectId = await resolveProjectId(projectId);
+  const c = await getCharacter(projectId, identifier);
   if (!c) throw new Error(`Character not found: ${identifier}`);
   const oid = attachmentId instanceof ObjectId ? attachmentId : new ObjectId(String(attachmentId));
   const attachments = c.attachments || [];

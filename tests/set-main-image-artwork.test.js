@@ -17,13 +17,17 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Files = await import('../src/mongo/files.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
 const Artworks = await import('../src/mongo/artworks.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 function makeMeta() {
@@ -39,34 +43,34 @@ function makeMeta() {
 
 describe('setMainCharacterImage — artwork source', () => {
   it('accepts a done artwork result_image_id and sets main', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
-    const { artwork } = await Artworks.createPendingArtwork({
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       prompt: 'p',
       model: 'fal',
     });
     const resultId = new ObjectId();
-    await Artworks.setArtworkResult({
+    await Artworks.setArtworkResult({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       artworkId: artwork._id,
       resultImageId: resultId,
     });
 
-    const out = await Files.setMainCharacterImage({
+    const out = await Files.setMainCharacterImage({ projectId,
       character: c._id.toString(),
       imageId: resultId.toString(),
     });
     expect(out.main_image_id.equals(resultId)).toBe(true);
 
-    const fresh = await Characters.getCharacter('Rae');
+    const fresh = await Characters.getCharacter(projectId, 'Rae');
     expect(fresh.main_image_id.equals(resultId)).toBe(true);
   });
 
   it('rejects a pending artwork (no result yet)', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
-    const { artwork } = await Artworks.createPendingArtwork({
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'character',
       hostId: c._id.toString(),
       prompt: 'p',
@@ -75,7 +79,7 @@ describe('setMainCharacterImage — artwork source', () => {
     // Synthesize an id that is not present anywhere on the host
     const ghost = new ObjectId();
     await expect(
-      Files.setMainCharacterImage({
+      Files.setMainCharacterImage({ projectId,
         character: c._id.toString(),
         imageId: ghost.toString(),
       }),
@@ -86,10 +90,10 @@ describe('setMainCharacterImage — artwork source', () => {
   });
 
   it('still accepts a regular images[] entry (no regression)', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
     const meta = makeMeta();
-    await Characters.pushCharacterImage(c._id.toString(), meta, false);
-    const out = await Files.setMainCharacterImage({
+    await Characters.pushCharacterImage(projectId, c._id.toString(), meta, false);
+    const out = await Files.setMainCharacterImage({ projectId,
       character: c._id.toString(),
       imageId: meta._id.toString(),
     });
@@ -97,9 +101,9 @@ describe('setMainCharacterImage — artwork source', () => {
   });
 
   it('rejects an id that is neither in images[] nor an artwork result', async () => {
-    const c = await Characters.createCharacter({ name: 'Rae' });
+    const c = await Characters.createCharacter({ projectId, name: 'Rae' });
     await expect(
-      Files.setMainCharacterImage({
+      Files.setMainCharacterImage({ projectId,
         character: c._id.toString(),
         imageId: new ObjectId().toString(),
       }),
@@ -109,37 +113,37 @@ describe('setMainCharacterImage — artwork source', () => {
 
 describe('setBeatMainImage — artwork source', () => {
   it('accepts a done artwork result_image_id on a beat', async () => {
-    const b = await Plots.createBeat({ name: 'Cold open' });
-    const { artwork } = await Artworks.createPendingArtwork({
+    const b = await Plots.createBeat({ projectId, name: 'Cold open' });
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
       hostType: 'beat',
       hostId: b._id.toString(),
       prompt: 'p',
       model: 'fal',
     });
     const resultId = new ObjectId();
-    await Artworks.setArtworkResult({
+    await Artworks.setArtworkResult({ projectId,
       hostType: 'beat',
       hostId: b._id.toString(),
       artworkId: artwork._id,
       resultImageId: resultId,
     });
 
-    const updated = await Plots.setBeatMainImage(b._id.toString(), resultId);
+    const updated = await Plots.setBeatMainImage(projectId, b._id.toString(), resultId);
     expect(updated.main_image_id.equals(resultId)).toBe(true);
   });
 
   it('still accepts a regular images[] entry on a beat (no regression)', async () => {
-    const b = await Plots.createBeat({ name: 'Cold open' });
+    const b = await Plots.createBeat({ projectId, name: 'Cold open' });
     const meta = makeMeta();
-    await Plots.pushBeatImage(b._id.toString(), meta, false);
-    const updated = await Plots.setBeatMainImage(b._id.toString(), meta._id);
+    await Plots.pushBeatImage(projectId, b._id.toString(), meta, false);
+    const updated = await Plots.setBeatMainImage(projectId, b._id.toString(), meta._id);
     expect(updated.main_image_id.equals(meta._id)).toBe(true);
   });
 
   it('rejects an id that is neither in images[] nor an artwork result', async () => {
-    const b = await Plots.createBeat({ name: 'Cold open' });
+    const b = await Plots.createBeat({ projectId, name: 'Cold open' });
     await expect(
-      Plots.setBeatMainImage(b._id.toString(), new ObjectId()),
+      Plots.setBeatMainImage(projectId, b._id.toString(), new ObjectId()),
     ).rejects.toThrow(/not attached/i);
   });
 });

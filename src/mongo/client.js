@@ -92,7 +92,8 @@ export async function connectMongo() {
   db = client.db(config.mongo.db);
   logger.info(`Mongo connected: ${config.mongo.db}`);
 
-  await db.collection('characters').createIndex({ name_lower: 1 }, { unique: true });
+  await db.collection('characters').createIndex({ project_id: 1, name_lower: 1 }, { unique: true });
+  await db.collection('projects').createIndex({ title_lower: 1 }, { unique: true });
   await db.collection('messages').createIndex({ channel_id: 1, created_at: 1 });
   await db
     .collection('images.files')
@@ -100,9 +101,24 @@ export async function connectMongo() {
   await db
     .collection('images.files')
     .createIndex({ 'metadata.owner_type': 1, 'metadata.name_lower': 1 });
+  await db
+    .collection('images.files')
+    .createIndex({ 'metadata.project_id': 1, 'metadata.owner_type': 1 });
+  await db
+    .collection('attachments.files')
+    .createIndex({ 'metadata.project_id': 1, 'metadata.owner_type': 1 });
+  await db
+    .collection('attachments.files')
+    .createIndex({ 'metadata.owner_type': 1, 'metadata.owner_id': 1 });
   await db.collection('token_usage').createIndex({ discord_user_id: 1, created_at: -1 });
   await db.collection('token_usage').createIndex({ created_at: -1 });
   await db.collection('storyboards').createIndex({ beat_id: 1, order: 1 });
+  await db.collection('storyboards').createIndex({ project_id: 1, beat_id: 1 });
+  await db.collection('dialogs').createIndex({ project_id: 1, beat_id: 1 });
+  await db.collection('plots').createIndex(
+    { project_id: 1 },
+    { unique: true, partialFilterExpression: { project_id: { $type: 'string' } } },
+  );
 
   return db;
 }

@@ -2,8 +2,10 @@ import { apiDelete, apiPostJson } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
 import { ImageGallery } from './ImageGallery.jsx';
+import { useProject } from '../project/ProjectContext.jsx';
 
 export function NotesPanel({ notes, session, onChange }) {
+  const { id: projectId } = useProject();
   async function addNote() {
     await apiPostJson('/notes', { text: '_New note_' });
     onChange();
@@ -17,7 +19,7 @@ export function NotesPanel({ notes, session, onChange }) {
 
   return (
     <>
-      <CollabSurface room="notes" session={session} onPing={onChange}>
+      <CollabSurface room={`notes:${projectId}`} session={session} onPing={onChange}>
         {notes.length === 0 && (
           <p style={{ color: 'var(--fg-muted)' }}>No notes yet.</p>
         )}

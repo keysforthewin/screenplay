@@ -12,13 +12,21 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Attachments = await import('../src/mongo/attachments.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
 const DirectorNotes = await import('../src/mongo/directorNotes.js');
+const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let pid;
+
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
+  pid = (await Projects.getDefaultProject())._id.toString();
 });
 
 function seedLibraryAttachment(extra = {}) {
@@ -29,6 +37,7 @@ function seedLibraryAttachment(extra = {}) {
     length: 5000,
     uploadDate: new Date(),
     metadata: {
+      project_id: pid,
       owner_type: null,
       owner_id: null,
       source: 'upload',
@@ -44,22 +53,55 @@ describe('listLibraryAttachments', () => {
   it('returns only files with owner_type null', async () => {
     seedLibraryAttachment();
     seedLibraryAttachment({
-      metadata: { owner_type: 'beat', owner_id: new ObjectId() },
+      metadata: { project_id: projectId, owner_type: 'beat', owner_id: new ObjectId() },
     });
     seedLibraryAttachment();
 
-    const lib = await Attachments.listLibraryAttachments();
+    const lib = await Attachments.listLibraryAttachments(projectId);
     expect(lib).toHaveLength(2);
     for (const f of lib) expect(f.metadata.owner_type).toBeNull();
+  });
+
+  it('is project-filtered', async () => {
+    const other = await Projects.createProject('Other Movie');
+    const otherPid = other._id.toString();
+    seedLibraryAttachment();
+    seedLibraryAttachment({
+      metadata: {
+        project_id: otherPid,
+        owner_type: null,
+        owner_id: null,
+        source: 'upload',
+        content_type: 'audio/mpeg',
+      },
+    });
+
+    const defaults = await Attachments.listLibraryAttachments(projectId);
+    expect(defaults).toHaveLength(1);
+    expect(defaults[0].metadata.project_id).toBe(pid);
+
+    const others = await Attachments.listLibraryAttachments(otherPid);
+    expect(others).toHaveLength(1);
+    expect(others[0].metadata.project_id).toBe(otherPid);
+  });
+
+  it('files without metadata.project_id are excluded (strict filter; migration stamps legacy files)', async () => {
+    const stamped = seedLibraryAttachment();
+    const unstamped = seedLibraryAttachment();
+    delete unstamped.metadata.project_id;
+
+    const lib = await Attachments.listLibraryAttachments(projectId);
+    expect(lib).toHaveLength(1);
+    expect(lib[0]._id.equals(stamped._id)).toBe(true);
   });
 });
 
 describe('attachExistingAttachmentToCharacter', () => {
   it('moves a library attachment to a character', async () => {
-    const c = await Characters.createCharacter({ name: 'Bronze Leopard' });
+    const c = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
     const file = seedLibraryAttachment();
 
-    const res = await Attachments.attachExistingAttachmentToCharacter({
+    const res = await Attachments.attachExistingAttachmentToCharacter({ projectId,
       character: 'Bronze Leopard',
       attachmentId: file._id,
       caption: 'theme music',
@@ -78,14 +120,14 @@ describe('attachExistingAttachmentToCharacter', () => {
   });
 
   it('is idempotent on re-attach to same character', async () => {
-    await Characters.createCharacter({ name: 'Polly' });
+    await Characters.createCharacter({ projectId, name: 'Polly' });
     const file = seedLibraryAttachment();
 
-    await Attachments.attachExistingAttachmentToCharacter({
+    await Attachments.attachExistingAttachmentToCharacter({ projectId,
       character: 'Polly',
       attachmentId: file._id,
     });
-    const second = await Attachments.attachExistingAttachmentToCharacter({
+    const second = await Attachments.attachExistingAttachmentToCharacter({ projectId,
       character: 'Polly',
       attachmentId: file._id,
     });
@@ -93,12 +135,12 @@ describe('attachExistingAttachmentToCharacter', () => {
   });
 
   it('moves the attachment off a real prior beat when reattaching to a character', async () => {
-    const c = await Characters.createCharacter({ name: 'Bronze Leopard' });
-    const beat = await Plots.createBeat({ name: 'Diner Showdown' });
+    const c = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner Showdown' });
     const file = seedLibraryAttachment({
-      metadata: { owner_type: 'beat', owner_id: beat._id },
+      metadata: { project_id: projectId, owner_type: 'beat', owner_id: beat._id },
     });
-    await Plots.pushBeatAttachment(beat._id.toString(), {
+    await Plots.pushBeatAttachment(projectId, beat._id.toString(), {
       _id: file._id,
       filename: file.filename,
       content_type: file.contentType,
@@ -106,7 +148,7 @@ describe('attachExistingAttachmentToCharacter', () => {
       uploaded_at: file.uploadDate,
     });
 
-    const res = await Attachments.attachExistingAttachmentToCharacter({
+    const res = await Attachments.attachExistingAttachmentToCharacter({ projectId,
       character: 'Bronze Leopard',
       attachmentId: file._id,
     });
@@ -114,7 +156,7 @@ describe('attachExistingAttachmentToCharacter', () => {
     expect(res.moved_from?.prior_owner_type).toBe('beat');
     expect(res.moved_from?.prior_owner_name).toBe('Diner Showdown');
 
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     const updatedBeat = plot.beats.find((b) => b._id.equals(beat._id));
     expect(updatedBeat.attachments || []).toHaveLength(0);
 
@@ -126,11 +168,11 @@ describe('attachExistingAttachmentToCharacter', () => {
   });
 
   it('succeeds with stale prior-owner metadata pointing at a deleted beat', async () => {
-    await Characters.createCharacter({ name: 'Bronze Leopard' });
+    await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
     const file = seedLibraryAttachment({
-      metadata: { owner_type: 'beat', owner_id: new ObjectId() },
+      metadata: { project_id: projectId, owner_type: 'beat', owner_id: new ObjectId() },
     });
-    const res = await Attachments.attachExistingAttachmentToCharacter({
+    const res = await Attachments.attachExistingAttachmentToCharacter({ projectId,
       character: 'Bronze Leopard',
       attachmentId: file._id,
     });
@@ -141,9 +183,9 @@ describe('attachExistingAttachmentToCharacter', () => {
   });
 
   it('throws when the attachment_id does not exist', async () => {
-    await Characters.createCharacter({ name: 'Bronze Leopard' });
+    await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
     await expect(
-      Attachments.attachExistingAttachmentToCharacter({
+      Attachments.attachExistingAttachmentToCharacter({ projectId,
         character: 'Bronze Leopard',
         attachmentId: new ObjectId(),
       }),
@@ -153,17 +195,17 @@ describe('attachExistingAttachmentToCharacter', () => {
 
 describe('attachExistingAttachmentToBeat', () => {
   it('moves a library attachment to a beat by name', async () => {
-    const beat = await Plots.createBeat({ name: 'Diner Showdown', desc: 'tense' });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner Showdown', desc: 'tense' });
     const file = seedLibraryAttachment();
 
-    const res = await Attachments.attachExistingAttachmentToBeat({
+    const res = await Attachments.attachExistingAttachmentToBeat({ projectId,
       beat: 'Diner Showdown',
       attachmentId: file._id,
     });
 
     expect(res.beat.name).toBe('Diner Showdown');
 
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     const updated = plot.beats.find((b) => b._id.equals(beat._id));
     expect(updated.attachments).toHaveLength(1);
     expect(updated.attachments[0]._id.equals(file._id)).toBe(true);
@@ -176,7 +218,7 @@ describe('attachExistingAttachmentToBeat', () => {
   it('throws when beat is unknown', async () => {
     const file = seedLibraryAttachment();
     await expect(
-      Attachments.attachExistingAttachmentToBeat({
+      Attachments.attachExistingAttachmentToBeat({ projectId,
         beat: 'Nonexistent',
         attachmentId: file._id,
       }),
@@ -186,16 +228,16 @@ describe('attachExistingAttachmentToBeat', () => {
 
 describe('attachExistingAttachmentToDirectorNote', () => {
   it('moves a library attachment to a director note', async () => {
-    const note = await DirectorNotes.addDirectorNote({ text: 'keep dialect Appalachian' });
+    const note = await DirectorNotes.addDirectorNote({ projectId, text: 'keep dialect Appalachian' });
     const file = seedLibraryAttachment();
 
-    const res = await Attachments.attachExistingAttachmentToDirectorNote({
+    const res = await Attachments.attachExistingAttachmentToDirectorNote({ projectId,
       noteId: note._id.toString(),
       attachmentId: file._id,
     });
     expect(res.note_id.equals(note._id)).toBe(true);
 
-    const dn = await DirectorNotes.getDirectorNotes();
+    const dn = await DirectorNotes.getDirectorNotes(projectId);
     const updated = dn.notes.find((n) => n._id.equals(note._id));
     expect(updated.attachments).toHaveLength(1);
     expect(updated.attachments[0]._id.equals(file._id)).toBe(true);
@@ -208,7 +250,7 @@ describe('attachExistingAttachmentToDirectorNote', () => {
   it('throws when note_id is unknown', async () => {
     const file = seedLibraryAttachment();
     await expect(
-      Attachments.attachExistingAttachmentToDirectorNote({
+      Attachments.attachExistingAttachmentToDirectorNote({ projectId,
         noteId: new ObjectId().toString(),
         attachmentId: file._id,
       }),
@@ -218,15 +260,15 @@ describe('attachExistingAttachmentToDirectorNote', () => {
 
 describe('attachment move-on-attach across owner types', () => {
   it('moves an attachment from one character to another', async () => {
-    const cA = await Characters.createCharacter({ name: 'Bronze Leopard' });
-    const cB = await Characters.createCharacter({ name: 'Silver Wolf' });
+    const cA = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
+    const cB = await Characters.createCharacter({ projectId, name: 'Silver Wolf' });
     const file = seedLibraryAttachment();
 
-    await Attachments.attachExistingAttachmentToCharacter({
+    await Attachments.attachExistingAttachmentToCharacter({ projectId,
       character: 'Bronze Leopard',
       attachmentId: file._id,
     });
-    const res = await Attachments.attachExistingAttachmentToCharacter({
+    const res = await Attachments.attachExistingAttachmentToCharacter({ projectId,
       character: 'Silver Wolf',
       attachmentId: file._id,
     });
@@ -241,10 +283,10 @@ describe('attachment move-on-attach across owner types', () => {
   });
 
   it('moves an attachment from a note onto a beat', async () => {
-    const note = await DirectorNotes.addDirectorNote({ text: 'lighting cues' });
-    const beat = await Plots.createBeat({ name: 'Climax' });
+    const note = await DirectorNotes.addDirectorNote({ projectId, text: 'lighting cues' });
+    const beat = await Plots.createBeat({ projectId, name: 'Climax' });
     const file = seedLibraryAttachment({
-      metadata: { owner_type: 'director_note', owner_id: note._id },
+      metadata: { project_id: projectId, owner_type: 'director_note', owner_id: note._id },
     });
     await fakeDb.collection('prompts').updateOne(
       { _id: 'director_notes' },
@@ -252,7 +294,7 @@ describe('attachment move-on-attach across owner types', () => {
         $set: {
           notes: [
             {
-              ...(await DirectorNotes.getDirectorNotes()).notes[0],
+              ...(await DirectorNotes.getDirectorNotes(projectId)).notes[0],
               attachments: [
                 {
                   _id: file._id,
@@ -268,17 +310,17 @@ describe('attachment move-on-attach across owner types', () => {
       },
     );
 
-    const res = await Attachments.attachExistingAttachmentToBeat({
+    const res = await Attachments.attachExistingAttachmentToBeat({ projectId,
       beat: 'Climax',
       attachmentId: file._id,
     });
     expect(res.moved_from?.prior_owner_type).toBe('director_note');
 
-    const dn = await DirectorNotes.getDirectorNotes();
+    const dn = await DirectorNotes.getDirectorNotes(projectId);
     const updatedNote = dn.notes.find((n) => n._id.equals(note._id));
     expect(updatedNote.attachments || []).toHaveLength(0);
 
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     const updatedBeat = plot.beats.find((b) => b._id.equals(beat._id));
     expect(updatedBeat.attachments).toHaveLength(1);
   });
@@ -287,10 +329,10 @@ describe('attachment move-on-attach across owner types', () => {
 describe('handler: list_library_attachments and attach_library_attachment_to_character', () => {
   it('lists library attachments and dispatches the character attach', async () => {
     const { HANDLERS } = await import('../src/agent/handlers.js');
-    await Characters.createCharacter({ name: 'Bronze Leopard' });
+    await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
     const file = seedLibraryAttachment();
 
-    const list = await HANDLERS.list_library_attachments();
+    const list = await HANDLERS.list_library_attachments({}, { projectId });
     const parsed = JSON.parse(list);
     expect(parsed).toHaveLength(1);
     expect(parsed[0]._id).toBe(file._id.toString());
@@ -298,18 +340,18 @@ describe('handler: list_library_attachments and attach_library_attachment_to_cha
     const out = await HANDLERS.attach_library_attachment_to_character({
       attachment_id: file._id.toString(),
       character: 'Bronze Leopard',
-    });
+    }, { projectId });
     expect(out).toMatch(/Attached attachment to character "Bronze Leopard"/);
   });
 
   it('surfaces a "(moved from beat ...)" suffix in the handler message', async () => {
     const { HANDLERS } = await import('../src/agent/handlers.js');
-    await Characters.createCharacter({ name: 'Bronze Leopard' });
-    const beat = await Plots.createBeat({ name: 'Diner Showdown' });
+    await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner Showdown' });
     const file = seedLibraryAttachment({
-      metadata: { owner_type: 'beat', owner_id: beat._id },
+      metadata: { project_id: projectId, owner_type: 'beat', owner_id: beat._id },
     });
-    await Plots.pushBeatAttachment(beat._id.toString(), {
+    await Plots.pushBeatAttachment(projectId, beat._id.toString(), {
       _id: file._id,
       filename: file.filename,
       content_type: file.contentType,
@@ -320,7 +362,7 @@ describe('handler: list_library_attachments and attach_library_attachment_to_cha
     const out = await HANDLERS.attach_library_attachment_to_character({
       attachment_id: file._id.toString(),
       character: 'Bronze Leopard',
-    });
+    }, { projectId });
     expect(out).toMatch(/moved from beat "Diner Showdown"/);
   });
 });

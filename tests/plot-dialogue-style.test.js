@@ -14,16 +14,20 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 describe('plot dialogue_style', () => {
   it('updatePlot accepts and persists dialogue_style', async () => {
-    await Plots.updatePlot({ dialogue_style: '1970s neo-noir. Sparse, hard-boiled.' });
-    const plot = await Plots.getPlot();
+    await Plots.updatePlot(projectId, { dialogue_style: '1970s neo-noir. Sparse, hard-boiled.' });
+    const plot = await Plots.getPlot(projectId);
     expect(plot.dialogue_style).toBe('1970s neo-noir. Sparse, hard-boiled.');
   });
 });

@@ -98,9 +98,9 @@ function sanitizeDirection(s) {
 // Fetch the project-wide director's notes for inclusion in the planner prompt.
 // Swallows errors (returns []) so a transient DB hiccup doesn't fail the whole
 // generation job — the notes are guidance, not load-bearing.
-export async function loadDirectorNotesForPlanner() {
+export async function loadDirectorNotesForPlanner(projectId) {
   try {
-    const doc = await getDirectorNotes();
+    const doc = await getDirectorNotes(projectId);
     return Array.isArray(doc?.notes) ? doc.notes : [];
   } catch (e) {
     logger.warn(`storyboard gen: loadDirectorNotesForPlanner failed: ${e?.message || e}`);
@@ -232,7 +232,7 @@ function toCritiqueNeighbor(sb) {
 // Pass 4: auto prompt-tier critique. Runs the four-lens panel over every shot of
 // the beat (bible + director's notes + neighbors) and persists prompt_critique.
 // Per-shot failures are swallowed so a bad critique never fails the job.
-async function critiqueShotsForBeat({ beat, sceneBible, directorNotes, onProgress = null }) {
+async function critiqueShotsForBeat({ projectId, beat, sceneBible, directorNotes, onProgress = null }) {
   const shots = await listStoryboards({ beatId: beat._id });
   for (let i = 0; i < shots.length; i++) {
     const sb = shots[i];
@@ -248,7 +248,7 @@ async function critiqueShotsForBeat({ beat, sceneBible, directorNotes, onProgres
       const prevShot = i > 0 ? toCritiqueNeighbor(shots[i - 1]) : null;
       const nextShot = i < shots.length - 1 ? toCritiqueNeighbor(shots[i + 1]) : null;
       const critique = await runCritiquePanel({ target: 'prompt', sceneBible, directorNotes, shot, prevShot, nextShot });
-      await setStoryboardCritiqueViaGateway({ storyboardId: sb._id, beatId: beat._id, target: 'prompt', critique });
+      await setStoryboardCritiqueViaGateway({ projectId, storyboardId: sb._id, beatId: beat._id, target: 'prompt', critique });
     } catch (e) {
       logger.warn(`storyboard critique: shot ${i + 1} failed: ${e?.message || e}`);
     }
@@ -322,10 +322,11 @@ export async function listMissingStartFrameTargets(beatId) {
 // /storyboards/generate-images/:jobId. The runner holds the per-beat lock for
 // its whole duration so it can't race the plan-generation job or per-frame edits.
 export async function startBulkFrameGenerationJob({
+  projectId,
   beatId,
   imageModel = 'nano-banana-pro',
 }) {
-  const beat = await getBeat(beatId);
+  const beat = await getBeat(projectId, beatId);
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
@@ -354,7 +355,7 @@ export async function startBulkFrameGenerationJob({
   });
 
   withBeatLock(beat._id, () =>
-    runBulkFrameGenerationJob({ job, beat, targets, imageModel }),
+    runBulkFrameGenerationJob({ projectId, job, beat, targets, imageModel }),
   ).catch((e) => {
     job.status = 'error';
     job.error = e.message;
@@ -370,7 +371,7 @@ export async function startBulkFrameGenerationJob({
   return { jobId, planned: targets.length };
 }
 
-async function runBulkFrameGenerationJob({ job, beat, targets, imageModel }) {
+async function runBulkFrameGenerationJob({ projectId, job, beat, targets, imageModel }) {
   if (targets.length === 0) {
     job.status = 'done';
     job.finished_at = new Date();
@@ -401,6 +402,7 @@ async function runBulkFrameGenerationJob({ job, beat, targets, imageModel }) {
     });
     try {
       await regenerateStoryboardFrameInternal({
+        projectId,
         sb,
         beat,
         frame,
@@ -446,10 +448,10 @@ export function getCritiqueJob(jobId) {
   return critiqueJobs.get(jobId) || null;
 }
 
-export async function startCritiqueJob({ storyboardId, target = 'prompt' }) {
-  const sb = await getStoryboard(storyboardId);
+export async function startCritiqueJob({ projectId, storyboardId, target = 'prompt' }) {
+  const sb = await getStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const beat = await getBeat(sb.beat_id.toString());
+  const beat = await getBeat(projectId, sb.beat_id.toString());
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
   const jobId = makeJobId();
   const job = {
@@ -467,7 +469,7 @@ export async function startCritiqueJob({ storyboardId, target = 'prompt' }) {
   (async () => {
     job.status = 'running';
     try {
-      const directorNotes = await loadDirectorNotesForPlanner();
+      const directorNotes = await loadDirectorNotesForPlanner(projectId);
       const shots = await listStoryboards({ beatId: beat._id });
       const idx = shots.findIndex((s) => String(s._id) === String(sb._id));
       const prevShot = idx > 0 ? toCritiqueNeighbor(shots[idx - 1]) : null;
@@ -487,7 +489,7 @@ export async function startCritiqueJob({ storyboardId, target = 'prompt' }) {
         shot_type: sb.shot_type,
       };
       const critique = await runCritiquePanel({ target, sceneBible: beat.scene_bible, directorNotes, shot, prevShot, nextShot, imageInput });
-      await setStoryboardCritiqueViaGateway({ storyboardId: sb._id, beatId: beat._id, target, critique });
+      await setStoryboardCritiqueViaGateway({ projectId, storyboardId: sb._id, beatId: beat._id, target, critique });
       job.overall = critique.overall;
       job.status = 'done';
     } catch (e) {
@@ -509,13 +511,14 @@ export class BeatBusyError extends Error {
 }
 
 export async function startStoryboardGenerationJob({
+  projectId,
   beatId,
   targetCount,
   imageModel = 'gemini',
   direction = '',
   announceUsername = null,
 }) {
-  const beat = await getBeat(beatId);
+  const beat = await getBeat(projectId, beatId);
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
@@ -553,6 +556,7 @@ export async function startStoryboardGenerationJob({
   // the delete-then-recreate window.
   withBeatLock(beat._id, () =>
     runStoryboardGenerationJob({
+      projectId,
       job,
       beat,
       targetCount: resolvedCount,
@@ -574,6 +578,7 @@ export async function startStoryboardGenerationJob({
 }
 
 async function runStoryboardGenerationJob({
+  projectId,
   job,
   beat,
   targetCount,
@@ -589,10 +594,10 @@ async function runStoryboardGenerationJob({
     step: 'plan_start',
     message: `Planning scene with ${job.model}…`,
   });
-  const characterDocs = await findCharactersInBeat(beat);
+  const characterDocs = await findCharactersInBeat(projectId, beat);
   // Director's notes are project-wide guidance; fetch once and pass to both
   // passes so every shot sees the same notes without re-querying.
-  const directorNotes = await loadDirectorNotesForPlanner();
+  const directorNotes = await loadDirectorNotesForPlanner(projectId);
   const { frames: planned, sceneBible } = await planFramesV2({
     beat,
     characters: characterDocs,
@@ -606,7 +611,7 @@ async function runStoryboardGenerationJob({
   // individual row creation fails below.
   if (sceneBible && !isEmptySceneBible(sceneBible)) {
     try {
-      await setBeatSceneBible(beat._id, sceneBible);
+      await setBeatSceneBible(projectId, beat._id, sceneBible);
     } catch (e) {
       logger.warn(`storyboard gen: persist scene bible failed: ${e.message}`);
     }
@@ -627,7 +632,7 @@ async function runStoryboardGenerationJob({
   }
   // Now that we know we have a plan, clear the existing storyboards so the
   // SPA shows an empty list while new items stream in.
-  await deleteAllStoryboardsForBeatViaGateway({ beatId: beat._id });
+  await deleteAllStoryboardsForBeatViaGateway({ projectId, beatId: beat._id });
   job.status = 'rendering';
   recordProgress(job, {
     phase: 'rendering',
@@ -653,6 +658,7 @@ async function runStoryboardGenerationJob({
     });
     try {
       await createPlannedStoryboardEntry({
+        projectId,
         beat,
         frame,
         order,
@@ -687,6 +693,7 @@ async function runStoryboardGenerationJob({
     recordProgress(job, { phase: 'critiquing', step: 'critique_start', total: planned.length, message: 'Critiquing shots…' });
     try {
       await critiqueShotsForBeat({
+        projectId,
         beat,
         sceneBible,
         directorNotes,
@@ -709,7 +716,9 @@ async function runStoryboardGenerationJob({
     try {
       const { announceText } = await import('../discord/announcer.js');
       const { storyboardUrl } = await import('./links.js');
-      const url = storyboardUrl(beat);
+      const { getProjectById } = await import('../mongo/projects.js');
+      const project = projectId ? await getProjectById(projectId) : null;
+      const url = storyboardUrl(project?.title ?? null, beat);
       const name = stripMarkdown(beat.name || '').trim();
       const order = Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
       const beatLabel = name ? `${order}: ${name}` : order;
@@ -727,13 +736,13 @@ async function runStoryboardGenerationJob({
 // Mongo doc. Exported so the SPA's pre-generation sheet picker hits the same
 // resolution path that the renderer uses — guaranteeing the dropdown reflects
 // what the renderer will actually pick up.
-export async function findCharactersInBeat(beat) {
+export async function findCharactersInBeat(projectId, beat) {
   const out = [];
   for (const raw of beat?.characters || []) {
     const stripped = stripMarkdown(raw || '').trim();
     if (!stripped) continue;
     try {
-      const c = await getCharacter(stripped);
+      const c = await getCharacter(projectId, stripped);
       if (c) out.push(c);
     } catch (e) {
       logger.warn(`storyboard gen: character lookup "${stripped}" failed: ${e.message}`);
@@ -831,7 +840,7 @@ function formatDirectorNotes(directorNotes) {
 // shot-expand call (Pass 2). Exported via the preview endpoint so the SPA can show users the same
 // text the LLM will see.
 //
-// directorNotes is the project-wide list (from getDirectorNotes().notes) —
+// directorNotes is the project-wide list (from getDirectorNotes(projectId).notes) —
 // every note appears in every shot's prompt because notes are global tone /
 // style / continuity guidance, not scene-scoped.
 export function buildBeatContextBlock({ beat, characters, direction, directorNotes = [] }) {
@@ -1134,9 +1143,9 @@ export function mergeCritiqueComments(critique) {
 
 // Lock-free core of a single-shot re-expansion. Caller must already hold the
 // beat lock (reExpandShot acquires it per-call; the bulk job holds it once).
-export async function reExpandShotInner({ sb, beat, critiqueGuidance = '' }) {
-  const characters = await findCharactersInBeat(beat);
-  const directorNotes = await loadDirectorNotesForPlanner();
+export async function reExpandShotInner({ projectId, sb, beat, critiqueGuidance = '' }) {
+  const characters = await findCharactersInBeat(projectId, beat);
+  const directorNotes = await loadDirectorNotesForPlanner(projectId);
   const outlineFrame = {
     description: stripMarkdown(sb.summary || '').trim(),
     shot_type: sb.shot_type ?? null,
@@ -1167,7 +1176,7 @@ export async function reExpandShotInner({ sb, beat, critiqueGuidance = '' }) {
   // rendered text_prompt to createStoryboardViaGateway. For an existing row the
   // equivalent write is setStoryboardTextPromptViaGateway (the text-field gateway
   // helper; falls back to Mongo when Hocuspocus isn't running).
-  await setStoryboardTextPromptViaGateway({ storyboardId: sb._id, text: newTextPrompt });
+  await setStoryboardTextPromptViaGateway({ projectId, storyboardId: sb._id, text: newTextPrompt });
 
   // Persist the start-frame prompt onto frames[0] — mirror how
   // createPlannedStoryboardEntry seeds the first frame via addStoryboardFrameViaGateway.
@@ -1177,12 +1186,14 @@ export async function reExpandShotInner({ sb, beat, critiqueGuidance = '' }) {
     const firstFrame = (sb.frames || [])[0];
     if (firstFrame) {
       await setStoryboardFramePromptViaGateway({
+        projectId,
         storyboardId: sb._id,
         frameId: firstFrame._id,
         text: newStartPrompt,
       });
     } else {
       await addStoryboardFrameViaGateway({
+        projectId,
         storyboardId: sb._id,
         prompt: newStartPrompt,
         referenceIds: [],
@@ -1195,10 +1206,10 @@ export async function reExpandShotInner({ sb, beat, critiqueGuidance = '' }) {
 // Regenerate ONE shot's prompts (Pass 2 for a single shot), inheriting the
 // beat's scene bible and optionally steered by critique guidance. Writes the new
 // start-frame prompt + text_prompt via the gateway. Does NOT re-render the image.
-export async function reExpandShot({ storyboardId, critiqueGuidance = '' }) {
-  const sb = await getStoryboard(storyboardId);
+export async function reExpandShot({ projectId, storyboardId, critiqueGuidance = '' }) {
+  const sb = await getStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const beat = await getBeat(sb.beat_id.toString());
+  const beat = await getBeat(projectId, sb.beat_id.toString());
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
   // Fail-fast if a generation job (delete+recreate) is in flight for this beat —
   // mirror regenerateStoryboardFrame. Editing prompts against rows a concurrent
@@ -1209,7 +1220,7 @@ export async function reExpandShot({ storyboardId, critiqueGuidance = '' }) {
   // Hold the beat lock for the duration of the expand + writes so a generation
   // can't start mid-write. (withBeatLock only queues; it doesn't itself call
   // isBeatLocked, so the pre-check above doesn't deadlock with this wrap.)
-  return withBeatLock(beat._id, () => reExpandShotInner({ sb, beat, critiqueGuidance }));
+  return withBeatLock(beat._id, () => reExpandShotInner({ projectId, sb, beat, critiqueGuidance }));
 }
 
 const reExpandAllJobs = new Map();
@@ -1219,8 +1230,8 @@ export function getReExpandAllJob(jobId) { return reExpandAllJobs.get(jobId) || 
 // scene bible. Holds the beat lock once and loops shots through the lock-free
 // reExpandShotInner. Per-shot failures are swallowed so one bad shot doesn't
 // abort the batch.
-export async function startReExpandAllJob({ beatId }) {
-  const beat = await getBeat(beatId);
+export async function startReExpandAllJob({ projectId, beatId }) {
+  const beat = await getBeat(projectId, beatId);
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
   if (isBeatLocked(beat._id)) throw new BeatBusyError(beat._id.toString());
   const jobId = makeJobId();
@@ -1235,7 +1246,7 @@ export async function startReExpandAllJob({ beatId }) {
       recordProgress(job, { phase: 'reexpand', step: 'shot_start', frame: i + 1, total: shots.length, message: `Re-expanding shot ${i + 1}/${shots.length}…` });
       try {
         const sb = shots[i];
-        await reExpandShotInner({ sb, beat });
+        await reExpandShotInner({ projectId, sb, beat });
         job.completed += 1;
       } catch (e) {
         job.failed += 1;
@@ -1395,6 +1406,7 @@ export function _planFramesV2ForTest(args) {
 // list is seeded from the beat + in-scene characters' images so the modal's
 // default ref grid is non-empty.
 async function createPlannedStoryboardEntry({
+  projectId,
   beat,
   frame,
   order,
@@ -1408,6 +1420,7 @@ async function createPlannedStoryboardEntry({
   const summary = stripMarkdown(frame.description || '').replace(/\s+/g, ' ').trim();
   const startFramePrompt = stripMarkdown(frame.start_frame_prompt || '').trim();
   const sb = await createStoryboardViaGateway({
+    projectId,
     beatId: beat._id,
     textPrompt,
     summary,
@@ -1430,6 +1443,7 @@ async function createPlannedStoryboardEntry({
   let referenceIds = [];
   try {
     const collected = await collectStoryboardReferenceIds({
+      projectId,
       beat,
       charactersInScene: frame.characters_in_scene ?? [],
       existingIds: [],
@@ -1446,6 +1460,7 @@ async function createPlannedStoryboardEntry({
     if (!prompt) continue;
     try {
       await addStoryboardFrameViaGateway({
+        projectId,
         storyboardId: sb._id,
         prompt,
         referenceIds,
@@ -1492,6 +1507,7 @@ function buildSuggestedFramePrompt({ sb }) {
 }
 
 async function persistFrameImage({
+  projectId,
   storyboardId,
   frameId,
   result,
@@ -1500,7 +1516,7 @@ async function persistFrameImage({
   rotateToPrevious = false,
   editPrompt = null,
 }) {
-  const file = await uploadGeneratedImage({
+  const file = await uploadGeneratedImage(projectId, {
     buffer: result.buffer,
     contentType: result.contentType,
     prompt: null,
@@ -1511,6 +1527,7 @@ async function persistFrameImage({
   });
   if (rotateToPrevious) {
     await setStoryboardFrameEditResultViaGateway({
+      projectId,
       storyboardId,
       frameId,
       newImageId: file._id,
@@ -1518,6 +1535,7 @@ async function persistFrameImage({
     });
   } else {
     await setStoryboardFrameImageViaGateway({
+      projectId,
       storyboardId,
       frameId,
       imageId: file._id,
@@ -1580,6 +1598,7 @@ async function loadFrameReferenceImages(frame) {
 // through `startFrameGenerationJob` instead, which holds the lock for the
 // duration of the run.
 export async function regenerateStoryboardFrame({
+  projectId,
   storyboardId,
   frameId,
   imageModel = 'gemini',
@@ -1592,16 +1611,17 @@ export async function regenerateStoryboardFrame({
   if (!['generate', 'edit'].includes(mode)) {
     throw new EditModeError(`Unknown regen mode "${mode}".`);
   }
-  const sb = await getStoryboard(storyboardId);
+  const sb = await getStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const frame = getFrame(sb, frameId);
   if (!frame) throw new FrameNotFoundError(frameId);
-  const beat = await getBeat(sb.beat_id);
+  const beat = await getBeat(projectId, sb.beat_id);
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
   }
   return regenerateStoryboardFrameInternal({
+    projectId,
     sb,
     beat,
     frame,
@@ -1617,12 +1637,12 @@ export async function regenerateStoryboardFrame({
 // Preview the suggested default prompt for a frame. Called by the SPA's
 // generate modal on open so the user gets a sensible starting draft when the
 // stored prompt is empty.
-export async function previewFrameGenerationPrompt({ storyboardId, frameId }) {
-  const sb = await getStoryboard(storyboardId);
+export async function previewFrameGenerationPrompt({ projectId, storyboardId, frameId }) {
+  const sb = await getStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const frame = getFrame(sb, frameId);
   if (!frame) throw new FrameNotFoundError(frameId);
-  const beat = await getBeat(sb.beat_id);
+  const beat = await getBeat(projectId, sb.beat_id);
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
@@ -1639,6 +1659,7 @@ export async function previewFrameGenerationPrompt({ storyboardId, frameId }) {
 }
 
 async function regenerateStoryboardFrameInternal({
+  projectId,
   sb,
   beat,
   frame,
@@ -1691,6 +1712,7 @@ async function regenerateStoryboardFrameInternal({
     // prompt is still sent to the model, the persisted value just lags.
     try {
       await setStoryboardFramePromptViaGateway({
+        projectId,
         storyboardId: sb._id,
         frameId,
         text: renderPrompt,
@@ -1710,6 +1732,7 @@ async function regenerateStoryboardFrameInternal({
   });
 
   const file = await persistFrameImage({
+    projectId,
     storyboardId: sb._id,
     frameId,
     result,
@@ -1737,6 +1760,7 @@ export function getFrameGenerationJob(jobId) {
 // the work lands or fails. The runner holds the per-beat lock for its
 // duration so it can't race the batch pipeline.
 export async function startFrameGenerationJob({
+  projectId,
   storyboardId,
   frameId,
   imageModel = 'gemini',
@@ -1750,11 +1774,11 @@ export async function startFrameGenerationJob({
   if (!['generate', 'edit'].includes(mode)) {
     throw new EditModeError(`Unknown regen mode "${mode}".`);
   }
-  const sb = await getStoryboard(storyboardId);
+  const sb = await getStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const frame = getFrame(sb, frameId);
   if (!frame) throw new FrameNotFoundError(frameId);
-  const beat = await getBeat(sb.beat_id);
+  const beat = await getBeat(projectId, sb.beat_id);
   if (!beat) throw new Error(`Beat not found for storyboard ${storyboardId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
@@ -1781,6 +1805,7 @@ export async function startFrameGenerationJob({
 
   withBeatLock(beat._id, () =>
     runFrameGenerationJob({
+      projectId,
       job,
       sb,
       beat,
@@ -1804,6 +1829,7 @@ export async function startFrameGenerationJob({
 }
 
 async function runFrameGenerationJob({
+  projectId,
   job,
   sb,
   beat,
@@ -1818,6 +1844,7 @@ async function runFrameGenerationJob({
 }) {
   job.status = 'running';
   const { image_id } = await regenerateStoryboardFrameInternal({
+    projectId,
     sb,
     beat,
     frame,
@@ -1836,6 +1863,8 @@ async function runFrameGenerationJob({
       const { announceMediaEvent } = await import('../discord/announcer.js');
       const { storyboardUrl } = await import('./links.js');
       const { stripMarkdown } = await import('../util/markdown.js');
+      const { getProjectById } = await import('../mongo/projects.js');
+      const project = projectId ? await getProjectById(projectId) : null;
       const name = stripMarkdown(beat.name || '').trim();
       const order = Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
       const beatLabel = name ? `${order}: ${name}` : order;
@@ -1845,7 +1874,7 @@ async function runFrameGenerationJob({
         username: announceUsername,
         verb,
         entityLabel: `Storyboard — ${beatLabel}${orderHint}`,
-        entityUrl: storyboardUrl(beat),
+        entityUrl: storyboardUrl(project?.title ?? null, beat),
         imageFileId: image_id,
         prompt: prompt || editPrompt || null,
       }).catch(() => {});

@@ -93,7 +93,7 @@ async function safeUnlink(p) {
 //   currentSbId : ObjectId/hex of the storyboard receiving the start frame
 //   prev        : full prev storyboard doc; we read prev.video_file_id and
 //                 prev.beat_id (== currentSb.beat_id) for ownership metadata.
-export async function grabFrameFromPrevious({ currentSbId, prev }) {
+export async function grabFrameFromPrevious({ projectId, currentSbId, prev }) {
   if (!currentSbId) throw new Error('currentSbId required');
   if (!prev || !prev.video_file_id) {
     throw new Error('prev storyboard with video_file_id required');
@@ -129,7 +129,7 @@ export async function grabFrameFromPrevious({ currentSbId, prev }) {
     // entry point uses, so we stay consistent.
     validateImageBuffer(buffer);
 
-    const file = await uploadGeneratedImage({
+    const file = await uploadGeneratedImage(projectId, {
       buffer,
       contentType: 'image/jpeg',
       ownerType: 'beat',
@@ -139,6 +139,7 @@ export async function grabFrameFromPrevious({ currentSbId, prev }) {
     });
 
     const { storyboard, frameId } = await addStoryboardFrameViaGateway({
+      projectId,
       storyboardId: currentSbId,
       imageId: file._id,
     });

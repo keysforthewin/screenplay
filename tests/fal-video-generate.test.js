@@ -62,7 +62,7 @@ vi.mock('../src/mongo/attachments.js', () => ({
       },
     };
   }),
-  uploadAttachmentBuffer: vi.fn(async (args) => {
+  uploadAttachmentBuffer: vi.fn(async (_projectId, args) => {
     const file = {
       _id: new ObjectId(),
       filename: args.filename,
@@ -145,6 +145,7 @@ function installFetchMock() {
   }));
 }
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Falgen = await import('../src/web/falVideoGenerate.js');
@@ -164,8 +165,8 @@ async function seedScene({
   audio = false,
   charactersInScene = [],
 } = {}) {
-  const beat = await Plots.createBeat({ name: 'Test beat', body: 'body' });
-  const sb = await Storyboards.createStoryboard({
+  const beat = await Plots.createBeat({ projectId, name: 'Test beat', body: 'body' });
+  const sb = await Storyboards.createStoryboard({ projectId,
     beatId: beat._id,
     textPrompt: 'Hero crosses the room.',
     durationSeconds: 5,
@@ -186,9 +187,9 @@ async function seedScene({
   if (audio) {
     const id = new ObjectId();
     fakeAttachmentStore.set(id.toString(), { buffer: Buffer.from('audio'), contentType: 'audio/mpeg' });
-    await Storyboards.updateStoryboard(sb._id, { audio_file_id: id });
+    await Storyboards.updateStoryboard(projectId, sb._id, { audio_file_id: id });
   }
-  return { beat, sb: await Storyboards.getStoryboard(sb._id) };
+  return { beat, sb: await Storyboards.getStoryboard(projectId, sb._id) };
 }
 
 async function seedCharacter(name, { sheetCount = 1 } = {}) {
@@ -209,8 +210,11 @@ async function seedCharacter(name, { sheetCount = 1 } = {}) {
   return { name, sheetIds };
 }
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   fakeImageStore.clear();
   fakeAttachmentStore.clear();
   uploadedAttachments.length = 0;
@@ -237,7 +241,7 @@ describe('startVideoGenerationJob', () => {
       charactersInScene: ['Steve'],
     });
 
-    const { job_id } = await Falgen.startVideoGenerationJob({
+    const { job_id } = await Falgen.startVideoGenerationJob({ projectId,
       storyboardId: sb._id.toString(),
       modelId: 'kling-3-pro',
       durationSeconds: 7,
@@ -279,7 +283,7 @@ describe('startVideoGenerationJob', () => {
     expect(persisted.metadata.owner_id?.toString?.()).toBe(beat._id.toString());
 
     // Storyboard row updated via the gateway.
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(projectId, sb._id);
     expect(fresh.video_file_id?.toString()).toBe(job.video_file_id);
     expect(fresh.video_duration_seconds).toBe(7);
     // Enriched metadata: model identification, params, and cost are all
@@ -307,7 +311,7 @@ describe('startVideoGenerationJob', () => {
       charactersInScene: ['Steve'],
     });
 
-    const { job_id } = await Falgen.startVideoGenerationJob({
+    const { job_id } = await Falgen.startVideoGenerationJob({ projectId,
       storyboardId: sb._id.toString(),
       modelId: 'kling-3-pro',
       durationSeconds: 5,
@@ -325,7 +329,7 @@ describe('startVideoGenerationJob', () => {
 
   it('Veo 3.1 first-last-frame requires both frames; submit input has first_frame_url + last_frame_url', async () => {
     const { beat, sb } = await seedScene({ start: true, end: true });
-    const { job_id } = await Falgen.startVideoGenerationJob({
+    const { job_id } = await Falgen.startVideoGenerationJob({ projectId,
       storyboardId: sb._id.toString(),
       modelId: 'veo-3-1-flf',
       durationSeconds: 8,
@@ -344,13 +348,13 @@ describe('startVideoGenerationJob', () => {
   it('Veo 3.1 rejects with MissingInputsError when end frame is absent', async () => {
     const { sb } = await seedScene({ start: true, end: false });
     await expect(
-      Falgen.startVideoGenerationJob({ storyboardId: sb._id.toString(), modelId: 'veo-3-1-flf' }),
+      Falgen.startVideoGenerationJob({ projectId, storyboardId: sb._id.toString(), modelId: 'veo-3-1-flf' }),
     ).rejects.toBeInstanceOf(Falgen.MissingInputsError);
   });
 
   it('Kling AI Avatar: image_url falls back to start_frame when character_sheet is unavailable; audio_url required', async () => {
     const { beat, sb } = await seedScene({ start: true, audio: true });
-    const { job_id } = await Falgen.startVideoGenerationJob({
+    const { job_id } = await Falgen.startVideoGenerationJob({ projectId,
       storyboardId: sb._id.toString(),
       modelId: 'kling-avatar-v2-pro',
     });
@@ -371,7 +375,7 @@ describe('startVideoGenerationJob', () => {
   it('Kling AI Avatar rejects with MissingInputsError when audio is absent', async () => {
     const { sb } = await seedScene({ start: true, audio: false });
     await expect(
-      Falgen.startVideoGenerationJob({
+      Falgen.startVideoGenerationJob({ projectId,
         storyboardId: sb._id.toString(),
         modelId: 'kling-avatar-v2-pro',
       }),
@@ -382,14 +386,14 @@ describe('startVideoGenerationJob', () => {
     falStubs.isConfigured = vi.fn(() => false);
     const { sb } = await seedScene({ start: true, end: true });
     await expect(
-      Falgen.startVideoGenerationJob({ storyboardId: sb._id.toString(), modelId: 'kling-3-pro' }),
+      Falgen.startVideoGenerationJob({ projectId, storyboardId: sb._id.toString(), modelId: 'kling-3-pro' }),
     ).rejects.toBeInstanceOf(Falgen.FalNotConfiguredError);
   });
 
   it('throws UnknownVideoModelError on an unregistered model id', async () => {
     const { sb } = await seedScene({ start: true });
     await expect(
-      Falgen.startVideoGenerationJob({ storyboardId: sb._id.toString(), modelId: 'does-not-exist' }),
+      Falgen.startVideoGenerationJob({ projectId, storyboardId: sb._id.toString(), modelId: 'does-not-exist' }),
     ).rejects.toBeInstanceOf(Falgen.UnknownVideoModelError);
   });
 
@@ -401,7 +405,7 @@ describe('startVideoGenerationJob', () => {
     };
 
     const { beat, sb } = await seedScene({ start: true, end: true });
-    const { job_id } = await Falgen.startVideoGenerationJob({
+    const { job_id } = await Falgen.startVideoGenerationJob({ projectId,
       storyboardId: sb._id.toString(),
       modelId: 'kling-3-pro',
     });
@@ -420,7 +424,7 @@ describe('startVideoGenerationJob', () => {
       throw new Error('queue boom');
     };
     const { beat, sb } = await seedScene({ start: true, end: true });
-    const { job_id } = await Falgen.startVideoGenerationJob({
+    const { job_id } = await Falgen.startVideoGenerationJob({ projectId,
       storyboardId: sb._id.toString(),
       modelId: 'kling-3-pro',
     });
@@ -439,7 +443,7 @@ describe('startVideoGenerationJob', () => {
       charactersInScene: ['Alice'],
     });
 
-    const { job_id } = await Falgen.startVideoGenerationJob({
+    const { job_id } = await Falgen.startVideoGenerationJob({ projectId,
       storyboardId: sb._id.toString(),
       modelId: 'sora-2',
       durationSeconds: 8,
@@ -467,7 +471,7 @@ describe('startVideoGenerationJob', () => {
   it('Sora 2 Pro: passes user-selected resolution to fal and records the tier cost', async () => {
     const { beat, sb } = await seedScene({ start: true });
 
-    const { job_id } = await Falgen.startVideoGenerationJob({
+    const { job_id } = await Falgen.startVideoGenerationJob({ projectId,
       storyboardId: sb._id.toString(),
       modelId: 'sora-2-pro',
       durationSeconds: 8,
@@ -481,7 +485,7 @@ describe('startVideoGenerationJob', () => {
     expect(falStubs.submitCalls[0].args.input.resolution).toBe('1080p');
 
     // 1080p on Sora 2 Pro is $0.50/s. 8s × $0.50 = $4.00.
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(projectId, sb._id);
     expect(fresh.video_parameters?.resolution).toBe('1080p');
     expect(fresh.video_cost_usd).toBeCloseTo(8 * 0.5, 6);
   });
@@ -523,7 +527,7 @@ describe('frame-pool → reference-image mapping for slot-less models', () => {
     const { beat, sb } = await seedScene({ start: true, end: true });
     await addFrame(sb._id, 'thirdframe');
 
-    const { job_id } = await Falgen.startVideoGenerationJob({
+    const { job_id } = await Falgen.startVideoGenerationJob({ projectId,
       storyboardId: sb._id.toString(),
       modelId: REF_MODEL,
     });
@@ -545,10 +549,10 @@ describe('frame-pool → reference-image mapping for slot-less models', () => {
 
     const { sb } = await seedScene({ start: true, end: true });
     await addFrame(sb._id, 'thirdframe');
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(projectId, sb._id);
     const frameImageIds = fresh.frames.map((f) => f.image_id.toString());
 
-    const preview = await Falgen.buildVideoPayloadPreview({
+    const preview = await Falgen.buildVideoPayloadPreview({ projectId,
       storyboardId: sb._id.toString(),
       modelId: REF_MODEL,
     });
@@ -574,9 +578,9 @@ describe('frame-pool → reference-image mapping for slot-less models', () => {
     const { beat, sb } = await seedScene({ start: true, end: false });
     const videoId = new ObjectId();
     fakeAttachmentStore.set(videoId.toString(), { buffer: Buffer.from('srcvideo'), contentType: 'video/mp4' });
-    await Storyboards.updateStoryboard(sb._id, { video_upload_file_id: videoId });
+    await Storyboards.updateStoryboard(projectId, sb._id, { video_upload_file_id: videoId });
 
-    const { job_id } = await Falgen.startVideoGenerationJob({
+    const { job_id } = await Falgen.startVideoGenerationJob({ projectId,
       storyboardId: sb._id.toString(),
       modelId: V2V_MODEL,
     });

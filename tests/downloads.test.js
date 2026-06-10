@@ -49,8 +49,28 @@ vi.mock('../src/web/auth.js', () => ({
   requireSession: () => (_req, _res, next) => next(),
 }));
 
+// resolveProject() middleware needs Mongo to look up projects. Mock the
+// projects module to return a fixed default so tests that don't care about
+// multi-project scoping don't need a real (or fake) DB connection.
+vi.mock('../src/mongo/projects.js', () => ({
+  getProjectById: async () => null,
+  getDefaultProject: async () => ({
+    _id: { toString: () => '000000000000000000000001' },
+    title: 'Screenplay',
+  }),
+  normalizeProjectTitle: (t) => {
+    const s = String(t ?? '').trim();
+    if (!s) throw new Error('project title must be a non-empty string');
+    return s;
+  },
+  createProject: async () => null,
+  getProjectByTitle: async () => null,
+  listProjects: async () => [],
+  resolveProjectId: async (id) => id,
+}));
+
 vi.mock('../src/mongo/plots.js', () => ({
-  getBeat: async (idOrOrder) => {
+  getBeat: async (_projectId, idOrOrder) => {
     if (idOrOrder === beatId.toString() || idOrOrder === '7') {
       return { _id: beatId, order: 7, name: 'Climax **scene**' };
     }
@@ -61,7 +81,7 @@ vi.mock('../src/mongo/plots.js', () => ({
 }));
 
 vi.mock('../src/mongo/characters.js', () => ({
-  getCharacter: async (idOrName) => {
+  getCharacter: async (_projectId, idOrName) => {
     if (idOrName === charId.toString() || idOrName === 'Steve') {
       return {
         _id: charId,
@@ -86,7 +106,7 @@ vi.mock('../src/mongo/directorNotes.js', () => ({
 }));
 
 vi.mock('../src/mongo/images.js', () => ({
-  listImagesForBeat: async (id) => {
+  listImagesForBeat: async (_projectId, id) => {
     return id === beatId.toString() ? [beatImage1, beatImage2] : [];
   },
   listImagesForDirectorNote: async (id) => {

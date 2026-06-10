@@ -93,7 +93,7 @@ async function safeCall(fn) {
   }
 }
 
-export async function resolveEntityLinks(touched) {
+export async function resolveEntityLinks(touched, context = null) {
   if (!touched) return [];
   const urls = [];
   const seen = new Set();
@@ -104,7 +104,7 @@ export async function resolveEntityLinks(touched) {
   };
 
   if (touched.notes) {
-    push(notesUrl());
+    push(notesUrl(context?.projectTitle));
   }
 
   let currentBeatPromise = null;
@@ -114,7 +114,7 @@ export async function resolveEntityLinks(touched) {
     if (ref === CURRENT_BEAT) {
       if (!currentBeatPromise) {
         currentBeatPromise = safeCall(async () => {
-          const plot = await getPlot();
+          const plot = await getPlot(context?.projectId);
           if (!plot?.current_beat_id) return null;
           return (
             (plot.beats || []).find(
@@ -125,15 +125,15 @@ export async function resolveEntityLinks(touched) {
       }
       beat = await currentBeatPromise;
     } else {
-      beat = await safeCall(() => getBeat(ref));
+      beat = await safeCall(() => getBeat(context?.projectId, ref));
     }
-    push(beatUrl(beat));
+    push(beatUrl(context?.projectTitle, beat));
   }
 
   for (const ref of touched.characters || []) {
     if (urls.length >= MAX_URLS) break;
-    const character = await safeCall(() => getCharacter(ref));
-    push(characterUrl(character));
+    const character = await safeCall(() => getCharacter(context?.projectId, ref));
+    push(characterUrl(context?.projectTitle, character));
   }
 
   return urls.slice(0, MAX_URLS);
@@ -153,4 +153,14 @@ export function appendEntityLinks(text, urls) {
 
 export function createTouchedEntities() {
   return { beats: new Set(), characters: new Set(), notes: false };
+}
+
+// Drop every touch accumulated so far. Called by the agent loop when a
+// set_project succeeds mid-turn: pre-switch refs belong to the previous
+// project and must not be resolved into links against the new one.
+export function clearTouchedEntities(touched) {
+  if (!touched) return;
+  touched.beats.clear();
+  touched.characters.clear();
+  touched.notes = false;
 }

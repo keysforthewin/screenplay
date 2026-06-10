@@ -35,19 +35,24 @@ vi.mock('../src/rag/embeddings.js', () => ({
   RagDisabledError: class extends Error {},
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const DirectorNotes = await import('../src/mongo/directorNotes.js');
 const Indexer = await import('../src/rag/indexer.js');
+const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   fakeChroma._store.clear();
 });
 
 describe('rag indexer — beats', () => {
   it('indexBeat creates expected chunk ids for name/desc/body', async () => {
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Diner Argument',
       desc: 'Alice and Bob argue at the diner.',
       body: 'A short body about the morning hours.',
@@ -60,7 +65,7 @@ describe('rag indexer — beats', () => {
   });
 
   it('shrinking the body deletes orphan chunks', async () => {
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Long',
       desc: 'd',
       body: ('Para. '.repeat(200) + '\n\n').repeat(8),
@@ -70,7 +75,7 @@ describe('rag indexer — beats', () => {
       k.startsWith(`beat:${beat._id.toString()}:body:`),
     ).length;
     expect(wide).toBeGreaterThan(1);
-    await Plots.setBeatBody(beat._id.toString(), 'tiny');
+    await Plots.setBeatBody(projectId, beat._id.toString(), 'tiny');
     await Indexer.indexBeat(beat._id);
     const narrow = [...fakeChroma._store.keys()].filter((k) =>
       k.startsWith(`beat:${beat._id.toString()}:body:`),
@@ -80,7 +85,7 @@ describe('rag indexer — beats', () => {
   });
 
   it('beat name strip-markdown is used for entity_label', async () => {
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: '**Bold Name**',
       desc: 'd',
     });
@@ -94,7 +99,7 @@ describe('rag indexer — beats', () => {
 
 describe('rag indexer — characters', () => {
   it('skips empty hollywood_actor and empty fields', async () => {
-    const c = await Characters.createCharacter({
+    const c = await Characters.createCharacter({ projectId,
       name: 'Alice',
       plays_self: false,
       hollywood_actor: '',
@@ -110,7 +115,7 @@ describe('rag indexer — characters', () => {
   });
 
   it('updating a custom field replaces only that field\'s chunks', async () => {
-    const c = await Characters.createCharacter({
+    const c = await Characters.createCharacter({ projectId,
       name: 'Bob',
       plays_self: true,
       hollywood_actor: '',
@@ -122,7 +127,7 @@ describe('rag indexer — characters', () => {
       k.includes('field:background_story'),
     ).length;
     expect(before).toBeGreaterThan(0);
-    await Characters.updateCharacter(c._id.toString(), {
+    await Characters.updateCharacter(projectId, c._id.toString(), {
       fields: { background_story: 'short' },
     });
     await Indexer.indexCharacter(c._id);
@@ -135,7 +140,7 @@ describe('rag indexer — characters', () => {
 
 describe('rag indexer — director notes & messages', () => {
   it('indexDirectorNote chunks the note text', async () => {
-    const note = await DirectorNotes.addDirectorNote({ text: 'No fast cuts under 90 seconds.' });
+    const note = await DirectorNotes.addDirectorNote({ projectId, text: 'No fast cuts under 90 seconds.' });
     await Indexer.indexDirectorNote(note._id);
     const ids = [...fakeChroma._store.keys()];
     expect(ids).toContain(`director_note:${note._id.toString()}:text:0`);
@@ -152,6 +157,7 @@ describe('rag indexer — director notes & messages', () => {
       _id: oid2,
       role: 'user',
       channel_id: '0',
+      project_id: projectId,
       content: 'Hello, this is a real message.',
       author: { tag: 'steve' },
       created_at: new Date('2026-04-01T00:00:00Z'),
@@ -165,9 +171,94 @@ describe('rag indexer — director notes & messages', () => {
   });
 });
 
+describe('rag indexer — project metadata', () => {
+  it('indexBeat stamps project_id from the owning plot doc and re-keys the rag_indexed_at stamp', async () => {
+    const project = await Projects.createProject('Project A');
+    const pidA = project._id.toString();
+    const beatId = new ObjectId();
+    const plotId = new ObjectId();
+    fakeDb.collection('plots')._docs.push({
+      _id: plotId,
+      project_id: pidA,
+      beats: [{ _id: beatId, order: 0, name: 'Diner', desc: 'They meet.', body: 'A short body.', images: [] }],
+    });
+
+    await Indexer.indexBeat(beatId);
+
+    const meta = fakeChroma._store.get(`beat:${beatId.toString()}:name`).metadata;
+    expect(meta.project_id).toBe(pidA);
+    const plotAfter = await fakeDb.collection('plots').findOne({ _id: plotId });
+    expect(plotAfter.beats[0].rag_indexed_at).toBeInstanceOf(Date);
+  });
+
+  it('indexCharacter stamps project_id from the character doc', async () => {
+    const project = await Projects.createProject('Project A');
+    const pidA = project._id.toString();
+    const charId = new ObjectId();
+    fakeDb.collection('characters')._docs.push({
+      _id: charId,
+      project_id: pidA,
+      name: 'Alice',
+      name_lower: 'alice',
+      hollywood_actor: '',
+      fields: {},
+    });
+
+    await Indexer.indexCharacter(charId);
+
+    const meta = fakeChroma._store.get(`character:${charId.toString()}:name`).metadata;
+    expect(meta.project_id).toBe(pidA);
+  });
+
+  it('indexDirectorNote stamps project_id from the composite prompts _id', async () => {
+    const project = await Projects.createProject('Project A');
+    const pidA = project._id.toString();
+    const noteId = new ObjectId();
+    fakeDb.collection('prompts')._docs.push({
+      _id: `${pidA}:director_notes`,
+      notes: [{ _id: noteId, text: 'No fast cuts under 90 seconds.' }],
+    });
+
+    await Indexer.indexDirectorNote(noteId);
+
+    const meta = fakeChroma._store.get(`director_note:${noteId.toString()}:text:0`).metadata;
+    expect(meta.project_id).toBe(pidA);
+  });
+
+  it('legacy entities without project info are skipped (strict mode; reindex after migration)', async () => {
+    const noteId = new ObjectId();
+    fakeDb.collection('prompts')._docs.push({
+      _id: 'director_notes',
+      notes: [{ _id: noteId, text: 'Legacy note before re-key.' }],
+    });
+
+    await Indexer.indexDirectorNote(noteId);
+
+    expect(fakeChroma._store.has(`director_note:${noteId.toString()}:text:0`)).toBe(false);
+  });
+
+  it('indexMessage stamps project_id from the message doc', async () => {
+    const project = await Projects.createProject('Project A');
+    const pidA = project._id.toString();
+    const oid = new ObjectId();
+    await Indexer.indexMessage({
+      _id: oid,
+      role: 'user',
+      channel_id: '0',
+      project_id: pidA,
+      content: 'Hello from project A.',
+      author: { tag: 'steve' },
+      created_at: new Date('2026-06-01T00:00:00Z'),
+    });
+
+    const meta = fakeChroma._store.get(`message:${oid.toString()}`).metadata;
+    expect(meta.project_id).toBe(pidA);
+  });
+});
+
 describe('rag indexer — degraded paths', () => {
   it('embedTexts throwing leaves the store untouched and surfaces the error', async () => {
-    const c = await Characters.createCharacter({
+    const c = await Characters.createCharacter({ projectId,
       name: 'Charlie',
       plays_self: true,
       hollywood_actor: '',

@@ -7,17 +7,22 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const { seedDefaults } = await import('../src/seed/defaults.js');
 const { getCharacterTemplate, updateCharacterTemplateFields } = await import('../src/mongo/prompts.js');
+const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 describe('seedDefaults', () => {
   it('seeds the full character template on a fresh DB, including alternate_names and name_changes', async () => {
     await seedDefaults();
-    const tpl = await getCharacterTemplate();
+    const tpl = await getCharacterTemplate(projectId);
     const names = tpl.fields.map((f) => f.name);
     expect(names).toContain('alternate_names');
     expect(names).toContain('name_changes');
@@ -35,7 +40,7 @@ describe('seedDefaults', () => {
   it('does not duplicate fields when called twice', async () => {
     await seedDefaults();
     await seedDefaults();
-    const tpl = await getCharacterTemplate();
+    const tpl = await getCharacterTemplate(projectId);
     const names = tpl.fields.map((f) => f.name);
     const dedup = new Set(names);
     expect(names.length).toBe(dedup.size);
@@ -43,8 +48,9 @@ describe('seedDefaults', () => {
 
   it('backfills new optional fields onto a pre-existing template that lacks them', async () => {
     // Simulate an existing deployment seeded BEFORE alternate_names / name_changes were added.
+    const def = await Projects.getDefaultProject();
     await fakeDb.collection('prompts').insertOne({
-      _id: 'character_template',
+      _id: `${def._id.toString()}:character_template`,
       fields: [
         { name: 'name', description: 'x', required: true, core: true },
         { name: 'hollywood_actor', description: 'x', required: false, core: true },
@@ -55,7 +61,7 @@ describe('seedDefaults', () => {
 
     await seedDefaults();
 
-    const tpl = await getCharacterTemplate();
+    const tpl = await getCharacterTemplate(projectId);
     const names = tpl.fields.map((f) => f.name);
     expect(names).toContain('alternate_names');
     expect(names).toContain('name_changes');
@@ -63,8 +69,9 @@ describe('seedDefaults', () => {
   });
 
   it('strips retired plays_self / own_voice fields from an existing template', async () => {
+    const def = await Projects.getDefaultProject();
     await fakeDb.collection('prompts').insertOne({
-      _id: 'character_template',
+      _id: `${def._id.toString()}:character_template`,
       fields: [
         { name: 'name', description: 'x', required: true, core: true },
         { name: 'plays_self', description: 'legacy', required: false, core: true },
@@ -76,7 +83,7 @@ describe('seedDefaults', () => {
 
     await seedDefaults();
 
-    const tpl = await getCharacterTemplate();
+    const tpl = await getCharacterTemplate(projectId);
     const names = tpl.fields.map((f) => f.name);
     expect(names).not.toContain('plays_self');
     expect(names).not.toContain('own_voice');
@@ -85,13 +92,35 @@ describe('seedDefaults', () => {
 
   it('preserves user-added custom template fields across re-seeds', async () => {
     await seedDefaults();
-    await updateCharacterTemplateFields({
+    await updateCharacterTemplateFields({ projectId,
       add: [{ name: 'favorite_color', description: 'fav color', required: false }],
     });
     await seedDefaults();
-    const tpl = await getCharacterTemplate();
+    const tpl = await getCharacterTemplate(projectId);
     const names = tpl.fields.map((f) => f.name);
     expect(names).toContain('favorite_color');
     expect(names).toContain('alternate_names');
+  });
+});
+
+describe('seedProjectDefaults', () => {
+  it('seeds templates and an empty plot doc for every project on startup', async () => {
+    const defaultProject = await Projects.getDefaultProject();
+    const defaultId = defaultProject._id.toString();
+    const p2 = (await Projects.createProject('Second'))._id.toString();
+    await seedDefaults();
+    const { getCharacterTemplate, getPlotTemplate } = await import('../src/mongo/prompts.js');
+    // Default project
+    expect(await getCharacterTemplate(defaultId)).toBeTruthy();
+    expect(await getPlotTemplate(defaultId)).toBeTruthy();
+    const defaultPlot = await fakeDb.collection('plots').findOne({ project_id: defaultId });
+    expect(defaultPlot).toBeTruthy();
+    expect(defaultPlot.beats).toEqual([]);
+    // Second project
+    expect(await getCharacterTemplate(p2)).toBeTruthy();
+    expect(await getPlotTemplate(p2)).toBeTruthy();
+    const plot = await fakeDb.collection('plots').findOne({ project_id: p2 });
+    expect(plot).toBeTruthy();
+    expect(plot.beats).toEqual([]);
   });
 });

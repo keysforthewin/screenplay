@@ -33,12 +33,16 @@ vi.mock('../src/rag/embeddings.js', () => ({
   RagDisabledError: class extends Error {},
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Indexer = await import('../src/rag/indexer.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   fakeChroma._store.clear();
   ragState.enabled = true;
 });
@@ -46,24 +50,24 @@ beforeEach(() => {
 describe('screenplay_search handler', () => {
   it('returns a friendly error when RAG is not configured', async () => {
     ragState.enabled = false;
-    const out = await HANDLERS.screenplay_search({ query: 'anything' });
+    const out = await HANDLERS.screenplay_search({ query: 'anything' }, { projectId });
     expect(out).toMatch(/unavailable/);
     expect(out).toMatch(/VOYAGE_API_KEY/);
   });
 
   it('errors when query is missing', async () => {
-    const out = await HANDLERS.screenplay_search({});
+    const out = await HANDLERS.screenplay_search({}, { projectId });
     expect(out).toMatch(/^Error: `query` is required/);
   });
 
   it('returns formatted JSON with provenance for indexed beats', async () => {
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Diner Argument',
       desc: 'Alice and Bob fight at the diner over the affair.',
       body: 'Alice slams down the menu. The waitress avoids eye contact. Bob says nothing.',
     });
     await Indexer.indexBeat(beat._id);
-    const out = await HANDLERS.screenplay_search({ query: 'Alice and Bob diner', k: 3 });
+    const out = await HANDLERS.screenplay_search({ query: 'Alice and Bob diner', k: 3 }, { projectId });
     const parsed = JSON.parse(out);
     expect(parsed.match_count).toBeGreaterThan(0);
     const top = parsed.results[0];
@@ -78,7 +82,7 @@ describe('screenplay_search handler', () => {
   });
 
   it('respects entity_types filter', async () => {
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'Open',
       desc: 'opening scene',
       body: 'the bag is heavy',
@@ -90,6 +94,7 @@ describe('screenplay_search handler', () => {
       _id: oid,
       role: 'user',
       channel_id: '0',
+      project_id: projectId,
       author: { tag: 'a' },
       content: 'the bag is heavy',
       created_at: new Date(),
@@ -98,7 +103,7 @@ describe('screenplay_search handler', () => {
       query: 'bag',
       k: 5,
       entity_types: ['beat'],
-    });
+    }, { projectId });
     const parsed = JSON.parse(out);
     for (const r of parsed.results) {
       expect(r.entity_type).toBe('beat');

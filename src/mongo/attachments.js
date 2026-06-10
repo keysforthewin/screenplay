@@ -16,6 +16,7 @@ import {
   deriveAttachmentFilename,
   toObjectId,
 } from './attachmentBytes.js';
+import { resolveProjectId } from './projects.js';
 
 const BUCKET_NAME = 'attachments';
 
@@ -38,16 +39,18 @@ function uploadBuffer({ buffer, filename, contentType, metadata }) {
   });
 }
 
-export async function uploadAttachmentBuffer({
+export async function uploadAttachmentBuffer(projectId, {
   buffer,
   filename,
   contentType,
   ownerType = null,
   ownerId = null,
-}) {
+} = {}) {
+  const pid = await resolveProjectId(projectId);
   const ct = contentType || 'application/octet-stream';
   const finalFilename = filename?.trim() || `attachment-${Date.now()}.bin`;
   const metadata = {
+    project_id: pid,
     owner_type: ownerType,
     owner_id: ownerId ? toObjectId(ownerId) : null,
     source: 'upload',
@@ -64,19 +67,21 @@ export async function uploadAttachmentBuffer({
   };
 }
 
-export async function uploadAttachmentFromUrl({
+export async function uploadAttachmentFromUrl(projectId, {
   sourceUrl,
   filename,
   contentType: hintedContentType,
   ownerType = null,
   ownerId = null,
-}) {
+} = {}) {
+  const pid = await resolveProjectId(projectId);
   const { buffer, contentType, size } = await fetchAttachmentFromUrl(
     sourceUrl,
     hintedContentType,
   );
   const finalFilename = filename?.trim() || deriveAttachmentFilename(sourceUrl, contentType);
   const metadata = {
+    project_id: pid,
     owner_type: ownerType,
     owner_id: ownerId ? toObjectId(ownerId) : null,
     source: 'upload',
@@ -102,35 +107,28 @@ export async function findAttachmentFile(attachmentId) {
 // uploadAttachmentBuffer). The new file gets a fresh _id — callers can rely on
 // this to break ownership links (e.g. "copy this dialog's audio onto a scene
 // as an independent file, not a reference").
-export async function copyAttachmentBuffer({
-  sourceFileId,
-  filename,
-  ownerType = null,
-  ownerId = null,
-}) {
-  const read = await readAttachmentBuffer(sourceFileId);
-  if (!read) throw new Error(`Attachment not found: ${sourceFileId}`);
-  const { buffer, file } = read;
-  const ct =
-    file.contentType || file.metadata?.content_type || 'application/octet-stream';
-  const finalFilename =
-    filename?.trim() || file.filename || `copy-${Date.now()}.bin`;
-  return uploadAttachmentBuffer({
-    buffer,
-    filename: finalFilename,
-    contentType: ct,
-    ownerType,
-    ownerId,
-  });
-}
+//
+// Implementation lives in attachmentCopy.js (separate module boundary) so that
+// readAttachmentBuffer / uploadAttachmentBuffer calls are interceptable in tests
+// — mirrors the imageCopy.js / images.js split. This re-export keeps the public
+// API stable for existing callers (gateway.js, dialog-audio-gateway tests, etc.).
+export { copyAttachmentBuffer } from './attachmentCopy.js';
 
-export async function listLibraryAttachments() {
+export async function listLibraryAttachments(projectId) {
+  const pid = await resolveProjectId(projectId);
   return filesCol()
-    .find({ 'metadata.owner_type': null })
+    .find({ 'metadata.project_id': pid, 'metadata.owner_type': null })
     .sort({ uploadDate: -1 })
     .toArray();
 }
 
+// These per-owner listers are DELIBERATELY unscoped by project. They are
+// id-addressed — the caller supplies an entity id that uniquely identifies the
+// owner — and project gating happens at owner resolution in routes: getBeat and
+// getCharacter already verify that the resolved entity belongs to the active
+// project. Unlike images.js there is no lenient in-module project_id check
+// (no legacy unstamped-file lenience), and these attachment ids are not
+// re-signed or returned to the client as temporary links.
 export async function listAttachmentsForCharacter(characterId) {
   return filesCol()
     .find({ 'metadata.owner_type': 'character', 'metadata.owner_id': toObjectId(characterId) })
@@ -275,10 +273,10 @@ async function pushCharacterAttachment(characterId, attachmentMeta) {
     );
 }
 
-export async function attachToCharacter({ character, sourceUrl, filename, caption }) {
-  const c = await getCharacter(character);
+export async function attachToCharacter({ projectId, character, sourceUrl, filename, caption }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
-  const file = await uploadAttachmentFromUrl({
+  const file = await uploadAttachmentFromUrl(projectId ?? c.project_id, {
     sourceUrl,
     filename,
     ownerType: 'character',
@@ -305,16 +303,22 @@ export async function detachAttachmentFromCurrentOwner(file) {
   const ownerType = file?.metadata?.owner_type;
   const ownerId = file?.metadata?.owner_id;
   if (!ownerType || !ownerId) return null;
+  // The file's own stamp is the source of truth for which project the owner
+  // lives in. Post-migration every file carries a project_id stamp; the pull*
+  // helpers require it (no stamp → projectId required error). Legacy unstamped
+  // files must be migrated first via scripts/migrate-multi-project.js before
+  // this path is exercised.
+  const projectId = file?.metadata?.project_id;
   let priorName = null;
   try {
     if (ownerType === 'beat') {
-      const res = await pullBeatAttachment(ownerId, file._id);
+      const res = await pullBeatAttachment(projectId, ownerId, file._id);
       priorName = res?.beat?.name || null;
     } else if (ownerType === 'character') {
-      const res = await pullCharacterAttachment(ownerId, file._id);
+      const res = await pullCharacterAttachment(projectId, ownerId, file._id);
       priorName = res?.character || null;
     } else if (ownerType === 'director_note') {
-      await pullDirectorNoteAttachment(ownerId, file._id);
+      await pullDirectorNoteAttachment(projectId, ownerId, file._id);
     }
   } catch (e) {
     if (!/not attached|not found/i.test(e?.message || '')) throw e;
@@ -333,8 +337,8 @@ function buildAttachmentMeta(file, caption) {
   };
 }
 
-export async function attachExistingAttachmentToCharacter({ character, attachmentId, caption }) {
-  const c = await getCharacter(character);
+export async function attachExistingAttachmentToCharacter({ projectId, character, attachmentId, caption }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const file = await findAttachmentFile(attachmentId);
   if (!file) throw new Error(`Attachment not found: ${attachmentId}`);
@@ -359,11 +363,11 @@ export async function attachExistingAttachmentToCharacter({ character, attachmen
   return { character: c.name, ...meta, moved_from: movedFrom };
 }
 
-export async function attachExistingAttachmentToBeat({ beat, attachmentId, caption }) {
+export async function attachExistingAttachmentToBeat({ projectId, beat, attachmentId, caption }) {
   const file = await findAttachmentFile(attachmentId);
   if (!file) throw new Error(`Attachment not found: ${attachmentId}`);
 
-  const beatDoc = await getBeat(beat);
+  const beatDoc = await getBeat(projectId, beat);
   if (!beatDoc) throw new Error(`Beat not found: ${beat}`);
 
   if (
@@ -382,15 +386,15 @@ export async function attachExistingAttachmentToBeat({ beat, attachmentId, capti
   const movedFrom = await detachAttachmentFromCurrentOwner(file);
   await setAttachmentOwner(attachmentId, { ownerType: 'beat', ownerId: beatDoc._id });
   const meta = buildAttachmentMeta(file, caption);
-  await pushBeatAttachment(beatDoc._id.toString(), meta);
+  await pushBeatAttachment(projectId, beatDoc._id.toString(), meta);
   return { beat: { _id: beatDoc._id, name: beatDoc.name }, ...meta, moved_from: movedFrom };
 }
 
-export async function attachExistingAttachmentToDirectorNote({ noteId, attachmentId, caption }) {
+export async function attachExistingAttachmentToDirectorNote({ projectId, noteId, attachmentId, caption }) {
   const file = await findAttachmentFile(attachmentId);
   if (!file) throw new Error(`Attachment not found: ${attachmentId}`);
 
-  const { notes = [] } = (await getDirectorNotes()) || {};
+  const { notes = [] } = (await getDirectorNotes(projectId)) || {};
   const target = notes.find((n) => n._id?.toString() === String(noteId));
   if (!target) throw new Error(`Director note not found: ${noteId}`);
 
@@ -410,18 +414,18 @@ export async function attachExistingAttachmentToDirectorNote({ noteId, attachmen
   const movedFrom = await detachAttachmentFromCurrentOwner(file);
   await setAttachmentOwner(attachmentId, { ownerType: 'director_note', ownerId: target._id });
   const meta = buildAttachmentMeta(file, caption);
-  await pushDirectorNoteAttachment(target._id.toString(), meta);
+  await pushDirectorNoteAttachment(projectId, target._id.toString(), meta);
   return { note_id: target._id, ...meta, moved_from: movedFrom };
 }
 
-export async function listCharacterAttachments(character) {
-  const c = await getCharacter(character);
+export async function listCharacterAttachments(projectId, character) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   return { character: c.name, _id: c._id, attachments: c.attachments || [] };
 }
 
-export async function removeCharacterAttachment({ character, attachmentId }) {
-  const c = await getCharacter(character);
+export async function removeCharacterAttachment({ projectId, character, attachmentId }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const oid = toObjectId(attachmentId);
   const has = (c.attachments || []).some((a) => a._id && a._id.equals(oid));

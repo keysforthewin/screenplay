@@ -11,6 +11,7 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
@@ -43,14 +44,17 @@ function csvRows(text) {
     .map((line) => line.split(','));
 }
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 async function seedCharacters() {
   // Persist the retired top-level boolean `plays_self` directly to give the
   // export_csv tests a stable top-level boolean field to filter/group on.
-  const a = await Characters.createCharacter({
+  const a = await Characters.createCharacter({ projectId,
     name: 'Alice',
     fields: { age: 30, background_story: 'Detective from Boston.' },
   });
@@ -58,7 +62,7 @@ async function seedCharacters() {
     { _id: a._id },
     { $set: { plays_self: true } },
   );
-  const b = await Characters.createCharacter({
+  const b = await Characters.createCharacter({ projectId,
     name: 'Bob',
     hollywood_actor: 'Tom Hardy',
     fields: { age: 45, background_story: 'Reformed villain.' },
@@ -67,7 +71,7 @@ async function seedCharacters() {
     { _id: b._id },
     { $set: { plays_self: false } },
   );
-  const c = await Characters.createCharacter({
+  const c = await Characters.createCharacter({ projectId,
     name: 'Carol',
     fields: { age: 22 },
   });
@@ -78,19 +82,19 @@ async function seedCharacters() {
 }
 
 async function seedBeats() {
-  await Plots.createBeat({
+  await Plots.createBeat({ projectId,
     name: 'Opening',
     desc: 'The opening scene.',
     body: 'Alice walks into the diner alone',
     characters: ['Alice'],
   });
-  await Plots.createBeat({
+  await Plots.createBeat({ projectId,
     name: 'Confrontation',
     desc: 'Alice meets Bob.',
     body: 'Alice and Bob argue about the case for many minutes back and forth',
     characters: ['Alice', 'Bob'],
   });
-  await Plots.createBeat({
+  await Plots.createBeat({ projectId,
     name: 'Resolution',
     desc: 'They reconcile.',
     body: 'Carol arrives and changes everything completely',
@@ -100,12 +104,12 @@ async function seedBeats() {
 
 describe('export_csv — validation and entity dispatch', () => {
   it('rejects an unknown entity', async () => {
-    const out = await HANDLERS.export_csv({ entity: 'monkeys', columns: [{ field: 'name' }] });
+    const out = await HANDLERS.export_csv({ entity: 'monkeys', columns: [{ field: 'name' }] }, { projectId });
     expect(out).toMatch(/^Tool error \(export_csv\): unknown entity/);
   });
 
   it('rejects empty columns', async () => {
-    const out = await HANDLERS.export_csv({ entity: 'characters', columns: [] });
+    const out = await HANDLERS.export_csv({ entity: 'characters', columns: [] }, { projectId });
     expect(out).toMatch(/at least one column is required/);
   });
 
@@ -118,7 +122,7 @@ describe('export_csv — validation and entity dispatch', () => {
         { field: 'name' }, // not in group_by, not aggregated
       ],
       group_by: ['plays_self'],
-    });
+    }, { projectId });
     expect(out).toMatch(/column "name" must be in group_by or have a non-none aggregate/);
   });
 
@@ -130,7 +134,7 @@ describe('export_csv — validation and entity dispatch', () => {
         { field: 'name' }, // raw column alongside an aggregate is invalid
         { field: 'fields.age', aggregate: 'avg' },
       ],
-    });
+    }, { projectId });
     expect(out).toMatch(/column "name" must be in group_by or have a non-none aggregate/);
   });
 });
@@ -141,7 +145,7 @@ describe('export_csv — raw row export', () => {
     const out = await HANDLERS.export_csv({
       entity: 'characters',
       columns: [{ field: 'name' }, { field: 'plays_self' }, { field: 'fields.age' }],
-    });
+    }, { projectId });
     const text = await readCsv(out);
     const rows = csvRows(text);
     expect(rows[0]).toEqual(['name', 'plays_self', 'fields.age']);
@@ -157,7 +161,7 @@ describe('export_csv — raw row export', () => {
     const out = await HANDLERS.export_csv({
       entity: 'beats',
       columns: [{ field: 'order' }, { field: 'name' }],
-    });
+    }, { projectId });
     const text = await readCsv(out);
     const rows = csvRows(text);
     expect(rows[0]).toEqual(['order', 'name']);
@@ -176,7 +180,7 @@ describe('export_csv — raw row export', () => {
         { field: 'name', header: 'Character' },
         { field: 'fields.age', header: 'Age' },
       ],
-    });
+    }, { projectId });
     const text = await readCsv(out);
     expect(text.split('\n')[0]).toBe('Character,Age');
   });
@@ -186,7 +190,7 @@ describe('export_csv — raw row export', () => {
     const out = await HANDLERS.export_csv({
       entity: 'characters',
       columns: [{ field: 'name' }],
-    });
+    }, { projectId });
     const { filepath, note } = parseSentinel(out);
     expect(path.dirname(filepath)).toBe(os.tmpdir());
     expect(note).toMatch(/Exported 3 characters row\(s\)\./);
@@ -201,7 +205,7 @@ describe('export_csv — raw row export', () => {
     const out = await HANDLERS.export_csv({
       entity: 'beats',
       columns: [{ field: 'name' }],
-    });
+    }, { projectId });
     const { filepath } = parseSentinel(out);
     expect(path.basename(filepath)).toBe(`beats-${today}.csv`);
     await fs.unlink(filepath);
@@ -215,7 +219,7 @@ describe('export_csv — filter operators', () => {
       entity: 'characters',
       columns: [{ field: 'name' }],
       filter: [{ field: 'plays_self', op: 'eq', value: true }],
-    });
+    }, { projectId });
     const rows = csvRows(await readCsv(out));
     expect(rows.slice(1)).toEqual([['Alice'], ['Carol']]);
   });
@@ -226,7 +230,7 @@ describe('export_csv — filter operators', () => {
       entity: 'characters',
       columns: [{ field: 'name' }],
       filter: [{ field: 'plays_self', op: 'ne', value: true }],
-    });
+    }, { projectId });
     const rows = csvRows(await readCsv(out));
     expect(rows.slice(1)).toEqual([['Bob']]);
   });
@@ -237,14 +241,14 @@ describe('export_csv — filter operators', () => {
       entity: 'characters',
       columns: [{ field: 'name' }],
       filter: [{ field: 'fields.age', op: 'gt', value: 25 }],
-    });
+    }, { projectId });
     expect(csvRows(await readCsv(gt)).slice(1)).toEqual([['Alice'], ['Bob']]);
 
     const gte = await HANDLERS.export_csv({
       entity: 'characters',
       columns: [{ field: 'name' }],
       filter: [{ field: 'fields.age', op: 'gte', value: 30 }],
-    });
+    }, { projectId });
     expect(csvRows(await readCsv(gte)).slice(1)).toEqual([['Alice'], ['Bob']]);
   });
 
@@ -254,14 +258,14 @@ describe('export_csv — filter operators', () => {
       entity: 'characters',
       columns: [{ field: 'name' }],
       filter: [{ field: 'fields.age', op: 'lt', value: 30 }],
-    });
+    }, { projectId });
     expect(csvRows(await readCsv(lt)).slice(1)).toEqual([['Carol']]);
 
     const lte = await HANDLERS.export_csv({
       entity: 'characters',
       columns: [{ field: 'name' }],
       filter: [{ field: 'fields.age', op: 'lte', value: 30 }],
-    });
+    }, { projectId });
     expect(csvRows(await readCsv(lte)).slice(1)).toEqual([['Alice'], ['Carol']]);
   });
 
@@ -271,7 +275,7 @@ describe('export_csv — filter operators', () => {
       entity: 'characters',
       columns: [{ field: 'name' }],
       filter: [{ field: 'fields.background_story', op: 'contains', value: 'BOSTON' }],
-    });
+    }, { projectId });
     expect(csvRows(await readCsv(out)).slice(1)).toEqual([['Alice']]);
   });
 
@@ -281,7 +285,7 @@ describe('export_csv — filter operators', () => {
       entity: 'beats',
       columns: [{ field: 'name' }],
       filter: [{ field: 'characters', op: 'contains', value: 'Bob' }],
-    });
+    }, { projectId });
     expect(csvRows(await readCsv(out)).slice(1)).toEqual([['Confrontation']]);
   });
 
@@ -291,14 +295,14 @@ describe('export_csv — filter operators', () => {
       entity: 'characters',
       columns: [{ field: 'name' }],
       filter: [{ field: 'hollywood_actor', op: 'exists', value: true }],
-    });
+    }, { projectId });
     expect(csvRows(await readCsv(truthy)).slice(1)).toEqual([['Bob']]);
 
     const falsy = await HANDLERS.export_csv({
       entity: 'characters',
       columns: [{ field: 'name' }],
       filter: [{ field: 'hollywood_actor', op: 'exists', value: false }],
-    });
+    }, { projectId });
     expect(csvRows(await readCsv(falsy)).slice(1)).toEqual([['Alice'], ['Carol']]);
   });
 
@@ -311,7 +315,7 @@ describe('export_csv — filter operators', () => {
         { field: 'plays_self', op: 'eq', value: true },
         { field: 'fields.age', op: 'gte', value: 30 },
       ],
-    });
+    }, { projectId });
     expect(csvRows(await readCsv(out)).slice(1)).toEqual([['Alice']]);
   });
 });
@@ -325,7 +329,7 @@ describe('export_csv — aggregation', () => {
         { field: 'fields.age', aggregate: 'avg' },
         { field: 'name', aggregate: 'count' },
       ],
-    });
+    }, { projectId });
     const rows = csvRows(await readCsv(out));
     expect(rows[0]).toEqual(['avg(fields.age)', 'count(name)']);
     expect(rows).toHaveLength(2);
@@ -345,7 +349,7 @@ describe('export_csv — aggregation', () => {
       ],
       group_by: ['plays_self'],
       sort: [{ field: 'plays_self', direction: 'desc' }],
-    });
+    }, { projectId });
     const rows = csvRows(await readCsv(out));
     expect(rows[0]).toEqual(['plays_self', 'count(name)', 'avg(fields.age)']);
     expect(rows[1][0]).toBe('true');
@@ -365,7 +369,7 @@ describe('export_csv — aggregation', () => {
         { field: 'fields.age', aggregate: 'min', header: 'youngest' },
         { field: 'fields.age', aggregate: 'max', header: 'oldest' },
       ],
-    });
+    }, { projectId });
     const rows = csvRows(await readCsv(out));
     expect(rows[0]).toEqual(['sum(fields.age)', 'youngest', 'oldest']);
     expect(rows[1]).toEqual(['97', '22', '45']);
@@ -384,7 +388,7 @@ describe('export_csv — computed columns', () => {
         { field: 'image_count' },
         { field: 'character_count' },
       ],
-    });
+    }, { projectId });
     const rows = csvRows(await readCsv(out));
     expect(rows[0]).toEqual(['name', 'word_count', 'char_count', 'image_count', 'character_count']);
     // Body: "Alice walks into the diner alone" → 6 words.
@@ -405,7 +409,7 @@ describe('export_csv — computed columns', () => {
     const out = await HANDLERS.export_csv({
       entity: 'beats',
       columns: [{ field: 'word_count', aggregate: 'avg' }],
-    });
+    }, { projectId });
     const rows = csvRows(await readCsv(out));
     // word counts: 6, 13, 6 → avg 25/3 ≈ 8.333
     expect(Number(rows[1][0])).toBeCloseTo(25 / 3, 3);
@@ -417,7 +421,7 @@ describe('export_csv — computed columns', () => {
     const out = await HANDLERS.export_csv({
       entity: 'characters',
       columns: [{ field: 'name' }, { field: 'appears_in_beats' }],
-    });
+    }, { projectId });
     const rows = csvRows(await readCsv(out));
     // Alice in 3 beats; Bob in 1; Carol in 1.
     expect(rows.slice(1)).toEqual([
@@ -436,7 +440,7 @@ describe('export_csv — sort and limit', () => {
       columns: [{ field: 'name' }, { field: 'fields.age' }],
       sort: [{ field: 'fields.age', direction: 'desc' }],
       limit: 2,
-    });
+    }, { projectId });
     const rows = csvRows(await readCsv(out));
     expect(rows.slice(1)).toEqual([
       ['Bob', '45'],
@@ -447,7 +451,7 @@ describe('export_csv — sort and limit', () => {
 
 describe('export_csv — CSV escaping', () => {
   it('escapes commas, quotes, and newlines per RFC 4180', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Smith, John "Johnny"',
       plays_self: true,
       own_voice: true,
@@ -456,7 +460,7 @@ describe('export_csv — CSV escaping', () => {
     const out = await HANDLERS.export_csv({
       entity: 'characters',
       columns: [{ field: 'name' }, { field: 'fields.background_story' }],
-    });
+    }, { projectId });
     const { filepath } = parseSentinel(out);
     const text = await fs.readFile(filepath, 'utf8');
     await fs.unlink(filepath);
@@ -474,7 +478,7 @@ describe('export_csv — filename sanitization', () => {
       entity: 'characters',
       columns: [{ field: 'name' }],
       filename: '../../etc/passwd',
-    });
+    }, { projectId });
     const { filepath } = parseSentinel(out);
     expect(path.dirname(filepath)).toBe(os.tmpdir());
     expect(path.basename(filepath)).toMatch(/\.csv$/);
@@ -489,7 +493,7 @@ describe('export_csv — filename sanitization', () => {
       entity: 'characters',
       columns: [{ field: 'name' }],
       filename: 'cast_list',
-    });
+    }, { projectId });
     const { filepath } = parseSentinel(out);
     expect(path.basename(filepath)).toBe('cast_list.csv');
     await fs.unlink(filepath);

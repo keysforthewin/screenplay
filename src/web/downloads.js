@@ -137,12 +137,12 @@ async function appendAttachments(archive, attachments, folder) {
 
 export async function streamBeatZip(req, res) {
   const idOrOrder = req.params.id;
-  const beat = await getBeat(idOrOrder);
+  const beat = await getBeat(req.projectId, idOrOrder);
   if (!beat) return res.status(404).json({ error: 'beat not found' });
 
   const beatIdHex = beat._id.toString();
   const [images, attachments] = await Promise.all([
-    listImagesForBeat(beatIdHex),
+    listImagesForBeat(req.projectId, beatIdHex),
     listAttachmentsForBeat(beatIdHex),
   ]);
 
@@ -158,7 +158,7 @@ export async function streamBeatZip(req, res) {
 
 export async function streamCharacterZip(req, res) {
   const idOrName = req.params.id;
-  const character = await getCharacter(idOrName);
+  const character = await getCharacter(req.projectId, idOrName);
   if (!character) return res.status(404).json({ error: 'character not found' });
 
   const cidHex = character._id.toString();
@@ -188,10 +188,10 @@ export async function streamCharacterZip(req, res) {
   });
 }
 
-export async function streamLibraryZip(_req, res) {
+export async function streamLibraryZip(req, res) {
   const [images, attachments] = await Promise.all([
-    listLibraryImages(),
-    listLibraryAttachments(),
+    listLibraryImages(req.projectId),
+    listLibraryAttachments(req.projectId),
   ]);
 
   await streamZip(res, 'library.zip', async (archive) => {
@@ -200,8 +200,8 @@ export async function streamLibraryZip(_req, res) {
   });
 }
 
-export async function streamNotesZip(_req, res) {
-  const { notes = [] } = await getDirectorNotes();
+export async function streamNotesZip(req, res) {
+  const { notes = [] } = await getDirectorNotes(req.projectId);
 
   // Per-note folders: notes/<index>-<short-id>/{images,attachments}
   const folderNames = uniqueNames(notes, (n, i) => {

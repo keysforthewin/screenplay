@@ -547,8 +547,8 @@ async function loadDirectorNoteImages(directorNotes) {
   return out;
 }
 
-async function loadLibrary() {
-  const orphanFiles = await listLibraryImages();
+async function loadLibrary(projectId) {
+  const orphanFiles = await listLibraryImages(projectId);
   const images = [];
   for (const file of orphanFiles || []) {
     try {
@@ -558,13 +558,13 @@ async function loadLibrary() {
       logger.warn(`could not load library image ${file._id}: ${e.message}`);
     }
   }
-  const attachments = await listLibraryAttachments();
+  const attachments = await listLibraryAttachments(projectId);
   return { images, attachments: attachments || [] };
 }
 
-async function buildExportData({ characters: charNames, beats_query, dossier_character }) {
+async function buildExportData({ projectId, characters: charNames, beats_query, dossier_character }) {
   if (Array.isArray(charNames) && charNames.length) {
-    const resolved = await Promise.all(charNames.map((n) => getCharacter(n)));
+    const resolved = await Promise.all(charNames.map((n) => getCharacter(projectId, n)));
     const missing = charNames.filter((_, i) => !resolved[i]);
     if (missing.length) return { error: `No such character(s): ${missing.join(', ')}.` };
     const characterImages = await loadCharacterImages(resolved);
@@ -585,7 +585,7 @@ async function buildExportData({ characters: charNames, beats_query, dossier_cha
   }
 
   if (beats_query) {
-    const matches = await searchBeats(beats_query);
+    const matches = await searchBeats(projectId, beats_query);
     if (!matches.length) return { error: `No beats matched query: "${beats_query}".` };
     const beats = matches
       .map((m) => m.beat)
@@ -604,9 +604,9 @@ async function buildExportData({ characters: charNames, beats_query, dossier_cha
   }
 
   if (dossier_character) {
-    const character = await getCharacter(dossier_character);
+    const character = await getCharacter(projectId, dossier_character);
     if (!character) return { error: `Character not found: ${dossier_character}.` };
-    const plot = await getPlot();
+    const plot = await getPlot(projectId);
     const target = String(character.name || '').toLowerCase();
     const beats = (plot.beats || [])
       .filter((b) => (b.characters || []).some((n) => String(n).toLowerCase() === target))
@@ -627,14 +627,14 @@ async function buildExportData({ characters: charNames, beats_query, dossier_cha
     };
   }
 
-  const characters = await findAllCharacters();
-  const plot = await getPlot();
-  const directorNotes = await getDirectorNotes();
+  const characters = await findAllCharacters(projectId);
+  const plot = await getPlot(projectId);
+  const directorNotes = await getDirectorNotes(projectId);
   const [beatImages, characterImages, directorNoteImages, library] = await Promise.all([
     loadBeatImages(plot),
     loadCharacterImages(characters),
     loadDirectorNoteImages(directorNotes),
-    loadLibrary(),
+    loadLibrary(projectId),
   ]);
   return {
     characters,
@@ -652,13 +652,13 @@ async function buildExportData({ characters: charNames, beats_query, dossier_cha
   };
 }
 
-export async function exportToPdf({ title, characters, beats_query, dossier_character } = {}) {
-  const result = await buildExportData({ characters, beats_query, dossier_character });
+export async function exportToPdf({ projectId, title, characters, beats_query, dossier_character } = {}) {
+  const result = await buildExportData({ projectId, characters, beats_query, dossier_character });
   if (result.error) return { error: result.error };
   const { meta, ...data } = result;
   let effectiveTitle = typeof title === 'string' ? title.trim() : '';
   if (!effectiveTitle) {
-    const persistedTitle = (result.plot?.title || (await getPlot()).title || '').trim();
+    const persistedTitle = (result.plot?.title || (await getPlot(projectId)).title || '').trim();
     if (persistedTitle) effectiveTitle = persistedTitle;
   }
   const renderArgs = effectiveTitle ? { title: effectiveTitle, ...data } : { ...data };

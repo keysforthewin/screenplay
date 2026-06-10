@@ -17,9 +17,12 @@ vi.mock('../src/rag/queue.js', () => ({
 vi.mock('../src/rag/indexer.js', () => ({}));
 
 const { resolveRoom } = await import('../src/web/roomRegistry.js');
+const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let pid;
+beforeEach(async () => {
   fakeDb.reset();
+  pid = (await Projects.getDefaultProject())._id;
 });
 
 function seedAttachmentFile({ id, ownerType, ownerId, name = '', description = '' }) {
@@ -49,6 +52,7 @@ describe('owned-attachment fragments on character/beat rooms', () => {
     const attB = new ObjectId();
     fakeDb.collection('plots')._docs.push({
       _id: 'main',
+      project_id: pid.toString(),
       title: 'P',
       synopsis: '',
       beats: [
@@ -99,6 +103,7 @@ describe('owned-attachment fragments on character/beat rooms', () => {
     const attA = new ObjectId();
     fakeDb.collection('plots')._docs.push({
       _id: 'main',
+      project_id: pid.toString(),
       title: 'P',
       synopsis: '',
       beats: [
@@ -143,6 +148,7 @@ describe('owned-attachment fragments on character/beat rooms', () => {
     const attA = new ObjectId();
     fakeDb.collection('characters')._docs.push({
       _id: charId,
+      project_id: pid.toString(),
       name: 'Steve',
       name_lower: 'steve',
       hollywood_actor: '',
@@ -171,6 +177,7 @@ describe('owned-attachment fragments on character/beat rooms', () => {
     const beatId = new ObjectId();
     fakeDb.collection('plots')._docs.push({
       _id: 'main',
+      project_id: pid.toString(),
       title: 'P',
       synopsis: '',
       beats: [

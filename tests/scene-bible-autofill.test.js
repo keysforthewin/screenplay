@@ -50,6 +50,7 @@ vi.mock('../src/web/announceHelpers.js', () => ({
   announceBatchSummary: vi.fn(),
 }));
 
+const Projects = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const { addDirectorNote } = await import('../src/mongo/directorNotes.js');
@@ -73,11 +74,14 @@ const FULL = {
 };
 
 function reloadBeat(beatId) {
-  return Plots.getBeat(String(beatId));
+  return Plots.getBeat(projectId, String(beatId));
 }
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await Projects.createProject('Test Project'))._id.toString();
   _clearBeatLocksForTests();
   h.toolInput = { ...FULL };
   h.createCalls = [];
@@ -98,9 +102,9 @@ async function whileBeatLocked(beatId, fn) {
 
 describe('autofillSceneBible (module)', () => {
   it('fills all 8 fields and persists them to beat.scene_bible', async () => {
-    const beat = await Plots.createBeat({ name: 'Diner', body: 'Sarah waits in the rain.' });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner', body: 'Sarah waits in the rain.' });
 
-    const result = await autofillSceneBible({ beatId: beat._id.toString() });
+    const result = await autofillSceneBible({ projectId, beatId: beat._id.toString() });
 
     for (const f of SCENE_BIBLE_FIELDS) {
       expect(result.scene_bible[f]).toBe(FULL[f]);
@@ -115,10 +119,10 @@ describe('autofillSceneBible (module)', () => {
   });
 
   it('normalizes partial/garbage model output into all 8 keys', async () => {
-    const beat = await Plots.createBeat({ name: 'Sparse' });
+    const beat = await Plots.createBeat({ projectId, name: 'Sparse' });
     h.toolInput = { location: 'Rooftop', mood: 'Tense', bogus_field: 'ignored', palette: 42 };
 
-    const result = await autofillSceneBible({ beatId: beat._id.toString() });
+    const result = await autofillSceneBible({ projectId, beatId: beat._id.toString() });
 
     expect(Object.keys(result.scene_bible).sort()).toEqual([...SCENE_BIBLE_FIELDS].sort());
     expect(result.scene_bible.location).toBe('Rooftop');
@@ -129,21 +133,21 @@ describe('autofillSceneBible (module)', () => {
   });
 
   it('throws when the model does not call the tool', async () => {
-    const beat = await Plots.createBeat({ name: 'NoTool' });
+    const beat = await Plots.createBeat({ projectId, name: 'NoTool' });
     h.emptyContent = true;
-    await expect(autofillSceneBible({ beatId: beat._id.toString() })).rejects.toThrow();
+    await expect(autofillSceneBible({ projectId, beatId: beat._id.toString() })).rejects.toThrow();
   });
 
   it('throws when the beat does not exist', async () => {
-    await expect(autofillSceneBible({ beatId: new ObjectId().toString() })).rejects.toThrow(
+    await expect(autofillSceneBible({ projectId, beatId: new ObjectId().toString() })).rejects.toThrow(
       /not found/i,
     );
   });
 
   it('fails fast (BeatBusyError) when the beat is already locked', async () => {
-    const beat = await Plots.createBeat({ name: 'Busy' });
+    const beat = await Plots.createBeat({ projectId, name: 'Busy' });
     await whileBeatLocked(beat._id.toString(), async () => {
-      await expect(autofillSceneBible({ beatId: beat._id.toString() })).rejects.toMatchObject({
+      await expect(autofillSceneBible({ projectId, beatId: beat._id.toString() })).rejects.toMatchObject({
         code: 'BEAT_BUSY',
       });
     });
@@ -154,10 +158,10 @@ describe('autofillSceneBible (module)', () => {
 
 describe('buildSceneBibleContext', () => {
   it('includes the logline and the beat body', async () => {
-    await Plots.updatePlot({ title: 'Neon City', synopsis: 'A courier outruns her past.' });
-    const beat = await Plots.createBeat({ name: 'Chase', body: 'She sprints down the wet alley.' });
+    await Plots.updatePlot(projectId, { title: 'Neon City', synopsis: 'A courier outruns her past.' });
+    const beat = await Plots.createBeat({ projectId, name: 'Chase', body: 'She sprints down the wet alley.' });
 
-    const ctx = await buildSceneBibleContext(await reloadBeat(beat._id));
+    const ctx = await buildSceneBibleContext(projectId, await reloadBeat(beat._id));
 
     expect(ctx).toContain('Logline: A courier outruns her past.');
     expect(ctx).toContain('She sprints down the wet alley.');
@@ -166,13 +170,14 @@ describe('buildSceneBibleContext', () => {
 
   it('includes character bios and director notes', async () => {
     await Characters.createCharacter({
+      projectId,
       name: 'Alice',
       fields: { background_story: 'Former courier.' },
     });
-    await addDirectorNote({ text: 'Keep it rain-soaked throughout.' });
-    const beat = await Plots.createBeat({ name: 'Meet', characters: ['Alice'] });
+    await addDirectorNote({ projectId, text: 'Keep it rain-soaked throughout.' });
+    const beat = await Plots.createBeat({ projectId, name: 'Meet', characters: ['Alice'] });
 
-    const ctx = await buildSceneBibleContext(await reloadBeat(beat._id));
+    const ctx = await buildSceneBibleContext(projectId, await reloadBeat(beat._id));
 
     expect(ctx).toContain('## Alice');
     expect(ctx).toContain('background_story: Former courier.');
@@ -182,10 +187,11 @@ describe('buildSceneBibleContext', () => {
 
 describe('gateway fallback for scene_bible.* (no Hocuspocus)', () => {
   it('setEntityFieldMarkdown writes beat.scene_bible.<field> through a null bible', async () => {
-    const beat = await Plots.createBeat({ name: 'Bible' });
+    const beat = await Plots.createBeat({ projectId, name: 'Bible' });
     expect(beat.scene_bible).toBeNull();
 
     await Gateway.setEntityFieldMarkdown({
+      projectId,
       entityType: 'beat',
       entityId: beat._id.toString(),
       field: 'scene_bible.mood',
@@ -199,14 +205,16 @@ describe('gateway fallback for scene_bible.* (no Hocuspocus)', () => {
   });
 
   it('preserves earlier scene_bible fields on a later field write', async () => {
-    const beat = await Plots.createBeat({ name: 'Bible2' });
+    const beat = await Plots.createBeat({ projectId, name: 'Bible2' });
     await Gateway.setEntityFieldMarkdown({
+      projectId,
       entityType: 'beat',
       entityId: beat._id.toString(),
       field: 'scene_bible.location',
       markdown: 'Pier at night',
     });
     await Gateway.setEntityFieldMarkdown({
+      projectId,
       entityType: 'beat',
       entityId: beat._id.toString(),
       field: 'scene_bible.palette',
@@ -238,11 +246,11 @@ describe('POST /api/beat/:beatId/scene-bible/autofill (endpoint)', () => {
   });
 
   it('returns the generated scene bible and persists it', async () => {
-    const beat = await Plots.createBeat({ name: 'Endpoint', body: 'A tense standoff.' });
+    const beat = await Plots.createBeat({ projectId, name: 'Endpoint', body: 'A tense standoff.' });
 
     const res = await fetch(`${baseUrl}/api/beat/${beat._id.toString()}/scene-bible/autofill`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Project-Id': projectId },
       body: JSON.stringify({}),
     });
     const json = await res.json();
@@ -256,17 +264,17 @@ describe('POST /api/beat/:beatId/scene-bible/autofill (endpoint)', () => {
   it('404s for an unknown beat', async () => {
     const res = await fetch(
       `${baseUrl}/api/beat/${new ObjectId().toString()}/scene-bible/autofill`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+      { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Project-Id': projectId }, body: '{}' },
     );
     expect(res.status).toBe(404);
   });
 
   it('409s when the beat is busy', async () => {
-    const beat = await Plots.createBeat({ name: 'Busy endpoint' });
+    const beat = await Plots.createBeat({ projectId, name: 'Busy endpoint' });
     const status = await whileBeatLocked(beat._id.toString(), async () => {
       const res = await fetch(
         `${baseUrl}/api/beat/${beat._id.toString()}/scene-bible/autofill`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+        { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Project-Id': projectId }, body: '{}' },
       );
       return res.status;
     });

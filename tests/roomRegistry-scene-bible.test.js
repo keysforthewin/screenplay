@@ -7,16 +7,22 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const { createBeat, getBeat, setBeatSceneBible } = await import('../src/mongo/plots.js');
 const { resolveRoom } = await import('../src/web/roomRegistry.js');
 
 describe('beat room scene_bible fragments', () => {
-  beforeEach(() => fakeDb.reset());
+  let projectId;
+
+beforeEach(async () => {
+  fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
+});
 
   it('exposes a fragment per scene_bible field, seeded from the stored bible', async () => {
-    await createBeat({ name: 'Diner', desc: 'd' });
-    const beat = await getBeat('Diner');
-    await setBeatSceneBible(beat._id, { location: 'Corner diner', mood: 'tense' });
+    await createBeat({ projectId, name: 'Diner', desc: 'd' });
+    const beat = await getBeat(projectId, 'Diner');
+    await setBeatSceneBible(projectId, beat._id, { location: 'Corner diner', mood: 'tense' });
 
     const desc = await resolveRoom(`beat:${beat._id.toString()}`);
     expect(desc.fields).toContain('scene_bible.location');
@@ -27,8 +33,8 @@ describe('beat room scene_bible fragments', () => {
   });
 
   it('persistFields writes a changed bible field back via setBeatSceneBible', async () => {
-    await createBeat({ name: 'Diner', desc: 'd' });
-    const beat = await getBeat('Diner');
+    await createBeat({ projectId, name: 'Diner', desc: 'd' });
+    const beat = await getBeat(projectId, 'Diner');
     const desc = await resolveRoom(`beat:${beat._id.toString()}`);
     const snapshot = {};
     for (const f of desc.fields) snapshot[f] = desc.seed[f] ?? '';
@@ -36,14 +42,14 @@ describe('beat room scene_bible fragments', () => {
     const result = await desc.persistFields(snapshot);
     expect(result.changed).toBe(true);
     expect(result.fields).toContain('scene_bible.location');
-    const updated = await getBeat('Diner');
+    const updated = await getBeat(projectId, 'Diner');
     expect(updated.scene_bible.location).toBe('Rainy alley');
   });
 
   it('persistFields does nothing when no bible field changed', async () => {
-    await createBeat({ name: 'Diner', desc: 'd' });
-    const beat = await getBeat('Diner');
-    await setBeatSceneBible(beat._id, { location: 'Corner diner' });
+    await createBeat({ projectId, name: 'Diner', desc: 'd' });
+    const beat = await getBeat(projectId, 'Diner');
+    await setBeatSceneBible(projectId, beat._id, { location: 'Corner diner' });
     const desc = await resolveRoom(`beat:${beat._id.toString()}`);
     const snapshot = {};
     for (const f of desc.fields) snapshot[f] = desc.seed[f] ?? '';
@@ -52,8 +58,8 @@ describe('beat room scene_bible fragments', () => {
   });
 
   it('does not re-persist a bible field whose only difference is trailing whitespace', async () => {
-    await createBeat({ name: 'Diner', desc: 'd' });
-    const beat = await getBeat('Diner');
+    await createBeat({ projectId, name: 'Diner', desc: 'd' });
+    const beat = await getBeat(projectId, 'Diner');
 
     // First store tick: the y-doc fragment has trailing whitespace.
     let desc = await resolveRoom(`beat:${beat._id.toString()}`);

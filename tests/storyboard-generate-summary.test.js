@@ -29,6 +29,7 @@ vi.mock('../src/llm/analyze.js', () => ({
   analyzeText: (...args) => analyzeTextMock(...args),
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
 
@@ -49,8 +50,11 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(() => resolve()));
 });
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   analyzeTextMock.mockReset();
 });
 
@@ -76,7 +80,7 @@ describe('POST /api/storyboard/:id/generate-summary', () => {
   });
 
   it('returns 400 when text_prompt is empty', async () => {
-    const sb = await Storyboards.createStoryboard({ beatId });
+    const sb = await Storyboards.createStoryboard({ projectId, beatId });
     const { status, json } = await post(sb._id.toString());
     expect(status).toBe(400);
     expect(json.error).toMatch(/empty/);
@@ -84,7 +88,7 @@ describe('POST /api/storyboard/:id/generate-summary', () => {
   });
 
   it('summarizes text_prompt, writes summary via gateway, and returns the value', async () => {
-    const sb = await Storyboards.createStoryboard({
+    const sb = await Storyboards.createStoryboard({ projectId,
       beatId,
       textPrompt: 'Wide shot of the **diner** at dusk; Alice arrives.',
     });
@@ -100,12 +104,12 @@ describe('POST /api/storyboard/:id/generate-summary', () => {
     expect(callArgs.user).not.toMatch(/\*\*/);
     expect(callArgs.user).toMatch(/diner/);
 
-    const fresh = await Storyboards.getStoryboard(sb._id);
+    const fresh = await Storyboards.getStoryboard(projectId, sb._id);
     expect(fresh.summary).toBe('Alice arrives at the dusk diner.');
   });
 
   it('collapses whitespace in the model output', async () => {
-    const sb = await Storyboards.createStoryboard({
+    const sb = await Storyboards.createStoryboard({ projectId,
       beatId,
       textPrompt: 'Something happens.',
     });

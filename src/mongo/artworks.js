@@ -20,6 +20,8 @@
 import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../log.js';
+import { getPlot } from './plots.js';
+import { getCharacter } from './characters.js';
 
 const VALID_HOST_TYPES = new Set(['character', 'beat']);
 const VALID_STATUSES = new Set(['pending', 'done', 'error']);
@@ -48,21 +50,6 @@ function assertHostType(hostType) {
 // every subsequent write is keyed off that _id with positional/arrayFilter
 // operators so concurrent callers don't fight over a shared snapshot.
 
-async function loadCharacter(hostId) {
-  const c = getDb().collection('characters');
-  const oid = maybeOid(hostId);
-  if (oid) {
-    const byId = await c.findOne({ _id: oid });
-    if (byId) return byId;
-  }
-  const lc = String(hostId).toLowerCase();
-  return c.findOne({ name_lower: lc });
-}
-
-async function loadPlot() {
-  return getDb().collection('plots').findOne({ _id: 'main' });
-}
-
 function findBeatInPlot(plot, hostId) {
   const beats = plot?.beats || [];
   const oid = maybeOid(hostId);
@@ -79,14 +66,14 @@ function findBeatInPlot(plot, hostId) {
   return beats.find((b) => (b.name || '').toLowerCase() === t) || null;
 }
 
-async function loadHost(hostType, hostId) {
+async function loadHost(projectId, hostType, hostId) {
   assertHostType(hostType);
   if (hostType === 'character') {
-    const c = await loadCharacter(hostId);
+    const c = await getCharacter(projectId, String(hostId));
     if (!c) throw new Error(`Character not found: ${hostId}`);
     return { kind: 'character', doc: c, _id: c._id };
   }
-  const plot = await loadPlot();
+  const plot = await getPlot(projectId);
   if (!plot) throw new Error('Plot doc not found');
   const beat = findBeatInPlot(plot, hostId);
   if (!beat) throw new Error(`Beat not found: ${hostId}`);
@@ -101,7 +88,7 @@ async function fetchArtwork(host, artworkId) {
     const fresh = await getDb().collection('characters').findOne({ _id: host._id });
     return (fresh?.artworks || []).find((a) => a?._id && aid.equals(a._id)) || null;
   }
-  const plot = await loadPlot();
+  const plot = await getDb().collection('plots').findOne({ _id: host.plot._id });
   const beat = (plot?.beats || []).find((b) => b._id && host._id.equals(b._id));
   return (beat?.artworks || []).find((a) => a?._id && aid.equals(a._id)) || null;
 }
@@ -111,7 +98,7 @@ async function fetchHostMainImageId(host) {
     const fresh = await getDb().collection('characters').findOne({ _id: host._id });
     return fresh?.main_image_id || null;
   }
-  const plot = await loadPlot();
+  const plot = await getDb().collection('plots').findOne({ _id: host.plot._id });
   const beat = (plot?.beats || []).find((b) => b._id && host._id.equals(b._id));
   return beat?.main_image_id || null;
 }
@@ -128,7 +115,7 @@ async function pushArtwork(host, artwork) {
     return;
   }
   await getDb().collection('plots').updateOne(
-    { _id: 'main' },
+    { _id: host.plot._id },
     {
       $push: { 'beats.$[b].artworks': artwork },
       $set: { 'beats.$[b].updated_at': now, updated_at: now },
@@ -166,7 +153,7 @@ async function setArtworkFields(host, artworkId, fields, options = {}) {
     $set['beats.$[b].main_image_id'] = options.hostMainImageId;
   }
   const result = await getDb().collection('plots').updateOne(
-    { _id: 'main' },
+    { _id: host.plot._id },
     { $set },
     { arrayFilters: [{ 'b._id': host._id }, { 'a._id': aid }] },
   );
@@ -197,7 +184,7 @@ async function pullArtwork(host, artworkId, options = {}) {
     update.$set['beats.$[b].main_image_id'] = options.hostMainImageId;
   }
   await getDb().collection('plots').updateOne(
-    { _id: 'main' },
+    { _id: host.plot._id },
     update,
     { arrayFilters: [{ 'b._id': host._id }] },
   );
@@ -233,12 +220,13 @@ function oidEquals(a, b) {
 // generated artwork. `source` is set only at creation; patchArtwork's
 // PATCHABLE allowlist rejects it on updates.
 export async function appendDoneArtwork({
+  projectId,
   hostType,
   hostId,
   resultImageId,
   name = '',
 }) {
-  const host = await loadHost(hostType, hostId);
+  const host = await loadHost(projectId, hostType, hostId);
   const now = new Date();
   const artwork = {
     _id: new ObjectId(),
@@ -267,6 +255,7 @@ export async function appendDoneArtwork({
 // kicks off the background work after this returns. The returned artwork
 // has status='pending', no result_image_id, and a fresh _id.
 export async function createPendingArtwork({
+  projectId,
   hostType,
   hostId,
   prompt,
@@ -275,7 +264,7 @@ export async function createPendingArtwork({
   referenceImageIds = [],
   jobId,
 }) {
-  const host = await loadHost(hostType, hostId);
+  const host = await loadHost(projectId, hostType, hostId);
   const now = new Date();
   const artwork = {
     _id: new ObjectId(),
@@ -311,11 +300,11 @@ const PATCHABLE = new Set([
   'job_id',
 ]);
 
-export async function patchArtwork({ hostType, hostId, artworkId, patch }) {
+export async function patchArtwork({ projectId, hostType, hostId, artworkId, patch }) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new Error('patchArtwork: patch must be an object');
   }
-  const host = await loadHost(hostType, hostId);
+  const host = await loadHost(projectId, hostType, hostId);
   const current = findArtworkInList(readArtworks(host), artworkId);
   if (!current) throw new Error(`Artwork ${artworkId} not found on ${host.kind} ${host._id}`);
   const fields = {};
@@ -342,6 +331,7 @@ export async function patchArtwork({ hostType, hostId, artworkId, patch }) {
 
 // Update status (pending/done/error) and optionally error_message.
 export async function setArtworkStatus({
+  projectId,
   hostType,
   hostId,
   artworkId,
@@ -351,7 +341,7 @@ export async function setArtworkStatus({
   if (!VALID_STATUSES.has(status)) {
     throw new Error(`setArtworkStatus: invalid status "${status}"`);
   }
-  const host = await loadHost(hostType, hostId);
+  const host = await loadHost(projectId, hostType, hostId);
   const current = findArtworkInList(readArtworks(host), artworkId);
   if (!current) throw new Error(`Artwork ${artworkId} not found on ${host.kind} ${host._id}`);
   const fields = {
@@ -373,13 +363,14 @@ export async function setArtworkStatus({
 // Otherwise (regenerate or initial generate) the prior result_image_id is
 // returned as an orphan if it existed.
 export async function setArtworkResult({
+  projectId,
   hostType,
   hostId,
   artworkId,
   resultImageId,
   rotateToPrevious = false,
 }) {
-  const host = await loadHost(hostType, hostId);
+  const host = await loadHost(projectId, hostType, hostId);
   const current = findArtworkInList(readArtworks(host), artworkId);
   if (!current) throw new Error(`Artwork ${artworkId} not found on ${host.kind} ${host._id}`);
   const newResult = toOid(resultImageId);
@@ -422,8 +413,8 @@ export async function setArtworkResult({
 
 // Swap previous_result_image_id → result_image_id. The image that was
 // current is reported as orphaned for GridFS cleanup (no redo, per spec).
-export async function undoArtworkEdit({ hostType, hostId, artworkId }) {
-  const host = await loadHost(hostType, hostId);
+export async function undoArtworkEdit({ projectId, hostType, hostId, artworkId }) {
+  const host = await loadHost(projectId, hostType, hostId);
   const current = findArtworkInList(readArtworks(host), artworkId);
   if (!current) throw new Error(`Artwork ${artworkId} not found on ${host.kind} ${host._id}`);
   if (!current.previous_result_image_id) {
@@ -454,8 +445,8 @@ export async function undoArtworkEdit({ hostType, hostId, artworkId }) {
 
 // Remove the artwork from the host. Returns the image ids that were
 // attached so the caller can purge them from GridFS.
-export async function removeArtwork({ hostType, hostId, artworkId }) {
-  const host = await loadHost(hostType, hostId);
+export async function removeArtwork({ projectId, hostType, hostId, artworkId }) {
+  const host = await loadHost(projectId, hostType, hostId);
   const removed = findArtworkInList(readArtworks(host), artworkId);
   if (!removed) throw new Error(`Artwork ${artworkId} not found on ${host.kind} ${host._id}`);
   const hostMain = readHostMainImageId(host);
@@ -477,16 +468,16 @@ export async function removeArtwork({ hostType, hostId, artworkId }) {
 }
 
 // Read a single artwork.
-export async function getArtwork({ hostType, hostId, artworkId }) {
-  const host = await loadHost(hostType, hostId);
+export async function getArtwork({ projectId, hostType, hostId, artworkId }) {
+  const host = await loadHost(projectId, hostType, hostId);
   const artwork = findArtworkInList(readArtworks(host), artworkId);
   if (!artwork) return null;
   return { artwork, host_id: host._id, host_kind: host.kind };
 }
 
 // List artworks for a host. Used by /api/beats/with-artwork and similar.
-export async function listArtworks({ hostType, hostId }) {
-  const host = await loadHost(hostType, hostId);
+export async function listArtworks({ projectId, hostType, hostId }) {
+  const host = await loadHost(projectId, hostType, hostId);
   return { artworks: readArtworks(host), host_id: host._id };
 }
 

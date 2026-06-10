@@ -14,14 +14,18 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Generate = await import('../src/web/dialogGenerate.js');
 const BeatLocks = await import('../src/web/beatLocks.js');
 const { _setAnthropicClientForTests, _resetAnthropicClientForTests } =
   await import('../src/anthropic/client.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   BeatLocks._clearBeatLocksForTests();
   _resetAnthropicClientForTests();
 });
@@ -52,11 +56,11 @@ describe('dialog generation rejects concurrent jobs for the same beat', () => {
       },
     }));
 
-    const beat = await Plots.createBeat({
+    const beat = await Plots.createBeat({ projectId,
       name: 'L', desc: '', body: '', characters: [],
     });
 
-    const jobIdP = Generate.startDialogGenerationJob({
+    const jobIdP = Generate.startDialogGenerationJob({ projectId,
       beatId: beat._id.toString(),
     });
     // Wait for the lock to actually be claimed.
@@ -65,7 +69,7 @@ describe('dialog generation rejects concurrent jobs for the same beat', () => {
 
     let err;
     try {
-      await Generate.startDialogGenerationJob({
+      await Generate.startDialogGenerationJob({ projectId,
         beatId: beat._id.toString(),
       });
     } catch (e) {
@@ -94,10 +98,10 @@ describe('dialog generation rejects concurrent jobs for the same beat', () => {
         })),
       },
     }));
-    const beatA = await Plots.createBeat({ name: 'A', desc: '', body: '', characters: [] });
-    const beatB = await Plots.createBeat({ name: 'B', desc: '', body: '', characters: [] });
-    const idA = await Generate.startDialogGenerationJob({ beatId: beatA._id.toString() });
-    const idB = await Generate.startDialogGenerationJob({ beatId: beatB._id.toString() });
+    const beatA = await Plots.createBeat({ projectId, name: 'A', desc: '', body: '', characters: [] });
+    const beatB = await Plots.createBeat({ projectId, name: 'B', desc: '', body: '', characters: [] });
+    const idA = await Generate.startDialogGenerationJob({ projectId, beatId: beatA._id.toString() });
+    const idB = await Generate.startDialogGenerationJob({ projectId, beatId: beatB._id.toString() });
     expect(idA).not.toBe(idB);
     for (const id of [idA, idB]) {
       for (let i = 0; i < 200; i++) {

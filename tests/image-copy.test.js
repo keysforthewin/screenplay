@@ -43,9 +43,10 @@ vi.mock('../src/mongo/images.js', async () => {
         file: found,
       };
     },
-    uploadGeneratedImage: async (args) => {
+    uploadGeneratedImage: async (projectId, args) => {
       const id = new ObjectId();
       uploadCalls.push({
+        projectId: projectId ?? null,
         ownerType: args.ownerType,
         ownerId: args.ownerId ? String(args.ownerId) : null,
         prompt: args.prompt ?? null,
@@ -72,6 +73,7 @@ vi.mock('../src/mongo/images.js', async () => {
   };
 });
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const DirectorNotes = await import('../src/mongo/directorNotes.js');
@@ -94,8 +96,11 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(() => resolve()));
 });
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   uploadCalls.length = 0;
   readCalls.length = 0;
 });
@@ -134,8 +139,8 @@ async function post(path, body) {
 
 describe('POST /api/character/:id/image/copy', () => {
   it('copies a character-owned image to another character without disturbing the source', async () => {
-    const src = await Characters.createCharacter({ name: 'Bronze Leopard' });
-    const dst = await Characters.createCharacter({ name: 'Silver Wolf' });
+    const src = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
+    const dst = await Characters.createCharacter({ projectId, name: 'Silver Wolf' });
     const file = seedSourceImage({
       ownerType: 'character',
       ownerId: src._id,
@@ -181,10 +186,10 @@ describe('POST /api/character/:id/image/copy', () => {
   });
 
   it('copies a beat-owned image to a character without disturbing the source beat', async () => {
-    const char = await Characters.createCharacter({ name: 'Bronze Leopard' });
-    const beat = await Plots.createBeat({ name: 'Diner Showdown' });
+    const char = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner Showdown' });
     const file = seedSourceImage({ ownerType: 'beat', ownerId: beat._id });
-    await Plots.pushBeatImage(beat._id.toString(), {
+    await Plots.pushBeatImage(projectId, beat._id.toString(), {
       _id: file._id,
       filename: file.filename,
       content_type: file.contentType,
@@ -202,7 +207,7 @@ describe('POST /api/character/:id/image/copy', () => {
     expect(uploadCalls[0].ownerId).toBe(String(char._id));
 
     // Source beat keeps its image.
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     const srcBeat = plot.beats.find((b) => b._id.equals(beat._id));
     expect(srcBeat.images).toHaveLength(1);
     expect(String(srcBeat.images[0]._id)).toBe(String(file._id));
@@ -214,7 +219,7 @@ describe('POST /api/character/:id/image/copy', () => {
   });
 
   it('returns 400 on a malformed image_id', async () => {
-    const c = await Characters.createCharacter({ name: 'Bronze Leopard' });
+    const c = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
     const { status } = await post(
       `/api/character/${c._id}/image/copy`,
       { image_id: 'not-an-oid' },
@@ -224,7 +229,7 @@ describe('POST /api/character/:id/image/copy', () => {
   });
 
   it('returns 404 when the source image does not exist', async () => {
-    const c = await Characters.createCharacter({ name: 'Bronze Leopard' });
+    const c = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
     const { status } = await post(
       `/api/character/${c._id}/image/copy`,
       { image_id: String(new ObjectId()) },
@@ -236,8 +241,8 @@ describe('POST /api/character/:id/image/copy', () => {
 
 describe('POST /api/beat/:id/image/copy', () => {
   it('copies a character-owned image to a beat without disturbing the source', async () => {
-    const char = await Characters.createCharacter({ name: 'Bronze Leopard' });
-    const beat = await Plots.createBeat({ name: 'Diner Showdown' });
+    const char = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
+    const beat = await Plots.createBeat({ projectId, name: 'Diner Showdown' });
     const file = seedSourceImage({ ownerType: 'character', ownerId: char._id });
     await fakeDb.collection('characters').updateOne(
       { _id: char._id },
@@ -256,7 +261,7 @@ describe('POST /api/beat/:id/image/copy', () => {
     const charAfter = await fakeDb.collection('characters').findOne({ _id: char._id });
     expect(charAfter.images).toHaveLength(1);
 
-    const plot = await Plots.getPlot();
+    const plot = await Plots.getPlot(projectId);
     const beatAfter = plot.beats.find((b) => b._id.equals(beat._id));
     expect(beatAfter.images).toHaveLength(1);
     expect(String(beatAfter.images[0]._id)).not.toBe(String(file._id));
@@ -265,8 +270,8 @@ describe('POST /api/beat/:id/image/copy', () => {
 
 describe('POST /api/notes/:noteId/image/copy', () => {
   it('copies an image into a director note without disturbing the source', async () => {
-    const char = await Characters.createCharacter({ name: 'Bronze Leopard' });
-    const note = await DirectorNotes.addDirectorNote({ text: 'noir tone' });
+    const char = await Characters.createCharacter({ projectId, name: 'Bronze Leopard' });
+    const note = await DirectorNotes.addDirectorNote({ projectId, text: 'noir tone' });
     const file = seedSourceImage({ ownerType: 'character', ownerId: char._id });
 
     const { status } = await post(
@@ -278,9 +283,60 @@ describe('POST /api/notes/:noteId/image/copy', () => {
     expect(uploadCalls[0].ownerType).toBe('director_note');
     expect(uploadCalls[0].ownerId).toBe(String(note._id));
 
-    const dn = await DirectorNotes.getDirectorNotes();
+    const dn = await DirectorNotes.getDirectorNotes(projectId);
     const noteAfter = dn.notes.find((n) => n._id.equals(note._id));
     expect(noteAfter.images).toHaveLength(1);
     expect(String(noteAfter.images[0]._id)).not.toBe(String(file._id));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// copyImageToNewOwner — project-id precedence
+// ---------------------------------------------------------------------------
+
+import { copyImageToNewOwner } from '../src/mongo/imageCopy.js';
+
+describe('copyImageToNewOwner — project-id precedence', () => {
+  it('fallback-to-source: uses source file project_id when no explicit projectId is given', async () => {
+    const sourceProjectId = 'a'.repeat(24);
+    const char = await Characters.createCharacter({ projectId, name: 'Fallback Fox' });
+    const file = seedSourceImage({ ownerType: 'character', ownerId: char._id });
+    // Attach project_id to the source file's metadata.
+    const filesCol = fakeDb.collection('images.files');
+    const idx = filesCol._docs.findIndex((d) => d._id.equals(file._id));
+    filesCol._docs[idx].metadata.project_id = sourceProjectId;
+
+    await copyImageToNewOwner({
+      imageId: file._id,
+      ownerType: 'character',
+      ownerId: char._id,
+      filenameBase: 'fallback-test',
+    });
+
+    expect(uploadCalls).toHaveLength(1);
+    expect(uploadCalls[0].projectId).toBe(sourceProjectId);
+  });
+
+  it('pin-override: explicit projectId wins over source file project_id', async () => {
+    const sourceProjectId = 'a'.repeat(24);
+    const pinnedProjectId = 'b'.repeat(24);
+    const char = await Characters.createCharacter({ projectId, name: 'Pin Override Fox' });
+    const file = seedSourceImage({ ownerType: 'character', ownerId: char._id });
+    // Attach a different project_id to the source file's metadata.
+    const filesCol = fakeDb.collection('images.files');
+    const idx = filesCol._docs.findIndex((d) => d._id.equals(file._id));
+    filesCol._docs[idx].metadata.project_id = sourceProjectId;
+
+    await copyImageToNewOwner({
+      projectId: pinnedProjectId,
+      imageId: file._id,
+      ownerType: 'character',
+      ownerId: char._id,
+      filenameBase: 'pin-test',
+    });
+
+    expect(uploadCalls).toHaveLength(1);
+    expect(uploadCalls[0].projectId).toBe(pinnedProjectId);
+    expect(uploadCalls[0].projectId).not.toBe(sourceProjectId);
   });
 });

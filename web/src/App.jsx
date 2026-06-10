@@ -12,7 +12,37 @@ import { DialogIndex } from './routes/DialogIndex.jsx';
 import { DialogBeat } from './routes/DialogBeat.jsx';
 import { About } from './routes/About.jsx';
 import { Header } from './widgets/Header.jsx';
+import { ProjectProvider } from './project/ProjectContext.jsx';
+import { RedirectToProject } from './project/RedirectToProject.jsx';
 import { loadSession, validateSession, clearSession } from './auth/session.js';
+
+// Everything project-scoped lives under /p/:projectTitle/*. ProjectProvider
+// resolves the title (and blocks children until the api.js store is set);
+// the descendant <Routes> match against the splat remainder, so the
+// existing route paths are unchanged. The Header moves inside the provider
+// because it shows the project title (Task 17).
+function ProjectShell({ session, onLogout }) {
+  return (
+    <ProjectProvider>
+      <Header session={session} onLogout={onLogout} />
+      <Routes>
+        <Route path="/" element={<Toc session={session} />} />
+        <Route path="/beat/:order" element={<Beat session={session} />} />
+        <Route path="/character/:name" element={<Character session={session} />} />
+        <Route path="/notes" element={<Notes session={session} />} />
+        <Route path="/library" element={<Library session={session} />} />
+        <Route path="/storyboard" element={<StoryboardIndex session={session} />} />
+        <Route path="/storyboard/:order" element={<StoryboardBeat session={session} />} />
+        <Route path="/dialog" element={<DialogIndex session={session} />} />
+        <Route path="/dialog/:order" element={<DialogBeat session={session} />} />
+        <Route path="/about" element={<About session={session} />} />
+        {/* Unknown subpath: bounce via the app-root catch-all
+            (RedirectToProject re-enters this project from the per-tab store). */}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </ProjectProvider>
+  );
+}
 
 export function App() {
   const [session, setSession] = useState(undefined); // undefined = checking, null = none, object = active
@@ -55,21 +85,17 @@ export function App() {
   }
 
   return (
-    <>
-      <Header session={session} onLogout={() => { clearSession(); setSession(null); }} />
-      <Routes>
-        <Route path="/" element={<Toc session={session} />} />
-        <Route path="/beat/:order" element={<Beat session={session} />} />
-        <Route path="/character/:name" element={<Character session={session} />} />
-        <Route path="/notes" element={<Notes session={session} />} />
-        <Route path="/library" element={<Library session={session} />} />
-        <Route path="/storyboard" element={<StoryboardIndex session={session} />} />
-        <Route path="/storyboard/:order" element={<StoryboardBeat session={session} />} />
-        <Route path="/dialog" element={<DialogIndex session={session} />} />
-        <Route path="/dialog/:order" element={<DialogBeat session={session} />} />
-        <Route path="/about" element={<About session={session} />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </>
+    <Routes>
+      <Route
+        path="/p/:projectTitle/*"
+        element={
+          <ProjectShell
+            session={session}
+            onLogout={() => { clearSession(); setSession(null); }}
+          />
+        }
+      />
+      <Route path="*" element={<RedirectToProject />} />
+    </Routes>
   );
 }

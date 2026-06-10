@@ -4,6 +4,8 @@ import { logger } from '../log.js';
 import { handleMessage } from './messageHandler.js';
 import { registerSlashCommands } from './interactions.js';
 import { setBotDisplayName } from '../web/gateway.js';
+import { getCurrentProjectId } from '../mongo/channelState.js';
+import { getDefaultProject, getProjectById } from '../mongo/projects.js';
 
 export function createDiscordClient() {
   const client = new Client({
@@ -30,7 +32,16 @@ export function createDiscordClient() {
       }
       setBotDisplayName(resolvedName);
       logger.info(`bot display name: ${resolvedName}`);
-      await channel.send(`🎬 Lucas online (${new Date().toISOString()})`);
+      let project = null;
+      try {
+        const projectId = await getCurrentProjectId(config.discord.movieChannelId);
+        project = projectId ? await getProjectById(projectId) : null;
+        if (!project) project = await getDefaultProject();
+      } catch (e) {
+        logger.warn(`startup project lookup failed: ${e.message}`);
+      }
+      const projectNote = project ? ` — project "${project.title}"` : '';
+      await channel.send(`🎬 Lucas online${projectNote} (${new Date().toISOString()})`);
     } catch (e) {
       logger.warn(`startup announce failed: ${e.message}`);
     }

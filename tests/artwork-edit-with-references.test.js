@@ -28,7 +28,7 @@ vi.mock('../src/mongo/images.js', () => ({
     if (!imageBlobs.has(key)) return null;
     return imageBlobs.get(key);
   }),
-  uploadGeneratedImage: vi.fn(async ({ filename }) => ({
+  uploadGeneratedImage: vi.fn(async (_projectId, { filename }) => ({
     _id: new ObjectId(),
     filename,
     contentType: 'image/png',
@@ -46,6 +46,7 @@ vi.mock('../src/discord/announcer.js', () => ({
   announceMediaEvent: vi.fn(async () => {}),
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const Artworks = await import('../src/mongo/artworks.js');
@@ -72,8 +73,11 @@ async function waitForDispatch() {
   throw new Error('dispatchImageReplace was not called');
 }
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   imageBlobs.clear();
   dispatchSpy.mockReset();
   dispatchSpy.mockResolvedValue({
@@ -85,19 +89,19 @@ beforeEach(() => {
 
 describe('startEditArtworkJob with reference_image_ids', () => {
   it('forwards references + the artwork\'s existing result image to the dispatcher', async () => {
-    const character = await Characters.createCharacter({ name: 'Rae' });
+    const character = await Characters.createCharacter({ projectId, name: 'Rae' });
     const existingResultId = registerImage(new ObjectId(), 'EXISTING');
     const ref1 = registerImage(new ObjectId(), 'REF-1');
     const ref2 = registerImage(new ObjectId(), 'REF-2');
 
-    const { artwork: seeded } = await Artworks.appendDoneArtwork({
+    const { artwork: seeded } = await Artworks.appendDoneArtwork({ projectId,
       hostType: 'character',
       hostId: character._id,
       resultImageId: existingResultId,
       name: 'seed',
     });
 
-    await ArtworkJobs.startEditArtworkJob({
+    await ArtworkJobs.startEditArtworkJob({ projectId,
       hostType: 'character',
       hostId: character._id,
       artworkId: seeded._id,
@@ -120,17 +124,17 @@ describe('startEditArtworkJob with reference_image_ids', () => {
   });
 
   it('defaults to no references (existing image only)', async () => {
-    const beat = await Plots.createBeat({ name: 'Cold open' });
+    const beat = await Plots.createBeat({ projectId, name: 'Cold open' });
     const existingResultId = registerImage(new ObjectId(), 'EXISTING');
 
-    const { artwork: seeded } = await Artworks.appendDoneArtwork({
+    const { artwork: seeded } = await Artworks.appendDoneArtwork({ projectId,
       hostType: 'beat',
       hostId: beat._id,
       resultImageId: existingResultId,
       name: 'seed',
     });
 
-    await ArtworkJobs.startEditArtworkJob({
+    await ArtworkJobs.startEditArtworkJob({ projectId,
       hostType: 'beat',
       hostId: beat._id,
       artworkId: seeded._id,

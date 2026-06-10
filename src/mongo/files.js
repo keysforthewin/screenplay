@@ -25,16 +25,22 @@ export async function detachImageFromCurrentOwner(file) {
   const ownerType = file?.metadata?.owner_type;
   const ownerId = file?.metadata?.owner_id;
   if (!ownerType || !ownerId) return null;
+  // The file's own stamp is the source of truth for which project the owner
+  // lives in. Post-migration every file carries a project_id stamp; the pull*
+  // helpers require it (no stamp → projectId required error). Legacy unstamped
+  // files must be migrated first via scripts/migrate-multi-project.js before
+  // this path is exercised.
+  const projectId = file?.metadata?.project_id;
   let priorName = null;
   try {
     if (ownerType === 'beat') {
-      const res = await pullBeatImage(ownerId, file._id);
+      const res = await pullBeatImage(projectId, ownerId, file._id);
       priorName = res?.beat?.name || null;
     } else if (ownerType === 'character') {
-      const res = await pullCharacterImage(ownerId, file._id);
+      const res = await pullCharacterImage(projectId, ownerId, file._id);
       priorName = res?.character || null;
     } else if (ownerType === 'director_note') {
-      await pullDirectorNoteImage(ownerId, file._id);
+      await pullDirectorNoteImage(projectId, ownerId, file._id);
     }
   } catch (e) {
     if (!/not attached|not found/i.test(e?.message || '')) throw e;
@@ -42,11 +48,11 @@ export async function detachImageFromCurrentOwner(file) {
   return { prior_owner_type: ownerType, prior_owner_id: ownerId, prior_owner_name: priorName };
 }
 
-export async function attachImageToCharacter({ character, sourceUrl, filename, caption, setAsMain }) {
-  const c = await getCharacter(character);
+export async function attachImageToCharacter({ projectId, character, sourceUrl, filename, caption, setAsMain }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
 
-  const file = await uploadImageFromUrl({
+  const file = await uploadImageFromUrl(projectId ?? c.project_id, {
     sourceUrl,
     filename,
     ownerType: 'character',
@@ -62,12 +68,12 @@ export async function attachImageToCharacter({ character, sourceUrl, filename, c
     caption: caption?.trim() || null,
   };
 
-  const { is_main } = await pushCharacterImage(c._id.toString(), meta, setAsMain);
+  const { is_main } = await pushCharacterImage(projectId, c._id.toString(), meta, setAsMain);
   return { character: c.name, ...meta, is_main };
 }
 
-export async function attachExistingImageToCharacter({ character, imageId, caption, setAsMain }) {
-  const c = await getCharacter(character);
+export async function attachExistingImageToCharacter({ projectId, character, imageId, caption, setAsMain }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
 
   const file = await findImageFile(imageId);
@@ -101,12 +107,12 @@ export async function attachExistingImageToCharacter({ character, imageId, capti
     caption: caption?.trim() || null,
   };
 
-  const { is_main } = await pushCharacterImage(c._id.toString(), meta, setAsMain);
+  const { is_main } = await pushCharacterImage(projectId, c._id.toString(), meta, setAsMain);
   return { character: c.name, ...meta, is_main, moved_from: movedFrom };
 }
 
-export async function listCharacterImages(character) {
-  const c = await getCharacter(character);
+export async function listCharacterImages(projectId, character) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   return {
     character: c.name,
@@ -115,8 +121,8 @@ export async function listCharacterImages(character) {
   };
 }
 
-export async function setMainCharacterImage({ character, imageId }) {
-  const c = await getCharacter(character);
+export async function setMainCharacterImage({ projectId, character, imageId }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const oid = toObjectId(imageId);
   const inImages = (c.images || []).some((img) => img._id.equals(oid));
@@ -136,8 +142,8 @@ export async function readCharacterImageBuffer(imageId) {
   return readImageBuffer(imageId);
 }
 
-export async function removeCharacterImage({ character, imageId }) {
-  const c = await getCharacter(character);
+export async function removeCharacterImage({ projectId, character, imageId }) {
+  const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const oid = toObjectId(imageId);
   const images = c.images || [];

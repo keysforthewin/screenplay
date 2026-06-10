@@ -15,14 +15,18 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Dialogs = await import('../src/mongo/dialogs.js');
 const { critiqueDialog } = await import('../src/web/dialogCritique.js');
 const { _setAnthropicClientForTests, _resetAnthropicClientForTests } =
   await import('../src/anthropic/client.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   _resetAnthropicClientForTests();
 });
 
@@ -46,11 +50,11 @@ describe('critiqueDialog', () => {
         ],
       }),
     );
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: 'b' });
-    const d1 = await Dialogs.createDialog({ beatId: beat._id, body: 'Hi.', character: 'A' });
-    const d2 = await Dialogs.createDialog({ beatId: beat._id, body: 'I am very sad right now.', character: 'B' });
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: 'b' });
+    const d1 = await Dialogs.createDialog({ projectId, beatId: beat._id, body: 'Hi.', character: 'A' });
+    const d2 = await Dialogs.createDialog({ projectId, beatId: beat._id, body: 'I am very sad right now.', character: 'B' });
 
-    const result = await critiqueDialog({ beatId: beat._id.toString() });
+    const result = await critiqueDialog({ projectId, beatId: beat._id.toString() });
     expect(result.scores).toEqual([
       { dialog_id: d1._id.toString(), score: 5, issue: '' },
       { dialog_id: d2._id.toString(), score: 2, issue: 'on-the-nose' },
@@ -60,9 +64,9 @@ describe('critiqueDialog', () => {
   it('returns an empty list with no model call when the beat has no lines', async () => {
     const client = fakeClient({ scores: [] });
     _setAnthropicClientForTests(client);
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: 'b' });
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: 'b' });
 
-    const result = await critiqueDialog({ beatId: beat._id.toString() });
+    const result = await critiqueDialog({ projectId, beatId: beat._id.toString() });
     expect(result.scores).toEqual([]);
     expect(client.messages.create).not.toHaveBeenCalled();
   });
@@ -70,10 +74,10 @@ describe('critiqueDialog', () => {
   it('sends the numbered line list to the model', async () => {
     const client = fakeClient({ scores: [{ line_number: 1, score: 4, issue: '' }] });
     _setAnthropicClientForTests(client);
-    const beat = await Plots.createBeat({ name: 'B', desc: 'd', body: 'b' });
-    await Dialogs.createDialog({ beatId: beat._id, body: 'Where were you?', character: 'A' });
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: 'b' });
+    await Dialogs.createDialog({ projectId, beatId: beat._id, body: 'Where were you?', character: 'A' });
 
-    await critiqueDialog({ beatId: beat._id.toString() });
+    await critiqueDialog({ projectId, beatId: beat._id.toString() });
     const userText = client.messages.create.mock.calls[0][0].messages[0].content[0].text;
     expect(userText).toContain('1.');
     expect(userText).toContain('Where were you?');

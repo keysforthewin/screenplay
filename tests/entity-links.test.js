@@ -9,6 +9,7 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const {
@@ -18,8 +19,11 @@ const {
   createTouchedEntities,
 } = await import('../src/agent/entityLinks.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
 });
 
 describe('recordEntityTouch', () => {
@@ -107,26 +111,26 @@ describe('recordEntityTouch', () => {
 
 describe('resolveEntityLinks', () => {
   it('resolves :current: via plot.current_beat_id to the matching /beat/<order>', async () => {
-    const a = await Plots.createBeat({ name: 'Open', desc: 'Opening scene' });
-    await Plots.createBeat({ name: 'Inciting', desc: 'Inciting incident' });
-    await Plots.setCurrentBeat(a.order); // sets current to beat 1
+    const a = await Plots.createBeat({ projectId, name: 'Open', desc: 'Opening scene' });
+    await Plots.createBeat({ projectId, name: 'Inciting', desc: 'Inciting incident' });
+    await Plots.setCurrentBeat(projectId, a.order); // sets current to beat 1
     const t = createTouchedEntities();
     t.beats.add(':current:');
-    const urls = await resolveEntityLinks(t);
+    const urls = await resolveEntityLinks(t, { projectId });
     expect(urls).toEqual(['http://localhost:3000/beat/1']);
   });
 
   it('resolves a beat by order', async () => {
-    await Plots.createBeat({ name: 'Open', desc: 'A' });
-    await Plots.createBeat({ name: 'Mid', desc: 'B' });
+    await Plots.createBeat({ projectId, name: 'Open', desc: 'A' });
+    await Plots.createBeat({ projectId, name: 'Mid', desc: 'B' });
     const t = createTouchedEntities();
     t.beats.add('2');
-    const urls = await resolveEntityLinks(t);
+    const urls = await resolveEntityLinks(t, { projectId });
     expect(urls).toEqual(['http://localhost:3000/beat/2']);
   });
 
   it('resolves a character by name', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Steve',
       plays_self: true,
       hollywood_actor: null,
@@ -134,29 +138,29 @@ describe('resolveEntityLinks', () => {
     });
     const t = createTouchedEntities();
     t.characters.add('Steve');
-    const urls = await resolveEntityLinks(t);
+    const urls = await resolveEntityLinks(t, { projectId });
     expect(urls).toEqual(['http://localhost:3000/character/Steve']);
   });
 
   it('skips refs that no longer resolve without throwing', async () => {
-    await Plots.createBeat({ name: 'Open', desc: 'A' });
+    await Plots.createBeat({ projectId, name: 'Open', desc: 'A' });
     const t = createTouchedEntities();
     t.beats.add('99'); // no such beat
     t.characters.add('Ghost'); // no such character
-    const urls = await resolveEntityLinks(t);
+    const urls = await resolveEntityLinks(t, { projectId });
     expect(urls).toEqual([]);
   });
 
   it('returns exactly one /notes URL even when many note tools touched', async () => {
     const t = createTouchedEntities();
     t.notes = true;
-    const urls = await resolveEntityLinks(t);
+    const urls = await resolveEntityLinks(t, { projectId });
     expect(urls).toEqual(['http://localhost:3000/notes']);
   });
 
   it('orders output: notes first, then beats, then characters', async () => {
-    await Plots.createBeat({ name: 'Open', desc: 'A' });
-    await Characters.createCharacter({
+    await Plots.createBeat({ projectId, name: 'Open', desc: 'A' });
+    await Characters.createCharacter({ projectId,
       name: 'Steve',
       plays_self: true,
       hollywood_actor: null,
@@ -166,7 +170,7 @@ describe('resolveEntityLinks', () => {
     t.characters.add('Steve');
     t.beats.add('1');
     t.notes = true;
-    const urls = await resolveEntityLinks(t);
+    const urls = await resolveEntityLinks(t, { projectId });
     expect(urls).toEqual([
       'http://localhost:3000/notes',
       'http://localhost:3000/beat/1',
@@ -176,7 +180,7 @@ describe('resolveEntityLinks', () => {
 
   it('caps at 10 URLs even when more entities are touched', async () => {
     for (let i = 0; i < 15; i++) {
-      await Characters.createCharacter({
+      await Characters.createCharacter({ projectId,
         name: `Person${i}`,
         plays_self: true,
         hollywood_actor: null,
@@ -185,17 +189,17 @@ describe('resolveEntityLinks', () => {
     }
     const t = createTouchedEntities();
     for (let i = 0; i < 15; i++) t.characters.add(`Person${i}`);
-    const urls = await resolveEntityLinks(t);
+    const urls = await resolveEntityLinks(t, { projectId });
     expect(urls).toHaveLength(10);
   });
 
   it('dedups URLs that resolve to the same beat from different identifiers', async () => {
-    const a = await Plots.createBeat({ name: 'Open', desc: 'A' });
+    const a = await Plots.createBeat({ projectId, name: 'Open', desc: 'A' });
     const t = createTouchedEntities();
     t.beats.add('1'); // by order
     t.beats.add(a._id.toString()); // by _id
     t.beats.add('Open'); // by name
-    const urls = await resolveEntityLinks(t);
+    const urls = await resolveEntityLinks(t, { projectId });
     expect(urls).toEqual(['http://localhost:3000/beat/1']);
   });
 

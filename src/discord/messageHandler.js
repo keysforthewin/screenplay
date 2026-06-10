@@ -13,7 +13,12 @@ import {
   recordAssistantMessage,
   recordAgentTurns,
 } from '../mongo/messages.js';
-import { getHistoryClearedAt } from '../mongo/channelState.js';
+import {
+  getHistoryClearedAt,
+  getCurrentProjectId,
+  setCurrentProjectId,
+} from '../mongo/channelState.js';
+import { getDefaultProject, getProjectById } from '../mongo/projects.js';
 import { listCharacters } from '../mongo/characters.js';
 import { getPlot } from '../mongo/plots.js';
 import { recordAnthropicTextUsage } from '../mongo/tokenUsage.js';
@@ -110,9 +115,25 @@ export async function handleMessage(msg) {
     logger.info(`entered channel mutex after ${Date.now() - mutexT0}ms`);
     let typingTimer;
     let attachmentPaths = [];
+    let projectId = null;
+    let projectTitle = null;
     try {
       fireAndForgetTyping(msg.channel);
       typingTimer = setInterval(() => fireAndForgetTyping(msg.channel), 8000);
+
+      // Resolve the channel's active project (inside the mutex, so a
+      // set_project from a concurrent message can never race this read).
+      projectId = await loggedStep('mongo getCurrentProjectId', () =>
+        getCurrentProjectId(msg.channelId),
+      );
+      let project = projectId ? await getProjectById(projectId) : null;
+      if (!project) {
+        project = await getDefaultProject();
+        projectId = project._id.toString();
+        await setCurrentProjectId(msg.channelId, projectId);
+        logger.info(`project pointer initialized → "${project.title}" (${projectId})`);
+      }
+      projectTitle = project.title;
 
       const histT0 = Date.now();
       const clearedAt = await loggedStep('mongo getHistoryClearedAt', () =>
@@ -143,12 +164,12 @@ export async function handleMessage(msg) {
       const discordUser = { id: msg.author.id, displayName };
 
       await loggedStep('mongo recordUserMessage', () =>
-        recordUserMessage({ msg, text, attachments, displayName }),
+        recordUserMessage({ msg, text, attachments, displayName, projectId }),
       );
 
       const enhanceT0 = Date.now();
       const [characters, plot] = await loggedStep('mongo listCharacters+getPlot', () =>
-        Promise.all([listCharacters(), getPlot()]),
+        Promise.all([listCharacters(projectId), getPlot(projectId)]),
       );
       const enhancement = await loggedStep('anthropic enhancePrompt', () =>
         enhancePrompt({
@@ -192,6 +213,8 @@ export async function handleMessage(msg) {
             discordUser,
             channelId: msg.channelId,
             enhancementNotes: enhancement.notes,
+            projectId,
+            projectTitle,
           }),
         15000,
       );
@@ -210,6 +233,7 @@ export async function handleMessage(msg) {
           channelId: msg.channelId,
           guildId: msg.guildId || null,
           threadId: msg.thread?.id || null,
+          projectId: result.projectId ?? projectId,
           turns: result.agentMessages,
         });
       } catch (e) {
@@ -235,6 +259,7 @@ export async function handleMessage(msg) {
           channelId: msg.channelId,
           guildId: msg.guildId || null,
           threadId: msg.thread?.id || null,
+          projectId,
           text: replyText,
         });
       } catch (e2) {

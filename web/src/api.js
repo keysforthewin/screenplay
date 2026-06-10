@@ -9,11 +9,62 @@ function withBase(p) {
   return `${BASE}${p}`;
 }
 
+// ---------------------------------------------------------------------------
+// Current-project store (module-level, not a hook — same pattern as
+// auth/session.js#loadSession). ProjectProvider calls setCurrentProject()
+// once the URL's :projectTitle resolves; every subsequent fetch carries the
+// X-Project-Id header and SSE URLs carry &project_id=.
+// ---------------------------------------------------------------------------
+
+const PROJECT_KEY = 'screenplay_project_v1';
+
+let currentProject = null; // { id, title } | null
+
+export function setCurrentProject(p) {
+  currentProject = p?.id && p?.title
+    ? { id: String(p.id), title: String(p.title) }
+    : null;
+  if (!currentProject) return;
+  try {
+    localStorage.setItem(
+      PROJECT_KEY,
+      JSON.stringify({ project_id: currentProject.id, title: currentProject.title }),
+    );
+  } catch {
+    // localStorage unavailable (private mode) — the header still works for this tab.
+  }
+}
+
+export function getCurrentProject() {
+  return currentProject;
+}
+
+// Last project this BROWSER viewed (vs getCurrentProject() = this TAB).
+// Used by RedirectToProject for legacy URLs opened in a fresh tab.
+export function loadStoredProject() {
+  try {
+    const raw = localStorage.getItem(PROJECT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.project_id || !parsed?.title) return null;
+    return { id: String(parsed.project_id), title: String(parsed.title) };
+  } catch {
+    return null;
+  }
+}
+
+// Canonical URL of a project's TOC. Full-reload project switches use
+// location.assign(projectHomeUrl(title)).
+export function projectHomeUrl(title) {
+  return withBase(`/p/${encodeURIComponent(title)}/`);
+}
+
 function authHeaders(extra = {}) {
   const s = loadSession();
   return {
     ...extra,
     ...(s?.session_id ? { 'X-Session-Id': s.session_id } : {}),
+    ...(currentProject?.id ? { 'X-Project-Id': currentProject.id } : {}),
   };
 }
 
@@ -135,5 +186,8 @@ export function attachmentUrl(id) {
 export function apiSseUrl(path) {
   const s = loadSession();
   const sep = path.includes('?') ? '&' : '?';
-  return `${withBase(`/api${path}`)}${sep}session_id=${encodeURIComponent(s?.session_id || '')}`;
+  const project = currentProject?.id
+    ? `&project_id=${encodeURIComponent(currentProject.id)}`
+    : '';
+  return `${withBase(`/api${path}`)}${sep}session_id=${encodeURIComponent(s?.session_id || '')}${project}`;
 }

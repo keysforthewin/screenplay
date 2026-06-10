@@ -69,10 +69,10 @@ const SYSTEM_PROMPT = [
 // Assemble the steering context for one beat: logline, the beat itself,
 // character bios, and project-wide director's notes. Mirrors dialogContext's
 // shape but is visual-look focused (no previous-beat dialogue / dialogue style).
-export async function buildSceneBibleContext(beat) {
+export async function buildSceneBibleContext(projectId, beat) {
   const sections = [];
 
-  const plot = await getPlot().catch(() => null);
+  const plot = await getPlot(projectId).catch(() => null);
   const title = stripMarkdown(plot?.title || '').trim();
   const synopsis = stripMarkdown(plot?.synopsis || '').trim();
   if (title || synopsis) {
@@ -90,13 +90,13 @@ export async function buildSceneBibleContext(beat) {
   if (beatBody) beatLines.push('', beatBody);
   sections.push(beatLines.join('\n'));
 
-  const characters = await loadCharacterDocs(beat?.characters || []).catch(() => []);
+  const characters = await loadCharacterDocs(projectId, beat?.characters || []).catch(() => []);
   const bios = characters.map(formatCharacterBio).filter(Boolean);
   if (bios.length) {
     sections.push(['# Characters in this story', bios.join('\n\n')].join('\n'));
   }
 
-  const notesDoc = await getDirectorNotes().catch(() => null);
+  const notesDoc = await getDirectorNotes(projectId).catch(() => null);
   const noteTexts = (notesDoc?.notes || [])
     .map((n) => stripMarkdown(n?.text || '').trim())
     .filter(Boolean);
@@ -107,8 +107,8 @@ export async function buildSceneBibleContext(beat) {
   return sections.join('\n\n');
 }
 
-export async function autofillSceneBible({ beatId } = {}) {
-  const beat = await getBeat(String(beatId));
+export async function autofillSceneBible({ projectId, beatId } = {}) {
+  const beat = await getBeat(projectId, String(beatId));
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
   // Serialize with every other scene_bible writer (storyboard generation writes
   // the bible too). Fail fast if the beat is already busy, then hold the lock
@@ -116,7 +116,7 @@ export async function autofillSceneBible({ beatId } = {}) {
   if (isBeatLocked(beat._id)) throw new BeatBusyError(beat._id.toString());
 
   return withBeatLock(beat._id, async () => {
-    const context = await buildSceneBibleContext(beat);
+    const context = await buildSceneBibleContext(projectId, beat);
     const userText = [
       context,
       '',
@@ -147,6 +147,7 @@ export async function autofillSceneBible({ beatId } = {}) {
     // (open SceneBiblePanel CollabFields update themselves) and persists to Mongo.
     for (const field of SCENE_BIBLE_FIELDS) {
       await setEntityFieldMarkdown({
+        projectId,
         entityType: 'beat',
         entityId,
         field: `scene_bible.${field}`,

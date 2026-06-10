@@ -18,19 +18,23 @@ vi.mock('../src/llm/analyze.js', () => ({
   analyzeText: analyzeTextMock,
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 const Characters = await import('../src/mongo/characters.js');
 const { config } = await import('../src/config.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   tavilySearch.mockReset();
   analyzeTextMock.mockReset();
   config.tavily.apiKey = 'test-key';
 });
 
 async function seedAtticus() {
-  await Characters.createCharacter({
+  await Characters.createCharacter({ projectId,
     name: 'Atticus',
     plays_self: false,
     hollywood_actor: 'Gregory Peck',
@@ -47,14 +51,14 @@ async function seedAtticus() {
 
 describe('similar_character', () => {
   it('returns error when character is missing', async () => {
-    const out = await HANDLERS.similar_character({});
+    const out = await HANDLERS.similar_character({}, { projectId });
     expect(out).toMatch(/required/i);
     expect(tavilySearch).not.toHaveBeenCalled();
     expect(analyzeTextMock).not.toHaveBeenCalled();
   });
 
   it('returns error when character is not found', async () => {
-    const out = await HANDLERS.similar_character({ character: 'Ghost' });
+    const out = await HANDLERS.similar_character({ character: 'Ghost' }, { projectId });
     expect(out).toMatch(/No character found/);
     expect(tavilySearch).not.toHaveBeenCalled();
   });
@@ -62,20 +66,20 @@ describe('similar_character', () => {
   it('returns error when TAVILY_API_KEY is unset', async () => {
     await seedAtticus();
     config.tavily.apiKey = null;
-    const out = await HANDLERS.similar_character({ character: 'Atticus' });
+    const out = await HANDLERS.similar_character({ character: 'Atticus' }, { projectId });
     expect(out).toMatch(/TAVILY_API_KEY/);
     expect(tavilySearch).not.toHaveBeenCalled();
     expect(analyzeTextMock).not.toHaveBeenCalled();
   });
 
   it('returns error when character has no descriptive fields', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Empty',
       plays_self: true,
       own_voice: true,
       fields: {},
     });
-    const out = await HANDLERS.similar_character({ character: 'Empty' });
+    const out = await HANDLERS.similar_character({ character: 'Empty' }, { projectId });
     expect(out).toMatch(/no descriptive fields/);
     expect(tavilySearch).not.toHaveBeenCalled();
   });
@@ -99,7 +103,7 @@ describe('similar_character', () => {
       '1. **To Kill a Mockingbird** (1960) — Atticus Finch\n   Confidence: high\n   Evidence: matches\n   Source: https://example.com/tkam',
     );
 
-    const out = await HANDLERS.similar_character({ character: 'Atticus', max_works: 2 });
+    const out = await HANDLERS.similar_character({ character: 'Atticus', max_works: 2 }, { projectId });
 
     expect(tavilySearch).toHaveBeenCalledTimes(1);
     const tavilyArg = tavilySearch.mock.calls[0][0];
@@ -126,7 +130,7 @@ describe('similar_character', () => {
   });
 
   it('appends focus to the query when provided', async () => {
-    await Characters.createCharacter({
+    await Characters.createCharacter({ projectId,
       name: 'Bob',
       plays_self: true,
       own_voice: true,
@@ -134,7 +138,7 @@ describe('similar_character', () => {
     });
     tavilySearch.mockResolvedValue({ results: [] });
     analyzeTextMock.mockResolvedValue('No strong parallels found.');
-    await HANDLERS.similar_character({ character: 'Bob', focus: 'neo-noir thrillers' });
+    await HANDLERS.similar_character({ character: 'Bob', focus: 'neo-noir thrillers' }, { projectId });
     const arg = tavilySearch.mock.calls[0][0];
     expect(arg.query).toMatch(/neo-noir thrillers/);
   });
@@ -150,7 +154,7 @@ describe('similar_character', () => {
     }));
     tavilySearch.mockResolvedValue({ results: fakeResults });
     analyzeTextMock.mockResolvedValue('done');
-    await HANDLERS.similar_character({ character: 'Atticus' });
+    await HANDLERS.similar_character({ character: 'Atticus' }, { projectId });
     const userText = analyzeTextMock.mock.calls[0][0].user;
     expect(userText).toMatch(/RAW_BODY_0/);
     expect(userText).toMatch(/RAW_BODY_1/);

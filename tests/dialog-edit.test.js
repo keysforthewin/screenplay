@@ -14,14 +14,18 @@ vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Dialogs = await import('../src/mongo/dialogs.js');
 const Edit = await import('../src/web/dialogEdit.js');
 const { _setAnthropicClientForTests, _resetAnthropicClientForTests } =
   await import('../src/anthropic/client.js');
 
-beforeEach(() => {
+let projectId;
+
+beforeEach(async () => {
   fakeDb.reset();
+  projectId = (await createProject('Test Project'))._id.toString();
   _resetAnthropicClientForTests();
 });
 
@@ -40,11 +44,11 @@ function fakeAnthropicEmitting(ops) {
 }
 
 async function seedBeat(entries) {
-  const beat = await Plots.createBeat({
+  const beat = await Plots.createBeat({ projectId,
     name: 'B', desc: 'd', body: 'b', characters: [],
   });
   for (const e of entries) {
-    await Dialogs.createDialog({
+    await Dialogs.createDialog({ projectId,
       beatId: beat._id,
       body: e.body,
       character: e.character,
@@ -66,7 +70,7 @@ describe('dialog LLM edit', () => {
       { body: 'a', character: 'X' },
       { body: 'b', character: 'Y' },
     ]);
-    const result = await Edit.editDialog({
+    const result = await Edit.editDialog({ projectId,
       beatId: beat._id,
       instructions: 'do nothing',
     });
@@ -92,7 +96,7 @@ describe('dialog LLM edit', () => {
       { body: 'c', character: 'C' },
       { body: 'd', character: 'D' },
     ]);
-    const result = await Edit.editDialog({
+    const result = await Edit.editDialog({ projectId,
       beatId: beat._id,
       instructions: 'delete 2, change 3',
     });
@@ -111,7 +115,7 @@ describe('dialog LLM edit', () => {
       ]),
     );
     const beat = await seedBeat([{ body: 'old', character: 'Old' }]);
-    const result = await Edit.editDialog({
+    const result = await Edit.editDialog({ projectId,
       beatId: beat._id,
       instructions: 'update item 1',
     });
@@ -129,7 +133,7 @@ describe('dialog LLM edit', () => {
     );
     const beat = await seedBeat([{ body: 'a', character: 'A' }]);
     await expect(
-      Edit.editDialog({ beatId: beat._id, instructions: 'noop update' }),
+      Edit.editDialog({ projectId, beatId: beat._id, instructions: 'noop update' }),
     ).rejects.toMatchObject({ code: 'INVALID_OPS' });
   });
 
@@ -149,7 +153,7 @@ describe('dialog LLM edit', () => {
       { body: 'd', character: 'D' },
       { body: 'e', character: 'E' },
     ]);
-    const result = await Edit.editDialog({
+    const result = await Edit.editDialog({ projectId,
       beatId: beat._id,
       instructions: 'mixed batch',
     });
@@ -172,7 +176,7 @@ describe('dialog LLM edit', () => {
       { body: 'y', character: 'Y' },
       { body: 'z', character: 'Z' },
     ]);
-    await Edit.editDialog({ beatId: beat._id, instructions: 'add two' });
+    await Edit.editDialog({ projectId, beatId: beat._id, instructions: 'add two' });
     const after = await Dialogs.listDialogs({ beatId: beat._id });
     expect(after.map((s) => s.body)).toEqual(['x', 'y', 'A', 'B', 'z']);
   });
@@ -189,7 +193,7 @@ describe('dialog LLM edit', () => {
       { body: 'c', character: 'C' },
       { body: 'd', character: 'D' },
     ]);
-    await Edit.editDialog({ beatId: beat._id, instructions: 'move 3 to start' });
+    await Edit.editDialog({ projectId, beatId: beat._id, instructions: 'move 3 to start' });
     let after = await Dialogs.listDialogs({ beatId: beat._id });
     expect(after.map((s) => s.body)).toEqual(['c', 'a', 'b', 'd']);
 
@@ -205,7 +209,7 @@ describe('dialog LLM edit', () => {
       { body: 'c', character: 'C' },
       { body: 'd', character: 'D' },
     ]);
-    await Edit.editDialog({ beatId: beat._id, instructions: 'move 1 to end' });
+    await Edit.editDialog({ projectId, beatId: beat._id, instructions: 'move 1 to end' });
     after = await Dialogs.listDialogs({ beatId: beat._id });
     expect(after.map((s) => s.body)).toEqual(['b', 'c', 'd', 'a']);
   });
@@ -223,7 +227,7 @@ describe('dialog LLM edit', () => {
       { body: 'c', character: 'C' },
     ]);
     await expect(
-      Edit.editDialog({ beatId: beat._id, instructions: 'invalid' }),
+      Edit.editDialog({ projectId, beatId: beat._id, instructions: 'invalid' }),
     ).rejects.toMatchObject({ code: 'INVALID_OPS' });
     const after = await Dialogs.listDialogs({ beatId: beat._id });
     expect(after.map((s) => s.body)).toEqual(['a', 'b', 'c']);
@@ -243,7 +247,7 @@ describe('dialog LLM edit', () => {
     ]);
     let err;
     try {
-      await Edit.editDialog({ beatId: beat._id, instructions: 'conflict' });
+      await Edit.editDialog({ projectId, beatId: beat._id, instructions: 'conflict' });
     } catch (e) {
       err = e;
     }
@@ -265,7 +269,7 @@ describe('dialog LLM edit', () => {
       { body: 'c', character: 'C' },
     ]);
     await expect(
-      Edit.editDialog({ beatId: beat._id, instructions: 'self-move' }),
+      Edit.editDialog({ projectId, beatId: beat._id, instructions: 'self-move' }),
     ).rejects.toMatchObject({ code: 'INVALID_OPS' });
   });
 
@@ -276,7 +280,7 @@ describe('dialog LLM edit', () => {
       ]),
     );
     const beat = await seedBeat([]);
-    const result = await Edit.editDialog({
+    const result = await Edit.editDialog({ projectId,
       beatId: beat._id,
       instructions: 'add first',
     });
