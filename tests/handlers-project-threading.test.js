@@ -68,12 +68,4 @@ describe('project-prefixed SPA links', () => {
     expect(notesUrl('My Movie')).toMatch(/\/p\/My%20Movie\/notes$/);
     expect(libraryUrl('My Movie')).toMatch(/\/p\/My%20Movie\/library$/);
   });
-
-  it('legacy un-prefixed calls keep working (transitional shim)', () => {
-    expect(beatUrl({ order: 2 })).toMatch(/\/beat\/2$/);
-    expect(beatUrl({ order: 2 })).not.toContain('/p/');
-    expect(characterUrl({ name: 'Steve' })).toMatch(/\/character\/Steve$/);
-    expect(notesUrl()).toMatch(/\/notes$/);
-    expect(notesUrl()).not.toContain('/p/');
-  });
 });

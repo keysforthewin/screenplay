@@ -108,7 +108,7 @@ export class InvalidOpsError extends Error {
   }
 }
 
-export async function editDialog({ beatId, instructions }) {
+export async function editDialog({ projectId, beatId, instructions }) {
   const originals = await listDialogs({ beatId });
   const N = originals.length;
 
@@ -169,12 +169,13 @@ export async function editDialog({ beatId, instructions }) {
   // Phase 3: commit. Order matters because each gateway call broadcasts.
   // (1) Deletes first so the SPA's count drops before adds arrive.
   for (const entry of result.deletes) {
-    await deleteDialogViaGateway({ dialogId: entry.id });
+    await deleteDialogViaGateway({ projectId, dialogId: entry.id });
   }
   // (2) Updates on surviving originals — write each changed field.
   for (const entry of result.updates) {
     if (entry.bodyChanged) {
       await setDialogTextFieldViaGateway({
+        projectId,
         dialogId: entry.id,
         field: 'body',
         text: entry.body,
@@ -182,6 +183,7 @@ export async function editDialog({ beatId, instructions }) {
     }
     if (entry.characterChanged) {
       await setDialogTextFieldViaGateway({
+        projectId,
         dialogId: entry.id,
         field: 'character',
         text: entry.character,
@@ -195,6 +197,7 @@ export async function editDialog({ beatId, instructions }) {
   const newIdsByToken = new Map(); // tokenIndex → new dialog _id
   for (const entry of result.creates) {
     const d = await createDialogViaGateway({
+      projectId,
       beatId,
       body: entry.body,
       character: entry.character,
@@ -209,7 +212,7 @@ export async function editDialog({ beatId, instructions }) {
       if (t.kind === 'new') return newIdsByToken.get(t.tokenIndex);
       throw new Error('unreachable');
     });
-    await reorderDialogsViaGateway({ beatId, orderedIds });
+    await reorderDialogsViaGateway({ projectId, beatId, orderedIds });
   }
 
   const fresh = await listDialogs({ beatId });

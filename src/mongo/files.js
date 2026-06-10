@@ -1,6 +1,6 @@
 import { getDb } from './client.js';
 import { getCharacter, pushCharacterImage, pullCharacterImage } from './characters.js';
-import { pullBeatImage, findPlotByBeatId } from './plots.js';
+import { pullBeatImage } from './plots.js';
 import { pullDirectorNoteImage } from './directorNotes.js';
 import {
   uploadImageFromUrl,
@@ -25,17 +25,21 @@ export async function detachImageFromCurrentOwner(file) {
   const ownerType = file?.metadata?.owner_type;
   const ownerId = file?.metadata?.owner_id;
   if (!ownerType || !ownerId) return null;
+  // The file's own stamp is the source of truth for which project the owner
+  // lives in. Legacy files uploaded before the migration have no stamp; the
+  // pull* helpers are lenient about unstamped docs, and post-migration every
+  // file is stamped.
+  const projectId = file?.metadata?.project_id;
   let priorName = null;
   try {
     if (ownerType === 'beat') {
-      const hostPlot = await findPlotByBeatId(ownerId);
-      const res = await pullBeatImage(hostPlot?.project_id, ownerId, file._id);
+      const res = await pullBeatImage(projectId, ownerId, file._id);
       priorName = res?.beat?.name || null;
     } else if (ownerType === 'character') {
-      const res = await pullCharacterImage(undefined, ownerId, file._id);
+      const res = await pullCharacterImage(projectId, ownerId, file._id);
       priorName = res?.character || null;
     } else if (ownerType === 'director_note') {
-      await pullDirectorNoteImage(undefined, ownerId, file._id);
+      await pullDirectorNoteImage(projectId, ownerId, file._id);
     }
   } catch (e) {
     if (!/not attached|not found/i.test(e?.message || '')) throw e;

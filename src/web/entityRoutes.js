@@ -552,7 +552,7 @@ export function buildApiRouter() {
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const beat = await getBeat(req.projectId, beatId);
       const { findCharactersInBeat } = await import('./storyboardGenerate.js');
-      const docs = await findCharactersInBeat(undefined, beat);
+      const docs = await findCharactersInBeat(req.projectId, beat);
       const out = [];
       for (const c of docs) {
         const sheetIds = Array.isArray(c.character_sheet_image_ids)
@@ -596,7 +596,7 @@ export function buildApiRouter() {
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const beat = await getBeat(req.projectId, beatId);
       const { findCharactersInBeat } = await import('./storyboardGenerate.js');
-      const charDocs = await findCharactersInBeat(undefined, beat);
+      const charDocs = await findCharactersInBeat(req.projectId, beat);
 
       const items = [];
       const seen = new Set(); // dedupe by result_image_id
@@ -2347,7 +2347,7 @@ export function buildApiRouter() {
       const beats = await listBeats(req.projectId);
       const out = [];
       for (const b of beats) {
-        const chars = await findCharactersInBeat(undefined, b);
+        const chars = await findCharactersInBeat(req.projectId, b);
         const features = chars.some(
           (c) => (c._id?.toString?.() || String(c._id)) === targetIdStr,
         );
@@ -2956,6 +2956,7 @@ export function buildApiRouter() {
       } = await import('./storyboardGenerate.js');
       try {
         const jobId = await startFrameGenerationJob({
+          projectId: req.projectId,
           storyboardId: sbId,
           frameId,
           imageModel,
@@ -3018,6 +3019,7 @@ export function buildApiRouter() {
       } = await import('./storyboardGenerate.js');
       try {
         const jobId = await startFrameGenerationJob({
+          projectId: req.projectId,
           storyboardId: sbId,
           frameId,
           imageModel: model,
@@ -3096,6 +3098,7 @@ export function buildApiRouter() {
         } = await import('./storyboardGenerate.js');
         try {
           const preview = await previewFrameGenerationPrompt({
+            projectId: req.projectId,
             storyboardId: sbId,
             frameId,
           });
@@ -3309,7 +3312,7 @@ export function buildApiRouter() {
       if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
       const target = req.query?.target === 'image' ? 'image' : 'prompt';
       const { startCritiqueJob } = await import('./storyboardGenerate.js');
-      const jobId = await startCritiqueJob({ storyboardId: sbId, target });
+      const jobId = await startCritiqueJob({ projectId: req.projectId, storyboardId: sbId, target });
       res.status(202).json({ job_id: jobId, storyboard_id: sbId, target });
     } catch (e) { next(e); }
   });
@@ -3330,7 +3333,7 @@ export function buildApiRouter() {
       }
       const { reExpandShot, BeatBusyError } = await import('./storyboardGenerate.js');
       try {
-        const result = await reExpandShot({ storyboardId: sbId, critiqueGuidance: guidance });
+        const result = await reExpandShot({ projectId: req.projectId, storyboardId: sbId, critiqueGuidance: guidance });
         res.json(result);
       } catch (e) {
         if (e instanceof BeatBusyError) return res.status(409).json({ error: e.message });
@@ -3349,7 +3352,7 @@ export function buildApiRouter() {
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const { startReExpandAllJob, BeatBusyError } = await import('./storyboardGenerate.js');
       try {
-        const jobId = await startReExpandAllJob({ beatId: beat._id.toString() });
+        const jobId = await startReExpandAllJob({ projectId: req.projectId, beatId: beat._id.toString() });
         res.status(202).json({ job_id: jobId, beat_id: beat._id });
       } catch (e) {
         if (e instanceof BeatBusyError) return res.status(409).json({ error: e.message });
@@ -3365,7 +3368,7 @@ export function buildApiRouter() {
       const beat = await getBeat(req.projectId, String(req.params.beatId));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const { autofillSceneBible } = await import('./sceneBibleAutofill.js');
-      const result = await autofillSceneBible({ beatId: beat._id.toString() });
+      const result = await autofillSceneBible({ projectId: req.projectId, beatId: beat._id.toString() });
       res.json(result);
     } catch (e) {
       if (e?.code === 'BEAT_BUSY') return res.status(409).json({ error: e.message });
@@ -4528,6 +4531,7 @@ export function buildApiRouter() {
       );
       try {
         const jobId = await startStoryboardGenerationJob({
+          projectId: req.projectId,
           beatId: beat._id.toString(),
           targetCount: target,
           imageModel,
@@ -4558,7 +4562,7 @@ export function buildApiRouter() {
       const direction =
         typeof req.body?.direction === 'string' ? req.body.direction : '';
       const { findCharactersInBeat } = await import('./storyboardGenerate.js');
-      const characters = await findCharactersInBeat(undefined, beat);
+      const characters = await findCharactersInBeat(req.projectId, beat);
       const { analyzeStoryboardCount } = await import(
         '../llm/storyboardCountAnalyze.js'
       );
@@ -4592,8 +4596,8 @@ export function buildApiRouter() {
         SCENE_PLAN_SYSTEM_PROMPT,
         SHOT_EXPAND_SYSTEM_PROMPT,
       } = await import('./storyboardGenerate.js');
-      const characters = await findCharactersInBeat(undefined, beat);
-      const directorNotes = await loadDirectorNotesForPlanner();
+      const characters = await findCharactersInBeat(req.projectId, beat);
+      const directorNotes = await loadDirectorNotesForPlanner(req.projectId);
       const user = buildScenePlanUserText({
         beat,
         characters,
@@ -4668,6 +4672,7 @@ export function buildApiRouter() {
       const { startBulkFrameGenerationJob, BeatBusyError } = await import('./storyboardGenerate.js');
       try {
         const { jobId, planned } = await startBulkFrameGenerationJob({
+          projectId: req.projectId,
           beatId: beat._id,
           imageModel,
         });
@@ -4737,7 +4742,7 @@ export function buildApiRouter() {
       const { editStoryboard, InvalidOpsError } = await import('./storyboardEdit.js');
       try {
         const result = await withBeatLock(beat._id, () =>
-          editStoryboard({ beatId: beat._id, instructions }),
+          editStoryboard({ projectId: req.projectId, beatId: beat._id, instructions }),
         );
         res.json(result);
       } catch (e) {
@@ -4982,6 +4987,7 @@ export function buildApiRouter() {
       );
       try {
         const jobId = await startDialogGenerationJob({
+          projectId: req.projectId,
           beatId: beat._id.toString(),
         });
         res.status(202).json({ job_id: jobId, beat_id: beat._id });
@@ -5049,7 +5055,7 @@ export function buildApiRouter() {
       const { editDialog, InvalidOpsError } = await import('./dialogEdit.js');
       try {
         const result = await withBeatLock(beat._id, () =>
-          editDialog({ beatId: beat._id, instructions }),
+          editDialog({ projectId: req.projectId, beatId: beat._id, instructions }),
         );
         res.json(result);
       } catch (e) {
@@ -5071,7 +5077,7 @@ export function buildApiRouter() {
       const dId = await resolveDialogId(req);
       if (!dId) return res.status(404).json({ error: 'dialog not found' });
       const { generateAlternatives } = await import('./dialogRegenerate.js');
-      const result = await generateAlternatives({ dialogId: dId });
+      const result = await generateAlternatives({ projectId: req.projectId, dialogId: dId });
       res.json(result);
     } catch (e) {
       next(e);
@@ -5087,7 +5093,7 @@ export function buildApiRouter() {
       const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const { critiqueDialog } = await import('./dialogCritique.js');
-      const result = await critiqueDialog({ beatId: beat._id.toString() });
+      const result = await critiqueDialog({ projectId: req.projectId, beatId: beat._id.toString() });
       res.json(result);
     } catch (e) {
       next(e);

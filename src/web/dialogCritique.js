@@ -62,8 +62,8 @@ const SYSTEM_PROMPT = [
   'note to a few words; use an empty string for strong lines.',
 ].join('\n');
 
-export async function critiqueDialog({ beatId } = {}) {
-  const beat = await getBeat(undefined, String(beatId));
+export async function critiqueDialog({ projectId, beatId } = {}) {
+  const beat = await getBeat(projectId, String(beatId));
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
   const dialogs = await listDialogs({ beatId: beat._id });
   if (!dialogs.length) return { scores: [] };
@@ -76,7 +76,7 @@ export async function critiqueDialog({ beatId } = {}) {
     })
     .join('\n');
 
-  const context = await buildDialogContext(beat);
+  const context = await buildDialogContext(projectId, beat);
   const userText = [
     context,
     '',

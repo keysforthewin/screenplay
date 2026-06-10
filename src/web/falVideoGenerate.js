@@ -163,6 +163,7 @@ export class UnknownVideoModelError extends Error {
 // Validate inputs + start the background job. Returns { job_id } so the SPA
 // can immediately open its SSE stream.
 export async function startVideoGenerationJob({
+  projectId = null,
   storyboardId,
   modelId = null,
   prompt = null,
@@ -182,7 +183,7 @@ export async function startVideoGenerationJob({
   const model = await getVideoModelOrCatalog(chosenId);
   if (!model) throw new UnknownVideoModelError(chosenId);
 
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
 
   const assignment = resolveFrameAssignment(model, sb, frameAssignment);
@@ -215,6 +216,7 @@ export async function startVideoGenerationJob({
 
   withBeatLock(sb.beat_id, () =>
     runVideoGenerationJob({
+      projectId,
       job,
       storyboard: sb,
       model,
@@ -419,6 +421,7 @@ async function describeAttachmentInput({ slot, attachmentId, name }) {
 // MissingInputsError the real submit path throws so the route can return
 // matching status codes.
 export async function buildVideoPayloadPreview({
+  projectId = null,
   storyboardId,
   modelId = null,
   prompt = null,
@@ -437,7 +440,7 @@ export async function buildVideoPayloadPreview({
   const model = await getVideoModelOrCatalog(chosenId);
   if (!model) throw new UnknownVideoModelError(chosenId);
 
-  const sb = await mongoGetStoryboard(undefined, storyboardId);
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
 
   const assignment = resolveFrameAssignment(model, sb, frameAssignment);
@@ -510,7 +513,7 @@ export async function buildVideoPayloadPreview({
     }
   }
 
-  const directorNotes = includeDirectorNotes ? await loadDirectorNotesForPrompt() : null;
+  const directorNotes = includeDirectorNotes ? await loadDirectorNotesForPrompt(projectId) : null;
   const finalPrompt = buildPrompt({ override: prompt, storyboard: sb, directorNotes });
   const finalDuration = pickDurationSeconds({
     requested: durationSeconds,
@@ -604,6 +607,7 @@ export async function buildVideoPayloadPreview({
 }
 
 async function runVideoGenerationJob({
+  projectId = null,
   job,
   storyboard,
   model,
@@ -657,7 +661,7 @@ async function runVideoGenerationJob({
       : [];
 
     // 2. Build the model-specific input from the unified bundle.
-    const directorNotes = includeDirectorNotes ? await loadDirectorNotesForPrompt() : null;
+    const directorNotes = includeDirectorNotes ? await loadDirectorNotesForPrompt(projectId) : null;
     const bundle = {
       prompt: buildPrompt({ override: prompt, storyboard, directorNotes }),
       startFrameUrl,
@@ -737,7 +741,7 @@ async function runVideoGenerationJob({
 
     // 6. Persist into GridFS attachments as a beat-owned video.
     setStep(job, 'persisting', 'Saving video');
-    const file = await uploadAttachmentBuffer(undefined, {
+    const file = await uploadAttachmentBuffer(projectId, {
       buffer,
       filename: `storyboard-${storyboard._id}-video-${Date.now()}.mp4`,
       contentType: contentType || 'video/mp4',
@@ -746,6 +750,7 @@ async function runVideoGenerationJob({
     });
 
     await setStoryboardVideoViaGateway({
+      projectId,
       storyboardId: storyboard._id,
       videoFileId: file._id,
       durationSeconds: bundle.durationSeconds,
@@ -771,7 +776,9 @@ async function runVideoGenerationJob({
         const { storyboardUrl } = await import('./links.js');
         const { stripMarkdown } = await import('../util/markdown.js');
         const { getBeat } = await import('../mongo/plots.js');
-        const beat = await getBeat(undefined, String(storyboard.beat_id));
+        const { getProjectById } = await import('../mongo/projects.js');
+        const beat = await getBeat(projectId, String(storyboard.beat_id));
+        const project = projectId ? await getProjectById(projectId) : null;
         const name = beat ? stripMarkdown(beat.name || '').trim() : '';
         const order = beat && Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
         const beatLabel = name ? `${order}: ${name}` : order;
@@ -782,7 +789,7 @@ async function runVideoGenerationJob({
           username: announceUsername,
           verb: 'generated video for',
           entityLabel: `Storyboard — ${beatLabel}${orderHint}`,
-          entityUrl: beat ? storyboardUrl(beat) : null,
+          entityUrl: beat ? storyboardUrl(project?.title ?? null, beat) : null,
           mediaFileId: file._id,
           mediaLabel: model?.label ? `video (${model.label})` : 'video',
           prompt,
@@ -862,9 +869,9 @@ function buildPrompt({ override, storyboard, directorNotes = null }) {
 // Pull the project-wide director's notes once per submit. Returns the bare
 // notes array (possibly empty) so buildPrompt can format it; we don't pass
 // the whole doc to avoid leaking unrelated fields.
-async function loadDirectorNotesForPrompt() {
+async function loadDirectorNotesForPrompt(projectId) {
   try {
-    const doc = await getDirectorNotes();
+    const doc = await getDirectorNotes(projectId);
     return Array.isArray(doc?.notes) ? doc.notes : [];
   } catch (e) {
     logger.warn(`fal video gen: failed to load director notes: ${e.message}`);

@@ -40,6 +40,7 @@ function canonicalImageIdFor(c) {
 }
 
 export async function collectStoryboardReferenceIds({
+  projectId,
   beat,
   charactersInScene,
   existingIds = [],
@@ -55,7 +56,7 @@ export async function collectStoryboardReferenceIds({
     if (!stripped) continue;
     let c = null;
     try {
-      c = await getCharacter(undefined, stripped);
+      c = await getCharacter(projectId, stripped);
     } catch (e) {
       logger.warn(
         `storyboard refs: character lookup "${stripped}" failed: ${e.message}`,

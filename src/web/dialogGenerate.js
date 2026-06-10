@@ -140,8 +140,8 @@ export class BeatBusyError extends Error {
   }
 }
 
-export async function startDialogGenerationJob({ beatId }) {
-  const beat = await getBeat(undefined, beatId);
+export async function startDialogGenerationJob({ projectId, beatId }) {
+  const beat = await getBeat(projectId, beatId);
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
   if (isBeatLocked(beat._id)) {
     throw new BeatBusyError(beat._id.toString());
@@ -161,7 +161,7 @@ export async function startDialogGenerationJob({ beatId }) {
   // Fire and forget; errors are recorded on the job. Holding the per-beat lock
   // for the duration prevents concurrent generates and edit calls from racing
   // the delete-then-recreate window.
-  withBeatLock(beat._id, () => runDialogGenerationJob({ job, beat })).catch((e) => {
+  withBeatLock(beat._id, () => runDialogGenerationJob({ job, beat, projectId })).catch((e) => {
     job.status = 'error';
     job.error = e.message;
     job.finished_at = new Date();
@@ -170,9 +170,9 @@ export async function startDialogGenerationJob({ beatId }) {
   return jobId;
 }
 
-async function runDialogGenerationJob({ job, beat }) {
+async function runDialogGenerationJob({ job, beat, projectId }) {
   job.status = 'extracting';
-  const entries = await extractEntries({ beat });
+  const entries = await extractEntries({ beat, projectId });
   job.extracted = entries.length;
   if (!entries.length) {
     job.status = 'done';
@@ -184,7 +184,7 @@ async function runDialogGenerationJob({ job, beat }) {
   }
   // Clear existing dialogs so the SPA shows an empty list while new items
   // stream in.
-  await deleteAllDialogsForBeatViaGateway({ beatId: beat._id });
+  await deleteAllDialogsForBeatViaGateway({ projectId, beatId: beat._id });
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
     try {
@@ -193,6 +193,7 @@ async function runDialogGenerationJob({ job, beat }) {
       // dialog therefore mounts against a populated fragment and shows the
       // generated text immediately rather than appearing empty until reload.
       await createDialogViaGateway({
+        projectId,
         beatId: beat._id,
         body: entry.body,
         character: entry.character,
@@ -213,8 +214,8 @@ async function runDialogGenerationJob({ job, beat }) {
   );
 }
 
-async function extractEntries({ beat }) {
-  const context = await buildDialogContext(beat);
+async function extractEntries({ beat, projectId }) {
+  const context = await buildDialogContext(projectId, beat);
   const userText = [
     context,
     '',

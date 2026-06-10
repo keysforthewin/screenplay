@@ -48,10 +48,10 @@ const SYSTEM_PROMPT = [
   'Return only the spoken words — no speaker prefix, no quotation marks, no parentheticals.',
 ].join('\n');
 
-export async function generateAlternatives({ dialogId, count = ALTERNATIVE_COUNT } = {}) {
-  const dialog = await getDialog(undefined, dialogId);
+export async function generateAlternatives({ projectId, dialogId, count = ALTERNATIVE_COUNT } = {}) {
+  const dialog = await getDialog(projectId, dialogId);
   if (!dialog) throw new Error(`Dialog not found: ${dialogId}`);
-  const beat = await getBeat(undefined, dialog.beat_id.toString());
+  const beat = await getBeat(projectId, dialog.beat_id.toString());
   if (!beat) throw new Error(`Beat not found for dialog ${dialogId}`);
 
   const all = await listDialogs({ beatId: dialog.beat_id });
@@ -69,7 +69,7 @@ export async function generateAlternatives({ dialogId, count = ALTERNATIVE_COUNT
     })
     .join('\n');
 
-  const context = await buildDialogContext(beat);
+  const context = await buildDialogContext(projectId, beat);
   const userText = [
     context,
     '',
