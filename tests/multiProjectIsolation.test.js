@@ -7,6 +7,17 @@ vi.mock('../src/mongo/client.js', () => ({
   getDb: () => fakeDb,
   connectMongo: async () => fakeDb,
 }));
+vi.mock('../src/log.js', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+vi.mock('../src/rag/queue.js', () => ({ enqueueReindex: () => {} }));
+vi.mock('../src/rag/indexer.js', () => ({ deleteEntity: () => Promise.resolve() }));
+vi.mock('../src/web/hocuspocus.js', () => ({
+  isHocuspocusRunning: () => false,
+  broadcastRoomStateless: () => {},
+  getRoomDocument: () => null,
+  withDirectDocument: async (_r, _o, fn) => fn({}),
+}));
 
 const { createProject } = await import('../src/mongo/projects.js');
 const { createCharacter, getCharacter, listCharacters } = await import(
@@ -14,7 +25,8 @@ const { createCharacter, getCharacter, listCharacters } = await import(
 );
 const { getPlot, createBeat, listBeats } = await import('../src/mongo/plots.js');
 const { getCharacterTemplate, setCharacterTemplate } = await import('../src/mongo/prompts.js');
-const { listLibraryImages } = await import('../src/mongo/images.js');
+const { listLibraryImages, findImageFile } = await import('../src/mongo/images.js');
+const Gateway = await import('../src/web/gateway.js');
 
 describe('multi-project isolation', () => {
   let pidA;
@@ -88,25 +100,53 @@ describe('multi-project isolation', () => {
     expect((b?.fields || []).map((f) => f.name)).not.toContain('secret_skill');
   });
 
-  it('cross-project media attach: image owned by project A note inserted into project B beat records correct owner scope', async () => {
-    // An image file stamped with project_id = pidA should be owned by A's
-    // scope. Attaching it to a beat in project B must either (a) reject the
-    // attach or (b) copy the image so the result_image_id on B's beat is a
-    // NEW file stamped project_id = pidB, leaving A's original untouched.
-    // This test asserts the chosen invariant (copy path): the broadcast that
-    // fires when the artwork is appended targets B's room, and A's original
-    // image doc still carries project_id = pidA.
-    const imageA = {
-      _id: new ObjectId(),
+  it('cross-project media attach: attaching project A image to project B beat moves owner but preserves source project_id stamp', async () => {
+    // attachExistingImageToBeatViaGateway reassigns ownership via setImageOwner
+    // (which only writes owner_type / owner_id, never project_id). The source
+    // file therefore retains project_id = pidA even after it is moved to a beat
+    // in project B. This test drives that real gateway path and asserts:
+    //  1. The source file's project_id is untouched (still pidA).
+    //  2. The file's owner is now the beat in project B (owner_type = 'beat').
+    //  3. The beat in project B has the image in its images[] array.
+    // It will fail if setImageOwner or detachImageFromCurrentOwner starts
+    // silently re-stamping the source file's project_id.
+    const noteId = new ObjectId();
+    const imageId = new ObjectId();
+    // Insert an image.files doc that is owned by a director_note in project A.
+    await fakeDb.collection('images.files').insertOne({
+      _id: imageId,
       filename: 'note-img.png',
+      length: 1024,
       uploadDate: new Date(),
-      metadata: { owner_type: 'director_note', owner_id: new ObjectId().toString(), project_id: pidA },
-    };
-    await fakeDb.collection('images.files').insertOne(imageA);
-    // After the pre-flip threading, createArtworkFromImageViaGateway would
-    // copy the image to B's scope via copyImageToNewOwner. Assert that A's
-    // original doc is unmodified:
-    const stillA = await fakeDb.collection('images.files').findOne({ _id: imageA._id });
-    expect(stillA.metadata.project_id).toBe(pidA);
+      contentType: 'image/png',
+      metadata: {
+        owner_type: 'director_note',
+        owner_id: noteId,
+        project_id: pidA,
+        source: 'upload',
+        prompt: null,
+        generated_by: null,
+      },
+    });
+    // Create a beat in project B.
+    const beat = await createBeat({ projectId: pidB, name: 'B-beat', desc: 'beat in B' });
+    const beatId = beat._id.toString();
+    // Run the real gateway attach path.
+    await Gateway.attachExistingImageToBeatViaGateway({
+      projectId: pidB,
+      beatId,
+      imageId: imageId.toString(),
+    });
+    // 1. Source file's project_id must be untouched.
+    const movedFile = await findImageFile(imageId.toString());
+    expect(movedFile.metadata.project_id).toBe(pidA);
+    // 2. Owner has been reassigned to the beat in project B.
+    expect(movedFile.metadata.owner_type).toBe('beat');
+    expect(movedFile.metadata.owner_id.toString()).toBe(beatId);
+    // 3. The beat in project B records the image in its images[] array.
+    const plotB = await getPlot(pidB);
+    const beatB = plotB.beats.find((b) => b._id.toString() === beatId);
+    expect(beatB).toBeDefined();
+    expect(beatB.images.some((img) => img._id.toString() === imageId.toString())).toBe(true);
   });
 });

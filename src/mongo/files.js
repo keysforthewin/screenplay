@@ -26,9 +26,10 @@ export async function detachImageFromCurrentOwner(file) {
   const ownerId = file?.metadata?.owner_id;
   if (!ownerType || !ownerId) return null;
   // The file's own stamp is the source of truth for which project the owner
-  // lives in. Legacy files uploaded before the migration have no stamp; the
-  // pull* helpers are lenient about unstamped docs, and post-migration every
-  // file is stamped.
+  // lives in. Post-migration every file carries a project_id stamp; the pull*
+  // helpers require it (no stamp → projectId required error). Legacy unstamped
+  // files must be migrated first via scripts/migrate-multi-project.js before
+  // this path is exercised.
   const projectId = file?.metadata?.project_id;
   let priorName = null;
   try {

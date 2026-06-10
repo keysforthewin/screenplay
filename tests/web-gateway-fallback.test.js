@@ -34,14 +34,14 @@ const Attachments = await import('../src/mongo/attachments.js');
 describe('gateway fallback (no Hocuspocus)', () => {
   let projectId;
 
-beforeEach(async () => {
-  fakeDb.reset();
-  projectId = (await createProject('Test Project'))._id.toString();
-});
+  beforeEach(async () => {
+    fakeDb.reset();
+    projectId = (await createProject('Test Project'))._id.toString();
+  });
 
   it('setBeatBodyViaGateway writes the beat body via Mongo', async () => {
     const pid = (await Projects.getDefaultProject())._id.toString();
-    const beat = await Plots.createBeat({ projectId, name: 'Pilot', desc: 'Opening scene', projectId: pid });
+    const beat = await Plots.createBeat({ projectId: pid, name: 'Pilot', desc: 'Opening scene' });
     await Gateway.setBeatBodyViaGateway(pid, beat._id.toString(), 'Once upon a time...');
     const fresh = await Plots.getBeat(pid, beat._id.toString());
     expect(fresh.body).toBe('Once upon a time...');
@@ -49,7 +49,7 @@ beforeEach(async () => {
 
   it('appendBeatBodyViaGateway appends to the beat body', async () => {
     const pid = (await Projects.getDefaultProject())._id.toString();
-    const beat = await Plots.createBeat({ projectId, name: 'Pilot', desc: 'X', body: 'first', projectId: pid });
+    const beat = await Plots.createBeat({ projectId: pid, name: 'Pilot', desc: 'X', body: 'first' });
     await Gateway.appendBeatBodyViaGateway(pid, beat._id.toString(), 'second');
     const fresh = await Plots.getBeat(pid, beat._id.toString());
     expect(fresh.body).toBe('first\n\nsecond');
@@ -57,7 +57,7 @@ beforeEach(async () => {
 
   it('editBeatBodyViaGateway applies find/replace edits', async () => {
     const pid = (await Projects.getDefaultProject())._id.toString();
-    const beat = await Plots.createBeat({ projectId, name: 'Pilot', desc: 'X', body: 'foo bar baz', projectId: pid });
+    const beat = await Plots.createBeat({ projectId: pid, name: 'Pilot', desc: 'X', body: 'foo bar baz' });
     const result = await Gateway.editBeatBodyViaGateway(pid, beat._id.toString(), [
       { find: 'bar', replace: 'BAZ' },
     ]);
@@ -75,7 +75,7 @@ beforeEach(async () => {
 
   it('updateCharacterViaGateway writes name + custom field', async () => {
     const pid = (await Projects.getDefaultProject())._id.toString();
-    const c = await Characters.createCharacter({ projectId, name: 'Steve', projectId: pid });
+    const c = await Characters.createCharacter({ projectId: pid, name: 'Steve' });
     await Gateway.updateCharacterViaGateway(pid, c._id.toString(), {
       name: 'Steven',
       'fields.background_story': 'Born in 1990.',
@@ -87,7 +87,7 @@ beforeEach(async () => {
 
   it('updateCharacterViaGateway rejects unrecognized fields', async () => {
     const pid = (await Projects.getDefaultProject())._id.toString();
-    const c = await Characters.createCharacter({ projectId, name: 'Bob', projectId: pid });
+    const c = await Characters.createCharacter({ projectId: pid, name: 'Bob' });
     await expect(
       Gateway.updateCharacterViaGateway(pid, c._id.toString(), { totally_made_up: 'x' }),
     ).rejects.toThrow(/no recognized fields/);

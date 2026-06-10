@@ -256,7 +256,10 @@ export async function indexDirectorNote(noteId) {
     // project to stamp, so skip it; the migration re-keys the doc and a
     // post-migration reindex picks the notes up under their real project.
     const docId = String(doc._id);
-    if (!docId.includes(':')) return;
+    if (!docId.includes(':')) {
+      logger.info(`rag: indexDirectorNote skipping legacy unstamped doc _id=${docId} noteId=${String(note._id)} — run migrate-multi-project.js to re-key`);
+      return;
+    }
     const projectId = await resolveProjectId(docId.split(':')[0]);
     const chunks = buildChunksForField({
       entityType: 'director_note',
