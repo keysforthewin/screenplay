@@ -638,6 +638,12 @@ export async function runAgent({
         }
       }
 
+      // Snapshot project before the batch so we can detect a successful
+      // set_project by context mutation rather than by result error flags
+      // (handlers may return a friendly error string — not is_error — on
+      // failure, which the old error-flag check would misread as success).
+      const projectBefore = context.projectId;
+
       const realResults = realToolUses.length
         ? await dispatchToolUses(
             realToolUses,
@@ -649,18 +655,29 @@ export async function runAgent({
           )
         : [];
 
-      // A successful set_project invalidates every entity touched so far this
-      // turn: those refs belong to the pre-switch project. Drop them so the
-      // end-of-turn link resolution can't mislink into the new project.
-      // (Touches recorded below for THIS batch resolve against the final
-      // project at end of turn; pre-switch ids simply fail as not-found and
-      // are dropped by resolveEntityLinks' safeCall.)
-      const switchedProject = realToolUses.some((tu) => {
-        if (tu.name !== 'set_project') return false;
-        const res = realResults.find((r) => r.tool_use_id === tu.id);
-        return !!res && !res.is_error;
-      });
-      if (switchedProject) {
+      // A successful set_project mutates context.projectId in place. That
+      // mutation is the semantic event we key on — it is more reliable than
+      // inspecting result error flags, which don't distinguish a friendly-
+      // error string (per handler conventions) from a real success.
+      //
+      // When a switch did happen we must also record touches in batch order so
+      // that tools BEFORE the switch are cleared and tools AFTER the switch are
+      // kept against the new project. Order matters because a ref like "beat 3"
+      // or a character name can exist in both projects — clearing after the
+      // whole batch would wrongly keep pre-switch touches, and clearing before
+      // recording would drop post-switch touches.
+      if (context.projectId !== projectBefore) {
+        // Find the split point: the first set_project tool is the one that
+        // mutated context (set_project is the only tool that changes projectId).
+        const splitIdx = realToolUses.findIndex((tu) => tu.name === 'set_project');
+        // Record touches for tools BEFORE the switch (pre-switch project).
+        for (let i = 0; i < splitIdx; i++) {
+          recordEntityTouch(realToolUses[i].name, realToolUses[i].input, touchedEntities);
+        }
+        // Clear all pre-switch refs — they belong to the old project and must
+        // not be resolved as links in the new one (order-number refs like "beat
+        // 3" and name refs can resolve to entirely different entities in the new
+        // project, not just fail as not-found).
         const dropped =
           touchedEntities.beats.size +
           touchedEntities.characters.size +
@@ -669,10 +686,16 @@ export async function runAgent({
           logger.info(`set_project: dropped ${dropped} pre-switch touched entity ref(s)`);
         }
         clearTouchedEntities(touchedEntities);
-      }
-
-      for (const tu of realToolUses) {
-        recordEntityTouch(tu.name, tu.input, touchedEntities);
+        // Record touches for the set_project tool and everything after it —
+        // these resolve against the new project at end of turn.
+        for (let i = splitIdx; i < realToolUses.length; i++) {
+          recordEntityTouch(realToolUses[i].name, realToolUses[i].input, touchedEntities);
+        }
+      } else {
+        // No project switch — record all touches in one pass as before.
+        for (const tu of realToolUses) {
+          recordEntityTouch(tu.name, tu.input, touchedEntities);
+        }
       }
 
       // Reassemble in the original tool_use order so tool_result blocks line up.

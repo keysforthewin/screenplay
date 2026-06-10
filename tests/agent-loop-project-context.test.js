@@ -129,10 +129,32 @@ describe('runAgent project context', () => {
     expect(joined).toContain('Current project: "My Movie"');
   });
 
-  it('a successful set_project clears pre-switch touched entities', async () => {
-    dispatchToolMock.mockImplementation(async (name) =>
-      name === 'set_project' ? 'Switched to project "B".' : 'ok',
-    );
+  it('a successful set_project clears pre-switch touched entities, and the update_beat touch is gone', async () => {
+    const PID_B = 'b'.repeat(24);
+    // Capture what touchedEntities looks like at clear-time so we can assert
+    // the pre-switch beat ref is present and will be dropped.
+    let capturedAtClear = null;
+    entitySpies.clearTouchedEntities.mockImplementation((touched) => {
+      capturedAtClear = {
+        beats: new Set(touched.beats),
+        characters: new Set(touched.characters),
+        notes: touched.notes,
+      };
+      // Actually clear so post-switch touches are not contaminated.
+      touched.beats.clear();
+      touched.characters.clear();
+      touched.notes = false;
+    });
+
+    dispatchToolMock.mockImplementation(async (name, _input, context) => {
+      if (name === 'set_project') {
+        // Real handler (Task 13) mutates context in place on success.
+        context.projectId = PID_B;
+        context.projectTitle = 'B';
+        return 'Switched to project "B".';
+      }
+      return 'ok';
+    });
     messagesCreate.mockResolvedValueOnce({
       stop_reason: 'tool_use',
       usage: { input_tokens: 100, output_tokens: 10 },
@@ -153,7 +175,11 @@ describe('runAgent project context', () => {
       projectTitle: 'A',
     });
 
+    // The clear must have fired exactly once.
     expect(entitySpies.clearTouchedEntities).toHaveBeenCalledTimes(1);
+    // At the moment of clearing, the pre-switch beat touch was present.
+    expect(capturedAtClear).not.toBeNull();
+    expect(capturedAtClear.beats.has('5')).toBe(true);
   });
 
   it('a failed set_project does NOT clear touched entities', async () => {
@@ -179,6 +205,46 @@ describe('runAgent project context', () => {
       projectTitle: 'A',
     });
 
+    expect(entitySpies.clearTouchedEntities).not.toHaveBeenCalled();
+  });
+
+  it('set_project returning a friendly-error string (no context mutation) does NOT clear touches', async () => {
+    // Simulates the Task-13 handler finding no matching project and returning
+    // a user-visible error string without mutating context.projectId. The old
+    // is_error-based check was fragile here because dispatchToolUses tags
+    // "Tool error (" strings with is_error:true — but a handler could also
+    // return a non-prefixed friendly error string that is NOT tagged is_error
+    // while still leaving context unchanged. The new mutation-keyed check
+    // handles both cases correctly.
+    dispatchToolMock.mockImplementation(async (name) => {
+      if (name === 'set_project') {
+        // Friendly error string, NOT prefixed with "Tool error (" — would NOT
+        // be tagged is_error by dispatchToolUses, yet context is unchanged.
+        return 'No project found with that name. Did you mean "Alpha"?';
+      }
+      return 'ok';
+    });
+    messagesCreate.mockResolvedValueOnce({
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 100, output_tokens: 10 },
+      content: [
+        { type: 'tool_use', id: 't1', name: 'update_beat', input: { identifier: '3' } },
+        { type: 'tool_use', id: 't2', name: 'set_project', input: { title: 'Typo' } },
+      ],
+    });
+    messagesCreate.mockResolvedValueOnce(endTurn());
+
+    await runAgent({
+      history: [],
+      userText: 'switch',
+      attachments: [],
+      discordUser: { id: 'u', displayName: 'U' },
+      channelId: 'c1',
+      projectId: PID,
+      projectTitle: 'Alpha',
+    });
+
+    // No context mutation → no clear, pre-switch touches are preserved.
     expect(entitySpies.clearTouchedEntities).not.toHaveBeenCalled();
   });
 
