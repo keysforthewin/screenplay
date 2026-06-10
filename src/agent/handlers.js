@@ -3540,10 +3540,22 @@ export const HANDLERS = {
     const project = await getProjectByTitle(title);
     if (!project) {
       const all = await listProjects();
-      const titles = all.map((p) => `"${p.title}"`).join(', ');
-      return `Tool error (set_project): no project titled "${title.trim()}". Available projects: ${titles || '(none)'}.`;
+      const MAX_LIST = 25;
+      const shown = all.slice(0, MAX_LIST).map((p) => `"${p.title}"`).join(', ');
+      const overflow = all.length > MAX_LIST ? ` …and ${all.length - MAX_LIST} more` : '';
+      const titles = shown ? `${shown}${overflow}` : '(none)';
+      return `Tool error (set_project): no project titled "${title.trim()}". Available projects: ${titles}.`;
     }
     const projectId = project._id.toString();
+    // Persist FIRST so that if the write fails the loop's snapshot detection
+    // doesn't treat the switch as successful while the channel pointer is
+    // unchanged (split-brain turn).  Only after a successful persist do we
+    // mutate the in-process context snapshot.
+    if (context?.channelId) {
+      await setCurrentProjectId(context.channelId, projectId);
+    } else {
+      logger.warn('set_project: no channelId in context — switch not persisted to channel_state');
+    }
     // Mutate the shared per-turn context IN PLACE so every later tool call in
     // this turn — and the end-of-turn recordAgentTurns stamp — uses the new
     // project. The loop's MUTATING_PREFIXES ('set_') rebuilds the system
@@ -3553,12 +3565,8 @@ export const HANDLERS = {
       context.projectId = projectId;
       context.projectTitle = project.title;
     }
-    if (context?.channelId) {
-      await setCurrentProjectId(context.channelId, projectId);
-    } else {
-      logger.warn('set_project: no channelId in context — switch not persisted to channel_state');
-    }
-    return `Switched to project "${project.title}".`;
+    const notPersisted = !context?.channelId ? ' (not persisted — no channel context)' : '';
+    return `Switched to project "${project.title}".${notPersisted}`;
   },
 };
 

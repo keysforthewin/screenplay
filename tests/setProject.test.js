@@ -65,4 +65,14 @@ describe('set_project handler', () => {
     const out = await HANDLERS.set_project({}, makeContext());
     expect(out).toMatch(/`title` is required/);
   });
+
+  it('no-channel context: returns success with not-persisted qualifier and does not write channel_state', async () => {
+    await createProject('Heist Movie');
+    // Pass null context (missing channelId) — handler must not throw and must
+    // not call setCurrentProjectId.
+    const out = await HANDLERS.set_project({ title: 'Heist Movie' }, null);
+    expect(out).toBe('Switched to project "Heist Movie". (not persisted — no channel context)');
+    // Nothing should have been written to channel_state.
+    expect(await getCurrentProjectId('chan-1')).toBeNull();
+  });
 });
