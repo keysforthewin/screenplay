@@ -1240,6 +1240,7 @@ export async function attachExistingAttachmentToBeatViaGateway({
   beatId,
   attachmentId,
 }) {
+  projectId = await resolveProjectId(projectId);
   const result = await attachExistingAttachmentToBeat({
     beat: String(beatId),
     attachmentId,

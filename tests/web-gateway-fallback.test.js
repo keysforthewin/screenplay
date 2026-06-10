@@ -28,6 +28,7 @@ const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const DirectorNotes = await import('../src/mongo/directorNotes.js');
 const Projects = await import('../src/mongo/projects.js');
+const Attachments = await import('../src/mongo/attachments.js');
 
 describe('gateway fallback (no Hocuspocus)', () => {
   beforeEach(() => fakeDb.reset());
@@ -116,6 +117,27 @@ describe('gateway fallback (no Hocuspocus)', () => {
     });
     expect((await DirectorNotes.getDirectorNotes(aid)).notes[0].text).toBe('scoped v2');
     expect((await DirectorNotes.getDirectorNotes(bid)).notes || []).toHaveLength(0);
+  });
+
+  it('attachExistingAttachmentToBeatViaGateway resolves projectId and broadcasts without throwing', async () => {
+    const pid = (await Projects.getDefaultProject())._id.toString();
+    const beat = await Plots.createBeat({ name: 'Rooftop', desc: 'Chase', projectId: pid });
+    const fileDoc = {
+      _id: new ObjectId(),
+      filename: 'ambience.mp3',
+      contentType: 'audio/mpeg',
+      length: 1000,
+      uploadDate: new Date(),
+      metadata: { project_id: pid, owner_type: null, owner_id: null, source: 'upload', content_type: 'audio/mpeg' },
+    };
+    fakeDb.collection('attachments.files')._docs.push(fileDoc);
+    // Omit projectId (undefined) — resolveProjectId must handle it without throwing
+    const res = await Gateway.attachExistingAttachmentToBeatViaGateway({
+      projectId: undefined,
+      beatId: beat._id.toString(),
+      attachmentId: fileDoc._id,
+    });
+    expect(res.beat.name).toBe('Rooftop');
   });
 
 });
