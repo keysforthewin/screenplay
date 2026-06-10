@@ -112,6 +112,7 @@ describe('library room', () => {
       length: 555,
       uploadDate: new Date(),
       metadata: {
+        project_id: pid,
         owner_type: null,
         owner_id: null,
         source: 'upload',

@@ -16,6 +16,7 @@ import {
   deriveAttachmentFilename,
   toObjectId,
 } from './attachmentBytes.js';
+import { resolveProjectId } from './projects.js';
 
 const BUCKET_NAME = 'attachments';
 
@@ -38,16 +39,18 @@ function uploadBuffer({ buffer, filename, contentType, metadata }) {
   });
 }
 
-export async function uploadAttachmentBuffer({
+export async function uploadAttachmentBuffer(projectId, {
   buffer,
   filename,
   contentType,
   ownerType = null,
   ownerId = null,
-}) {
+} = {}) {
+  const pid = await resolveProjectId(projectId);
   const ct = contentType || 'application/octet-stream';
   const finalFilename = filename?.trim() || `attachment-${Date.now()}.bin`;
   const metadata = {
+    project_id: pid,
     owner_type: ownerType,
     owner_id: ownerId ? toObjectId(ownerId) : null,
     source: 'upload',
@@ -64,19 +67,21 @@ export async function uploadAttachmentBuffer({
   };
 }
 
-export async function uploadAttachmentFromUrl({
+export async function uploadAttachmentFromUrl(projectId, {
   sourceUrl,
   filename,
   contentType: hintedContentType,
   ownerType = null,
   ownerId = null,
-}) {
+} = {}) {
+  const pid = await resolveProjectId(projectId);
   const { buffer, contentType, size } = await fetchAttachmentFromUrl(
     sourceUrl,
     hintedContentType,
   );
   const finalFilename = filename?.trim() || deriveAttachmentFilename(sourceUrl, contentType);
   const metadata = {
+    project_id: pid,
     owner_type: ownerType,
     owner_id: ownerId ? toObjectId(ownerId) : null,
     source: 'upload',
@@ -103,6 +108,7 @@ export async function findAttachmentFile(attachmentId) {
 // this to break ownership links (e.g. "copy this dialog's audio onto a scene
 // as an independent file, not a reference").
 export async function copyAttachmentBuffer({
+  projectId,
   sourceFileId,
   filename,
   ownerType = null,
@@ -115,7 +121,8 @@ export async function copyAttachmentBuffer({
     file.contentType || file.metadata?.content_type || 'application/octet-stream';
   const finalFilename =
     filename?.trim() || file.filename || `copy-${Date.now()}.bin`;
-  return uploadAttachmentBuffer({
+  // Copies stay in the source attachment's project unless the caller pins one.
+  return uploadAttachmentBuffer(projectId || file.metadata?.project_id || undefined, {
     buffer,
     filename: finalFilename,
     contentType: ct,
@@ -124,9 +131,10 @@ export async function copyAttachmentBuffer({
   });
 }
 
-export async function listLibraryAttachments() {
+export async function listLibraryAttachments(projectId) {
+  const pid = await resolveProjectId(projectId);
   return filesCol()
-    .find({ 'metadata.owner_type': null })
+    .find({ 'metadata.project_id': pid, 'metadata.owner_type': null })
     .sort({ uploadDate: -1 })
     .toArray();
 }
@@ -278,7 +286,7 @@ async function pushCharacterAttachment(characterId, attachmentMeta) {
 export async function attachToCharacter({ projectId, character, sourceUrl, filename, caption }) {
   const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
-  const file = await uploadAttachmentFromUrl({
+  const file = await uploadAttachmentFromUrl(projectId ?? c.project_id, {
     sourceUrl,
     filename,
     ownerType: 'character',

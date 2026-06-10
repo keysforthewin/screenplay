@@ -737,7 +737,7 @@ async function runVideoGenerationJob({
 
     // 6. Persist into GridFS attachments as a beat-owned video.
     setStep(job, 'persisting', 'Saving video');
-    const file = await uploadAttachmentBuffer({
+    const file = await uploadAttachmentBuffer(undefined, {
       buffer,
       filename: `storyboard-${storyboard._id}-video-${Date.now()}.mp4`,
       contentType: contentType || 'video/mp4',

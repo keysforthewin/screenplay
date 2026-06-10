@@ -16,9 +16,13 @@ const Attachments = await import('../src/mongo/attachments.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
 const DirectorNotes = await import('../src/mongo/directorNotes.js');
+const Projects = await import('../src/mongo/projects.js');
 
-beforeEach(() => {
+let pid;
+
+beforeEach(async () => {
   fakeDb.reset();
+  pid = (await Projects.getDefaultProject())._id.toString();
 });
 
 function seedLibraryAttachment(extra = {}) {
@@ -29,6 +33,7 @@ function seedLibraryAttachment(extra = {}) {
     length: 5000,
     uploadDate: new Date(),
     metadata: {
+      project_id: pid,
       owner_type: null,
       owner_id: null,
       source: 'upload',
@@ -51,6 +56,29 @@ describe('listLibraryAttachments', () => {
     const lib = await Attachments.listLibraryAttachments();
     expect(lib).toHaveLength(2);
     for (const f of lib) expect(f.metadata.owner_type).toBeNull();
+  });
+
+  it('is project-filtered', async () => {
+    const other = await Projects.createProject('Other Movie');
+    const otherPid = other._id.toString();
+    seedLibraryAttachment();
+    seedLibraryAttachment({
+      metadata: {
+        project_id: otherPid,
+        owner_type: null,
+        owner_id: null,
+        source: 'upload',
+        content_type: 'audio/mpeg',
+      },
+    });
+
+    const defaults = await Attachments.listLibraryAttachments();
+    expect(defaults).toHaveLength(1);
+    expect(defaults[0].metadata.project_id).toBe(pid);
+
+    const others = await Attachments.listLibraryAttachments(otherPid);
+    expect(others).toHaveLength(1);
+    expect(others[0].metadata.project_id).toBe(otherPid);
   });
 });
 

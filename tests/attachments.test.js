@@ -294,6 +294,7 @@ describe('beat attachment handlers', () => {
       caption: 'use at PAULY IS FULL DEEP',
     });
     expect(Attachments.uploadAttachmentFromUrl).toHaveBeenCalledWith(
+      undefined,
       expect.objectContaining({
         sourceUrl: 'https://cdn.discord.com/x/recording.ogg',
         ownerType: 'beat',

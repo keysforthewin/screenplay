@@ -29,7 +29,7 @@ vi.mock('../src/log.js', () => ({
 const uploaded = [];
 const stored = new Map();
 vi.mock('../src/mongo/attachments.js', () => ({
-  uploadAttachmentBuffer: vi.fn(async ({ buffer, filename, contentType, ownerType, ownerId }) => {
+  uploadAttachmentBuffer: vi.fn(async (_projectId, { buffer, filename, contentType, ownerType, ownerId }) => {
     const id = new ObjectId();
     uploaded.push({ id, buffer, filename, contentType, ownerType, ownerId });
     stored.set(id.toString(), { buffer, contentType });

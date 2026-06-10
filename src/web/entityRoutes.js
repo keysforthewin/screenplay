@@ -835,7 +835,7 @@ export function buildApiRouter() {
   router.post('/library/attachment', upload.single('file'), async (req, res, next) => {
     try {
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      const meta = await uploadAttachmentBuffer({
+      const meta = await uploadAttachmentBuffer(undefined, {
         buffer: req.file.buffer,
         filename: safeFilename(req.file.originalname, `attachment-${Date.now()}.bin`),
         contentType: req.file.mimetype,
@@ -1279,7 +1279,7 @@ export function buildApiRouter() {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      const file = await uploadAttachmentBuffer({
+      const file = await uploadAttachmentBuffer(undefined, {
         buffer: req.file.buffer,
         filename: safeFilename(req.file.originalname, `attach-${Date.now()}.bin`),
         contentType: req.file.mimetype,
@@ -1793,7 +1793,7 @@ export function buildApiRouter() {
       const cid = await resolveCharacterId(req);
       if (!cid) return res.status(404).json({ error: 'character not found' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      const file = await uploadAttachmentBuffer({
+      const file = await uploadAttachmentBuffer(undefined, {
         buffer: req.file.buffer,
         filename: safeFilename(req.file.originalname, `attach-${Date.now()}.bin`),
         contentType: req.file.mimetype,
@@ -2426,7 +2426,7 @@ export function buildApiRouter() {
     try {
       if (!isOidHex(req.params.noteId)) return res.status(400).json({ error: 'invalid id' });
       if (!req.file) return res.status(400).json({ error: 'file required' });
-      const file = await uploadAttachmentBuffer({
+      const file = await uploadAttachmentBuffer(undefined, {
         buffer: req.file.buffer,
         filename: safeFilename(req.file.originalname, `note-attach-${Date.now()}.bin`),
         contentType: req.file.mimetype,
@@ -3705,7 +3705,7 @@ export function buildApiRouter() {
         if (handled) return handled;
         throw e;
       }
-      const file = await uploadAttachmentBuffer({
+      const file = await uploadAttachmentBuffer(undefined, {
         buffer: audio.buffer,
         filename: audio.filename,
         contentType: audio.contentType,
@@ -3781,7 +3781,7 @@ export function buildApiRouter() {
         else return res.status(400).json({ error: 'file must be video/*' });
       }
       const sb = await getStoryboard(undefined, sbId);
-      const file = await uploadAttachmentBuffer({
+      const file = await uploadAttachmentBuffer(undefined, {
         buffer: req.file.buffer,
         filename: safeFilename(
           req.file.originalname,
@@ -4757,7 +4757,7 @@ export function buildApiRouter() {
         if (handled) return handled;
         throw e;
       }
-      const file = await uploadAttachmentBuffer({
+      const file = await uploadAttachmentBuffer(undefined, {
         buffer: audio.buffer,
         filename: audio.filename,
         contentType: audio.contentType,

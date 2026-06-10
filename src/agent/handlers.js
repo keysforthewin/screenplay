@@ -1583,7 +1583,7 @@ export const HANDLERS = {
 
   async add_director_note_attachment({ note_id, source_url, filename, caption } = {}) {
     const target = await resolveDirectorNote(note_id);
-    const file = await Attachments.uploadAttachmentFromUrl({
+    const file = await Attachments.uploadAttachmentFromUrl(undefined, {
       sourceUrl: source_url,
       filename,
       ownerType: 'director_note',
@@ -2092,7 +2092,7 @@ export const HANDLERS = {
   },
 
   async add_library_attachment({ source_url, filename, caption } = {}) {
-    const file = await Attachments.uploadAttachmentFromUrl({
+    const file = await Attachments.uploadAttachmentFromUrl(undefined, {
       sourceUrl: source_url,
       filename,
       ownerType: null,
@@ -2737,7 +2737,7 @@ export const HANDLERS = {
 
   async add_beat_attachment({ beat, source_url, filename, caption }) {
     const target = await resolveBeat(beat);
-    const file = await Attachments.uploadAttachmentFromUrl({
+    const file = await Attachments.uploadAttachmentFromUrl(undefined, {
       sourceUrl: source_url,
       filename,
       ownerType: 'beat',

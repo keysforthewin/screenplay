@@ -62,7 +62,7 @@ vi.mock('../src/mongo/attachments.js', () => ({
       },
     };
   }),
-  uploadAttachmentBuffer: vi.fn(async (args) => {
+  uploadAttachmentBuffer: vi.fn(async (_projectId, args) => {
     const file = {
       _id: new ObjectId(),
       filename: args.filename,
