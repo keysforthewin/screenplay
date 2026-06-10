@@ -43,9 +43,10 @@ vi.mock('../src/mongo/images.js', async () => {
         file: found,
       };
     },
-    uploadGeneratedImage: async (_projectId, args) => {
+    uploadGeneratedImage: async (projectId, args) => {
       const id = new ObjectId();
       uploadCalls.push({
+        projectId: projectId ?? null,
         ownerType: args.ownerType,
         ownerId: args.ownerId ? String(args.ownerId) : null,
         prompt: args.prompt ?? null,
@@ -282,5 +283,56 @@ describe('POST /api/notes/:noteId/image/copy', () => {
     const noteAfter = dn.notes.find((n) => n._id.equals(note._id));
     expect(noteAfter.images).toHaveLength(1);
     expect(String(noteAfter.images[0]._id)).not.toBe(String(file._id));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// copyImageToNewOwner — project-id precedence
+// ---------------------------------------------------------------------------
+
+import { copyImageToNewOwner } from '../src/mongo/imageCopy.js';
+
+describe('copyImageToNewOwner — project-id precedence', () => {
+  it('fallback-to-source: uses source file project_id when no explicit projectId is given', async () => {
+    const sourceProjectId = 'a'.repeat(24);
+    const char = await Characters.createCharacter({ name: 'Fallback Fox' });
+    const file = seedSourceImage({ ownerType: 'character', ownerId: char._id });
+    // Attach project_id to the source file's metadata.
+    const filesCol = fakeDb.collection('images.files');
+    const idx = filesCol._docs.findIndex((d) => d._id.equals(file._id));
+    filesCol._docs[idx].metadata.project_id = sourceProjectId;
+
+    await copyImageToNewOwner({
+      imageId: file._id,
+      ownerType: 'character',
+      ownerId: char._id,
+      filenameBase: 'fallback-test',
+    });
+
+    expect(uploadCalls).toHaveLength(1);
+    expect(uploadCalls[0].projectId).toBe(sourceProjectId);
+  });
+
+  it('pin-override: explicit projectId wins over source file project_id', async () => {
+    const sourceProjectId = 'a'.repeat(24);
+    const pinnedProjectId = 'b'.repeat(24);
+    const char = await Characters.createCharacter({ name: 'Pin Override Fox' });
+    const file = seedSourceImage({ ownerType: 'character', ownerId: char._id });
+    // Attach a different project_id to the source file's metadata.
+    const filesCol = fakeDb.collection('images.files');
+    const idx = filesCol._docs.findIndex((d) => d._id.equals(file._id));
+    filesCol._docs[idx].metadata.project_id = sourceProjectId;
+
+    await copyImageToNewOwner({
+      projectId: pinnedProjectId,
+      imageId: file._id,
+      ownerType: 'character',
+      ownerId: char._id,
+      filenameBase: 'pin-test',
+    });
+
+    expect(uploadCalls).toHaveLength(1);
+    expect(uploadCalls[0].projectId).toBe(pinnedProjectId);
+    expect(uploadCalls[0].projectId).not.toBe(sourceProjectId);
   });
 });
