@@ -1,9 +1,7 @@
-import { promises as fsp } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { config } from '../config.js';
 import { logger } from '../log.js';
-import { keyedMutex } from '../util/mutex.js';
+import { channelMutex } from '../agent/channelMutex.js';
+import { cleanupTmpAttachments } from '../util/tmpFiles.js';
 import { runAgent } from '../agent/loop.js';
 import { enhancePrompt } from '../agent/promptEnhance.js';
 import { trimHistoryForLlm } from '../agent/historyTrim.js';
@@ -24,8 +22,6 @@ import { getPlot } from '../mongo/plots.js';
 import { recordAnthropicTextUsage } from '../mongo/tokenUsage.js';
 import { sendReply } from './reply.js';
 import { shouldIgnoreMessage } from './messageFilter.js';
-
-const mutex = keyedMutex();
 
 const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
@@ -111,7 +107,7 @@ export async function handleMessage(msg) {
 
   logger.info(`queueing into channel mutex (channel=${msg.channelId})`);
   const mutexT0 = Date.now();
-  await mutex.run(msg.channelId, async () => {
+  await channelMutex.run(msg.channelId, async () => {
     logger.info(`entered channel mutex after ${Date.now() - mutexT0}ms`);
     let typingTimer;
     let attachmentPaths = [];
@@ -269,17 +265,4 @@ export async function handleMessage(msg) {
       await cleanupTmpAttachments(attachmentPaths);
     }
   });
-}
-
-async function cleanupTmpAttachments(paths) {
-  const tmpRoot = path.resolve(os.tmpdir());
-  for (const p of paths || []) {
-    try {
-      const resolved = path.resolve(p);
-      if (!resolved.startsWith(tmpRoot + path.sep)) continue;
-      await fsp.unlink(resolved);
-    } catch (e) {
-      if (e?.code !== 'ENOENT') logger.warn(`failed to delete tmp attachment ${p}: ${e.message}`);
-    }
-  }
 }

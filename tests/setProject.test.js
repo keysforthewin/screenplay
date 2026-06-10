@@ -66,6 +66,19 @@ describe('set_project handler', () => {
     expect(out).toMatch(/`title` is required/);
   });
 
+  it('web runs are refused: no switch, no persistence, context unchanged', async () => {
+    await createProject('Heist Movie');
+    const ctx = makeContext({ webRun: true });
+    const out = await HANDLERS.set_project({ title: 'Heist Movie' }, ctx);
+    expect(out).toMatch(/disabled in the web chat/);
+    expect(out).toMatch(/project picker/);
+    // Web runs carry the real Discord channelId — the refusal must come
+    // before any channel_state write or context mutation.
+    expect(ctx.projectId).toBe('a'.repeat(24));
+    expect(ctx.projectTitle).toBe('Old Project');
+    expect(await getCurrentProjectId('chan-1')).toBeNull();
+  });
+
   it('no-channel context: returns success with not-persisted qualifier and does not write channel_state', async () => {
     await createProject('Heist Movie');
     // Pass null context (missing channelId) — handler must not throw and must

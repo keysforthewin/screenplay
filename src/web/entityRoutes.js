@@ -52,6 +52,13 @@ import {
   UnknownVideoModelError,
 } from './falVideoGenerate.js';
 import {
+  startChatRun,
+  getChatRun,
+  subscribeToChatRun,
+  unsubscribeFromChatRun,
+  serializeChatRun,
+} from './chatRuns.js';
+import {
   addBeatImageViaGateway,
   addBeatAttachmentViaGateway,
   addCharacterAttachmentViaGateway,
@@ -398,7 +405,96 @@ export function buildApiRouter() {
     }
   });
 
+  // Server-Sent Events stream of a web chat agent run. Registered BEFORE
+  // requireSession() for the same EventSource-can't-set-headers reason as
+  // the video-job stream above.
+  router.get('/chat/:runId/events', async (req, res, next) => {
+    try {
+      const sid = String(req.query?.session_id || '');
+      if (!sid) {
+        res.status(401).json({ error: 'missing session' });
+        return;
+      }
+      const session = await getSession(sid);
+      if (!session) {
+        res.status(401).json({ error: 'invalid session' });
+        return;
+      }
+      touchSession(sid).catch(() => {});
+      req.session = session;
+
+      const run = getChatRun(req.params.runId);
+      if (!run) {
+        res.status(404).json({ error: 'run not found' });
+        return;
+      }
+      res.set({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      res.flushHeaders?.();
+      // Initial snapshot replays accumulated progress for reconnects.
+      res.write(`event: snapshot\ndata: ${JSON.stringify(serializeChatRun(run))}\n\n`);
+
+      const listener = (snap) => {
+        const terminal = snap.status === 'done' || snap.status === 'error';
+        const eventName = terminal ? snap.status : 'progress';
+        res.write(`event: ${eventName}\ndata: ${JSON.stringify(snap)}\n\n`);
+        if (terminal) {
+          unsubscribeFromChatRun(snap.run_id, listener);
+          res.end();
+        }
+      };
+      subscribeToChatRun(req.params.runId, listener);
+
+      // Already terminal at connect time — the snapshot said everything.
+      if (run.status === 'done' || run.status === 'error') {
+        unsubscribeFromChatRun(req.params.runId, listener);
+        res.end();
+        return;
+      }
+
+      const keepalive = setInterval(() => {
+        res.write(`: keepalive ${Date.now()}\n\n`);
+      }, 20_000);
+      keepalive.unref?.();
+
+      req.on('close', () => {
+        clearInterval(keepalive);
+        unsubscribeFromChatRun(req.params.runId, listener);
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   router.use(requireSession());
+
+  // Start a web chat agent run against the viewer's current project. The
+  // agent shares the Discord channel's conversation history but the run is
+  // scoped to the browser's project and never moves the channel's pointer.
+  router.post('/chat', async (req, res, next) => {
+    try {
+      const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+      if (!text) {
+        return res.status(400).json({ error: 'text is required' });
+      }
+      if (text.length > 4000) {
+        return res.status(400).json({ error: 'text too long (max 4000 chars)' });
+      }
+      const run = startChatRun({
+        projectId: req.projectId,
+        projectTitle: req.projectTitle,
+        session: req.session,
+        text,
+      });
+      res.status(202).json({ run_id: run.run_id });
+    } catch (e) {
+      next(e);
+    }
+  });
 
   // Connection metadata for the SPA so it knows where to open WebSockets.
   // screenplay_title was dropped (no SPA consumers remain; project title is

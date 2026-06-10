@@ -4,6 +4,7 @@ import { useConnectedUsers } from '../editor/PresenceContext.jsx';
 import { useProject } from '../project/ProjectContext.jsx';
 import { SavedIndicator } from './SavedIndicator.jsx';
 import { ProjectManagerDialog } from './ProjectManagerDialog.jsx';
+import { ChatDialog } from './ChatDialog.jsx';
 
 function colorForUser(name) {
   let hash = 0;
@@ -31,6 +32,8 @@ export function Header({ session, onLogout }) {
   const users = useConnectedUsers();
   const project = useProject();
   const [managerOpen, setManagerOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState([]);
   const seen = new Map();
   for (const u of users) {
     const key = u?.name || Math.random();
@@ -49,6 +52,15 @@ export function Header({ session, onLogout }) {
       >
         {brand}
       </button>
+      <button
+        type="button"
+        className="chat-launch"
+        aria-haspopup="dialog"
+        title="Chat with the AI agent about this project"
+        onClick={() => setChatOpen(true)}
+      >
+        ✨ AI chat
+      </button>
       <div className="meta">
         <Link to="/about" title="Project name, synopsis & global dialogue style">About</Link>
         <SavedIndicator />
@@ -60,6 +72,12 @@ export function Header({ session, onLogout }) {
         open={managerOpen}
         onClose={() => setManagerOpen(false)}
         currentProjectId={project.id}
+      />
+      <ChatDialog
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        messages={chatMessages}
+        setMessages={setChatMessages}
       />
     </header>
   );

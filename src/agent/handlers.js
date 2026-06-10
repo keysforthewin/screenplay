@@ -3534,6 +3534,12 @@ export const HANDLERS = {
   },
 
   async set_project({ title } = {}, context = null) {
+    // Web chat runs are bound to the project open in the browser. Refuse
+    // BEFORE any persistence — web runs carry the real Discord channelId, so
+    // falling through would silently switch the Discord channel's project.
+    if (context?.webRun) {
+      return 'Project switching is disabled in the web chat. Ask the user to switch projects with the project picker in the browser header (the project name, top-left).';
+    }
     if (typeof title !== 'string' || !title.trim()) {
       return 'Tool error (set_project): `title` is required.';
     }

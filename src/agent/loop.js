@@ -411,7 +411,16 @@ export async function runAgent({
   enhancementNotes = null,
   projectId = null,
   projectTitle = null,
+  onEvent = null,
+  webRun = false,
 }) {
+  // Optional progress hook (web chat uses it to surface tool activity). A
+  // throwing listener must never break the agent run.
+  const emit = (ev) => {
+    try {
+      onEvent?.(ev);
+    } catch {}
+  };
   const senderName =
     typeof discordUser?.displayName === 'string' && discordUser.displayName.trim()
       ? discordUser.displayName.trim()
@@ -431,7 +440,7 @@ export async function runAgent({
   const attachmentPaths = [];
   const attachmentLinks = [];
   const touchedEntities = createTouchedEntities();
-  const context = { discordUser, channelId, projectId, projectTitle };
+  const context = { discordUser, channelId, projectId, projectTitle, webRun };
   const model = config.anthropic.model;
 
   const anthropicTotals = {
@@ -541,6 +550,7 @@ export async function runAgent({
       logger.info(
         `anthropic → iter ${i + 1}/${MAX_TOOL_ITERATIONS} model=${model} msgs=${messages.length} tools=${currentTools.length}`,
       );
+      emit({ type: 'iteration', n: i + 1, max: MAX_TOOL_ITERATIONS });
       const anthropicT0 = Date.now();
       const resp = await client.messages.create({
         model,
@@ -597,6 +607,7 @@ export async function runAgent({
       }
 
       const toolUses = resp.content.filter((b) => b.type === 'tool_use');
+      emit({ type: 'tools', tools: toolUses.map((t) => t.name) });
 
       // Split out tool_search (handled inline so it can mutate loadedToolNames),
       // and — when review-mode is active — intercept any mutation tool call so
