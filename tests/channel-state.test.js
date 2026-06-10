@@ -8,7 +8,8 @@ vi.mock('../src/mongo/client.js', () => ({
   connectMongo: async () => fakeDb,
 }));
 
-const { getHistoryClearedAt, setHistoryClearedAt } = await import('../src/mongo/channelState.js');
+const { getHistoryClearedAt, setHistoryClearedAt, getCurrentProjectId, setCurrentProjectId } =
+  await import('../src/mongo/channelState.js');
 
 beforeEach(() => {
   fakeDb.reset();
@@ -56,5 +57,53 @@ describe('channelState', () => {
 
   it('returns null when channelId is empty on get', async () => {
     expect(await getHistoryClearedAt('')).toBeNull();
+  });
+});
+
+describe('channelState current project pointer', () => {
+  const PID_A = 'a'.repeat(24);
+  const PID_B = 'b'.repeat(24);
+
+  it('returns null for an unknown channel', async () => {
+    expect(await getCurrentProjectId('nope')).toBeNull();
+  });
+
+  it('returns null when channelId is empty on get', async () => {
+    expect(await getCurrentProjectId('')).toBeNull();
+  });
+
+  it('round-trips a project id via upsert', async () => {
+    const returned = await setCurrentProjectId('chan-1', PID_A);
+    expect(returned).toBe(PID_A);
+    expect(await getCurrentProjectId('chan-1')).toBe(PID_A);
+  });
+
+  it('overwrites a previous project id on a second call', async () => {
+    await setCurrentProjectId('chan-2', PID_A);
+    await setCurrentProjectId('chan-2', PID_B);
+    expect(await getCurrentProjectId('chan-2')).toBe(PID_B);
+  });
+
+  it('keeps project pointer isolated per channel', async () => {
+    await setCurrentProjectId('chan-a', PID_A);
+    expect(await getCurrentProjectId('chan-a')).toBe(PID_A);
+    expect(await getCurrentProjectId('chan-b')).toBeNull();
+  });
+
+  it('coexists with history_cleared_at on the same doc', async () => {
+    const when = new Date('2026-06-01T10:00:00Z');
+    await setHistoryClearedAt('chan-3', when);
+    await setCurrentProjectId('chan-3', PID_A);
+    expect(await getHistoryClearedAt('chan-3')).toEqual(when);
+    expect(await getCurrentProjectId('chan-3')).toBe(PID_A);
+  });
+
+  it('rejects an empty channelId on set', async () => {
+    await expect(setCurrentProjectId('', PID_A)).rejects.toThrow(/channelId required/);
+  });
+
+  it('rejects a non-hex projectId on set', async () => {
+    await expect(setCurrentProjectId('chan-4', 'not-a-hex-id')).rejects.toThrow(/24-hex/);
+    await expect(setCurrentProjectId('chan-4', null)).rejects.toThrow(/24-hex/);
   });
 });
