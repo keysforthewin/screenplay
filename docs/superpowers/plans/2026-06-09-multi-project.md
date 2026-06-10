@@ -89,6 +89,11 @@ describe('createProject', () => {
     await expect(Projects.createProject('a/b')).rejects.toThrow(/\//);
   });
 
+  it('rejects "." and ".." as titles', async () => {
+    await expect(Projects.createProject('.')).rejects.toThrow(/title/);
+    await expect(Projects.createProject('..')).rejects.toThrow(/title/);
+  });
+
   it('throws (code 11000) on duplicate title, case-insensitively', async () => {
     await Projects.createProject('Heist');
     const err = await Projects.createProject('  HEIST ').catch((e) => e);
@@ -144,10 +149,15 @@ describe('getDefaultProject', () => {
 });
 
 describe('resolveProjectId (transitional)', () => {
-  it('returns String(projectId) when truthy', async () => {
+  it('accepts a 24-hex string or an ObjectId', async () => {
     const oid = new ObjectId();
     expect(await Projects.resolveProjectId(oid)).toBe(oid.toString());
-    expect(await Projects.resolveProjectId('abc')).toBe('abc');
+    const hex = oid.toString();
+    expect(await Projects.resolveProjectId(hex)).toBe(hex);
+  });
+
+  it('rejects a truthy but malformed id', async () => {
+    await expect(Projects.resolveProjectId('abc')).rejects.toThrow(/invalid projectId/);
   });
 
   it('falls back to the default project id when falsy', async () => {
@@ -181,6 +191,7 @@ export function normalizeProjectTitle(title) {
     throw new Error(`project title must be at most ${MAX_TITLE_LEN} characters`);
   }
   if (t.includes('/')) throw new Error('project title must not contain "/"');
+  if (t === '.' || t === '..') throw new Error('project title must not be "." or ".."');
   return t;
 }
 
@@ -203,7 +214,7 @@ export async function createProject(title) {
 }
 
 export async function listProjects() {
-  return col().find({}).sort({ created_at: 1 }).toArray();
+  return col().find({}).sort({ created_at: 1, _id: 1 }).toArray();
 }
 
 export async function getProjectByTitle(title) {
@@ -223,7 +234,7 @@ export async function getProjectById(id) {
 // Default project := the oldest project by created_at (post-migration there is
 // exactly one). Lazily creates 'Screenplay' on a fresh database.
 export async function getDefaultProject() {
-  const oldest = await col().find({}).sort({ created_at: 1 }).limit(1).toArray();
+  const oldest = await col().find({}).sort({ created_at: 1, _id: 1 }).limit(1).toArray();
   if (oldest.length) return oldest[0];
   try {
     return await createProject(DEFAULT_PROJECT_TITLE);
@@ -240,7 +251,11 @@ export async function getDefaultProject() {
 // un-migrated callers stay green during the incremental sweep. Task 20
 // (strict flip) changes this to THROW on falsy.
 export async function resolveProjectId(projectId) {
-  if (projectId) return String(projectId);
+  if (projectId) {
+    const s = String(projectId);
+    if (!/^[a-f0-9]{24}$/i.test(s)) throw new Error(`invalid projectId: ${s}`);
+    return s;
+  }
   return (await getDefaultProject())._id.toString();
 }
 ```
@@ -10143,10 +10158,15 @@ In `src/mongo/projects.js`, the transitional version (quoted from the Phase A
 conventions — Section 1 wrote exactly this shape):
 
 ```js
-// TRANSITIONAL: falls back to the default project so un-migrated callers keep
-// working during the threading sweep. Task 20 flips this to throw.
+// TRANSITIONAL: falsy projectId resolves to the default project so
+// un-migrated callers stay green during the incremental sweep. Task 20
+// (strict flip) changes this to THROW on falsy.
 export async function resolveProjectId(projectId) {
-  if (projectId) return String(projectId);
+  if (projectId) {
+    const s = String(projectId);
+    if (!/^[a-f0-9]{24}$/i.test(s)) throw new Error(`invalid projectId: ${s}`);
+    return s;
+  }
   return (await getDefaultProject())._id.toString();
 }
 ```
@@ -10158,14 +10178,15 @@ Replace with the strict version:
 // missed threading site — fix the caller; never re-add a default fallback.
 export async function resolveProjectId(projectId) {
   if (!projectId) throw new Error('projectId required');
-  return String(projectId);
+  const s = String(projectId);
+  if (!/^[a-f0-9]{24}$/i.test(s)) throw new Error(`invalid projectId: ${s}`);
+  return s;
 }
 ```
 
 (Keep it `async` — every helper awaits it, and the strict version must stay drop-in.)
-If Phase A's comment text differs slightly, match on the function body — the
-`if (projectId) return String(projectId);` / `getDefaultProject()` pair is the
-load-bearing part.
+Match on the function body — the hex-validation block and the `getDefaultProject()`
+fallback are the load-bearing parts.
 
 - [ ] **Step 17: Run the project tests, then the FULL suite — fix stragglers by threading, never by defaulting**
 

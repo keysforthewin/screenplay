@@ -37,6 +37,11 @@ describe('createProject', () => {
     await expect(Projects.createProject('a/b')).rejects.toThrow(/\//);
   });
 
+  it('rejects "." and ".." as titles', async () => {
+    await expect(Projects.createProject('.')).rejects.toThrow(/title/);
+    await expect(Projects.createProject('..')).rejects.toThrow(/title/);
+  });
+
   it('throws (code 11000) on duplicate title, case-insensitively', async () => {
     await Projects.createProject('Heist');
     const err = await Projects.createProject('  HEIST ').catch((e) => e);
@@ -92,10 +97,15 @@ describe('getDefaultProject', () => {
 });
 
 describe('resolveProjectId (transitional)', () => {
-  it('returns String(projectId) when truthy', async () => {
+  it('accepts a 24-hex string or an ObjectId', async () => {
     const oid = new ObjectId();
     expect(await Projects.resolveProjectId(oid)).toBe(oid.toString());
-    expect(await Projects.resolveProjectId('abc')).toBe('abc');
+    const hex = oid.toString();
+    expect(await Projects.resolveProjectId(hex)).toBe(hex);
+  });
+
+  it('rejects a truthy but malformed id', async () => {
+    await expect(Projects.resolveProjectId('abc')).rejects.toThrow(/invalid projectId/);
   });
 
   it('falls back to the default project id when falsy', async () => {

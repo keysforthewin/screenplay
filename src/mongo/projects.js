@@ -16,6 +16,7 @@ export function normalizeProjectTitle(title) {
     throw new Error(`project title must be at most ${MAX_TITLE_LEN} characters`);
   }
   if (t.includes('/')) throw new Error('project title must not contain "/"');
+  if (t === '.' || t === '..') throw new Error('project title must not be "." or ".."');
   return t;
 }
 
@@ -38,7 +39,7 @@ export async function createProject(title) {
 }
 
 export async function listProjects() {
-  return col().find({}).sort({ created_at: 1 }).toArray();
+  return col().find({}).sort({ created_at: 1, _id: 1 }).toArray();
 }
 
 export async function getProjectByTitle(title) {
@@ -58,7 +59,7 @@ export async function getProjectById(id) {
 // Default project := the oldest project by created_at (post-migration there is
 // exactly one). Lazily creates 'Screenplay' on a fresh database.
 export async function getDefaultProject() {
-  const oldest = await col().find({}).sort({ created_at: 1 }).limit(1).toArray();
+  const oldest = await col().find({}).sort({ created_at: 1, _id: 1 }).limit(1).toArray();
   if (oldest.length) return oldest[0];
   try {
     return await createProject(DEFAULT_PROJECT_TITLE);
@@ -75,6 +76,10 @@ export async function getDefaultProject() {
 // un-migrated callers stay green during the incremental sweep. Task 20
 // (strict flip) changes this to THROW on falsy.
 export async function resolveProjectId(projectId) {
-  if (projectId) return String(projectId);
+  if (projectId) {
+    const s = String(projectId);
+    if (!/^[a-f0-9]{24}$/i.test(s)) throw new Error(`invalid projectId: ${s}`);
+    return s;
+  }
   return (await getDefaultProject())._id.toString();
 }
