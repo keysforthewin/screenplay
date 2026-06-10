@@ -6143,7 +6143,7 @@ Task 15 Step 7d — this call site is updated there, atomically with the signatu
 Verification — gateway calls (expect output `0`):
 
 ```bash
-grep -Pzo '(?:[a-zA-Z]+ViaGateway)\(\{\s*(?!projectId)' src/web/entityRoutes.js | wc -c
+grep -Pzo '(?:[a-zA-Z]+ViaGateway)\(\{\s*+(?!projectId)' src/web/entityRoutes.js | wc -c
 ```
 
 (`-Pz` treats the file as one buffer so `\s*` spans newlines; a match means some call
@@ -6205,7 +6205,7 @@ Leave unchanged (and why):
 Verification (expect output `0`):
 
 ```bash
-grep -Pzo '(?:startVideoGenerationJob|buildVideoPayloadPreview|startGenerateArtworkJob|startRegenerateArtworkJob|startEditArtworkJob|undoArtworkEdit|deleteArtwork|grabFrameFromPrevious|collectStoryboardReferenceIds)\(\{\s*(?!projectId)' src/web/entityRoutes.js | wc -c
+grep -Pzo '(?:startVideoGenerationJob|buildVideoPayloadPreview|startGenerateArtworkJob|startRegenerateArtworkJob|startEditArtworkJob|undoArtworkEdit|deleteArtwork|grabFrameFromPrevious|collectStoryboardReferenceIds)\(\{\s*+(?!projectId)' src/web/entityRoutes.js | wc -c
 ```
 
 - [ ] **Step 14: Full suite + commit**
@@ -7254,7 +7254,7 @@ Explicit deviating sites (not covered by the uniform rule):
 Verification (expect output `0`, then **no output**):
 
 ```bash
-grep -Pzo 'export async function [a-zA-Z]+ViaGateway\(\{\s*(?!projectId)' src/web/gateway.js | wc -c
+grep -Pzo 'export async function [a-zA-Z]+ViaGateway\(\{\s*+(?!projectId)' src/web/gateway.js | wc -c
 grep -nE "broadcastFieldsUpdated\('(notes|library)'|entityId: '(notes|library)'" src/web/gateway.js | grep -v "projectId" | grep "broadcastFieldsUpdated('"
 ```
 
@@ -7717,6 +7717,8 @@ and 17 manual QA therefore avoids asserting on those three surfaces.
   legacy deep links keep their target page.)
 
 - [ ] **Step 7: Restructure `web/src/App.jsx`**
+
+  > **Note:** Add `Vary: X-Project-Id` (or `Cache-Control: no-store`) to `GET /api/info` now that it is header-keyed per project.
 
   Current authed return block (lines 57–74) — this is the code being
   replaced, quoted exactly:
@@ -9683,7 +9685,7 @@ Verification (expect **no output**, then output `0`):
 
 ```
 grep -nE "uploadGeneratedImage\(undefined|\(undefined, " src/web/artworkJobs.js
-grep -Pzo '(?:[a-zA-Z]+ViaGateway|announceArtwork)\(\{\s*(?!projectId)' src/web/artworkJobs.js | wc -c
+grep -Pzo '(?:[a-zA-Z]+ViaGateway|announceArtwork)\(\{\s*+(?!projectId)' src/web/artworkJobs.js | wc -c
 ```
 
 - [ ] **Step 8: Pre-flip threading — dialog modules + `sceneBibleAutofill.js` (+ their route call sites)**
@@ -9775,7 +9777,7 @@ Verification (expect **no output**, then output `0`):
 
 ```
 grep -nE "\(undefined, |getPlot\(\)|listCharacters\(\)|getDirectorNotes\(\)" src/web/dialogContext.js src/web/dialogGenerate.js src/web/dialogRegenerate.js src/web/dialogCritique.js src/web/sceneBibleAutofill.js
-grep -Pzo '(?:startDialogGenerationJob|generateAlternatives|critiqueDialog|autofillSceneBible)\(\{\s*(?!projectId)' src/web/entityRoutes.js | wc -c
+grep -Pzo '(?:startDialogGenerationJob|generateAlternatives|critiqueDialog|autofillSceneBible)\(\{\s*+(?!projectId)' src/web/entityRoutes.js | wc -c
 ```
 
 - [ ] **Step 9: Pre-flip threading — `src/web/storyboardGenerate.js`, `storyboardGrabFrame.js`, `storyboardReferenceAggregator.js` (+ route call sites)**
@@ -9909,8 +9911,8 @@ Verification (expect **no output**, then `0` twice):
 
 ```
 grep -nE "\(undefined, |getDirectorNotes\(\)|loadDirectorNotesForPlanner\(\)" src/web/storyboardGenerate.js src/web/storyboardGrabFrame.js src/web/storyboardReferenceAggregator.js src/web/entityRoutes.js
-grep -Pzo '(?:startFrameGenerationJob|previewFrameGenerationPrompt|startCritiqueJob|reExpandShot|startReExpandAllJob|startStoryboardGenerationJob|startBulkFrameGenerationJob)\(\{\s*(?!projectId)' src/web/entityRoutes.js | wc -c
-grep -Pzo '(?:[a-zA-Z]+ViaGateway|collectStoryboardReferenceIds|persistFrameImage|createPlannedStoryboardEntry|critiqueShotsForBeat)\(\{\s*(?!projectId)' src/web/storyboardGenerate.js | wc -c
+grep -Pzo '(?:startFrameGenerationJob|previewFrameGenerationPrompt|startCritiqueJob|reExpandShot|startReExpandAllJob|startStoryboardGenerationJob|startBulkFrameGenerationJob)\(\{\s*+(?!projectId)' src/web/entityRoutes.js | wc -c
+grep -Pzo '(?:[a-zA-Z]+ViaGateway|collectStoryboardReferenceIds|persistFrameImage|createPlannedStoryboardEntry|critiqueShotsForBeat)\(\{\s*+(?!projectId)' src/web/storyboardGenerate.js | wc -c
 ```
 
 - [ ] **Step 10: Pre-flip threading — `src/web/falVideoGenerate.js`**
@@ -10232,7 +10234,7 @@ should have consumed — restricted to the re-signed helper names so an unrelate
 `undefined` argument elsewhere can't false-positive:
 
 ```
-grep -rnE "\b(getPlot|getBeat|searchBeats|getCharacter|listCharacters|findAllCharacters|getDirectorNotes|getCharacterTemplate|getPlotTemplate|getStoryboard|updateStoryboard|setFramePrompt|getPreviousStoryboardInBeat|getDialog|updateDialog|listImagesForBeat|listImagesForCharacter|listImagesForDirectorNote|listAttachmentsForBeat|listAttachmentsForCharacter|listAttachmentsForDirectorNote|listImagesByOwnerType|uploadGeneratedImage|uploadImageFromUrl|uploadAttachmentBuffer|uploadAttachmentFromUrl|findCharactersInBeat|setBeatSceneBible|linkCharacterToBeat|unlinkCharacterFromBeat|pushBeatImage|pullBeatImage|pushBeatAttachment|pullBeatAttachment|pushCharacterImage|pullCharacterImage|pullCharacterAttachment|pullDirectorNoteImage|pullDirectorNoteAttachment|updateBeatViaGateway|updateCharacterViaGateway)\(undefined, " src/ scripts/
+grep -rnE "\b(getPlot|updatePlot|getBeat|searchBeats|getCharacter|listCharacters|findAllCharacters|getDirectorNotes|getCharacterTemplate|getPlotTemplate|getStoryboard|updateStoryboard|setFramePrompt|getPreviousStoryboardInBeat|getDialog|updateDialog|listImagesForBeat|listImagesForCharacter|listImagesForDirectorNote|listAttachmentsForBeat|listAttachmentsForCharacter|listAttachmentsForDirectorNote|listImagesByOwnerType|uploadGeneratedImage|uploadImageFromUrl|uploadAttachmentBuffer|uploadAttachmentFromUrl|findCharactersInBeat|setBeatSceneBible|linkCharacterToBeat|unlinkCharacterFromBeat|pushBeatImage|pullBeatImage|pushBeatAttachment|pullBeatAttachment|pushCharacterImage|pullCharacterImage|pullCharacterAttachment|pullDirectorNoteImage|pullDirectorNoteAttachment|updateBeatViaGateway|updateCharacterViaGateway)\(undefined, " src/ scripts/
 ```
 
 Expected output: **zero matches.** Any hit is a threading site the pre-flip steps (or

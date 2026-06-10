@@ -452,7 +452,7 @@ export function buildApiRouter() {
         // fake Mongo never throws this — the getProjectByTitle pre-check above
         // is what the test suite exercises.
         if (e?.code === 11000) {
-          return res.status(409).json({ error: 'duplicate project title' });
+          return res.status(409).json({ error: 'a project with that title already exists' });
         }
         throw e;
       }
@@ -5105,7 +5105,7 @@ export function buildApiRouter() {
         return res.status(400).json({ error: 'text (string) required' });
       }
       const { updatePlot } = await import('../mongo/plots.js');
-      const plot = await updatePlot(undefined, { dialogue_style: text });
+      const plot = await updatePlot(req.projectId, { dialogue_style: text });
       res.json({ dialogue_style: plot.dialogue_style || '' });
     } catch (e) {
       next(e);

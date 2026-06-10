@@ -63,6 +63,10 @@ vi.mock('../src/mongo/projects.js', () => ({
     if (!s) throw new Error('project title must be a non-empty string');
     return s;
   },
+  createProject: async () => null,
+  getProjectByTitle: async () => null,
+  listProjects: async () => [],
+  resolveProjectId: async (id) => id,
 }));
 
 vi.mock('../src/mongo/plots.js', () => ({
