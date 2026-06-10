@@ -113,4 +113,23 @@ describe('resolveProject middleware', () => {
     expect(res.statusCode).toBe(404);
     expect(res.body).toEqual({ error: 'unknown project' });
   });
+
+  it('skips resolution for GET /projects even with a stale/invalid X-Project-Id', async () => {
+    // Carried improvement 3: a stale header for a vanished project must not
+    // block the recovery fetch that lists all projects.
+    const { ObjectId } = await import('mongodb');
+    const req = {
+      method: 'GET',
+      path: '/projects',
+      headers: { 'x-project-id': new ObjectId().toString() },
+      query: {},
+      get(name) { return this.headers[String(name).toLowerCase()]; },
+    };
+    const res = stubRes();
+    const next = vi.fn();
+    await resolveProject()(req, res, next);
+    expect(next).toHaveBeenCalledOnce();
+    // req.projectId is not set — the route handler doesn't need it.
+    expect(req.projectId).toBeUndefined();
+  });
 });

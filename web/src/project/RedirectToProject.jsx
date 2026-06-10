@@ -47,9 +47,10 @@ export function RedirectToProject() {
       navigate(`/p/${encodeURIComponent(target.title)}${suffix}`, { replace: true });
     })();
     return () => { cancelled = true; };
-    // Run once for the location we mounted with; a successful run navigates away.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // Carried improvement 2: include location parts as deps so a navigation
+    // to a different legacy path re-runs the redirect with the new suffix.
+    // A successful run navigates away; the cancelled guard prevents races.
+  }, [location.pathname, location.search, location.hash]);
 
   if (error) {
     return <div className="app"><div className="error-banner">{error}</div></div>;

@@ -14,7 +14,8 @@
 
 import { createContext, useContext, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { apiGet, setCurrentProject, projectHomeUrl } from '../api.js';
+import { apiGet, setCurrentProject, getCurrentProject, projectHomeUrl } from '../api.js';
+import { ProjectManagerDialog } from '../widgets/ProjectManagerDialog.jsx';
 
 const ProjectContext = createContext(null);
 
@@ -30,6 +31,20 @@ export function ProjectProvider({ children }) {
 
   useEffect(() => {
     let cancelled = false;
+
+    // Carried improvement 1: sync short-circuit — if the module store already
+    // holds a project with a title that matches :projectTitle case-insensitively,
+    // skip the /api/projects round-trip and go ready immediately. This kills the
+    // per-navigation RTT + loading flash for in-app navigation.
+    const wanted = String(projectTitle || '').trim().toLowerCase();
+    const cached = getCurrentProject();
+    if (cached && String(cached.title).trim().toLowerCase() === wanted) {
+      setCurrentProject(cached);
+      document.title = cached.title;
+      setState({ status: 'ready', project: cached });
+      return;
+    }
+
     setState({ status: 'loading' });
     (async () => {
       let projects;
@@ -41,7 +56,6 @@ export function ProjectProvider({ children }) {
         return;
       }
       if (cancelled) return;
-      const wanted = String(projectTitle || '').trim().toLowerCase();
       const match = projects.find(
         (p) => String(p.title).trim().toLowerCase() === wanted,
       );
@@ -74,6 +88,7 @@ export function ProjectProvider({ children }) {
 }
 
 function ProjectNotFound({ title, projects }) {
+  const [managerOpen, setManagerOpen] = useState(false);
   return (
     <main className="app">
       <h1>Project not found</h1>
@@ -92,6 +107,16 @@ function ProjectNotFound({ title, projects }) {
           </ul>
         </>
       )}
+      <p>
+        <button className="primary" onClick={() => setManagerOpen(true)}>
+          Open Project Manager
+        </button>
+      </p>
+      <ProjectManagerDialog
+        open={managerOpen}
+        onClose={() => setManagerOpen(false)}
+        currentProjectId={null}
+      />
     </main>
   );
 }

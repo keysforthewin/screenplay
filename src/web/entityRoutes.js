@@ -324,6 +324,9 @@ export function buildApiRouter() {
   // custom headers — the SSE route relies on this middleware's ?project_id=
   // query fallback. resolveProject never reads the session, so the early
   // mount grants nothing to unauthenticated callers beyond a 404 oracle.
+  // Carried improvement 3: GET /projects is exempted inside resolveProject
+  // (see projectMiddleware.js) so a stale X-Project-Id for a vanished project
+  // can't 404 the recovery fetch. POST stays behind resolution for symmetry.
   router.use(resolveProject());
 
   // Server-Sent Events stream of fal video-generation job status. Registered
@@ -417,6 +420,9 @@ export function buildApiRouter() {
 
   // {projects:[...]} envelope deliberately wraps the spec's bare array for
   // forward-compat; SPA consumers read data.projects.
+  // resolveProject() skips this path (see projectMiddleware.js, carried
+  // improvement 3) so a stale header pointing at a vanished project can't
+  // 404 the recovery fetch.
   router.get('/projects', async (_req, res, next) => {
     try {
       const projects = await listProjects();

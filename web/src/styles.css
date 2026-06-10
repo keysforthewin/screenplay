@@ -78,6 +78,16 @@ input[type="text"], input[type="search"] {
   text-decoration: none;
 }
 
+/* The brand is now a <button> (opens the Project Manager) — strip the
+   global button chrome so it still reads as the wordmark. */
+.app-header button.brand {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
 .app-header .meta {
   display: flex;
   align-items: center;

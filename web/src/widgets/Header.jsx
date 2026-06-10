@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { apiGet } from '../api.js';
 import { useConnectedUsers } from '../editor/PresenceContext.jsx';
+import { useProject } from '../project/ProjectContext.jsx';
 import { SavedIndicator } from './SavedIndicator.jsx';
+import { ProjectManagerDialog } from './ProjectManagerDialog.jsx';
 
 function colorForUser(name) {
   let hash = 0;
@@ -28,29 +29,25 @@ function Dot({ user }) {
 
 export function Header({ session, onLogout }) {
   const users = useConnectedUsers();
-  const [title, setTitle] = useState('');
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const info = await apiGet('/info');
-        if (!cancelled) setTitle(info?.screenplay_title || '');
-      } catch {
-        // Header just falls back to "Screenplay" if /info fails.
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+  const project = useProject();
+  const [managerOpen, setManagerOpen] = useState(false);
   const seen = new Map();
   for (const u of users) {
     const key = u?.name || Math.random();
     if (!seen.has(key)) seen.set(key, u);
   }
   const list = Array.from(seen.values());
-  const brand = title.trim() || 'Screenplay';
+  const brand = project.title;
   return (
     <header className="app-header">
-      <Link to="/" className="brand" title={brand}>{brand}</Link>
+      <button
+        type="button"
+        className="brand"
+        title={`${brand} — switch or create projects`}
+        onClick={() => setManagerOpen(true)}
+      >
+        {brand}
+      </button>
       <div className="meta">
         <Link to="/about" title="Project name, synopsis & global dialogue style">About</Link>
         <SavedIndicator />
@@ -58,6 +55,11 @@ export function Header({ session, onLogout }) {
         <span>signed in as <strong>{session.username}</strong></span>
         <button onClick={onLogout} title="Clear local session">Logout</button>
       </div>
+      <ProjectManagerDialog
+        open={managerOpen}
+        onClose={() => setManagerOpen(false)}
+        currentProjectId={project.id}
+      />
     </header>
   );
 }
