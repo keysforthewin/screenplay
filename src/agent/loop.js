@@ -171,6 +171,7 @@ export function buildUserContent(
   attachments,
   enhancementNotes = null,
   senderName = null,
+  pageContext = null,
 ) {
   const content = [];
   const images = attachments.filter((a) => a.kind !== 'file');
@@ -206,6 +207,9 @@ export function buildUserContent(
     text = label(text);
   }
   content.push({ type: 'text', text });
+  if (typeof pageContext === 'string' && pageContext.trim()) {
+    content.push({ type: 'text', text: pageContext.trim() });
+  }
   if (typeof enhancementNotes === 'string' && enhancementNotes.trim()) {
     content.push({
       type: 'text',
@@ -413,6 +417,7 @@ export async function runAgent({
   projectTitle = null,
   onEvent = null,
   webRun = false,
+  pageContext = null,
 }) {
   // Optional progress hook (web chat uses it to surface tool activity). A
   // throwing listener must never break the agent run.
@@ -433,7 +438,7 @@ export async function runAgent({
     ...history,
     {
       role: 'user',
-      content: buildUserContent(userText, attachments, enhancementNotes, senderName),
+      content: buildUserContent(userText, attachments, enhancementNotes, senderName, pageContext),
     },
   ];
   const agentStart = messages.length;
