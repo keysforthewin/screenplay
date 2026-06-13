@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Modal } from './Modal.jsx';
 import { apiPostJson, apiSseUrl } from '../api.js';
+import { useLocation } from 'react-router-dom';
+import { pageContextFromPath } from '../project/pageContext.js';
 
 function safeParse(raw) {
   try {
@@ -67,6 +69,8 @@ function ChatMessage({ m }) {
 // Transcript state lives in the parent (Header) so closing/reopening the
 // dialog keeps the conversation for the page session.
 export function ChatDialog({ open, onClose, messages, setMessages }) {
+  const location = useLocation();
+  const pageCtx = useMemo(() => pageContextFromPath(location.pathname), [location.pathname]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -111,7 +115,7 @@ export function ChatDialog({ open, onClose, messages, setMessages }) {
       { role: 'assistant', pending: true, progressLabel: 'sending…' },
     ]);
     try {
-      const r = await apiPostJson('/chat', { text });
+      const r = await apiPostJson('/chat', { text, context: { kind: pageCtx.kind, ref: pageCtx.ref } });
       const runId = r?.run_id;
       if (!runId) throw new Error('Server did not return a run id.');
       const es = new EventSource(apiSseUrl(`/chat/${runId}/events`));
@@ -179,6 +183,9 @@ export function ChatDialog({ open, onClose, messages, setMessages }) {
           ))}
         </div>
         {error && <div className="error-banner">{error}</div>}
+        <div className="chat-context-chip" title="The agent is told which page you're on">
+          Context: {pageCtx.label}
+        </div>
         <div className="chat-input-row">
           <textarea
             rows={2}
