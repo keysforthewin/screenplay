@@ -35,4 +35,12 @@ describe('buildUserContent pageContext block', () => {
     expect(out[1]).toBe('PAGE NOTE');
     expect(out[2]).toContain('ENH');
   });
+
+  it('omits the block when pageContext is whitespace-only', () => {
+    expect(texts(buildUserContent('hello', [], null, null, '   '))).toEqual(['hello']);
+  });
+
+  it('trims surrounding whitespace from the page-context block', () => {
+    expect(texts(buildUserContent('hello', [], null, null, '  PAGE NOTE  '))).toEqual(['hello', 'PAGE NOTE']);
+  });
 });
