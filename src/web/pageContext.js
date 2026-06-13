@@ -33,6 +33,10 @@ export async function resolvePageContextNote({ projectId, projectTitle, context 
     case 'storyboard':
     case 'dialog': {
       if (!ref) return null;
+      // These page refs are beat ORDERS (the SPA addresses beats by order).
+      // Reject anything non-numeric so a stray name can't silently resolve a
+      // different beat via getBeat's name-matching fallthrough.
+      if (!/^\d+$/.test(ref)) return null;
       const beat = await getBeat(projectId, ref);
       if (!beat) return null;
       const name = stripMarkdown(beat.name || '').trim();

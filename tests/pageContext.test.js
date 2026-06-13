@@ -39,8 +39,12 @@ describe('resolvePageContextNote', () => {
   });
 
   it('phrases storyboard/dialog pages relative to their beat', async () => {
-    expect(await resolve({ kind: 'storyboard', ref: '2' })).toContain('storyboard page for Beat 2');
-    expect(await resolve({ kind: 'dialog', ref: '2' })).toContain('dialog page for Beat 2');
+    const sb = await resolve({ kind: 'storyboard', ref: '2' });
+    expect(sb).toContain('storyboard page for Beat 2');
+    expect(sb).toContain('beat id');
+    const dlg = await resolve({ kind: 'dialog', ref: '2' });
+    expect(dlg).toContain('dialog page for Beat 2');
+    expect(dlg).toContain('beat id');
   });
 
   it('resolves a character by name', async () => {
@@ -60,8 +64,10 @@ describe('resolvePageContextNote', () => {
 
   it('returns null for a stale entity ref, an unknown kind, or a missing project', async () => {
     expect(await resolve({ kind: 'beat', ref: '99' })).toBeNull();
+    expect(await resolve({ kind: 'beat', ref: 'The Heist' })).toBeNull(); // non-numeric beat ref
     expect(await resolve({ kind: 'bogus' })).toBeNull();
     expect(await resolvePageContextNote({ projectId: null, projectTitle: 'X', context: { kind: 'overview' } })).toBeNull();
     expect(await resolvePageContextNote({ projectId: pid, projectTitle: 'X', context: null })).toBeNull();
+    expect(await resolvePageContextNote({ projectId: pid, projectTitle: 'X', context: 42 })).toBeNull(); // primitive context
   });
 });
