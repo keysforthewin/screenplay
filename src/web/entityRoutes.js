@@ -181,6 +181,23 @@ import {
 
 const HEX24 = /^[a-f0-9]{24}$/i;
 
+const ALLOWED_CONTEXT_KINDS = new Set([
+  'overview', 'beat', 'character', 'notes', 'library',
+  'storyboard', 'storyboard-index', 'dialog', 'dialog-index', 'about',
+]);
+
+// Parse the SPA's optional page-context hint from a /chat body. Unknown/malformed
+// context returns null and is simply not forwarded — a stale SPA bundle must
+// never turn a chat message into a 400.
+function parseChatContext(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const kind = String(raw.kind || '');
+  if (!ALLOWED_CONTEXT_KINDS.has(kind)) return null;
+  let ref = raw.ref == null ? null : String(raw.ref).trim().slice(0, 80);
+  if (ref === '') ref = null;
+  return { kind, ref };
+}
+
 // Sentinel returned by the resolution/fps validators when they've already
 // sent a 400. Callers check `=== ERR` and bail out of the route.
 const ERR = Symbol('input-validation-error');
@@ -484,11 +501,13 @@ export function buildApiRouter() {
       if (text.length > 4000) {
         return res.status(400).json({ error: 'text too long (max 4000 chars)' });
       }
+      const context = parseChatContext(req.body?.context);
       const run = startChatRun({
         projectId: req.projectId,
         projectTitle: req.projectTitle,
         session: req.session,
         text,
+        context,
       });
       res.status(202).json({ run_id: run.run_id });
     } catch (e) {

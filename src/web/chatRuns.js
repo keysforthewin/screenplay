@@ -29,6 +29,7 @@ import { listCharacters } from '../mongo/characters.js';
 import { getPlot } from '../mongo/plots.js';
 import { recordAnthropicTextUsage } from '../mongo/tokenUsage.js';
 import { pdfLink } from '../server/index.js';
+import { resolvePageContextNote } from './pageContext.js';
 
 const runs = new Map();      // runId -> run (live mutable object)
 const listeners = new Map(); // runId -> Set<(snapshot) => void>
@@ -141,7 +142,7 @@ function buildWebAttachments(attachmentPaths, attachmentLinks) {
 // Create the run and detach the agent turn onto the shared channel mutex.
 // Returns the initial snapshot synchronously so the route can answer 202
 // and the SPA can open its SSE stream right away.
-export function startChatRun({ projectId, projectTitle, session, text }) {
+export function startChatRun({ projectId, projectTitle, session, text, context = null }) {
   const channelId = config.discord.movieChannelId;
   const run = {
     run_id: randomUUID(),
@@ -158,7 +159,7 @@ export function startChatRun({ projectId, projectTitle, session, text }) {
   runs.set(run.run_id, run);
 
   channelMutex
-    .run(channelId, () => executeChatRun({ run, channelId, projectId, projectTitle, session, text }))
+    .run(channelId, () => executeChatRun({ run, channelId, projectId, projectTitle, session, text, context }))
     .catch((e) => {
       if (run.status !== 'done' && run.status !== 'error') {
         run.status = 'error';
@@ -175,7 +176,7 @@ export function startChatRun({ projectId, projectTitle, session, text }) {
   return serializeChatRun(run);
 }
 
-async function executeChatRun({ run, channelId, projectId, projectTitle, session, text }) {
+async function executeChatRun({ run, channelId, projectId, projectTitle, session, text, context }) {
   const username = session?.username || 'web visitor';
   const discordUser = { id: `web:${username}`, displayName: username };
   let attachmentPaths = [];
@@ -240,6 +241,13 @@ async function executeChatRun({ run, channelId, projectId, projectTitle, session
       }
     }
 
+    let pageContext = null;
+    try {
+      pageContext = await resolvePageContextNote({ projectId, projectTitle, context });
+    } catch (e) {
+      logger.warn(`chat run: page context resolve failed: ${e.message}`);
+    }
+
     addProgress(run, 'thinking…');
     const result = await runAgent({
       history,
@@ -251,6 +259,7 @@ async function executeChatRun({ run, channelId, projectId, projectTitle, session
       projectId,
       projectTitle,
       webRun: true,
+      pageContext,
       onEvent: (ev) => {
         if (ev?.type === 'tools') {
           for (const name of ev.tools || []) addProgress(run, `calling ${name}…`);

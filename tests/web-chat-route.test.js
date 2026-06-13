@@ -38,6 +38,7 @@ const { config } = await import('../src/config.js');
 const Projects = await import('../src/mongo/projects.js');
 const ChatRuns = await import('../src/web/chatRuns.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
+const Plots = await import('../src/mongo/plots.js');
 
 const IMAGE_ID = 'a'.repeat(24);
 
@@ -138,6 +139,41 @@ describe('POST /api/chat', () => {
     expect(r1.status).toBe(400);
     const r2 = await post('/chat', { text: 'x'.repeat(4001) });
     expect(r2.status).toBe(400);
+  });
+
+  it('resolves the page context and threads it to the agent', async () => {
+    const project = await Projects.createProject('Western');
+    const pid = project._id.toString();
+    await Plots.createBeat({ projectId: pid, name: 'The Heist', desc: 'heist', body: 'rob bank', order: 1 });
+
+    const r = await post(
+      '/chat',
+      { text: 'make this beat tenser', context: { kind: 'beat', ref: '1' } },
+      { 'X-Project-Id': pid },
+    );
+    expect(r.status).toBe(202);
+    const { run_id } = await r.json();
+    await waitForRun(run_id);
+
+    const args = runAgentMock.mock.calls[0][0];
+    expect(args.pageContext).toContain('Beat 1 — "The Heist"');
+    expect(args.pageContext).toContain('authoritative location');
+  });
+
+  it('omits page context when none is sent and ignores invalid context without erroring', async () => {
+    const project = await Projects.createProject('Western');
+    const pid = project._id.toString();
+
+    const r1 = await post('/chat', { text: 'hello' }, { 'X-Project-Id': pid });
+    expect(r1.status).toBe(202);
+    await waitForRun((await r1.json()).run_id);
+    expect(runAgentMock.mock.calls[0][0].pageContext).toBeNull();
+
+    runAgentMock.mockClear();
+    const r2 = await post('/chat', { text: 'hello', context: { kind: 'bogus' } }, { 'X-Project-Id': pid });
+    expect(r2.status).toBe(202); // invalid context is dropped, not a 400
+    await waitForRun((await r2.json()).run_id);
+    expect(runAgentMock.mock.calls[0][0].pageContext).toBeNull();
   });
 
   it('records an apology to the shared transcript when the agent fails', async () => {
