@@ -6,6 +6,11 @@
 // Routes live under /p/:projectTitle/* (see web/src/App.jsx); strip that prefix
 // and match the remainder against the project-scoped route table. Per-beat
 // storyboard/dialog regexes are checked before the bare index paths.
+//
+// Pass a basename-relative pathname (react-router's useLocation().pathname), NOT
+// window.location.pathname: the /p/:title prefix strip assumes no app base-path
+// prefix is present, so a raw location under a non-"/" base would bucket every
+// page to overview.
 
 export function pageContextFromPath(pathname) {
   const remainder = String(pathname || '').replace(/^\/p\/[^/]+/, '').replace(/\/$/, '') || '/';
