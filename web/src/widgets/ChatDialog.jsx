@@ -183,7 +183,11 @@ export function ChatDialog({ open, onClose, messages, setMessages }) {
           ))}
         </div>
         {error && <div className="error-banner">{error}</div>}
-        <div className="chat-context-chip" title="The agent is told which page you're on">
+        <div
+          className="chat-context-chip"
+          title="The agent is told which page you're on"
+          aria-label={`Page context: ${pageCtx.label} — the agent is told which page you're on`}
+        >
           Context: {pageCtx.label}
         </div>
         <div className="chat-input-row">
