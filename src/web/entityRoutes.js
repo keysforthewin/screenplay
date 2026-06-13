@@ -193,8 +193,10 @@ function parseChatContext(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const kind = String(raw.kind || '');
   if (!ALLOWED_CONTEXT_KINDS.has(kind)) return null;
-  let ref = raw.ref == null ? null : String(raw.ref).trim().slice(0, 80);
-  if (ref === '') ref = null;
+  let ref = null;
+  if (typeof raw.ref === 'string' || typeof raw.ref === 'number') {
+    ref = String(raw.ref).trim().slice(0, 80) || null;
+  }
   return { kind, ref };
 }
 

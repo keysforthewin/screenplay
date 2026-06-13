@@ -25,7 +25,7 @@ function note(where) {
 export async function resolvePageContextNote({ projectId, projectTitle, context }) {
   if (!projectId || !context || typeof context !== 'object') return null;
   const { kind } = context;
-  const ref = context.ref == null ? null : String(context.ref);
+  const ref = context.ref == null ? null : String(context.ref).trim().slice(0, 80);
   const title = projectTitle || 'this screenplay';
 
   switch (kind) {
