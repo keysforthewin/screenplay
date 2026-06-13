@@ -31,9 +31,20 @@ describe('pageContextFromPath', () => {
   });
 
   it('maps the singleton section pages', () => {
-    expect(pageContextFromPath('/p/Heist/notes').kind).toBe('notes');
-    expect(pageContextFromPath('/p/Heist/library').kind).toBe('library');
-    expect(pageContextFromPath('/p/Heist/about').kind).toBe('about');
+    expect(pageContextFromPath('/p/Heist/notes')).toEqual({ kind: 'notes', ref: null, label: 'Notes' });
+    expect(pageContextFromPath('/p/Heist/library')).toEqual({ kind: 'library', ref: null, label: 'Library' });
+    expect(pageContextFromPath('/p/Heist/about')).toEqual({ kind: 'about', ref: null, label: 'About' });
+  });
+
+  it('strips a trailing slash from sub-route refs', () => {
+    expect(pageContextFromPath('/p/Heist/beat/2/')).toEqual({ kind: 'beat', ref: '2', label: 'Beat 2' });
+    expect(pageContextFromPath('/p/Heist/character/Steve/')).toEqual({ kind: 'character', ref: 'Steve', label: 'Character: Steve' });
+  });
+
+  it('passes a 24-hex character ref through unchanged (Toc links characters by _id when unnamed)', () => {
+    expect(pageContextFromPath('/p/Heist/character/0123456789abcdef01234567')).toEqual({
+      kind: 'character', ref: '0123456789abcdef01234567', label: 'Character: 0123456789abcdef01234567',
+    });
   });
 
   it('falls back to overview for unknown subpaths', () => {

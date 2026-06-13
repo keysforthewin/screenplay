@@ -8,7 +8,7 @@
 // storyboard/dialog regexes are checked before the bare index paths.
 
 export function pageContextFromPath(pathname) {
-  const remainder = String(pathname || '').replace(/^\/p\/[^/]+/, '') || '/';
+  const remainder = String(pathname || '').replace(/^\/p\/[^/]+/, '').replace(/\/$/, '') || '/';
 
   const beat = remainder.match(/^\/beat\/(.+)$/);
   if (beat) {
