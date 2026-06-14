@@ -10,7 +10,11 @@ const countTokensMock = vi.fn();
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class MockAnthropic {
     constructor() {
-      this.messages = { create: messagesCreate, countTokens: countTokensMock };
+      this.messages = {
+        create: messagesCreate,
+        stream: (args) => ({ finalMessage: () => messagesCreate(args) }),
+        countTokens: countTokensMock,
+      };
     }
   },
 }));

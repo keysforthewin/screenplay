@@ -4,7 +4,10 @@ const messagesCreate = vi.fn();
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class MockAnthropic {
     constructor() {
-      this.messages = { create: messagesCreate };
+      this.messages = {
+        create: messagesCreate,
+        stream: (args) => ({ finalMessage: () => messagesCreate(args) }),
+      };
     }
   },
 }));

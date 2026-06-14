@@ -19,7 +19,12 @@ vi.mock('../src/mongo/client.js', () => ({
 
 const { anthropicState } = vi.hoisted(() => ({ anthropicState: { resp: null } }));
 vi.mock('../src/anthropic/client.js', () => ({
-  getAnthropic: () => ({ messages: { create: async () => anthropicState.resp } }),
+  getAnthropic: () => ({
+    messages: {
+      create: async () => anthropicState.resp,
+      stream: () => ({ finalMessage: async () => anthropicState.resp }),
+    },
+  }),
 }));
 
 const { createProject } = await import('../src/mongo/projects.js');

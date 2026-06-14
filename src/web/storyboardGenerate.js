@@ -894,14 +894,19 @@ async function planScene({ beat, characters, targetCount, direction, directorNot
   }
   const userText = buildScenePlanUserText({ beat, characters, targetCount, direction, directorNotes });
   const client = getAnthropic();
-  const resp = await client.messages.create({
-    model: STORYBOARD_MODEL,
-    max_tokens: 16000,
-    system: SCENE_PLAN_SYSTEM_PROMPT,
-    tools: [SCENE_PLAN_TOOL],
-    tool_choice: { type: 'tool', name: 'plan_scene' },
-    messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
-  });
+  // Stream (then collect the final message): the non-streaming create() is
+  // rejected by the SDK when max_tokens exceeds a model's 8192 non-streaming
+  // cap (Opus 4 family). finalMessage() yields the same Message shape.
+  const resp = await client.messages
+    .stream({
+      model: STORYBOARD_MODEL,
+      max_tokens: 16000,
+      system: SCENE_PLAN_SYSTEM_PROMPT,
+      tools: [SCENE_PLAN_TOOL],
+      tool_choice: { type: 'tool', name: 'plan_scene' },
+      messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+    })
+    .finalMessage();
   if (resp.stop_reason === 'max_tokens') {
     logger.warn(
       `storyboard plan_scene: hit max_tokens cap (model=${STORYBOARD_MODEL}, target=${targetCount}); response may be truncated`,
@@ -1085,14 +1090,19 @@ async function expandShots({ beat, characters, sceneBible, outline, direction, d
   }
   const userText = buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes, revisionNotes });
   const client = getAnthropic();
-  const resp = await client.messages.create({
-    model: STORYBOARD_MODEL,
-    max_tokens: 16000,
-    system: SHOT_EXPAND_SYSTEM_PROMPT,
-    tools: [SHOT_EXPAND_TOOL],
-    tool_choice: { type: 'tool', name: 'expand_shots' },
-    messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
-  });
+  // Stream (then collect the final message): see planScene above — the
+  // non-streaming create() is rejected at max_tokens > the model's 8192
+  // non-streaming cap. finalMessage() yields the same Message shape.
+  const resp = await client.messages
+    .stream({
+      model: STORYBOARD_MODEL,
+      max_tokens: 16000,
+      system: SHOT_EXPAND_SYSTEM_PROMPT,
+      tools: [SHOT_EXPAND_TOOL],
+      tool_choice: { type: 'tool', name: 'expand_shots' },
+      messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+    })
+    .finalMessage();
   if (resp.stop_reason === 'max_tokens') {
     logger.warn(
       `storyboard expand_shots: hit max_tokens cap (model=${STORYBOARD_MODEL}, shots=${outline.length}); response may be truncated`,

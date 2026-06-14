@@ -557,13 +557,20 @@ export async function runAgent({
       );
       emit({ type: 'iteration', n: i + 1, max: MAX_TOOL_ITERATIONS });
       const anthropicT0 = Date.now();
-      const resp = await client.messages.create({
-        model,
-        max_tokens: config.anthropic.maxTokens,
-        system,
-        tools: currentTools,
-        messages: requestMessages,
-      });
+      // Stream rather than use the non-streaming create(): the SDK rejects a
+      // non-streaming request whose worst-case generation could exceed 10
+      // minutes, which max_tokens=16000 trips on models with an 8192
+      // non-streaming cap (the Opus 4 family). We don't consume token deltas —
+      // finalMessage() returns the same Message shape create() would have.
+      const resp = await client.messages
+        .stream({
+          model,
+          max_tokens: config.anthropic.maxTokens,
+          system,
+          tools: currentTools,
+          messages: requestMessages,
+        })
+        .finalMessage();
       const anthropicMs = Date.now() - anthropicT0;
       const u = resp.usage || {};
       logger.info(
