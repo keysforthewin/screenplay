@@ -29,7 +29,7 @@ import {
 
 const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
-const MAX_TOOL_ITERATIONS = 12;
+const MAX_TOOL_ITERATIONS = 24;
 
 // Tool-name prefixes (or whole names) that mutate state visible in the volatile
 // system block (characters list, beats list, current beat, director notes).
