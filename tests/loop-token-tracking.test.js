@@ -205,9 +205,9 @@ describe('runAgent records Anthropic token usage', () => {
     const docs = fakeDb.collection('token_usage')._docs;
     expect(docs).toHaveLength(1);
     expect(docs[0].kind).toBe('anthropic_text');
-    expect(docs[0].meta.iteration_count).toBe(12);
-    expect(docs[0].meta.input_tokens).toBe(120);
-    expect(docs[0].meta.output_tokens).toBe(60);
+    expect(docs[0].meta.iteration_count).toBe(32);
+    expect(docs[0].meta.input_tokens).toBe(320);
+    expect(docs[0].meta.output_tokens).toBe(160);
   });
 });
 
