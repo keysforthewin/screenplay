@@ -155,6 +155,7 @@ async function buildSystem({
     plot,
     directorNotes: omitDirectorNotes ? null : directorNotes,
     cache,
+    systemTtl: config.cache.systemTtl,
     botName: getBotDisplayName(),
     senderName,
     reviewMode,

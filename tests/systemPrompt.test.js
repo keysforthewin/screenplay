@@ -11,7 +11,7 @@ function joined(args) {
 }
 
 describe('buildSystemPrompt', () => {
-  it('returns an array of two cache-controlled text blocks by default', () => {
+  it('returns two text blocks; only the stable block carries a cache breakpoint', () => {
     const blocks = buildSystemPrompt({
       characters: [{ name: 'Alice' }],
       characterTemplate: { fields: [] },
@@ -20,11 +20,25 @@ describe('buildSystemPrompt', () => {
     });
     expect(Array.isArray(blocks)).toBe(true);
     expect(blocks).toHaveLength(2);
-    for (const b of blocks) {
-      expect(b.type).toBe('text');
-      expect(typeof b.text).toBe('string');
-      expect(b.cache_control).toEqual({ type: 'ephemeral' });
-    }
+    const [stable, volatile] = blocks;
+    expect(stable.type).toBe('text');
+    expect(volatile.type).toBe('text');
+    // Stable block is cached; volatile block deliberately is not (it's tiny and
+    // is cached transitively via the downstream message breakpoint).
+    expect(stable.cache_control).toEqual({ type: 'ephemeral' });
+    expect(volatile.cache_control).toBeUndefined();
+  });
+
+  it('applies systemTtl to the stable block when provided', () => {
+    const blocks = buildSystemPrompt({
+      characters: [],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+      systemTtl: '1h',
+      plot: { synopsis: '', beats: [] },
+    });
+    expect(blocks[0].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect(blocks[1].cache_control).toBeUndefined();
   });
 
   it('omits cache_control when cache: false', () => {
@@ -412,9 +426,9 @@ describe('buildSystemPrompt', () => {
         reviewMode: true,
       });
       expect(blocks).toHaveLength(3);
-      // Stable + volatile keep their cache_control; the suffix block does not.
+      // Only the stable block is cached; the volatile and suffix blocks are not.
       expect(blocks[0].cache_control).toEqual({ type: 'ephemeral' });
-      expect(blocks[1].cache_control).toEqual({ type: 'ephemeral' });
+      expect(blocks[1].cache_control).toBeUndefined();
       expect(blocks[2].cache_control).toBeUndefined();
       expect(blocks[2].text).toMatch(/Review-mode/);
       expect(blocks[2].text).toMatch(/No changes will be made until you confirm/);

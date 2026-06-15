@@ -1729,17 +1729,39 @@ export const CORE_TOOL_NAMES = new Set([
   'edit',
 ]);
 
-// Strip internal-only fields (`keywords`, `metaTool`) before sending to the
-// Anthropic API. Returns API-shaped tool definitions for the given names, in
-// the order they appear in TOOLS.
+// API-shaped tool def per name (internal-only `keywords`/`metaTool` stripped),
+// plus the canonical TOOLS index, both computed once at module load.
+const TOOL_DEF_BY_NAME = new Map(
+  TOOLS.map((t) => {
+    const { keywords, metaTool, ...api } = t;
+    return [t.name, api];
+  }),
+);
+const TOOL_INDEX_BY_NAME = new Map(TOOLS.map((t, i) => [t.name, i]));
+
+// Returns API-shaped tool definitions for the given names in **append-only**
+// order: all loaded CORE tools first (in a fixed canonical order), then any
+// dynamically-loaded non-core tools in the order they were loaded (the
+// iteration order of `names` — `loadedToolNames` is a Set seeded core-first,
+// so its iteration order is exactly load order).
+//
+// This ordering is what makes prompt caching survive mid-turn `tool_search`
+// calls. Tools render BEFORE the system prompt, so any change to the tools
+// section invalidates the system + message caches downstream. Emitting in raw
+// TOOLS order would *insert* a newly-loaded tool among the (scattered) core
+// tools, shifting the byte prefix and busting the cache. Appending instead
+// keeps the core prefix byte-identical every turn and grows the tail only — the
+// same prefix-preserving behavior Anthropic's native tool-search tool relies on.
 export function toolDefsForApi(names) {
   const set = names instanceof Set ? names : new Set(names || []);
   if (!set.size) return [];
-  const out = [];
-  for (const t of TOOLS) {
-    if (!set.has(t.name)) continue;
-    const { keywords, metaTool, ...api } = t;
-    out.push(api);
+  const core = [];
+  const dynamic = [];
+  for (const name of set) {
+    if (!TOOL_DEF_BY_NAME.has(name)) continue;
+    (CORE_TOOL_NAMES.has(name) ? core : dynamic).push(name);
   }
-  return out;
+  // Core tools in a fixed canonical order; dynamic tools appended in load order.
+  core.sort((a, b) => TOOL_INDEX_BY_NAME.get(a) - TOOL_INDEX_BY_NAME.get(b));
+  return [...core, ...dynamic].map((name) => TOOL_DEF_BY_NAME.get(name));
 }

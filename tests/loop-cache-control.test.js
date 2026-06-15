@@ -63,7 +63,7 @@ beforeEach(() => {
 });
 
 describe('runAgent prompt-cache wiring', () => {
-  it('marks cache_control on the last tool, both system blocks, and the last history block', async () => {
+  it('marks cache_control on the last tool, the stable system block, and the last history block', async () => {
     messagesCreate.mockResolvedValueOnce({
       stop_reason: 'end_turn',
       usage: { input_tokens: 100, output_tokens: 10 },
@@ -109,14 +109,17 @@ describe('runAgent prompt-cache wiring', () => {
     // exported TOOLS array MUST remain pristine
     for (const t of TOOLS) expect(t.cache_control).toBeUndefined();
 
-    // system: array of 2 text blocks, each with cache_control: ephemeral
+    // system: array of 2 text blocks. Only the stable block (first) carries a
+    // breakpoint, with the 1h TTL from config. The volatile block (second) is
+    // intentionally uncached — cached transitively via the message breakpoint.
     expect(Array.isArray(args.system)).toBe(true);
     expect(args.system).toHaveLength(2);
     for (const b of args.system) {
       expect(b.type).toBe('text');
       expect(typeof b.text).toBe('string');
-      expect(b.cache_control).toEqual({ type: 'ephemeral' });
     }
+    expect(args.system[0].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect(args.system[1].cache_control).toBeUndefined();
 
     // messages: last message in history is the user-with-tool_result we passed,
     // and runAgent appends one more user msg (the new prompt) at the tail.

@@ -338,6 +338,7 @@ export function buildSystemPrompt({
   plot,
   directorNotes,
   cache = true,
+  systemTtl = null,
   botName = 'Screenplay Bot',
   senderName = null,
   webBaseUrl = spaBaseUrl(),
@@ -350,11 +351,21 @@ export function buildSystemPrompt({
   const stableBlock = { type: 'text', text: stable };
   const volatileBlock = { type: 'text', text: volatile };
   if (cache) {
-    // INVARIANT: cache_control belongs on the stable + volatile blocks only.
-    // The review-mode suffix (when appended below) MUST stay unmarked so
+    // INVARIANT: only the stable block carries a cache breakpoint.
+    //
+    // The stable block is the large (~7.8k-token), byte-identical-across-turns
+    // chunk — caching it (1h TTL via systemTtl) is the dominant cost win.
+    //
+    // The volatile block (~190 tokens) deliberately gets NO breakpoint: it isn't
+    // worth one of the 4 scarce breakpoints, and it is still cached transitively
+    // inside the downstream message-level breakpoint's prefix. The freed
+    // breakpoint is spent on a second history breakpoint (see historyCache.js).
+    //
+    // The review-mode suffix (when appended below) MUST also stay unmarked so
     // per-turn mode flips don't bust the upstream cache breakpoints.
-    stableBlock.cache_control = { type: 'ephemeral' };
-    volatileBlock.cache_control = { type: 'ephemeral' };
+    stableBlock.cache_control = systemTtl
+      ? { type: 'ephemeral', ttl: systemTtl }
+      : { type: 'ephemeral' };
   }
   const blocks = [stableBlock, volatileBlock];
   if (reviewMode) {

@@ -375,9 +375,10 @@ describe('runAgent review-mode', () => {
 
     const sys = messagesCreate.mock.calls[0][0].system;
     expect(sys).toHaveLength(3);
-    // First two blocks (stable, volatile) carry cache_control; third does not.
-    expect(sys[0].cache_control).toEqual({ type: 'ephemeral' });
-    expect(sys[1].cache_control).toEqual({ type: 'ephemeral' });
+    // Only the stable block (first) carries a cache breakpoint, with the 1h TTL.
+    // The volatile (second) and review-mode suffix (third) blocks are unmarked.
+    expect(sys[0].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect(sys[1].cache_control).toBeUndefined();
     expect(sys[2].cache_control).toBeUndefined();
     expect(sys[2].text).toMatch(/Review-mode/);
     expect(sys[2].text).toMatch(/No changes will be made until you confirm/);

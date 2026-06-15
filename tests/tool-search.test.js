@@ -132,10 +132,30 @@ describe('CORE_TOOL_NAMES', () => {
 });
 
 describe('toolDefsForApi', () => {
-  it('returns only tools whose names are in the set, preserving TOOLS order', () => {
+  it('emits core tools first (canonical order), then non-core tools', () => {
     const names = new Set(['create_beat', 'list_characters', 'tool_search']);
     const out = toolDefsForApi(names);
+    // core (tool_search, list_characters) in canonical TOOLS order, then the
+    // non-core create_beat appended.
     expect(out.map((t) => t.name)).toEqual(['tool_search', 'list_characters', 'create_beat']);
+  });
+
+  it('appends dynamically-loaded tools in load order, after a stable core prefix', () => {
+    // Simulate the loop's Set: core seeded first, then tools added by tool_search
+    // in whatever order the model searched. The core prefix must be byte-stable
+    // and identical to a core-only call; new tools append at the tail.
+    const coreOnly = toolDefsForApi(new Set(CORE_TOOL_NAMES)).map((t) => t.name);
+
+    const loaded = new Set(CORE_TOOL_NAMES);
+    loaded.add('create_beat');
+    loaded.add('add_beat_image');
+    const withLoaded = toolDefsForApi(loaded).map((t) => t.name);
+
+    // Core prefix is byte-identical (append-only — preserves the upstream cache).
+    expect(withLoaded.slice(0, coreOnly.length)).toEqual(coreOnly);
+    // Loaded tools appended in the order they were added, regardless of their
+    // (earlier) canonical index in TOOLS.
+    expect(withLoaded.slice(coreOnly.length)).toEqual(['create_beat', 'add_beat_image']);
   });
   it('strips internal-only fields (keywords, metaTool) before returning', () => {
     const out = toolDefsForApi(new Set(['tool_search']));

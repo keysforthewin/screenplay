@@ -25,7 +25,12 @@ export const config = {
   },
   cache: {
     enabled: !process.env.PROMPT_CACHE_DISABLED,
+    // The tools block and the large (~7.8k-token) stable system block are
+    // byte-identical for hours/days, so they use the 1h TTL — for a Discord bot
+    // with sporadic traffic, the default 5-minute ephemeral cache expires
+    // between turns and forces a fresh write of those blocks almost every turn.
     toolsTtl: process.env.PROMPT_CACHE_TOOLS_TTL || '1h',
+    systemTtl: process.env.PROMPT_CACHE_SYSTEM_TTL || '1h',
   },
   trim: {
     enabled: !process.env.HISTORY_TRIM_DISABLED,
