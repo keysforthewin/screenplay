@@ -34,6 +34,7 @@ export function Header({ session, onLogout }) {
   const [managerOpen, setManagerOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
+  const [beatHistories, setBeatHistories] = useState({});
   const seen = new Map();
   for (const u of users) {
     const key = u?.name || Math.random();
@@ -78,6 +79,8 @@ export function Header({ session, onLogout }) {
         onClose={() => setChatOpen(false)}
         messages={chatMessages}
         setMessages={setChatMessages}
+        beatHistories={beatHistories}
+        setBeatHistories={setBeatHistories}
       />
     </header>
   );
