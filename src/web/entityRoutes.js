@@ -110,6 +110,7 @@ import {
   setStoryboardUploadedVideoViaGateway,
   setStoryboardVideoViaGateway,
   undoStoryboardFrameEditViaGateway,
+  setEntityFieldMarkdown,
   updateBeatViaGateway,
   updateStoryboardScalarsViaGateway,
 } from './gateway.js';
@@ -1574,6 +1575,37 @@ export function buildApiRouter() {
       if (!Object.keys(patch).length) return res.status(400).json({ error: 'no patch fields' });
       const result = await updateBeatViaGateway(req.projectId, beatId, patch);
       res.json({ beat: result });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Restore a beat's text fields to a prior snapshot. Used by the AI-chat
+  // undo/redo controls. Each field is written through the gateway so the change
+  // applies as a CRDT op to any open editor (and falls back to a direct Mongo
+  // write when Hocuspocus isn't running). Always overwrites current text — no
+  // concurrent-edit guard (see the design spec).
+  router.patch('/beat/:id/text', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const { name, desc, body } = req.body || {};
+      const fields = [];
+      if (typeof name === 'string') fields.push(['name', name]);
+      if (typeof desc === 'string') fields.push(['desc', desc]);
+      if (typeof body === 'string') fields.push(['body', body]);
+      if (!fields.length) return res.status(400).json({ error: 'no text fields' });
+      for (const [field, markdown] of fields) {
+        await setEntityFieldMarkdown({
+          projectId: req.projectId,
+          entityType: 'beat',
+          entityId: beatId,
+          field,
+          markdown,
+        });
+      }
+      const beat = await getBeat(req.projectId, beatId);
+      res.json({ beat });
     } catch (e) {
       next(e);
     }
