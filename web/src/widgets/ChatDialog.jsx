@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Modal } from './Modal.jsx';
-import { apiPostJson, apiSseUrl } from '../api.js';
+import { apiGet, apiPatchJson, apiPostJson, apiSseUrl } from '../api.js';
+import {
+  emptyHistory,
+  recordEdit,
+  undo as undoHistory,
+  redo as redoHistory,
+  canUndo,
+  canRedo,
+} from './beatEditHistory.js';
 import { useLocation } from 'react-router-dom';
 import { pageContextFromPath } from '../project/pageContext.js';
 
@@ -68,12 +76,14 @@ function ChatMessage({ m }) {
 // loop against the browser's current project) and follows the run via SSE.
 // Transcript state lives in the parent (Header) so closing/reopening the
 // dialog keeps the conversation for the page session.
-export function ChatDialog({ open, onClose, messages, setMessages }) {
+export function ChatDialog({ open, onClose, messages, setMessages, beatHistories, setBeatHistories }) {
   const location = useLocation();
   const pageCtx = useMemo(() => pageContextFromPath(location.pathname), [location.pathname]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreStatus, setRestoreStatus] = useState(null);
   const esRef = useRef(null);
   const listRef = useRef(null);
 
@@ -103,10 +113,75 @@ export function ChatDialog({ open, onClose, messages, setMessages }) {
     setBusy(false);
   }
 
+  // Drop the transient "reverted" status when the active page/beat changes.
+  useEffect(() => {
+    setRestoreStatus(null);
+  }, [pageCtx.kind, pageCtx.ref]);
+
+  const beatRef = pageCtx.kind === 'beat' ? pageCtx.ref : null;
+  const history = (beatRef && beatHistories[beatRef]) || emptyHistory();
+
+  async function fetchBeatText(ref) {
+    try {
+      // `ref` is the beat's order number from the page URL (e.g. "2"), not a
+      // hex id, so query by `order` — GET /api/beat only treats `id` as a beat
+      // when it's a hex ObjectId.
+      const { beat } = await apiGet(`/beat?order=${encodeURIComponent(ref)}`);
+      if (!beat) return null;
+      return {
+        name: beat.name || '',
+        desc: beat.desc || '',
+        body: beat.body || '',
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async function recordBeatEdit(ref, before) {
+    if (!ref || !before) return;
+    const after = await fetchBeatText(ref);
+    if (!after) return;
+    setBeatHistories((prev) => ({
+      ...prev,
+      [ref]: recordEdit(prev[ref] || emptyHistory(), before, after),
+    }));
+  }
+
+  async function applyRestore(ref, snapshot, nextHistory) {
+    setRestoring(true);
+    setError(null);
+    setRestoreStatus(null);
+    try {
+      await apiPatchJson(`/beat/${encodeURIComponent(ref)}/text`, snapshot);
+      setBeatHistories((prev) => ({ ...prev, [ref]: nextHistory }));
+      setRestoreStatus('Reverted beat text');
+    } catch (e) {
+      setError(e.message || 'Failed to restore beat text.');
+    } finally {
+      setRestoring(false);
+    }
+  }
+
+  // onUndo/onRedo re-read beatHistories[beatRef] at call time (not the
+  // render-time `history`) so the computed next-state is never stale.
+  function onUndo() {
+    if (!beatRef) return;
+    const { history: next, snapshot } = undoHistory(beatHistories[beatRef] || emptyHistory());
+    if (snapshot) applyRestore(beatRef, snapshot, next);
+  }
+
+  function onRedo() {
+    if (!beatRef) return;
+    const { history: next, snapshot } = redoHistory(beatHistories[beatRef] || emptyHistory());
+    if (snapshot) applyRestore(beatRef, snapshot, next);
+  }
+
   async function send() {
     const text = input.trim();
-    if (!text || busy) return;
+    if (!text || busy || restoring) return;
     setError(null);
+    setRestoreStatus(null);
     setBusy(true);
     setInput('');
     setMessages((prev) => [
@@ -115,6 +190,8 @@ export function ChatDialog({ open, onClose, messages, setMessages }) {
       { role: 'assistant', pending: true, progressLabel: 'sending…' },
     ]);
     try {
+      const captureRef = pageCtx.kind === 'beat' ? pageCtx.ref : null;
+      const before = captureRef ? await fetchBeatText(captureRef) : null;
       const r = await apiPostJson('/chat', { text, context: { kind: pageCtx.kind, ref: pageCtx.ref } });
       const runId = r?.run_id;
       if (!runId) throw new Error('Server did not return a run id.');
@@ -129,6 +206,7 @@ export function ChatDialog({ open, onClose, messages, setMessages }) {
             attachments: snap.attachments || [],
             interpreted: snap.interpreted,
           });
+          if (captureRef && before) recordBeatEdit(captureRef, before);
           finishStream();
         } else if (snap.status === 'error') {
           patchPending({ pending: false, text: `Something went wrong: ${snap.error}` });
@@ -190,16 +268,37 @@ export function ChatDialog({ open, onClose, messages, setMessages }) {
         >
           Context: {pageCtx.label}
         </div>
+        <div className="chat-history-row">
+          <button
+            type="button"
+            className="chat-history-btn"
+            onClick={onUndo}
+            disabled={busy || restoring || !beatRef || !canUndo(history)}
+            title={beatRef ? 'Undo the last AI edit to this beat' : 'Open a beat page to undo AI edits'}
+          >
+            ↶ Undo
+          </button>
+          <button
+            type="button"
+            className="chat-history-btn"
+            onClick={onRedo}
+            disabled={busy || restoring || !beatRef || !canRedo(history)}
+            title={beatRef ? 'Redo the last undone AI edit' : 'Open a beat page to redo AI edits'}
+          >
+            ↷ Redo
+          </button>
+          {restoreStatus && <span className="chat-history-status">{restoreStatus}</span>}
+        </div>
         <div className="chat-input-row">
           <textarea
             rows={2}
             placeholder="Message the agent… (Enter to send, Shift+Enter for a new line)"
             value={input}
-            disabled={busy}
+            disabled={busy || restoring}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKeyDown}
           />
-          <button className="primary" onClick={send} disabled={busy || !input.trim()}>
+          <button className="primary" onClick={send} disabled={busy || restoring || !input.trim()}>
             {busy ? 'Working…' : 'Send'}
           </button>
         </div>

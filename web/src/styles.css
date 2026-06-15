@@ -2626,3 +2626,26 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   flex: 1;
   resize: vertical;
 }
+
+.chat-history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 6px;
+}
+
+.chat-history-btn {
+  font-size: 0.85rem;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.chat-history-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.chat-history-status {
+  font-size: 0.8rem;
+  color: var(--fg-muted, #888);
+}
