@@ -2647,5 +2647,5 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .chat-history-status {
   font-size: 0.8rem;
-  color: var(--muted, #888);
+  color: var(--fg-muted, #888);
 }
