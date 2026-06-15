@@ -123,7 +123,10 @@ export function ChatDialog({ open, onClose, messages, setMessages, beatHistories
 
   async function fetchBeatText(ref) {
     try {
-      const { beat } = await apiGet(`/beat?id=${encodeURIComponent(ref)}`);
+      // `ref` is the beat's order number from the page URL (e.g. "2"), not a
+      // hex id, so query by `order` — GET /api/beat only treats `id` as a beat
+      // when it's a hex ObjectId.
+      const { beat } = await apiGet(`/beat?order=${encodeURIComponent(ref)}`);
       if (!beat) return null;
       return {
         name: beat.name || '',
