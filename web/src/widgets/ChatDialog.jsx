@@ -113,6 +113,11 @@ export function ChatDialog({ open, onClose, messages, setMessages, beatHistories
     setBusy(false);
   }
 
+  // Drop the transient "reverted" status when the active page/beat changes.
+  useEffect(() => {
+    setRestoreStatus(null);
+  }, [pageCtx.kind, pageCtx.ref]);
+
   const beatRef = pageCtx.kind === 'beat' ? pageCtx.ref : null;
   const history = (beatRef && beatHistories[beatRef]) || emptyHistory();
 
@@ -155,6 +160,8 @@ export function ChatDialog({ open, onClose, messages, setMessages, beatHistories
     }
   }
 
+  // onUndo/onRedo re-read beatHistories[beatRef] at call time (not the
+  // render-time `history`) so the computed next-state is never stale.
   function onUndo() {
     if (!beatRef) return;
     const { history: next, snapshot } = undoHistory(beatHistories[beatRef] || emptyHistory());
@@ -169,8 +176,9 @@ export function ChatDialog({ open, onClose, messages, setMessages, beatHistories
 
   async function send() {
     const text = input.trim();
-    if (!text || busy) return;
+    if (!text || busy || restoring) return;
     setError(null);
+    setRestoreStatus(null);
     setBusy(true);
     setInput('');
     setMessages((prev) => [
@@ -283,11 +291,11 @@ export function ChatDialog({ open, onClose, messages, setMessages, beatHistories
             rows={2}
             placeholder="Message the agent… (Enter to send, Shift+Enter for a new line)"
             value={input}
-            disabled={busy}
+            disabled={busy || restoring}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKeyDown}
           />
-          <button className="primary" onClick={send} disabled={busy || !input.trim()}>
+          <button className="primary" onClick={send} disabled={busy || restoring || !input.trim()}>
             {busy ? 'Working…' : 'Send'}
           </button>
         </div>
