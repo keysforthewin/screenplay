@@ -41,6 +41,19 @@ export function BeatCharacters({ beat, toc, onRefresh }) {
     });
   }, [linkedNames, tocByPlain]);
 
+  const totalInScreenplay = (toc?.characters || []).length;
+  const countLabel = `${linked.length} of ${totalInScreenplay} character${
+    totalInScreenplay === 1 ? '' : 's'
+  } in this beat`;
+  const countLine = (
+    <div
+      className="beat-character-count"
+      style={{ color: 'var(--fg-muted)', fontSize: '0.9em', margin: '4px 0' }}
+    >
+      {countLabel}
+    </div>
+  );
+
   const linkedKeys = useMemo(() => {
     return new Set(linked.map((l) => l.plain.toLowerCase()).filter(Boolean));
   }, [linked]);
@@ -80,6 +93,7 @@ export function BeatCharacters({ beat, toc, onRefresh }) {
   return (
     <div>
       {error && <div className="error-banner">{error}</div>}
+      {countLine}
       {linked.length === 0 && (
         <p style={{ color: 'var(--fg-muted)', margin: '4px 0 12px' }}>
           No characters linked yet.
@@ -139,6 +153,7 @@ export function BeatCharacters({ beat, toc, onRefresh }) {
           onChange={addByPlain}
         />
       </div>
+      {countLine}
     </div>
   );
 }
