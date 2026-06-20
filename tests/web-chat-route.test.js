@@ -119,12 +119,12 @@ describe('POST /api/chat', () => {
     expect(args.projectId).toBe(pid);
     expect(args.projectTitle).toBe('Western');
     expect(args.webRun).toBe(true);
-    expect(args.channelId).toBe(config.discord.movieChannelId);
+    expect(args.channelId).toBe(`web:${pid}:tester`);
 
     // Shared transcript: user message + agent turn under the Discord channel id.
     const docs = await fakeDb.collection('messages').find({}).toArray();
     const user = docs.find((d) => d.role === 'user');
-    expect(user.channel_id).toBe(config.discord.movieChannelId);
+    expect(user.channel_id).toBe(`web:${pid}:tester`);
     expect(user.project_id).toBe(pid);
     expect(user.author.displayName).toBe('tester');
     expect(user.author.id).toBe('web:tester');
@@ -132,6 +132,9 @@ describe('POST /api/chat', () => {
     const turns = docs.filter((d) => d.role === 'assistant');
     expect(turns).toHaveLength(1);
     expect(turns[0].project_id).toBe(pid);
+
+    expect(typeof run.estimated_tokens).toBe('number');
+    expect(run.estimated_tokens).toBeGreaterThan(0);
   });
 
   it('400s on empty or oversized text', async () => {
@@ -189,7 +192,7 @@ describe('POST /api/chat', () => {
     const docs = await fakeDb.collection('messages').find({}).toArray();
     const assistant = docs.find((d) => d.role === 'assistant');
     expect(assistant.content).toMatch(/internal error/);
-    expect(assistant.channel_id).toBe(config.discord.movieChannelId);
+    expect(assistant.channel_id).toBe(`web:${pid}:tester`);
   });
 
   it('serializes concurrent runs through the shared channel mutex', async () => {
