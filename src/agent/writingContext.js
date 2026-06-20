@@ -18,6 +18,7 @@ import { stripMarkdown } from '../util/markdown.js';
 import { formatCharacterBio } from '../util/characterBio.js';
 import { truncateForPreview } from '../util/textWindow.js';
 import { config } from '../config.js';
+import { SCREENPLAY_STYLE_GUIDE } from './screenplayStyle.js';
 
 function formatBody(beat) {
   const body = String(beat?.body || '');
@@ -86,6 +87,10 @@ export async function buildWritingContext(projectId, beat, characterNames = []) 
     for (const u of unknown) lines.push(`(No character on file named "${u}".)`);
     sections.push(lines.join('\n'));
   }
+
+  // Screenplay-format craft guide — last section so it is the freshest guidance
+  // in context right before the agent composes/edits the body.
+  sections.push(['# Writing in screenplay format', SCREENPLAY_STYLE_GUIDE].join('\n'));
 
   return sections.join('\n\n');
 }

@@ -171,6 +171,7 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   '',
   '# Two jobs',
   '1. Write the SCENE BIBLE — a compact, unified visual plan (location, time of day, lighting key, palette, mood, blocking, continuity anchors, camera language). Every shot will inherit this, so make it concrete and self-consistent. Derive it from the beat body, description, characters, and director guidance.',
+  '   Beat bodies are written in screenplay format (Fountain-flavored): read sluglines (INT./EXT. LOCATION — TIME) for location, time of day, and lighting; action lines for blocking and staging; and shot cues (CLOSE ON, WIDE, PUSH IN) for camera language. Lean on that structure when deriving the scene bible.',
   '2. Plan the ordered SHOT SKELETON — one entry per shot, covering the whole beat with cinematic rhythm.',
   '',
   '# FRAME COUNT IS NON-NEGOTIABLE',
