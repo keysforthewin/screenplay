@@ -255,12 +255,14 @@ function makeCursor(arr) {
     async toArray() {
       let out = [...docs];
       if (sortSpec) {
-        const [[k, dir]] = Object.entries(sortSpec);
+        const entries = Object.entries(sortSpec);
         out.sort((a, b) => {
-          const av = a[k];
-          const bv = b[k];
-          if (av < bv) return -1 * dir;
-          if (av > bv) return dir;
+          for (const [k, dir] of entries) {
+            const av = a[k];
+            const bv = b[k];
+            if (av < bv) return -1 * dir;
+            if (av > bv) return dir;
+          }
           return 0;
         });
       }

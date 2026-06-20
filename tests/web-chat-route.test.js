@@ -1,7 +1,8 @@
 // Web chat: POST /api/chat starts an agent run against the browser's project
-// and GET /api/chat/:runId/events streams progress over SSE. The run shares
-// the Discord channel's conversation (channel_id = movieChannelId) and
-// serializes through the same channel mutex as Discord turns.
+// and GET /api/chat/:runId/events streams progress over SSE. Each web user
+// gets an isolated conversation keyed by a synthetic channel id
+// (web:<projectId>:<username>), separate from Discord and other users, and
+// runs for the same user+project serialize through that channel's mutex.
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import express from 'express';
 import { createFakeDb } from './_fakeMongo.js';
@@ -85,6 +86,9 @@ const post = (path, body, headers = {}) =>
     body: JSON.stringify(body),
   });
 
+const get = (path, headers = {}) =>
+  fetch(`${baseUrl}/api${path}`, { headers });
+
 async function waitForRun(runId, status = 'done') {
   await vi.waitFor(
     () => {
@@ -119,12 +123,12 @@ describe('POST /api/chat', () => {
     expect(args.projectId).toBe(pid);
     expect(args.projectTitle).toBe('Western');
     expect(args.webRun).toBe(true);
-    expect(args.channelId).toBe(config.discord.movieChannelId);
+    expect(args.channelId).toBe(`web:${pid}:tester`);
 
     // Shared transcript: user message + agent turn under the Discord channel id.
     const docs = await fakeDb.collection('messages').find({}).toArray();
     const user = docs.find((d) => d.role === 'user');
-    expect(user.channel_id).toBe(config.discord.movieChannelId);
+    expect(user.channel_id).toBe(`web:${pid}:tester`);
     expect(user.project_id).toBe(pid);
     expect(user.author.displayName).toBe('tester');
     expect(user.author.id).toBe('web:tester');
@@ -132,6 +136,9 @@ describe('POST /api/chat', () => {
     const turns = docs.filter((d) => d.role === 'assistant');
     expect(turns).toHaveLength(1);
     expect(turns[0].project_id).toBe(pid);
+
+    expect(typeof run.estimated_tokens).toBe('number');
+    expect(run.estimated_tokens).toBeGreaterThan(0);
   });
 
   it('400s on empty or oversized text', async () => {
@@ -189,7 +196,7 @@ describe('POST /api/chat', () => {
     const docs = await fakeDb.collection('messages').find({}).toArray();
     const assistant = docs.find((d) => d.role === 'assistant');
     expect(assistant.content).toMatch(/internal error/);
-    expect(assistant.channel_id).toBe(config.discord.movieChannelId);
+    expect(assistant.channel_id).toBe(`web:${pid}:tester`);
   });
 
   it('serializes concurrent runs through the shared channel mutex', async () => {
@@ -218,6 +225,33 @@ describe('POST /api/chat', () => {
     release();
     await waitForRun(id1);
     await waitForRun(id2);
+  });
+});
+
+describe('GET /api/chat/history + POST /api/chat/clear', () => {
+  it('returns the persisted transcript and token stats, then clears it', async () => {
+    const project = await Projects.createProject('Western');
+    const pid = project._id.toString();
+
+    // One real turn so there is history to load.
+    const r = await post('/chat', { text: 'add a beat' }, { 'X-Project-Id': pid });
+    await waitForRun((await r.json()).run_id);
+
+    const hist = await get('/chat/history', { 'X-Project-Id': pid });
+    expect(hist.status).toBe(200);
+    const body = await hist.json();
+    expect(body.messages).toEqual([
+      { role: 'user', text: 'add a beat' },
+      { role: 'assistant', text: 'hi there' },
+    ]);
+    expect(body.estimated_tokens).toBeGreaterThan(0);
+
+    const cleared = await post('/chat/clear', {}, { 'X-Project-Id': pid });
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json())).toMatchObject({ ok: true, estimated_tokens: 0 });
+
+    const after = await get('/chat/history', { 'X-Project-Id': pid });
+    expect((await after.json()).messages).toEqual([]);
   });
 });
 

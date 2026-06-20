@@ -180,6 +180,17 @@ function kindBucketField(kind) {
   return null;
 }
 
+export async function getLastAnthropicInputTokens(channelId) {
+  if (!channelId) return null;
+  const docs = await col()
+    .find({ kind: KIND_ANTHROPIC_TEXT, channel_id: channelId })
+    .sort({ created_at: -1 })
+    .limit(1)
+    .toArray();
+  const v = docs[0]?.meta?.input_tokens;
+  return Number.isFinite(v) ? v : null;
+}
+
 export async function aggregateUsage({ since = null, userQuery = null } = {}) {
   const query = {};
   if (since instanceof Date) query.created_at = { $gte: since };

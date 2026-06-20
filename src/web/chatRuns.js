@@ -3,11 +3,12 @@
 // returns a run id immediately; the SPA opens an EventSource on
 // /api/chat/:runId/events and receives progress pushes as the agent works.
 //
-// Web and Discord share one conversation (channel_id = movieChannelId in the
-// messages collection), so runs serialize through the same channelMutex the
-// Discord handler uses. Web runs never touch channel_state — the project is
-// the browser's, for this run only — and set_project is refused via the
-// webRun context flag.
+// Each web user gets an isolated conversation keyed by a synthetic channel id
+// (web:<projectId>:<username>, see chatHistory.js), separate from Discord and
+// from other users. Runs for the same user+project serialize through the
+// channelMutex on that synthetic id; different users never block each other.
+// Web runs never touch channel_state — the project is the browser's, for this
+// run only — and set_project is refused via the webRun context flag.
 
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -30,6 +31,7 @@ import { getPlot } from '../mongo/plots.js';
 import { recordAnthropicTextUsage } from '../mongo/tokenUsage.js';
 import { pdfLink } from '../server/index.js';
 import { resolvePageContextNote } from './pageContext.js';
+import { webChannelId, computeHistoryStats } from './chatHistory.js';
 
 const runs = new Map();      // runId -> run (live mutable object)
 const listeners = new Map(); // runId -> Set<(snapshot) => void>
@@ -71,6 +73,8 @@ export function serializeChatRun(run) {
     error: run.error,
     created_at: run.created_at,
     finished_at: run.finished_at,
+    estimated_tokens: run.estimated_tokens ?? null,
+    last_input_tokens: run.last_input_tokens ?? null,
   };
 }
 
@@ -143,7 +147,7 @@ function buildWebAttachments(attachmentPaths, attachmentLinks) {
 // Returns the initial snapshot synchronously so the route can answer 202
 // and the SPA can open its SSE stream right away.
 export function startChatRun({ projectId, projectTitle, session, text, context = null }) {
-  const channelId = config.discord.movieChannelId;
+  const channelId = webChannelId(projectId, session?.username);
   const run = {
     run_id: randomUUID(),
     project_id: projectId,
@@ -155,6 +159,8 @@ export function startChatRun({ projectId, projectTitle, session, text, context =
     error: null,
     created_at: new Date(),
     finished_at: null,
+    estimated_tokens: null,
+    last_input_tokens: null,
   };
   runs.set(run.run_id, run);
 
@@ -276,6 +282,14 @@ async function executeChatRun({ run, channelId, projectId, projectTitle, session
       });
     } catch (e) {
       logger.error('chat run: failed to record agent turns', e);
+    }
+
+    try {
+      const stats = await computeHistoryStats(channelId);
+      run.estimated_tokens = stats.estimated_tokens;
+      run.last_input_tokens = stats.last_input_tokens;
+    } catch (e) {
+      logger.warn(`chat run: history stats failed: ${e.message}`);
     }
 
     run.text = result.text || '(no reply)';

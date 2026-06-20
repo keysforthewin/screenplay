@@ -350,6 +350,20 @@ export async function searchMessages({
   };
 }
 
+// Raw stored docs for a channel since an optional watermark, oldest first.
+// Used by the SPA chat to rebuild its visible transcript on open.
+export async function loadChannelMessagesSince(channelId, { since = null, limit = HISTORY_LIMIT } = {}) {
+  const query = { channel_id: channelId };
+  if (since instanceof Date) query.created_at = { $gt: since };
+  const docs = await col()
+    .find(query)
+    .sort({ created_at: -1, _id: -1 })
+    .limit(limit)
+    .toArray();
+  docs.reverse();
+  return docs;
+}
+
 export async function loadHistoryForLlm(
   channelId,
   { maxAgeMs = DEFAULT_HISTORY_WINDOW_MS, since = null } = {},
