@@ -87,4 +87,11 @@ describe('buildWritingContext', () => {
     expect(ctx).not.toContain('TAILMARKER');
     expect(ctx).toMatch(/read_beat_body/);
   });
+
+  it('includes the screenplay-format writing guide', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'Road', desc: 'd', body: 'b' });
+    const ctx = await buildWritingContext(projectId, beat, []);
+    expect(ctx).toContain('# Writing in screenplay format');
+    expect(ctx.toLowerCase()).toContain('photographable');
+  });
 });
