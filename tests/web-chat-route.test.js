@@ -1,7 +1,8 @@
 // Web chat: POST /api/chat starts an agent run against the browser's project
-// and GET /api/chat/:runId/events streams progress over SSE. The run shares
-// the Discord channel's conversation (channel_id = movieChannelId) and
-// serializes through the same channel mutex as Discord turns.
+// and GET /api/chat/:runId/events streams progress over SSE. Each web user
+// gets an isolated conversation keyed by a synthetic channel id
+// (web:<projectId>:<username>), separate from Discord and other users, and
+// runs for the same user+project serialize through that channel's mutex.
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import express from 'express';
 import { createFakeDb } from './_fakeMongo.js';
