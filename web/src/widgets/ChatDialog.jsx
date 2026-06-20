@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Modal } from './Modal.jsx';
+import { Modal, ConfirmDialog } from './Modal.jsx';
 import { apiGet, apiPatchJson, apiPostJson, apiSseUrl } from '../api.js';
 import {
   emptyHistory,
@@ -84,6 +84,10 @@ export function ChatDialog({ open, onClose, messages, setMessages, beatHistories
   const [error, setError] = useState(null);
   const [restoring, setRestoring] = useState(false);
   const [restoreStatus, setRestoreStatus] = useState(null);
+  const [estimatedTokens, setEstimatedTokens] = useState(0);
+  const [lastInputTokens, setLastInputTokens] = useState(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const loadedRef = useRef(false);
   const esRef = useRef(null);
   const listRef = useRef(null);
 
@@ -117,6 +121,25 @@ export function ChatDialog({ open, onClose, messages, setMessages, beatHistories
   useEffect(() => {
     setRestoreStatus(null);
   }, [pageCtx.kind, pageCtx.ref]);
+
+  // Fetch persisted history the first time the dialog opens.
+  useEffect(() => {
+    if (!open || loadedRef.current) return;
+    loadedRef.current = true;
+    (async () => {
+      try {
+        const data = await apiGet('/chat/history');
+        if (messages.length === 0 && Array.isArray(data?.messages)) {
+          setMessages(data.messages);
+        }
+        setEstimatedTokens(data?.estimated_tokens ?? 0);
+        setLastInputTokens(data?.last_input_tokens ?? null);
+      } catch {
+        // best-effort: an empty/missing history just starts fresh
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const beatRef = pageCtx.kind === 'beat' ? pageCtx.ref : null;
   const history = (beatRef && beatHistories[beatRef]) || emptyHistory();
@@ -206,6 +229,8 @@ export function ChatDialog({ open, onClose, messages, setMessages, beatHistories
             attachments: snap.attachments || [],
             interpreted: snap.interpreted,
           });
+          if (typeof snap.estimated_tokens === 'number') setEstimatedTokens(snap.estimated_tokens);
+          if (snap.last_input_tokens !== undefined) setLastInputTokens(snap.last_input_tokens);
           if (captureRef && before) recordBeatEdit(captureRef, before);
           finishStream();
         } else if (snap.status === 'error') {
@@ -239,6 +264,19 @@ export function ChatDialog({ open, onClose, messages, setMessages, beatHistories
     }
   }
 
+  async function doClear() {
+    setConfirmClear(false);
+    setError(null);
+    try {
+      await apiPostJson('/chat/clear', {});
+      setMessages([]);
+      setEstimatedTokens(0);
+      setLastInputTokens(null);
+    } catch (e) {
+      setError(e.message || 'Failed to clear history.');
+    }
+  }
+
   function onKeyDown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -247,8 +285,36 @@ export function ChatDialog({ open, onClose, messages, setMessages, beatHistories
   }
 
   return (
-    <Modal open={open} title="AI chat" onClose={onClose} size="wide">
+    <Modal open={open} title={null} onClose={onClose} size="fullscreen">
       <div className="chat-dialog">
+        <div className="chat-toolbar">
+          <span className="chat-title">AI chat</span>
+          <span className="chat-token-readout" title="Estimated tokens in the conversation history sent each request">
+            ~{estimatedTokens.toLocaleString()} tokens
+            {lastInputTokens != null && (
+              <span className="chat-token-secondary"> · last request {lastInputTokens.toLocaleString()}</span>
+            )}
+          </span>
+          <span className="chat-toolbar-spacer" />
+          <button
+            type="button"
+            className="chat-history-btn"
+            onClick={() => setConfirmClear(true)}
+            disabled={busy || restoring || messages.length === 0}
+            title="Clear this conversation and start fresh"
+          >
+            🧹 Clear
+          </button>
+          <button
+            type="button"
+            className="chat-close-btn"
+            onClick={onClose}
+            title="Close (Esc)"
+            aria-label="Close chat"
+          >
+            ✕
+          </button>
+        </div>
         <div className="chat-messages" ref={listRef}>
           {messages.length === 0 && (
             <p className="chat-empty">
@@ -302,6 +368,16 @@ export function ChatDialog({ open, onClose, messages, setMessages, beatHistories
             {busy ? 'Working…' : 'Send'}
           </button>
         </div>
+        <ConfirmDialog
+          open={confirmClear}
+          title="Clear conversation?"
+          message="This hides the current conversation and starts fresh. It can't be undone here."
+          confirmLabel="Clear"
+          cancelLabel="Cancel"
+          danger
+          onConfirm={doClear}
+          onCancel={() => setConfirmClear(false)}
+        />
       </div>
     </Modal>
   );
