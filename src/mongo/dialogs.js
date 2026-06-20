@@ -8,6 +8,8 @@
 //   order: number (1..N within a beat)
 //   body: string (markdown — what the character says)
 //   character: string (markdown — the speaker's name)
+//   direction: string (markdown — AI/human performance note: what's happening in
+//                       the scene at this moment + how to deliver this line)
 //   audio_file_id: ObjectId | null  (GridFS attachments bucket — recorded line)
 //   created_at, updated_at: Date
 
@@ -45,6 +47,7 @@ function backfill(doc) {
     ...doc,
     body: typeof doc.body === 'string' ? doc.body : '',
     character: typeof doc.character === 'string' ? doc.character : '',
+    direction: typeof doc.direction === 'string' ? doc.direction : '',
     audio_file_id: doc.audio_file_id ?? null,
   };
 }
@@ -116,6 +119,7 @@ export async function createDialog({ projectId, beatId, order, body = '', charac
     order: Number(nextOrder),
     body: String(body || ''),
     character: String(character || ''),
+    direction: '',
     audio_file_id: null,
     created_at: now,
     updated_at: now,
@@ -127,7 +131,7 @@ export async function createDialog({ projectId, beatId, order, body = '', charac
   return backfill(doc);
 }
 
-const TEXT_FIELDS = new Set(['body', 'character']);
+const TEXT_FIELDS = new Set(['body', 'character', 'direction']);
 const ID_FIELDS = new Set(['audio_file_id']);
 
 export async function updateDialog(projectId, id, patch) {

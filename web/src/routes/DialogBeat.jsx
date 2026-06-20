@@ -20,6 +20,7 @@ import { CollabField } from '../editor/CollabField.jsx';
 import { DialogItem } from '../widgets/DialogItem.jsx';
 import { ConfirmDialog } from '../widgets/Modal.jsx';
 import { DialogEditDialog } from '../widgets/DialogEditDialog.jsx';
+import { DialogPerform } from '../widgets/DialogPerform.jsx';
 import { BeatTabs } from '../widgets/BeatTabs.jsx';
 import { BeatPager } from '../widgets/BeatPager.jsx';
 
@@ -42,6 +43,9 @@ export function DialogBeat({ session }) {
   const [critiquing, setCritiquing] = useState(false);
   const [critiqueError, setCritiqueError] = useState(null);
   const [critiqueScores, setCritiqueScores] = useState(null);
+  const [performing, setPerforming] = useState(false);
+  const [preparingNotes, setPreparingNotes] = useState(false);
+  const [prepareError, setPrepareError] = useState(null);
 
   const [characters, setCharacters] = useState([]);
   const [tocBeats, setTocBeats] = useState([]);
@@ -222,6 +226,23 @@ export function DialogBeat({ session }) {
     }
   }
 
+  // Generate a performance "Direction" note for every line in this beat at once.
+  // The notes land in each line's collaborative field; refetch so button labels
+  // and any open editors reflect them.
+  async function prepareNotes() {
+    if (!data?.beat) return;
+    setPreparingNotes(true);
+    setPrepareError(null);
+    try {
+      await apiPostJson('/dialogs/direction', { beat_id: data.beat._id });
+      onRefresh();
+    } catch (e) {
+      setPrepareError(e.message);
+    } finally {
+      setPreparingNotes(false);
+    }
+  }
+
   useEffect(() => {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
@@ -299,6 +320,20 @@ export function DialogBeat({ session }) {
           >
             {critiquing ? 'Critiquing…' : 'Critique'}
           </button>
+          <button
+            onClick={prepareNotes}
+            disabled={generating || preparingNotes || sortedItems.length === 0}
+            title="Generate a performance Direction note for every line in this beat"
+          >
+            {preparingNotes ? 'Preparing…' : 'Prepare notes'}
+          </button>
+          <button
+            onClick={() => setPerforming(true)}
+            disabled={generating || sortedItems.length === 0}
+            title="Open a distraction-free view to read context, see direction, and record each line"
+          >
+            ▶ Perform
+          </button>
           <button onClick={addDialog} disabled={generating}>+ Add dialog</button>
           <button
             className="danger"
@@ -322,6 +357,9 @@ export function DialogBeat({ session }) {
       {critiqueError && (
         <div className="error-banner">Critique failed: {critiqueError}</div>
       )}
+      {prepareError && (
+        <div className="error-banner">Prepare notes failed: {prepareError}</div>
+      )}
       {generating && generationStatus && (
         <div
           style={{
@@ -341,6 +379,14 @@ export function DialogBeat({ session }) {
 
       {room && (
         <CollabSurface room={room} session={session} onPing={onRefresh}>
+          {performing ? (
+            <DialogPerform
+              items={sortedItems}
+              onAudioChange={onRefresh}
+              onClose={() => setPerforming(false)}
+            />
+          ) : (
+          <>
           <div className="dialog-notes-panel" style={{ marginBottom: 16 }}>
             <CollabField
               label="Dialogue Notes"
@@ -366,13 +412,15 @@ export function DialogBeat({ session }) {
                 strategy={verticalListSortingStrategy}
               >
                 <div className="dialog-list">
-                  {sortedItems.map((d) => {
+                  {sortedItems.map((d, i) => {
                     const sid = d._id?.toString?.() || String(d._id);
                     return (
                       <DialogItem
                         key={sid}
                         dialog={d}
                         characters={characters}
+                        prevDialog={sortedItems[i - 1] || null}
+                        nextDialog={sortedItems[i + 1] || null}
                         onDelete={() => deleteDialog(d._id)}
                         onCharacterChange={setDialogCharacter}
                         onAudioChange={onRefresh}
@@ -388,6 +436,8 @@ export function DialogBeat({ session }) {
                 </div>
               </SortableContext>
             </DndContext>
+          )}
+          </>
           )}
         </CollabSurface>
       )}

@@ -565,12 +565,13 @@ async function describeStoryboardsRoom(beatId) {
 
 // Dialogs -------------------------------------------------------------------
 //
-// One y-doc per beat (room: "dialogs:<beatId>"). Each dialog item exposes two
-// fragments: "item:<dialog _id>:body" and "item:<dialog _id>:character". When
+// One y-doc per beat (room: "dialogs:<beatId>"). Each dialog item exposes three
+// fragments: "item:<dialog _id>:body", "item:<dialog _id>:character", and
+// "item:<dialog _id>:direction" (the voice-actor performance note). When
 // dialogs are added/removed the room composition changes; the seed reflects
 // whatever exists in Mongo at the time the room is loaded.
 
-const DIALOG_FIELD_NAMES = ['body', 'character'];
+const DIALOG_FIELD_NAMES = ['body', 'character', 'direction'];
 
 function dialogFieldName(dialogId, field) {
   return `item:${dialogId}:${field}`;
@@ -616,7 +617,7 @@ async function describeDialogsRoom(beatId) {
         }
       }
       for (const [field, value] of Object.entries(snapshot)) {
-        const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
+        const m = field.match(/^item:([a-f0-9]{24}):(body|character|direction)$/);
         if (!m) continue;
         const dId = m[1];
         const fieldName = m[2];
