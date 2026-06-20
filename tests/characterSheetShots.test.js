@@ -93,16 +93,39 @@ describe('buildCharacterShotPrompt', () => {
     expect(prompt).toContain('left eyebrow');
   });
 
-  it('enforces single-image, no-grid, no-text output rules', () => {
+  it('forbids overlay/caption text but preserves text on clothing', () => {
     const character = { name: 'X', hollywood_actor: 'Zendaya', fields: {} };
     const prompt = buildCharacterShotPrompt({ character, shot });
     expect(prompt).toMatch(/ONE image of ONE person/i);
     expect(prompt).toMatch(/not a character sheet/i);
     expect(prompt).toMatch(/grid/i);
-    expect(prompt).toMatch(/no text/i);
+    // forbids ADDED captions / labels / watermarks…
+    expect(prompt).toMatch(/captions|labels|watermark/i);
+    // …but explicitly keeps text/logos that belong on the subject's clothing
+    expect(prompt).toMatch(/clothing|logos|brand/i);
     // The image itself must never be described as a "reference sheet image" —
     // that phrasing is what made the model emit multi-panel sheets.
     expect(prompt).not.toMatch(/reference sheet image/i);
+  });
+});
+
+describe('expanded preset', () => {
+  it('has at least 24 shots', () => {
+    expect(CHARACTER_SHEET_SHOTS.length).toBeGreaterThanOrEqual(24);
+  });
+
+  it('includes a rich set of distinct expression/emotion shots', () => {
+    const expressions = CHARACTER_SHEET_SHOTS.filter((s) =>
+      /smile|laugh|anger|sad|sorrow|surpris|fear|pensive|smirk|disgust|confiden|intense/i.test(
+        `${s.name} ${s.fragment}`,
+      ),
+    );
+    expect(expressions.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it('keeps every shot name unique', () => {
+    const names = CHARACTER_SHEET_SHOTS.map((s) => s.name);
+    expect(new Set(names).size).toBe(names.length);
   });
 });
 

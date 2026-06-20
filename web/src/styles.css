@@ -755,12 +755,41 @@ input[type="text"], input[type="search"] {
 .artwork-card {
   display: flex;
   flex-direction: column;
+  position: relative;
   border: 1px solid var(--border, #333);
   border-radius: 6px;
   overflow: hidden;
   background: var(--bg-elevated, #1a1a1a);
 }
 .artwork-card .artwork-thumb { border: none; border-radius: 0; aspect-ratio: 1 / 1; }
+
+/* Multi-select for bulk delete. */
+.artwork-card.is-selected { outline: 2px solid var(--accent, #6cf); outline-offset: -2px; }
+.artwork-select {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.artwork-select input { width: 16px; height: 16px; margin: 0; cursor: pointer; }
+.artwork-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  background: var(--bg-elevated, #1a1a1a);
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+}
 .artwork-thumb-empty {
   display: flex;
   align-items: center;

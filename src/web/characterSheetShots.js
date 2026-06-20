@@ -30,20 +30,39 @@ export const CHARACTER_SHEET_OUTPUT_RULES = [
   'STRICT OUTPUT RULES:',
   '- Produce exactly ONE image of ONE person in the single pose described above — nothing else.',
   '- This is a plain photograph, NOT a character sheet, model sheet, reference sheet, turnaround, contact sheet, grid, collage, storyboard, or multi-panel layout. Never show the person more than once, and never place multiple views, angles, or poses side by side.',
-  '- Absolutely NO text anywhere in the image: no words, letters, captions, labels, headers, titles, names, numbers, callouts, measurements, watermarks, logos, or annotations of any kind.',
+  '- Do NOT add overlay graphics or descriptive text to the image: no captions, labels, headers, titles, name tags, callouts, measurements, annotations, borders, or watermarks. It is a candid photograph, not a labeled diagram.',
+  '- BUT keep any text, lettering, logos, brand names, or graphics that naturally belong on the subject — printing on their clothing, patches, or accessories they wear. Render those faithfully and legibly; never blank them out or replace them with empty patches.',
 ].join('\n');
 
 // The fixed shot list (name + framing fragment). Names double as the artwork
 // card labels in the gallery, so keep them short and human-readable.
 export const CHARACTER_SHEET_SHOTS = [
-  { name: 'Front headshot — neutral', fragment: 'tight head-and-shoulders headshot, facing camera straight on, neutral relaxed expression, eyes to lens' },
-  { name: '3/4 left headshot', fragment: 'head-and-shoulders headshot, face turned three-quarters to the left, neutral expression' },
-  { name: '3/4 right headshot', fragment: 'head-and-shoulders headshot, face turned three-quarters to the right, neutral expression' },
+  // ── Headshot angles ────────────────────────────────────────────────
+  { name: 'Front headshot — neutral', fragment: 'tight head-and-shoulders headshot, facing camera straight on, neutral relaxed expression, eyes to the lens' },
+  { name: '3/4 left headshot', fragment: 'head-and-shoulders headshot, face turned three-quarters to the left, neutral expression, eyes to the lens' },
+  { name: '3/4 right headshot', fragment: 'head-and-shoulders headshot, face turned three-quarters to the right, neutral expression, eyes to the lens' },
   { name: 'Left profile', fragment: 'strict left-side profile of the head, ninety degrees to camera, neutral expression' },
   { name: 'Right profile', fragment: 'strict right-side profile of the head, ninety degrees to camera, neutral expression' },
+  { name: 'Chin-up low angle', fragment: 'head-and-shoulders headshot shot from a slightly low angle looking up at the subject, chin lifted, assured neutral expression, eyes toward the lens' },
+  { name: 'Chin-down high angle', fragment: 'head-and-shoulders headshot shot from a slightly high angle looking down at the subject, chin tucked, eyes raised to the lens' },
+  { name: 'Gaze off-camera', fragment: 'three-quarter head-and-shoulders headshot, head turned slightly, eyes looking off to the side away from the lens, calm candid expression' },
+
+  // ── Expressions / emotions (front head-and-shoulders) ──────────────
+  { name: 'Warm genuine smile', fragment: 'front head-and-shoulders headshot, a warm genuine smile — mouth corners lifted, cheeks raised, light creasing at the outer corners of the eyes, bright relaxed happy gaze' },
+  { name: 'Big joyful laugh', fragment: 'front head-and-shoulders headshot, caught mid-laugh — mouth open in a broad laugh showing teeth, eyes squeezed nearly shut, head tipped very slightly back, pure delight' },
+  { name: 'Soft subtle smile', fragment: 'front head-and-shoulders headshot, a soft closed-lip smile, gentle and content, eyes calm and kind' },
+  { name: 'Intense & determined', fragment: 'front head-and-shoulders headshot, an intense determined expression — eyebrows lowered and drawn together, eyes narrowed and sharply focused on the lens, jaw set firm, lips pressed into a hard line' },
+  { name: 'Fierce anger', fragment: 'front head-and-shoulders headshot, fierce anger — brows slammed down and together, hard glaring eyes, nostrils flared, upper lip tightened with teeth slightly bared, jaw clenched' },
+  { name: 'Sorrowful / sad', fragment: 'front head-and-shoulders headshot, deep sadness — inner eyebrows pulled up and together, eyes heavy and glistening, mouth corners turned down, a slight tremble to the lips' },
+  { name: 'Surprised / shocked', fragment: 'front head-and-shoulders headshot, genuine shock — eyebrows raised high, forehead creased, eyes wide and round, mouth dropped open' },
+  { name: 'Fearful / wary', fragment: 'front head-and-shoulders headshot, fear — eyebrows raised and drawn together, eyes widened and tense, lips parted and pulled back in apprehension' },
+  { name: 'Pensive / thoughtful', fragment: 'front head-and-shoulders headshot, pensive and thoughtful — eyes cast slightly aside and unfocused, brow lightly knit, lips softly pursed, lost in thought' },
+  { name: 'Sly smirk', fragment: 'front head-and-shoulders headshot, a sly knowing smirk — one corner of the mouth pulled up, one eyebrow cocked, a glint of mischief in the eyes' },
+  { name: 'Disgust', fragment: 'front head-and-shoulders headshot, disgust — nose wrinkled, upper lip raised, eyes narrowed in a faint squint, recoiling slightly' },
+  { name: 'Confident / proud', fragment: 'front head-and-shoulders headshot, calm confidence — chin slightly raised, a faint assured half-smile, steady self-possessed gaze straight to the lens' },
+
+  // ── Back & full body ───────────────────────────────────────────────
   { name: 'Back of head', fragment: 'back of the head and shoulders, subject facing fully away from camera, showing hair and nape' },
-  { name: 'Expression — smiling', fragment: 'front head-and-shoulders headshot, genuine warm smile' },
-  { name: 'Expression — intense', fragment: 'front head-and-shoulders headshot, intense determined expression, brow slightly furrowed' },
   { name: 'Full body — front', fragment: 'full-body shot head to toe, standing front-facing in a neutral A-pose, arms slightly away from the body, full wardrobe and footwear visible' },
   { name: 'Full body — back', fragment: 'full-body shot head to toe, standing with back to camera, full rear of the wardrobe and silhouette visible' },
   { name: 'Full body — 3/4 action', fragment: 'full-body three-quarter angle, relaxed dynamic standing pose with characteristic body language' },

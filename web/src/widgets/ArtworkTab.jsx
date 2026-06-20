@@ -44,6 +44,9 @@ export function ArtworkTab({
   const [busyId, setBusyId] = useState(null);
   const [renameId, setRenameId] = useState(null);
   const [renameValue, setRenameValue] = useState('');
+  // Multi-select for bulk delete on the gallery.
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
   // Image-sheet batch job: lives here (not in the dialog) so progress survives
   // the dialog closing on start. The job runs server-side regardless; this only
   // tracks the aggregate progress panel.
@@ -118,6 +121,38 @@ export function ArtworkTab({
     } finally {
       setBusyId(null);
     }
+  }
+
+  function toggleSelect(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // Bulk-delete the checked artworks. Reuses the per-artwork DELETE endpoint in
+  // sequence (each purges its GridFS images + broadcasts) — fine for the handful
+  // a user selects; failures are tallied rather than aborting the batch.
+  async function bulkDelete() {
+    const ids = [...selectedIds];
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} artwork${ids.length === 1 ? '' : 's'}? Their result images will be removed too.`)) return;
+    setBulkBusy(true);
+    setError(null);
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        await apiDelete(`${basePath}/artwork/${id}`);
+      } catch {
+        failed += 1;
+      }
+    }
+    setBulkBusy(false);
+    setSelectedIds(new Set());
+    if (failed) setError(`${failed} of ${ids.length} could not be deleted.`);
+    await onChange?.();
   }
 
   async function retry(art) {
@@ -236,6 +271,18 @@ export function ArtworkTab({
         </div>
       )}
 
+      {selectedIds.size > 0 && (
+        <div className="artwork-bulk-bar">
+          <span>{selectedIds.size} selected</span>
+          <button type="button" className="primary" onClick={bulkDelete} disabled={bulkBusy}>
+            {bulkBusy ? 'Deleting…' : `Delete ${selectedIds.size} selected`}
+          </button>
+          <button type="button" onClick={() => setSelectedIds(new Set())} disabled={bulkBusy}>
+            Clear
+          </button>
+        </div>
+      )}
+
       {sorted.length === 0 ? (
         <div className="artwork-empty">
           No artwork yet. Click "+ New artwork" to generate the first piece.
@@ -248,8 +295,16 @@ export function ArtworkTab({
               || (art.result_image_id ? String(art.result_image_id) : null);
             const isBusy = busyId === id;
             const status = art.status || (resultId ? 'done' : 'pending');
+            const selected = selectedIds.has(id);
             return (
-              <div key={id} className={`artwork-card artwork-card-${status}`}>
+              <div key={id} className={`artwork-card artwork-card-${status}${selected ? ' is-selected' : ''}`}>
+                <label className="artwork-select" title="Select for bulk delete">
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={() => toggleSelect(id)}
+                  />
+                </label>
                 <div className="artwork-thumb">
                   {resultId ? (
                     <a
