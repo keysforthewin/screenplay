@@ -2353,6 +2353,109 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   margin-top: 4px;
 }
 
+/* Per-line "Direction" note + neighbour context strips
+   ---------------------------------------------------- */
+.dialog-context-strip {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  padding: 2px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dialog-context-kind {
+  display: inline-block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+  margin-right: 6px;
+  opacity: 0.8;
+}
+.dialog-context-speaker {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.dialog-item-direction {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+
+/* Perform mode (distraction-free teleprompter for recording)
+   --------------------------------------------------------- */
+.dialog-perform {
+  max-width: 760px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.dialog-perform-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.dialog-perform-progress {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+.dialog-perform-direction {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent, #6b9eff);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+.dialog-perform-direction .ProseMirror {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--fg);
+}
+.dialog-perform-line {
+  padding: 20px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+}
+.dialog-perform-speaker {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.dialog-perform-line .ProseMirror {
+  font-size: 24px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+.dialog-perform-record {
+  margin: 4px 0;
+}
+.dialog-perform-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dialog-perform-nav button {
+  min-width: 120px;
+}
+
 /* Character picker (combobox)
    --------------------------- */
 .character-select {

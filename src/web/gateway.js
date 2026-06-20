@@ -442,7 +442,7 @@ async function fallbackTextWrite({ projectId, entityType, entityId, field, op, .
     if (field === 'dialog_notes') {
       return Plots.updateBeat(projectId, entityId, { dialog_notes: args.markdown });
     }
-    const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
+    const m = field.match(/^item:([a-f0-9]{24}):(body|character|direction)$/);
     if (!m) throw new Error(`gateway fallback: unknown dialogs field "${field}"`);
     return mongoUpdateDialog(projectId, m[1], { [m[2]]: args.markdown });
   }
@@ -2021,16 +2021,17 @@ export async function copyDialogAudioToStoryboardViaGateway({
 // ─── Dialogs ──────────────────────────────────────────────────────────────
 //
 // Dialogs live in their own top-level collection but share one y-doc per
-// beat (room: "dialogs:<beatId>") with two fragments per item:
-// "item:<dialogId>:body" and "item:<dialogId>:character". Mutations that
-// change room composition (create / delete / reorder) broadcast a
+// beat (room: "dialogs:<beatId>") with three fragments per item:
+// "item:<dialogId>:body", "item:<dialogId>:character", and
+// "item:<dialogId>:direction" (the voice-actor performance note). Mutations
+// that change room composition (create / delete / reorder) broadcast a
 // `fields_updated` ping to the room so the SPA refetches.
 
 function dialogItemField(dialogId, field) {
   return `item:${dialogId}:${field}`;
 }
 
-const DIALOG_TEXT_FIELDS = new Set(['body', 'character']);
+const DIALOG_TEXT_FIELDS = new Set(['body', 'character', 'direction']);
 
 export async function setDialogTextFieldViaGateway({ projectId, dialogId, field, text }) {
   if (!DIALOG_TEXT_FIELDS.has(field)) {

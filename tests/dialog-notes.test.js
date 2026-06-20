@@ -17,6 +17,7 @@ vi.mock('../src/log.js', () => ({
 
 const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
+const Dialogs = await import('../src/mongo/dialogs.js');
 const { resolveRoom } = await import('../src/web/roomRegistry.js');
 
 let projectId;
@@ -54,5 +55,31 @@ describe('dialogs room dialog_notes fragment', () => {
 
     const fresh = await Plots.getBeat(projectId, beat._id.toString());
     expect(fresh.dialog_notes).toBe('written from y-doc');
+  });
+});
+
+describe('dialogs room direction fragment (voice-actor note)', () => {
+  it('exposes an item:<id>:direction fragment seeded from the dialog', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: 'b' });
+    const d = await Dialogs.createDialog({ projectId, beatId: beat._id, body: 'Drive.', character: 'Bob' });
+    await Dialogs.updateDialog(projectId, d._id, { direction: 'Urgent. Eyes on the road.' });
+
+    const room = await resolveRoom(`dialogs:${beat._id.toString()}`);
+    const field = `item:${d._id.toString()}:direction`;
+    expect(room.fields).toContain(field);
+    expect(room.seed[field]).toBe('Urgent. Eyes on the road.');
+  });
+
+  it('persists a changed direction fragment back to the dialog', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'B', desc: 'd', body: 'b' });
+    const d = await Dialogs.createDialog({ projectId, beatId: beat._id, body: 'Drive.', character: 'Bob' });
+    const room = await resolveRoom(`dialogs:${beat._id.toString()}`);
+    const field = `item:${d._id.toString()}:direction`;
+
+    const result = await room.persistFields({ [field]: 'written from y-doc' });
+    expect(result.changed).toBe(true);
+
+    const fresh = await Dialogs.getDialog(projectId, d._id);
+    expect(fresh.direction).toBe('written from y-doc');
   });
 });

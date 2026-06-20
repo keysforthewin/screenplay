@@ -6,6 +6,7 @@ import { CollabField } from '../editor/CollabField.jsx';
 import { CharacterSelect } from './CharacterSelect.jsx';
 import { AudioSlot } from './AudioSlot.jsx';
 import { DialogItemCollapsed } from './DialogItemCollapsed.jsx';
+import { DialogContextStrip } from './DialogContextStrip.jsx';
 
 export function DialogItem({
   dialog,
@@ -17,11 +18,34 @@ export function DialogItem({
   critique,
   isExpanded,
   onExpandToggle,
+  prevDialog,
+  nextDialog,
 }) {
   const id = dialog._id?.toString?.() || String(dialog._id);
   const [alternatives, setAlternatives] = useState(null);
   const [loadingAlts, setLoadingAlts] = useState(false);
   const [altError, setAltError] = useState(null);
+  const [genDir, setGenDir] = useState(false);
+  const [genDirError, setGenDirError] = useState(null);
+  const [noteGenerated, setNoteGenerated] = useState(false);
+  // The note text lives in the y-doc; this drives only the button label.
+  const hasNote = noteGenerated || !!(dialog.direction && String(dialog.direction).trim());
+
+  // Generate (or regenerate) the performance "Direction" note for this line.
+  // The server writes it to the collaborative `direction` field, so it lands
+  // live in the CollabField below — no manual refetch needed.
+  async function generateDirection() {
+    setGenDir(true);
+    setGenDirError(null);
+    try {
+      await apiPostJson(`/dialog/${id}/direction`, {});
+      setNoteGenerated(true);
+    } catch (e) {
+      setGenDirError(e.message);
+    } finally {
+      setGenDir(false);
+    }
+  }
 
   async function requestAlternatives() {
     setLoadingAlts(true);
@@ -181,6 +205,33 @@ export function DialogItem({
             onChange={(plainName) => onCharacterChange(id, plainName)}
           />
         </div>
+        <DialogContextStrip dialog={prevDialog} kind="prev" />
+        <div className="dialog-item-direction">
+          <div
+            className="field-label"
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+          >
+            <span>Direction</span>
+            <button
+              type="button"
+              className="dialog-regen-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                generateDirection();
+              }}
+              disabled={genDir}
+              title="Generate a performance note: what's happening in the scene + how to play this line"
+            >
+              {genDir ? 'Generating…' : hasNote ? '↻ Regenerate note' : '✨ Generate note'}
+            </button>
+          </div>
+          <CollabField
+            field={`item:${id}:direction`}
+            multiline
+            placeholder="What's happening in the scene here + how to play this line…"
+          />
+          {genDirError && <div className="error-banner small">{genDirError}</div>}
+        </div>
         <div className="dialog-item-body">
           <div
             className="field-label"
@@ -196,6 +247,7 @@ export function DialogItem({
           />
           {altPicker}
         </div>
+        <DialogContextStrip dialog={nextDialog} kind="next" />
         <AudioSlot
           audioId={dialog.audio_file_id}
           uploadEndpoint={`/dialog/${id}/audio`}

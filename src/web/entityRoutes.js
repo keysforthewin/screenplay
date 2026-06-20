@@ -5276,6 +5276,71 @@ export function buildApiRouter() {
     }
   });
 
+  // Generate (or regenerate) the per-line "Direction" note — the voice-actor
+  // performance note: what's happening in the scene at this moment + how to play
+  // this line. The result is written to the dialog's collaborative `direction`
+  // field through the gateway, so it lands live in any open editor.
+  router.post('/dialog/:id/direction', async (req, res, next) => {
+    try {
+      const dId = await resolveDialogId(req);
+      if (!dId) return res.status(404).json({ error: 'dialog not found' });
+      const { generateDirectionForLine } = await import('./dialogDirection.js');
+      const { setDialogTextFieldViaGateway } = await import('./gateway.js');
+      const { direction } = await generateDirectionForLine({
+        projectId: req.projectId,
+        dialogId: dId,
+      });
+      await setDialogTextFieldViaGateway({
+        projectId: req.projectId,
+        dialogId: dId,
+        field: 'direction',
+        text: direction,
+      });
+      const dialog = await getDialog(req.projectId, dId);
+      res.json({ dialog, direction });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Whole-beat "Prepare notes": one Direction note per line in a single pass,
+  // each written back through the gateway. Locked like /dialogs/edit because it
+  // writes to every line.
+  router.post('/dialogs/direction', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(req.projectId, String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { isBeatLocked, withBeatLock } = await import('./beatLocks.js');
+      if (isBeatLocked(beat._id)) {
+        return res
+          .status(409)
+          .json({ error: 'Dialog work in progress for this beat; try again' });
+      }
+      const { generateDirectionForBeat } = await import('./dialogDirection.js');
+      const { setDialogTextFieldViaGateway } = await import('./gateway.js');
+      const notes = await withBeatLock(beat._id, async () => {
+        const { notes } = await generateDirectionForBeat({
+          projectId: req.projectId,
+          beatId: beat._id.toString(),
+        });
+        for (const n of notes) {
+          await setDialogTextFieldViaGateway({
+            projectId: req.projectId,
+            dialogId: n.dialog_id,
+            field: 'direction',
+            text: n.direction,
+          });
+        }
+        return notes;
+      });
+      res.json({ count: notes.length });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // Project-level dialogue style / influences (steers every dialogue op).
   router.get('/plot/dialogue-style', async (req, res, next) => {
     try {

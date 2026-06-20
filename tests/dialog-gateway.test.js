@@ -76,6 +76,20 @@ beforeEach(async () => {
     expect(fresh.character).toBe('Detective Bob');
   });
 
+  it('setDialogTextFieldViaGateway writes direction via fallback', async () => {
+    const beat = await makeBeat();
+    const d = await Gateway.createDialogViaGateway({ projectId, beatId: beat._id });
+    await Gateway.setDialogTextFieldViaGateway({ projectId,
+      dialogId: d._id,
+      field: 'direction',
+      text: 'He is stalling for time — calm on the surface, racing underneath.',
+    });
+    const fresh = await Dialogs.getDialog(projectId, d._id);
+    expect(fresh.direction).toBe(
+      'He is stalling for time — calm on the surface, racing underneath.',
+    );
+  });
+
   it('setDialogTextFieldViaGateway rejects unknown fields', async () => {
     const beat = await makeBeat();
     const d = await Gateway.createDialogViaGateway({ projectId, beatId: beat._id });

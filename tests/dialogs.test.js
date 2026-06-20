@@ -86,6 +86,35 @@ describe('dialogs mongo helpers', () => {
     ).rejects.toThrow(/unknown field/);
   });
 
+  it('createDialog defaults direction to an empty string', async () => {
+    const d = await Dialogs.createDialog({ projectId, beatId: beatA });
+    expect(d.direction).toBe('');
+  });
+
+  it('updateDialog accepts the direction field (the voice-actor note)', async () => {
+    const d = await Dialogs.createDialog({ projectId, beatId: beatA });
+    const updated = await Dialogs.updateDialog(projectId, d._id, {
+      direction: 'Mid-argument. He is cornered — play it quiet, not shouting.',
+    });
+    expect(updated.direction).toBe(
+      'Mid-argument. He is cornered — play it quiet, not shouting.',
+    );
+  });
+
+  it('listDialogs backfills direction for legacy docs missing the field', async () => {
+    fakeDb.collection('dialogs')._docs.push({
+      _id: new ObjectId(),
+      beat_id: beatA,
+      order: 1,
+      body: 'old line',
+      character: 'Old Speaker',
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+    const [legacy] = await Dialogs.listDialogs({ beatId: beatA });
+    expect(legacy.direction).toBe('');
+  });
+
   it('createDialog defaults audio_file_id to null', async () => {
     const d = await Dialogs.createDialog({ projectId, beatId: beatA });
     expect(d.audio_file_id).toBe(null);
