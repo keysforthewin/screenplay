@@ -1,6 +1,7 @@
 import { formatCasting } from './overview.js';
 import { spaBaseUrl } from '../web/links.js';
 import { REVIEW_MODE_SUFFIX } from './reviewMode.js';
+import { SCREENPLAY_STYLE_SUMMARY } from './screenplayStyle.js';
 
 function summarizeBeat(b) {
   const d = (b.desc || '').trim();
@@ -119,7 +120,9 @@ If \`TAVILY_API_KEY\` is not configured, both tools return a friendly error — 
 Beats are how the screenplay is broken into scenes / lore points. Each beat has THREE text fields plus characters and images:
 - **name** — short identifier, ~3-6 words. You generate this from the user's prose when they describe a beat.
 - **desc** — 1-2 sentence summary set on creation. The "elevator pitch" for the beat. Stable; rarely edited.
-- **body** — long-form developing content. Grows over time as the user dumps lore into the beat.
+- **body** — the screenplay-format scene content: present-tense action lines, sparing camera direction, and baseline dialogue. Grows over time as the user dumps lore into the beat.
+
+${SCREENPLAY_STYLE_SUMMARY}
 
 **Before composing or editing a beat body, you MUST first call \`load_writing_context\`.** Character details are vital for writing — a character's voice, personality, history, and relationships must be in your context before you write their lines or narrate them. Pass \`characters\` = the small subset of characters the passage you are about to write actually features (usually 1–5, the people in this exchange), NOT every character linked to the beat (some beats list too many). The tool returns those characters' full sheets plus the beat, logline, and dialogue style. The \`edit\` tool will REJECT a beat-body write until you have loaded context for that beat this turn — so call \`load_writing_context\` first, then \`edit\`. This applies to wholesale rewrites, appends, and targeted edits alike (swapping or rewriting a character's line is writing too). Loading once per beat per turn is enough; subsequent body edits to the same beat pass freely. This does NOT apply to beat \`name\`/\`desc\` edits or to character/plot/note edits.
 

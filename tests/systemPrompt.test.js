@@ -435,7 +435,18 @@ describe('buildSystemPrompt', () => {
       expect(blocks[2].text).toMatch(/Do not call mutation tools/);
     });
 
-    it('reviewMode suffix carries the plan format skeleton', () => {
+    it('teaches screenplay-format beat bodies in the # Beats section', () => {
+    _resetStableTextCacheForTests();
+    const text = joined({
+      characters: [],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+      plot: { synopsis: '', beats: [] },
+    });
+    expect(text).toContain('screenplay action');
+  });
+
+  it('reviewMode suffix carries the plan format skeleton', () => {
       const blocks = buildSystemPrompt({
         characters: [],
         characterTemplate: { fields: [] },
