@@ -2505,19 +2505,20 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .chat-dialog {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  height: 100%;
   gap: 10px;
-  min-height: 320px;
 }
 
 .chat-messages {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   overflow-y: auto;
-  max-height: 55vh;
-  min-height: 240px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 4px 2px;
+  padding-right: 4px;
 }
 
 .chat-empty {
@@ -2648,4 +2649,41 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .chat-history-status {
   font-size: 0.8rem;
   color: var(--fg-muted, #888);
+}
+
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border, #333);
+}
+.chat-title {
+  font-weight: 600;
+  font-size: 1rem;
+}
+.chat-token-readout {
+  font-size: 0.8rem;
+  color: var(--text-muted, #9aa0a6);
+  font-variant-numeric: tabular-nums;
+}
+.chat-token-secondary {
+  opacity: 0.75;
+}
+.chat-toolbar-spacer {
+  flex: 1 1 auto;
+}
+.chat-close-btn {
+  background: transparent;
+  border: 1px solid var(--border, #333);
+  color: var(--text, #e8e8e8);
+  border-radius: 6px;
+  width: 30px;
+  height: 30px;
+  cursor: pointer;
+  line-height: 1;
+  font-size: 0.95rem;
+}
+.chat-close-btn:hover {
+  background: var(--bg-elevated, #2a2a2e);
 }
