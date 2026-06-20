@@ -3,6 +3,12 @@
 // (web:<projectId>:<username>) so each logged-in user gets their own thread,
 // separate from Discord (config.discord.movieChannelId) and from other users.
 
+import { config } from '../config.js';
+import { getHistoryClearedAt } from '../mongo/channelState.js';
+import { loadHistoryForLlm, loadChannelMessagesSince } from '../mongo/messages.js';
+import { estimateMessageTokens } from '../agent/historyTrim.js';
+import { getLastAnthropicInputTokens } from '../mongo/tokenUsage.js';
+
 export function webChannelId(projectId, username) {
   const user = (typeof username === 'string' ? username.trim() : '') || 'web visitor';
   return `web:${projectId}:${user}`;
@@ -31,4 +37,23 @@ export function reconstructDisplayTranscript(docs) {
     if (text) out.push({ role: doc.role, text });
   }
   return out;
+}
+
+export async function loadWebDisplayHistory(channelId) {
+  const clearedAt = await getHistoryClearedAt(channelId);
+  const docs = await loadChannelMessagesSince(channelId, { since: clearedAt });
+  return reconstructDisplayTranscript(docs);
+}
+
+// Estimated size of the history actually sent to the model (post-watermark,
+// HISTORY_LIMIT window) plus the real input_tokens of the most recent request.
+export async function computeHistoryStats(channelId) {
+  const clearedAt = await getHistoryClearedAt(channelId);
+  const history = await loadHistoryForLlm(channelId, {
+    maxAgeMs: config.trim.historyWindowMs,
+    since: clearedAt,
+  });
+  const estimated_tokens = history.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
+  const last_input_tokens = await getLastAnthropicInputTokens(channelId);
+  return { estimated_tokens, last_input_tokens };
 }
