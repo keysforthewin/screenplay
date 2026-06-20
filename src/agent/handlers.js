@@ -47,6 +47,7 @@ import { analyzeText } from '../llm/analyze.js';
 import { create, all } from 'mathjs';
 import { runJsInVm } from './codeRunner.js';
 import { decodeEscapes } from './decodeEscapes.js';
+import { buildWritingContext } from './writingContext.js';
 import {
   sliceLines,
   searchLines,
@@ -1105,6 +1106,25 @@ export const HANDLERS = {
 
     const target = await resolveEditTarget(context, { collection, identifier, field });
 
+    // Hard gate: composing/editing a beat body requires the character + beat
+    // detail to be in context first. The agent must call load_writing_context
+    // for this beat (in this turn) before writing prose/dialogue into it. The
+    // gate is keyed on the per-turn `writingContextBeats` Set, which only the
+    // agent loop populates — non-loop callers (tests, direct invocations) pass
+    // no Set and are never gated. See docs/superpowers/specs/2026-06-19-*.
+    if (
+      collection === 'beat' &&
+      target.gatewayField === 'body' &&
+      context?.writingContextBeats instanceof Set &&
+      !context.writingContextBeats.has(target.entityId)
+    ) {
+      return (
+        'Tool error (edit): load character & beat context first — call ' +
+        'load_writing_context({ beat, characters: [the characters this passage features] }) ' +
+        'before composing or editing a beat body.'
+      );
+    }
+
     let summary;
     if (isWholeReplace) {
       const newText = String(edits[0].replace ?? '');
@@ -1680,6 +1700,21 @@ export const HANDLERS = {
       compact(serializeBeat(b, { fullBody: !!full_body })),
       beatUrl(context?.projectTitle, b),
     );
+  },
+
+  // Load scoped character + beat detail into context before composing or
+  // editing a beat body. The agent names the small subset of characters the
+  // passage features (typically <5) — their full sheets, plus the beat, logline,
+  // and dialogue style, are returned. Marks the beat as context-loaded for this
+  // turn, which unlocks the beat-body edit gate (see the `edit` handler).
+  async load_writing_context({ beat, characters } = {}, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
+    const names = Array.isArray(characters) ? characters : [];
+    const block = await buildWritingContext(context?.projectId, target, names);
+    if (context?.writingContextBeats instanceof Set) {
+      context.writingContextBeats.add(target._id.toString());
+    }
+    return withSpaLink(block, beatUrl(context?.projectTitle, target));
   },
 
   async create_beat({ name, desc, body, characters, order }, context = null) {
