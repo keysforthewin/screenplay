@@ -15,12 +15,23 @@
 import { stripMarkdown } from '../util/markdown.js';
 import { clipField, NON_VISUAL_CASTING, formatDirectorNotes } from './storyboardGenerate.js';
 
-// Neutral, identity-locking framing shared by every shot so the set reads as a
-// coherent reference sheet (plain backdrop, even light, no scene).
+// Framing shared by every shot. CRITICAL: never call this a "character sheet" /
+// "reference sheet" / "model sheet" in the prompt — image models are trained to
+// render those as multi-panel turnaround grids with captions and annotations,
+// which is exactly the failure mode we must avoid. Each shot is ONE plain
+// photograph of ONE pose, enforced by CHARACTER_SHEET_OUTPUT_RULES below.
 export const CHARACTER_SHEET_STYLE_PREAMBLE =
-  'Character reference sheet image. Plain seamless neutral-grey studio backdrop, ' +
-  'even soft frontal lighting, no props, no background scene, photoreal, sharp focus, ' +
-  'consistent identity and wardrobe across the set.';
+  'A single photorealistic, full-color studio photograph of ONE person in ONE pose. ' +
+  'Plain seamless mid-grey studio backdrop, soft even lighting, no props, sharp focus.';
+
+// Hard negative constraints appended to every shot prompt — the levers that keep
+// the model from drifting into a multi-panel "model sheet" with labels/biography.
+export const CHARACTER_SHEET_OUTPUT_RULES = [
+  'STRICT OUTPUT RULES:',
+  '- Produce exactly ONE image of ONE person in the single pose described above — nothing else.',
+  '- This is a plain photograph, NOT a character sheet, model sheet, reference sheet, turnaround, contact sheet, grid, collage, storyboard, or multi-panel layout. Never show the person more than once, and never place multiple views, angles, or poses side by side.',
+  '- Absolutely NO text anywhere in the image: no words, letters, captions, labels, headers, titles, names, numbers, callouts, measurements, watermarks, logos, or annotations of any kind.',
+].join('\n');
 
 // The fixed shot list (name + framing fragment). Names double as the artwork
 // card labels in the gallery, so keep them short and human-readable.
@@ -91,31 +102,50 @@ export function scanCharacterFields(character, { maxPerField = 200, maxTotal = 1
   return parts.join('; ');
 }
 
-// Compose the full image prompt for one shot of one character.
+// Compose the full image prompt for one shot of one character. Structure:
+// single-photo framing → the pose → the subject handle → appearance/wardrobe to
+// match (explicitly flagged as NON-text) → optional style notes → the strict
+// no-text / no-grid output rules, repeated last for recency.
 export function buildCharacterShotPrompt({ character, shot, directorNotes = [] }) {
   const handle = buildSubjectHandle(character);
-  const details = scanCharacterFields(character);
+  // Keep the appearance context tight so it informs the look without reading as
+  // a caption block the model might render verbatim.
+  const details = scanCharacterFields(character, { maxPerField: 160, maxTotal: 700 });
   const notes = formatDirectorNotes(directorNotes);
   const lines = [
     CHARACTER_SHEET_STYLE_PREAMBLE,
     '',
-    `Shot: ${shot.fragment}.`,
+    `Pose: ${shot.fragment}.`,
     '',
     `Subject: ${handle}.`,
   ];
   if (details) {
-    lines.push('', `Character details to honor: ${details}.`);
+    lines.push(
+      '',
+      `Appearance and wardrobe to match — use these to get the look right, but NEVER render any of this as text in the image: ${details}.`,
+    );
   }
   if (notes) {
-    lines.push('', "Director's notes (apply as global style/tone guidance):", notes);
+    lines.push('', 'Style and tone guidance (apply to the look; do not render as text):', notes);
   }
+  lines.push('', CHARACTER_SHEET_OUTPUT_RULES);
   return lines.join('\n');
 }
 
-// Build the full (or sliced) sheet: one { name, prompt } per shot.
-export function buildCharacterSheetShots({ character, directorNotes = [], shotCount } = {}) {
-  const n = clampShotCount(shotCount);
-  return CHARACTER_SHEET_SHOTS.slice(0, n).map((shot) => ({
+// Select which preset shots to generate. An explicit `shotNames` list (from the
+// SPA checklist) wins and is honored in canonical preset order; otherwise fall
+// back to the first `shotCount` shots (an omitted count means all).
+export function selectSheetShots({ shotNames, shotCount } = {}) {
+  if (Array.isArray(shotNames)) {
+    const wanted = new Set(shotNames.map((s) => String(s)));
+    return CHARACTER_SHEET_SHOTS.filter((s) => wanted.has(s.name));
+  }
+  return CHARACTER_SHEET_SHOTS.slice(0, clampShotCount(shotCount));
+}
+
+// Build the selected sheet: one { name, prompt } per chosen shot.
+export function buildCharacterSheetShots({ character, directorNotes = [], shotNames, shotCount } = {}) {
+  return selectSheetShots({ shotNames, shotCount }).map((shot) => ({
     name: shot.name,
     prompt: buildCharacterShotPrompt({ character, shot, directorNotes }),
   }));

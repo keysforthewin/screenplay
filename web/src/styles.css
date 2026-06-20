@@ -439,6 +439,17 @@ input[type="text"], input[type="search"] {
    .storyboard-progress styling; this wrapper just spaces it from the grid. */
 .image-sheet-progress { margin: 0 0 16px; }
 
+/* Character image-sheet shot checklist (in the Create-image-sheet dialog). */
+.image-sheet-shotlist { margin: 12px 0 0; }
+.image-sheet-shotlist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 4px 12px;
+  margin: 6px 0;
+}
+.image-sheet-shot { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.image-sheet-shot input { margin: 0; flex: none; }
+
 /* Attachment one-row inline editing — same shape as gallery/library, no
    thumbnail. The file column shows a glyph + filename + size; the meta
    column shows two CollabFields (name + description). */

@@ -2478,6 +2478,9 @@ export function buildApiRouter() {
         const refs = await validateArtworkRefs(req, res);
         if (!refs) return;
         const shotCount = req.body?.shot_count != null ? Number(req.body.shot_count) : undefined;
+        const shotNames = Array.isArray(req.body?.shot_names)
+          ? req.body.shot_names.map((s) => String(s)).filter(Boolean)
+          : undefined;
         const direction = String(req.body?.direction || '').slice(0, 4000);
         const { startImageSheetJob } = await import('./imageSheetJobs.js');
         const result = await startImageSheetJob({
@@ -2486,6 +2489,7 @@ export function buildApiRouter() {
           hostId,
           model,
           referenceImageIds: refs.ids,
+          shotNames,
           shotCount,
           direction,
           discordUser: webDiscordUser(req),
@@ -4853,6 +4857,18 @@ export function buildApiRouter() {
         return res.status(404).json({ error: 'job not found' });
       }
       res.json({ job });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // The canonical character-sheet shot list, so the SPA can render a checklist
+  // the user ticks/unticks before generating. Static — the same source the
+  // generator selects from.
+  router.get('/character-sheet-shots', async (req, res, next) => {
+    try {
+      const { CHARACTER_SHEET_SHOTS } = await import('./characterSheetShots.js');
+      res.json({ shots: CHARACTER_SHEET_SHOTS.map((s) => ({ name: s.name, hint: s.fragment })) });
     } catch (e) {
       next(e);
     }

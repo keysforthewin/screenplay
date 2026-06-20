@@ -21,6 +21,7 @@ const {
   CHARACTER_SHEET_STYLE_PREAMBLE,
   buildCharacterShotPrompt,
   buildCharacterSheetShots,
+  selectSheetShots,
 } = await import('../src/web/characterSheetShots.js');
 
 describe('character sheet shot preset', () => {
@@ -90,6 +91,46 @@ describe('buildCharacterShotPrompt', () => {
     const prompt = buildCharacterShotPrompt({ character, shot });
     expect(prompt).toContain('red leather jacket');
     expect(prompt).toContain('left eyebrow');
+  });
+
+  it('enforces single-image, no-grid, no-text output rules', () => {
+    const character = { name: 'X', hollywood_actor: 'Zendaya', fields: {} };
+    const prompt = buildCharacterShotPrompt({ character, shot });
+    expect(prompt).toMatch(/ONE image of ONE person/i);
+    expect(prompt).toMatch(/not a character sheet/i);
+    expect(prompt).toMatch(/grid/i);
+    expect(prompt).toMatch(/no text/i);
+    // The image itself must never be described as a "reference sheet image" —
+    // that phrasing is what made the model emit multi-panel sheets.
+    expect(prompt).not.toMatch(/reference sheet image/i);
+  });
+});
+
+describe('selectSheetShots / shotNames', () => {
+  it('filters to the named shots in canonical preset order', () => {
+    const names = [CHARACTER_SHEET_SHOTS[2].name, CHARACTER_SHEET_SHOTS[0].name];
+    const picked = selectSheetShots({ shotNames: names });
+    expect(picked.map((s) => s.name)).toEqual([
+      CHARACTER_SHEET_SHOTS[0].name,
+      CHARACTER_SHEET_SHOTS[2].name,
+    ]);
+  });
+
+  it('returns [] when shotNames is an empty array', () => {
+    expect(selectSheetShots({ shotNames: [] })).toEqual([]);
+  });
+
+  it('falls back to a shotCount slice when shotNames is omitted', () => {
+    expect(selectSheetShots({ shotCount: 2 })).toHaveLength(2);
+    expect(selectSheetShots({})).toHaveLength(CHARACTER_SHEET_SHOTS.length);
+  });
+
+  it('buildCharacterSheetShots honors shotNames (preset order)', () => {
+    const character = { name: 'X', hollywood_actor: 'Zendaya', fields: {} };
+    const front = CHARACTER_SHEET_SHOTS[0].name;
+    const back = CHARACTER_SHEET_SHOTS.find((s) => /back of head/i.test(s.name)).name;
+    const shots = buildCharacterSheetShots({ character, shotNames: [back, front] });
+    expect(shots.map((s) => s.name)).toEqual([front, back]);
   });
 });
 

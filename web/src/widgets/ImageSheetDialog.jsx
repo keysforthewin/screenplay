@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
 import { ArtworkReferencePicker } from './ArtworkReferencePicker.jsx';
-import { apiPostJson, imageUrl, thumbUrl } from '../api.js';
+import { apiGet, apiPostJson, imageUrl, thumbUrl } from '../api.js';
 import {
   IMAGE_MODELS,
   IMAGE_MODEL_IDS,
@@ -11,23 +11,15 @@ import {
 
 const MODEL_STORAGE_KEY = 'screenplay.imagesheet.model';
 
-// Per-host shot-count config. Characters use a fixed preset (max = preset
-// length, 11); beats target an approximate count for the LLM planner.
-const SHOT_CONFIG = {
-  character: { label: 'Shots', def: 11, min: 1, max: 11 },
-  beat: { label: 'Target shots', def: 8, min: 3, max: 20 },
-};
+// Beats target an approximate count for the LLM planner (characters use the
+// checklist below instead of a count).
+const BEAT_SHOT = { label: 'Target shots', def: 8, min: 3, max: 20 };
 
 // "Create image sheet" dialog for the Artwork tab on characters AND beats.
-// Starts a long-running batch job: characters get a fixed portrait/turnaround
-// set; beats get a dynamically-planned set of environment/background plates.
-// The submit POSTs to /{hostType}/{hostId}/image-sheet which returns a job id
-// immediately (202). The dialog closes on success and the parent watches the
-// job + the pending artwork tiles fill in live.
-//
-// Props:
-//   onStarted({ jobId, planned }): called after a successful start.
-//   hostType, hostId, hostLabel, hostImages, hostArtworks: as for ArtworkDialog.
+// Characters: pick exactly which fixed shots to generate from a checklist.
+// Beats: a dynamically-planned set of environment/background plates (a count).
+// Starts a background job (POST returns a job id immediately); the dialog closes
+// and the parent watches the job + the pending artwork tiles fill in live.
 export function ImageSheetDialog({
   open,
   onClose,
@@ -38,13 +30,17 @@ export function ImageSheetDialog({
   hostImages = [],
   hostArtworks = [],
 }) {
-  const cfg = SHOT_CONFIG[hostType] || SHOT_CONFIG.character;
+  const isCharacter = hostType === 'character';
   const [imageModel, setImageModel] = useState(() => readStoredImageModel(MODEL_STORAGE_KEY));
-  const [shotCount, setShotCount] = useState(cfg.def);
   const [referenceIds, setReferenceIds] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  // Character: the fixed shot list + which are checked.
+  const [shots, setShots] = useState([]);
+  const [selectedShots, setSelectedShots] = useState([]);
+  // Beat: approximate target count.
+  const [shotCount, setShotCount] = useState(BEAT_SHOT.def);
   const openSeqRef = useRef(0);
 
   const basePath = `/${hostType}/${hostId}`;
@@ -57,8 +53,27 @@ export function ImageSheetDialog({
     setError(null);
     setBusy(false);
     setReferenceIds([]);
-    setShotCount(cfg.def);
-  }, [open, cfg.def]);
+    setShotCount(BEAT_SHOT.def);
+  }, [open]);
+
+  // Load the canonical character shot list when the dialog opens for a
+  // character; default every shot to checked.
+  useEffect(() => {
+    if (!open || !isCharacter) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await apiGet('/character-sheet-shots');
+        if (cancelled) return;
+        const list = Array.isArray(r?.shots) ? r.shots : [];
+        setShots(list);
+        setSelectedShots(list.map((s) => s.name));
+      } catch (e) {
+        if (!cancelled) setError(e?.message || 'Could not load the shot list');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, isCharacter]);
 
   useEffect(() => {
     writeStoredImageModel(MODEL_STORAGE_KEY, imageModel);
@@ -68,9 +83,16 @@ export function ImageSheetDialog({
     setReferenceIds((prev) => prev.filter((x) => x !== id));
   }
 
+  function toggleShot(name) {
+    setSelectedShots((prev) =>
+      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
+    );
+  }
+
   const count = Number(shotCount);
-  const countValid = Number.isFinite(count) && count >= cfg.min && count <= cfg.max;
-  const canSubmit = countValid && IMAGE_MODEL_IDS.has(imageModel) && !busy;
+  const countValid = Number.isFinite(count) && count >= BEAT_SHOT.min && count <= BEAT_SHOT.max;
+  const selectionValid = isCharacter ? selectedShots.length >= 1 : countValid;
+  const canSubmit = selectionValid && IMAGE_MODEL_IDS.has(imageModel) && !busy;
 
   async function submit() {
     if (!canSubmit) return;
@@ -78,11 +100,10 @@ export function ImageSheetDialog({
     setError(null);
     const seq = openSeqRef.current;
     try {
-      const res = await apiPostJson(`${basePath}/image-sheet`, {
-        reference_image_ids: referenceIds,
-        model: imageModel,
-        shot_count: count,
-      });
+      const body = isCharacter
+        ? { reference_image_ids: referenceIds, model: imageModel, shot_names: selectedShots }
+        : { reference_image_ids: referenceIds, model: imageModel, shot_count: count };
+      const res = await apiPostJson(`${basePath}/image-sheet`, body);
       if (seq !== openSeqRef.current) return;
       onStarted?.({ jobId: res.job_id, planned: res.planned ?? null });
       onClose?.();
@@ -94,10 +115,9 @@ export function ImageSheetDialog({
     }
   }
 
-  const intro =
-    hostType === 'character'
-      ? 'Generate a full set of portrait, profile and turnaround shots for this character in one background job — a reusable reference sheet.'
-      : 'Plan and generate a set of scene and background plates for this beat in one background job — universal backdrops you can reuse later.';
+  const intro = isCharacter
+    ? 'Generate a set of clean, single-pose reference photos for this character — one image per checked shot. No text, no panels; just the pose.'
+    : 'Plan and generate a set of scene and background plates for this beat in one background job — universal backdrops you can reuse later.';
 
   return (
     <>
@@ -116,7 +136,11 @@ export function ImageSheetDialog({
               onClick={submit}
               disabled={!canSubmit}
             >
-              {busy ? 'Starting…' : 'Generate sheet'}
+              {busy
+                ? 'Starting…'
+                : isCharacter
+                  ? `Generate ${selectedShots.length} image${selectedShots.length === 1 ? '' : 's'}`
+                  : 'Generate sheet'}
             </button>
           </>
         }
@@ -139,8 +163,8 @@ export function ImageSheetDialog({
             <div className="frame-generate-ref-grid">
               {referenceIds.length === 0 ? (
                 <div className="frame-generate-ref-empty">
-                  No reference images selected. Adding some anchors the look — the
-                  generated images may drift without them.
+                  No reference images selected. Adding some anchors the likeness —
+                  the generated images may drift without them.
                 </div>
               ) : (
                 referenceIds.map((id) => (
@@ -166,22 +190,55 @@ export function ImageSheetDialog({
             </div>
           </div>
 
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 12, maxWidth: 220 }}>
-            <span className="field-label">{cfg.label}</span>
-            <input
-              type="number"
-              min={cfg.min}
-              max={cfg.max}
-              value={shotCount}
-              onChange={(e) => setShotCount(e.target.value)}
-              disabled={busy}
-            />
-            <span className="frame-generate-help">
-              {hostType === 'character'
-                ? `Fixed turnaround/portrait set (up to ${cfg.max}). Lower for a quicker partial sheet.`
-                : `The planner aims for about this many plates; the actual count may differ.`}
-            </span>
-          </label>
+          {isCharacter ? (
+            <div className="image-sheet-shotlist">
+              <div className="frame-generate-section-header">
+                <span className="field-label">
+                  Shots to generate ({selectedShots.length}/{shots.length})
+                </span>
+                <span style={{ display: 'flex', gap: 8 }}>
+                  <button type="button" onClick={() => setSelectedShots(shots.map((s) => s.name))} disabled={busy}>
+                    All
+                  </button>
+                  <button type="button" onClick={() => setSelectedShots([])} disabled={busy}>
+                    None
+                  </button>
+                </span>
+              </div>
+              <div className="image-sheet-shotlist-grid">
+                {shots.map((s) => (
+                  <label key={s.name} className="image-sheet-shot" title={s.hint || ''}>
+                    <input
+                      type="checkbox"
+                      checked={selectedShots.includes(s.name)}
+                      onChange={() => toggleShot(s.name)}
+                      disabled={busy}
+                    />
+                    <span>{s.name}</span>
+                  </label>
+                ))}
+              </div>
+              <span className="frame-generate-help">
+                Each checked shot is one image. Uncheck any you don't need —
+                generation is billed per image.
+              </span>
+            </div>
+          ) : (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 12, maxWidth: 220 }}>
+              <span className="field-label">{BEAT_SHOT.label}</span>
+              <input
+                type="number"
+                min={BEAT_SHOT.min}
+                max={BEAT_SHOT.max}
+                value={shotCount}
+                onChange={(e) => setShotCount(e.target.value)}
+                disabled={busy}
+              />
+              <span className="frame-generate-help">
+                The planner aims for about this many plates; the actual count may differ.
+              </span>
+            </label>
+          )}
 
           <div className="frame-generate-model-row">
             <span className="field-label">Image model</span>

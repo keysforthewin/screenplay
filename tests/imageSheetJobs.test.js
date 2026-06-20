@@ -83,6 +83,7 @@ const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
 const Planner = await import('../src/web/beatSheetPlanner.js');
 const Sheet = await import('../src/web/imageSheetJobs.js');
+const CharShots = await import('../src/web/characterSheetShots.js');
 
 let projectId;
 
@@ -174,6 +175,26 @@ describe('startImageSheetJob — character', () => {
     expect(statuses).toEqual(['done', 'done', 'error']);
     const errored = fresh.artworks.find((a) => a.status === 'error');
     expect(errored.error_message).toMatch(/boom/);
+  });
+
+  it('generates exactly the shots named in shotNames', async () => {
+    const front = CharShots.CHARACTER_SHEET_SHOTS[0].name;
+    const back = CharShots.CHARACTER_SHEET_SHOTS.find((s) => /back of head/i.test(s.name)).name;
+    const c = await Characters.createCharacter({ projectId, name: 'Named', hollywood_actor: 'Zendaya' });
+    const { job_id, planned } = await Sheet.startImageSheetJob({
+      projectId,
+      hostType: 'character',
+      hostId: c._id.toString(),
+      model: 'nano-banana-pro',
+      referenceImageIds: [],
+      shotNames: [back, front],
+    });
+    expect(planned).toBe(2);
+    const job = await waitForJob(job_id);
+    expect(job.status).toBe('done');
+    expect(job.completed).toBe(2);
+    const fresh = await Characters.getCharacter(projectId, 'Named');
+    expect(fresh.artworks.map((a) => a.name).sort()).toEqual([back, front].sort());
   });
 });
 

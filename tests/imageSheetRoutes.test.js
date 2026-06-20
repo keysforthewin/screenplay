@@ -159,6 +159,29 @@ describe('POST /api/:host/:id/image-sheet', () => {
     const { status } = await postJson(`/api/character/${c._id.toString()}/image-sheet`, { model: 'nano-banana-pro' });
     expect(status).toBe(400);
   });
+
+  it('accepts shot_names and plans exactly that many', async () => {
+    const c = await Characters.createCharacter({ projectId, name: 'Pick', hollywood_actor: 'Z' });
+    const { json: list } = await getJson('/api/character-sheet-shots');
+    const names = [list.shots[0].name, list.shots.find((s) => /back of head/i.test(s.name)).name];
+    const { status, json } = await postJson(`/api/character/${c._id.toString()}/image-sheet`, {
+      model: 'nano-banana-pro',
+      shot_names: names,
+    });
+    expect(status).toBe(202);
+    expect(json.planned).toBe(2);
+    await drain(json.job_id);
+  });
+});
+
+describe('GET /api/character-sheet-shots', () => {
+  it('returns the canonical character shot list', async () => {
+    const { status, json } = await getJson('/api/character-sheet-shots');
+    expect(status).toBe(200);
+    expect(Array.isArray(json.shots)).toBe(true);
+    expect(json.shots.length).toBeGreaterThanOrEqual(8);
+    expect(typeof json.shots[0].name).toBe('string');
+  });
 });
 
 describe('GET /api/image-sheet/:jobId', () => {

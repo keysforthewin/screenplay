@@ -33,7 +33,7 @@ import {
   loadImageInput,
   STORYBOARD_MODEL,
 } from './storyboardGenerate.js';
-import { buildCharacterSheetShots, clampShotCount } from './characterSheetShots.js';
+import { buildCharacterSheetShots, selectSheetShots } from './characterSheetShots.js';
 import { planBeatSceneImages } from './beatSheetPlanner.js';
 
 // How many provider calls run at once. Bounded to avoid hammering provider rate
@@ -118,12 +118,12 @@ async function loadReferenceInputs(referenceImageIds) {
 }
 
 // Plan the shot list for the host. Character → fixed preset; beat → LLM planner.
-async function planShots({ projectId, job, hostType, hostId, referenceImageIds, shotCount, direction }) {
+async function planShots({ projectId, job, hostType, hostId, referenceImageIds, shotNames, shotCount, direction }) {
   if (hostType === 'character') {
     const character = await getCharacter(projectId, hostId);
     if (!character) throw new Error(`character not found: ${hostId}`);
     const directorNotes = await loadDirectorNotesForPlanner(projectId);
-    return buildCharacterSheetShots({ character, directorNotes, shotCount });
+    return buildCharacterSheetShots({ character, directorNotes, shotNames, shotCount });
   }
   // beat
   job.status = 'planning';
@@ -238,9 +238,9 @@ async function announceSheet({ job, hostType, hostId, projectId, announceUsernam
   }
 }
 
-async function runSheetJob({ projectId, job, hostType, hostId, model, referenceImageIds, shotCount, direction, discordUser, announceUsername }) {
+async function runSheetJob({ projectId, job, hostType, hostId, model, referenceImageIds, shotNames, shotCount, direction, discordUser, announceUsername }) {
   try {
-    const shots = await planShots({ projectId, job, hostType, hostId, referenceImageIds, shotCount, direction });
+    const shots = await planShots({ projectId, job, hostType, hostId, referenceImageIds, shotNames, shotCount, direction });
     job.planned = shots.length;
     if (!shots.length) {
       job.status = 'done';
@@ -286,6 +286,7 @@ export async function startImageSheetJob({
   hostId,
   model,
   referenceImageIds = [],
+  shotNames,
   shotCount,
   direction = '',
   discordUser = null,
@@ -316,7 +317,7 @@ export async function startImageSheetJob({
     model,
     planner_model: hostType === 'beat' ? STORYBOARD_MODEL : null,
     reference_image_ids: (referenceImageIds || []).map(String),
-    planned: hostType === 'character' ? clampShotCount(shotCount) : 0,
+    planned: hostType === 'character' ? selectSheetShots({ shotNames, shotCount }).length : 0,
     completed: 0,
     failed: 0,
     progress: null,
@@ -328,7 +329,7 @@ export async function startImageSheetJob({
   // Fire-and-forget; the runner records its own errors. Release the host on
   // completion regardless of outcome.
   setImmediate(() => {
-    runSheetJob({ projectId, job, hostType, hostId: resolvedHostId, model, referenceImageIds, shotCount, direction, discordUser, announceUsername })
+    runSheetJob({ projectId, job, hostType, hostId: resolvedHostId, model, referenceImageIds, shotNames, shotCount, direction, discordUser, announceUsername })
       .catch((e) => {
         job.status = 'error';
         job.error = e.message;
