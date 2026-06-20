@@ -557,6 +557,20 @@ export const TOOLS = [
     },
   },
   {
+    name: 'load_writing_context',
+    keywords: ['write', 'writing', 'compose', 'dialogue', 'dialog', 'prose', 'story', 'scene', 'context', 'character', 'bio', 'voice', 'body', 'before'],
+    description: 'MANDATORY before composing or editing a beat body. Loads scoped steering context for writing into a beat: the named characters\' FULL sheets (bios, custom fields, casting), plus the beat (name, desc, dialogue notes, current body), the logline, and the project dialogue style. Pass `characters` = the small subset of characters the passage you are about to write actually features (typically 1–5) — NOT every character linked to the beat. `beat` defaults to the current beat. Call this FIRST, then edit the body: the `edit` tool blocks beat-body writes until this has run for that beat in the current turn.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use the current beat.' },
+        characters: { type: 'array', items: { type: 'string' }, description: 'Names of the characters the passage features (the small subset you are writing about, typically 1–5). Their full sheets are loaded into context.' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'search_beats',
     keywords: ['search', 'find', 'beat', 'scene', 'moment', 'fuzzy', 'lookup', 'substring'],
     description: 'Substring search across beat name, desc, and body (case-insensitive). Returns ranked candidates so you can disambiguate when the user gestures at a beat ("the diner argument", "that scene where Alice leaves"). Use this before set_current_beat / update_beat when the user references a beat by description rather than an exact name. Each result is { _id, order, name, desc_preview, matched_field, score }.',
@@ -1727,6 +1741,7 @@ export const CORE_TOOL_NAMES = new Set([
   'search_message_history',
   'screenplay_search',
   'edit',
+  'load_writing_context',
 ]);
 
 // API-shaped tool def per name (internal-only `keywords`/`metaTool` stripped),

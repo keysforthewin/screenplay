@@ -16,25 +16,13 @@ import { getPlot } from '../mongo/plots.js';
 import { listCharacters } from '../mongo/characters.js';
 import { listDialogs } from '../mongo/dialogs.js';
 import { stripMarkdown } from '../util/markdown.js';
+import { formatCharacterBio } from '../util/characterBio.js';
 
 const PREV_BEAT_LINE_LIMIT = 6;
 
-// Format one character's bio block: a `## Name` heading followed by
-// `hollywood_actor` (if set) and every non-empty custom field.
-export function formatCharacterBio(c) {
-  const plainName = stripMarkdown(c?.name || '').trim();
-  if (!plainName) return '';
-  const lines = [`## ${plainName}`];
-  const actor = stripMarkdown(c.hollywood_actor || '').trim();
-  if (actor) lines.push(`hollywood_actor: ${actor}`);
-  const fields = c.fields && typeof c.fields === 'object' ? c.fields : {};
-  for (const [key, raw] of Object.entries(fields)) {
-    const value = stripMarkdown(typeof raw === 'string' ? raw : '').trim();
-    if (!value) continue;
-    lines.push(`${key}: ${value}`);
-  }
-  return lines.join('\n');
-}
+// Re-exported from the shared util so existing importers (sceneBibleAutofill.js)
+// keep working unchanged.
+export { formatCharacterBio };
 
 // Resolve character docs for the speakers named on the beat, beat-listed names
 // first then everyone else, deduped case-insensitively on the stripped name.

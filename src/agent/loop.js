@@ -446,7 +446,13 @@ export async function runAgent({
   const attachmentPaths = [];
   const attachmentLinks = [];
   const touchedEntities = createTouchedEntities();
-  const context = { discordUser, channelId, projectId, projectTitle, webRun };
+  // Per-turn set of beat _ids for which load_writing_context has run. The edit
+  // handler's beat-body gate checks membership before allowing a body write, so
+  // the agent always has character + beat detail in context before composing.
+  const context = {
+    discordUser, channelId, projectId, projectTitle, webRun,
+    writingContextBeats: new Set(),
+  };
   const model = config.anthropic.model;
 
   const anthropicTotals = {
