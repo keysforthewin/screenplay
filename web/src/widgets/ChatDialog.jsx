@@ -288,11 +288,11 @@ export function ChatDialog({ open, onClose, messages, setMessages, beatHistories
     <Modal open={open} title={null} onClose={onClose} size="fullscreen">
       <div className="chat-dialog">
         <div className="chat-toolbar">
-          <span className="chat-title">AI chat</span>
-          <span className="chat-token-readout" title="Estimated tokens in the conversation history sent each request">
+          <span className="chat-title" id="modal-title">AI chat</span>
+          <span className="chat-token-readout" title="Estimated tokens in the conversation history sent each run">
             ~{estimatedTokens.toLocaleString()} tokens
             {lastInputTokens != null && (
-              <span className="chat-token-secondary"> · last request {lastInputTokens.toLocaleString()}</span>
+              <span className="chat-token-secondary"> · last run {lastInputTokens.toLocaleString()}</span>
             )}
           </span>
           <span className="chat-toolbar-spacer" />

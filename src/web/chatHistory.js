@@ -39,6 +39,8 @@ export function reconstructDisplayTranscript(docs) {
   return out;
 }
 
+// Intentionally shows the full post-watermark transcript (no age window), so
+// the visible history may be wider than the age-windowed set that computeHistoryStats estimates.
 export async function loadWebDisplayHistory(channelId) {
   const clearedAt = await getHistoryClearedAt(channelId);
   const docs = await loadChannelMessagesSince(channelId, { since: clearedAt });
