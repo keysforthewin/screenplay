@@ -74,7 +74,8 @@ const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
 // Every LLM call in the storyboard pipeline runs on the top-tier model.
 // Hardcoded (not config-driven) on purpose — this surface is meant to be
 // "primo", so we don't want silent downgrades via ANTHROPIC_MODEL or similar.
-const STORYBOARD_MODEL = 'claude-opus-4-7';
+// Exported so the image-sheet beat planner runs on the same top-tier model.
+export const STORYBOARD_MODEL = 'claude-opus-4-8';
 export const DEFAULT_TARGET_COUNT = 11;
 export const MIN_TARGET_COUNT = 3;
 export const MAX_TARGET_COUNT = 30;

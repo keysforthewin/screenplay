@@ -14,7 +14,7 @@ export const config = {
   },
   anthropic: {
     apiKey: required('ANTHROPIC_API_KEY'),
-    model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-7',
+    model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-8',
     maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS) || 16000,
     enhancerModel: process.env.ANTHROPIC_ENHANCER_MODEL || 'claude-haiku-4-5-20251001',
   },

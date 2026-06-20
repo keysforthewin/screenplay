@@ -79,7 +79,7 @@ export function aggregateCritique(lensResults) {
 }
 
 // Hardcoded top-tier model, matching the rest of the storyboard surface.
-const CRITIQUE_MODEL = 'claude-opus-4-7';
+const CRITIQUE_MODEL = 'claude-opus-4-8';
 
 // Forced-tool schema: every lens judge returns one score + comments.
 const JUDGE_TOOL = {
