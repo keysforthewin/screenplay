@@ -85,6 +85,9 @@ const post = (path, body, headers = {}) =>
     body: JSON.stringify(body),
   });
 
+const get = (path, headers = {}) =>
+  fetch(`${baseUrl}/api${path}`, { headers });
+
 async function waitForRun(runId, status = 'done') {
   await vi.waitFor(
     () => {
@@ -221,6 +224,33 @@ describe('POST /api/chat', () => {
     release();
     await waitForRun(id1);
     await waitForRun(id2);
+  });
+});
+
+describe('GET /api/chat/history + POST /api/chat/clear', () => {
+  it('returns the persisted transcript and token stats, then clears it', async () => {
+    const project = await Projects.createProject('Western');
+    const pid = project._id.toString();
+
+    // One real turn so there is history to load.
+    const r = await post('/chat', { text: 'add a beat' }, { 'X-Project-Id': pid });
+    await waitForRun((await r.json()).run_id);
+
+    const hist = await get('/chat/history', { 'X-Project-Id': pid });
+    expect(hist.status).toBe(200);
+    const body = await hist.json();
+    expect(body.messages).toEqual([
+      { role: 'user', text: 'add a beat' },
+      { role: 'assistant', text: 'hi there' },
+    ]);
+    expect(body.estimated_tokens).toBeGreaterThan(0);
+
+    const cleared = await post('/chat/clear', {}, { 'X-Project-Id': pid });
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json())).toMatchObject({ ok: true, estimated_tokens: 0 });
+
+    const after = await get('/chat/history', { 'X-Project-Id': pid });
+    expect((await after.json()).messages).toEqual([]);
   });
 });
 

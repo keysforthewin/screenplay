@@ -58,6 +58,8 @@ import {
   unsubscribeFromChatRun,
   serializeChatRun,
 } from './chatRuns.js';
+import { webChannelId, loadWebDisplayHistory, computeHistoryStats } from './chatHistory.js';
+import { setHistoryClearedAt } from '../mongo/channelState.js';
 import {
   addBeatImageViaGateway,
   addBeatAttachmentViaGateway,
@@ -513,6 +515,31 @@ export function buildApiRouter() {
         context,
       });
       res.status(202).json({ run_id: run.run_id });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Persisted transcript + token stats for this user's isolated thread.
+  router.get('/chat/history', async (req, res, next) => {
+    try {
+      const channelId = webChannelId(req.projectId, req.session?.username);
+      const [messages, stats] = await Promise.all([
+        loadWebDisplayHistory(channelId),
+        computeHistoryStats(channelId),
+      ]);
+      res.json({ messages, ...stats });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Non-destructive clear: set the history watermark for this user's thread.
+  router.post('/chat/clear', async (req, res, next) => {
+    try {
+      const channelId = webChannelId(req.projectId, req.session?.username);
+      await setHistoryClearedAt(channelId);
+      res.json({ ok: true, estimated_tokens: 0, last_input_tokens: null });
     } catch (e) {
       next(e);
     }
