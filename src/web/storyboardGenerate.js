@@ -196,7 +196,7 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   '- shot_type drives duration_seconds: establishing/cinematic_wide/insert ≤ 15s, medium ≤ 10s, close_up/reaction/two_shot/over_the_shoulder ≤ 5s. Prefer the lower half of the range — shorter clips survive video gen better.',
   "- Don't invent characters not in the beat's character list.",
   '- Emit EXACTLY the requested number of frames.',
-];
+].join('\n');
 
 let dispatcherOverride = null;
 export function _setImageDispatcherForTests(fn) {
@@ -902,7 +902,7 @@ async function planScene({ beat, characters, targetCount, direction, directorNot
     .stream({
       model: STORYBOARD_MODEL,
       max_tokens: 16000,
-      system: SCENE_PLAN_SYSTEM_PROMPT.join('\n'),
+      system: SCENE_PLAN_SYSTEM_PROMPT,
       tools: [SCENE_PLAN_TOOL],
       tool_choice: { type: 'tool', name: 'plan_scene' },
       messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],

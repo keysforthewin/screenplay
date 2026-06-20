@@ -772,7 +772,7 @@ describe('shot-expand prompt wiring', () => {
 
 describe('scene-planner screenplay-format nudge', () => {
   it('tells the planner that beat bodies are screenplay-formatted', () => {
-    const text = Generate.SCENE_PLAN_SYSTEM_PROMPT.join('\n');
+    const text = Generate.SCENE_PLAN_SYSTEM_PROMPT;
     expect(text.toLowerCase()).toContain('screenplay format');
     expect(text.toLowerCase()).toContain('slugline');
   });
