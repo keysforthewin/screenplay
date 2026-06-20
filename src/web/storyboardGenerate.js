@@ -756,7 +756,7 @@ export async function findCharactersInBeat(projectId, beat) {
 // The description (when present, populated by the vision seed worker) is
 // returned alongside the bytes so callers can build concordant text+image
 // references instead of having to infer everything from pixels alone.
-async function loadImageInput(imageId) {
+export async function loadImageInput(imageId) {
   try {
     const result = await readImageBuffer(imageId);
     if (!result) return null;
@@ -775,7 +775,7 @@ async function loadImageInput(imageId) {
 // Clip a markdown field to a plain, length-bounded one-liner for prompt
 // context — strips markdown, collapses whitespace, truncates on a word boundary,
 // and appends an ellipsis. Returns '' for empty/missing input.
-function clipField(raw, max = 300) {
+export function clipField(raw, max = 300) {
   const s = stripMarkdown(typeof raw === 'string' ? raw : '')
     .replace(/\s+/g, ' ')
     .trim();
@@ -788,7 +788,7 @@ function clipField(raw, max = 300) {
 // Casting markers that mean the actor is NOT the on-screen visual likeness, so
 // we must not present them as "played by" (the image model would paint the
 // voice actor's face). The character's own look field carries the visuals.
-const NON_VISUAL_CASTING = /\b(voice[\s-]?only|voice[\s-]?over|v\.?o\.?|motion[\s-]?capture|mo-?cap)\b/i;
+export const NON_VISUAL_CASTING = /\b(voice[\s-]?only|voice[\s-]?over|v\.?o\.?|motion[\s-]?capture|mo-?cap)\b/i;
 
 // Format the character list the same way for every LLM call so all passes
 // (planScene + expandShots) see consistent context. Surfaces the appearance-
@@ -825,7 +825,7 @@ function formatCharacterLines(characters) {
     .join('\n');
 }
 
-function formatDirectorNotes(directorNotes) {
+export function formatDirectorNotes(directorNotes) {
   if (!Array.isArray(directorNotes) || !directorNotes.length) return null;
   const items = directorNotes
     .map((n) => {

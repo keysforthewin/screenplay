@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArtworkDialog } from './ArtworkDialog.jsx';
 import { ArtworkEditDialog } from './ArtworkEditDialog.jsx';
 import { ArtworkPickerModal } from './ArtworkPickerModal.jsx';
-import { apiDelete, apiPatchJson, apiPostJson, imageUrl, thumbUrl } from '../api.js';
+import { ImageSheetDialog } from './ImageSheetDialog.jsx';
+import { GenerationProgress } from './GenerationProgress.jsx';
+import { apiDelete, apiGet, apiPatchJson, apiPostJson, imageUrl, thumbUrl } from '../api.js';
 
 // Generalized artwork tab — works for both character and beat hosts.
 // Renders host.artworks[] as a grid. Each tile shows the artwork's name
@@ -42,8 +44,61 @@ export function ArtworkTab({
   const [busyId, setBusyId] = useState(null);
   const [renameId, setRenameId] = useState(null);
   const [renameValue, setRenameValue] = useState('');
+  // Image-sheet batch job: lives here (not in the dialog) so progress survives
+  // the dialog closing on start. The job runs server-side regardless; this only
+  // tracks the aggregate progress panel.
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetJob, setSheetJob] = useState(null);
+  const [sheetJobErr, setSheetJobErr] = useState(null);
+  const [showSheetLog, setShowSheetLog] = useState(false);
+  const sheetPollRef = useRef(null);
+  const sheetLogRef = useRef(null);
 
   const basePath = `/${hostType}/${hostId}`;
+
+  const sheetActive = !!sheetJob && !['done', 'partial', 'error'].includes(sheetJob.status);
+
+  function stopSheetPoll() {
+    if (sheetPollRef.current) {
+      clearInterval(sheetPollRef.current);
+      sheetPollRef.current = null;
+    }
+  }
+
+  // Poll the global image-sheet job endpoint, refreshing the host each tick so
+  // the pending artwork tiles fill in live alongside the aggregate panel.
+  async function pollSheet(jobId) {
+    try {
+      const r = await apiGet(`/image-sheet/${jobId}`);
+      const job = r?.job ?? r;
+      setSheetJob(job);
+      if (job && ['done', 'partial', 'error'].includes(job.status)) {
+        stopSheetPoll();
+        if (job.status === 'error') setSheetJobErr(job.error || 'Image sheet failed.');
+      }
+      await onChange?.();
+    } catch {
+      // transient poll error — keep polling (the job runs server-side regardless)
+    }
+  }
+
+  function startSheetJob({ jobId, planned }) {
+    stopSheetPoll();
+    setSheetJobErr(null);
+    setShowSheetLog(true);
+    setSheetJob({
+      status: 'queued',
+      completed: 0,
+      failed: 0,
+      planned: planned || 0,
+      started_at: new Date().toISOString(),
+    });
+    sheetPollRef.current = setInterval(() => pollSheet(jobId), 2000);
+    pollSheet(jobId);
+  }
+
+  // Clear the poll interval on unmount (e.g. navigating away mid-job).
+  useEffect(() => () => stopSheetPoll(), []);
 
   const sorted = [...(artworks || [])].sort((a, b) => {
     const aTime = +new Date(a.updated_at || a.created_at || 0);
@@ -145,9 +200,41 @@ export function ArtworkTab({
         >
           + New artwork
         </button>
+        <button
+          type="button"
+          onClick={() => setSheetOpen(true)}
+          disabled={sheetActive}
+          title={sheetActive ? 'An image sheet is already generating' : undefined}
+        >
+          Create image sheet
+        </button>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
+      {sheetJobErr && (
+        <div className="error-banner">Image sheet error: {sheetJobErr}</div>
+      )}
+      {sheetJob && (
+        <div className="image-sheet-progress">
+          <GenerationProgress
+            job={sheetJob}
+            noun="shot"
+            showLog={showSheetLog}
+            onToggleLog={() => setShowSheetLog((s) => !s)}
+            logRef={sheetLogRef}
+          />
+          {!sheetActive && (
+            <div className="tab-actions">
+              <button
+                type="button"
+                onClick={() => { setSheetJob(null); setSheetJobErr(null); }}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {sorted.length === 0 ? (
         <div className="artwork-empty">
@@ -295,6 +382,17 @@ export function ArtworkTab({
         open={creating}
         onClose={() => setCreating(false)}
         onDone={onChange}
+        hostType={hostType}
+        hostId={hostId}
+        hostLabel={hostLabel}
+        hostImages={hostImages}
+        hostArtworks={hostArtworks}
+      />
+
+      <ImageSheetDialog
+        open={sheetOpen}
+        onClose={() => setSheetOpen(false)}
+        onStarted={startSheetJob}
         hostType={hostType}
         hostId={hostId}
         hostLabel={hostLabel}

@@ -2460,6 +2460,42 @@ export function buildApiRouter() {
         handleArtworkError(e, res, next);
       }
     });
+
+    // POST /<host>/:id/image-sheet — start a batch "image sheet" generation
+    // job. Characters get a fixed portrait/turnaround set; beats get a
+    // dynamically-planned set of environment/background plates. Returns 202 +
+    // { job_id, planned, host_type, host_id } immediately; each generated image
+    // lands as a pending→done artwork the gallery already renders live, and the
+    // SPA polls GET /image-sheet/:jobId for the aggregate progress.
+    router.post(`${basePath}/:id/image-sheet`, async (req, res, next) => {
+      try {
+        const hostId = await resolveHostId(req);
+        if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
+        const model = normalizeImageModel(req.body?.model);
+        if (!isValidImageModel(model)) {
+          return res.status(400).json({ error: IMAGE_MODEL_ERROR });
+        }
+        const refs = await validateArtworkRefs(req, res);
+        if (!refs) return;
+        const shotCount = req.body?.shot_count != null ? Number(req.body.shot_count) : undefined;
+        const direction = String(req.body?.direction || '').slice(0, 4000);
+        const { startImageSheetJob } = await import('./imageSheetJobs.js');
+        const result = await startImageSheetJob({
+          projectId: req.projectId,
+          hostType,
+          hostId,
+          model,
+          referenceImageIds: refs.ids,
+          shotCount,
+          direction,
+          discordUser: webDiscordUser(req),
+          announceUsername: req?.session?.username || null,
+        });
+        res.status(202).json(result);
+      } catch (e) {
+        handleArtworkError(e, res, next);
+      }
+    });
   }
 
   registerArtworkRoutes({
@@ -4799,6 +4835,23 @@ export function buildApiRouter() {
       const { getStoryboardGenerationJob } = await import('./storyboardGenerate.js');
       const job = getStoryboardGenerationJob(req.params.jobId);
       if (!job) return res.status(404).json({ error: 'job not found' });
+      res.json({ job });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Poll an image-sheet job started via POST /:host/:id/image-sheet. Job ids are
+  // global (not host-scoped), so verify the job belongs to the caller's project
+  // before returning it.
+  router.get('/image-sheet/:jobId', async (req, res, next) => {
+    try {
+      const { getImageSheetJob } = await import('./imageSheetJobs.js');
+      const job = getImageSheetJob(req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'job not found' });
+      if (job.project_id && String(job.project_id) !== String(req.projectId)) {
+        return res.status(404).json({ error: 'job not found' });
+      }
       res.json({ job });
     } catch (e) {
       next(e);

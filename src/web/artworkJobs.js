@@ -170,6 +170,61 @@ export async function startGenerateArtworkJob({
   return artwork;
 }
 
+// Generate one image for an ALREADY-CREATED pending artwork and flip it to
+// `done`: load reference bytes → call the provider → upload to GridFS → (patch
+// the artwork's model if the provider fell back) → setArtworkResult. Returns
+// `{ fileId, model }` on success and THROWS on failure — the caller owns the
+// error→status write. Shared by the single-artwork generate job (runGenerate
+// below) and the image-sheet batch worker (src/web/imageSheetJobs.js) so the
+// provider/upload/result policy lives in exactly one place.
+export async function generateArtworkImageInline({
+  projectId = null,
+  hostType,
+  hostId,
+  artworkId,
+  prompt,
+  model,
+  referenceImageIds = [],
+  discordUser = null,
+  channelId = null,
+}) {
+  const referenceImages = await loadImageBuffers(referenceImageIds);
+  const result = await runProviderForGenerate({
+    prompt,
+    model,
+    referenceImages,
+    discordUser,
+    channelId,
+  });
+  const file = await uploadGeneratedImage(projectId, {
+    buffer: result.buffer,
+    contentType: result.contentType,
+    prompt,
+    generatedBy: result.model || model,
+    ownerType: hostType,
+    ownerId: hostId,
+    filename: `${hostType}-${hostId}-artwork-${Date.now()}.png`,
+  });
+  if (result.model && result.model !== model) {
+    await patchArtworkViaGateway({
+      projectId,
+      hostType,
+      hostId,
+      artworkId,
+      patch: { model: result.model },
+    });
+  }
+  await setArtworkResultViaGateway({
+    projectId,
+    hostType,
+    hostId,
+    artworkId,
+    resultImageId: file._id,
+    rotateToPrevious: false,
+  });
+  return { fileId: file._id, model: result.model || model };
+}
+
 async function runGenerate(opts) {
   const {
     projectId,
@@ -185,39 +240,16 @@ async function runGenerate(opts) {
     announceVerb,
   } = opts;
   try {
-    const referenceImages = await loadImageBuffers(referenceImageIds);
-    const result = await runProviderForGenerate({
-      prompt,
-      model,
-      referenceImages,
-      discordUser,
-      channelId,
-    });
-    const file = await uploadGeneratedImage(projectId, {
-      buffer: result.buffer,
-      contentType: result.contentType,
-      prompt,
-      generatedBy: result.model || model,
-      ownerType: hostType,
-      ownerId: hostId,
-      filename: `${hostType}-${hostId}-artwork-${Date.now()}.png`,
-    });
-    if (result.model && result.model !== model) {
-      await patchArtworkViaGateway({
-        projectId,
-        hostType,
-        hostId,
-        artworkId,
-        patch: { model: result.model },
-      });
-    }
-    await setArtworkResultViaGateway({
+    const { fileId } = await generateArtworkImageInline({
       projectId,
       hostType,
       hostId,
       artworkId,
-      resultImageId: file._id,
-      rotateToPrevious: false,
+      prompt,
+      model,
+      referenceImageIds,
+      discordUser,
+      channelId,
     });
     if (announceUsername) {
       announceArtwork({
@@ -226,7 +258,7 @@ async function runGenerate(opts) {
         hostId,
         username: announceUsername,
         verb: announceVerb || 'created artwork on',
-        fileId: file._id,
+        fileId,
         prompt,
       });
     }
