@@ -171,6 +171,7 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   '',
   '# Two jobs',
   '1. Write the SCENE BIBLE — a compact, unified visual plan (location, time of day, lighting key, palette, mood, blocking, continuity anchors, camera language). Every shot will inherit this, so make it concrete and self-consistent. Derive it from the beat body, description, characters, and director guidance.',
+  '   Beat bodies are written in screenplay format (Fountain-flavored): read sluglines (INT./EXT. LOCATION — TIME) for location, time of day, and lighting; action lines for blocking and staging; and shot cues (CLOSE ON, WIDE, PUSH IN) for camera language. Lean on that structure when deriving the scene bible.',
   '2. Plan the ordered SHOT SKELETON — one entry per shot, covering the whole beat with cinematic rhythm.',
   '',
   '# FRAME COUNT IS NON-NEGOTIABLE',
@@ -195,7 +196,7 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   '- shot_type drives duration_seconds: establishing/cinematic_wide/insert ≤ 15s, medium ≤ 10s, close_up/reaction/two_shot/over_the_shoulder ≤ 5s. Prefer the lower half of the range — shorter clips survive video gen better.',
   "- Don't invent characters not in the beat's character list.",
   '- Emit EXACTLY the requested number of frames.',
-].join('\n');
+];
 
 let dispatcherOverride = null;
 export function _setImageDispatcherForTests(fn) {
@@ -901,7 +902,7 @@ async function planScene({ beat, characters, targetCount, direction, directorNot
     .stream({
       model: STORYBOARD_MODEL,
       max_tokens: 16000,
-      system: SCENE_PLAN_SYSTEM_PROMPT,
+      system: SCENE_PLAN_SYSTEM_PROMPT.join('\n'),
       tools: [SCENE_PLAN_TOOL],
       tool_choice: { type: 'tool', name: 'plan_scene' },
       messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
