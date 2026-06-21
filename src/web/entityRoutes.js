@@ -173,7 +173,7 @@ import {
 } from '../mongo/attachments.js';
 import { getCharacterTemplate, getPlotTemplate } from '../mongo/prompts.js';
 import { stripMarkdown } from '../util/markdown.js';
-import { collectStoryboardReferenceIds } from './storyboardReferenceAggregator.js';
+import { selectBestReferencesForShot } from './referenceSelector.js';
 import { buildTocResponse } from './toc.js';
 import {
   streamBeatZip,
@@ -3899,12 +3899,18 @@ export function buildApiRouter() {
         const frame = (sb.frames || []).find((f) => f._id.toString() === frameId);
         if (!frame) return res.status(404).json({ error: 'frame not found' });
         const beat = await getBeat(req.projectId, String(sb.beat_id));
-        const { ids, added } = await collectStoryboardReferenceIds({
+        const shotText = [sb.summary, frame.text_prompt, frame.prompt]
+          .map((s) => stripMarkdown(String(s || '')).trim())
+          .filter(Boolean)
+          .join('\n');
+        const ids = await selectBestReferencesForShot({
           projectId: req.projectId,
-          beat,
-          charactersInScene: sb.characters_in_scene || [],
-          existingIds: frame.reference_ids || [],
+          shotText,
+          characterNames: sb.characters_in_scene || [],
+          beatMainImageId: beat?.main_image_id || null,
         });
+        const existing = new Set((frame.reference_ids || []).map(String));
+        const added = ids.filter((id) => !existing.has(String(id)));
         const storyboard = added.length
           ? await setStoryboardFrameReferenceImagesViaGateway({
               projectId: req.projectId,
