@@ -6,20 +6,13 @@ export function DialogIndex() {
   const [toc, setToc] = useState(null);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState('');
-  const [style, setStyle] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [t, s] = await Promise.all([
-          apiGet('/toc'),
-          apiGet('/plot/dialogue-style').catch(() => ({ dialogue_style: '' })),
-        ]);
-        if (!cancelled) {
-          setToc(t);
-          setStyle(s.dialogue_style || '');
-        }
+        const t = await apiGet('/toc');
+        if (!cancelled) setToc(t);
       } catch (e) {
         if (!cancelled) setError(e.message);
       }
@@ -80,13 +73,6 @@ export function DialogIndex() {
           Edit it on the <Link to="/about">About page</Link>. Each beat also has its
           own dialogue notes on its dialog page.
         </p>
-        {style.trim() ? (
-          <p style={{ whiteSpace: 'pre-wrap', margin: '4px 0 0' }}>{style}</p>
-        ) : (
-          <p style={{ color: 'var(--fg-muted)', fontStyle: 'italic', margin: '4px 0 0' }}>
-            No global dialogue style set yet.
-          </p>
-        )}
       </section>
 
       <div className="toc-filter">
