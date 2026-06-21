@@ -303,7 +303,7 @@ export function StoryboardBeat({ session }) {
     }
   }
 
-  async function generateAllImages({ imageModel }) {
+  async function generateAllImages({ imageModel, autoReferences = true }) {
     if (!data?.beat) return;
     setImageGenError(null);
     setImageGenerating(true);
@@ -313,6 +313,7 @@ export function StoryboardBeat({ session }) {
       const r = await apiPostJson('/storyboards/generate-images', {
         beat_id: data.beat._id,
         image_model: imageModel,
+        auto_references: autoReferences,
       });
       const jobId = r.job_id;
       imagePollRef.current = setInterval(() => pollImageJob(jobId), 2000);

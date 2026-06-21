@@ -14,6 +14,7 @@ const MODEL_STORAGE_KEY = 'screenplay.storyboard.model';
 // vs skipped (computed by the caller from the loaded storyboard list).
 export function BulkGenerateImagesDialog({ open, onClose, onSubmit, missingCount = 0, skipCount = 0 }) {
   const [imageModel, setImageModel] = useState(() => readStoredImageModel(MODEL_STORAGE_KEY));
+  const [autoReferences, setAutoReferences] = useState(true);
 
   useEffect(() => {
     writeStoredImageModel(MODEL_STORAGE_KEY, imageModel);
@@ -33,7 +34,7 @@ export function BulkGenerateImagesDialog({ open, onClose, onSubmit, missingCount
           <button
             type="button"
             className="primary"
-            onClick={() => onSubmit({ imageModel })}
+            onClick={() => onSubmit({ imageModel, autoReferences })}
             disabled={nothingToDo}
           >
             Generate
@@ -54,6 +55,17 @@ export function BulkGenerateImagesDialog({ open, onClose, onSubmit, missingCount
           Each frame uses its own configured prompt and references. Frames with no
           saved prompt fall back to an auto-suggested one.
         </p>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={autoReferences}
+            onChange={(e) => setAutoReferences(e.target.checked)}
+          />
+          <span className="modal-help" style={{ margin: 0 }}>
+            Auto-pick reference images for frames that have none, from the library
+            artwork and the characters in each scene.
+          </span>
+        </label>
         <div className="frame-generate-model-row">
           <span className="field-label">Image model</span>
           <div className="frame-generate-model-options">
