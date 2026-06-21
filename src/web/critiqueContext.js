@@ -38,6 +38,9 @@ export async function buildCritiqueContext(projectId, beat) {
   const plot = await getPlot(projectId);
   const beats = await listBeats(projectId); // already sorted by order
   const idx = beats.findIndex((b) => b._id && beat._id && b._id.equals(beat._id));
+  if (idx === -1) {
+    throw new Error(`buildCritiqueContext: beat ${beat?._id} not found in project ${projectId}`);
+  }
   const prevBeat = idx > 0 ? beats[idx - 1] : null;
   const nextBeat = idx >= 0 && idx < beats.length - 1 ? beats[idx + 1] : null;
   const spine = beats.map((b) => ({ order: b.order, name: b.name, desc: b.desc }));

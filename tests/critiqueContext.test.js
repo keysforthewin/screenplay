@@ -42,5 +42,9 @@ describe('buildCritiqueContext', () => {
     const ctx = await buildCritiqueContext(projectId, beat);
     expect(ctx.prevBeat).toBeNull();
     expect(ctx.nextBeat.order).toBe(2);
+    const last = await Plots.getBeat(projectId, (await Plots.listBeats(projectId)).at(-1)._id.toString());
+    const lastCtx = await buildCritiqueContext(projectId, last);
+    expect(lastCtx.nextBeat).toBeNull();
+    expect(lastCtx.prevBeat.order).toBe(1);
   });
 });
