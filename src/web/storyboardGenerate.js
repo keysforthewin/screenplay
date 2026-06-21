@@ -58,7 +58,6 @@ import {
 import { autoFillFrameReferencesIfEmpty } from './frameReferences.js';
 import { critiquePanel as defaultCritiquePanel } from './storyboardCritique.js';
 import { formatCandidateManifest, gatherCandidatesFromDocs, resolveReferencePicks } from './referenceSelector.js';
-import { collectStoryboardReferenceIds } from './storyboardReferenceAggregator.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 import {
   CAMERA_MOTION_RULES,
@@ -1489,22 +1488,9 @@ async function createPlannedStoryboardEntry({
     reverseInPost: Boolean(frame.reverse_in_post),
   });
 
-  // Collect the visual references for this shot once (beat set image(s) plus
-  // each in-scene character's sheets and portraits) and seed every planned
-  // frame's reference list with them so the modal's default ref grid is
-  // non-empty. Failures are swallowed so the row still lands.
-  let referenceIds = [];
-  try {
-    const collected = await collectStoryboardReferenceIds({
-      projectId,
-      beat,
-      charactersInScene: frame.characters_in_scene ?? [],
-      existingIds: [],
-    });
-    referenceIds = collected.ids || [];
-  } catch (e) {
-    logger.warn(`storyboard gen: collect refs failed: ${e.message}`);
-  }
+  // Reference ids are resolved during planning (planFramesV2 -> resolveReferencePicks):
+  // beat image + the LLM-picked best image per in-scene character.
+  const referenceIds = Array.isArray(frame.reference_ids) ? frame.reference_ids : [];
 
   // The planner produces an opening still prompt; seed it as the first frame
   // of the pool. A frame with no prompt is skipped so a sparse planner output

@@ -611,37 +611,86 @@ describe('storyboard auto-generation (two-pass)', () => {
   });
 });
 
+// Helpers shared across reference-image tests.
+async function putImageMetaInDb({ name = '', description = '' } = {}) {
+  const _id = new ObjectId();
+  await fakeDb.collection('images.files').insertOne({
+    _id, filename: 'x.png', contentType: 'image/png', length: 10,
+    uploadDate: new Date(), metadata: { name, description },
+  });
+  return _id;
+}
+const RefChars = await import('../src/mongo/characters.js');
+async function makeRefCharacter(name, { sheets = [], mainId = null, images = [] } = {}) {
+  const c = await RefChars.createCharacter({ projectId, name });
+  await fakeDb.collection('characters').updateOne(
+    { _id: c._id },
+    { $set: { character_sheet_image_ids: sheets, main_image_id: mainId, images } },
+  );
+  return RefChars.getCharacter(projectId, name);
+}
+
 describe('auto-populated reference images', () => {
-  it('attaches beat + per-character reference images to each generated row', async () => {
-    installPlanner(TWO_SHOT_PLAN);
-    const Characters = await import('../src/mongo/characters.js');
-    const sheetA = new ObjectId();
-    const mainA = new ObjectId();
-    const sheetB = new ObjectId();
+  it('seeds frame reference_ids from the LLM-picked image, not the full aggregator set', async () => {
+    // Beat has a main image. Character "Keys" has two labeled sheets (young,
+    // old). The expander picks image_index:2 (the OLD sheet). After Task 7,
+    // the stored frame's reference_ids must contain [beatImg, oldSheet] and
+    // must NOT contain youngSheet.
+    const youngSheet = await putImageMetaInDb({ name: 'Young Keys', description: 'teen' });
+    const oldSheet = await putImageMetaInDb({ name: 'Old Keys', description: '70s' });
+    await makeRefCharacter('Keys', { sheets: [youngSheet, oldSheet], mainId: youngSheet });
+
+    const beatImg = new ObjectId();
+    const beat = await Plots.createBeat({ projectId,
+      name: 'Keys solo',
+      desc: 'k',
+      body: 'Keys alone in the bar.',
+      characters: ['Keys'],
+    });
+    await Plots.pushBeatImage(projectId, beat._id, { _id: beatImg }, true);
+
+    Generate._setScenePlannerForTests(async () => ({
+      sceneBible: { location: 'Bar' },
+      outline: [{ description: 'cu on Keys', shot_type: 'close_up', duration_seconds: 4,
+        transition_in: '', characters_in_scene: ['Keys'], reverse_in_post: false }],
+    }));
+    Generate._setShotExpanderForTests(async ({ outline }) =>
+      outline.map(() => ({
+        start_frame_prompt: 'Close-up on the old man.',
+        video_prompt: 'Static. Keys stares into the glass.',
+        references: [{ character: 'Keys', image_index: 2 }],
+      })),
+    );
+
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
+      beatId: beat._id.toString(),
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+
+    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
+    expect(stored).toHaveLength(1);
+    const frame = stored[0].frames[0];
+    const ids = frame.reference_ids.map((x) => x.toString());
+    // Beat image is always first.
+    expect(ids).toContain(beatImg.toString());
+    // The LLM picked the OLD sheet (index 2).
+    expect(ids).toContain(oldSheet.toString());
+    // The young sheet was NOT picked — it must be absent.
+    expect(ids).not.toContain(youngSheet.toString());
+  });
+
+  it('attaches beat + LLM-first-pick reference image per in-scene character', async () => {
+    // When the expander emits no references, resolveReferencePicks falls back
+    // to the first candidate for each in-scene character (not the full aggregator
+    // set — aggregator is replaced by frame.reference_ids in Task 7).
+    const sheetA = await putImageMetaInDb({ name: 'Alice sheet', description: '' });
+    const mainA = await putImageMetaInDb({ name: 'Alice main', description: '' });
+    const sheetB = await putImageMetaInDb({ name: 'Bob sheet', description: '' });
     const beatImg = new ObjectId();
 
-    const a = await Characters.createCharacter({ projectId, name: 'Alice' });
-    await fakeDb.collection('characters').updateOne(
-      { _id: a._id },
-      {
-        $set: {
-          character_sheet_image_ids: [sheetA],
-          main_image_id: mainA,
-          images: [{ _id: mainA }],
-        },
-      },
-    );
-    const b = await Characters.createCharacter({ projectId, name: 'Bob' });
-    await fakeDb.collection('characters').updateOne(
-      { _id: b._id },
-      {
-        $set: {
-          character_sheet_image_ids: [sheetB],
-          main_image_id: null,
-          images: [],
-        },
-      },
-    );
+    await makeRefCharacter('Alice', { sheets: [sheetA], mainId: mainA, images: [{ _id: mainA }] });
+    await makeRefCharacter('Bob', { sheets: [sheetB], mainId: null, images: [] });
 
     const beat = await Plots.createBeat({ projectId,
       name: 'Diner',
@@ -650,6 +699,8 @@ describe('auto-populated reference images', () => {
       characters: ['Alice', 'Bob'],
     });
     await Plots.pushBeatImage(projectId, beat._id, { _id: beatImg }, true);
+
+    installPlanner(TWO_SHOT_PLAN); // no references in expander output
 
     const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
@@ -660,17 +711,18 @@ describe('auto-populated reference images', () => {
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(stored).toHaveLength(2);
 
-    // Each planned row's single seeded frame gets its reference list seeded from
-    // the aggregator (beat image + the in-scene characters' refs).
-    // Shot 1: Alice only → beat image + Alice's sheet + Alice's main.
+    // Shot 1: Alice only → beat image + Alice's first candidate (sheetA).
+    // mainA is NOT included because the aggregator is gone — only the first
+    // candidate picked by resolveReferencePicks (no explicit LLM pick → cands[0]).
     for (const frame of stored[0].frames) {
       const ids = frame.reference_ids.map((x) => x.toString());
       expect(ids).toContain(beatImg.toString());
       expect(ids).toContain(sheetA.toString());
-      expect(ids).toContain(mainA.toString());
+      // mainA is the second candidate; without an explicit pick it is not included.
+      expect(ids).not.toContain(mainA.toString());
       expect(ids).not.toContain(sheetB.toString());
     }
-    // Shot 2: Alice + Bob → beat image + both characters' refs.
+    // Shot 2: Alice + Bob → beat image + Alice's first candidate + Bob's first candidate.
     for (const frame of stored[1].frames) {
       const ids = frame.reference_ids.map((x) => x.toString());
       expect(ids).toContain(beatImg.toString());
