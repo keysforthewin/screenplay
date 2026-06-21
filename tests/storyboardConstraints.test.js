@@ -73,4 +73,32 @@ describe('storyboard constraints', () => {
     expect(t).toContain('back');
     expect(t).toContain('two separate shots');
   });
+
+  it('still-framing rules treat the start frame as the initial state at t=0', () => {
+    const t = STILL_FRAMING_RULES.toLowerCase();
+    expect(t).toContain('initial state');
+    expect(t).toContain('first frame');
+  });
+
+  it('still-framing rules withhold mid-clip non-solid effects from the still (shooting-star fix)', () => {
+    const t = STILL_FRAMING_RULES.toLowerCase();
+    expect(t).toContain('non-solid');
+    expect(t).toContain('shooting star');
+    // The withheld effect belongs in the video_prompt, not the opening still.
+    expect(t).toContain('video_prompt');
+  });
+
+  it('subject-motion rules scope the "already in the start frame" ban to solids and exempt non-solid effects', () => {
+    const t = SUBJECT_MOTION_RULES.toLowerCase();
+    expect(t).toContain('solid');
+    // Non-solid effects are the sanctioned exception that may appear mid-clip.
+    expect(t).toContain('non-solid');
+    expect(t).toContain('exception');
+  });
+
+  it('video-prompt hero temporal change may be a non-solid effect absent from the start frame', () => {
+    const t = VIDEO_PROMPT_RULES.toLowerCase();
+    expect(t).toContain('non-solid');
+    expect(t).toContain('start frame');
+  });
 });

@@ -961,7 +961,7 @@ const SHOT_EXPAND_TOOL = {
             start_frame_prompt: {
               type: 'string',
               description:
-                'Still-image prompt for the opening composition. Capture the subject as a FROZEN MOMENT of the action — pose, orientation, heading, and placement in the required geography — so the still reads as the intended moment (a car squarely in its lane, nose down the street, not slewed across it). ~2–3 sentences. Do NOT restate the scene bible (location/lighting/palette/blocking) or character faces/wardrobe — reference them.',
+                'Still-image prompt for the opening composition. Capture the subject as a FROZEN MOMENT of the action — pose, orientation, heading, and placement in the required geography — so the still reads as the intended moment (a car squarely in its lane, nose down the street, not slewed across it). ~2–3 sentences. Do NOT restate the scene bible (location/lighting/palette/blocking) or character faces/wardrobe — reference them. This is the clip\'s FIRST frame (the initial state at t=0): a NON-SOLID effect that only occurs later in the clip (a shooting star, a flash, a breaking wave) is NOT in this frame — it belongs solely in the video_prompt.',
             },
             video_prompt: {
               type: 'string',
@@ -1003,7 +1003,7 @@ export const SHOT_EXPAND_SYSTEM_PROMPT = [
   'You see the SCENE BIBLE (the unified look) and the FULL shot skeleton at once, so you can compose the whole scene coherently: each shot picks up its neighbor, and every shot honors the same bible.',
   '',
   '# Two outputs per shot (NO end frame)',
-  '1. start_frame_prompt — the opening still the image-to-video model conditions on. Capture the subject as a frozen moment of the action: its pose, orientation, heading, and where it sits in the geography the beat requires. ~2–3 sentences. This is the ONLY place the subject/scene appearance is described.',
+  '1. start_frame_prompt — the opening still the image-to-video model conditions on. Capture the subject as a frozen moment of the action: its pose, orientation, heading, and where it sits in the geography the beat requires. ~2–3 sentences. This is the ONLY place the subject/scene appearance is described. It is the clip\'s FIRST frame — the initial state at t=0: a non-solid effect that only happens later in the clip (a shooting star, a flash) is NOT in this frame; it goes only in the video_prompt.',
   '2. video_prompt — what CHANGES over the clip: the camera first, then one primary motion, assuming the start frame already exists. 2–4 sentences. Strip every static/scene detail; never re-describe the start composition.',
   '',
   '# Inherit the bible — do not re-describe it',
