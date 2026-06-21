@@ -19,7 +19,7 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
         if (!cancelled) setCritique(r.critique || null);
       } catch (e) { if (!cancelled) setError(e.message); }
     })();
-    return () => { cancelled = true; if (esRef.current) esRef.current.close(); };
+    return () => { cancelled = true; if (esRef.current) { esRef.current.close(); esRef.current = null; } setRunning(false); };
   }, [beatId]);
 
   function closeStream() { if (esRef.current) { esRef.current.close(); esRef.current = null; } }
@@ -73,11 +73,11 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
         <button type="button" className="primary" disabled={running} onClick={runCritique}>
           {running ? 'Critiquing…' : critique ? 'Re-run critique' : 'Run critique'}
         </button>
-        <button type="button" disabled={busy || running || !hasCritique} onClick={regenerate}>
+        <button type="button" disabled={!!busy || running || !hasCritique} onClick={regenerate}>
           {busy === 'regen' ? 'Regenerating…' : 'Regenerate beat from critique'}
         </button>
         {hasPreviousBody && (
-          <button type="button" disabled={busy} onClick={undo}>{busy === 'undo' ? 'Undoing…' : 'Undo rewrite'}</button>
+          <button type="button" disabled={!!busy} onClick={undo}>{busy === 'undo' ? 'Undoing…' : 'Undo rewrite'}</button>
         )}
       </div>
       {error && <div className="critique-error">{error}</div>}

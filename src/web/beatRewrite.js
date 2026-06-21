@@ -66,8 +66,8 @@ export async function normalizeBeat(projectId, beatId) {
   projectId = await resolveProjectId(projectId);
   const beat = await getBeat(projectId, String(beatId));
   if (!beat) throw httpError(`beat not found: ${beatId}`, 404);
-  await stashPreviousBody(projectId, beat._id, String(beat.body || ''));
   const body = await normalizeBeatBody(beat.body);
+  await stashPreviousBody(projectId, beat._id, String(beat.body || ''));
   await setBeatBodyViaGateway(projectId, beat._id, body);
   logger.info(`beatRewrite: normalize beat=${beat._id} chars=${body.length}`);
   return { body };
@@ -81,8 +81,8 @@ export async function regenerateBeat(projectId, beatId) {
   if (!critique || !(critique.facets || []).some((f) => f.status === 'done')) {
     throw httpError('No critique to regenerate from. Run a critique first.', 409);
   }
-  await stashPreviousBody(projectId, beat._id, String(beat.body || ''));
   const body = await regenerateBeatBody({ beat, critique });
+  await stashPreviousBody(projectId, beat._id, String(beat.body || ''));
   await setBeatBodyViaGateway(projectId, beat._id, body);
   logger.info(`beatRewrite: regenerate beat=${beat._id} chars=${body.length}`);
   return { body };

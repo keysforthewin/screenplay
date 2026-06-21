@@ -20,7 +20,6 @@ vi.mock('../src/web/announceHelpers.js', () => ({
 
 const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
-const C = await import('../src/mongo/critiques.js');
 const G = await import('../src/web/critiqueGenerate.js');
 const { _setAnthropicClientForTests } = await import('../src/anthropic/client.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');

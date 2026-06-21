@@ -506,6 +506,9 @@ export function buildApiRouter() {
       const {
         getCritiqueJob, subscribeToCritiqueJob, unsubscribeFromCritiqueJob, serializeCritiqueJob,
       } = await import('./critiqueGenerate.js');
+      // Keyed on the server-minted job id (an unguessable ObjectId returned only
+      // to the authenticated starter of the run) — same capability model as the
+      // video-job SSE route. The mutating routes enforce project scoping.
       const job = getCritiqueJob(req.params.jobId);
       if (!job) { res.status(404).json({ error: 'job not found' }); return; }
 
