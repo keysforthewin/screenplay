@@ -175,7 +175,7 @@ describe('POST /storyboard/:id/frame/:frameId/reference/auto-populate', () => {
     expect(added).not.toContain(youngSheet.toString());
 
     // total reflects the full resolved list (beatImg + oldSheet = 2)
-    expect(json.total).toBeGreaterThanOrEqual(1);
+    expect(json.total).toBe(2);
 
     // storyboard returned in response
     expect(json.storyboard).toBeDefined();
