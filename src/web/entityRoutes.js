@@ -5019,6 +5019,7 @@ export function buildApiRouter() {
       if (!isValidImageModel(imageModel)) {
         return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
+      const autoReferences = req.body?.auto_references !== false; // default on
       const { isBeatLocked } = await import('./beatLocks.js');
       if (isBeatLocked(beat._id)) {
         return res
@@ -5031,6 +5032,7 @@ export function buildApiRouter() {
           projectId: req.projectId,
           beatId: beat._id,
           imageModel,
+          autoReferences,
         });
         res.status(202).json({ job_id: jobId, planned, beat_id: beat._id.toString() });
       } catch (e) {

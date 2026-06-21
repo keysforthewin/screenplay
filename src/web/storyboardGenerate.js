@@ -55,6 +55,7 @@ import {
   setStoryboardFramePromptViaGateway,
   setStoryboardCritiqueViaGateway,
 } from './gateway.js';
+import { autoFillFrameReferencesIfEmpty } from './frameReferences.js';
 import { critiquePanel as defaultCritiquePanel } from './storyboardCritique.js';
 import { collectStoryboardReferenceIds } from './storyboardReferenceAggregator.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
@@ -327,6 +328,7 @@ export async function startBulkFrameGenerationJob({
   projectId,
   beatId,
   imageModel = 'nano-banana-pro',
+  autoReferences = true,
 }) {
   const beat = await getBeat(projectId, beatId);
   if (!beat) throw new Error(`Beat not found: ${beatId}`);
@@ -357,7 +359,7 @@ export async function startBulkFrameGenerationJob({
   });
 
   withBeatLock(beat._id, () =>
-    runBulkFrameGenerationJob({ projectId, job, beat, targets, imageModel }),
+    runBulkFrameGenerationJob({ projectId, job, beat, targets, imageModel, autoReferences }),
   ).catch((e) => {
     job.status = 'error';
     job.error = e.message;
@@ -373,7 +375,7 @@ export async function startBulkFrameGenerationJob({
   return { jobId, planned: targets.length };
 }
 
-async function runBulkFrameGenerationJob({ projectId, job, beat, targets, imageModel }) {
+async function runBulkFrameGenerationJob({ projectId, job, beat, targets, imageModel, autoReferences = true }) {
   if (targets.length === 0) {
     job.status = 'done';
     job.finished_at = new Date();
@@ -411,6 +413,7 @@ async function runBulkFrameGenerationJob({ projectId, job, beat, targets, imageM
         imageModel,
         mode: 'generate',
         prompt,
+        autoReferences,
       });
       job.completed += 1;
       recordProgress(job, {
@@ -1681,6 +1684,7 @@ async function regenerateStoryboardFrameInternal({
   editReferenceImageIds = [],
   prompt = null,
   rotateToPrevious = false,
+  autoReferences = true,
 }) {
   const frameId = frame._id;
   let renderPrompt;
@@ -1732,6 +1736,13 @@ async function regenerateStoryboardFrameInternal({
     } catch (e) {
       logger.warn(`storyboard regen: persist frame prompt failed: ${e.message}`);
     }
+    await autoFillFrameReferencesIfEmpty({
+      projectId,
+      sb,
+      frame,
+      sceneText: renderPrompt,
+      autoReferences,
+    });
     inputImages = await loadFrameReferenceImages(frame);
     dispatchMode = 'generate';
   }
