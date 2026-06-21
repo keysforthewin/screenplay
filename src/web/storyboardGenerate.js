@@ -1311,9 +1311,10 @@ export function findAppearingBeatCharacters(text, beatCharacters) {
 // the shot text, deduped case-insensitively. Planner picks lead the ordering.
 export function linkBeatCharactersForShot(frame, beatCharacters) {
   const picks = Array.isArray(frame?.characters_in_scene) ? frame.characters_in_scene : [];
-  const text = [frame?.description, frame?.start_frame_prompt, frame?.video_prompt, frame?.transition_in]
-    .filter(Boolean)
-    .join('\n');
+  // Backstop scans ONLY the still composition. video_prompt (motion/narration),
+  // description (summary) and transition_in routinely name off-frame characters,
+  // which previously pulled their reference images into shots they aren't in.
+  const text = [frame?.start_frame_prompt].filter(Boolean).join('\n');
   const detected = findAppearingBeatCharacters(text, beatCharacters);
   const out = [];
   const seen = new Set();

@@ -17,6 +17,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ObjectId } from 'mongodb';
 import { createFakeDb } from './_fakeMongo.js';
+import { linkBeatCharactersForShot } from '../src/web/storyboardGenerate.js';
 
 const fakeDb = createFakeDb();
 
@@ -781,5 +782,31 @@ describe('scene-planner screenplay-format nudge', () => {
     const text = Generate.SCENE_PLAN_SYSTEM_PROMPT.toLowerCase();
     expect(text).toContain('sub-location');
     expect(text).toContain('mini-slug');
+  });
+});
+
+describe('linkBeatCharactersForShot backstop scope', () => {
+  const beatCast = ['Young Keys', 'Old Keys', 'Mara'];
+
+  it('does NOT link a character named only in video_prompt / description / transition', () => {
+    const frame = {
+      characters_in_scene: ['Young Keys'],
+      description: 'Young Keys remembers Old Keys.',
+      start_frame_prompt: 'Tight close-up on the young man, eyes wet.',
+      video_prompt: 'Static camera. Old Keys is mentioned in narration only.',
+      transition_in: 'Cut from Mara.',
+    };
+    const out = linkBeatCharactersForShot(frame, beatCast);
+    expect(out).toEqual(['Young Keys']);
+  });
+
+  it('DOES link a beat character named in start_frame_prompt but missing from picks', () => {
+    const frame = {
+      characters_in_scene: ['Young Keys'],
+      start_frame_prompt: 'Two-shot: the young man beside Mara at the window.',
+      video_prompt: 'Static camera.',
+    };
+    const out = linkBeatCharactersForShot(frame, beatCast);
+    expect(out).toEqual(['Young Keys', 'Mara']);
   });
 });
