@@ -7,6 +7,7 @@ import { getCharacter } from '../mongo/characters.js';
 import { findImageFile, imageFileToMeta } from '../mongo/images.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { logger } from '../log.js';
+import { getAnthropic } from '../anthropic/client.js';
 
 // Candidate ids for a character, ordered to match canonicalImageIdFor priority
 // (sheets -> main -> attached images), deduped. candidates[0] is the canonical
@@ -88,6 +89,93 @@ export function formatCandidateManifest(perCharacter) {
     blocks.push(lines.join('\n'));
   }
   return blocks.join('\n');
+}
+
+// Kept in sync with STORYBOARD_MODEL; a local const avoids an import cycle with
+// storyboardGenerate.js (which imports this module).
+const REFERENCE_SELECT_MODEL = 'claude-opus-4-8';
+
+const REFERENCE_SELECT_TOOL = {
+  name: 'select_references',
+  description:
+    "Pick the single most appropriate reference image for each character in the shot, by 1-based index from that character's candidate list.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      picks: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            character: { type: 'string', description: 'Character name, exactly as listed.' },
+            image_index: { type: 'integer', minimum: 1, description: "1-based index into that character's candidate list." },
+          },
+          required: ['character', 'image_index'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['picks'],
+    additionalProperties: false,
+  },
+};
+
+const REFERENCE_SELECT_SYSTEM_PROMPT = [
+  'You are a storyboard artist choosing reference images. For each character in the shot,',
+  "pick the ONE candidate image whose name/description/caption best matches how the character",
+  'appears in THIS shot (age, wardrobe, framing, emotion). Return one pick per character via the',
+  "select_references tool, using the 1-based index from that character's candidate list.",
+  'If nothing clearly fits, pick index 1.',
+].join(' ');
+
+let llmOverride = null;
+export function _setReferenceSelectorLLMForTests(fn) {
+  llmOverride = fn;
+}
+
+async function callReferenceSelectLLM({ shotText, manifest }) {
+  if (llmOverride) return llmOverride({ shotText, manifest });
+  const client = getAnthropic();
+  const userText = [
+    `# Shot\n${shotText}`,
+    '',
+    '# Candidate reference images (pick one index per character):',
+    manifest,
+  ].join('\n');
+  const resp = await client.messages
+    .stream({
+      model: REFERENCE_SELECT_MODEL,
+      max_tokens: 1024,
+      system: REFERENCE_SELECT_SYSTEM_PROMPT,
+      tools: [REFERENCE_SELECT_TOOL],
+      tool_choice: { type: 'tool', name: 'select_references' },
+      messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+    })
+    .finalMessage();
+  const toolUse = (resp.content || []).find((b) => b.type === 'tool_use' && b.name === 'select_references');
+  return { picks: Array.isArray(toolUse?.input?.picks) ? toolUse.input.picks : [] };
+}
+
+// A character is worth asking the LLM about only if it has >1 candidate AND at
+// least one carries descriptive text to disambiguate on.
+function isSelectable(entry) {
+  return entry.candidates.length > 1 && entry.candidates.some((c) => c.name || c.description || c.caption);
+}
+
+export async function selectBestReferencesForShot({ projectId, shotText, characterNames, beatMainImageId = null, max = 12 }) {
+  const perCharacter = await gatherCharacterReferenceCandidates(projectId, characterNames);
+  let picks = [];
+  if (perCharacter.some(isSelectable)) {
+    try {
+      const manifest = formatCandidateManifest(perCharacter);
+      const r = await callReferenceSelectLLM({ shotText: String(shotText || ''), manifest });
+      picks = r.picks || [];
+    } catch (e) {
+      logger.warn(`reference selector: LLM selection failed, using canonical: ${e.message}`);
+      picks = [];
+    }
+  }
+  return resolveReferencePicks({ picks, perCharacter, beatMainImageId, max });
 }
 
 export function resolveReferencePicks({ picks, perCharacter, beatMainImageId = null, max = 12 }) {
