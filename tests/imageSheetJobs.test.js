@@ -95,7 +95,8 @@ beforeEach(async () => {
   h.dispatch.maxInFlight = 0;
   h.dispatch.failOnCall = 0;
   h.fal.configured = true;
-  Planner._setSceneImagePlannerForTests(null);
+  Planner._setScenePlatePlannerForTests(null);
+  Planner._setScenePlateCritiqueForTests(null);
 });
 
 async function waitForJob(jobId, timeoutMs = 4000) {
@@ -200,12 +201,11 @@ describe('startImageSheetJob — character', () => {
 
 describe('startImageSheetJob — beat (dynamic planner)', () => {
   it('plans then renders one done artwork per planned image', async () => {
-    Planner._setSceneImagePlannerForTests(async () => ({
-      images: [
-        { name: 'Alley — wide', prompt: 'wide empty rain-slick alley at dusk' },
-        { name: 'Brick — insert', prompt: 'tight insert of wet brick texture' },
-      ],
-    }));
+    Planner._setScenePlatePlannerForTests(async () => ([
+      { name: 'Alley — wide', prompt: 'wide empty rain-slick alley at dusk', justification: 'establishes the location', quote: 'INT. ALLEY - NIGHT' },
+      { name: 'Brick — insert', prompt: 'tight insert of wet brick texture', justification: 'set detail', quote: 'INT. ALLEY - NIGHT' },
+    ]));
+    Planner._setScenePlateCritiqueForTests(async () => ({ verdict: 'keep' }));
     const beat = await Plots.createBeat({ projectId, name: 'The Alley', desc: 'x', body: 'INT. ALLEY - NIGHT' });
     const { job_id, planned } = await Sheet.startImageSheetJob({
       projectId,
@@ -228,7 +228,7 @@ describe('startImageSheetJob — beat (dynamic planner)', () => {
   });
 
   it('finishes "done" with no artworks when the planner returns nothing', async () => {
-    Planner._setSceneImagePlannerForTests(async () => ({ images: [] }));
+    Planner._setScenePlatePlannerForTests(async () => []);
     const beat = await Plots.createBeat({ projectId, name: 'Empty', desc: '', body: '' });
     const { job_id } = await Sheet.startImageSheetJob({
       projectId,

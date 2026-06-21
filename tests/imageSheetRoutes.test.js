@@ -86,7 +86,8 @@ beforeEach(async () => {
   fakeDb.reset();
   projectId = (await createProject('Test Project'))._id.toString();
   h.configured = true;
-  Planner._setSceneImagePlannerForTests(async () => ({ images: [{ name: 'Plate', prompt: 'wide empty set' }] }));
+  Planner._setScenePlatePlannerForTests(async () => ([{ name: 'Plate', prompt: 'wide empty set', justification: 'establishes', quote: 'INT. SET' }]));
+  Planner._setScenePlateCritiqueForTests(async () => ({ verdict: 'keep' }));
 });
 
 async function postJson(path, body) {
