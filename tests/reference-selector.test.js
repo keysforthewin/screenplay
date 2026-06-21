@@ -40,6 +40,7 @@ async function makeCharacter(name, { sheets = [], mainId = null, images = [] } =
 
 beforeEach(async () => {
   fakeDb.reset();
+  Sel._setReferenceSelectorLLMForTests(null);
   projectId = (await createProject('Test Project'))._id.toString();
 });
 
