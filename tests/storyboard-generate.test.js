@@ -831,3 +831,46 @@ describe('expandShots reference fold-in', () => {
     expect(text.toLowerCase()).toContain('reference image');
   });
 });
+
+const PlanFramesCharacters = await import('../src/mongo/characters.js');
+
+describe('planFramesV2 resolves per-frame reference_ids', () => {
+  async function putImageMeta({ name = '', description = '' } = {}) {
+    const _id = new ObjectId();
+    await fakeDb.collection('images.files').insertOne({
+      _id, filename: 'x.png', contentType: 'image/png', length: 10,
+      uploadDate: new Date(), metadata: { name, description },
+    });
+    return _id;
+  }
+
+  async function makeCharacter(name, { sheets = [], mainId = null, images = [] } = {}) {
+    const c = await PlanFramesCharacters.createCharacter({ projectId, name });
+    await fakeDb.collection('characters').updateOne(
+      { _id: c._id },
+      { $set: { character_sheet_image_ids: sheets, main_image_id: mainId, images } },
+    );
+    return PlanFramesCharacters.getCharacter(projectId, name);
+  }
+
+  it('uses the expander reference pick to choose the character image', async () => {
+    const young = await putImageMeta({ name: 'Young Keys', description: 'teen' });
+    const old = await putImageMeta({ name: 'Old Keys', description: '70s' });
+    const keys = await makeCharacter('Keys', { sheets: [young, old], mainId: young });
+    const beat = { _id: 'beat1', characters: ['Keys'], main_image_id: 'beatimg' };
+
+    Generate._setScenePlannerForTests(async () => ({
+      sceneBible: null,
+      outline: [{ description: 'old man cu', shot_type: 'close_up', characters_in_scene: ['Keys'] }],
+    }));
+    Generate._setShotExpanderForTests(async ({ outline }) => outline.map(() => ({
+      start_frame_prompt: 'Close-up on the old man.',
+      video_prompt: 'Static camera.',
+      references: [{ character: 'Keys', image_index: 2 }],
+    })));
+
+    const { frames } = await Generate._planFramesV2ForTest({ beat, characters: [keys], targetCount: 1 });
+    expect(frames).toHaveLength(1);
+    expect(frames[0].reference_ids).toEqual(['beatimg', String(old)]);
+  });
+});

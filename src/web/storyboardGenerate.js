@@ -57,7 +57,7 @@ import {
 } from './gateway.js';
 import { autoFillFrameReferencesIfEmpty } from './frameReferences.js';
 import { critiquePanel as defaultCritiquePanel } from './storyboardCritique.js';
-import { formatCandidateManifest } from './referenceSelector.js';
+import { formatCandidateManifest, gatherCandidatesFromDocs, resolveReferencePicks } from './referenceSelector.js';
 import { collectStoryboardReferenceIds } from './storyboardReferenceAggregator.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 import {
@@ -1375,6 +1375,11 @@ function cleanPlannedFrameV2(f) {
   const rawChars = Array.isArray(f.characters_in_scene)
     ? f.characters_in_scene.map((n) => stripMarkdown(String(n ?? '')).trim()).filter(Boolean)
     : [];
+  const refs = Array.isArray(f.references)
+    ? f.references
+        .map((r) => ({ character: stripMarkdown(String(r?.character ?? '')).trim(), image_index: Number(r?.image_index) }))
+        .filter((r) => r.character && Number.isInteger(r.image_index) && r.image_index >= 1)
+    : [];
   const transition =
     typeof f.transition_in === 'string' && f.transition_in.trim()
       ? f.transition_in.trim().slice(0, MAX_TRANSITION_LEN)
@@ -1385,6 +1390,7 @@ function cleanPlannedFrameV2(f) {
     duration_seconds: clampedDur,
     transition_in: transition,
     characters_in_scene: rawChars,
+    references: refs,
     reverse_in_post: Boolean(f.reverse_in_post),
   }];
 }
@@ -1410,8 +1416,10 @@ async function planFramesV2({ beat, characters, targetCount, direction = '', dir
     reverse_in_post: Boolean(f?.reverse_in_post),
   }));
 
+  const perCharacter = await gatherCandidatesFromDocs(characters);
+
   onProgress?.({ phase: 'expanding', step: 'expand_start', total: outline.length, message: `Expanding ${outline.length} shots…` });
-  const expanded = await expandShots({ beat, characters, sceneBible, outline, direction, directorNotes });
+  const expanded = await expandShots({ beat, characters, sceneBible, outline, direction, directorNotes, candidates: perCharacter });
   onProgress?.({ phase: 'expanding', step: 'expand_done', total: outline.length, message: 'Shot expansion complete.' });
 
   const frames = outline.flatMap((f, i) => {
@@ -1420,18 +1428,23 @@ async function planFramesV2({ beat, characters, targetCount, direction = '', dir
       ...f,
       start_frame_prompt: e.start_frame_prompt,
       video_prompt: e.video_prompt,
+      references: e.references,
       reverse_in_post: typeof e.reverse_in_post === 'boolean' ? e.reverse_in_post : f.reverse_in_post,
     });
   });
 
-  // Backstop: link any beat character named in a shot's text but missing from
-  // the planner's characters_in_scene, so their artwork gets seeded as a
-  // reference. Scoped to the curated beat cast.
   const beatCharacters = Array.isArray(beat?.characters) ? beat.characters : [];
-  const linkedFrames = frames.map((fr) => ({
-    ...fr,
-    characters_in_scene: linkBeatCharactersForShot(fr, beatCharacters),
-  }));
+  const linkedFrames = frames.map((fr) => {
+    const names = linkBeatCharactersForShot(fr, beatCharacters);
+    const framePer = perCharacter.filter((e) => names.some((n) => n.toLowerCase() === e.name.toLowerCase()));
+    const reference_ids = resolveReferencePicks({
+      picks: fr.references || [],
+      perCharacter: framePer,
+      beatMainImageId: beat?.main_image_id || null,
+      max: MAX_FRAME_REFERENCE_IMAGES,
+    });
+    return { ...fr, characters_in_scene: names, reference_ids };
+  });
   return { frames: linkedFrames, sceneBible };
 }
 
