@@ -57,6 +57,7 @@ import {
 } from './gateway.js';
 import { autoFillFrameReferencesIfEmpty } from './frameReferences.js';
 import { critiquePanel as defaultCritiquePanel } from './storyboardCritique.js';
+import { formatCandidateManifest } from './referenceSelector.js';
 import { collectStoryboardReferenceIds } from './storyboardReferenceAggregator.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 import {
@@ -973,6 +974,19 @@ const SHOT_EXPAND_TOOL = {
               description:
                 'Override the skeleton if you detect a reveal it missed. When true, invert: start_frame_prompt = final revealed state, video_prompt = the pull-back/generation-direction move (reversed in post). Omit to inherit the skeleton value.',
             },
+            references: {
+              type: 'array',
+              description: "One entry per character in this shot's characters_in_scene. Pick the candidate reference image (by 1-based index from that character's list) that best matches how they appear in THIS shot — age, wardrobe, framing. Omit a character to use their default.",
+              items: {
+                type: 'object',
+                properties: {
+                  character: { type: 'string', description: 'Character name, exactly as in characters_in_scene.' },
+                  image_index: { type: 'integer', minimum: 1, description: "1-based index into that character's candidate list." },
+                },
+                required: ['character', 'image_index'],
+                additionalProperties: false,
+              },
+            },
           },
           required: ['shot_index', 'start_frame_prompt', 'video_prompt'],
           additionalProperties: false,
@@ -1057,7 +1071,7 @@ function formatSkeletonForExpand(outline) {
     .join('\n');
 }
 
-export function buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes = [], revisionNotes = '' }) {
+export function buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes = [], revisionNotes = '', candidates = [] }) {
   const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes });
   const bibleBlock = renderSceneBibleBlock(sceneBible);
   const lines = [ctx];
@@ -1071,6 +1085,14 @@ export function buildShotExpandUserText({ beat, characters, sceneBible, outline,
   );
   if (typeof revisionNotes === 'string' && revisionNotes.trim()) {
     lines.push('', '# Revision notes to address (from a critique of the previous version — fix these):', revisionNotes.trim());
+  }
+  const manifest = formatCandidateManifest(candidates);
+  if (manifest) {
+    lines.push(
+      '',
+      "# Character reference images (per character; in each shot's `references`, pick ONE index per character in that shot):",
+      manifest,
+    );
   }
   lines.push(
     '',
@@ -1091,11 +1113,11 @@ function synthesizeFallbackShot(frame) {
 // Pass 2. One call expands the whole skeleton. Returns an array aligned to the
 // skeleton (index i -> shot i+1); omitted entries are filled with a synthesized
 // fallback so downstream persistence always gets a usable prompt.
-async function expandShots({ beat, characters, sceneBible, outline, direction, directorNotes = [], revisionNotes = '' }) {
+async function expandShots({ beat, characters, sceneBible, outline, direction, directorNotes = [], revisionNotes = '', candidates = [] }) {
   if (shotExpanderOverride) {
-    return shotExpanderOverride({ beat, characters, sceneBible, outline, direction, directorNotes, revisionNotes });
+    return shotExpanderOverride({ beat, characters, sceneBible, outline, direction, directorNotes, revisionNotes, candidates });
   }
-  const userText = buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes, revisionNotes });
+  const userText = buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes, revisionNotes, candidates });
   const client = getAnthropic();
   // Stream (then collect the final message): see planScene above — the
   // non-streaming create() is rejected at max_tokens > the model's 8192
@@ -1136,10 +1158,10 @@ async function expandShots({ beat, characters, sceneBible, outline, direction, d
     const vp = typeof s?.video_prompt === 'string' ? s.video_prompt.trim() : '';
     if (!sfp || !vp) {
       logger.warn(`storyboard expand_shots: missing output for shot ${i + 1}; using fallback`);
-      return { ...synthesizeFallbackShot(f), reverse_in_post: Boolean(f.reverse_in_post) };
+      return { ...synthesizeFallbackShot(f), reverse_in_post: Boolean(f.reverse_in_post), references: [] };
     }
     const rev = typeof s.reverse_in_post === 'boolean' ? s.reverse_in_post : Boolean(f.reverse_in_post);
-    return { start_frame_prompt: sfp, video_prompt: vp, reverse_in_post: rev };
+    return { start_frame_prompt: sfp, video_prompt: vp, reverse_in_post: rev, references: Array.isArray(s.references) ? s.references : [] };
   });
 }
 

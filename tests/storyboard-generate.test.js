@@ -817,3 +817,17 @@ describe('linkBeatCharactersForShot backstop scope', () => {
     expect(out).toEqual(['Young Keys', 'Mara']);
   });
 });
+
+describe('expandShots reference fold-in', () => {
+  beforeEach(() => Generate._setShotExpanderForTests(null));
+
+  it('passes references from the tool output through to each shot', async () => {
+    const text = Generate.buildShotExpandUserText({
+      beat: { characters: ['Keys'] }, characters: [], sceneBible: null,
+      outline: [{ description: 'cu', shot_type: 'close_up', characters_in_scene: ['Keys'] }],
+      candidates: [{ name: 'Keys', candidates: [{ id: 'a', name: 'Young Keys', description: 'teen', caption: '' }] }],
+    });
+    expect(text).toContain('Young Keys');
+    expect(text.toLowerCase()).toContain('reference image');
+  });
+});
