@@ -128,17 +128,28 @@ describe('POST /api/:host/:id/image-sheet', () => {
     await drain(json.job_id);
   });
 
-  it('starts a beat sheet job and returns 202 (planned unknown until planned)', async () => {
+  it('renders an explicit beat shot list and returns 202 with the planned count', async () => {
     const beat = await Plots.createBeat({ projectId, name: 'Alley', body: 'INT. ALLEY - NIGHT' });
     const { status, json } = await postJson(`/api/beat/${beat._id.toString()}/image-sheet`, {
       model: 'nano-banana-pro',
-      shot_count: 6,
+      shots: [
+        { name: 'Alley — wide', prompt: 'wide empty rain-slick alley' },
+        { name: 'Brick — insert', prompt: 'wet brick texture' },
+      ],
     });
     expect(status).toBe(202);
     expect(json.job_id).toBeTruthy();
-    expect(json.planned == null).toBe(true);
+    expect(json.planned).toBe(2);
     expect(json.host_type).toBe('beat');
     await drain(json.job_id);
+  });
+
+  it('400s a beat image-sheet with no shots', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'NoShots', body: 'INT. X' });
+    const { status } = await postJson(`/api/beat/${beat._id.toString()}/image-sheet`, {
+      model: 'nano-banana-pro',
+    });
+    expect(status).toBe(400);
   });
 
   it('400s on an unknown model', async () => {

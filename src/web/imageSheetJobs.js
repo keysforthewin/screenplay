@@ -34,7 +34,7 @@ import {
   STORYBOARD_MODEL,
 } from './storyboardGenerate.js';
 import { buildCharacterSheetShots, selectSheetShots } from './characterSheetShots.js';
-import { planBeatSceneImages } from './beatSheetPlanner.js';
+import { planBeatSceneImages, MAX_SCENE_IMAGE_COUNT } from './beatSheetPlanner.js';
 
 // How many provider calls run at once. Bounded to avoid hammering provider rate
 // limits when a sheet has a dozen+ shots.
@@ -82,16 +82,13 @@ function validateModel(model) {
 }
 
 // Fail the start cleanly (before creating any pending tiles) if the chosen
-// provider — or, for beats, the planner — has no API key configured.
-function assertConfigured(model, hostType) {
+// provider has no API key configured.
+function assertConfigured(model) {
   if (model === 'openai' && !config.openai?.apiKey) {
     throw httpError('OPENAI_API_KEY is not configured.', 400);
   }
   if (FAL_MODELS.has(model) && !falConfigured()) {
     throw httpError('FAL_KEY is not configured.', 400);
-  }
-  if (hostType === 'beat' && !config.anthropic?.apiKey) {
-    throw httpError('ANTHROPIC_API_KEY is not configured (required to plan beat scene images).', 400);
   }
 }
 
@@ -117,31 +114,14 @@ async function loadReferenceInputs(referenceImageIds) {
   return out;
 }
 
-// Plan the shot list for the host. Character → fixed preset; beat → LLM planner.
-async function planShots({ projectId, job, hostType, hostId, referenceImageIds, shotNames, shotCount, direction }) {
-  if (hostType === 'character') {
-    const character = await getCharacter(projectId, hostId);
-    if (!character) throw new Error(`character not found: ${hostId}`);
-    const directorNotes = await loadDirectorNotesForPlanner(projectId);
-    return buildCharacterSheetShots({ character, directorNotes, shotNames, shotCount });
-  }
-  // beat
-  job.status = 'planning';
-  recordProgress(job, { phase: 'planning', step: 'plan_start', message: `Planning scene plates with ${job.planner_model}…` });
-  const beat = await getBeat(projectId, hostId);
-  if (!beat) throw new Error(`beat not found: ${hostId}`);
-  const characters = await findCharactersInBeat(projectId, beat);
+// Plan the shot list for a CHARACTER (fixed preset). Beats are rendered from an
+// explicit, pre-derived list passed straight to runSheetJob, so they never
+// reach here.
+async function planShots({ projectId, hostId, shotNames, shotCount }) {
+  const character = await getCharacter(projectId, hostId);
+  if (!character) throw new Error(`character not found: ${hostId}`);
   const directorNotes = await loadDirectorNotesForPlanner(projectId);
-  const referenceInputs = await loadReferenceInputs(referenceImageIds);
-  const { images } = await planBeatSceneImages({
-    beat,
-    characters,
-    referenceInputs,
-    direction,
-    directorNotes,
-    targetCount: shotCount,
-  });
-  return images;
+  return buildCharacterSheetShots({ character, directorNotes, shotNames, shotCount });
 }
 
 // Run `items` through `worker` with at most `limit` in flight at once.
@@ -155,6 +135,22 @@ async function runPool(items, limit, worker) {
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runNext));
+}
+
+// Trim/validate a client-supplied explicit shot list (beats). Returns an array
+// of { name, prompt } (blanks dropped, lengths clamped, capped at the max), or
+// null if `shots` is not an array.
+function normalizeExplicitShots(shots, { max = MAX_SCENE_IMAGE_COUNT } = {}) {
+  if (!Array.isArray(shots)) return null;
+  const out = [];
+  for (const s of shots) {
+    const name = typeof s?.name === 'string' ? s.name.trim().slice(0, 200) : '';
+    const prompt = typeof s?.prompt === 'string' ? s.prompt.trim().slice(0, 2000) : '';
+    if (!name || !prompt) continue;
+    out.push({ name, prompt });
+    if (out.length >= max) break;
+  }
+  return out;
 }
 
 // Render one shot: create a pending artwork, then generate its image. Per-shot
@@ -238,9 +234,9 @@ async function announceSheet({ job, hostType, hostId, projectId, announceUsernam
   }
 }
 
-async function runSheetJob({ projectId, job, hostType, hostId, model, referenceImageIds, shotNames, shotCount, direction, discordUser, announceUsername }) {
+async function runSheetJob({ projectId, job, hostType, hostId, model, referenceImageIds, shotNames, shotCount, explicitShots, discordUser, announceUsername }) {
   try {
-    const shots = await planShots({ projectId, job, hostType, hostId, referenceImageIds, shotNames, shotCount, direction });
+    const shots = explicitShots ?? await planShots({ projectId, hostId, shotNames, shotCount });
     job.planned = shots.length;
     if (!shots.length) {
       job.status = 'done';
@@ -380,14 +376,25 @@ export async function startImageSheetJob({
   referenceImageIds = [],
   shotNames,
   shotCount,
+  shots,
   direction = '',
   discordUser = null,
   announceUsername = null,
 }) {
   if (!VALID_HOST_TYPES.has(hostType)) throw httpError(`invalid hostType: ${hostType}`, 400);
   validateModel(model);
-  assertConfigured(model, hostType);
+  assertConfigured(model);
   const resolvedHostId = await loadHostId(projectId, hostType, hostId);
+
+  // Beats render an explicit, pre-derived shot list (the derive→review→generate
+  // flow); characters plan their fixed preset.
+  let explicitShots = null;
+  if (hostType === 'beat') {
+    explicitShots = normalizeExplicitShots(shots);
+    if (!explicitShots || !explicitShots.length) {
+      throw httpError('A beat image sheet needs a derived shot list (shots[]).', 400);
+    }
+  }
 
   const busyKey = `${hostType}:${resolvedHostId}`;
   if (busyHosts.has(busyKey)) {
@@ -407,9 +414,10 @@ export async function startImageSheetJob({
     finished_at: null,
     error: null,
     model,
-    planner_model: hostType === 'beat' ? STORYBOARD_MODEL : null,
+    planner_model: null,
     reference_image_ids: (referenceImageIds || []).map(String),
-    planned: hostType === 'character' ? selectSheetShots({ shotNames, shotCount }).length : 0,
+    planned: hostType === 'character' ? selectSheetShots({ shotNames, shotCount }).length : explicitShots.length,
+    shots: explicitShots,
     completed: 0,
     failed: 0,
     progress: null,
@@ -421,7 +429,7 @@ export async function startImageSheetJob({
   // Fire-and-forget; the runner records its own errors. Release the host on
   // completion regardless of outcome.
   setImmediate(() => {
-    runSheetJob({ projectId, job, hostType, hostId: resolvedHostId, model, referenceImageIds, shotNames, shotCount, direction, discordUser, announceUsername })
+    runSheetJob({ projectId, job, hostType, hostId: resolvedHostId, model, referenceImageIds, shotNames, shotCount, explicitShots, discordUser, announceUsername })
       .catch((e) => {
         job.status = 'error';
         job.error = e.message;
@@ -433,7 +441,7 @@ export async function startImageSheetJob({
 
   return {
     job_id: jobId,
-    planned: hostType === 'character' ? job.planned : null,
+    planned: hostType === 'character' ? job.planned : explicitShots.length,
     host_type: hostType,
     host_id: resolvedHostId,
   };

@@ -210,13 +210,10 @@ describe('startImageSheetJob — character', () => {
   });
 });
 
-describe('startImageSheetJob — beat (dynamic planner)', () => {
-  it('plans then renders one done artwork per planned image', async () => {
-    Planner._setScenePlatePlannerForTests(async () => ([
-      { name: 'Alley — wide', prompt: 'wide empty rain-slick alley at dusk', justification: 'establishes the location', quote: 'INT. ALLEY - NIGHT' },
-      { name: 'Brick — insert', prompt: 'tight insert of wet brick texture', justification: 'set detail', quote: 'INT. ALLEY - NIGHT' },
-    ]));
-    Planner._setScenePlateCritiqueForTests(async () => ({ verdict: 'keep' }));
+describe('startImageSheetJob — beat (explicit shots)', () => {
+  it('renders one done artwork per explicit shot WITHOUT calling the planner', async () => {
+    let planCalls = 0;
+    Planner._setScenePlatePlannerForTests(async () => { planCalls += 1; return []; });
     const beat = await Plots.createBeat({ projectId, name: 'The Alley', desc: 'x', body: 'INT. ALLEY - NIGHT' });
     const { job_id, planned } = await Sheet.startImageSheetJob({
       projectId,
@@ -224,36 +221,52 @@ describe('startImageSheetJob — beat (dynamic planner)', () => {
       hostId: beat._id.toString(),
       model: 'nano-banana-pro',
       referenceImageIds: [],
-      shotCount: 8,
+      shots: [
+        { name: 'Alley — wide', prompt: 'wide empty rain-slick alley at dusk' },
+        { name: 'Brick — insert', prompt: 'tight insert of wet brick texture' },
+      ],
     });
-    // Beat count is unknown until planning completes.
-    expect(planned == null || planned === 0).toBe(true);
+    expect(planned).toBe(2);
     const job = await waitForJob(job_id);
     expect(job.status).toBe('done');
     expect(job.planned).toBe(2);
     expect(job.completed).toBe(2);
+    expect(planCalls).toBe(0);
 
     const fresh = await Plots.getBeat(projectId, beat._id.toString());
     expect(fresh.artworks).toHaveLength(2);
     expect(fresh.artworks.map((a) => a.name).sort()).toEqual(['Alley — wide', 'Brick — insert']);
+    for (const a of fresh.artworks) {
+      expect(a.status).toBe('done');
+      expect(a.prompt.length).toBeGreaterThan(0);
+    }
   });
 
-  it('finishes "done" with no artworks when the planner returns nothing', async () => {
-    Planner._setScenePlatePlannerForTests(async () => []);
-    const beat = await Plots.createBeat({ projectId, name: 'Empty', desc: '', body: '' });
-    const { job_id } = await Sheet.startImageSheetJob({
-      projectId,
-      hostType: 'beat',
-      hostId: beat._id.toString(),
-      model: 'nano-banana-pro',
-      referenceImageIds: [],
-      shotCount: 8,
+  it('rejects a beat with no shots (status 400)', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'NoShots', body: 'INT. X' });
+    await expect(
+      Sheet.startImageSheetJob({ projectId, hostType: 'beat', hostId: beat._id.toString(), model: 'nano-banana-pro' }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('rejects a beat with an empty/invalid shots list (status 400)', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'Empty', body: 'INT. X' });
+    await expect(
+      Sheet.startImageSheetJob({
+        projectId, hostType: 'beat', hostId: beat._id.toString(), model: 'nano-banana-pro',
+        shots: [{ name: '', prompt: '' }],
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('clamps an over-long explicit shot list to MAX_SCENE_IMAGE_COUNT', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'Many', body: 'INT. X' });
+    const shots = Array.from({ length: 30 }, (_, i) => ({ name: `n${i}`, prompt: `p${i}` }));
+    const { job_id, planned } = await Sheet.startImageSheetJob({
+      projectId, hostType: 'beat', hostId: beat._id.toString(), model: 'nano-banana-pro', shots,
     });
-    const job = await waitForJob(job_id);
-    expect(job.status).toBe('done');
-    expect(job.planned).toBe(0);
-    const fresh = await Plots.getBeat(projectId, beat._id.toString());
-    expect(fresh.artworks || []).toHaveLength(0);
+    expect(planned).toBe(Planner.MAX_SCENE_IMAGE_COUNT);
+    await waitForJob(job_id);
   });
 });
 
