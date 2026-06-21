@@ -59,6 +59,17 @@ describe('storyboard constraints', () => {
     expect(t).toContain('back seat');
   });
 
+  it('still-framing rules demand sub-location even on close-ups, with an anchoring cue against the wrong default', () => {
+    const t = STILL_FRAMING_RULES.toLowerCase();
+    // Required in every still, including tight close-ups where the seat seems invisible.
+    expect(t).toContain('every still');
+    expect(t).toContain('close-up');
+    // Positive anchoring cue, and the concrete wrong-default it must defeat.
+    expect(t).toContain('anchoring');
+    expect(t).toContain('headrest');
+    expect(t).toContain('front passenger');
+  });
+
   it('occupant placeholder rules cover interiors framed from outside', () => {
     const t = OCCUPANT_PLACEHOLDER_RULES.toLowerCase();
     expect(t).toContain('placeholder');

@@ -961,7 +961,7 @@ const SHOT_EXPAND_TOOL = {
             start_frame_prompt: {
               type: 'string',
               description:
-                'Still-image prompt for the opening composition. Capture the subject as a FROZEN MOMENT of the action — pose, orientation, heading, and placement in the required geography — so the still reads as the intended moment (a car squarely in its lane, nose down the street, not slewed across it). ~2–3 sentences. Do NOT restate the scene bible (location/lighting/palette/blocking) or character faces/wardrobe — reference them. This is the clip\'s FIRST frame (the initial state at t=0): a NON-SOLID effect that only occurs later in the clip (a shooting star, a flash, a breaking wave) is NOT in this frame — it belongs solely in the video_prompt.',
+                'Still-image prompt for the opening composition. Capture the subject as a FROZEN MOMENT of the action — pose, orientation, heading, and placement in the required geography — so the still reads as the intended moment (a car squarely in its lane, nose down the street, not slewed across it). ~2–3 sentences. Do NOT restate the scene bible (location/lighting/palette/blocking) or character faces/wardrobe — reference them (EXCEPTION: always state the framed subject\'s precise sub-location, e.g. back seat vs front — the image model never sees the bible and will otherwise default to the wrong position). This is the clip\'s FIRST frame (the initial state at t=0): a NON-SOLID effect that only occurs later in the clip (a shooting star, a flash, a breaking wave) is NOT in this frame — it belongs solely in the video_prompt.',
             },
             video_prompt: {
               type: 'string',
@@ -1007,7 +1007,7 @@ export const SHOT_EXPAND_SYSTEM_PROMPT = [
   '2. video_prompt — what CHANGES over the clip: the camera first, then one primary motion, assuming the start frame already exists. 2–4 sentences. Strip every static/scene detail; never re-describe the start composition.',
   '',
   '# Inherit the bible — do not re-describe it',
-  '- The scene bible already fixes location, time of day, lighting key, palette, mood, blocking, and camera language. Reference them; never restate them.',
+  '- The scene bible already fixes location, time of day, lighting key, palette, mood, blocking, and camera language. Reference them; never restate them — with ONE exception: the framed subject\'s OWN precise sub-location / placement (which seat, which side of the table, which doorway) MUST be written into the still. The image model receives only this prompt plus reference photos, never the bible, so an unstated placement is rendered as the model\'s generic default — a child at a car window becomes the front passenger, not the back seat.',
   '- NEVER use a character\'s proper name in a prompt. Image models can\'t resolve a made-up name ("Young Keys") — they drop the figure, merge it into another, or misplace it. Refer to each character by a concise VISUAL HANDLE drawn from the character context:',
   '  • Played on-screen by a real actor? Use that likeness — e.g. "the pilot, played by Jake Gyllenhaal".',
   '  • Voice-only or non-human? Use their described physical look — e.g. "the fish in the black-and-yellow armored suit with a teal visor".',

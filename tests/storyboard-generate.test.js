@@ -841,6 +841,15 @@ describe('shot-expand prompt wiring', () => {
       'through the glass',
     );
   });
+
+  it('excepts the subject sub-location from the "do not restate the bible" rule', () => {
+    // The image model only ever sees the still prompt + reference images, never
+    // the bible, so the framed subject's precise placement must be written in.
+    const t = Generate.SHOT_EXPAND_SYSTEM_PROMPT.toLowerCase();
+    expect(t).toContain('receives only this prompt');
+    expect(t).toContain('placement');
+    expect(t).toContain('front passenger');
+  });
 });
 
 describe('scene-planner screenplay-format nudge', () => {
