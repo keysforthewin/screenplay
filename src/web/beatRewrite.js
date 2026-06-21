@@ -7,7 +7,7 @@ import { logger } from '../log.js';
 import { analyzeText } from '../llm/analyze.js';
 import { resolveProjectId } from '../mongo/projects.js';
 import { getBeat } from '../mongo/plots.js';
-import { getBeatCritique, stashPreviousBody, getPreviousBody, clearPreviousBody } from '../mongo/critiques.js';
+import { getBeatCritique, setCritiqueStrategy, stashPreviousBody, getPreviousBody, clearPreviousBody } from '../mongo/critiques.js';
 import { setBeatBodyViaGateway } from './gateway.js';
 import { SCREENPLAY_STYLE_GUIDE } from '../agent/screenplayStyle.js';
 
@@ -25,10 +25,24 @@ const NORMALIZE_SYSTEM = [
   SCREENPLAY_STYLE_GUIDE,
 ].join('\n');
 
+// Pass 1: reconcile every facet's notes into ONE concrete strategy that targets
+// a perfect score in EVERY facet without trading one facet off against another.
+const SYNTHESIZE_SYSTEM = [
+  'You are a script-editing strategist. You are given one screenplay beat and a set of per-facet critiques, each with a 1-10 score and concrete notes.',
+  'Produce ONE concrete, direct rewriting strategy a screenwriter will follow to rewrite the beat.',
+  '- Extract EVERY concrete, actionable fix from EVERY facet into a single numbered action plan. Do not drop any fix.',
+  '- Reconcile conflicts: where improving one facet could hurt another, state exactly how to satisfy BOTH. The rewrite must RAISE every facet toward a perfect 10 and must NEVER sacrifice one facet to improve another.',
+  '- Be specific and directive — name the exact changes (lines to add/cut/reshape, sluglines, blocking, subtext), not vague advice.',
+  "- Keep the story's intent and the characters intact.",
+  'Output ONLY the numbered strategy. Do NOT write the rewritten beat.',
+].join('\n');
+
+// Pass 2: rewrite the beat by executing the strategy, aiming for a perfect score
+// in every facet and letting none regress.
 const REGEN_SYSTEM = [
-  'You are a screenwriter revising one beat of a screenplay using a structured critique.',
-  'Rewrite the beat body to address the critique comments while preserving the story\'s intent and the characters present.',
-  'The rewrite MUST also conform to standard screenplay format per the guide below.',
+  'You are a screenwriter rewriting one beat of a screenplay by fully executing a rewriting strategy.',
+  'Execute EVERY item in the strategy. The goal is a PERFECT 10 in every critique facet — raise every weak facet and let no facet regress.',
+  "Preserve the story's intent and the characters present. The rewrite MUST conform to standard screenplay format per the guide below.",
   'Return ONLY the rewritten beat body as plain text — no preamble, no commentary, no code fences.',
   '',
   SCREENPLAY_STYLE_GUIDE,
@@ -50,10 +64,24 @@ function formatCritiqueForRewrite(critique) {
   return lines.length ? lines.join('\n\n') : '(no actionable critique comments)';
 }
 
-export async function regenerateBeatBody({ beat, critique }) {
+// Pass 1 — synthesize all facet critiques into one concrete rewrite strategy.
+export async function synthesizeRewriteStrategy({ beat, critique }) {
   const user = [
-    '# Critique to address',
+    '# Per-facet critique (each with its 1-10 score and notes)',
     formatCritiqueForRewrite(critique),
+    '',
+    '# Current beat body',
+    String(beat?.body || ''),
+  ].join('\n');
+  const out = await analyzeText({ system: SYNTHESIZE_SYSTEM, user, maxTokens: 4000 });
+  return out.trim();
+}
+
+// Pass 2 — rewrite the beat body by executing the synthesized strategy.
+export async function regenerateBeatBody({ beat, strategy }) {
+  const user = [
+    '# Rewrite strategy to execute (every item; aim for a perfect 10 in every facet)',
+    String(strategy || ''),
     '',
     '# Current beat body to rewrite',
     String(beat?.body || ''),
@@ -81,11 +109,15 @@ export async function regenerateBeat(projectId, beatId) {
   if (!critique || !(critique.facets || []).some((f) => f.status === 'done')) {
     throw httpError('No critique to regenerate from. Run a critique first.', 409);
   }
-  const body = await regenerateBeatBody({ beat, critique });
+  // Pass 1: reconcile every facet into one concrete strategy. Pass 2: rewrite
+  // from that strategy. Stash only after both model calls succeed.
+  const strategy = await synthesizeRewriteStrategy({ beat, critique });
+  const body = await regenerateBeatBody({ beat, strategy });
   await stashPreviousBody(projectId, beat._id, String(beat.body || ''));
   await setBeatBodyViaGateway(projectId, beat._id, body);
-  logger.info(`beatRewrite: regenerate beat=${beat._id} chars=${body.length}`);
-  return { body };
+  await setCritiqueStrategy(projectId, beat._id, strategy);
+  logger.info(`beatRewrite: regenerate beat=${beat._id} strategy_chars=${strategy.length} body_chars=${body.length}`);
+  return { body, strategy };
 }
 
 export async function restoreBeatBody(projectId, beatId) {

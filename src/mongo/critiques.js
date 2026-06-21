@@ -33,6 +33,7 @@ export async function setCritiquePending(projectId, beatId, { model, facets } = 
     model: String(model || ''),
     status: 'pending',
     overall: null,
+    strategy: null,
     facets: (facets || []).map((f) => ({ ...f })),
   };
   await col().updateOne(
@@ -78,6 +79,22 @@ export async function finalizeCritique(projectId, beatId, { status, overall } = 
     { arrayFilters: [{ 'b._id': oid }] },
   );
   logger.info(`mongo: critique finalize beat=${oid} status=${status} overall=${overall ?? 'null'}`);
+}
+
+// Persist the synthesized rewrite strategy onto the critique (so the UI can
+// show the concrete plan the regenerate followed). Reset to null on each fresh
+// critique run via setCritiquePending's `strategy: null`.
+export async function setCritiqueStrategy(projectId, beatId, strategy) {
+  projectId = await resolveProjectId(projectId);
+  const oid = await resolveBeatOid(projectId, beatId);
+  if (!oid) throw new Error(`Beat not found: ${beatId}`);
+  const now = new Date();
+  await col().updateOne(
+    { project_id: projectId },
+    { $set: { 'beats.$[b].critique.strategy': String(strategy ?? ''), 'beats.$[b].updated_at': now, updated_at: now } },
+    { arrayFilters: [{ 'b._id': oid }] },
+  );
+  logger.info(`mongo: critique strategy set beat=${oid} chars=${String(strategy ?? '').length}`);
 }
 
 export async function stashPreviousBody(projectId, beatId, body) {

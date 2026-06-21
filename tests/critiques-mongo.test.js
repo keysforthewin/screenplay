@@ -57,6 +57,21 @@ describe('critiques mongo helpers', () => {
     expect(c.overall).toBe(6);
   });
 
+  it('initializes strategy to null on a pending critique', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'B', body: 'b' });
+    await C.setCritiquePending(projectId, beat._id.toString(), { model: 'm', facets: STUBS });
+    const c = await C.getBeatCritique(projectId, beat._id.toString());
+    expect(c.strategy).toBeNull();
+  });
+
+  it('sets the rewrite strategy on the critique', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'B', body: 'b' });
+    await C.setCritiquePending(projectId, beat._id.toString(), { model: 'm', facets: STUBS });
+    await C.setCritiqueStrategy(projectId, beat._id.toString(), '1. Tighten the open.');
+    const c = await C.getBeatCritique(projectId, beat._id.toString());
+    expect(c.strategy).toBe('1. Tighten the open.');
+  });
+
   it('stashes, reads, and clears previous_body', async () => {
     const beat = await Plots.createBeat({ projectId, name: 'B', body: 'orig' });
     await C.stashPreviousBody(projectId, beat._id.toString(), 'orig');

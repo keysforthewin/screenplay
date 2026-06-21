@@ -2845,3 +2845,21 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   vertical-align: middle;
 }
 .critique-scope.scope-story { color: var(--accent); border-color: var(--accent); }
+.critique-strategy {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.03));
+}
+.critique-strategy > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--fg);
+}
+.critique-strategy-body {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  color: var(--fg-muted);
+  font: inherit;
+}

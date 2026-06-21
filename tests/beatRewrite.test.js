@@ -61,6 +61,26 @@ describe('regenerateBeat', () => {
     expect(res.body).toBe('REWRITTEN');
     expect(await C.getPreviousBody(projectId, beat._id.toString())).toBe('old body');
   });
+
+  it('synthesizes a strategy first, persists it, and returns it alongside the body', async () => {
+    // Call-counting stub: 1st call (synthesis) -> STRATEGY, 2nd (rewrite) -> REWRITTEN.
+    let n = 0;
+    _setAnthropicClientForTests({
+      messages: { create: async () => ({ content: [{ type: 'text', text: ++n === 1 ? 'STRATEGY' : 'REWRITTEN' }] }) },
+    });
+    const beat = await Plots.createBeat({ projectId, name: 'B', body: 'old body' });
+    await C.setCritiquePending(projectId, beat._id.toString(), {
+      model: 'm',
+      facets: [{ key: 'pacing', label: 'Pacing', scope: 'focused', score: 4, comments: 'slow', status: 'done', error_message: null }],
+    });
+    await C.finalizeCritique(projectId, beat._id.toString(), { status: 'done', overall: 4 });
+    const res = await R.regenerateBeat(projectId, beat._id.toString());
+    expect(res.strategy).toBe('STRATEGY'); // first call = synthesis pass
+    expect(res.body).toBe('REWRITTEN'); // second call = rewrite from the strategy
+    const c = await C.getBeatCritique(projectId, beat._id.toString());
+    expect(c.strategy).toBe('STRATEGY'); // persisted on the critique for the UI
+    expect(await C.getPreviousBody(projectId, beat._id.toString())).toBe('old body');
+  });
 });
 
 describe('restoreBeatBody', () => {

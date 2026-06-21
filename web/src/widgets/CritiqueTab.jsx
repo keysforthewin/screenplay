@@ -46,7 +46,11 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
 
   async function regenerate() {
     setBusy('regen'); setError(null);
-    try { await apiPostJson(`/beat/${beatId}/regenerate`, {}); await onRefresh?.(); }
+    try {
+      const r = await apiPostJson(`/beat/${beatId}/regenerate`, {});
+      if (r?.strategy) setCritique((c) => (c ? { ...c, strategy: r.strategy } : c));
+      await onRefresh?.();
+    }
     catch (e) { setError(e.message); } finally { setBusy(null); }
   }
 
@@ -97,6 +101,12 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
           )}
         </div>
       ))}
+      {critique?.strategy && (
+        <details className="critique-strategy" open>
+          <summary>Rewrite strategy</summary>
+          <div className="critique-strategy-body">{critique.strategy}</div>
+        </details>
+      )}
     </div>
   );
 }
