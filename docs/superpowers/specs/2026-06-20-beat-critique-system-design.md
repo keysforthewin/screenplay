@@ -15,12 +15,20 @@ The Writing tab lets you edit a beat's Name and Body (Background sub-tab) but of
 
 Two facets are mandatory per the user: **screenplay-format conformance** and **director's-notes adherence**.
 
-## Prior art / related code (read before implementing)
+## Prior art / related code (the architectural template)
 
-- `2026-06-08-storyboard-critique-scene-bible-ui-design.md` + `docs/superpowers/plans/2026-06-08-storyboard-critique-panel.md` — an existing *storyboard* critique panel. This is a **different** surface (storyboard images, not beat prose) but may have reusable UI/streaming patterns. Skim it; don't force-fit it.
-- `src/web/imageSheetJobs.js` and `src/web/storyboardGenerate.js` — the canonical async-job + parallel-generation patterns this feature mirrors.
-- `src/web/beatSheetPlanner.js` — example of a server-side Anthropic call (`getAnthropic()`, `claude-opus-4-8`, streamed `finalMessage()`).
-- The storyboard video-job SSE endpoint in `src/web/entityRoutes.js` — the SSE pattern this feature mirrors (`text/event-stream`, session/project via query string).
+The **storyboard critique** is a near-exact analog and the primary template — same shape (on-demand job → scored, lensed critique → regenerate-from-critique), applied to storyboard shots instead of beat prose. Reuse its data shape and display layer; stream instead of poll.
+
+- **Critique data shape** (reuse): storyboard critiques are `{ overall, lenses: [{ lens, score (1-10), comments, error }] }`. Beat critique uses the same idea — `facets` instead of `lenses`, plus a `scope` tag.
+- **`web/src/widgets/critiqueDisplay.js`** (reuse directly): pure, unit-tested helpers — `scoreBand(score)` → `'good'|'medium'|'bad'`, `pickCritiqueScore`, `isFlagged`. Already covered by `critiqueDisplay.test.js`.
+- **`web/src/widgets/CritiquePanel.jsx`** (model the CritiqueTab on this): renders overall score + per-lens score bar + comments + a "Regenerate from critique" button. The CritiqueTab is this, driven by SSE and with scope badges + Normalize/Undo.
+- **`src/web/dialogCritique.js`** (the per-facet scoring pattern): a forced-tool Anthropic call (`score_dialog` tool, `config.anthropic.model`) returning `{ score (1-5), issue }` per line. Each beat-critique facet runs the same way, returning `{ score (1-10), comments }`.
+- **`src/web/dialogContext.js` / `buildBeatContextBlock`** (`storyboardGenerate.js`) — reusable beat-context formatting.
+- `src/web/falVideoGenerate.js` — the in-memory job registry + SSE pub/sub (`jobs`/`listeners`/`subscribeToJob`/`serializeJob`) this feature replicates for streaming.
+- The storyboard video-job + chat SSE endpoints in `src/web/entityRoutes.js` (registered **before** `requireSession()`; session/project via query string) — the SSE route pattern this mirrors.
+- `src/web/imageSheetJobs.js` — the async-job-start + busy-host guard pattern.
+
+Distinct from this feature: the storyboard critique scores *images/prompts*; this scores *beat prose*. Reuse the shape and display, not the storyboard-specific generators.
 
 ## Decisions (locked with user)
 
@@ -30,6 +38,7 @@ Two facets are mandatory per the user: **screenplay-format conformance** and **d
 | Critique generation mode | **Parallel + stream (SSE)** — facets run concurrently, each card fills in as it completes |
 | Persistence | **Latest only** — each run overwrites; no history |
 | Optional focused facets | Pacing & momentum, Character voice, Cinematic craft, Dialogue & subtext (all four selected) |
+| Facet output | **1-10 score + prose comments** per facet, plus a rounded **overall** — reuse `critiqueDisplay.js` (`scoreBand`) and the `CritiquePanel` score-bar layout |
 
 ## The facets (7 critiques per run)
 
@@ -38,6 +47,8 @@ A central registry (`src/web/critiqueFacets.js`) is the single source of truth. 
 ```js
 { key, label, scope /* 'focused' | 'story' */, required /* bool */, systemPrompt, buildContext(ctx) }
 ```
+
+Each facet runs one forced-tool Anthropic call (the `dialogCritique.js` pattern) returning **`{ score: 1-10, comments: string }`** — `systemPrompt` frames the facet's lens; `buildContext(ctx)` is the user text. The run's **`overall`** is the rounded mean of the done facets' scores.
 
 **Focused** (scope `'focused'`) — judge the current beat, with prev/next beats as immediate context:
 
@@ -85,11 +96,11 @@ New modules, mirroring `imageSheetJobs.js` / `storyboardGenerate.js`:
 
 - **`src/web/critiqueFacets.js`** — facet registry (above). Exports `FACETS` (ordered array) and helpers (`getFacet(key)`).
 - **`src/web/critiqueGenerate.js`** — orchestration:
-  - `runCritique({ projectId, beatId, onFacet })` — assembles `ctx`, sets the critique to `pending` with all 7 facet stubs, then runs all facets **in parallel** via `getAnthropic()` on `claude-opus-4-8`. As each facet resolves it (a) persists that facet (`updateCritiqueFacet`), (b) calls `onFacet(facetResult)` for SSE. A single facet failure marks that facet `error` and the run `partial`; all-fail → `error`; all-succeed → `done`. Ends with one `fields_updated` broadcast.
-  - An in-memory job registry (`jobs` Map keyed by `job_id`) like `imageSheetJobs.js`, holding status + an event buffer so the SSE endpoint can replay events to a late subscriber.
-- **`src/web/beatRewrite.js`** — shared body-rewrite core, used by both endpoints:
+  - `runCritique({ projectId, beatId, job })` — assembles `ctx`, sets the critique to `pending` with all 7 facet stubs (score `null`), then runs all facets **in parallel**. Each facet is one forced-tool Anthropic call (`critique_facet` tool → `{ score: 1-10, comments }`) via `getAnthropic()` on `claude-opus-4-8`. As each facet resolves it (a) persists that facet (`updateCritiqueFacet`), (b) updates the in-memory `job` and `publish(job)`es a fresh full snapshot to SSE subscribers. A single facet failure marks that facet `error` (score `null`) and the run `partial`; all-fail → `error`; all-succeed → `done`. On finalize it computes `overall` (rounded mean of done scores) and persists it. A module test seam (`_setFacetGeneratorForTests`) swaps the per-facet call.
+  - An in-memory job registry + SSE pub/sub replicated from `falVideoGenerate.js`: `jobs` Map, `listeners` Map, `getCritiqueJob`, `subscribeToCritiqueJob`, `unsubscribeFromCritiqueJob`, `serializeCritiqueJob`, `TERMINAL_RETENTION_MS`. A `busyBeats` Set rejects a second concurrent run on the same beat (409).
+- **`src/web/beatRewrite.js`** — shared body-rewrite core (uses `analyzeText` from `src/llm/analyze.js`):
   - `normalizeBeatBody(body)` → Opus call with `SCREENPLAY_STYLE_GUIDE` + body, returns reformatted body (format only, no content change).
-  - `regenerateBeatBody({ beat, critique })` → Opus call with body + all critique facet text + `SCREENPLAY_STYLE_GUIDE`, returns a rewrite that addresses the critique **and** conforms to format.
+  - `regenerateBeatBody({ beat, critique })` → Opus call with body + every facet's `comments` + `SCREENPLAY_STYLE_GUIDE`, returns a rewrite that addresses the critique **and** conforms to format.
   - Both callers stash the old body (`stashPreviousBody`) before writing the new one via `setBeatBodyViaGateway(projectId, beatId, body)` (gateway.js:535) so collaborative editors stay in sync.
 - **`src/mongo/critiques.js`** — Mongo helpers (fake-Mongo compatible):
   - `getBeatCritique(projectId, beatId)`
@@ -121,15 +132,19 @@ beat.critique = {
   generated_at,                 // Date
   model,                        // 'claude-opus-4-8'
   status,                       // 'pending' | 'done' | 'partial' | 'error'
+  overall,                      // rounded mean of done facet scores (1-10), or null
   facets: [                     // 7 entries, in registry order
-    { key, label, scope, text, status /* 'pending'|'done'|'error' */, error_message }
+    { key, label, scope,
+      score,                    // 1-10 | null (null while pending / on error)
+      comments,                 // prose critique
+      status /* 'pending'|'done'|'error' */, error_message }
   ]
 } | null
 
 beat.previous_body = "<text>" | null   // single undo slot, shared by Normalize + Regenerate (last write wins)
 ```
 
-Incremental persistence (each facet flips pending→done as it streams) means a mid-run page refresh shows partial progress. The final `fields_updated` broadcast syncs other open clients.
+Incremental persistence (each facet flips pending→done as it streams) means a mid-run page refresh shows the partial run via `GET /critique`. v1 does **not** add a `fields_updated` broadcast for the critique object (YAGNI) — the active client gets live SSE; other open clients see the latest critique on their next mount/refresh. Body rewrites still sync live because they go through `setBeatBodyViaGateway` (the y-doc).
 
 ## Regenerate & Normalize
 
@@ -143,21 +158,21 @@ Model: `claude-opus-4-8` (same constant pattern as `STORYBOARD_MODEL`) for both,
 
 ## SPA
 
-- **`web/src/widgets/CritiqueTab.jsx`** (new):
-  - **Run critique** button → `POST /beat/:id/critique`, then open `EventSource` on the events URL (built via `apiSseUrl`-style helper with `project_id` + session in the query). Each `facet` event updates/inserts that facet's card; `done`/`error` ends the stream.
-  - Facet cards: label, a scope badge (Focused / Story), the critique text (markdown), per-card `pending` spinner and `error` state.
-  - **Regenerate beat** button → `POST /beat/:id/regenerate`; disabled until a critique exists. On success, body updates live through the collaborative editor; show **Undo**.
+- **`web/src/widgets/CritiqueTab.jsx`** (new), modeled on `CritiquePanel.jsx` and reusing `critiqueDisplay.js` (`scoreBand`):
+  - **Run critique** button → `POST /beat/:id/critique` → `{ job_id }`, then open `new EventSource(apiSseUrl('/beat/:id/critique/:jobId/events'))` (the `GenerateVideoDialog.jsx` pattern; `apiSseUrl` already exists). Listen for `snapshot` / `update` (replace the whole critique state from each full job snapshot, so cards fill in live) and `done` / `error` (end the stream).
+  - Facet rows reuse the `CritiquePanel` layout: facet label, a **scope badge** (Focused / Story), a **1-10 score + colored bar** (`scoreBand`), and the prose `comments`; per-row `pending` spinner and `error` state. An **overall** score chip up top.
+  - **Regenerate beat** button → `POST /beat/:id/regenerate`; disabled until a critique exists. On success, the body updates live through the collaborative editor; show **Undo**.
   - On mount, `GET /beat/:id/critique` to hydrate the last persisted run.
 - **`web/src/routes/Beat.jsx`**: add `'critique'` to `TABS` (right after `'background'`), a `tabLabel` case (`'Critique'`), and the `<div className="tab-panel" hidden={activeTab !== 'critique'}>` rendering `<CritiqueTab>`.
 - **Background panel** (`Beat.jsx`): add a `.tab-actions` row above the Body field with a **Normalize** button (`POST /beat/:id/normalize`) and, when `previous_body` is set, an **Undo** button (`POST /beat/:id/restore-body`).
-- **`web/src/api.js`**: reuse `apiGet` / `apiPostJson` / `authHeaders`; add a small SSE URL helper if one doesn't already cover this shape.
+- **`web/src/api.js`**: reuse `apiGet` / `apiPostJson` / `authHeaders` / `apiSseUrl` (all already present).
 
-Plain CSS in `web/src/styles.css`; `.primary` buttons, `.tab-actions` wrapper, a `.critique-card` block following existing card styling. New CSS for scope badges and card states.
+Plain CSS in `web/src/styles.css`; `.primary` buttons, `.tab-actions` wrapper. Reuse the existing `.critique-*`/`.lens-*`/`scoreBand` (`good`/`medium`/`bad`) styles from the storyboard `CritiquePanel`; add only a scope-badge style.
 
 ## Testing (Vitest, fake Mongo)
 
 - **Facet registry**: every facet has `key`/`label`/`scope`/`systemPrompt`/`buildContext`; keys unique; exactly two `required`; `buildContext` returns a non-empty string for a minimal `ctx`.
-- **`runCritique`** with a stubbed `getAnthropic`: persists all 7 facets, calls `onFacet` once per facet, marks run `done`; one stubbed facet throwing → that facet `error` + run `partial`; all throwing → `error`.
+- **`runCritique`** with a stubbed facet generator (`_setFacetGeneratorForTests`): persists all 7 facets with `score`+`comments`, sets `overall` to the rounded mean, marks run `done`; one stubbed facet throwing → that facet `error` (score `null`) + run `partial`; all throwing → `error`. `scoreBand` thresholds covered in `critiqueDisplay.test.js` already.
 - **`beatRewrite`**: Normalize and Regenerate both stash `previous_body` before writing; `restorePreviousBody` brings it back and clears the slot; restore with nothing stashed is a safe no-op.
 - **Mongo helpers**: `setCritiquePending` / `updateCritiqueFacet` round-trip through fake Mongo with `arrayFilters`; `getBeatCritique` cross-project id → not found.
 - **Endpoints**: critique persistence GET/POST; regenerate 409 with no critique; project scoping (cross-project beat id → 404).
