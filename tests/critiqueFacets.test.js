@@ -47,6 +47,14 @@ describe('critique facet registry', () => {
     expect(getFacet('format').label).toBe('Screenplay format');
     const stubs = facetStubs();
     expect(stubs).toHaveLength(7);
-    expect(stubs[0]).toMatchObject({ score: null, comments: '', status: 'pending', error_message: null });
+    expect(stubs[0]).toMatchObject({
+      key: 'format',
+      label: 'Screenplay format',
+      scope: 'focused',
+      score: null,
+      comments: '',
+      status: 'pending',
+      error_message: null,
+    });
   });
 });

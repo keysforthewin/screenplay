@@ -7,7 +7,6 @@
 // required: always-run facets the user mandated (format + director's notes).
 
 import { stripMarkdown } from '../util/markdown.js';
-import { SCREENPLAY_STYLE_GUIDE } from '../agent/screenplayStyle.js';
 
 function txt(s) {
   return stripMarkdown(String(s || '')).trim();
