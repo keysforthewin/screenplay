@@ -377,7 +377,6 @@ export async function startImageSheetJob({
   shotNames,
   shotCount,
   shots,
-  direction = '',
   discordUser = null,
   announceUsername = null,
 }) {

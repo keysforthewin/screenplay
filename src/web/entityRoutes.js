@@ -2593,7 +2593,6 @@ export function buildApiRouter() {
           ? req.body.shot_names.map((s) => String(s)).filter(Boolean)
           : undefined;
         const shots = Array.isArray(req.body?.shots) ? req.body.shots : undefined;
-        const direction = String(req.body?.direction || '').slice(0, 4000);
         const { startImageSheetJob } = await import('./imageSheetJobs.js');
         const result = await startImageSheetJob({
           projectId: req.projectId,
@@ -2604,7 +2603,6 @@ export function buildApiRouter() {
           shotNames,
           shotCount,
           shots,
-          direction,
           discordUser: webDiscordUser(req),
           announceUsername: req?.session?.username || null,
         });
