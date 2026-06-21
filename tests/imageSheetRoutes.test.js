@@ -175,6 +175,35 @@ describe('POST /api/:host/:id/image-sheet', () => {
   });
 });
 
+describe('POST /api/beat/:id/shot-plan', () => {
+  it('starts a derive job and the poll reaches "derived" with shots', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'Alley', body: 'INT. ALLEY - NIGHT' });
+    const { status, json } = await postJson(`/api/beat/${beat._id.toString()}/shot-plan`, {
+      reference_image_ids: [],
+    });
+    expect(status).toBe(202);
+    expect(json.job_id).toBeTruthy();
+
+    let job = null;
+    const start = Date.now();
+    while (Date.now() - start < 4000) {
+      const r = await getJson(`/api/image-sheet/${json.job_id}`);
+      job = r.json.job;
+      if (job && ['derived', 'error'].includes(job.status)) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(job.status).toBe('derived');
+    expect(job.kind).toBe('beat_plan');
+    expect(Array.isArray(job.shots)).toBe(true);
+    expect(job.shots[0].name).toBe('Plate');
+  });
+
+  it('404s on a missing beat', async () => {
+    const { status } = await postJson(`/api/beat/${new ObjectId().toString()}/shot-plan`, {});
+    expect(status).toBe(404);
+  });
+});
+
 describe('GET /api/character-sheet-shots', () => {
   it('returns the canonical character shot list', async () => {
     const { status, json } = await getJson('/api/character-sheet-shots');

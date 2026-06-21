@@ -2611,6 +2611,32 @@ export function buildApiRouter() {
         handleArtworkError(e, res, next);
       }
     });
+
+    // POST /beat/:id/shot-plan — start a two-phase plate DERIVATION job (beats
+    // only). Renders nothing; returns 202 + { job_id }. The SPA polls
+    // GET /image-sheet/:jobId until status==='derived', shows job.shots for
+    // review, then POSTs the reviewed list to /beat/:id/image-sheet.
+    if (hostType === 'beat') {
+      router.post(`${basePath}/:id/shot-plan`, async (req, res, next) => {
+        try {
+          const hostId = await resolveHostId(req);
+          if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
+          const refs = await validateArtworkRefs(req, res);
+          if (!refs) return;
+          const direction = String(req.body?.direction || '').slice(0, 4000);
+          const { startShotPlanJob } = await import('./imageSheetJobs.js');
+          const result = await startShotPlanJob({
+            projectId: req.projectId,
+            hostId,
+            referenceImageIds: refs.ids,
+            direction,
+          });
+          res.status(202).json(result);
+        } catch (e) {
+          handleArtworkError(e, res, next);
+        }
+      });
+    }
   }
 
   registerArtworkRoutes({

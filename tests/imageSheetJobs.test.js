@@ -109,6 +109,16 @@ async function waitForJob(jobId, timeoutMs = 4000) {
   throw new Error('job did not finish in time');
 }
 
+async function waitForStatus(jobId, statuses, timeoutMs = 4000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const job = Sheet.getImageSheetJob(jobId);
+    if (job && statuses.includes(job.status)) return job;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error(`job did not reach ${statuses.join('/')} in time`);
+}
+
 describe('startImageSheetJob — character', () => {
   it('creates one done artwork per shot and finishes "done"', async () => {
     const c = await Characters.createCharacter({ projectId, name: 'Rae', hollywood_actor: 'Zendaya' });
@@ -241,6 +251,47 @@ describe('startImageSheetJob — beat (dynamic planner)', () => {
     const job = await waitForJob(job_id);
     expect(job.status).toBe('done');
     expect(job.planned).toBe(0);
+    const fresh = await Plots.getBeat(projectId, beat._id.toString());
+    expect(fresh.artworks || []).toHaveLength(0);
+  });
+});
+
+describe('startShotPlanJob — derive', () => {
+  it('runs the two-phase planner and parks at "derived" with job.shots', async () => {
+    Planner._setScenePlatePlannerForTests(async () => ([
+      { name: 'Alley — wide', prompt: 'wide empty alley', justification: 'establishes', quote: 'INT. ALLEY - NIGHT' },
+    ]));
+    Planner._setScenePlateCritiqueForTests(async () => ({ verdict: 'keep' }));
+    const beat = await Plots.createBeat({ projectId, name: 'Alley', body: 'INT. ALLEY - NIGHT' });
+    const { job_id } = await Sheet.startShotPlanJob({
+      projectId,
+      hostId: beat._id.toString(),
+      referenceImageIds: [],
+    });
+    expect(job_id).toBeTruthy();
+    const job = await waitForStatus(job_id, ['derived', 'error']);
+    expect(job.status).toBe('derived');
+    expect(job.kind).toBe('beat_plan');
+    expect(job.planned).toBe(1);
+    expect(job.shots).toEqual([
+      { name: 'Alley — wide', prompt: 'wide empty alley', justification: 'establishes', quote: 'INT. ALLEY - NIGHT' },
+    ]);
+  });
+
+  it('rejects a missing beat with status 404', async () => {
+    await expect(
+      Sheet.startShotPlanJob({ projectId, hostId: new ObjectId().toString(), referenceImageIds: [] }),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('does NOT create any artworks (derive renders nothing)', async () => {
+    Planner._setScenePlatePlannerForTests(async () => ([
+      { name: 'A', prompt: 'a', justification: '', quote: '' },
+    ]));
+    Planner._setScenePlateCritiqueForTests(async () => ({ verdict: 'keep' }));
+    const beat = await Plots.createBeat({ projectId, name: 'NoArt', body: 'INT. X' });
+    const { job_id } = await Sheet.startShotPlanJob({ projectId, hostId: beat._id.toString(), referenceImageIds: [] });
+    await waitForStatus(job_id, ['derived', 'error']);
     const fresh = await Plots.getBeat(projectId, beat._id.toString());
     expect(fresh.artworks || []).toHaveLength(0);
   });

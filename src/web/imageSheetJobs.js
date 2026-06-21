@@ -276,6 +276,98 @@ async function runSheetJob({ projectId, job, hostType, hostId, model, referenceI
   }
 }
 
+// Run the two-phase derivation for a beat and park the result on the job for
+// review. Renders NOTHING — the SPA polls GET /image-sheet/:jobId, reads
+// job.shots once status === 'derived', lets the user edit, then POSTs the
+// reviewed list back to /beat/:id/image-sheet. No busyHosts lock: deriving has no side
+// effects.
+async function runShotPlanJob({ projectId, job, hostId, referenceImageIds, direction }) {
+  try {
+    job.status = 'planning';
+    const beat = await getBeat(projectId, hostId);
+    if (!beat) throw new Error(`beat not found: ${hostId}`);
+    const characters = await findCharactersInBeat(projectId, beat);
+    const directorNotes = await loadDirectorNotesForPlanner(projectId);
+    const referenceInputs = await loadReferenceInputs(referenceImageIds);
+    const { images } = await planBeatSceneImages({
+      beat,
+      characters,
+      referenceInputs,
+      direction,
+      directorNotes,
+      onProgress: (e) => recordProgress(job, e),
+    });
+    job.shots = images;
+    job.planned = images.length;
+    job.status = 'derived';
+    job.finished_at = new Date();
+    recordProgress(job, {
+      phase: 'derived',
+      step: 'derive_done',
+      total: images.length,
+      message: `Derived ${images.length} plate${images.length === 1 ? '' : 's'} — review and generate.`,
+    });
+  } catch (e) {
+    job.status = 'error';
+    job.error = e.message;
+    job.finished_at = new Date();
+    recordProgress(job, { phase: 'error', step: 'derive_crashed', message: `Derivation failed: ${e.message}` });
+    logger.error(`shot-plan job ${job.job_id} crashed: ${e.message}`);
+  }
+}
+
+// Start a background plate-derivation job for a beat. Returns { job_id }
+// immediately (HTTP 202). Throws an error carrying `.status` for not-found /
+// config conditions (surfaced before the job is created).
+export async function startShotPlanJob({
+  projectId,
+  hostId,
+  referenceImageIds = [],
+  direction = '',
+}) {
+  if (!config.anthropic?.apiKey) {
+    throw httpError('ANTHROPIC_API_KEY is not configured (required to derive beat plates).', 400);
+  }
+  const beat = await getBeat(projectId, String(hostId));
+  if (!beat) throw httpError(`beat not found: ${hostId}`, 404);
+  const resolvedHostId = beat._id.toString();
+
+  const jobId = makeJobId();
+  const job = {
+    job_id: jobId,
+    host_type: 'beat',
+    host_id: resolvedHostId,
+    project_id: projectId,
+    kind: 'beat_plan',
+    status: 'queued',
+    started_at: new Date(),
+    finished_at: null,
+    error: null,
+    planner_model: STORYBOARD_MODEL,
+    reference_image_ids: (referenceImageIds || []).map(String),
+    planned: 0,
+    completed: 0,
+    failed: 0,
+    progress: null,
+    events: [],
+    shots: null,
+  };
+  jobs.set(jobId, job);
+  recordProgress(job, { phase: 'queued', step: 'job_queued', message: 'Queued plate derivation…' });
+
+  setImmediate(() => {
+    runShotPlanJob({ projectId, job, hostId: resolvedHostId, referenceImageIds, direction })
+      .catch((e) => {
+        job.status = 'error';
+        job.error = e.message;
+        job.finished_at = new Date();
+        logger.error(`shot-plan job ${jobId} crashed (outer): ${e.message}`);
+      });
+  });
+
+  return { job_id: jobId };
+}
+
 // Start a background image-sheet job. Returns { job_id, planned, host_type,
 // host_id } immediately (HTTP 202). `planned` is the shot count for characters
 // and null for beats (known only after planning). Throws an error carrying a
