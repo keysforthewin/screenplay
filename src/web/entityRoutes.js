@@ -492,6 +492,52 @@ export function buildApiRouter() {
     }
   });
 
+  // SSE stream of a beat critique run. Registered BEFORE requireSession() —
+  // EventSource cannot set headers, so the session id arrives in the query.
+  router.get('/beat/:id/critique/:jobId/events', async (req, res, next) => {
+    try {
+      const sid = String(req.query?.session_id || '');
+      if (!sid) { res.status(401).json({ error: 'missing session' }); return; }
+      const session = await getSession(sid);
+      if (!session) { res.status(401).json({ error: 'invalid session' }); return; }
+      touchSession(sid).catch(() => {});
+      req.session = session;
+
+      const {
+        getCritiqueJob, subscribeToCritiqueJob, unsubscribeFromCritiqueJob, serializeCritiqueJob,
+      } = await import('./critiqueGenerate.js');
+      const job = getCritiqueJob(req.params.jobId);
+      if (!job) { res.status(404).json({ error: 'job not found' }); return; }
+
+      res.set({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      res.flushHeaders?.();
+      res.write(`event: snapshot\ndata: ${JSON.stringify(serializeCritiqueJob(job))}\n\n`);
+
+      const listener = (snap) => {
+        const terminal = snap.status === 'done' || snap.status === 'partial' || snap.status === 'error';
+        const eventName = terminal ? (snap.status === 'error' ? 'error' : 'done') : 'update';
+        res.write(`event: ${eventName}\ndata: ${JSON.stringify(snap)}\n\n`);
+        if (terminal) { unsubscribeFromCritiqueJob(snap.job_id, listener); res.end(); }
+      };
+      subscribeToCritiqueJob(req.params.jobId, listener);
+
+      if (job.status === 'done' || job.status === 'partial' || job.status === 'error') {
+        unsubscribeFromCritiqueJob(req.params.jobId, listener);
+        res.end();
+        return;
+      }
+
+      const keepalive = setInterval(() => { res.write(`: keepalive ${Date.now()}\n\n`); }, 20_000);
+      keepalive.unref?.();
+      req.on('close', () => { clearInterval(keepalive); unsubscribeFromCritiqueJob(req.params.jobId, listener); });
+    } catch (e) { next(e); }
+  });
+
   router.use(requireSession());
 
   // Start a web chat agent run against the viewer's current project. The
@@ -1092,6 +1138,68 @@ export function buildApiRouter() {
     const beat = await getBeat(req.projectId, id);
     return beat?._id?.toString() || null;
   }
+
+  router.get('/beat/:id/critique', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const { getBeatCritique } = await import('../mongo/critiques.js');
+      const critique = await getBeatCritique(req.projectId, beatId);
+      res.json({ critique: critique || null });
+    } catch (e) { next(e); }
+  });
+
+  router.post('/beat/:id/critique', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const { startCritiqueJob } = await import('./critiqueGenerate.js');
+      const jobId = await startCritiqueJob({ projectId: req.projectId, beatId });
+      res.status(202).json({ job_id: jobId, beat_id: beatId });
+    } catch (e) {
+      if (e?.status) return res.status(e.status).json({ error: e.message });
+      next(e);
+    }
+  });
+
+  router.post('/beat/:id/regenerate', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const { regenerateBeat } = await import('./beatRewrite.js');
+      const result = await regenerateBeat(req.projectId, beatId);
+      res.json(result);
+    } catch (e) {
+      if (e?.status) return res.status(e.status).json({ error: e.message });
+      next(e);
+    }
+  });
+
+  router.post('/beat/:id/normalize', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const { normalizeBeat } = await import('./beatRewrite.js');
+      const result = await normalizeBeat(req.projectId, beatId);
+      res.json(result);
+    } catch (e) {
+      if (e?.status) return res.status(e.status).json({ error: e.message });
+      next(e);
+    }
+  });
+
+  router.post('/beat/:id/restore-body', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const { restoreBeatBody } = await import('./beatRewrite.js');
+      const result = await restoreBeatBody(req.projectId, beatId);
+      res.json(result);
+    } catch (e) {
+      if (e?.status) return res.status(e.status).json({ error: e.message });
+      next(e);
+    }
+  });
 
   router.post('/beat/:id/image', upload.single('file'), async (req, res, next) => {
     try {
