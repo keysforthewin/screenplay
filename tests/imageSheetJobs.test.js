@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ObjectId } from 'mongodb';
 import { createFakeDb } from './_fakeMongo.js';
+import { config } from '../src/config.js';
 
 const fakeDb = createFakeDb();
 
@@ -276,6 +277,19 @@ describe('startShotPlanJob — derive', () => {
     expect(job.shots).toEqual([
       { name: 'Alley — wide', prompt: 'wide empty alley', justification: 'establishes', quote: 'INT. ALLEY - NIGHT' },
     ]);
+  });
+
+  it('rejects with status 400 when ANTHROPIC_API_KEY is not configured', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'NoKey', body: 'INT. X' });
+    const saved = config.anthropic.apiKey;
+    config.anthropic.apiKey = '';
+    try {
+      await expect(
+        Sheet.startShotPlanJob({ projectId, hostId: beat._id.toString(), referenceImageIds: [] }),
+      ).rejects.toMatchObject({ status: 400 });
+    } finally {
+      config.anthropic.apiKey = saved;
+    }
   });
 
   it('rejects a missing beat with status 404', async () => {

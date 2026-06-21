@@ -196,6 +196,10 @@ describe('POST /api/beat/:id/shot-plan', () => {
     expect(job.kind).toBe('beat_plan');
     expect(Array.isArray(job.shots)).toBe(true);
     expect(job.shots[0].name).toBe('Plate');
+    expect(typeof job.shots[0].prompt).toBe('string');
+    expect(job.shots[0].prompt.length).toBeGreaterThan(0);
+    expect(job.shots[0]).toHaveProperty('justification');
+    expect(job.shots[0]).toHaveProperty('quote');
   });
 
   it('404s on a missing beat', async () => {
