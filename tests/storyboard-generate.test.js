@@ -39,6 +39,26 @@ vi.mock('../src/mongo/images.js', () => ({
     size: 1024,
     uploaded_at: new Date(),
   })),
+  findImageFile: vi.fn(async (imageId) => {
+    try {
+      const oid = new ObjectId(String(imageId));
+      return fakeDb.collection('images.files').findOne({ _id: oid });
+    } catch {
+      return null;
+    }
+  }),
+  imageFileToMeta: vi.fn((file) => ({
+    _id: file._id,
+    filename: file.filename,
+    content_type: file.contentType,
+    size: file.length,
+    source: file.metadata?.source || 'upload',
+    prompt: file.metadata?.prompt || null,
+    generated_by: file.metadata?.generated_by || null,
+    name: file.metadata?.name || '',
+    description: file.metadata?.description || '',
+    uploaded_at: file.uploadDate,
+  })),
 }));
 
 const { createProject } = await import('../src/mongo/projects.js');
@@ -859,18 +879,32 @@ describe('planFramesV2 resolves per-frame reference_ids', () => {
     const keys = await makeCharacter('Keys', { sheets: [young, old], mainId: young });
     const beat = { _id: 'beat1', characters: ['Keys'], main_image_id: 'beatimg' };
 
+    let capturedCandidates = null;
     Generate._setScenePlannerForTests(async () => ({
       sceneBible: null,
       outline: [{ description: 'old man cu', shot_type: 'close_up', characters_in_scene: ['Keys'] }],
     }));
-    Generate._setShotExpanderForTests(async ({ outline }) => outline.map(() => ({
-      start_frame_prompt: 'Close-up on the old man.',
-      video_prompt: 'Static camera.',
-      references: [{ character: 'Keys', image_index: 2 }],
-    })));
+    Generate._setShotExpanderForTests(async ({ outline, candidates }) => {
+      capturedCandidates = candidates;
+      return outline.map(() => ({
+        start_frame_prompt: 'Close-up on the old man.',
+        video_prompt: 'Static camera.',
+        references: [{ character: 'Keys', image_index: 2 }],
+      }));
+    });
 
     const { frames } = await Generate._planFramesV2ForTest({ beat, characters: [keys], targetCount: 1 });
     expect(frames).toHaveLength(1);
     expect(frames[0].reference_ids).toEqual(['beatimg', String(old)]);
+
+    // Verify findImageFile + imageFileToMeta were exercised: the candidates manifest
+    // passed to the expander must carry the real name/description from images.files.
+    expect(capturedCandidates).not.toBeNull();
+    const keysCandidates = capturedCandidates?.find((e) => e.name === 'Keys')?.candidates ?? [];
+    expect(keysCandidates.length).toBeGreaterThanOrEqual(2);
+    expect(keysCandidates[0].name).toBe('Young Keys');
+    expect(keysCandidates[0].description).toBe('teen');
+    expect(keysCandidates[1].name).toBe('Old Keys');
+    expect(keysCandidates[1].description).toBe('70s');
   });
 });
