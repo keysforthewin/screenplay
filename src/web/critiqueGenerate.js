@@ -200,6 +200,10 @@ export async function startCritiqueJob({ projectId, beatId }) {
   const beat = await getBeat(projectId, String(beatId));
   if (!beat) throw httpError(`beat not found: ${beatId}`, 404);
   const busyKey = beat._id.toString();
+  // Concurrency-safe under Node's single-threaded event loop: there is no
+  // await between this has-check and the add below, so once the first caller
+  // adds busyKey, every later caller sees it and gets 409 — even though
+  // resolveProjectId/getBeat awaited earlier in this function.
   if (busyBeats.has(busyKey)) {
     throw httpError('A critique is already running for this beat.', 409);
   }
@@ -207,6 +211,8 @@ export async function startCritiqueJob({ projectId, beatId }) {
   const job = createCritiqueJob(busyKey);
   setImmediate(() => {
     runCritique({ projectId, job })
+      // runCritique catches its own errors, but keep this defensive .catch so a
+      // future change can never turn this fire-and-forget into an unhandledRejection.
       .catch((e) => logger.error(`critique gen: background run failed: ${e.message}`))
       .finally(() => busyBeats.delete(busyKey));
   });
