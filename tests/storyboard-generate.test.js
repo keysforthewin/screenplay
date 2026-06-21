@@ -785,6 +785,13 @@ describe('scene-planner screenplay-format nudge', () => {
   });
 });
 
+describe('SCENE_PLAN_SYSTEM_PROMPT narrowing rule', () => {
+  it('instructs narrowing characters_in_scene on tight shot types', () => {
+    expect(Generate.SCENE_PLAN_SYSTEM_PROMPT).toMatch(/close_up/);
+    expect(Generate.SCENE_PLAN_SYSTEM_PROMPT.toLowerCase()).toContain('only the character');
+  });
+});
+
 describe('linkBeatCharactersForShot backstop scope', () => {
   const beatCast = ['Young Keys', 'Old Keys', 'Mara'];
 
