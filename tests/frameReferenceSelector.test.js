@@ -79,6 +79,13 @@ describe('selectFrameReferences', () => {
     expect(warnSpy).toHaveBeenCalled();
   });
 
+  it('returns [] and warns when the SDK call throws', async () => {
+    messagesCreate.mockRejectedValueOnce(new Error('network down'));
+    const out = await selectFrameReferences({ sceneText: 'scene', candidates: CANDS, max: 6 });
+    expect(out).toEqual([]);
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
   it('returns [] without calling the SDK when no API key', async () => {
     hasKey = false;
     const out = await selectFrameReferences({ sceneText: 'scene', candidates: CANDS, max: 6 });
