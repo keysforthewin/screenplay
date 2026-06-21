@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { apiGet } from '../api.js';
+import { apiGet, apiPostJson } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
 import { ImageGallery } from '../widgets/ImageGallery.jsx';
@@ -11,8 +11,9 @@ import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
 import { ReferenceExtrasSection } from '../widgets/ReferenceExtrasSection.jsx';
 import { BeatPager } from '../widgets/BeatPager.jsx';
 import { BeatTabs } from '../widgets/BeatTabs.jsx';
+import { CritiqueTab } from '../widgets/CritiqueTab.jsx';
 
-const TABS = ['characters', 'background', 'attachments', 'references', 'artwork'];
+const TABS = ['characters', 'background', 'critique', 'attachments', 'references', 'artwork'];
 
 function readInitialTab() {
   if (typeof window === 'undefined') return 'background';
@@ -82,6 +83,18 @@ export function Beat({ session }) {
 
   function onRefresh() { setRefreshKey((k) => k + 1); }
 
+  const [bgBusy, setBgBusy] = useState(null); // 'normalize' | 'undo' | null
+  async function normalizeBody() {
+    setBgBusy('normalize');
+    try { await apiPostJson(`/beat/${beat._id}/normalize`, {}); onRefresh(); }
+    catch (e) { setError(e.message); } finally { setBgBusy(null); }
+  }
+  async function undoBody() {
+    setBgBusy('undo');
+    try { await apiPostJson(`/beat/${beat._id}/restore-body`, {}); onRefresh(); }
+    catch (e) { setError(e.message); } finally { setBgBusy(null); }
+  }
+
   if (error) {
     return <div className="app"><div className="error-banner">{error}</div></div>;
   }
@@ -128,8 +141,26 @@ export function Beat({ session }) {
         </div>
 
         <div className="tab-panel" hidden={activeTab !== 'background'}>
+          <div className="tab-actions">
+            <button type="button" disabled={bgBusy} onClick={normalizeBody}>
+              {bgBusy === 'normalize' ? 'Normalizing…' : 'Normalize to screenplay format'}
+            </button>
+            {beat.previous_body && (
+              <button type="button" disabled={bgBusy} onClick={undoBody}>
+                {bgBusy === 'undo' ? 'Undoing…' : 'Undo'}
+              </button>
+            )}
+          </div>
           <CollabField label="Name" field="name" />
           <CollabField label="Body" field="body" multiline />
+        </div>
+
+        <div className="tab-panel" hidden={activeTab !== 'critique'}>
+          <CritiqueTab
+            beatId={beat._id}
+            hasPreviousBody={Boolean(beat.previous_body)}
+            onRefresh={onRefresh}
+          />
         </div>
 
         <div className="tab-panel" hidden={activeTab !== 'attachments'}>
@@ -226,6 +257,7 @@ function tabLabel(tab) {
   switch (tab) {
     case 'characters': return 'Characters';
     case 'background': return 'Background';
+    case 'critique': return 'Critique';
     case 'attachments': return 'Attachments';
     case 'references': return 'References';
     case 'artwork': return 'Artwork';

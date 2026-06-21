@@ -2834,3 +2834,14 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .chat-close-btn:hover {
   background: var(--bg-elevated, #2a2a2e);
 }
+.critique-scope {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 6px;
+  margin-left: 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  vertical-align: middle;
+}
+.critique-scope.scope-story { color: var(--accent); border-color: var(--accent); }
