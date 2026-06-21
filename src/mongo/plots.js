@@ -67,6 +67,14 @@ async function ensureBeatIds(plot) {
       next.scene_bible = null;
       changed = true;
     }
+    if (next.critique === undefined) {
+      next.critique = null;
+      changed = true;
+    }
+    if (next.previous_body === undefined) {
+      next.previous_body = null;
+      changed = true;
+    }
     if (next.name === undefined) {
       next.name = next.title ? String(next.title) : '';
       changed = true;
