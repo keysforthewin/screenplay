@@ -776,4 +776,10 @@ describe('scene-planner screenplay-format nudge', () => {
     expect(text.toLowerCase()).toContain('screenplay format');
     expect(text.toLowerCase()).toContain('slugline');
   });
+
+  it('tells the planner to pull sub-locations / mini-slugs into blocking', () => {
+    const text = Generate.SCENE_PLAN_SYSTEM_PROMPT.toLowerCase();
+    expect(text).toContain('sub-location');
+    expect(text).toContain('mini-slug');
+  });
 });

@@ -15,6 +15,12 @@ describe('screenplay style text', () => {
     expect(SCREENPLAY_STYLE_GUIDE.toLowerCase()).toContain('dialogue');
     // reformat-on-request
     expect(SCREENPLAY_STYLE_GUIDE.toLowerCase()).toContain('reformat');
+    // spatial geography / blocking — the back-seat fix
+    expect(SCREENPLAY_STYLE_GUIDE.toLowerCase()).toContain('geography');
+    expect(SCREENPLAY_STYLE_GUIDE.toLowerCase()).toContain('blocking');
+    // mini-slug sub-location convention, with a concrete example
+    expect(SCREENPLAY_STYLE_GUIDE.toLowerCase()).toContain('mini-slug');
+    expect(SCREENPLAY_STYLE_GUIDE).toContain('BACK SEAT');
   });
 
   it('exports a short summary that points back to load_writing_context', () => {
@@ -23,5 +29,7 @@ describe('screenplay style text', () => {
     expect(SCREENPLAY_STYLE_SUMMARY.length).toBeLessThan(600);
     expect(SCREENPLAY_STYLE_SUMMARY).toContain('screenplay action');
     expect(SCREENPLAY_STYLE_SUMMARY).toContain('load_writing_context');
+    // the summary should also nudge spatial geography
+    expect(SCREENPLAY_STYLE_SUMMARY.toLowerCase()).toContain('geography');
   });
 });

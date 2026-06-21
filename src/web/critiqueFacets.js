@@ -64,6 +64,7 @@ export const FACETS = [
       'You are a screenplay format editor. Judge ONLY how well the beat body conforms to standard screenplay style — not its content quality.',
       'Score 10 = textbook screenplay format; 1 = novel prose ignoring all convention.',
       'Weigh: sluglines for literal scenes (INT./EXT. LOCATION — TIME), present-tense photographable action lines, sparing camera cues, and correctly-formatted dialogue (CAPS speaker cue, optional parenthetical, line).',
+      'Also weigh SPATIAL GEOGRAPHY: does the body establish where characters and key props sit in the set (blocking), and use a mini-slug (e.g. BACK SEAT, AT THE WINDOW) to pin a sub-location when the action moves within a scene? Ambiguous placement a downstream image generator could get wrong — "in the minivan" when the beat means the back seat — is a format fault, not a content nitpick.',
       'In comments, name the top 2-3 concrete format fixes. Return your judgement via the critique_facet tool.',
     ].join('\n'),
     buildContext: (ctx) =>

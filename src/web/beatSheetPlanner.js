@@ -50,7 +50,11 @@ export const SCENE_PLATE_PLAN_TOOL = {
               type: 'string',
               description:
                 'Full standalone image-generation prompt for this background/scene plate: concrete location, time of day, ' +
-                'lighting, palette, mood, lens/framing. Generally NO characters — an empty environment. ~2–3 sentences. ' +
+                'lighting, palette, mood, lens/framing. Encode the spatial layout and the exact sub-location the beat calls for ' +
+                '(e.g. "the rear bench of a minivan, the front seats soft in the foreground") and pick a vantage that reveals it. ' +
+                'State occupancy explicitly — unoccupied, empty seats by default so the model adds no stray figure; only if the ' +
+                'beat truly cannot read without a person, place that figure exactly where the beat puts them. Generally NO ' +
+                'characters — an empty environment. ~2–3 sentences. ' +
                 'Purely visual: do NOT include any justification or quote text here; this string is sent verbatim to the image model.',
             },
             justification: {
@@ -87,8 +91,13 @@ export const SCENE_PLATE_PLAN_SYSTEM_PROMPT = [
   '- quote: a short VERBATIM snippet copied exactly from the beat body that this plate depicts. Reviewer-facing only — never rendered.',
   '',
   '# How to read the beat',
-  '- Beat bodies are screenplay-format (Fountain-flavored): sluglines (INT./EXT. LOCATION — TIME) give location, time of day, and lighting; action lines give set dressing and atmosphere.',
+  '- Beat bodies are screenplay-format (Fountain-flavored): sluglines (INT./EXT. LOCATION — TIME) give location, time of day, and lighting; mini-slugs (BACK SEAT, AT THE WINDOW) name the sub-location a moment happens in; action lines give set dressing and atmosphere.',
   '- Use the supplied reference-image descriptions and the director\'s notes to lock the look (palette, era, mood). Stay consistent with them.',
+  '',
+  '# Spatial geography & occupancy',
+  '- Build each plate around the SUB-LOCATION the beat actually calls for, not the generic room. Read sluglines, mini-slugs, and action lines for where people and props sit, and frame that. If the beat lives in the back seat of a minivan, show the rear bench (third-row seats, the door beside it) from a vantage that reveals it — do not default to the front seats.',
+  '- Encode the layout concretely: foreground / midground / background, near / far, left / right, and the specific set features the beat names.',
+  '- State OCCUPANCY explicitly. These are empty backdrops, so say the seats / room are unoccupied — image models love to fill a car with a driver, and an unstated minivan interior gets one in the front. When the beat truly cannot read without a figure, place that figure in the exact spot the beat specifies (the rear bench, NOT the front) and note where it is NOT.',
   '',
   '# Constraints',
   '- No characters in the plates unless the beat truly cannot be represented without a figure — these are environments, not staged shots.',
@@ -195,6 +204,8 @@ export const SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT = [
   '- edit: worth keeping but the prompt is vague, generic, or missing concrete visual detail. Return an improved, purely-visual prompt.',
   '- divide: the plate is really two distinct plates (two locations, or a wide AND a detail insert). Return exactly two fully-formed plates.',
   '- cull: redundant with the beat\'s needs, off-topic, requires characters to read, or otherwise should not be generated. Drop it.',
+  '',
+  'SPATIAL FIDELITY — check this first: compare the prompt against the beat (and the plate\'s quote). If the beat pins a spatial placement or sub-location (e.g. "in the back seat", "by the window") and the prompt drops it or contradicts it, choose "edit" and restore the exact geography. If the prompt would let the image model add or misplace an occupant — a driver in an empty minivan, a figure in the front when the beat says the back — choose "edit" to fix the placement or to state the seats are empty.',
   '',
   'Rules: prompts stay purely visual (no characters unless unavoidable, no proper names, no caption/quote text). Prefer keep/edit over divide; only divide when genuinely two shots. Only cull when the plate adds no value.',
 ].join('\n');

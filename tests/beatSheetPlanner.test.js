@@ -216,10 +216,28 @@ describe('plate tools + system prompts', () => {
     expect(Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT.toLowerCase()).toMatch(/background|environment|plate|location/);
   });
 
+  it('plan prompt demands spatial geography, sub-location, and explicit occupancy', () => {
+    const t = Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT.toLowerCase();
+    expect(t).toContain('geography');
+    expect(t).toContain('sub-location');
+    expect(t).toContain('occupancy');
+  });
+
+  it('the plate prompt field tells the model to encode sub-location + occupancy', () => {
+    const desc = Planner.SCENE_PLATE_PLAN_TOOL.input_schema.properties.plates.items.properties.prompt.description.toLowerCase();
+    expect(desc).toContain('sub-location');
+    expect(desc).toContain('occupancy');
+  });
+
   it('exposes critique_scene_plate enumerating the four verdicts', () => {
     expect(Planner.SCENE_PLATE_CRITIQUE_TOOL.name).toBe('critique_scene_plate');
     expect(Planner.SCENE_PLATE_CRITIQUE_TOOL.input_schema.properties.verdict.enum.sort())
       .toEqual(['cull', 'divide', 'edit', 'keep']);
+  });
+
+  it('critique prompt checks spatial fidelity against the beat/quote', () => {
+    const t = Planner.SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT.toLowerCase();
+    expect(t).toContain('spatial');
   });
 });
 

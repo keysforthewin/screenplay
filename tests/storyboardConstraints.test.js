@@ -53,6 +53,12 @@ describe('storyboard constraints', () => {
     expect(STILL_FRAMING_RULES.toLowerCase()).not.toContain('center axis');
   });
 
+  it('still-framing rules require naming the beat sub-location / seat (back-seat fix)', () => {
+    const t = STILL_FRAMING_RULES.toLowerCase();
+    expect(t).toContain('sub-location');
+    expect(t).toContain('back seat');
+  });
+
   it('occupant placeholder rules cover interiors framed from outside', () => {
     const t = OCCUPANT_PLACEHOLDER_RULES.toLowerCase();
     expect(t).toContain('placeholder');

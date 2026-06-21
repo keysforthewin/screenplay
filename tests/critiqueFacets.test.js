@@ -43,6 +43,13 @@ describe('critique facet registry', () => {
     }
   });
 
+  it('the format facet weighs spatial geography / blocking and mini-slugs', () => {
+    const fmt = getFacet('format').systemPrompt.toLowerCase();
+    expect(fmt).toContain('geography');
+    expect(fmt).toContain('blocking');
+    expect(fmt).toContain('mini-slug');
+  });
+
   it('getFacet finds by key; facetStubs mirrors the registry', () => {
     expect(getFacet('format').label).toBe('Screenplay format');
     const stubs = facetStubs();
