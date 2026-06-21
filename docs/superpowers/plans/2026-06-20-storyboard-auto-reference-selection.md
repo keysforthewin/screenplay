@@ -296,12 +296,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
-vi.mock('../src/config.js', () => ({ config: { anthropic: { apiKey: 'k' } } }));
 
 const listLibraryImages = vi.fn();
-vi.mock('../src/mongo/images.js', async (importOriginal) => ({
-  ...(await importOriginal()),
+// Fully mock images.js so the real module (and its mongo/config deps) never
+// loads. imageFileToMeta is a tiny pure mapper — stand in for just the fields
+// buildFrameReferenceCandidates reads.
+vi.mock('../src/mongo/images.js', () => ({
   listLibraryImages,
+  imageFileToMeta: (f) => ({
+    _id: f._id,
+    name: f.metadata?.name || '',
+    description: f.metadata?.description || '',
+  }),
 }));
 
 const getCharacter = vi.fn();
@@ -444,7 +450,6 @@ Create `src/web/frameReferences.js`:
 // ones, and persists them onto the frame via the gateway so they show up in the
 // SPA for review. Only fills frames that have no references yet; never throws.
 
-import { config } from '../config.js';
 import { logger } from '../log.js';
 import { listLibraryImages, imageFileToMeta } from '../mongo/images.js';
 import { getCharacter } from '../mongo/characters.js';
