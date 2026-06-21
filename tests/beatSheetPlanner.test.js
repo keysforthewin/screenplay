@@ -222,3 +222,46 @@ describe('plate tools + system prompts', () => {
       .toEqual(['cull', 'divide', 'edit', 'keep']);
   });
 });
+
+describe('buildScenePlatePlanUserText — revision request', () => {
+  it('includes a revision section listing the previous plates when provided', () => {
+    const text = Planner.buildScenePlatePlanUserText({
+      beat,
+      previousPlates: [
+        { name: 'Old wide', prompt: 'wide empty alley at dusk' },
+        { name: 'Old insert', prompt: 'wet brick texture' },
+      ],
+      direction: 'too many wides; want more interior detail',
+    });
+    expect(text.toLowerCase()).toContain('revision request');
+    expect(text).toContain('Old wide');
+    expect(text).toContain('wide empty alley at dusk');
+    expect(text).toContain('Old insert');
+  });
+
+  it('omits the revision section when there are no previous plates', () => {
+    const text = Planner.buildScenePlatePlanUserText({ beat });
+    expect(text.toLowerCase()).not.toContain('revision request');
+  });
+});
+
+describe('planBeatSceneImages — revision threading', () => {
+  it('passes previousPlates to phase 1 but not to phase 2', async () => {
+    let p1args = null;
+    let p2ctx = null;
+    Planner._setScenePlatePlannerForTests(async (args) => {
+      p1args = args;
+      return [{ name: 'A', prompt: 'a', justification: '', quote: '' }];
+    });
+    Planner._setScenePlateCritiqueForTests(async (_plate, ctx) => {
+      p2ctx = ctx;
+      return { verdict: 'keep' };
+    });
+    await Planner.planBeatSceneImages({
+      beat,
+      previousPlates: [{ name: 'Old', prompt: 'old plate' }],
+    });
+    expect(p1args.previousPlates).toEqual([{ name: 'Old', prompt: 'old plate' }]);
+    expect(p2ctx.previousPlates).toBeUndefined();
+  });
+});

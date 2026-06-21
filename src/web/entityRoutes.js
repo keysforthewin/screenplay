@@ -2624,12 +2624,14 @@ export function buildApiRouter() {
           const refs = await validateArtworkRefs(req, res);
           if (!refs) return;
           const direction = String(req.body?.direction || '').slice(0, 4000);
+          const previousPlates = Array.isArray(req.body?.previous_plates) ? req.body.previous_plates : undefined;
           const { startShotPlanJob } = await import('./imageSheetJobs.js');
           const result = await startShotPlanJob({
             projectId: req.projectId,
             hostId,
             referenceImageIds: refs.ids,
             direction,
+            previousPlates,
           });
           res.status(202).json(result);
         } catch (e) {

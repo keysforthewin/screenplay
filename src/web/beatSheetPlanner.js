@@ -115,6 +115,7 @@ export function buildScenePlatePlanUserText({
   referenceInputs = [],
   direction = '',
   directorNotes = [],
+  previousPlates = [],
 } = {}) {
   const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes });
   const lines = [
@@ -122,6 +123,18 @@ export function buildScenePlatePlanUserText({
     '',
     ctx,
   ];
+  if (Array.isArray(previousPlates) && previousPlates.length) {
+    lines.push(
+      '',
+      '# Revision request',
+      'You previously proposed the plates below for this beat. The user reviewed them and asked for changes — their feedback is in the "Director\'s commentary" above. Re-plan the FULL set to act on that feedback: keep what works, change or drop what doesn\'t, and add anything missing. Do not simply repeat the old list.',
+      '',
+      'Previously proposed plates:',
+      ...previousPlates.map(
+        (p, i) => `${i + 1}. ${String(p?.name || '').trim() || '(unnamed)'} — ${String(p?.prompt || '').trim()}`,
+      ),
+    );
+  }
   const refBlock = formatReferenceInputs(referenceInputs);
   if (refBlock) {
     lines.push('', '# Reference images provided (their stored descriptions — design around these):', refBlock);
@@ -355,13 +368,14 @@ export async function planBeatSceneImages({
   referenceInputs = [],
   direction = '',
   directorNotes = [],
+  previousPlates = [],
   onProgress = null,
 } = {}) {
   const emit = (e) => { try { onProgress?.(e); } catch { /* progress is best-effort */ } };
 
   // Phase 1 — holistic plan.
   emit({ phase: 'planning', step: 'plan_start', message: 'Planning scene plates…' });
-  const phase1Args = { beat, characters, referenceInputs, direction, directorNotes };
+  const phase1Args = { beat, characters, referenceInputs, direction, directorNotes, previousPlates };
   let rawPlates;
   if (phase1Override) {
     const r = await phase1Override(phase1Args);

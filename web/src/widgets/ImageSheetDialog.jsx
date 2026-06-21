@@ -44,7 +44,10 @@ export function ImageSheetDialog({
   const [derivedShots, setDerivedShots] = useState([]); // [{ key, name, prompt, justification, quote }]
   const [deriveJob, setDeriveJob] = useState(null);
   const [showDeriveLog, setShowDeriveLog] = useState(false);
-  const [editedSinceDerive, setEditedSinceDerive] = useState(false);
+  // Re-derive feedback popup: the user says what to change; it's sent as
+  // `direction` and the current plates as `previous_plates` so the planner revises.
+  const [reDeriveOpen, setReDeriveOpen] = useState(false);
+  const [feedback, setFeedback] = useState('');
   const openSeqRef = useRef(0);
   const derivePollRef = useRef(null);
   const deriveLogRef = useRef(null);
@@ -73,7 +76,8 @@ export function ImageSheetDialog({
     setDerivedShots([]);
     setDeriveJob(null);
     setShowDeriveLog(false);
-    setEditedSinceDerive(false);
+    setReDeriveOpen(false);
+    setFeedback('');
   }, [open]);
 
   useEffect(() => () => stopDerivePoll(), []);
@@ -155,7 +159,6 @@ export function ImageSheetDialog({
           justification: s.justification || '',
           quote: s.quote || '',
         })));
-        setEditedSinceDerive(false);
         setStage('review');
         setBusy(false);
       } else if (job?.status === 'error') {
@@ -169,7 +172,7 @@ export function ImageSheetDialog({
     }
   }
 
-  async function derive() {
+  async function derive({ direction = '', previousPlates = null } = {}) {
     setBusy(true);
     setError(null);
     setStage('deriving');
@@ -177,7 +180,10 @@ export function ImageSheetDialog({
     setShowDeriveLog(true);
     const seq = openSeqRef.current;
     try {
-      const res = await apiPostJson(`${basePath}/shot-plan`, { reference_image_ids: referenceIds });
+      const body = { reference_image_ids: referenceIds };
+      if (direction.trim()) body.direction = direction.trim();
+      if (previousPlates && previousPlates.length) body.previous_plates = previousPlates;
+      const res = await apiPostJson(`${basePath}/shot-plan`, body);
       if (seq !== openSeqRef.current) return;
       stopDerivePoll();
       derivePollRef.current = setInterval(() => pollDerive(res.job_id, seq), 2000);
@@ -190,24 +196,31 @@ export function ImageSheetDialog({
     }
   }
 
+  // Re-derive opens a popup asking what to change; submitting sends that feedback
+  // plus the current plates so the planner revises rather than re-rolls.
   function reDerive() {
-    if (editedSinceDerive && !confirm('Re-derive will discard your edits to the shot list. Continue?')) return;
+    setFeedback('');
+    setReDeriveOpen(true);
+  }
+
+  function submitReDerive() {
+    const previousPlates = derivedShots
+      .map((s) => ({ name: s.name.trim(), prompt: s.prompt.trim() }))
+      .filter((s) => s.name && s.prompt);
+    setReDeriveOpen(false);
     setDerivedShots([]);
-    derive();
+    derive({ direction: feedback, previousPlates });
   }
 
   function updateShot(key, field, value) {
-    setEditedSinceDerive(true);
     setDerivedShots((prev) => prev.map((s) => (s.key === key ? { ...s, [field]: value } : s)));
   }
 
   function removeShot(key) {
-    setEditedSinceDerive(true);
     setDerivedShots((prev) => prev.filter((s) => s.key !== key));
   }
 
   function addShot() {
-    setEditedSinceDerive(true);
     setDerivedShots((prev) => [...prev, { key: nextKey(), name: 'New plate', prompt: '', justification: '', quote: '' }]);
   }
 
@@ -272,7 +285,7 @@ export function ImageSheetDialog({
     footer = (
       <>
         <button type="button" onClick={onClose} disabled={busy && stage !== 'deriving'}>Cancel</button>
-        <button type="button" className="primary" onClick={derive} disabled={busy}>
+        <button type="button" className="primary" onClick={() => derive()} disabled={busy}>
           {stage === 'deriving' ? 'Deriving…' : 'Derive shots'}
         </button>
       </>
@@ -480,6 +493,33 @@ export function ImageSheetDialog({
         hostArtworks={hostArtworks}
         selectedIds={referenceIds}
       />
+      <Modal
+        open={reDeriveOpen}
+        title="Re-derive plates"
+        onClose={() => setReDeriveOpen(false)}
+        footer={
+          <>
+            <button type="button" onClick={() => setReDeriveOpen(false)}>Cancel</button>
+            <button type="button" className="primary" onClick={submitReDerive}>Re-derive</button>
+          </>
+        }
+      >
+        <div className="frame-generate-modal">
+          <p className="tab-intro" style={{ marginTop: 0 }}>
+            What should change? Tell the planner what didn't work about the current plates or what
+            you'd like different — it will revise the set using your feedback. The current list (and
+            any edits) will be replaced.
+          </p>
+          <textarea
+            className="image-sheet-feedback"
+            rows={5}
+            autoFocus
+            value={feedback}
+            placeholder="e.g. Fewer wide shots, more interior set-detail inserts; grittier, rain-soaked mood."
+            onChange={(e) => setFeedback(e.target.value)}
+          />
+        </div>
+      </Modal>
     </>
   );
 }

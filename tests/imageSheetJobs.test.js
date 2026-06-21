@@ -322,6 +322,29 @@ describe('startShotPlanJob — derive', () => {
     const fresh = await Plots.getBeat(projectId, beat._id.toString());
     expect(fresh.artworks || []).toHaveLength(0);
   });
+
+  it('threads direction + normalized previousPlates into the planner on re-derive', async () => {
+    let p1args = null;
+    Planner._setScenePlatePlannerForTests(async (args) => {
+      p1args = args;
+      return [{ name: 'A', prompt: 'a', justification: '', quote: '' }];
+    });
+    Planner._setScenePlateCritiqueForTests(async () => ({ verdict: 'keep' }));
+    const beat = await Plots.createBeat({ projectId, name: 'Rev', body: 'INT. X' });
+    const { job_id } = await Sheet.startShotPlanJob({
+      projectId,
+      hostId: beat._id.toString(),
+      referenceImageIds: [],
+      direction: 'make it grittier',
+      previousPlates: [
+        { name: 'Old', prompt: 'old plate' },
+        { name: '', prompt: 'dropped (blank name)' },
+      ],
+    });
+    await waitForStatus(job_id, ['derived', 'error']);
+    expect(p1args.direction).toBe('make it grittier');
+    expect(p1args.previousPlates).toEqual([{ name: 'Old', prompt: 'old plate' }]);
+  });
 });
 
 describe('startImageSheetJob — validation', () => {

@@ -217,6 +217,31 @@ describe('POST /api/beat/:id/shot-plan', () => {
     const { status } = await postJson(`/api/beat/${new ObjectId().toString()}/shot-plan`, {});
     expect(status).toBe(404);
   });
+
+  it('threads direction + previous_plates through to the planner (re-derive)', async () => {
+    let p1args = null;
+    Planner._setScenePlatePlannerForTests(async (args) => {
+      p1args = args;
+      return [{ name: 'Revised', prompt: 'revised plate', justification: 'x', quote: 'INT. ALLEY - NIGHT' }];
+    });
+    const beat = await Plots.createBeat({ projectId, name: 'Rev', body: 'INT. ALLEY - NIGHT' });
+    const { status, json } = await postJson(`/api/beat/${beat._id.toString()}/shot-plan`, {
+      direction: 'grittier, fewer wides',
+      previous_plates: [{ name: 'Old', prompt: 'old plate' }],
+    });
+    expect(status).toBe(202);
+    let job = null;
+    const start = Date.now();
+    while (Date.now() - start < 4000) {
+      const r = await getJson(`/api/image-sheet/${json.job_id}`);
+      job = r.json.job;
+      if (job && ['derived', 'error'].includes(job.status)) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(job.status).toBe('derived');
+    expect(p1args.direction).toBe('grittier, fewer wides');
+    expect(p1args.previousPlates).toEqual([{ name: 'Old', prompt: 'old plate' }]);
+  });
 });
 
 describe('GET /api/character-sheet-shots', () => {

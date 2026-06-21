@@ -277,7 +277,7 @@ async function runSheetJob({ projectId, job, hostType, hostId, model, referenceI
 // job.shots once status === 'derived', lets the user edit, then POSTs the
 // reviewed list back to /beat/:id/image-sheet. No busyHosts lock: deriving has no side
 // effects.
-async function runShotPlanJob({ projectId, job, hostId, referenceImageIds, direction }) {
+async function runShotPlanJob({ projectId, job, hostId, referenceImageIds, direction, previousPlates }) {
   try {
     job.status = 'planning';
     const beat = await getBeat(projectId, hostId);
@@ -291,6 +291,7 @@ async function runShotPlanJob({ projectId, job, hostId, referenceImageIds, direc
       referenceInputs,
       direction,
       directorNotes,
+      previousPlates,
       onProgress: (e) => recordProgress(job, e),
     });
     job.shots = images;
@@ -320,6 +321,7 @@ export async function startShotPlanJob({
   hostId,
   referenceImageIds = [],
   direction = '',
+  previousPlates = [],
 }) {
   if (!config.anthropic?.apiKey) {
     throw httpError('ANTHROPIC_API_KEY is not configured (required to derive beat plates).', 400);
@@ -327,6 +329,9 @@ export async function startShotPlanJob({
   const beat = await getBeat(projectId, String(hostId));
   if (!beat) throw httpError(`beat not found: ${hostId}`, 404);
   const resolvedHostId = beat._id.toString();
+  // On re-derive the client sends the plates it's reacting to; normalize/cap
+  // them so the planner can revise rather than re-roll from scratch.
+  const priorPlates = normalizeExplicitShots(previousPlates) || [];
 
   const jobId = makeJobId();
   const job = {
@@ -352,7 +357,7 @@ export async function startShotPlanJob({
   recordProgress(job, { phase: 'queued', step: 'job_queued', message: 'Queued plate derivation…' });
 
   setImmediate(() => {
-    runShotPlanJob({ projectId, job, hostId: resolvedHostId, referenceImageIds, direction })
+    runShotPlanJob({ projectId, job, hostId: resolvedHostId, referenceImageIds, direction, previousPlates: priorPlates })
       .catch((e) => {
         job.status = 'error';
         job.error = e.message;
