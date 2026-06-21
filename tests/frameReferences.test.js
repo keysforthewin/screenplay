@@ -75,6 +75,29 @@ describe('buildFrameReferenceCandidates', () => {
     expect(cands.length).toBe(120);
     expect(cands.some((c) => c.id === 'match')).toBe(true);
   });
+
+  it('returns [] when listLibraryImages throws (never propagates)', async () => {
+    listLibraryImages.mockRejectedValueOnce(new Error('mongo down'));
+    getCharacter.mockResolvedValue(null);
+    const sb = { characters_in_scene: [] };
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, sceneText: 'x' });
+    expect(cands).toEqual([]);
+  });
+
+  it('skips a character and continues when getCharacter throws', async () => {
+    listLibraryImages.mockResolvedValueOnce([libDoc('art1', 'Neon alley', 'rain')]);
+    getCharacter.mockImplementation(async (_pid, name) => {
+      if (name === 'Steve') throw new Error('lookup failed');
+      if (name === 'Mary') return { _id: 'c2', name: 'Mary', main_image_id: 'p_mary' };
+      return null;
+    });
+    const sb = { characters_in_scene: ['Steve', 'Mary'] };
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, sceneText: 'x' });
+    expect(cands).toEqual([
+      { id: 'art1', kind: 'art', name: 'Neon alley', description: 'rain' },
+      { id: 'p_mary', kind: 'char', name: 'Mary', description: '' },
+    ]);
+  });
 });
 
 describe('autoFillFrameReferencesIfEmpty', () => {
@@ -137,5 +160,6 @@ describe('autoFillFrameReferencesIfEmpty', () => {
     const frame = { _id: 'f1', reference_ids: [] };
     const out = await autoFillFrameReferencesIfEmpty({ projectId: 'p', sb: { _id: 's1', characters_in_scene: [] }, frame, sceneText: 'x', autoReferences: true });
     expect(out).toEqual([]);
+    expect(frame.reference_ids).toEqual([]);
   });
 });
