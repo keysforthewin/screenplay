@@ -35,12 +35,11 @@ export async function setCritiquePending(projectId, beatId, { model, facets } = 
     overall: null,
     facets: (facets || []).map((f) => ({ ...f })),
   };
-  const result = await col().updateOne(
+  await col().updateOne(
     { project_id: projectId },
     { $set: { 'beats.$[b].critique': critique, 'beats.$[b].updated_at': now, updated_at: now } },
     { arrayFilters: [{ 'b._id': oid }] },
   );
-  if (!result.matchedCount) throw new Error(`setCritiquePending: beat ${oid} not found`);
   logger.info(`mongo: critique pending beat=${oid} facets=${critique.facets.length}`);
 }
 
@@ -53,12 +52,11 @@ export async function updateCritiqueFacet(projectId, beatId, facetKey, patch = {
   for (const k of ['score', 'comments', 'status', 'error_message']) {
     if (patch[k] !== undefined) $set[`beats.$[b].critique.facets.$[f].${k}`] = patch[k];
   }
-  const result = await col().updateOne(
+  await col().updateOne(
     { project_id: projectId },
     { $set },
     { arrayFilters: [{ 'b._id': oid }, { 'f.key': String(facetKey) }] },
   );
-  if (!result.matchedCount) throw new Error(`updateCritiqueFacet: beat ${oid} facet ${facetKey} not found`);
 }
 
 export async function finalizeCritique(projectId, beatId, { status, overall } = {}) {
