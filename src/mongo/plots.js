@@ -606,6 +606,42 @@ export async function setBeatMainImage(projectId, beatIdentifier, imageId) {
   return fetchBeat(projectId, beat._id);
 }
 
+// Persist the reference-image set chosen for this beat's image sheet, so the
+// "Tune image sheet" flow can pre-fill the picker with the same references.
+export async function setBeatImageSheetReferences(projectId, beatIdentifier, imageIds) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
+  const beat = findBeat(plot, beatIdentifier);
+  if (!beat) throw new Error(`Beat not found: ${beatIdentifier}`);
+  const ids = (Array.isArray(imageIds) ? imageIds : [])
+    .map((x) => {
+      try { return x instanceof ObjectId ? x : new ObjectId(String(x)); }
+      catch { return null; }
+    })
+    .filter(Boolean);
+  await updateBeatFields(projectId, beat._id, { 'beats.$.image_sheet_reference_ids': ids });
+  logger.info(`mongo: beat image_sheet_reference_ids set id=${beat._id} count=${ids.length}`);
+  return fetchBeat(projectId, beat._id);
+}
+
+// Pure: the reference ids used to pre-fill the Tune dialog. Prefers the saved
+// image_sheet_reference_ids; falls back to the union of reference_image_ids on
+// the beat's artworks (for sheets created before the field existed). Returns
+// hex strings.
+export function computeImageSheetPrefillIds(beat) {
+  const saved = (beat?.image_sheet_reference_ids || []).map((x) => String(x));
+  if (saved.length) return saved;
+  const seen = new Set();
+  const out = [];
+  for (const a of beat?.artworks || []) {
+    for (const r of a?.reference_image_ids || []) {
+      const id = String(r);
+      if (!seen.has(id)) { seen.add(id); out.push(id); }
+    }
+  }
+  return out;
+}
+
 // Replace one image meta in the beat's images[] array, preserving slot
 // position. Uses arrayFilters so the swap is one atomic write; the optional
 // main_image_id pivot is included in the same update when the replaced
