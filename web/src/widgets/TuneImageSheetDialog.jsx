@@ -218,7 +218,7 @@ export function TuneImageSheetDialog({
         open={open}
         title="Tune image sheet for storyboard"
         onClose={onClose}
-        dismissible={!busy}
+        dismissible={!busy || stage === 'scanning'}
         size={modalSize}
         footer={footer}
       >
