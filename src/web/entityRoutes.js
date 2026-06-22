@@ -177,6 +177,7 @@ import { stripMarkdown } from '../util/markdown.js';
 import {
   buildFrameReferenceCandidates,
   selectScoredFrameReferences,
+  RELEVANCE_THRESHOLD,
 } from './frameReferences.js';
 import { scoreFrameReferences } from '../llm/frameReferenceSelector.js';
 import { maxReferenceImagesFor } from './imageModelInfo.js';
@@ -3923,6 +3924,21 @@ export function buildApiRouter() {
           scores,
           maxTotal: maxReferenceImagesFor(null),
         });
+        // Diagnostic: shows whether the scorer ran and how selection resolved.
+        // candidates=N (B beat / C chars), scores=returned-count, above0.5=count
+        // clearing the threshold, selected=final ids, shotLen=prompt length.
+        {
+          const charSources = new Set(
+            candidates.filter((c) => c.kind === 'char').map((c) => c.source),
+          );
+          const beatCount = candidates.filter((c) => c.source === 'beat').length;
+          const above = [...scores.values()].filter((s) => s >= RELEVANCE_THRESHOLD).length;
+          logger.info(
+            `auto-populate frame ${frameId}: candidates=${candidates.length} ` +
+              `(${beatCount} beat / ${charSources.size} chars), scores=${scores.size}, ` +
+              `above${RELEVANCE_THRESHOLD}=${above}, selected=${ids.length}, shotLen=${shotText.length}`,
+          );
+        }
         const existing = new Set((frame.reference_ids || []).map(String));
         const added = ids.filter((id) => !existing.has(String(id)));
         const storyboard = added.length
