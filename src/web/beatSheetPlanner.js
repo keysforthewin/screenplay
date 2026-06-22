@@ -54,7 +54,8 @@ export const SCENE_PLATE_PLAN_TOOL = {
                 '(e.g. "the rear bench of a minivan, the front seats soft in the foreground") and pick a vantage that reveals it. ' +
                 'State occupancy explicitly — unoccupied, empty seats by default so the model adds no stray figure; only if the ' +
                 'beat truly cannot read without a person, place that figure exactly where the beat puts them. Generally NO ' +
-                'characters — an empty environment. ~2–3 sentences. ' +
+                'characters — an empty environment. Capture only the static environment — no moving or transient subjects ' +
+                '(a shooting star, passing car, bursting firework); show the empty scene the motion would happen in front of. ~2–3 sentences. ' +
                 'Purely visual: do NOT include any justification or quote text here; this string is sent verbatim to the image model.',
             },
             justification: {
@@ -100,6 +101,7 @@ export const SCENE_PLATE_PLAN_SYSTEM_PROMPT = [
   '- State OCCUPANCY explicitly. These are empty backdrops, so say the seats / room are unoccupied — image models love to fill a car with a driver, and an unstated minivan interior gets one in the front. When the beat truly cannot read without a figure, place that figure in the exact spot the beat specifies (the rear bench, NOT the front) and note where it is NOT.',
   '',
   '# Constraints',
+  '- These are CLEAN PLATES — capture only the static set and environment. Omit anything moving, transient, or mid-action even when the beat describes it: shooting stars, lightning, fireworks, explosions, falling/flying objects, moving vehicles, splashing water, birds in flight, drifting smoke as a subject, etc. Render the empty background as it looks BEFORE or AFTER that element passes through — the video stage adds the motion later. (You may keep the lighting such an event casts, e.g. the glow it throws across a rooftop, but never the moving object itself.)',
   '- No characters in the plates unless the beat truly cannot be represented without a figure — these are environments, not staged shots.',
   '- Never put a proper character name in a prompt; image models cannot resolve made-up names.',
   '- Do NOT put justification or quote text into the prompt field.',
@@ -203,9 +205,11 @@ export const SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT = [
   '- keep: the plate is already a strong, distinct, purely-visual environment plate. Return it untouched.',
   '- edit: worth keeping but the prompt is vague, generic, or missing concrete visual detail. Return an improved, purely-visual prompt.',
   '- divide: the plate is really two distinct plates (two locations, or a wide AND a detail insert). Return exactly two fully-formed plates.',
-  '- cull: redundant with the beat\'s needs, off-topic, requires characters to read, or otherwise should not be generated. Drop it.',
+  '- cull: redundant with the beat\'s needs, off-topic, requires characters to read, exists only to depict a moving/transient event, or otherwise should not be generated. Drop it.',
   '',
-  'SPATIAL FIDELITY — check this first: compare the prompt against the beat (and the plate\'s quote). If the beat pins a spatial placement or sub-location (e.g. "in the back seat", "by the window") and the prompt drops it or contradicts it, choose "edit" and restore the exact geography. If the prompt would let the image model add or misplace an occupant — a driver in an empty minivan, a figure in the front when the beat says the back — choose "edit" to fix the placement or to state the seats are empty.',
+  'STATIC-PLATE CHECK — check this first: these are clean background plates, not action frames. If the prompt describes a moving or transient subject (a shooting star, lightning bolt, passing vehicle, falling object, explosion, bursting firework), choose "edit" and rewrite it as the clean empty background — keep the location, lighting, and palette, drop the moving element so only the static environment remains. If the plate exists ONLY to depict that moving event and nothing else is left once it is removed, choose "cull".',
+  '',
+  'SPATIAL FIDELITY: compare the prompt against the beat (and the plate\'s quote). If the beat pins a spatial placement or sub-location (e.g. "in the back seat", "by the window") and the prompt drops it or contradicts it, choose "edit" and restore the exact geography. If the prompt would let the image model add or misplace an occupant — a driver in an empty minivan, a figure in the front when the beat says the back — choose "edit" to fix the placement or to state the seats are empty.',
   '',
   'Rules: prompts stay purely visual (no characters unless unavoidable, no proper names, no caption/quote text). Prefer keep/edit over divide; only divide when genuinely two shots. Only cull when the plate adds no value.',
 ].join('\n');

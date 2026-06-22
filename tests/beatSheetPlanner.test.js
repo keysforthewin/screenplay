@@ -239,6 +239,24 @@ describe('plate tools + system prompts', () => {
     const t = Planner.SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT.toLowerCase();
     expect(t).toContain('spatial');
   });
+
+  it('plan prompt forbids moving/transient subjects and names the shooting-star case', () => {
+    const t = Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT.toLowerCase();
+    expect(t).toContain('clean plate');
+    expect(t).toContain('shooting star');
+    expect(t).toMatch(/moving|transient/);
+  });
+
+  it('the plate prompt field tells the model to drop moving subjects', () => {
+    const desc = Planner.SCENE_PLATE_PLAN_TOOL.input_schema.properties.plates.items.properties.prompt.description.toLowerCase();
+    expect(desc).toMatch(/moving|transient/);
+  });
+
+  it('critique prompt has a static-plate check that rewrites away moving subjects', () => {
+    const t = Planner.SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT.toLowerCase();
+    expect(t).toContain('static-plate');
+    expect(t).toContain('shooting star');
+  });
 });
 
 describe('buildScenePlatePlanUserText — revision request', () => {
