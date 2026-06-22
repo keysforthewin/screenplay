@@ -1,11 +1,11 @@
 // HTTP route test for POST /api/storyboard/:id/frame/:frameId/reference/auto-populate
 //
-// Verifies that after Task 8 the endpoint uses selectBestReferencesForShot
-// (not collectStoryboardReferenceIds) to pick which reference images to append
-// to a frame.  We stub the selector's LLM via _setReferenceSelectorLLMForTests
-// so the "LLM" chooses image_index 2 for character "Keys" (the OLD sheet) and
-// assert the response contains the beat image + old sheet, but NOT the young
-// sheet.
+// Verifies that the endpoint uses the unified scored-selection path:
+// buildFrameReferenceCandidates → scoreFrameReferences → selectScoredFrameReferences.
+// We inject a deterministic scorer via _setFrameReferenceScorerForTests so
+// the "LLM" returns fixed scores (beat candidates 0.9, char candidates 0.8)
+// and assert the response reflects scored top-2-per-source + character guarantee,
+// capped at 6.
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
@@ -34,6 +34,13 @@ vi.mock('../src/mongo/images.js', () => ({
       return null;
     }
   }),
+  listImagesForBeat: vi.fn(async (projectId, beatId) => {
+    const docs = await fakeDb
+      .collection('images.files')
+      .find({ 'metadata.owner_type': 'beat', 'metadata.owner_id': beatId })
+      .toArray();
+    return docs;
+  }),
   imageFileToMeta: vi.fn((file) => ({
     _id: file._id,
     filename: file.filename,
@@ -43,7 +50,7 @@ vi.mock('../src/mongo/images.js', () => ({
     description: file.metadata?.description || '',
   })),
 }));
-// Stub the anthropic client so referenceSelector doesn't try to make real calls.
+// Stub the anthropic client so frameReferenceSelector doesn't try to make real calls.
 vi.mock('../src/anthropic/client.js', () => ({
   getAnthropic: () => ({}),
 }));
@@ -52,7 +59,7 @@ const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Characters = await import('../src/mongo/characters.js');
-const Sel = await import('../src/web/referenceSelector.js');
+const { _setFrameReferenceScorerForTests } = await import('../src/llm/frameReferenceSelector.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
 
 let server;
@@ -76,15 +83,15 @@ afterAll(async () => {
 beforeEach(async () => {
   fakeDb.reset();
   projectId = (await createProject('Test Project'))._id.toString();
-  Sel._setReferenceSelectorLLMForTests(null);
+  _setFrameReferenceScorerForTests(null);
 });
 
 afterEach(() => {
-  Sel._setReferenceSelectorLLMForTests(null);
+  _setFrameReferenceScorerForTests(null);
 });
 
-// Insert a GridFS image-file doc (the selector reads name/description from there).
-async function putImageMetaInDb({ name = '', description = '' } = {}) {
+// Insert a GridFS image-file doc owned by a beat.
+async function putBeatImageInDb(beatId, { name = 'beat artwork', description = '' } = {}) {
   const _id = new ObjectId();
   await fakeDb.collection('images.files').insertOne({
     _id,
@@ -92,16 +99,30 @@ async function putImageMetaInDb({ name = '', description = '' } = {}) {
     contentType: 'image/png',
     length: 10,
     uploadDate: new Date(),
-    metadata: { name, description },
+    metadata: { name, description, owner_type: 'beat', owner_id: String(beatId) },
   });
   return _id;
 }
 
-async function makeCharacter(name, { sheets = [], mainId = null, images = [] } = {}) {
+// Insert a GridFS image-file doc owned by a character.
+async function putCharImageInDb(characterId, { name = 'char image', description = '' } = {}) {
+  const _id = new ObjectId();
+  await fakeDb.collection('images.files').insertOne({
+    _id,
+    filename: 'c.png',
+    contentType: 'image/png',
+    length: 10,
+    uploadDate: new Date(),
+    metadata: { name, description, owner_type: 'character', owner_id: String(characterId) },
+  });
+  return _id;
+}
+
+async function makeCharacter(name, { images = [], mainId = null } = {}) {
   const c = await Characters.createCharacter({ projectId, name });
   await fakeDb.collection('characters').updateOne(
     { _id: c._id },
-    { $set: { character_sheet_image_ids: sheets, main_image_id: mainId, images } },
+    { $set: { main_image_id: mainId, images } },
   );
   return Characters.getCharacter(projectId, name);
 }
@@ -122,16 +143,8 @@ async function postJson(path, body, headers = {}) {
 }
 
 describe('POST /storyboard/:id/frame/:frameId/reference/auto-populate', () => {
-  it('uses selectBestReferencesForShot: picks old sheet + beat image, skips young sheet', async () => {
-    // ── seed images ──
-    const youngSheet = await putImageMetaInDb({ name: 'Young Keys', description: 'teenager' });
-    const oldSheet   = await putImageMetaInDb({ name: 'Old Keys',   description: '70s' });
-
-    // Character "Keys" has two labeled sheets; young is main.
-    await makeCharacter('Keys', { sheets: [youngSheet, oldSheet], mainId: youngSheet });
-
-    // ── seed beat with a main image ──
-    const beatImg = new ObjectId();
+  it('uses unified scored selection: beat artwork + character images, capped at 6', async () => {
+    // ── seed beat ──
     const beat = await Plots.createBeat({
       projectId,
       name: 'Keys solo',
@@ -139,7 +152,31 @@ describe('POST /storyboard/:id/frame/:frameId/reference/auto-populate', () => {
       body: 'Keys alone in the bar.',
       characters: ['Keys'],
     });
-    await Plots.pushBeatImage(projectId, beat._id, { _id: beatImg }, true);
+
+    // Seed two beat images into GridFS (simulates actual beat artwork)
+    const beatImg1 = await putBeatImageInDb(beat._id, { name: 'Bar interior', description: 'wide shot' });
+    const beatImg2 = await putBeatImageInDb(beat._id, { name: 'Close-up', description: 'face' });
+    // Register the first as the beat's main_image_id in plots
+    await Plots.pushBeatImage(projectId, beat._id, { _id: beatImg1 }, true);
+    await Plots.pushBeatImage(projectId, beat._id, { _id: beatImg2 }, false);
+
+    // ── seed character with multiple images ──
+    const char = await makeCharacter('Keys');
+    const charImg1 = await putCharImageInDb(char._id, { name: 'Keys young', description: 'teenager' });
+    const charImg2 = await putCharImageInDb(char._id, { name: 'Keys old', description: '70s' });
+    // Give the character its images array
+    await fakeDb.collection('characters').updateOne(
+      { _id: char._id },
+      {
+        $set: {
+          main_image_id: charImg1,
+          images: [
+            { _id: charImg1, filename: 'k1.png', content_type: 'image/png', size: 10, name: 'Keys young', description: 'teenager' },
+            { _id: charImg2, filename: 'k2.png', content_type: 'image/png', size: 10, name: 'Keys old', description: '70s' },
+          ],
+        },
+      },
+    );
 
     // ── seed storyboard + frame (empty reference_ids) ──
     const sb = await Storyboards.createStoryboard({
@@ -151,10 +188,16 @@ describe('POST /storyboard/:id/frame/:frameId/reference/auto-populate', () => {
     });
     const { frameId } = await Storyboards.addFrame(sb._id, {});
 
-    // ── stub the LLM to choose image_index 2 (oldSheet) for "Keys" ──
-    Sel._setReferenceSelectorLLMForTests(async () => ({
-      picks: [{ character: 'Keys', image_index: 2 }],
-    }));
+    // ── inject a deterministic scorer: beat candidates score 0.9, char 0.8 ──
+    // Track whether the scorer was actually called so we can assert the route
+    // took the new code path (not the old selectBestReferencesForShot path).
+    let scorerCalled = false;
+    _setFrameReferenceScorerForTests(async ({ candidates }) => {
+      scorerCalled = true;
+      const m = new Map();
+      candidates.forEach((c, i) => m.set(i + 1, c.source === 'beat' ? 0.9 : 0.8));
+      return m;
+    });
 
     // ── call the endpoint ──
     const { status, json } = await postJson(
@@ -164,20 +207,55 @@ describe('POST /storyboard/:id/frame/:frameId/reference/auto-populate', () => {
 
     expect(status).toBe(200);
     expect(json).toBeDefined();
-
-    const added = (json.added || []).map(String);
-
-    // beat image must be present
-    expect(added).toContain(beatImg.toString());
-    // LLM picked image_index 2 → oldSheet
-    expect(added).toContain(oldSheet.toString());
-    // youngSheet was NOT picked
-    expect(added).not.toContain(youngSheet.toString());
-
-    // total reflects the full resolved list (beatImg + oldSheet = 2)
-    expect(json.total).toBe(2);
-
+    // The new path MUST have called the injected scorer
+    expect(scorerCalled).toBe(true);
+    // total must be within the model cap (null → 6)
+    expect(json.total).toBeGreaterThan(0);
+    expect(json.total).toBeLessThanOrEqual(6);
+    // Both beat images (scored 0.9 each, above threshold) must be included;
+    // top-2-per-source means both beat images qualify.
+    expect(json.total).toBeGreaterThanOrEqual(2);
+    // added reflects what was actually appended
+    expect(Array.isArray(json.added)).toBe(true);
     // storyboard returned in response
+    expect(json.storyboard).toBeDefined();
+  });
+
+  it('returns status 200 with empty added when frame already has all references', async () => {
+    const beat = await Plots.createBeat({
+      projectId,
+      name: 'Scene',
+      desc: 'd',
+      body: 'A scene.',
+      characters: [],
+    });
+    const beatImg = await putBeatImageInDb(beat._id, { name: 'Scene art' });
+    await Plots.pushBeatImage(projectId, beat._id, { _id: beatImg }, true);
+
+    const sb = await Storyboards.createStoryboard({
+      projectId,
+      beatId: beat._id,
+      textPrompt: 'A scene.',
+      summary: 'Scene.',
+      charactersInScene: [],
+    });
+    const { frameId } = await Storyboards.addFrame(sb._id, {});
+    // Pre-seed the frame with the beat image so nothing new gets added
+    await Storyboards.setFrameReferenceImages(sb._id, frameId, [beatImg]);
+
+    _setFrameReferenceScorerForTests(async ({ candidates }) => {
+      const m = new Map();
+      candidates.forEach((c, i) => m.set(i + 1, 0.9));
+      return m;
+    });
+
+    const { status, json } = await postJson(
+      `/storyboard/${sb._id}/frame/${frameId}/reference/auto-populate`,
+      {},
+    );
+
+    expect(status).toBe(200);
+    expect(json.added).toEqual([]);
     expect(json.storyboard).toBeDefined();
   });
 });

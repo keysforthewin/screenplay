@@ -174,7 +174,12 @@ import {
 } from '../mongo/attachments.js';
 import { getCharacterTemplate, getPlotTemplate } from '../mongo/prompts.js';
 import { stripMarkdown } from '../util/markdown.js';
-import { selectBestReferencesForShot } from './referenceSelector.js';
+import {
+  buildFrameReferenceCandidates,
+  selectScoredFrameReferences,
+} from './frameReferences.js';
+import { scoreFrameReferences } from '../llm/frameReferenceSelector.js';
+import { maxReferenceImagesFor } from './imageModelInfo.js';
 import { buildTocResponse } from './toc.js';
 import {
   streamBeatZip,
@@ -3908,11 +3913,16 @@ export function buildApiRouter() {
           .map((s) => stripMarkdown(String(s || '')).trim())
           .filter(Boolean)
           .join('\n');
-        const ids = await selectBestReferencesForShot({
+        const candidates = await buildFrameReferenceCandidates({
           projectId: req.projectId,
-          shotText,
-          characterNames: sb.characters_in_scene || [],
-          beatMainImageId: beat?.main_image_id || null,
+          sb,
+          frameText: shotText,
+        });
+        const scores = await scoreFrameReferences({ frameText: shotText, candidates });
+        const ids = selectScoredFrameReferences({
+          candidates,
+          scores,
+          maxTotal: maxReferenceImagesFor(null),
         });
         const existing = new Set((frame.reference_ids || []).map(String));
         const added = ids.filter((id) => !existing.has(String(id)));
