@@ -38,7 +38,7 @@ describe('computeImageSheetPrefillIds', () => {
     const beat = { image_sheet_reference_ids: [id], artworks: [{ reference_image_ids: [new ObjectId()] }] };
     expect(Plots.computeImageSheetPrefillIds(beat)).toEqual([id]);
   });
-  it('falls back to the union of done-artwork reference ids when none saved', () => {
+  it('falls back to the union of all artwork reference ids when none saved', () => {
     const r1 = new ObjectId().toString();
     const r2 = new ObjectId().toString();
     const beat = {
