@@ -7,9 +7,10 @@
 import { logger } from '../log.js';
 import { listImagesForBeat, imageFileToMeta } from '../mongo/images.js';
 import { stripMarkdown } from '../util/markdown.js';
-import { selectFrameReferences } from '../llm/frameReferenceSelector.js';
+import { scoreFrameReferences } from '../llm/frameReferenceSelector.js';
 import { setStoryboardFrameReferenceImagesViaGateway } from './gateway.js';
 import { gatherCharacterReferenceCandidates } from './referenceSelector.js';
+import { maxReferenceImagesFor } from './imageModelInfo.js';
 
 export const AUTO_REFERENCE_MAX = 6;
 export const PER_SOURCE_MAX = 2;
@@ -70,19 +71,87 @@ export async function buildFrameReferenceCandidates({ projectId, sb, frameText =
   return candidates;
 }
 
+// Pure selection: group candidates by source, keep top PER_SOURCE_MAX above
+// RELEVANCE_THRESHOLD; guarantee >=1 per character source (best-scored, even
+// below threshold); beat source is threshold-only. Then clamp to maxTotal,
+// dropping lowest-scored first while preserving character guarantees.
+export function selectScoredFrameReferences({ candidates, scores, maxTotal }) {
+  const scoreOf = (i) => (scores.get(i + 1) ?? 0);
+  const bySource = new Map();
+  candidates.forEach((c, i) => {
+    if (!bySource.has(c.source)) bySource.set(c.source, []);
+    bySource.get(c.source).push({ c, score: scoreOf(i) });
+  });
+
+  const picks = []; // { id, score, guaranteed }
+  for (const [source, items] of bySource) {
+    items.sort((a, b) => b.score - a.score);
+    const isChar = items.some((it) => it.c.kind === 'char') || source !== 'beat';
+    const above = items.filter((it) => it.score >= RELEVANCE_THRESHOLD).slice(0, PER_SOURCE_MAX);
+    if (above.length) {
+      for (const it of above) picks.push({ id: it.c.id, score: it.score, guaranteed: false });
+    } else if (isChar && items.length) {
+      // character guarantee — include the single best even if below threshold
+      picks.push({ id: items[0].c.id, score: items[0].score, guaranteed: true });
+    }
+  }
+
+  // Dedupe by id, keeping the highest score / guaranteed flag.
+  const byId = new Map();
+  for (const p of picks) {
+    const prev = byId.get(p.id);
+    if (!prev || p.score > prev.score || (p.guaranteed && !prev.guaranteed)) {
+      byId.set(p.id, { ...p, guaranteed: !!(p.guaranteed || prev?.guaranteed) });
+    }
+  }
+  let kept = [...byId.values()];
+
+  // Clamp: sort guaranteed-first then by score desc, take maxTotal.
+  if (Number.isFinite(maxTotal) && kept.length > maxTotal) {
+    kept.sort((a, b) =>
+      (b.guaranteed - a.guaranteed) || (b.score - a.score));
+    kept = kept.slice(0, maxTotal);
+  }
+  // Final order: guaranteed-first then by score desc.
+  kept.sort((a, b) => (b.guaranteed - a.guaranteed) || (b.score - a.score));
+  return kept.map((p) => p.id);
+}
+
+// Deterministic fallback when scoring yields nothing usable: first beat artwork
+// + first candidate of each character source, clamped to maxTotal.
+function fallbackReferenceIds({ candidates, maxTotal }) {
+  const out = [];
+  const seenSource = new Set();
+  for (const c of candidates) {
+    if (seenSource.has(c.source)) continue;
+    seenSource.add(c.source);
+    out.push(c.id);
+  }
+  const cap = Number.isFinite(maxTotal) ? maxTotal : out.length;
+  return out.slice(0, cap);
+}
+
 export async function autoFillFrameReferencesIfEmpty({
   projectId,
   sb,
   frame,
-  sceneText,
+  frameText,
   autoReferences = true,
+  imageModel = null,
 }) {
   if (!autoReferences) return [];
   if ((frame?.reference_ids || []).length > 0) return [];
   try {
-    const candidates = await buildFrameReferenceCandidates({ projectId, sb, frameText: sceneText });
+    const text = String(frameText || '').trim();
+    const candidates = await buildFrameReferenceCandidates({ projectId, sb, frameText: text });
     if (!candidates.length) return [];
-    const ids = await selectFrameReferences({ sceneText, candidates, max: AUTO_REFERENCE_MAX });
+    const scores = await scoreFrameReferences({ frameText: text, candidates });
+    const maxTotal = maxReferenceImagesFor(imageModel);
+    let ids = selectScoredFrameReferences({ candidates, scores, maxTotal });
+    if (!ids.length) {
+      // Fallback: first candidate of each source, clamped.
+      ids = fallbackReferenceIds({ candidates, maxTotal });
+    }
     if (!ids.length) return [];
     await setStoryboardFrameReferenceImagesViaGateway({
       projectId,
@@ -91,7 +160,7 @@ export async function autoFillFrameReferencesIfEmpty({
       imageIds: ids,
       mode: 'replace',
     });
-    frame.reference_ids = ids; // existing load step in regen picks these up
+    frame.reference_ids = ids;
     return ids;
   } catch (e) {
     logger.warn(`frameReferences: auto-fill failed for frame ${frame?._id}: ${e.message}`);

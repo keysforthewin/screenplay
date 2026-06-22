@@ -25,8 +25,18 @@ vi.mock('../src/web/referenceSelector.js', () => ({
   gatherCharacterReferenceCandidates,
 }));
 
-const selectFrameReferences = vi.fn();
-vi.mock('../src/llm/frameReferenceSelector.js', () => ({ selectFrameReferences }));
+const scoreFrameReferences = vi.fn();
+const _setFrameReferenceScorerForTests = vi.fn((fn) => { scorerFnHolder.fn = fn; });
+const scorerFnHolder = { fn: null };
+vi.mock('../src/llm/frameReferenceSelector.js', () => ({
+  scoreFrameReferences,
+  _setFrameReferenceScorerForTests: (fn) => { scorerFnHolder.fn = fn; },
+}));
+
+// Mock imageModelInfo so tests don't depend on fal/imageCaps.js being present.
+vi.mock('../src/web/imageModelInfo.js', () => ({
+  maxReferenceImagesFor: () => 6,
+}));
 
 const setRefs = vi.fn();
 vi.mock('../src/web/gateway.js', () => ({
@@ -53,7 +63,7 @@ function beatDoc(id, name, description) {
 beforeEach(() => {
   listImagesForBeat.mockReset();
   gatherCharacterReferenceCandidates.mockReset();
-  selectFrameReferences.mockReset();
+  scoreFrameReferences.mockReset();
   setRefs.mockReset();
 });
 
@@ -234,11 +244,11 @@ describe('autoFillFrameReferencesIfEmpty', () => {
       projectId: 'p',
       sb: { _id: 's1' },
       frame,
-      sceneText: 'x',
+      frameText: 'x',
       autoReferences: false,
     });
     expect(out).toEqual([]);
-    expect(selectFrameReferences).not.toHaveBeenCalled();
+    expect(scoreFrameReferences).not.toHaveBeenCalled();
     expect(setRefs).not.toHaveBeenCalled();
   });
 
@@ -248,21 +258,22 @@ describe('autoFillFrameReferencesIfEmpty', () => {
       projectId: 'p',
       sb: { _id: 's1' },
       frame,
-      sceneText: 'x',
+      frameText: 'x',
       autoReferences: true,
     });
     expect(out).toEqual([]);
-    expect(selectFrameReferences).not.toHaveBeenCalled();
+    expect(scoreFrameReferences).not.toHaveBeenCalled();
     expect(setRefs).not.toHaveBeenCalled();
     expect(frame.reference_ids).toEqual(['existing']);
   });
 
-  it('persists picks via the gateway and mutates the frame', async () => {
-    // New pool: beat artwork. Provide one beat image so candidates is non-empty.
+  it('persists scored picks via the gateway and mutates the frame', async () => {
+    // Beat image above threshold — scorer returns high score so selection picks it.
     const beatImg = new ObjectId();
     listImagesForBeat.mockResolvedValueOnce([beatDoc(beatImg, 'Neon alley', 'rain')]);
     gatherCharacterReferenceCandidates.mockResolvedValueOnce([]);
-    selectFrameReferences.mockResolvedValueOnce([String(beatImg)]);
+    // Scorer returns score above threshold for candidate 1.
+    scoreFrameReferences.mockResolvedValueOnce(new Map([[1, 0.9]]));
 
     const frame = { _id: 'f1', reference_ids: [] };
     const sb = { _id: 's1', beat_id: 'beat1', characters_in_scene: [] };
@@ -270,7 +281,7 @@ describe('autoFillFrameReferencesIfEmpty', () => {
       projectId: 'p',
       sb,
       frame,
-      sceneText: 'alley',
+      frameText: 'alley',
       autoReferences: true,
     });
 
@@ -283,7 +294,9 @@ describe('autoFillFrameReferencesIfEmpty', () => {
       mode: 'replace',
     });
     expect(frame.reference_ids).toEqual([String(beatImg)]);
-    expect(selectFrameReferences.mock.calls[0][0].max).toBe(AUTO_REFERENCE_MAX);
+    // scoreFrameReferences was called with the frame text and candidates.
+    expect(scoreFrameReferences).toHaveBeenCalledOnce();
+    expect(scoreFrameReferences.mock.calls[0][0].frameText).toBe('alley');
   });
 
   it('does not persist when there are no candidates', async () => {
@@ -295,38 +308,43 @@ describe('autoFillFrameReferencesIfEmpty', () => {
       projectId: 'p',
       sb: { _id: 's1', beat_id: 'beat1', characters_in_scene: [] },
       frame,
-      sceneText: 'x',
+      frameText: 'x',
       autoReferences: true,
     });
     expect(out).toEqual([]);
-    expect(selectFrameReferences).not.toHaveBeenCalled();
+    expect(scoreFrameReferences).not.toHaveBeenCalled();
     expect(setRefs).not.toHaveBeenCalled();
   });
 
-  it('does not persist when the selector returns nothing', async () => {
+  it('falls back to first-per-source when scorer returns empty scores', async () => {
+    // When scorer returns an empty Map (API down / no key), selectScoredFrameReferences
+    // yields [] for beat-only candidates (no character guarantee). The fallback then
+    // picks the first candidate of each source, so the beat image IS persisted.
     const beatImg = new ObjectId();
     listImagesForBeat.mockResolvedValueOnce([beatDoc(beatImg, 'Neon alley', 'rain')]);
     gatherCharacterReferenceCandidates.mockResolvedValueOnce([]);
-    selectFrameReferences.mockResolvedValueOnce([]);
+    // Scorer returns empty Map — simulates no API key / failure.
+    scoreFrameReferences.mockResolvedValueOnce(new Map());
 
     const frame = { _id: 'f1', reference_ids: [] };
     const out = await autoFillFrameReferencesIfEmpty({
       projectId: 'p',
       sb: { _id: 's1', beat_id: 'beat1', characters_in_scene: [] },
       frame,
-      sceneText: 'x',
+      frameText: 'x',
       autoReferences: true,
     });
-    expect(out).toEqual([]);
-    expect(setRefs).not.toHaveBeenCalled();
-    expect(frame.reference_ids).toEqual([]);
+    // Fallback kicks in — first beat candidate is used.
+    expect(out).toEqual([String(beatImg)]);
+    expect(setRefs).toHaveBeenCalled();
+    expect(frame.reference_ids).toEqual([String(beatImg)]);
   });
 
   it('swallows gateway errors and returns []', async () => {
     const beatImg = new ObjectId();
     listImagesForBeat.mockResolvedValueOnce([beatDoc(beatImg, 'Neon alley', 'rain')]);
     gatherCharacterReferenceCandidates.mockResolvedValueOnce([]);
-    selectFrameReferences.mockResolvedValueOnce([String(beatImg)]);
+    scoreFrameReferences.mockResolvedValueOnce(new Map([[1, 0.9]]));
     setRefs.mockRejectedValueOnce(new Error('gateway down'));
 
     const frame = { _id: 'f1', reference_ids: [] };
@@ -334,7 +352,7 @@ describe('autoFillFrameReferencesIfEmpty', () => {
       projectId: 'p',
       sb: { _id: 's1', beat_id: 'beat1', characters_in_scene: [] },
       frame,
-      sceneText: 'x',
+      frameText: 'x',
       autoReferences: true,
     });
     expect(out).toEqual([]);
