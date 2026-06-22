@@ -2653,6 +2653,28 @@ export function buildApiRouter() {
         }
       });
 
+      // POST /beat/:id/tune-scan — scan the beat's storyboard against its existing
+      // plates and propose new ones. Renders nothing; returns 202 + { job_id }. The
+      // SPA polls GET /image-sheet/:jobId until status==='derived', reviews
+      // job.shots, then POSTs the reviewed list to /beat/:id/image-sheet.
+      router.post(`${basePath}/:id/tune-scan`, async (req, res, next) => {
+        try {
+          const hostId = await resolveHostId(req);
+          if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
+          const refs = await validateArtworkRefs(req, res);
+          if (!refs) return;
+          const { startTuneScanJob } = await import('./imageSheetJobs.js');
+          const result = await startTuneScanJob({
+            projectId: req.projectId,
+            hostId,
+            referenceImageIds: refs.ids,
+          });
+          res.status(202).json(result);
+        } catch (e) {
+          handleArtworkError(e, res, next);
+        }
+      });
+
       // GET /beat/:id/image-sheet-references — the reference set to pre-fill the
       // Tune dialog with (saved set, else union of the beat's artwork refs).
       router.get(`${basePath}/:id/image-sheet-references`, async (req, res, next) => {
