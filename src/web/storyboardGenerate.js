@@ -1764,8 +1764,9 @@ async function regenerateStoryboardFrameInternal({
       projectId,
       sb,
       frame,
-      sceneText: renderPrompt,
+      frameText: renderPrompt,
       autoReferences,
+      imageModel,
     });
     inputImages = await loadFrameReferenceImages(frame);
     dispatchMode = 'generate';
