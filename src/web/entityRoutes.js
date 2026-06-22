@@ -2615,6 +2615,11 @@ export function buildApiRouter() {
           discordUser: webDiscordUser(req),
           announceUsername: req?.session?.username || null,
         });
+        if (hostType === 'beat') {
+          const { setBeatImageSheetReferences } = await import('../mongo/plots.js');
+          await setBeatImageSheetReferences(req.projectId, hostId, refs.ids).catch((e) =>
+            logger.warn(`image-sheet: persist reference set failed: ${e.message}`));
+        }
         res.status(202).json(result);
       } catch (e) {
         handleArtworkError(e, res, next);
@@ -2645,6 +2650,21 @@ export function buildApiRouter() {
           res.status(202).json(result);
         } catch (e) {
           handleArtworkError(e, res, next);
+        }
+      });
+
+      // GET /beat/:id/image-sheet-references — the reference set to pre-fill the
+      // Tune dialog with (saved set, else union of the beat's artwork refs).
+      router.get(`${basePath}/:id/image-sheet-references`, async (req, res, next) => {
+        try {
+          const hostId = await resolveHostId(req);
+          if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
+          const { computeImageSheetPrefillIds } = await import('../mongo/plots.js');
+          const beat = await getBeat(req.projectId, hostId);
+          if (!beat) return res.status(404).json({ error: 'beat not found' });
+          res.json({ reference_ids: computeImageSheetPrefillIds(beat) });
+        } catch (e) {
+          next(e);
         }
       });
     }
