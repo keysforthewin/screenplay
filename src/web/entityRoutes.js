@@ -15,6 +15,7 @@ import { resolveProject } from './projectMiddleware.js';
 import { createProject, getProjectByTitle, listProjects, normalizeProjectTitle } from '../mongo/projects.js';
 import { seedProjectDefaults } from '../seed/defaults.js';
 import { ALLOWED_IMAGE_MODELS } from './imageReplaceDispatch.js';
+import { listImageModelInfo } from './imageModelInfo.js';
 
 // Default model the SPA falls back to when the request omits `image_model`/`model`.
 // Old enum values (`gemini`, `fal`) from cached SPA bundles are normalized to the
@@ -692,6 +693,10 @@ export function buildApiRouter() {
         { allDialogs, allStoryboards },
       ),
     );
+  });
+
+  router.get('/image-models', (req, res) => {
+    res.json({ models: listImageModelInfo() });
   });
 
   router.get('/template', async (req, res) => {
