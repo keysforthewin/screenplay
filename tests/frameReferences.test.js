@@ -1,15 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ObjectId } from 'mongodb';
 
 vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
-const listLibraryImages = vi.fn();
-// Fully mock images.js so the real module (and its mongo/config deps) never
-// loads. imageFileToMeta is a tiny pure mapper — stand in for just the fields
-// buildFrameReferenceCandidates reads.
+// Mock images.js: expose listImagesForBeat and imageFileToMeta used by
+// the new buildFrameReferenceCandidates.
+const listImagesForBeat = vi.fn();
 vi.mock('../src/mongo/images.js', () => ({
-  listLibraryImages,
+  listImagesForBeat,
+  // Pure mapper — mirrors the real implementation's field extraction.
   imageFileToMeta: (f) => ({
     _id: f._id,
     name: f.metadata?.name || '',
@@ -17,8 +18,12 @@ vi.mock('../src/mongo/images.js', () => ({
   }),
 }));
 
-const getCharacter = vi.fn();
-vi.mock('../src/mongo/characters.js', () => ({ getCharacter }));
+// Mock referenceSelector: gatherCharacterReferenceCandidates is the new
+// helper used to gather each scene character's full image set.
+const gatherCharacterReferenceCandidates = vi.fn();
+vi.mock('../src/web/referenceSelector.js', () => ({
+  gatherCharacterReferenceCandidates,
+}));
 
 const selectFrameReferences = vi.fn();
 vi.mock('../src/llm/frameReferenceSelector.js', () => ({ selectFrameReferences }));
@@ -31,79 +36,207 @@ vi.mock('../src/web/gateway.js', () => ({
 const { buildFrameReferenceCandidates, autoFillFrameReferencesIfEmpty, AUTO_REFERENCE_MAX } =
   await import('../src/web/frameReferences.js');
 
-// Minimal GridFS-shaped library doc.
-function libDoc(id, name, description) {
-  return { _id: id, filename: `${id}.png`, contentType: 'image/png', length: 1, uploadDate: new Date(), metadata: { name, description, owner_type: null } };
+// ---- Fixture helpers -------------------------------------------------------
+
+// Minimal GridFS-shaped beat image doc.
+function beatDoc(id, name, description) {
+  return {
+    _id: id,
+    filename: `${id}.png`,
+    contentType: 'image/png',
+    length: 1,
+    uploadDate: new Date(),
+    metadata: { name, description, owner_type: 'beat' },
+  };
 }
 
 beforeEach(() => {
-  listLibraryImages.mockReset();
-  getCharacter.mockReset();
+  listImagesForBeat.mockReset();
+  gatherCharacterReferenceCandidates.mockReset();
   selectFrameReferences.mockReset();
   setRefs.mockReset();
 });
 
+// ============================================================================
+// buildFrameReferenceCandidates
+// ============================================================================
+
 describe('buildFrameReferenceCandidates', () => {
-  it('includes captioned artwork + scene-character portraits, drops empties and missing portraits', async () => {
-    listLibraryImages.mockResolvedValueOnce([
-      libDoc('art1', 'Neon alley', 'rain-slick alley'),
-      libDoc('art2', '', ''), // no signal -> dropped
-      libDoc('art3', 'Diner', ''),
+  it('pools beat artwork and each character full set, tagging source and kind', async () => {
+    // Two beat images — both should appear with source 'beat' / kind 'art'.
+    const beatImg1 = new ObjectId();
+    const beatImg2 = new ObjectId();
+    listImagesForBeat.mockResolvedValueOnce([
+      beatDoc(beatImg1, 'Rainy alley', 'neon reflections'),
+      beatDoc(beatImg2, 'Diner interior', ''),
     ]);
-    getCharacter.mockImplementation(async (_pid, name) => {
-      if (name === 'Steve') return { _id: 'c1', name: 'Steve', main_image_id: 'p_steve' };
-      if (name === 'Mary') return { _id: 'c2', name: 'Mary', main_image_id: null }; // no portrait -> dropped
-      return null; // 'Ghost' unknown -> dropped
+
+    // Steve has two character image candidates.
+    const charImg1 = new ObjectId();
+    const charImg2 = new ObjectId();
+    gatherCharacterReferenceCandidates.mockResolvedValueOnce([
+      {
+        name: 'Steve',
+        candidates: [
+          { id: String(charImg1), name: 'Steve portrait', description: 'young', caption: '' },
+          { id: String(charImg2), name: 'Steve action', description: 'coat', caption: '' },
+        ],
+      },
+    ]);
+
+    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: ['Steve'] };
+    const cands = await buildFrameReferenceCandidates({
+      projectId: 'p',
+      sb,
+      frameText: 'rainy alley closeup',
     });
-    const sb = { characters_in_scene: ['**Steve**', 'Ghost', 'Mary'] };
-    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, sceneText: 'x' });
-    expect(cands).toEqual([
-      { id: 'art1', kind: 'art', name: 'Neon alley', description: 'rain-slick alley' },
-      { id: 'art3', kind: 'art', name: 'Diner', description: '' },
-      { id: 'p_steve', kind: 'char', name: 'Steve', description: '' },
+
+    const sources = new Set(cands.map((c) => c.source));
+    expect(sources.has('beat')).toBe(true);
+    expect(sources.has('Steve')).toBe(true);
+
+    // Beat candidates carry kind 'art'.
+    const beatCands = cands.filter((c) => c.source === 'beat');
+    expect(beatCands.length).toBe(2);
+    expect(beatCands.every((c) => c.kind === 'art')).toBe(true);
+    expect(beatCands.map((c) => c.id)).toContain(String(beatImg1));
+    expect(beatCands.map((c) => c.id)).toContain(String(beatImg2));
+
+    // Character candidates carry kind 'char'.
+    const charCands = cands.filter((c) => c.source === 'Steve');
+    expect(charCands.length).toBe(2);
+    expect(charCands.every((c) => c.kind === 'char')).toBe(true);
+    expect(charCands.map((c) => c.id)).toContain(String(charImg1));
+    expect(charCands.map((c) => c.id)).toContain(String(charImg2));
+  });
+
+  it('beat artwork uses name/description from GridFS metadata', async () => {
+    const id = new ObjectId();
+    listImagesForBeat.mockResolvedValueOnce([beatDoc(id, 'Lighthouse', 'cliff scene')]);
+    gatherCharacterReferenceCandidates.mockResolvedValueOnce([]);
+
+    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: [] };
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: '' });
+
+    expect(cands).toHaveLength(1);
+    expect(cands[0]).toMatchObject({
+      id: String(id),
+      kind: 'art',
+      source: 'beat',
+      name: 'Lighthouse',
+      description: 'cliff scene',
+    });
+  });
+
+  it('each character becomes its own source tag, stripped of markdown', async () => {
+    const img = new ObjectId();
+    listImagesForBeat.mockResolvedValueOnce([]);
+    gatherCharacterReferenceCandidates.mockResolvedValueOnce([
+      {
+        name: 'Steve',
+        candidates: [{ id: String(img), name: 'portrait', description: '', caption: '' }],
+      },
     ]);
+
+    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: ['**Steve**'] };
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: '' });
+
+    expect(cands).toHaveLength(1);
+    // source is the stripped character name returned by gatherCharacterReferenceCandidates
+    expect(cands[0].source).toBe('Steve');
+    expect(cands[0].kind).toBe('char');
   });
 
-  it('trims an oversized catalog to CATALOG_MAX, keeping scene-text matches', async () => {
-    const docs = [];
-    for (let i = 0; i < 130; i++) docs.push(libDoc(`art${i}`, `Filler ${i}`, 'generic'));
-    docs.push(libDoc('match', 'Lighthouse cliff', 'a lighthouse on a rugged cliff'));
-    listLibraryImages.mockResolvedValueOnce(docs);
-    getCharacter.mockResolvedValue(null);
-    const sb = { characters_in_scene: [] };
-    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, sceneText: 'a lighthouse on a cliff' });
-    expect(cands.length).toBe(120);
-    expect(cands.some((c) => c.id === 'match')).toBe(true);
-  });
+  it('does NOT include library images', async () => {
+    const libraryImgId = 'library-img-id';
+    listImagesForBeat.mockResolvedValueOnce([]); // no beat images
+    gatherCharacterReferenceCandidates.mockResolvedValueOnce([]); // no characters
 
-  it('returns [] when listLibraryImages throws (never propagates)', async () => {
-    listLibraryImages.mockRejectedValueOnce(new Error('mongo down'));
-    getCharacter.mockResolvedValue(null);
-    const sb = { characters_in_scene: [] };
-    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, sceneText: 'x' });
+    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: [] };
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: 'x' });
+
+    expect(cands.find((c) => c.id === libraryImgId)).toBeUndefined();
     expect(cands).toEqual([]);
   });
 
-  it('skips a character and continues when getCharacter throws', async () => {
-    listLibraryImages.mockResolvedValueOnce([libDoc('art1', 'Neon alley', 'rain')]);
-    getCharacter.mockImplementation(async (_pid, name) => {
-      if (name === 'Steve') throw new Error('lookup failed');
-      if (name === 'Mary') return { _id: 'c2', name: 'Mary', main_image_id: 'p_mary' };
-      return null;
-    });
-    const sb = { characters_in_scene: ['Steve', 'Mary'] };
-    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, sceneText: 'x' });
-    expect(cands).toEqual([
-      { id: 'art1', kind: 'art', name: 'Neon alley', description: 'rain' },
-      { id: 'p_mary', kind: 'char', name: 'Mary', description: '' },
+  it('returns [] when listImagesForBeat throws (never propagates)', async () => {
+    listImagesForBeat.mockRejectedValueOnce(new Error('mongo down'));
+    gatherCharacterReferenceCandidates.mockResolvedValueOnce([]);
+
+    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: [] };
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: 'x' });
+    expect(cands).toEqual([]);
+  });
+
+  it('continues when gatherCharacterReferenceCandidates throws, returning beat images', async () => {
+    const beatImg = new ObjectId();
+    listImagesForBeat.mockResolvedValueOnce([beatDoc(beatImg, 'Alley', 'rain')]);
+    gatherCharacterReferenceCandidates.mockRejectedValueOnce(new Error('lookup failed'));
+
+    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: ['Steve'] };
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: 'x' });
+
+    // Beat images still returned; character section silently swallowed.
+    expect(cands).toHaveLength(1);
+    expect(cands[0]).toMatchObject({ id: String(beatImg), kind: 'art', source: 'beat' });
+  });
+
+  it('deduplicates beat images that appear multiple times in listImagesForBeat', async () => {
+    const id = new ObjectId();
+    // Same image returned twice (e.g. main_image also in the GridFS results).
+    listImagesForBeat.mockResolvedValueOnce([
+      beatDoc(id, 'Alley', 'rain'),
+      beatDoc(id, 'Alley', 'rain'),
     ]);
+    gatherCharacterReferenceCandidates.mockResolvedValueOnce([]);
+
+    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: [] };
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: '' });
+    expect(cands).toHaveLength(1);
+    expect(cands[0].id).toBe(String(id));
+  });
+
+  it('returns [] when beat_id is absent', async () => {
+    gatherCharacterReferenceCandidates.mockResolvedValueOnce([]);
+
+    const sb = { _id: 'sb1', characters_in_scene: [] }; // no beat_id
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: '' });
+    expect(cands).toEqual([]);
+    expect(listImagesForBeat).not.toHaveBeenCalled();
+  });
+
+  it('combines candidate description and caption with em-dash separator', async () => {
+    const img = new ObjectId();
+    listImagesForBeat.mockResolvedValueOnce([]);
+    gatherCharacterReferenceCandidates.mockResolvedValueOnce([
+      {
+        name: 'Mary',
+        candidates: [
+          { id: String(img), name: 'Mary close', description: 'red coat', caption: 'pensive look' },
+        ],
+      },
+    ]);
+
+    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: ['Mary'] };
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: '' });
+    expect(cands[0].description).toBe('red coat — pensive look');
   });
 });
+
+// ============================================================================
+// autoFillFrameReferencesIfEmpty
+// ============================================================================
 
 describe('autoFillFrameReferencesIfEmpty', () => {
   it('does nothing when autoReferences is false', async () => {
     const frame = { _id: 'f1', reference_ids: [] };
-    const out = await autoFillFrameReferencesIfEmpty({ projectId: 'p', sb: { _id: 's1' }, frame, sceneText: 'x', autoReferences: false });
+    const out = await autoFillFrameReferencesIfEmpty({
+      projectId: 'p',
+      sb: { _id: 's1' },
+      frame,
+      sceneText: 'x',
+      autoReferences: false,
+    });
     expect(out).toEqual([]);
     expect(selectFrameReferences).not.toHaveBeenCalled();
     expect(setRefs).not.toHaveBeenCalled();
@@ -111,7 +244,13 @@ describe('autoFillFrameReferencesIfEmpty', () => {
 
   it('skips frames that already have references', async () => {
     const frame = { _id: 'f1', reference_ids: ['existing'] };
-    const out = await autoFillFrameReferencesIfEmpty({ projectId: 'p', sb: { _id: 's1' }, frame, sceneText: 'x', autoReferences: true });
+    const out = await autoFillFrameReferencesIfEmpty({
+      projectId: 'p',
+      sb: { _id: 's1' },
+      frame,
+      sceneText: 'x',
+      autoReferences: true,
+    });
     expect(out).toEqual([]);
     expect(selectFrameReferences).not.toHaveBeenCalled();
     expect(setRefs).not.toHaveBeenCalled();
@@ -119,46 +258,85 @@ describe('autoFillFrameReferencesIfEmpty', () => {
   });
 
   it('persists picks via the gateway and mutates the frame', async () => {
-    listLibraryImages.mockResolvedValueOnce([libDoc('art1', 'Neon alley', 'rain')]);
-    getCharacter.mockResolvedValue(null);
-    selectFrameReferences.mockResolvedValueOnce(['art1']);
+    // New pool: beat artwork. Provide one beat image so candidates is non-empty.
+    const beatImg = new ObjectId();
+    listImagesForBeat.mockResolvedValueOnce([beatDoc(beatImg, 'Neon alley', 'rain')]);
+    gatherCharacterReferenceCandidates.mockResolvedValueOnce([]);
+    selectFrameReferences.mockResolvedValueOnce([String(beatImg)]);
+
     const frame = { _id: 'f1', reference_ids: [] };
-    const sb = { _id: 's1', characters_in_scene: [] };
-    const out = await autoFillFrameReferencesIfEmpty({ projectId: 'p', sb, frame, sceneText: 'alley', autoReferences: true });
-    expect(out).toEqual(['art1']);
-    expect(setRefs).toHaveBeenCalledWith({ projectId: 'p', storyboardId: 's1', frameId: 'f1', imageIds: ['art1'], mode: 'replace' });
-    expect(frame.reference_ids).toEqual(['art1']);
+    const sb = { _id: 's1', beat_id: 'beat1', characters_in_scene: [] };
+    const out = await autoFillFrameReferencesIfEmpty({
+      projectId: 'p',
+      sb,
+      frame,
+      sceneText: 'alley',
+      autoReferences: true,
+    });
+
+    expect(out).toEqual([String(beatImg)]);
+    expect(setRefs).toHaveBeenCalledWith({
+      projectId: 'p',
+      storyboardId: 's1',
+      frameId: 'f1',
+      imageIds: [String(beatImg)],
+      mode: 'replace',
+    });
+    expect(frame.reference_ids).toEqual([String(beatImg)]);
     expect(selectFrameReferences.mock.calls[0][0].max).toBe(AUTO_REFERENCE_MAX);
   });
 
   it('does not persist when there are no candidates', async () => {
-    listLibraryImages.mockResolvedValueOnce([]);
-    getCharacter.mockResolvedValue(null);
+    listImagesForBeat.mockResolvedValueOnce([]);
+    gatherCharacterReferenceCandidates.mockResolvedValueOnce([]);
+
     const frame = { _id: 'f1', reference_ids: [] };
-    const out = await autoFillFrameReferencesIfEmpty({ projectId: 'p', sb: { _id: 's1', characters_in_scene: [] }, frame, sceneText: 'x', autoReferences: true });
+    const out = await autoFillFrameReferencesIfEmpty({
+      projectId: 'p',
+      sb: { _id: 's1', beat_id: 'beat1', characters_in_scene: [] },
+      frame,
+      sceneText: 'x',
+      autoReferences: true,
+    });
     expect(out).toEqual([]);
     expect(selectFrameReferences).not.toHaveBeenCalled();
     expect(setRefs).not.toHaveBeenCalled();
   });
 
   it('does not persist when the selector returns nothing', async () => {
-    listLibraryImages.mockResolvedValueOnce([libDoc('art1', 'Neon alley', 'rain')]);
-    getCharacter.mockResolvedValue(null);
+    const beatImg = new ObjectId();
+    listImagesForBeat.mockResolvedValueOnce([beatDoc(beatImg, 'Neon alley', 'rain')]);
+    gatherCharacterReferenceCandidates.mockResolvedValueOnce([]);
     selectFrameReferences.mockResolvedValueOnce([]);
+
     const frame = { _id: 'f1', reference_ids: [] };
-    const out = await autoFillFrameReferencesIfEmpty({ projectId: 'p', sb: { _id: 's1', characters_in_scene: [] }, frame, sceneText: 'x', autoReferences: true });
+    const out = await autoFillFrameReferencesIfEmpty({
+      projectId: 'p',
+      sb: { _id: 's1', beat_id: 'beat1', characters_in_scene: [] },
+      frame,
+      sceneText: 'x',
+      autoReferences: true,
+    });
     expect(out).toEqual([]);
     expect(setRefs).not.toHaveBeenCalled();
     expect(frame.reference_ids).toEqual([]);
   });
 
   it('swallows gateway errors and returns []', async () => {
-    listLibraryImages.mockResolvedValueOnce([libDoc('art1', 'Neon alley', 'rain')]);
-    getCharacter.mockResolvedValue(null);
-    selectFrameReferences.mockResolvedValueOnce(['art1']);
+    const beatImg = new ObjectId();
+    listImagesForBeat.mockResolvedValueOnce([beatDoc(beatImg, 'Neon alley', 'rain')]);
+    gatherCharacterReferenceCandidates.mockResolvedValueOnce([]);
+    selectFrameReferences.mockResolvedValueOnce([String(beatImg)]);
     setRefs.mockRejectedValueOnce(new Error('gateway down'));
+
     const frame = { _id: 'f1', reference_ids: [] };
-    const out = await autoFillFrameReferencesIfEmpty({ projectId: 'p', sb: { _id: 's1', characters_in_scene: [] }, frame, sceneText: 'x', autoReferences: true });
+    const out = await autoFillFrameReferencesIfEmpty({
+      projectId: 'p',
+      sb: { _id: 's1', beat_id: 'beat1', characters_in_scene: [] },
+      frame,
+      sceneText: 'x',
+      autoReferences: true,
+    });
     expect(out).toEqual([]);
     expect(frame.reference_ids).toEqual([]);
   });
