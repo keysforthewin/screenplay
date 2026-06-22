@@ -62,6 +62,7 @@ import {
   orderReferenceIdsByScore,
   selectFrameReferencesForShot,
   MAX_ATTACHED_REFERENCE_IMAGES,
+  REFERENCE_LIST_MAX,
 } from './frameReferences.js';
 import { maxReferenceImagesFor } from './imageModelInfo.js';
 import { critiquePanel as defaultCritiquePanel } from './storyboardCritique.js';
@@ -1491,7 +1492,7 @@ async function planFramesV2({ projectId, beat, characters, targetCount, directio
           imageModel,
           // Seed a generous list so the 2-per-character floor survives for big
           // ensembles; render-time loadFrameReferenceImages trims best-first.
-          maxTotal: MAX_FRAME_REFERENCE_IMAGES,
+          maxTotal: REFERENCE_LIST_MAX,
         });
         reference_ids = sel.ids;
         reference_scores = sel.referenceScores;

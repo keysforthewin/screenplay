@@ -175,13 +175,10 @@ import {
 import { getCharacterTemplate, getPlotTemplate } from '../mongo/prompts.js';
 import { stripMarkdown } from '../util/markdown.js';
 import {
-  buildFrameReferenceCandidates,
-  selectScoredFrameReferences,
-  referenceScoresForIds,
+  selectFrameReferencesForShot,
+  REFERENCE_LIST_MAX,
   RELEVANCE_THRESHOLD,
 } from './frameReferences.js';
-import { scoreFrameReferences } from '../llm/frameReferenceSelector.js';
-import { maxReferenceImagesFor } from './imageModelInfo.js';
 import { buildTocResponse } from './toc.js';
 import {
   streamBeatZip,
@@ -3914,30 +3911,47 @@ export function buildApiRouter() {
           .map((s) => stripMarkdown(String(s || '')).trim())
           .filter(Boolean)
           .join('\n');
-        const candidates = await buildFrameReferenceCandidates({
+        const { ids, candidates, scores, referenceScores } = await selectFrameReferencesForShot({
           projectId: req.projectId,
           sb,
           frameText: shotText,
+          // Generous list cap so the per-source floor (2 beat + 2 per character)
+          // survives for multi-character shots; render-time trims best-first.
+          maxTotal: REFERENCE_LIST_MAX,
         });
-        const scores = await scoreFrameReferences({ frameText: shotText, candidates });
-        const ids = selectScoredFrameReferences({
-          candidates,
-          scores,
-          maxTotal: maxReferenceImagesFor(null),
-        });
-        // Diagnostic: shows whether the scorer ran and how selection resolved.
-        // candidates=N (B beat / C chars), scores=returned-count, above0.5=count
-        // clearing the threshold, selected=final ids, shotLen=prompt length.
+        // Diagnostic: per-source breakdown so the counts are unambiguous —
+        // candidates=<total images> [beat:N, <Character>:N, …] is how many IMAGES
+        // each source offered; selected=<kept> [beat:N, <Character>:N] is how many
+        // were taken from each (the selection floors at 2 per source). scored is
+        // the count the scorer returned; above<T> cleared the relevance cutoff.
         {
-          const charSources = new Set(
-            candidates.filter((c) => c.kind === 'char').map((c) => c.source),
-          );
-          const beatCount = candidates.filter((c) => c.source === 'beat').length;
+          const sourceOfId = new Map();
+          const candBySource = new Map(); // source -> image count
+          for (const c of candidates) {
+            const key = String(c.id);
+            if (!sourceOfId.has(key)) sourceOfId.set(key, c.source);
+            candBySource.set(c.source, (candBySource.get(c.source) || 0) + 1);
+          }
+          const selBySource = new Map();
+          for (const id of ids) {
+            const src = sourceOfId.get(String(id));
+            if (src) selBySource.set(src, (selBySource.get(src) || 0) + 1);
+          }
+          // beat first, then characters by descending image count.
+          const order = [...candBySource.entries()].sort((a, b) =>
+            (a[0] === 'beat' ? -1 : b[0] === 'beat' ? 1 : b[1] - a[1]));
+          const candBreakdown = order.map(([s, n]) => `${s}:${n}`).join(', ');
+          const selBreakdown = order
+            .filter(([s]) => selBySource.get(s))
+            .map(([s]) => `${s}:${selBySource.get(s)}`)
+            .join(', ');
+          const charCount = order.filter(([s]) => s !== 'beat').length;
           const above = [...scores.values()].filter((s) => s >= RELEVANCE_THRESHOLD).length;
           logger.info(
-            `auto-populate frame ${frameId}: candidates=${candidates.length} ` +
-              `(${beatCount} beat / ${charSources.size} chars), scores=${scores.size}, ` +
-              `above${RELEVANCE_THRESHOLD}=${above}, selected=${ids.length}, shotLen=${shotText.length}`,
+            `auto-populate frame ${frameId}: candidates=${candidates.length} images ` +
+              `from beat+${charCount} character(s) [${candBreakdown}], scored=${scores.size}, ` +
+              `above${RELEVANCE_THRESHOLD}=${above}, selected=${ids.length} [${selBreakdown}], ` +
+              `shotLen=${shotText.length}`,
           );
         }
         const existing = new Set((frame.reference_ids || []).map(String));
@@ -3949,7 +3963,7 @@ export function buildApiRouter() {
               frameId,
               imageIds: ids,
               mode: 'append',
-              scores: referenceScoresForIds({ candidates, scores, ids }),
+              scores: referenceScores,
             })
           : sb;
         res.json({ storyboard, added, total: ids.length });

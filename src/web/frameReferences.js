@@ -23,6 +23,12 @@ export const RELEVANCE_THRESHOLD = 0.5;
 // regardless of the model's own (often higher) cap. The effective send count is
 // min(MAX_ATTACHED_REFERENCE_IMAGES, model cap), always the highest-scored.
 export const MAX_ATTACHED_REFERENCE_IMAGES = 8;
+// Generous ceiling for the *stored* reference LIST (distinct from the per-model
+// send cap above). Seeding/auto-suggest fill the list up to here so the
+// per-source floor (2 beat + 2 per character) survives for multi-character
+// shots; render-time loadFrameReferenceImages then trims best-first to the
+// model's send cap. Holds 2 beat + 2 each for up to 5 characters.
+export const REFERENCE_LIST_MAX = 12;
 
 // Map selected reference ids -> relevance score, so the generation step can
 // order references best-first without re-scoring. `scores` is the 1-based index
