@@ -5137,6 +5137,47 @@ export function buildApiRouter() {
     }
   });
 
+  // Page-level "Assign reference images": wipe every frame's references in the
+  // beat and re-run the scored auto-suggest pipeline for each. Async job; poll
+  // GET /storyboards/reassign-references/:jobId.
+  router.post('/storyboards/reassign-references', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(req.projectId, String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { isBeatLocked } = await import('./beatLocks.js');
+      if (isBeatLocked(beat._id)) {
+        return res.status(409).json({ error: 'Storyboard work in progress for this beat; try again' });
+      }
+      const { startReassignReferencesJob } = await import('./storyboardReferenceJobs.js');
+      const { BeatBusyError } = await import('./storyboardGenerate.js');
+      try {
+        const result = await startReassignReferencesJob({ projectId: req.projectId, beatId: beat._id });
+        res.status(202).json(result);
+      } catch (e) {
+        if (e instanceof BeatBusyError) return res.status(409).json({ error: e.message });
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/storyboards/reassign-references/:jobId', async (req, res, next) => {
+    try {
+      const { getReassignReferencesJob } = await import('./storyboardReferenceJobs.js');
+      const job = getReassignReferencesJob(req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'job not found' });
+      if (job.project_id && String(job.project_id) !== String(req.projectId)) {
+        return res.status(404).json({ error: 'job not found' });
+      }
+      res.json({ job });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // Page-level "Delete all images": clear every generated frame image in the beat.
   // Synchronous; keeps prompts + references.
   router.post('/storyboards/clear-images', async (req, res, next) => {
