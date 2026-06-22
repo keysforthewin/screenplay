@@ -67,6 +67,7 @@ export function ImageSheetDialog({
     if (!open) {
       openSeqRef.current++;
       stopDerivePoll();
+      setPickerOpen(false);
       return;
     }
     setError(null);
@@ -78,6 +79,9 @@ export function ImageSheetDialog({
     setShowDeriveLog(false);
     setReDeriveOpen(false);
     setFeedback('');
+    // Reference images are required, so open the picker immediately and let the
+    // user choose before doing anything else.
+    setPickerOpen(true);
   }, [open]);
 
   useEffect(() => () => stopDerivePoll(), []);
@@ -121,6 +125,10 @@ export function ImageSheetDialog({
 
   // ---- Character: start the render job immediately. ------------------------
   async function submitCharacter() {
+    if (referenceIds.length === 0) {
+      setError('Select at least one reference image before generating.');
+      return;
+    }
     setBusy(true);
     setError(null);
     const seq = openSeqRef.current;
@@ -173,6 +181,10 @@ export function ImageSheetDialog({
   }
 
   async function derive({ direction = '', previousPlates = null } = {}) {
+    if (referenceIds.length === 0) {
+      setError('Select at least one reference image before deriving plates.');
+      return;
+    }
     setBusy(true);
     setError(null);
     setStage('deriving');
@@ -232,6 +244,10 @@ export function ImageSheetDialog({
       setError('Add at least one plate with a name and a prompt.');
       return;
     }
+    if (referenceIds.length === 0) {
+      setError('Select at least one reference image before generating.');
+      return;
+    }
     setBusy(true);
     setError(null);
     const seq = openSeqRef.current;
@@ -253,7 +269,8 @@ export function ImageSheetDialog({
   }
 
   // ---- Footer (varies by host type + beat stage). -------------------------
-  const charCanSubmit = selectedShots.length >= 1 && IMAGE_MODEL_IDS.has(imageModel) && !busy;
+  const hasReferences = referenceIds.length > 0;
+  const charCanSubmit = selectedShots.length >= 1 && hasReferences && IMAGE_MODEL_IDS.has(imageModel) && !busy;
   const reviewReady = derivedShots.some((s) => s.name.trim() && s.prompt.trim());
 
   let footer;
@@ -275,7 +292,7 @@ export function ImageSheetDialog({
           type="button"
           className="primary"
           onClick={generateSheet}
-          disabled={busy || !reviewReady || !IMAGE_MODEL_IDS.has(imageModel)}
+          disabled={busy || !reviewReady || !hasReferences || !IMAGE_MODEL_IDS.has(imageModel)}
         >
           {busy ? 'Starting…' : `Generate sheet (${derivedShots.length})`}
         </button>
@@ -285,7 +302,7 @@ export function ImageSheetDialog({
     footer = (
       <>
         <button type="button" onClick={onClose} disabled={busy && stage !== 'deriving'}>Cancel</button>
-        <button type="button" className="primary" onClick={() => derive()} disabled={busy}>
+        <button type="button" className="primary" onClick={() => derive()} disabled={busy || !hasReferences}>
           {stage === 'deriving' ? 'Deriving…' : 'Derive shots'}
         </button>
       </>
@@ -322,8 +339,9 @@ export function ImageSheetDialog({
               <div className="frame-generate-ref-grid">
                 {referenceIds.length === 0 ? (
                   <div className="frame-generate-ref-empty">
-                    No reference images selected. Adding some anchors the look — the
-                    generated plates may drift without them.
+                    At least one reference image is required — they anchor the look so
+                    generation matches your subject instead of inventing random people.
+                    Use <strong>+ Add references</strong> to choose some.
                   </div>
                 ) : (
                   referenceIds.map((id) => (
