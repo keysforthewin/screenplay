@@ -5,6 +5,7 @@ import {
   readStoredImageModel,
   writeStoredImageModel,
 } from './imageModels.js';
+import { fetchImageModels } from '../api.js';
 
 const MODEL_STORAGE_KEY = 'screenplay.storyboard.model';
 
@@ -15,10 +16,25 @@ const MODEL_STORAGE_KEY = 'screenplay.storyboard.model';
 export function BulkGenerateImagesDialog({ open, onClose, onSubmit, missingCount = 0, skipCount = 0 }) {
   const [imageModel, setImageModel] = useState(() => readStoredImageModel(MODEL_STORAGE_KEY));
   const [autoReferences, setAutoReferences] = useState(true);
+  const [modelInfo, setModelInfo] = useState({});
 
   useEffect(() => {
     writeStoredImageModel(MODEL_STORAGE_KEY, imageModel);
   }, [imageModel]);
+
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    fetchImageModels()
+      .then((models) => {
+        if (!alive) return;
+        const byId = {};
+        for (const m of models) byId[m.id] = m;
+        setModelInfo(byId);
+      })
+      .catch(() => { /* label-only fallback */ });
+    return () => { alive = false; };
+  }, [open]);
 
   const nothingToDo = missingCount === 0;
 
@@ -69,18 +85,28 @@ export function BulkGenerateImagesDialog({ open, onClose, onSubmit, missingCount
         <div className="frame-generate-model-row">
           <span className="field-label">Image model</span>
           <div className="frame-generate-model-options">
-            {IMAGE_MODELS.map((m) => (
-              <label key={m.id}>
-                <input
-                  type="radio"
-                  name="bulk-image-model"
-                  value={m.id}
-                  checked={imageModel === m.id}
-                  onChange={() => setImageModel(m.id)}
-                />
-                {m.label}
-              </label>
-            ))}
+            {IMAGE_MODELS.map((m) => {
+              const info = modelInfo[m.id];
+              return (
+                <label key={m.id}>
+                  <input
+                    type="radio"
+                    name="bulk-image-model"
+                    value={m.id}
+                    checked={imageModel === m.id}
+                    onChange={() => setImageModel(m.id)}
+                  />
+                  <span>
+                    {m.label}
+                    {info && (
+                      <span className="model-meta" style={{ display: 'block', opacity: 0.7, fontSize: '0.85em' }}>
+                        {info.maxReferenceImages} ref images · {info.resolution} · {info.inputFormats.join('/')}
+                      </span>
+                    )}
+                  </span>
+                </label>
+              );
+            })}
           </div>
         </div>
       </div>

@@ -168,6 +168,11 @@ function filenameFromContentDisposition(value) {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
+export async function fetchImageModels() {
+  const data = await apiGet('/image-models');
+  return Array.isArray(data.models) ? data.models : [];
+}
+
 export function imageUrl(id) {
   return id ? withBase(`/image/${id}`) : null;
 }
