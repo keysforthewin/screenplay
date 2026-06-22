@@ -177,6 +177,7 @@ import { stripMarkdown } from '../util/markdown.js';
 import {
   buildFrameReferenceCandidates,
   selectScoredFrameReferences,
+  referenceScoresForIds,
   RELEVANCE_THRESHOLD,
 } from './frameReferences.js';
 import { scoreFrameReferences } from '../llm/frameReferenceSelector.js';
@@ -3948,6 +3949,7 @@ export function buildApiRouter() {
               frameId,
               imageIds: ids,
               mode: 'append',
+              scores: referenceScoresForIds({ candidates, scores, ids }),
             })
           : sb;
         res.json({ storyboard, added, total: ids.length });

@@ -1754,15 +1754,16 @@ export async function setStoryboardFrameReferenceImagesViaGateway({
   frameId,
   imageIds,
   mode = 'replace',
+  scores = null,
 }) {
   const sb = await mongoGetStoryboard(projectId, storyboardId);
   if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
   const ids = Array.isArray(imageIds) ? imageIds : [];
   let next;
   if (mode === 'append') {
-    next = await mongoPushFrameReferenceImages(storyboardId, frameId, ids);
+    next = await mongoPushFrameReferenceImages(storyboardId, frameId, ids, scores);
   } else if (mode === 'replace') {
-    next = await mongoSetFrameReferenceImages(storyboardId, frameId, ids);
+    next = await mongoSetFrameReferenceImages(storyboardId, frameId, ids, scores);
   } else {
     throw new Error(`setStoryboardFrameReferenceImagesViaGateway: invalid mode ${mode}`);
   }

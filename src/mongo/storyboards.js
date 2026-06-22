@@ -33,6 +33,12 @@
 //     reference_ids: ObjectId[]        (GridFS images bucket; per-frame image-gen
 //                                       references — distinct from the video
 //                                       model's generation-time reference list)
+//     reference_scores: {<hex>:number} (relevance score 0..1 per reference id,
+//                                       from the last scored selection. Used at
+//                                       generation time to send references
+//                                       best-first and strip the least relevant
+//                                       when a model accepts fewer. Pruned to
+//                                       reference_ids; manual picks are unscored)
 //   }>                                 The start_frame/end_frame distinction is
 //                                      no longer stored — it is chosen at video
 //                                      generation time (see resolveFrameAssignment
@@ -194,7 +200,29 @@ function normalizeFrame(f) {
     previous_image_id: f?.previous_image_id ?? null,
     last_edit_prompt: typeof f?.last_edit_prompt === 'string' ? f.last_edit_prompt : '',
     reference_ids: Array.isArray(f?.reference_ids) ? f.reference_ids : [],
+    reference_scores:
+      f?.reference_scores && typeof f.reference_scores === 'object' && !Array.isArray(f.reference_scores)
+        ? f.reference_scores
+        : {},
   };
+}
+
+// Re-derive a frame's `reference_scores` so it only contains entries for ids
+// currently in `reference_ids`, merging in any freshly-provided scores. Keeps
+// the map from accumulating stale ids and lets selection persist relevance.
+function syncReferenceScores(frame, scores = null) {
+  const idset = new Set((frame.reference_ids || []).map((x) => String(x)));
+  const out = {};
+  const prev = frame.reference_scores || {};
+  for (const k of Object.keys(prev)) {
+    if (idset.has(k) && Number.isFinite(prev[k])) out[k] = prev[k];
+  }
+  if (scores && typeof scores === 'object') {
+    for (const k of Object.keys(scores)) {
+      if (idset.has(k) && Number.isFinite(scores[k])) out[k] = scores[k];
+    }
+  }
+  frame.reference_scores = out;
 }
 
 // Build a `frames` array from the retired start_*/end_* fields of a legacy doc.
@@ -852,6 +880,7 @@ export async function pushFrameReferenceImage(id, frameId, imageId) {
   return mutateFrame(id, frameId, (frame) => {
     if ((frame.reference_ids || []).some((x) => String(x) === String(oid))) return;
     frame.reference_ids = [...(frame.reference_ids || []), oid];
+    syncReferenceScores(frame);
   });
 }
 
@@ -861,13 +890,14 @@ export async function pullFrameReferenceImage(id, frameId, imageId) {
     frame.reference_ids = (frame.reference_ids || []).filter(
       (x) => String(x) !== String(oid),
     );
+    syncReferenceScores(frame);
   });
 }
 
 // Append many image ids to a frame's reference list, deduping vs. existing.
 // Used by the AI generation pipeline and the auto-suggest endpoint so a single
 // Mongo write + a single broadcast covers many ids at once.
-export async function pushFrameReferenceImages(id, frameId, imageIds) {
+export async function pushFrameReferenceImages(id, frameId, imageIds, scores = null) {
   return mutateFrame(id, frameId, (frame) => {
     const existing = frame.reference_ids || [];
     const seen = new Set(existing.map((x) => String(x)));
@@ -886,12 +916,13 @@ export async function pushFrameReferenceImages(id, frameId, imageIds) {
       additions.push(oid);
     }
     frame.reference_ids = [...existing, ...additions];
+    syncReferenceScores(frame, scores);
   });
 }
 
 // Replace a frame's reference list with exactly the given ids (deduped,
 // preserving caller order). Used by the multi-select picker's Apply button.
-export async function setFrameReferenceImages(id, frameId, imageIds) {
+export async function setFrameReferenceImages(id, frameId, imageIds, scores = null) {
   return mutateFrame(id, frameId, (frame) => {
     const seen = new Set();
     const next = [];
@@ -909,6 +940,7 @@ export async function setFrameReferenceImages(id, frameId, imageIds) {
       next.push(oid);
     }
     frame.reference_ids = next;
+    syncReferenceScores(frame, scores);
   });
 }
 

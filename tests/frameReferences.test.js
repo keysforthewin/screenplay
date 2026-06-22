@@ -292,6 +292,7 @@ describe('autoFillFrameReferencesIfEmpty', () => {
       frameId: 'f1',
       imageIds: [String(beatImg)],
       mode: 'replace',
+      scores: { [String(beatImg)]: 0.9 },
     });
     expect(frame.reference_ids).toEqual([String(beatImg)]);
     // scoreFrameReferences was called with the frame text and candidates.

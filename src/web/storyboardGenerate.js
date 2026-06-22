@@ -55,7 +55,12 @@ import {
   setStoryboardFramePromptViaGateway,
   setStoryboardCritiqueViaGateway,
 } from './gateway.js';
-import { autoFillFrameReferencesIfEmpty } from './frameReferences.js';
+import {
+  autoFillFrameReferencesIfEmpty,
+  orderReferenceIdsByScore,
+  MAX_ATTACHED_REFERENCE_IMAGES,
+} from './frameReferences.js';
+import { maxReferenceImagesFor } from './imageModelInfo.js';
 import { critiquePanel as defaultCritiquePanel } from './storyboardCritique.js';
 import { formatCandidateManifest, gatherCandidatesFromDocs, resolveReferencePicks } from './referenceSelector.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
@@ -1606,10 +1611,22 @@ function getFrame(sb, frameId) {
   return (sb.frames || []).find((f) => f._id.toString() === String(frameId)) || null;
 }
 
-async function loadFrameReferenceImages(frame) {
-  const ids = frame?.reference_ids || [];
+// Assemble the reference images sent to the generator, ORDERED by their
+// persisted relevance score (best first) and capped to min(8, model cap) so the
+// least-relevant references are the ones dropped when a model accepts fewer.
+async function loadFrameReferenceImages(frame, { imageModel = null } = {}) {
+  const cap = Math.min(
+    MAX_ATTACHED_REFERENCE_IMAGES,
+    maxReferenceImagesFor(imageModel),
+    MAX_FRAME_REFERENCE_IMAGES,
+  );
+  const ordered = orderReferenceIdsByScore({
+    referenceIds: frame?.reference_ids || [],
+    referenceScores: frame?.reference_scores || {},
+    maxTotal: cap,
+  });
   const out = [];
-  for (const id of ids.slice(0, MAX_FRAME_REFERENCE_IMAGES)) {
+  for (const id of ordered) {
     const ref = await loadImageInput(id);
     if (ref) {
       out.push({ buffer: ref.buffer, contentType: ref.contentType });
@@ -1768,7 +1785,7 @@ async function regenerateStoryboardFrameInternal({
       autoReferences,
       imageModel,
     });
-    inputImages = await loadFrameReferenceImages(frame);
+    inputImages = await loadFrameReferenceImages(frame, { imageModel });
     dispatchMode = 'generate';
   }
 

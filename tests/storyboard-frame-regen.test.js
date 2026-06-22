@@ -146,6 +146,77 @@ describe('regenerateStoryboardFrame (generate mode)', () => {
     expect(frameOf(fresh, f2).prompt).toBe('second prompt');
   });
 
+  it('sends references ordered by relevance score (best first)', async () => {
+    const lo = registerImage(new ObjectId());
+    const hi = registerImage(new ObjectId());
+    const mid = registerImage(new ObjectId());
+    const { sb, frameId } = await setupRow();
+    // Stored out of score order; scores say hi > mid > lo.
+    await Storyboards.setFrameReferenceImages(sb._id, frameId, [lo, hi, mid], {
+      [String(lo)]: 0.2,
+      [String(hi)]: 0.9,
+      [String(mid)]: 0.5,
+    });
+
+    let captured;
+    Generate._setImageDispatcherForTests(async (args) => {
+      captured = args;
+      return { buffer: Buffer.from('img'), contentType: 'image/png' };
+    });
+
+    await Generate.regenerateStoryboardFrame({ projectId,
+      storyboardId: sb._id,
+      frameId,
+      imageModel: 'gemini',
+      mode: 'generate',
+      prompt: 'A wide shot of the diner.',
+    });
+
+    expect(captured.inputImages.map((x) => x.buffer.toString())).toEqual([
+      `bytes-${String(hi)}`,
+      `bytes-${String(mid)}`,
+      `bytes-${String(lo)}`,
+    ]);
+  });
+
+  it('caps attached references at the model limit, keeping the highest-scored', async () => {
+    // 5 references, scores 0.1..0.9; Flux 2 Klein only accepts 4.
+    const refs = [];
+    for (const s of [0.1, 0.9, 0.5, 0.7, 0.3]) {
+      refs.push({ id: registerImage(new ObjectId()), score: s });
+    }
+    const { sb, frameId } = await setupRow();
+    const scores = {};
+    for (const r of refs) scores[String(r.id)] = r.score;
+    await Storyboards.setFrameReferenceImages(
+      sb._id,
+      frameId,
+      refs.map((r) => r.id),
+      scores,
+    );
+
+    let captured;
+    Generate._setImageDispatcherForTests(async (args) => {
+      captured = args;
+      return { buffer: Buffer.from('img'), contentType: 'image/png' };
+    });
+
+    await Generate.regenerateStoryboardFrame({ projectId,
+      storyboardId: sb._id,
+      frameId,
+      imageModel: 'flux-2-klein', // cap 4
+      mode: 'generate',
+      prompt: 'A wide shot of the diner.',
+    });
+
+    // Best 4 by score: 0.9, 0.7, 0.5, 0.3 — the 0.1 ref is stripped.
+    const top4 = [...refs].sort((a, b) => b.score - a.score).slice(0, 4);
+    expect(captured.inputImages).toHaveLength(4);
+    expect(captured.inputImages.map((x) => x.buffer.toString())).toEqual(
+      top4.map((r) => `bytes-${String(r.id)}`),
+    );
+  });
+
   it('requires a non-empty prompt for generate mode', async () => {
     const { sb, frameId } = await setupRow();
     await expect(

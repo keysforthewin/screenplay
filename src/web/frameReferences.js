@@ -15,6 +15,51 @@ import { maxReferenceImagesFor } from './imageModelInfo.js';
 export const AUTO_REFERENCE_MAX = 6;
 export const PER_SOURCE_MAX = 2;
 export const RELEVANCE_THRESHOLD = 0.5;
+// Hard ceiling on how many reference images we attach to one generation,
+// regardless of the model's own (often higher) cap. The effective send count is
+// min(MAX_ATTACHED_REFERENCE_IMAGES, model cap), always the highest-scored.
+export const MAX_ATTACHED_REFERENCE_IMAGES = 8;
+
+// Map selected reference ids -> relevance score, so the generation step can
+// order references best-first without re-scoring. `scores` is the 1-based index
+// Map from scoreFrameReferences; a candidate id appearing in multiple sources
+// keeps its highest score. Ids with no finite score are omitted.
+export function referenceScoresForIds({ candidates, scores, ids }) {
+  const byId = new Map();
+  (candidates || []).forEach((c, i) => {
+    const s = scores?.get?.(i + 1);
+    if (!Number.isFinite(s)) return;
+    const key = String(c.id);
+    const prev = byId.get(key);
+    byId.set(key, prev == null ? s : Math.max(prev, s));
+  });
+  const out = {};
+  for (const id of ids || []) {
+    const s = byId.get(String(id));
+    if (Number.isFinite(s)) out[String(id)] = s;
+  }
+  return out;
+}
+
+// Order reference ids best-first by their persisted relevance score (descending,
+// stable for ties), then cap to maxTotal. Unscored ids sort after every scored
+// id (in their original order) and are the first dropped when over the cap.
+// Pure; ids pass through unchanged (ObjectId or hex string).
+export function orderReferenceIdsByScore({
+  referenceIds,
+  referenceScores = {},
+  maxTotal = Infinity,
+}) {
+  const scoreOf = (id) => {
+    const s = referenceScores?.[String(id)];
+    return Number.isFinite(s) ? s : -Infinity;
+  };
+  const ordered = (referenceIds || [])
+    .map((id, i) => ({ id, i, s: scoreOf(id) }))
+    .sort((a, b) => (a.s === b.s ? a.i - b.i : b.s - a.s))
+    .map((x) => x.id);
+  return Number.isFinite(maxTotal) ? ordered.slice(0, maxTotal) : ordered;
+}
 
 export async function buildFrameReferenceCandidates({ projectId, sb, frameText = '' }) {
   const candidates = [];
@@ -163,6 +208,7 @@ export async function autoFillFrameReferencesIfEmpty({
       frameId: frame._id,
       imageIds: ids,
       mode: 'replace',
+      scores: referenceScoresForIds({ candidates, scores, ids }),
     });
     frame.reference_ids = ids;
     return ids;
