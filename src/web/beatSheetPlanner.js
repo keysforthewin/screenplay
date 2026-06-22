@@ -77,6 +77,15 @@ export const SCENE_PLATE_PLAN_TOOL = {
   },
 };
 
+// Shared static-plate rules — reused by the storyboard image-sheet tuner so its
+// proposed plates obey the same clean-background discipline. Keep verbatim.
+export const STATIC_PLATE_CONSTRAINTS = [
+  '- These are CLEAN PLATES — capture only the static set and environment. Omit anything moving, transient, or mid-action even when the beat describes it: shooting stars, lightning, fireworks, explosions, falling/flying objects, moving vehicles, splashing water, birds in flight, drifting smoke as a subject, etc. Render the empty background as it looks BEFORE or AFTER that element passes through — the video stage adds the motion later. (You may keep the lighting such an event casts, e.g. the glow it throws across a rooftop, but never the moving object itself.)',
+  '- No characters in the plates unless the beat truly cannot be represented without a figure — these are environments, not staged shots.',
+  '- Never put a proper character name in a prompt; image models cannot resolve made-up names.',
+  '- Do NOT put justification or quote text into the prompt field.',
+].join('\n');
+
 export const SCENE_PLATE_PLAN_SYSTEM_PROMPT = [
   'You are a production designer and location scout planning the SET and BACKGROUND plates for one screenplay beat. Return your plan via the plan_scene_plates tool.',
   '',
@@ -101,10 +110,7 @@ export const SCENE_PLATE_PLAN_SYSTEM_PROMPT = [
   '- State OCCUPANCY explicitly. These are empty backdrops, so say the seats / room are unoccupied — image models love to fill a car with a driver, and an unstated minivan interior gets one in the front. When the beat truly cannot read without a figure, place that figure in the exact spot the beat specifies (the rear bench, NOT the front) and note where it is NOT.',
   '',
   '# Constraints',
-  '- These are CLEAN PLATES — capture only the static set and environment. Omit anything moving, transient, or mid-action even when the beat describes it: shooting stars, lightning, fireworks, explosions, falling/flying objects, moving vehicles, splashing water, birds in flight, drifting smoke as a subject, etc. Render the empty background as it looks BEFORE or AFTER that element passes through — the video stage adds the motion later. (You may keep the lighting such an event casts, e.g. the glow it throws across a rooftop, but never the moving object itself.)',
-  '- No characters in the plates unless the beat truly cannot be represented without a figure — these are environments, not staged shots.',
-  '- Never put a proper character name in a prompt; image models cannot resolve made-up names.',
-  '- Do NOT put justification or quote text into the prompt field.',
+  STATIC_PLATE_CONSTRAINTS,
 ].join('\n');
 
 function formatReferenceInputs(referenceInputs) {

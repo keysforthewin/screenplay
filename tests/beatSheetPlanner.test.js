@@ -281,6 +281,13 @@ describe('buildScenePlatePlanUserText — revision request', () => {
   });
 });
 
+describe('STATIC_PLATE_CONSTRAINTS', () => {
+  it('is exported and embedded verbatim in the phase-1 system prompt', () => {
+    expect(Planner.STATIC_PLATE_CONSTRAINTS).toContain('CLEAN PLATES');
+    expect(Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT).toContain(Planner.STATIC_PLATE_CONSTRAINTS);
+  });
+});
+
 describe('planBeatSceneImages — revision threading', () => {
   it('passes previousPlates to phase 1 but not to phase 2', async () => {
     let p1args = null;
