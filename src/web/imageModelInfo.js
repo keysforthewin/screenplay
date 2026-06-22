@@ -10,7 +10,7 @@ import {
   GEMINI_25_FLASH_EDIT_MAX_INPUTS,
   NANO_BANANA_2_EDIT_MAX_INPUTS,
   FLUX_2_KLEIN_EDIT_MAX_INPUTS,
-} from '../fal/imageClient.js';
+} from '../fal/imageCaps.js';
 
 // OpenAI gpt-image-2 edit accepts multiple input images (image[] array); the
 // practical edit maximum is 16. Defined here since it isn't a fal endpoint.

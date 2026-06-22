@@ -14,6 +14,20 @@ import { fal, isConfigured as falConfigured } from './client.js';
 import { config } from '../config.js';
 import { logger } from '../log.js';
 import { validateImageBuffer } from '../mongo/imageBytes.js';
+import {
+  FLUX_2_PRO_EDIT_MAX_INPUTS,
+  NANO_BANANA_PRO_EDIT_MAX_INPUTS,
+  GEMINI_25_FLASH_EDIT_MAX_INPUTS,
+  NANO_BANANA_2_EDIT_MAX_INPUTS,
+  FLUX_2_KLEIN_EDIT_MAX_INPUTS,
+} from './imageCaps.js';
+export {
+  FLUX_2_PRO_EDIT_MAX_INPUTS,
+  NANO_BANANA_PRO_EDIT_MAX_INPUTS,
+  GEMINI_25_FLASH_EDIT_MAX_INPUTS,
+  NANO_BANANA_2_EDIT_MAX_INPUTS,
+  FLUX_2_KLEIN_EDIT_MAX_INPUTS,
+};
 
 // Flux Pro Kontext single + multi. Kontext is image-conditioned only — the
 // single-image endpoint expects `image_url`, the /multi variant expects
@@ -33,10 +47,6 @@ export const NANO_BANANA_PRO_EDIT_MODEL = config.fal.nanoBananaProEditModel;
 export const FLUX_2_PRO_MODEL = config.fal.flux2ProGenerateModel;
 export const FLUX_2_PRO_EDIT_MODEL = config.fal.flux2ProEditModel;
 
-// Per-endpoint max input images. Anything above is sliced to the cap with a
-// warning — preferable to a hard 400 from fal.
-export const FLUX_2_PRO_EDIT_MAX_INPUTS = 9;
-export const NANO_BANANA_PRO_EDIT_MAX_INPUTS = 14;
 
 const ALLOWED_CONTENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
@@ -226,8 +236,6 @@ export async function generateFlux2ProImage({
 // Nano Banana Pro; cheaper and faster. /edit blends multiple references.
 export const GEMINI_25_FLASH_GENERATE_MODEL = config.fal.gemini25FlashGenerateModel;
 export const GEMINI_25_FLASH_EDIT_MODEL = config.fal.gemini25FlashEditModel;
-export const GEMINI_25_FLASH_EDIT_MAX_INPUTS = 10;
-
 export async function generateGemini25FlashImage({
   prompt,
   inputImages = [],
@@ -247,8 +255,6 @@ export async function generateGemini25FlashImage({
 // Nano Banana 2 (Gemini 3.1 Flash). Newer fast Gemini; identical call shape.
 export const NANO_BANANA_2_GENERATE_MODEL = config.fal.nanoBanana2GenerateModel;
 export const NANO_BANANA_2_EDIT_MODEL = config.fal.nanoBanana2EditModel;
-export const NANO_BANANA_2_EDIT_MAX_INPUTS = 10;
-
 export async function generateNanoBanana2Image({
   prompt,
   inputImages = [],
@@ -271,8 +277,6 @@ export async function generateNanoBanana2Image({
 // going through falGenerateEdit.
 export const FLUX_2_KLEIN_GENERATE_MODEL = config.fal.flux2KleinGenerateModel;
 export const FLUX_2_KLEIN_EDIT_MODEL = config.fal.flux2KleinEditModel;
-export const FLUX_2_KLEIN_EDIT_MAX_INPUTS = 4;
-
 // Map the aspect ratios the pipeline uses to explicit pixel dims. 16:9 matches
 // the storyboard pipeline's 2048x1152. Unmapped ratios fall through to the
 // model default (image_size omitted).
