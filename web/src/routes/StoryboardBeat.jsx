@@ -51,6 +51,12 @@ export function StoryboardBeat({ session }) {
   const imagePollRef = useRef(null);
   const [confirmDeleteImages, setConfirmDeleteImages] = useState(false);
   const [deleteImagesError, setDeleteImagesError] = useState(null);
+  // "Assign reference images": bulk reassign of every frame's references.
+  const [reassigning, setReassigning] = useState(false);
+  const [reassignJobStatus, setReassignJobStatus] = useState(null);
+  const [reassignError, setReassignError] = useState(null);
+  const [confirmReassign, setConfirmReassign] = useState(false);
+  const reassignPollRef = useRef(null);
   // Only one storyboard item can be expanded at a time. Collapsed by default
   // so the heavy media (videos, frames, audio, prompt CollabField) doesn't
   // mount until the user opens that item.
@@ -339,10 +345,48 @@ export function StoryboardBeat({ session }) {
     }
   }
 
+  async function pollReassignJob(jobId) {
+    try {
+      const r = await apiGet(`/storyboards/reassign-references/${jobId}`);
+      setReassignJobStatus(r.job);
+      if (['done', 'partial', 'error'].includes(r.job?.status)) {
+        clearInterval(reassignPollRef.current);
+        reassignPollRef.current = null;
+        setReassigning(false);
+        if (r.job.status === 'error') {
+          setReassignError(r.job.error || 'Reference reassignment failed.');
+        }
+        onRefresh();
+      } else {
+        onRefresh();
+      }
+    } catch (e) {
+      // transient poll error — keep polling (the job runs server-side).
+    }
+  }
+
+  async function reassignReferences() {
+    if (!data?.beat) return;
+    setReassignError(null);
+    setReassigning(true);
+    setShowProgressLog(true);
+    setReassignJobStatus({ status: 'queued', completed: 0, planned: 0, failed: 0 });
+    try {
+      const r = await apiPostJson('/storyboards/reassign-references', { beat_id: data.beat._id });
+      const jobId = r.job_id;
+      reassignPollRef.current = setInterval(() => pollReassignJob(jobId), 2000);
+      pollReassignJob(jobId);
+    } catch (e) {
+      setReassigning(false);
+      setReassignError(e.message);
+    }
+  }
+
   useEffect(() => {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
       if (imagePollRef.current) clearInterval(imagePollRef.current);
+      if (reassignPollRef.current) clearInterval(reassignPollRef.current);
     };
   }, []);
 
@@ -423,6 +467,13 @@ export function StoryboardBeat({ session }) {
           >
             Delete all images
           </button>
+          <button
+            onClick={() => setConfirmReassign(true)}
+            disabled={generating || imageGenerating || reassigning || sortedItems.length === 0}
+            title="Remove all reference images on every frame and reassign from the current artwork set"
+          >
+            {reassigning ? 'Assigning references…' : 'Assign reference images'}
+          </button>
         </div>
       </div>
 
@@ -447,6 +498,18 @@ export function StoryboardBeat({ session }) {
       )}
       {deleteImagesError && (
         <div className="error-banner">Delete images failed: {deleteImagesError}</div>
+      )}
+      {reassignError && (
+        <div className="error-banner">Reassign failed: {reassignError}</div>
+      )}
+      {reassigning && reassignJobStatus && (
+        <GenerationProgress
+          job={reassignJobStatus}
+          noun="frame"
+          showLog={showProgressLog}
+          onToggleLog={() => setShowProgressLog((s) => !s)}
+          logRef={progressLogRef}
+        />
       )}
       {imageGenerating && imageJobStatus && (
         <GenerationProgress
@@ -558,6 +621,18 @@ export function StoryboardBeat({ session }) {
         danger
         onConfirm={() => { setConfirmDeleteAll(false); deleteAll(); }}
         onCancel={() => setConfirmDeleteAll(false)}
+      />
+
+      <ConfirmDialog
+        open={confirmReassign}
+        title="Assign reference images?"
+        message={
+          'This removes all reference images on every frame in this beat — including frames that already have a generated image — and reassigns them from the current artwork set. Generated images are kept. This cannot be undone.'
+        }
+        confirmLabel="Assign reference images"
+        danger
+        onConfirm={() => { setConfirmReassign(false); reassignReferences(); }}
+        onCancel={() => setConfirmReassign(false)}
       />
 
       <StoryboardEditDialog
