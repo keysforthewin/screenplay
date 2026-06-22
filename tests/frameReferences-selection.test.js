@@ -11,32 +11,22 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
-vi.mock('../src/mongo/images.js', () => ({
-  listImagesForBeat: vi.fn(),
-  imageFileToMeta: (f) => ({
-    _id: f._id,
-    name: f.metadata?.name || '',
-    description: f.metadata?.description || '',
-  }),
-}));
-
-vi.mock('../src/web/referenceSelector.js', () => ({
-  gatherCharacterReferenceCandidates: vi.fn(),
-}));
+vi.mock('../src/mongo/plots.js', () => ({ getBeat: vi.fn() }));
+vi.mock('../src/mongo/characters.js', () => ({ getCharacter: vi.fn() }));
 
 vi.mock('../src/web/gateway.js', () => ({
   setStoryboardFrameReferenceImagesViaGateway: vi.fn(),
 }));
 
-const { listImagesForBeat } = await import('../src/mongo/images.js');
-const { gatherCharacterReferenceCandidates } = await import('../src/web/referenceSelector.js');
+const { getBeat } = await import('../src/mongo/plots.js');
+const { getCharacter } = await import('../src/mongo/characters.js');
 const { setStoryboardFrameReferenceImagesViaGateway: setRefs } = await import('../src/web/gateway.js');
 const { autoFillFrameReferencesIfEmpty } = await import('../src/web/frameReferences.js');
 const { _setFrameReferenceScorerForTests } = await import('../src/llm/frameReferenceSelector.js');
 
 beforeEach(() => {
-  listImagesForBeat.mockReset();
-  gatherCharacterReferenceCandidates.mockReset();
+  getBeat.mockReset();
+  getCharacter.mockReset();
   setRefs.mockReset();
   _setFrameReferenceScorerForTests(null);
 });
@@ -94,13 +84,15 @@ describe('selectScoredFrameReferences', () => {
 
 describe('autoFillFrameReferencesIfEmpty model cap', () => {
   it('clamps auto-fill to the model cap (klein=4)', async () => {
-    // Build 6 beat candidates — more than the klein cap of 4.
-    const beatDocs = Array.from({ length: 6 }, (_, i) => ({
-      _id: `img${i + 1}`,
-      metadata: { name: `image ${i + 1}`, description: '' },
+    // Build 6 beat artworks — more than the klein cap of 4.
+    const artworks = Array.from({ length: 6 }, (_, i) => ({
+      _id: `art${i + 1}`,
+      status: 'done',
+      result_image_id: `img${i + 1}`,
+      name: `image ${i + 1}`,
+      prompt: '',
     }));
-    listImagesForBeat.mockResolvedValueOnce(beatDocs);
-    gatherCharacterReferenceCandidates.mockResolvedValueOnce([]);
+    getBeat.mockResolvedValueOnce({ _id: 'beat1', artworks });
 
     // Score all 6 above threshold so they would normally all be picked.
     _setFrameReferenceScorerForTests(async ({ candidates }) => {

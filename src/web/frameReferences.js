@@ -1,15 +1,16 @@
 // Auto-select reference images for a storyboard frame. Builds a candidate
-// pool from the beat's own artwork plus each scene character's full image set,
+// pool from the beat's own artwork plus each scene character's artwork (the
+// "Artwork" sections — NOT every reference image owned by the beat/character),
 // asks the LLM selector to pick the most useful ones, and persists them onto
 // the frame via the gateway so they show up in the SPA for review. Only fills
 // frames that have no references yet; never throws.
 
 import { logger } from '../log.js';
-import { listImagesForBeat, imageFileToMeta } from '../mongo/images.js';
+import { getBeat } from '../mongo/plots.js';
+import { getCharacter } from '../mongo/characters.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { scoreFrameReferences } from '../llm/frameReferenceSelector.js';
 import { setStoryboardFrameReferenceImagesViaGateway } from './gateway.js';
-import { gatherCharacterReferenceCandidates } from './referenceSelector.js';
 import { maxReferenceImagesFor } from './imageModelInfo.js';
 
 export const AUTO_REFERENCE_MAX = 6;
@@ -61,53 +62,66 @@ export function orderReferenceIdsByScore({
   return Number.isFinite(maxTotal) ? ordered.slice(0, maxTotal) : ordered;
 }
 
+// Pull the candidate metas from a host's `artworks[]` array — the "Artwork"
+// section shown in the SPA. Only `done` artworks with a result image count;
+// pending/error artworks and the host's plain reference images are excluded on
+// purpose (those can still be added manually via the picker). Deduped by
+// result_image_id. `prompt` becomes the candidate description for scoring.
+function artworkCandidates(host, { kind, source }) {
+  const out = [];
+  const seen = new Set();
+  for (const a of host?.artworks || []) {
+    if (a?.status !== 'done' || !a.result_image_id) continue;
+    const id = String(a.result_image_id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      kind,
+      source,
+      name: (a.name || '').trim() || (kind === 'char' ? source : 'beat artwork'),
+      description: (a.prompt || '').trim(),
+    });
+  }
+  return out;
+}
+
 export async function buildFrameReferenceCandidates({ projectId, sb, frameText = '' }) {
   const candidates = [];
 
-  // Beat artwork — every GridFS image owned by this beat, including the beat's
-  // main image. Tagged source 'beat' / kind 'art'.
+  // Beat artwork — the beat's "Artwork" section (done artworks only), tagged
+  // source 'beat' / kind 'art'. NOT every GridFS image owned by the beat:
+  // storyboard frames and uploaded references are excluded so auto-suggest
+  // scores only curated artwork.
   try {
     const beatId = sb?.beat_id ? String(sb.beat_id) : null;
     if (beatId) {
-      const files = await listImagesForBeat(projectId, beatId);
-      const seen = new Set();
-      for (const f of files) {
-        const m = imageFileToMeta(f);
-        const id = String(m._id);
-        if (seen.has(id)) continue;
-        seen.add(id);
-        candidates.push({
-          id,
-          kind: 'art',
-          source: 'beat',
-          name: (m.name || '').trim() || 'beat artwork',
-          description: (m.description || '').trim(),
-        });
-      }
+      const beat = await getBeat(projectId, beatId);
+      candidates.push(...artworkCandidates(beat, { kind: 'art', source: 'beat' }));
     }
   } catch (e) {
     logger.warn(`frameReferences: beat artwork load failed: ${e.message}`);
   }
 
-  // Scene characters — full image set per character (sheets -> main -> attached),
-  // each character tagged with its own source name. Reuses the referenceSelector
-  // gatherer so candidate ordering matches the rest of the selection pipeline.
+  // Scene characters — each in-scene character's own "Artwork" section (done
+  // artworks only), tagged with the character's name as its source. Same
+  // artwork-only rule as the beat: sheets/portraits/gallery are not auto-
+  // suggested, only generated artworks.
   try {
     const names = Array.isArray(sb?.characters_in_scene) ? sb.characters_in_scene : [];
-    const perChar = await gatherCharacterReferenceCandidates(projectId, names);
-    for (const entry of perChar) {
-      const source = stripMarkdown(entry.name || '').trim();
-      if (!source) continue;
-      for (const cand of entry.candidates || []) {
-        const desc = [cand.description, cand.caption].filter(Boolean).join(' — ');
-        candidates.push({
-          id: String(cand.id),
-          kind: 'char',
-          source,
-          name: cand.name || source,
-          description: desc,
-        });
+    for (const raw of names) {
+      const nm = stripMarkdown(String(raw ?? '')).trim();
+      if (!nm) continue;
+      let c = null;
+      try {
+        c = await getCharacter(projectId, nm);
+      } catch (e) {
+        logger.warn(`frameReferences: character lookup "${nm}" failed: ${e.message}`);
+        continue;
       }
+      if (!c) continue;
+      const source = stripMarkdown(c.name || nm).trim() || nm;
+      candidates.push(...artworkCandidates(c, { kind: 'char', source }));
     }
   } catch (e) {
     logger.warn(`frameReferences: character candidates failed: ${e.message}`);

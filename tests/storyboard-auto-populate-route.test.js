@@ -59,6 +59,7 @@ const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Characters = await import('../src/mongo/characters.js');
+const { appendDoneArtwork } = await import('../src/mongo/artworks.js');
 const { _setFrameReferenceScorerForTests } = await import('../src/llm/frameReferenceSelector.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
 
@@ -104,20 +105,6 @@ async function putBeatImageInDb(beatId, { name = 'beat artwork', description = '
   return _id;
 }
 
-// Insert a GridFS image-file doc owned by a character.
-async function putCharImageInDb(characterId, { name = 'char image', description = '' } = {}) {
-  const _id = new ObjectId();
-  await fakeDb.collection('images.files').insertOne({
-    _id,
-    filename: 'c.png',
-    contentType: 'image/png',
-    length: 10,
-    uploadDate: new Date(),
-    metadata: { name, description, owner_type: 'character', owner_id: String(characterId) },
-  });
-  return _id;
-}
-
 async function makeCharacter(name, { images = [], mainId = null } = {}) {
   const c = await Characters.createCharacter({ projectId, name });
   await fakeDb.collection('characters').updateOne(
@@ -143,7 +130,7 @@ async function postJson(path, body, headers = {}) {
 }
 
 describe('POST /storyboard/:id/frame/:frameId/reference/auto-populate', () => {
-  it('uses unified scored selection: beat artwork + character images, capped at 6', async () => {
+  it('uses unified scored selection: beat artwork + character artwork, capped at 6', async () => {
     // ── seed beat ──
     const beat = await Plots.createBeat({
       projectId,
@@ -153,30 +140,23 @@ describe('POST /storyboard/:id/frame/:frameId/reference/auto-populate', () => {
       characters: ['Keys'],
     });
 
-    // Seed two beat images into GridFS (simulates actual beat artwork)
-    const beatImg1 = await putBeatImageInDb(beat._id, { name: 'Bar interior', description: 'wide shot' });
-    const beatImg2 = await putBeatImageInDb(beat._id, { name: 'Close-up', description: 'face' });
-    // Register the first as the beat's main_image_id in plots
-    await Plots.pushBeatImage(projectId, beat._id, { _id: beatImg1 }, true);
-    await Plots.pushBeatImage(projectId, beat._id, { _id: beatImg2 }, false);
+    // Seed two beat ARTWORKS (the "Artwork" section). Auto-suggest pools these,
+    // not the beat's plain reference images.
+    const beatArt1 = new ObjectId();
+    const beatArt2 = new ObjectId();
+    // Negative control: a plain beat reference image that is NOT an artwork —
+    // auto-suggest must never surface it.
+    const plainRefImg = await putBeatImageInDb(beat._id, { name: 'Uploaded ref', description: 'not artwork' });
+    await Plots.pushBeatImage(projectId, beat._id, { _id: plainRefImg }, true);
+    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt1, name: 'Bar interior' });
+    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt2, name: 'Close-up' });
 
-    // ── seed character with multiple images ──
+    // ── seed character with multiple artworks ──
     const char = await makeCharacter('Keys');
-    const charImg1 = await putCharImageInDb(char._id, { name: 'Keys young', description: 'teenager' });
-    const charImg2 = await putCharImageInDb(char._id, { name: 'Keys old', description: '70s' });
-    // Give the character its images array
-    await fakeDb.collection('characters').updateOne(
-      { _id: char._id },
-      {
-        $set: {
-          main_image_id: charImg1,
-          images: [
-            { _id: charImg1, filename: 'k1.png', content_type: 'image/png', size: 10, name: 'Keys young', description: 'teenager' },
-            { _id: charImg2, filename: 'k2.png', content_type: 'image/png', size: 10, name: 'Keys old', description: '70s' },
-          ],
-        },
-      },
-    );
+    const charArt1 = new ObjectId();
+    const charArt2 = new ObjectId();
+    await appendDoneArtwork({ projectId, hostType: 'character', hostId: char._id, resultImageId: charArt1, name: 'Keys young' });
+    await appendDoneArtwork({ projectId, hostType: 'character', hostId: char._id, resultImageId: charArt2, name: 'Keys old' });
 
     // ── seed storyboard + frame (empty reference_ids) ──
     const sb = await Storyboards.createStoryboard({
@@ -217,6 +197,8 @@ describe('POST /storyboard/:id/frame/:frameId/reference/auto-populate', () => {
     expect(json.total).toBeGreaterThanOrEqual(2);
     // added reflects what was actually appended
     expect(Array.isArray(json.added)).toBe(true);
+    // The plain (non-artwork) beat reference image must NOT be auto-suggested.
+    expect(json.added.map(String)).not.toContain(String(plainRefImg));
     // storyboard returned in response
     expect(json.storyboard).toBeDefined();
   });
@@ -229,8 +211,8 @@ describe('POST /storyboard/:id/frame/:frameId/reference/auto-populate', () => {
       body: 'A scene.',
       characters: [],
     });
-    const beatImg = await putBeatImageInDb(beat._id, { name: 'Scene art' });
-    await Plots.pushBeatImage(projectId, beat._id, { _id: beatImg }, true);
+    const beatArt = new ObjectId();
+    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt, name: 'Scene art' });
 
     const sb = await Storyboards.createStoryboard({
       projectId,
@@ -240,8 +222,8 @@ describe('POST /storyboard/:id/frame/:frameId/reference/auto-populate', () => {
       charactersInScene: [],
     });
     const { frameId } = await Storyboards.addFrame(sb._id, {});
-    // Pre-seed the frame with the beat image so nothing new gets added
-    await Storyboards.setFrameReferenceImages(sb._id, frameId, [beatImg]);
+    // Pre-seed the frame with the beat artwork so nothing new gets added
+    await Storyboards.setFrameReferenceImages(sb._id, frameId, [beatArt]);
 
     _setFrameReferenceScorerForTests(async ({ candidates }) => {
       const m = new Map();

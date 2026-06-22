@@ -3893,9 +3893,9 @@ export function buildApiRouter() {
     },
   );
 
-  // Aggregate every reasonable reference image for this storyboard's scene
-  // context (beat images + each in-scene character's sheets/portraits/extras)
-  // and append any that aren't already attached to the chosen frame.
+  // Score the storyboard's scene artwork (the beat's Artwork section + each
+  // in-scene character's artwork — NOT the beat's plain reference images) and
+  // append the most relevant that aren't already attached to the chosen frame.
   router.post(
     '/storyboard/:id/frame/:frameId/reference/auto-populate',
     async (req, res, next) => {
