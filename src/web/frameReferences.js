@@ -101,7 +101,11 @@ export function selectScoredFrameReferences({ candidates, scores, maxTotal }) {
   for (const p of picks) {
     const prev = byId.get(p.id);
     if (!prev || p.score > prev.score || (p.guaranteed && !prev.guaranteed)) {
-      byId.set(p.id, { ...p, guaranteed: !!(p.guaranteed || prev?.guaranteed) });
+      byId.set(p.id, {
+        ...p,
+        score: Math.max(p.score, prev?.score ?? 0),
+        guaranteed: !!(p.guaranteed || prev?.guaranteed),
+      });
     }
   }
   let kept = [...byId.values()];

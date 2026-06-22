@@ -40,7 +40,6 @@ async function makeCharacter(name, { sheets = [], mainId = null, images = [] } =
 
 beforeEach(async () => {
   fakeDb.reset();
-  Sel._setReferenceSelectorLLMForTests(null);
   projectId = (await createProject('Test Project'))._id.toString();
 });
 
@@ -110,43 +109,5 @@ describe('resolveReferencePicks', () => {
       max: 5,
     });
     expect(ids).toEqual(['young']); // beat == canonical, deduped; Ghost skipped
-  });
-});
-
-describe('selectBestReferencesForShot', () => {
-  async function setupKeys() {
-    const young = await putImageMeta({ name: 'Young Keys', description: 'teen' });
-    const old = await putImageMeta({ name: 'Old Keys', description: '70s' });
-    await makeCharacter('Keys', { sheets: [young, old], mainId: young });
-    return { young, old };
-  }
-
-  it('uses the LLM pick when available', async () => {
-    const { young, old } = await setupKeys();
-    Sel._setReferenceSelectorLLMForTests(async () => ({ picks: [{ character: 'Keys', image_index: 2 }] }));
-    const ids = await Sel.selectBestReferencesForShot({
-      projectId, shotText: 'Close-up on the old man.', characterNames: ['Keys'], beatMainImageId: 'beat',
-    });
-    expect(ids).toEqual(['beat', String(old)]);
-    expect(young).toBeDefined();
-  });
-
-  it('falls back to canonical when the LLM throws', async () => {
-    const { young } = await setupKeys();
-    Sel._setReferenceSelectorLLMForTests(async () => { throw new Error('boom'); });
-    const ids = await Sel.selectBestReferencesForShot({
-      projectId, shotText: 'x', characterNames: ['Keys'],
-    });
-    expect(ids).toEqual([String(young)]);
-  });
-
-  it('skips the LLM entirely when no character has >1 labeled candidate', async () => {
-    const only = await putImageMeta({ name: 'only', description: '' });
-    await makeCharacter('Solo', { sheets: [only] });
-    const spy = vi.fn(async () => ({ picks: [] }));
-    Sel._setReferenceSelectorLLMForTests(spy);
-    const ids = await Sel.selectBestReferencesForShot({ projectId, shotText: 'x', characterNames: ['Solo'] });
-    expect(spy).not.toHaveBeenCalled();
-    expect(ids).toEqual([String(only)]);
   });
 });

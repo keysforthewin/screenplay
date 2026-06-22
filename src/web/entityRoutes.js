@@ -3908,7 +3908,6 @@ export function buildApiRouter() {
         if (!sb) return res.status(404).json({ error: 'storyboard not found' });
         const frame = (sb.frames || []).find((f) => f._id.toString() === frameId);
         if (!frame) return res.status(404).json({ error: 'frame not found' });
-        const beat = await getBeat(req.projectId, String(sb.beat_id));
         const shotText = [sb.summary, sb.text_prompt, frame.prompt]
           .map((s) => stripMarkdown(String(s || '')).trim())
           .filter(Boolean)
