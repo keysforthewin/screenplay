@@ -53,16 +53,19 @@ import {
   setStoryboardFrameImageViaGateway,
   setStoryboardFrameEditResultViaGateway,
   setStoryboardFramePromptViaGateway,
+  setStoryboardFrameReferenceImagesViaGateway,
   setStoryboardCritiqueViaGateway,
+  updateStoryboardScalarsViaGateway,
 } from './gateway.js';
 import {
   autoFillFrameReferencesIfEmpty,
   orderReferenceIdsByScore,
+  selectFrameReferencesForShot,
   MAX_ATTACHED_REFERENCE_IMAGES,
 } from './frameReferences.js';
 import { maxReferenceImagesFor } from './imageModelInfo.js';
 import { critiquePanel as defaultCritiquePanel } from './storyboardCritique.js';
-import { formatCandidateManifest, gatherCandidatesFromDocs, resolveReferencePicks } from './referenceSelector.js';
+import { formatCandidateManifest, gatherCandidatesFromDocs } from './referenceSelector.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 import {
   CAMERA_MOTION_RULES,
@@ -611,6 +614,7 @@ async function runStoryboardGenerationJob({
   // passes so every shot sees the same notes without re-querying.
   const directorNotes = await loadDirectorNotesForPlanner(projectId);
   const { frames: planned, sceneBible } = await planFramesV2({
+    projectId,
     beat,
     characters: characterDocs,
     targetCount: targetCount || DEFAULT_TARGET_COUNT,
@@ -1215,6 +1219,30 @@ export async function reExpandShotInner({ projectId, sb, beat, critiqueGuidance 
   const newTextPrompt = buildTextPrompt(newFrame);
   const newStartPrompt = stripMarkdown(newFrame.start_frame_prompt || '').trim();
 
+  // Re-link characters from the rewritten prompts. linkBeatCharactersForShot
+  // unions the existing characters_in_scene with any beat cast named in the new
+  // still/video/summary text, so re-expansion only ever ADDS the characters the
+  // new prompts introduced — it never drops a manual or planner pick.
+  const beatCharacters = Array.isArray(beat?.characters) ? beat.characters : [];
+  const linkedNames = linkBeatCharactersForShot(newFrame, beatCharacters);
+  const prevNames = (Array.isArray(sb.characters_in_scene) ? sb.characters_in_scene : [])
+    .map((n) => stripMarkdown(String(n ?? '')).trim())
+    .filter(Boolean);
+  const sameNames =
+    linkedNames.length === prevNames.length &&
+    linkedNames.every((n, i) => n.toLowerCase() === (prevNames[i] || '').toLowerCase());
+  if (!sameNames) {
+    try {
+      await updateStoryboardScalarsViaGateway({
+        projectId,
+        storyboardId: sb._id,
+        patch: { characters_in_scene: linkedNames },
+      });
+    } catch (e) {
+      logger.warn(`storyboard reExpandShot: re-link characters failed: ${e.message}`);
+    }
+  }
+
   // Persist text_prompt — mirror createPlannedStoryboardEntry, which feeds the
   // rendered text_prompt to createStoryboardViaGateway. For an existing row the
   // equivalent write is setStoryboardTextPromptViaGateway (the text-field gateway
@@ -1338,10 +1366,14 @@ export function findAppearingBeatCharacters(text, beatCharacters) {
 // the shot text, deduped case-insensitively. Planner picks lead the ordering.
 export function linkBeatCharactersForShot(frame, beatCharacters) {
   const picks = Array.isArray(frame?.characters_in_scene) ? frame.characters_in_scene : [];
-  // Backstop scans ONLY the still composition. video_prompt (motion/narration),
-  // description (summary) and transition_in routinely name off-frame characters,
-  // which previously pulled their reference images into shots they aren't in.
-  const text = [frame?.start_frame_prompt].filter(Boolean).join('\n');
+  // Scan every text field a character can be named in — the still/image prompt,
+  // the motion/video prompt, and the shot summary — so a character referenced in
+  // ANY of them is linked to the shot. The candidate set is the beat cast only,
+  // so unrelated names can't leak in; scored reference selection then decides
+  // which of a linked character's artwork actually attaches.
+  const text = [frame?.start_frame_prompt, frame?.video_prompt, frame?.description]
+    .filter(Boolean)
+    .join('\n');
   const detected = findAppearingBeatCharacters(text, beatCharacters);
   const out = [];
   const seen = new Set();
@@ -1402,7 +1434,7 @@ function cleanPlannedFrameV2(f) {
 // New two-pass planner. Returns { frames, sceneBible }. frames carry
 // start_frame_prompt + video_prompt (no end_frame_prompt). On planner failure
 // returns { frames: [], sceneBible } (bible may still be present/null).
-async function planFramesV2({ beat, characters, targetCount, direction = '', directorNotes = [], onProgress = null }) {
+async function planFramesV2({ projectId, beat, characters, targetCount, direction = '', directorNotes = [], imageModel = null, onProgress = null }) {
   onProgress?.({ phase: 'planning', step: 'plan_scene_start', message: 'Planning scene bible + shot list…' });
   const { sceneBible, outline: outlineRaw } = await planScene({ beat, characters, targetCount, direction, directorNotes });
   if (!Array.isArray(outlineRaw) || !outlineRaw.length) {
@@ -1438,17 +1470,37 @@ async function planFramesV2({ beat, characters, targetCount, direction = '', dir
   });
 
   const beatCharacters = Array.isArray(beat?.characters) ? beat.characters : [];
-  const linkedFrames = frames.map((fr) => {
-    const names = linkBeatCharactersForShot(fr, beatCharacters);
-    const framePer = perCharacter.filter((e) => names.some((n) => n.toLowerCase() === e.name.toLowerCase()));
-    const reference_ids = resolveReferencePicks({
-      picks: fr.references || [],
-      perCharacter: framePer,
-      beatMainImageId: beat?.main_image_id || null,
-      max: MAX_FRAME_REFERENCE_IMAGES,
-    });
-    return { ...fr, characters_in_scene: names, reference_ids };
-  });
+  const linkedFrames = await Promise.all(
+    frames.map(async (fr) => {
+      const names = linkBeatCharactersForShot(fr, beatCharacters);
+      // Seed references from the same scored artwork selection the SPA's
+      // auto-suggest uses: floor of 2 beat + 2 per in-scene character, plus
+      // any extras that clear the relevance cutoff. The shot text is the union
+      // of the still prompt, motion prompt and summary.
+      const frameText = [fr.start_frame_prompt, fr.video_prompt, fr.description]
+        .map((s) => stripMarkdown(String(s || '')).trim())
+        .filter(Boolean)
+        .join('\n');
+      let reference_ids = [];
+      let reference_scores = {};
+      try {
+        const sel = await selectFrameReferencesForShot({
+          projectId,
+          sb: { beat_id: beat._id, characters_in_scene: names },
+          frameText,
+          imageModel,
+          // Seed a generous list so the 2-per-character floor survives for big
+          // ensembles; render-time loadFrameReferenceImages trims best-first.
+          maxTotal: MAX_FRAME_REFERENCE_IMAGES,
+        });
+        reference_ids = sel.ids;
+        reference_scores = sel.referenceScores;
+      } catch (e) {
+        logger.warn(`storyboard gen: reference selection failed for shot: ${e.message}`);
+      }
+      return { ...fr, characters_in_scene: names, reference_ids, reference_scores };
+    }),
+  );
   return { frames: linkedFrames, sceneBible };
 }
 
@@ -1493,9 +1545,14 @@ async function createPlannedStoryboardEntry({
     reverseInPost: Boolean(frame.reverse_in_post),
   });
 
-  // Reference ids are resolved during planning (planFramesV2 -> resolveReferencePicks):
-  // beat image + the LLM-picked best image per in-scene character.
+  // Reference ids + relevance scores are resolved during planning
+  // (planFramesV2 -> selectFrameReferencesForShot): the scored artwork
+  // selection (floor of 2 beat + 2 per character, plus high-scoring extras).
   const referenceIds = Array.isArray(frame.reference_ids) ? frame.reference_ids : [];
+  const referenceScores =
+    frame.reference_scores && typeof frame.reference_scores === 'object'
+      ? frame.reference_scores
+      : {};
 
   // The planner produces an opening still prompt; seed it as the first frame
   // of the pool. A frame with no prompt is skipped so a sparse planner output
@@ -1503,12 +1560,25 @@ async function createPlannedStoryboardEntry({
   for (const prompt of [startFramePrompt]) {
     if (!prompt) continue;
     try {
-      await addStoryboardFrameViaGateway({
+      const { frameId } = await addStoryboardFrameViaGateway({
         projectId,
         storyboardId: sb._id,
         prompt,
         referenceIds,
       });
+      // Persist the relevance scores so generation orders references best-first
+      // and drops the least-relevant when a model accepts fewer (mirrors the
+      // auto-suggest path). A no-op when there are no scored references.
+      if (frameId && referenceIds.length && Object.keys(referenceScores).length) {
+        await setStoryboardFrameReferenceImagesViaGateway({
+          projectId,
+          storyboardId: sb._id,
+          frameId,
+          imageIds: referenceIds,
+          mode: 'replace',
+          scores: referenceScores,
+        });
+      }
     } catch (e) {
       logger.warn(`storyboard gen: add planned frame failed: ${e.message}`);
     }

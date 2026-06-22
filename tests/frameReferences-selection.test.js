@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   selectScoredFrameReferences,
-  PER_SOURCE_MAX,
+  PER_SOURCE_MIN,
   RELEVANCE_THRESHOLD,
 } from '../src/web/frameReferences.js';
 
@@ -38,43 +38,51 @@ function cand(id, source, kind = source === 'beat' ? 'art' : 'char') {
 }
 
 describe('selectScoredFrameReferences', () => {
-  it('keeps at most PER_SOURCE_MAX per source above threshold', () => {
+  it('keeps the per-source floor plus any extras above threshold', () => {
     const candidates = [
-      cand('b1', 'beat'), cand('b2', 'beat'), cand('b3', 'beat'),
+      cand('b1', 'beat'), cand('b2', 'beat'), cand('b3', 'beat'), cand('b4', 'beat'),
     ];
-    const scores = new Map([[1, 0.9], [2, 0.8], [3, 0.7]]);
+    // b1,b2 are the floor; b3 (0.6) also clears the cutoff; b4 (0.3) does not.
+    const scores = new Map([[1, 0.9], [2, 0.8], [3, 0.6], [4, 0.3]]);
     const out = selectScoredFrameReferences({ candidates, scores, maxTotal: 99 });
-    expect(out).toEqual(['b1', 'b2']); // top 2 of beat
-    expect(PER_SOURCE_MAX).toBe(2);
-  });
-
-  it('excludes beat artwork below threshold', () => {
-    const candidates = [cand('b1', 'beat'), cand('b2', 'beat')];
-    const scores = new Map([[1, 0.2], [2, 0.1]]);
-    const out = selectScoredFrameReferences({ candidates, scores, maxTotal: 99 });
-    expect(out).toEqual([]);
+    expect(out).toEqual(['b1', 'b2', 'b3']);
+    expect(PER_SOURCE_MIN).toBe(2);
     expect(RELEVANCE_THRESHOLD).toBe(0.5);
   });
 
-  it('guarantees one image per character even below threshold', () => {
-    const candidates = [cand('s1', 'Steve'), cand('s2', 'Steve')];
-    const scores = new Map([[1, 0.1], [2, 0.05]]);
+  it('keeps the top-2 beat floor even when both are below threshold', () => {
+    const candidates = [cand('b1', 'beat'), cand('b2', 'beat'), cand('b3', 'beat')];
+    const scores = new Map([[1, 0.2], [2, 0.1], [3, 0.05]]);
     const out = selectScoredFrameReferences({ candidates, scores, maxTotal: 99 });
-    expect(out).toEqual(['s1']); // best of Steve, guaranteed
+    expect(out).toEqual(['b1', 'b2']); // floor of 2, b3 dropped (below cutoff, beyond floor)
   });
 
-  it('clamps to maxTotal dropping lowest score, keeping character guarantees', () => {
+  it('keeps the top-2 floor per character even below threshold', () => {
+    const candidates = [cand('s1', 'Steve'), cand('s2', 'Steve'), cand('s3', 'Steve')];
+    const scores = new Map([[1, 0.1], [2, 0.05], [3, 0.01]]);
+    const out = selectScoredFrameReferences({ candidates, scores, maxTotal: 99 });
+    expect(out).toEqual(['s1', 's2']); // best 2 of Steve
+  });
+
+  it('floors at 2 beat + 2 character for a one-character shot', () => {
+    const candidates = [
+      cand('b1', 'beat'), cand('b2', 'beat'),
+      cand('s1', 'Steve'), cand('s2', 'Steve'),
+    ];
+    // Everything below threshold — the floor still yields all four.
+    const scores = new Map([[1, 0.3], [2, 0.2], [3, 0.1], [4, 0.05]]);
+    const out = selectScoredFrameReferences({ candidates, scores, maxTotal: 99 });
+    expect(out.sort()).toEqual(['b1', 'b2', 's1', 's2']);
+  });
+
+  it('clamps to maxTotal dropping the lowest-scored floor picks first', () => {
     const candidates = [
       cand('b1', 'beat'), cand('b2', 'beat'),
       cand('s1', 'Steve'),
     ];
-    // beat high, Steve low — but Steve is guaranteed and must survive the clamp
     const scores = new Map([[1, 0.9], [2, 0.85], [3, 0.2]]);
     const out = selectScoredFrameReferences({ candidates, scores, maxTotal: 2 });
-    expect(out).toContain('s1');       // guaranteed survives
-    expect(out).toContain('b1');       // highest beat survives
-    expect(out).not.toContain('b2');   // dropped to fit cap 2
-    expect(out.length).toBe(2);
+    expect(out).toEqual(['b1', 'b2']); // top-2 by score survive the cap
   });
 });
 

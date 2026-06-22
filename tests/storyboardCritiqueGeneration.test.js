@@ -159,6 +159,33 @@ describe('reExpandShot (regenerate prompt from critique)', () => {
     gen._setShotExpanderForTests(null);
   });
 
+  it('re-links beat characters named in the re-expanded prompts', async () => {
+    const { createBeat, getBeat, setBeatSceneBible } = await import('../src/mongo/plots.js');
+    const { createStoryboard, getStoryboard } = await import('../src/mongo/storyboards.js');
+    const { createCharacter } = await import('../src/mongo/characters.js');
+    await createCharacter({ projectId, name: 'Sarah' });
+    await createCharacter({ projectId, name: 'Tom' });
+    await createBeat({ projectId, name: 'ReLink', desc: 'x', characters: ['Sarah', 'Tom'] });
+    const beat = await getBeat(projectId, 'ReLink');
+    await setBeatSceneBible(projectId, 'ReLink', { location: 'Diner' });
+    // Storyboard starts with only Sarah linked.
+    const sb = await createStoryboard({
+      projectId, beatId: beat._id, order: 1, textPrompt: 'OLD',
+      summary: 'Sarah at counter', shotType: 'two_shot', durationSeconds: 4,
+      charactersInScene: ['Sarah'],
+    });
+
+    // Re-expansion introduces Tom in the new video prompt.
+    gen._setShotExpanderForTests(({ outline }) =>
+      outline.map(() => ({ start_frame_prompt: 'Sarah and Tom at the counter.', video_prompt: 'Tom leans in.', reverse_in_post: false })),
+    );
+
+    await gen.reExpandShot({ projectId, storyboardId: sb._id.toString() });
+    const reread = await getStoryboard(projectId, sb._id);
+    expect(reread.characters_in_scene.sort()).toEqual(['Sarah', 'Tom']);
+    gen._setShotExpanderForTests(null);
+  });
+
   it('mergeCritiqueComments turns low-scoring lens comments into guidance', async () => {
     const guidance = gen.mergeCritiqueComments({
       overall: 4,

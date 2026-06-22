@@ -63,4 +63,19 @@ describe('linkBeatCharactersForShot', () => {
     const frame = { characters_in_scene: ['Bob'], description: 'Bob enters.', start_frame_prompt: '', video_prompt: '' };
     expect(linkBeatCharactersForShot(frame, ['Bob'])).toEqual(['Bob']);
   });
+
+  it('links a character named only in the video_prompt', () => {
+    const frame = { characters_in_scene: [], description: '', start_frame_prompt: '', video_prompt: 'Bob leans in.' };
+    expect(linkBeatCharactersForShot(frame, ['Alice', 'Bob'])).toEqual(['Bob']);
+  });
+
+  it('links a character named only in the summary (description)', () => {
+    const frame = { characters_in_scene: [], description: 'Alice waits alone.', start_frame_prompt: '', video_prompt: '' };
+    expect(linkBeatCharactersForShot(frame, ['Alice', 'Bob'])).toEqual(['Alice']);
+  });
+
+  it('does not scan transition_in', () => {
+    const frame = { characters_in_scene: [], description: '', start_frame_prompt: '', video_prompt: '', transition_in: 'Cut from Bob.' };
+    expect(linkBeatCharactersForShot(frame, ['Bob'])).toEqual([]);
+  });
 });

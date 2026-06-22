@@ -14,7 +14,10 @@ import { setStoryboardFrameReferenceImagesViaGateway } from './gateway.js';
 import { maxReferenceImagesFor } from './imageModelInfo.js';
 
 export const AUTO_REFERENCE_MAX = 6;
-export const PER_SOURCE_MAX = 2;
+// Per-source floor: always keep the top-N scored candidates from each source
+// (the beat, and each in-scene character), even when they fall below
+// RELEVANCE_THRESHOLD. With one character that floor is 2 beat + 2 character = 4.
+export const PER_SOURCE_MIN = 2;
 export const RELEVANCE_THRESHOLD = 0.5;
 // Hard ceiling on how many reference images we attach to one generation,
 // regardless of the model's own (often higher) cap. The effective send count is
@@ -130,10 +133,12 @@ export async function buildFrameReferenceCandidates({ projectId, sb, frameText =
   return candidates;
 }
 
-// Pure selection: group candidates by source, keep top PER_SOURCE_MAX above
-// RELEVANCE_THRESHOLD; guarantee >=1 per character source (best-scored, even
-// below threshold); beat source is threshold-only. Then clamp to maxTotal,
-// dropping lowest-scored first while preserving character guarantees.
+// Pure selection. For every source (the beat, and each in-scene character),
+// guarantee the top PER_SOURCE_MIN scored candidates as a floor (kept even when
+// below RELEVANCE_THRESHOLD), then add any further candidates from that source
+// that clear RELEVANCE_THRESHOLD. So a one-character shot floors at 2 beat + 2
+// character = 4, and high-scoring extras push above that. Finally dedupe by id
+// and clamp to maxTotal, dropping the lowest-scored non-floor picks first.
 export function selectScoredFrameReferences({ candidates, scores, maxTotal }) {
   const scoreOf = (i) => (scores.get(i + 1) ?? 0);
   const bySource = new Map();
@@ -143,16 +148,14 @@ export function selectScoredFrameReferences({ candidates, scores, maxTotal }) {
   });
 
   const picks = []; // { id, score, guaranteed }
-  for (const [source, items] of bySource) {
+  for (const [, items] of bySource) {
     items.sort((a, b) => b.score - a.score);
-    const isChar = items.some((it) => it.c.kind === 'char') || source !== 'beat';
-    const above = items.filter((it) => it.score >= RELEVANCE_THRESHOLD).slice(0, PER_SOURCE_MAX);
-    if (above.length) {
-      for (const it of above) picks.push({ id: it.c.id, score: it.score, guaranteed: false });
-    } else if (isChar && items.length) {
-      // character guarantee — include the single best even if below threshold
-      picks.push({ id: items[0].c.id, score: items[0].score, guaranteed: true });
-    }
+    items.forEach((it, rank) => {
+      const isFloor = rank < PER_SOURCE_MIN; // top-N from this source, always kept
+      if (isFloor || it.score >= RELEVANCE_THRESHOLD) {
+        picks.push({ id: it.c.id, score: it.score, guaranteed: isFloor });
+      }
+    });
   }
 
   // Dedupe by id, keeping the highest score / guaranteed flag.
@@ -194,6 +197,42 @@ function fallbackReferenceIds({ candidates, maxTotal }) {
   return out.slice(0, cap);
 }
 
+// Shared shot-reference selection: build the artwork candidate pool, score it,
+// and run the floored selection. Returns the chosen ids plus the candidates,
+// raw scores, and the id->score map so callers can persist relevance and log
+// diagnostics. Used by both the SPA auto-suggest endpoint and storyboard
+// generation so the two paths produce identical results.
+export async function selectFrameReferencesForShot({
+  projectId,
+  sb,
+  frameText,
+  imageModel = null,
+  maxTotal = null,
+}) {
+  const text = String(frameText || '').trim();
+  const candidates = await buildFrameReferenceCandidates({ projectId, sb, frameText: text });
+  if (!candidates.length) {
+    return { ids: [], candidates, scores: new Map(), referenceScores: {} };
+  }
+  const scores = await scoreFrameReferences({ frameText: text, candidates });
+  // An explicit maxTotal lets the caller seed a generous list (e.g. storyboard
+  // generation, which keeps the per-character floor for big ensembles and lets
+  // render-time clamping trim best-first). Defaults to the model's edit cap.
+  const cap = Number.isFinite(maxTotal) ? maxTotal : maxReferenceImagesFor(imageModel);
+  let ids = selectScoredFrameReferences({ candidates, scores, maxTotal: cap });
+  if (!ids.length && candidates.length) {
+    // Defensive fallback: first candidate of each source, clamped. With the
+    // per-source floor this only triggers in degenerate cases.
+    ids = fallbackReferenceIds({ candidates, maxTotal: cap });
+  }
+  return {
+    ids,
+    candidates,
+    scores,
+    referenceScores: referenceScoresForIds({ candidates, scores, ids }),
+  };
+}
+
 export async function autoFillFrameReferencesIfEmpty({
   projectId,
   sb,
@@ -205,16 +244,12 @@ export async function autoFillFrameReferencesIfEmpty({
   if (!autoReferences) return [];
   if ((frame?.reference_ids || []).length > 0) return [];
   try {
-    const text = String(frameText || '').trim();
-    const candidates = await buildFrameReferenceCandidates({ projectId, sb, frameText: text });
-    if (!candidates.length) return [];
-    const scores = await scoreFrameReferences({ frameText: text, candidates });
-    const maxTotal = maxReferenceImagesFor(imageModel);
-    let ids = selectScoredFrameReferences({ candidates, scores, maxTotal });
-    if (!ids.length) {
-      // Fallback: first candidate of each source, clamped.
-      ids = fallbackReferenceIds({ candidates, maxTotal });
-    }
+    const { ids, referenceScores } = await selectFrameReferencesForShot({
+      projectId,
+      sb,
+      frameText,
+      imageModel,
+    });
     if (!ids.length) return [];
     await setStoryboardFrameReferenceImagesViaGateway({
       projectId,
@@ -222,7 +257,7 @@ export async function autoFillFrameReferencesIfEmpty({
       frameId: frame._id,
       imageIds: ids,
       mode: 'replace',
-      scores: referenceScoresForIds({ candidates, scores, ids }),
+      scores: referenceScores,
     });
     frame.reference_ids = ids;
     return ids;

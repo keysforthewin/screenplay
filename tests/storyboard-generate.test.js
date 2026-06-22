@@ -14,7 +14,7 @@
 // empty-planner-preserves-existing path, reference seeding, the reverse_in_post
 // override, progress events, and crash recording.)
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ObjectId } from 'mongodb';
 import { createFakeDb } from './_fakeMongo.js';
 import { linkBeatCharactersForShot } from '../src/web/storyboardGenerate.js';
@@ -65,6 +65,8 @@ const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
 const Generate = await import('../src/web/storyboardGenerate.js');
+const { appendDoneArtwork } = await import('../src/mongo/artworks.js');
+const { _setFrameReferenceScorerForTests } = await import('../src/llm/frameReferenceSelector.js');
 
 let projectId;
 
@@ -91,6 +93,18 @@ beforeEach(async () => {
     created_at: new Date(),
     target: 'prompt',
   }));
+  // Reference scoring runs during generation; inject a deterministic scorer so
+  // every artwork candidate clears the cutoff (no real Anthropic call). The
+  // per-source floor + cutoff then keeps all artwork up to the model cap.
+  _setFrameReferenceScorerForTests(async ({ candidates }) => {
+    const m = new Map();
+    candidates.forEach((_, i) => m.set(i + 1, 0.9));
+    return m;
+  });
+});
+
+afterEach(() => {
+  _setFrameReferenceScorerForTests(null);
 });
 
 // A two-shot plan. The skeleton fields (description/shot_type/duration/...) are
@@ -631,23 +645,27 @@ async function makeRefCharacter(name, { sheets = [], mainId = null, images = [] 
 }
 
 describe('auto-populated reference images', () => {
-  it('seeds frame reference_ids from the LLM-picked image, not the full aggregator set', async () => {
-    // Beat has a main image. Character "Keys" has two labeled sheets (young,
-    // old). The expander picks image_index:2 (the OLD sheet). After Task 7,
-    // the stored frame's reference_ids must contain [beatImg, oldSheet] and
-    // must NOT contain youngSheet.
-    const youngSheet = await putImageMetaInDb({ name: 'Young Keys', description: 'teen' });
-    const oldSheet = await putImageMetaInDb({ name: 'Old Keys', description: '70s' });
-    await makeRefCharacter('Keys', { sheets: [youngSheet, oldSheet], mainId: youngSheet });
+  it('seeds frame reference_ids from beat + character artwork (not sheets/main)', async () => {
+    // The beat and the character each have two "done" artworks; the character
+    // also has plain sheets. The scored selection floors at 2 beat + 2 character
+    // artworks and must NOT pull in the non-artwork sheets/main image.
+    const sheet = await putImageMetaInDb({ name: 'Keys sheet', description: '' });
+    const keys = await makeRefCharacter('Keys', { sheets: [sheet], mainId: sheet });
+    const keysArt1 = new ObjectId();
+    const keysArt2 = new ObjectId();
+    await appendDoneArtwork({ projectId, hostType: 'character', hostId: keys._id, resultImageId: keysArt1, name: 'Young Keys' });
+    await appendDoneArtwork({ projectId, hostType: 'character', hostId: keys._id, resultImageId: keysArt2, name: 'Old Keys' });
 
-    const beatImg = new ObjectId();
     const beat = await Plots.createBeat({ projectId,
       name: 'Keys solo',
       desc: 'k',
       body: 'Keys alone in the bar.',
       characters: ['Keys'],
     });
-    await Plots.pushBeatImage(projectId, beat._id, { _id: beatImg }, true);
+    const beatArt1 = new ObjectId();
+    const beatArt2 = new ObjectId();
+    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt1, name: 'Bar wide' });
+    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt2, name: 'Bar close' });
 
     Generate._setScenePlannerForTests(async () => ({
       sceneBible: { location: 'Bar' },
@@ -656,9 +674,8 @@ describe('auto-populated reference images', () => {
     }));
     Generate._setShotExpanderForTests(async ({ outline }) =>
       outline.map(() => ({
-        start_frame_prompt: 'Close-up on the old man.',
+        start_frame_prompt: 'Close-up on Keys.',
         video_prompt: 'Static. Keys stares into the glass.',
-        references: [{ character: 'Keys', image_index: 2 }],
       })),
     );
 
@@ -672,35 +689,41 @@ describe('auto-populated reference images', () => {
     expect(stored).toHaveLength(1);
     const frame = stored[0].frames[0];
     const ids = frame.reference_ids.map((x) => x.toString());
-    // Beat image is always first.
-    expect(ids).toContain(beatImg.toString());
-    // The LLM picked the OLD sheet (index 2).
-    expect(ids).toContain(oldSheet.toString());
-    // The young sheet was NOT picked — it must be absent.
-    expect(ids).not.toContain(youngSheet.toString());
+    // Floor: both beat artworks + both Keys artworks.
+    expect(ids).toContain(beatArt1.toString());
+    expect(ids).toContain(beatArt2.toString());
+    expect(ids).toContain(keysArt1.toString());
+    expect(ids).toContain(keysArt2.toString());
+    // The plain character sheet is NOT artwork and must be absent.
+    expect(ids).not.toContain(sheet.toString());
+    // Scores were persisted for the seeded references.
+    expect(frame.reference_scores[beatArt1.toString()]).toBeCloseTo(0.9);
   });
 
-  it('attaches beat + LLM-first-pick reference image per in-scene character', async () => {
-    // When the expander emits no references, resolveReferencePicks falls back
-    // to the first candidate for each in-scene character (not the full aggregator
-    // set — aggregator is replaced by frame.reference_ids in Task 7).
-    const sheetA = await putImageMetaInDb({ name: 'Alice sheet', description: '' });
-    const mainA = await putImageMetaInDb({ name: 'Alice main', description: '' });
-    const sheetB = await putImageMetaInDb({ name: 'Bob sheet', description: '' });
-    const beatImg = new ObjectId();
-
-    await makeRefCharacter('Alice', { sheets: [sheetA], mainId: mainA, images: [{ _id: mainA }] });
-    await makeRefCharacter('Bob', { sheets: [sheetB], mainId: null, images: [] });
-
+  it('floors at 2 beat + 2 per character, scaling with the in-scene cast', async () => {
     const beat = await Plots.createBeat({ projectId,
       name: 'Diner',
       desc: 'd',
       body: 'Alice walks in. Bob is waiting.',
       characters: ['Alice', 'Bob'],
     });
-    await Plots.pushBeatImage(projectId, beat._id, { _id: beatImg }, true);
+    const beatArt1 = new ObjectId();
+    const beatArt2 = new ObjectId();
+    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt1, name: 'Diner wide' });
+    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt2, name: 'Diner booth' });
 
-    installPlanner(TWO_SHOT_PLAN); // no references in expander output
+    const alice = await makeRefCharacter('Alice');
+    const bob = await makeRefCharacter('Bob');
+    const aliceArt1 = new ObjectId();
+    const aliceArt2 = new ObjectId();
+    const bobArt1 = new ObjectId();
+    const bobArt2 = new ObjectId();
+    await appendDoneArtwork({ projectId, hostType: 'character', hostId: alice._id, resultImageId: aliceArt1, name: 'Alice A' });
+    await appendDoneArtwork({ projectId, hostType: 'character', hostId: alice._id, resultImageId: aliceArt2, name: 'Alice B' });
+    await appendDoneArtwork({ projectId, hostType: 'character', hostId: bob._id, resultImageId: bobArt1, name: 'Bob A' });
+    await appendDoneArtwork({ projectId, hostType: 'character', hostId: bob._id, resultImageId: bobArt2, name: 'Bob B' });
+
+    installPlanner(TWO_SHOT_PLAN);
 
     const jobId = await Generate.startStoryboardGenerationJob({ projectId,
       beatId: beat._id.toString(),
@@ -711,23 +734,20 @@ describe('auto-populated reference images', () => {
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(stored).toHaveLength(2);
 
-    // Shot 1: Alice only → beat image + Alice's first candidate (sheetA).
-    // mainA is NOT included because the aggregator is gone — only the first
-    // candidate picked by resolveReferencePicks (no explicit LLM pick → cands[0]).
+    // Shot 1: Alice only → 2 beat + 2 Alice artworks; no Bob artwork.
     for (const frame of stored[0].frames) {
       const ids = frame.reference_ids.map((x) => x.toString());
-      expect(ids).toContain(beatImg.toString());
-      expect(ids).toContain(sheetA.toString());
-      // mainA is the second candidate; without an explicit pick it is not included.
-      expect(ids).not.toContain(mainA.toString());
-      expect(ids).not.toContain(sheetB.toString());
+      expect(ids).toContain(beatArt1.toString());
+      expect(ids).toContain(aliceArt1.toString());
+      expect(ids).toContain(aliceArt2.toString());
+      expect(ids).not.toContain(bobArt1.toString());
     }
-    // Shot 2: Alice + Bob → beat image + Alice's first candidate + Bob's first candidate.
+    // Shot 2: Alice + Bob → beat + Alice + Bob artworks (capped at 6).
     for (const frame of stored[1].frames) {
       const ids = frame.reference_ids.map((x) => x.toString());
-      expect(ids).toContain(beatImg.toString());
-      expect(ids).toContain(sheetA.toString());
-      expect(ids).toContain(sheetB.toString());
+      expect(ids).toContain(aliceArt1.toString());
+      expect(ids).toContain(bobArt1.toString());
+      expect(ids.length).toBeLessThanOrEqual(6);
     }
   });
 
@@ -873,15 +893,27 @@ describe('SCENE_PLAN_SYSTEM_PROMPT narrowing rule', () => {
   });
 });
 
-describe('linkBeatCharactersForShot backstop scope', () => {
+describe('linkBeatCharactersForShot scope', () => {
   const beatCast = ['Young Keys', 'Old Keys', 'Mara'];
 
-  it('does NOT link a character named only in video_prompt / description / transition', () => {
+  it('links a beat character named in the video_prompt or summary', () => {
     const frame = {
       characters_in_scene: ['Young Keys'],
-      description: 'Young Keys remembers Old Keys.',
+      description: 'Young Keys remembers Old Keys.', // summary
       start_frame_prompt: 'Tight close-up on the young man, eyes wet.',
-      video_prompt: 'Static camera. Old Keys is mentioned in narration only.',
+      video_prompt: 'Static camera. Mara drifts in from the left.',
+    };
+    const out = linkBeatCharactersForShot(frame, beatCast);
+    // Old Keys (summary) and Mara (video prompt) are now both linked.
+    expect(out.sort()).toEqual(['Mara', 'Old Keys', 'Young Keys']);
+  });
+
+  it('does NOT scan transition_in (continuity note, not on-screen presence)', () => {
+    const frame = {
+      characters_in_scene: ['Young Keys'],
+      description: '',
+      start_frame_prompt: 'Tight close-up on the young man.',
+      video_prompt: 'Static camera.',
       transition_in: 'Cut from Mara.',
     };
     const out = linkBeatCharactersForShot(frame, beatCast);
@@ -934,11 +966,22 @@ describe('planFramesV2 resolves per-frame reference_ids', () => {
     return PlanFramesCharacters.getCharacter(projectId, name);
   }
 
-  it('uses the expander reference pick to choose the character image', async () => {
+  it('seeds reference_ids from scored beat + character artwork, and still feeds sheets to the expander', async () => {
+    // Sheets feed the expander's candidate manifest (prompt context); the
+    // reference list itself now comes from the scored artwork selection.
     const young = await putImageMeta({ name: 'Young Keys', description: 'teen' });
     const old = await putImageMeta({ name: 'Old Keys', description: '70s' });
     const keys = await makeCharacter('Keys', { sheets: [young, old], mainId: young });
-    const beat = { _id: 'beat1', characters: ['Keys'], main_image_id: 'beatimg' };
+    const keysArt1 = new ObjectId();
+    const keysArt2 = new ObjectId();
+    await appendDoneArtwork({ projectId, hostType: 'character', hostId: keys._id, resultImageId: keysArt1, name: 'Keys art 1' });
+    await appendDoneArtwork({ projectId, hostType: 'character', hostId: keys._id, resultImageId: keysArt2, name: 'Keys art 2' });
+
+    const beat = await Plots.createBeat({ projectId, name: 'Bar', desc: 'd', body: 'Keys in the bar.', characters: ['Keys'] });
+    const beatArt1 = new ObjectId();
+    const beatArt2 = new ObjectId();
+    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt1, name: 'Bar 1' });
+    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt2, name: 'Bar 2' });
 
     let capturedCandidates = null;
     Generate._setScenePlannerForTests(async () => ({
@@ -948,15 +991,20 @@ describe('planFramesV2 resolves per-frame reference_ids', () => {
     Generate._setShotExpanderForTests(async ({ outline, candidates }) => {
       capturedCandidates = candidates;
       return outline.map(() => ({
-        start_frame_prompt: 'Close-up on the old man.',
+        start_frame_prompt: 'Close-up on Keys.',
         video_prompt: 'Static camera.',
-        references: [{ character: 'Keys', image_index: 2 }],
       }));
     });
 
-    const { frames } = await Generate._planFramesV2ForTest({ beat, characters: [keys], targetCount: 1 });
+    const { frames } = await Generate._planFramesV2ForTest({ projectId, beat, characters: [keys], targetCount: 1 });
     expect(frames).toHaveLength(1);
-    expect(frames[0].reference_ids).toEqual(['beatimg', String(old)]);
+    const ids = frames[0].reference_ids.map(String);
+    expect(ids).toEqual(expect.arrayContaining([
+      beatArt1.toString(), beatArt2.toString(), keysArt1.toString(), keysArt2.toString(),
+    ]));
+    // Sheets are not artwork — they must not be seeded as references.
+    expect(ids).not.toContain(String(young));
+    expect(ids).not.toContain(String(old));
 
     // Verify findImageFile + imageFileToMeta were exercised: the candidates manifest
     // passed to the expander must carry the real name/description from images.files.
