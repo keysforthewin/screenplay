@@ -55,7 +55,6 @@ export function Header({ session, onLogout }) {
       <button
         type="button"
         className="chat-launch"
-        aria-haspopup="dialog"
         title="Chat with the AI agent about this project"
         onClick={() => openChatWindow(window, project)}
       >
