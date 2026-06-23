@@ -2693,6 +2693,14 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   color: var(--fg);
 }
 
+.chat-window {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
 .chat-dialog {
   display: flex;
   flex-direction: column;

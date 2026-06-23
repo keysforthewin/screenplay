@@ -4,7 +4,8 @@ import { useConnectedUsers } from '../editor/PresenceContext.jsx';
 import { useProject } from '../project/ProjectContext.jsx';
 import { SavedIndicator } from './SavedIndicator.jsx';
 import { ProjectManagerDialog } from './ProjectManagerDialog.jsx';
-import { ChatDialog } from './ChatDialog.jsx';
+import { openChatWindow } from './openChatWindow.js';
+import { useBroadcastPageContext } from '../project/usePageContextSync.js';
 
 function colorForUser(name) {
   let hash = 0;
@@ -32,9 +33,7 @@ export function Header({ session, onLogout }) {
   const users = useConnectedUsers();
   const project = useProject();
   const [managerOpen, setManagerOpen] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false);
-  const [chatMessages, setChatMessages] = useState([]);
-  const [beatHistories, setBeatHistories] = useState({});
+  useBroadcastPageContext(project.id);
   const seen = new Map();
   for (const u of users) {
     const key = u?.name || Math.random();
@@ -58,7 +57,7 @@ export function Header({ session, onLogout }) {
         className="chat-launch"
         aria-haspopup="dialog"
         title="Chat with the AI agent about this project"
-        onClick={() => setChatOpen(true)}
+        onClick={() => openChatWindow(window, project)}
       >
         ✨ AI chat
       </button>
@@ -73,14 +72,6 @@ export function Header({ session, onLogout }) {
         open={managerOpen}
         onClose={() => setManagerOpen(false)}
         currentProjectId={project.id}
-      />
-      <ChatDialog
-        open={chatOpen}
-        onClose={() => setChatOpen(false)}
-        messages={chatMessages}
-        setMessages={setChatMessages}
-        beatHistories={beatHistories}
-        setBeatHistories={setBeatHistories}
       />
     </header>
   );

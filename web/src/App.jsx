@@ -11,6 +11,7 @@ import { StoryboardBeat } from './routes/StoryboardBeat.jsx';
 import { DialogIndex } from './routes/DialogIndex.jsx';
 import { DialogBeat } from './routes/DialogBeat.jsx';
 import { About } from './routes/About.jsx';
+import { ChatWindow } from './routes/ChatWindow.jsx';
 import { Header } from './widgets/Header.jsx';
 import { ProjectProvider } from './project/ProjectContext.jsx';
 import { RedirectToProject } from './project/RedirectToProject.jsx';
@@ -86,6 +87,14 @@ export function App() {
 
   return (
     <Routes>
+      <Route
+        path="/p/:projectTitle/chat"
+        element={
+          <ProjectProvider>
+            <ChatWindow />
+          </ProjectProvider>
+        }
+      />
       <Route
         path="/p/:projectTitle/*"
         element={
