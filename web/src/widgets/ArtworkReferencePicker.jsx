@@ -9,6 +9,8 @@ import { apiGet, apiPostMultipart, imageUrl, thumbUrl } from '../api.js';
 //   "Beats"       — every beat's images + done artworks, badged with the beat name.
 //   "Characters"  — only when hostType === 'beat'; the main image + sheets of every
 //                   character resolved for the current beat (via /beat/:id/characters).
+//   "Library"     — the project's unassigned image library (GET /library), the same
+//                   set as the Library page; attach any of them as a reference.
 //   "Upload"      — file/drop upload that POSTs straight to /<hostType>/<hostId>/image,
 //                   adds the new image to the selection, and surfaces it on "This".
 // The shared search input filters all browse tabs by name/desc/filename. The
@@ -88,6 +90,8 @@ export function ArtworkReferencePicker({
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadError, setUploadError] = useState(null);
   const [localUploads, setLocalUploads] = useState([]);
+  const [libraryImages, setLibraryImages] = useState(null);
+  const [libraryError, setLibraryError] = useState(null);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -102,6 +106,8 @@ export function ArtworkReferencePicker({
     setUploadBusy(false);
     setUploadError(null);
     setLocalUploads([]);
+    setLibraryImages(null);
+    setLibraryError(null);
     // selectedIds intentionally captured at open time
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -138,6 +144,22 @@ export function ArtworkReferencePicker({
       cancelled = true;
     };
   }, [open, tab, characters, hostType, hostId]);
+
+  useEffect(() => {
+    if (!open || tab !== 'library' || libraryImages !== null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await apiGet('/library');
+        if (!cancelled) setLibraryImages(data.images || []);
+      } catch (e) {
+        if (!cancelled) setLibraryError(e.message);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, tab, libraryImages]);
 
   // Built candidates per tab. We re-derive on every render — these arrays
   // are small (tens to low hundreds at most) so the cost is negligible.
@@ -233,6 +255,16 @@ export function ArtworkReferencePicker({
     return out;
   }, [characters]);
 
+  const libraryCandidates = useMemo(() => {
+    if (!libraryImages) return [];
+    const out = [];
+    for (const img of libraryImages) {
+      const c = candidateFromImage(img, 'library', 'Library');
+      if (c) out.push(c);
+    }
+    return out;
+  }, [libraryImages]);
+
   const filterTokens = filter.trim();
 
   function filterAndExclude(cands) {
@@ -246,6 +278,7 @@ export function ArtworkReferencePicker({
   const visibleThis = filterAndExclude(thisHostCandidates);
   const visibleBeats = filterAndExclude(beatCandidates);
   const visibleCharacters = filterAndExclude(characterCandidates);
+  const visibleLibrary = filterAndExclude(libraryCandidates);
 
   // Re-group the filtered Characters candidates back by character so the JSX
   // can render section headers. Preserves character order from the API.
@@ -311,6 +344,7 @@ export function ArtworkReferencePicker({
     { key: 'this', label: hostLabel ? `This ${hostType} (${hostLabel})` : `This ${hostType}` },
     { key: 'beats', label: 'Beats' },
     ...(hostType === 'beat' ? [{ key: 'characters', label: 'Characters' }] : []),
+    { key: 'library', label: 'Library' },
     { key: 'upload', label: 'Upload' },
   ];
 
@@ -359,6 +393,9 @@ export function ArtworkReferencePicker({
         {tab === 'beats' && beatsError && <div className="error-banner">{beatsError}</div>}
         {tab === 'characters' && charactersError && (
           <div className="error-banner">{charactersError}</div>
+        )}
+        {tab === 'library' && libraryError && (
+          <div className="error-banner">{libraryError}</div>
         )}
         {tab === 'upload' && uploadError && (
           <div className="error-banner">{uploadError}</div>
@@ -427,6 +464,19 @@ export function ArtworkReferencePicker({
                   </section>
                 ))}
               </div>
+            )
+          )}
+
+          {tab === 'library' && (
+            libraryImages === null && !libraryError ? (
+              <p className="ref-picker-empty">Loading library…</p>
+            ) : (
+              <ThumbGridBody
+                candidates={visibleLibrary}
+                working={working}
+                onToggle={toggle}
+                emptyText={filterTokens ? 'No matches.' : 'No images in the library yet.'}
+              />
             )
           )}
 
