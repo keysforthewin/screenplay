@@ -13,25 +13,46 @@ import { BeatPager } from '../widgets/BeatPager.jsx';
 import { BeatTabs } from '../widgets/BeatTabs.jsx';
 import { CritiqueTab } from '../widgets/CritiqueTab.jsx';
 
-const TABS = ['characters', 'background', 'critique', 'attachments', 'references', 'artwork'];
+// The beat editor is split into two page-level sections, reached via <BeatTabs>:
+//   writing  (/beat/:order)    → Story, Characters, Critique
+//   artwork  (/artwork/:order) → Artwork, Attachments, References
+// Both render this component (chosen by the `section` prop) over the same
+// beat:<id> y-doc room. The `background` tab is labelled "Story".
+const SECTION_TABS = {
+  writing: ['background', 'characters', 'critique'],
+  artwork: ['artwork', 'attachments', 'references'],
+};
 
-function readInitialTab() {
-  if (typeof window === 'undefined') return 'background';
-  const h = (window.location.hash || '').replace(/^#/, '');
-  return TABS.includes(h) ? h : 'background';
+function tabsFor(section) {
+  return SECTION_TABS[section] || SECTION_TABS.writing;
 }
 
-export function Beat({ session }) {
+function readInitialTab(section) {
+  const tabs = tabsFor(section);
+  if (typeof window === 'undefined') return tabs[0];
+  const h = (window.location.hash || '').replace(/^#/, '');
+  return tabs.includes(h) ? h : tabs[0];
+}
+
+export function Beat({ session, section = 'writing' }) {
   const { order } = useParams();
   const navigate = useNavigate();
+  const tabs = tabsFor(section);
   const [beat, setBeat] = useState(null);
   const [toc, setToc] = useState(null);
   const [allBeatImages, setAllBeatImages] = useState([]);
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [activeTab, setActiveTab] = useState(readInitialTab);
+  const [activeTab, setActiveTab] = useState(() => readInitialTab(section));
   const [imagePickerOpen, setImagePickerOpen] = useState(false);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
+
+  // <BeatTabs> reuses this component across the writing/artwork routes (same
+  // type, same router slot), so switching sections updates `section` without a
+  // remount — resync the tab to the new section's URL hash (or its first tab).
+  useEffect(() => {
+    setActiveTab(readInitialTab(section));
+  }, [section]);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,17 +76,16 @@ export function Beat({ session }) {
 
   useEffect(() => {
     function onHash() {
-      const next = readInitialTab();
-      setActiveTab(next);
+      setActiveTab(readInitialTab(section));
     }
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
-  }, []);
+  }, [section]);
 
   function selectTab(tab) {
     setActiveTab(tab);
     if (typeof window !== 'undefined') {
-      const newHash = tab === 'background' ? '' : `#${tab}`;
+      const newHash = tab === tabs[0] ? '' : `#${tab}`;
       if (window.location.hash !== newHash) {
         window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${newHash}`);
       }
@@ -73,6 +93,9 @@ export function Beat({ session }) {
   }
 
   const room = beat?._id ? `beat:${beat._id}` : null;
+  // Clamp to the active section so a stale tab (e.g. left over after a section
+  // switch on a reused instance) never hides every panel.
+  const currentTab = tabs.includes(activeTab) ? activeTab : tabs[0];
 
   const beatImageIds = new Set(
     (beat?.images || []).map((i) => i._id?.toString?.() || String(i._id)),
@@ -102,32 +125,35 @@ export function Beat({ session }) {
     return <div className="app"><p style={{ color: 'var(--fg-muted)' }}>Loading beat #{order}…</p></div>;
   }
 
+  const basePath = section === 'artwork' ? '/artwork' : '/beat';
+
   return (
     <main className="app">
       <p>
         <a href="#" onClick={(e) => { e.preventDefault(); navigate('/'); }}>← Back to TOC</a>
       </p>
-      <BeatPager beats={toc?.beats} currentId={beat._id} basePath="/beat" />
+      <BeatPager beats={toc?.beats} currentId={beat._id} basePath={basePath} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
         <h1 style={{ marginTop: 0 }}>Beat #{beat.order}</h1>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <DownloadAllButton
             path={`/beat/${beat._id}/download`}
             filename={`beat-${beat.order}.zip`}
+            label="Download beat"
           />
         </div>
       </div>
 
-      <BeatTabs order={beat.order} active="writing" />
+      <BeatTabs order={beat.order} active={section} />
 
       <div className="tab-nav" role="tablist">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t}
             type="button"
             role="tab"
-            aria-selected={activeTab === t}
-            className={`tab-button${activeTab === t ? ' is-active' : ''}`}
+            aria-selected={currentTab === t}
+            className={`tab-button${currentTab === t ? ' is-active' : ''}`}
             onClick={() => selectTab(t)}
           >
             {tabLabel(t)}
@@ -136,119 +162,131 @@ export function Beat({ session }) {
       </div>
 
       <CollabSurface room={room} session={session} onPing={onRefresh}>
-        <div className="tab-panel" hidden={activeTab !== 'characters'}>
-          <BeatCharacters beat={beat} toc={toc} onRefresh={onRefresh} />
-        </div>
-
-        <div className="tab-panel" hidden={activeTab !== 'background'}>
-          <div className="tab-actions">
-            <button type="button" disabled={bgBusy} onClick={normalizeBody}>
-              {bgBusy === 'normalize' ? 'Normalizing…' : 'Normalize to screenplay format'}
-            </button>
-            {beat.previous_body && (
-              <button type="button" disabled={bgBusy} onClick={undoBody}>
-                {bgBusy === 'undo' ? 'Undoing…' : 'Undo'}
+        {tabs.includes('background') && (
+          <div className="tab-panel" hidden={currentTab !== 'background'}>
+            <div className="tab-actions">
+              <button type="button" disabled={bgBusy} onClick={normalizeBody}>
+                {bgBusy === 'normalize' ? 'Normalizing…' : 'Normalize to screenplay format'}
               </button>
-            )}
+              {beat.previous_body && (
+                <button type="button" disabled={bgBusy} onClick={undoBody}>
+                  {bgBusy === 'undo' ? 'Undoing…' : 'Undo'}
+                </button>
+              )}
+            </div>
+            <CollabField label="Name" field="name" />
+            <CollabField label="Body" field="body" multiline />
           </div>
-          <CollabField label="Name" field="name" />
-          <CollabField label="Body" field="body" multiline />
-        </div>
+        )}
 
-        <div className="tab-panel" hidden={activeTab !== 'critique'}>
-          <CritiqueTab
-            beatId={beat._id}
-            hasPreviousBody={Boolean(beat.previous_body)}
-            onRefresh={onRefresh}
-          />
-        </div>
-
-        <div className="tab-panel" hidden={activeTab !== 'attachments'}>
-          <p className="tab-intro">
-            <strong>Images</strong> are reference images used to create artwork for this beat.{' '}
-            <strong>Files</strong> are reference material such as PDFs, Word documents, and audio samples.
-          </p>
-          <div className="tab-actions">
-            <button
-              type="button"
-              className="primary"
-              onClick={() => setImagePickerOpen(true)}
-            >
-              + Add image
-            </button>
-            <button
-              type="button"
-              className="primary"
-              onClick={() => setFilePickerOpen(true)}
-            >
-              + Add file
-            </button>
+        {tabs.includes('characters') && (
+          <div className="tab-panel" hidden={currentTab !== 'characters'}>
+            <BeatCharacters beat={beat} toc={toc} onRefresh={onRefresh} />
           </div>
-          <ImageGallery
-            images={beat.images || []}
-            mainImageId={beat.main_image_id}
-            onChange={onRefresh}
-            uploadPath={`/beat/${beat._id}/image`}
-            deletePath={(imageId) => `/beat/${beat._id}/image/${imageId}`}
-            mainPath={`/beat/${beat._id}/main-image`}
-            editPath={(imageId) => `/beat/${beat._id}/image/${imageId}/regenerate`}
-            moveToLibraryPath={(imageId) =>
-              `/beat/${beat._id}/image/${imageId}/move-to-library`
-            }
-            attachPath={`/beat/${beat._id}/image/attach`}
-            generatePath={`/beat/${beat._id}/image/generate`}
-            characterSourcesPath={`/images/by-owner/characters`}
-            beatSourcesPath={`/images/by-owner/beats?exclude_id=${beat._id}`}
-            copyPath={`/beat/${beat._id}/image/copy`}
-            pickerTitle="Add image to beat"
-            hideAddButton
-            pickerOpen={imagePickerOpen}
-            onPickerOpenChange={setImagePickerOpen}
-          />
-          <AttachmentList
-            attachments={beat.attachments || []}
-            onChange={onRefresh}
-            uploadPath={`/beat/${beat._id}/attachment`}
-            deletePath={(id) => `/beat/${beat._id}/attachment/${id}`}
-            attachPath={`/beat/${beat._id}/attachment/attach`}
-            pickerTitle="Add file to beat"
-            fieldPrefix="attachment"
-            hideAddButton
-            pickerOpen={filePickerOpen}
-            onPickerOpenChange={setFilePickerOpen}
-          />
-        </div>
+        )}
 
-        <div className="tab-panel" hidden={activeTab !== 'references'}>
-          <p className="tab-intro">
-            Reference images attached to this beat by its storyboards — frame
-            snapshots and per-frame uploads. Manage gallery images on the
-            Attachments tab.
-          </p>
-          <ReferenceExtrasSection
-            items={extraReferenceImages}
-            deletePath={(id) => `/beat/${beat._id}/orphan-image/${id}`}
-            onChange={onRefresh}
-            emptyText="No storyboard reference images on this beat yet."
-          />
-        </div>
+        {tabs.includes('critique') && (
+          <div className="tab-panel" hidden={currentTab !== 'critique'}>
+            <CritiqueTab
+              beatId={beat._id}
+              hasPreviousBody={Boolean(beat.previous_body)}
+              onRefresh={onRefresh}
+            />
+          </div>
+        )}
 
-        <div className="tab-panel" hidden={activeTab !== 'artwork'}>
-          <ArtworkTab
-            hostType="beat"
-            hostId={beat._id}
-            hostLabel={beat.name || `Beat ${beat.order}`}
-            artworks={beat.artworks || []}
-            hostImages={beat.images || []}
-            hostArtworks={beat.artworks || []}
-            mainImageId={beat.main_image_id}
-            mainPath={`/beat/${beat._id}/main-image`}
-            onChange={onRefresh}
-          />
-        </div>
+        {tabs.includes('artwork') && (
+          <div className="tab-panel" hidden={currentTab !== 'artwork'}>
+            <ArtworkTab
+              hostType="beat"
+              hostId={beat._id}
+              hostLabel={beat.name || `Beat ${beat.order}`}
+              artworks={beat.artworks || []}
+              hostImages={beat.images || []}
+              hostArtworks={beat.artworks || []}
+              mainImageId={beat.main_image_id}
+              mainPath={`/beat/${beat._id}/main-image`}
+              onChange={onRefresh}
+            />
+          </div>
+        )}
+
+        {tabs.includes('attachments') && (
+          <div className="tab-panel" hidden={currentTab !== 'attachments'}>
+            <p className="tab-intro">
+              <strong>Images</strong> are reference images used to create artwork for this beat.{' '}
+              <strong>Files</strong> are reference material such as PDFs, Word documents, and audio samples.
+            </p>
+            <div className="tab-actions">
+              <button
+                type="button"
+                className="primary"
+                onClick={() => setImagePickerOpen(true)}
+              >
+                + Add image
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => setFilePickerOpen(true)}
+              >
+                + Add file
+              </button>
+            </div>
+            <ImageGallery
+              images={beat.images || []}
+              mainImageId={beat.main_image_id}
+              onChange={onRefresh}
+              uploadPath={`/beat/${beat._id}/image`}
+              deletePath={(imageId) => `/beat/${beat._id}/image/${imageId}`}
+              mainPath={`/beat/${beat._id}/main-image`}
+              editPath={(imageId) => `/beat/${beat._id}/image/${imageId}/regenerate`}
+              moveToLibraryPath={(imageId) =>
+                `/beat/${beat._id}/image/${imageId}/move-to-library`
+              }
+              attachPath={`/beat/${beat._id}/image/attach`}
+              generatePath={`/beat/${beat._id}/image/generate`}
+              characterSourcesPath={`/images/by-owner/characters`}
+              beatSourcesPath={`/images/by-owner/beats?exclude_id=${beat._id}`}
+              copyPath={`/beat/${beat._id}/image/copy`}
+              pickerTitle="Add image to beat"
+              hideAddButton
+              pickerOpen={imagePickerOpen}
+              onPickerOpenChange={setImagePickerOpen}
+            />
+            <AttachmentList
+              attachments={beat.attachments || []}
+              onChange={onRefresh}
+              uploadPath={`/beat/${beat._id}/attachment`}
+              deletePath={(id) => `/beat/${beat._id}/attachment/${id}`}
+              attachPath={`/beat/${beat._id}/attachment/attach`}
+              pickerTitle="Add file to beat"
+              fieldPrefix="attachment"
+              hideAddButton
+              pickerOpen={filePickerOpen}
+              onPickerOpenChange={setFilePickerOpen}
+            />
+          </div>
+        )}
+
+        {tabs.includes('references') && (
+          <div className="tab-panel" hidden={currentTab !== 'references'}>
+            <p className="tab-intro">
+              Reference images attached to this beat by its storyboards — frame
+              snapshots and per-frame uploads. Manage gallery images on the
+              Attachments tab.
+            </p>
+            <ReferenceExtrasSection
+              items={extraReferenceImages}
+              deletePath={(id) => `/beat/${beat._id}/orphan-image/${id}`}
+              onChange={onRefresh}
+              emptyText="No storyboard reference images on this beat yet."
+            />
+          </div>
+        )}
       </CollabSurface>
 
-      <BeatPager beats={toc?.beats} currentId={beat._id} basePath="/beat" />
+      <BeatPager beats={toc?.beats} currentId={beat._id} basePath={basePath} />
     </main>
   );
 }
@@ -256,7 +294,7 @@ export function Beat({ session }) {
 function tabLabel(tab) {
   switch (tab) {
     case 'characters': return 'Characters';
-    case 'background': return 'Background';
+    case 'background': return 'Story';
     case 'critique': return 'Critique';
     case 'attachments': return 'Attachments';
     case 'references': return 'References';

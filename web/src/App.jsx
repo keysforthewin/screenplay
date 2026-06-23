@@ -4,7 +4,6 @@ import { Login } from './routes/Login.jsx';
 import { Toc } from './routes/Toc.jsx';
 import { Beat } from './routes/Beat.jsx';
 import { Character } from './routes/Character.jsx';
-import { Notes } from './routes/Notes.jsx';
 import { Library } from './routes/Library.jsx';
 import { StoryboardIndex } from './routes/StoryboardIndex.jsx';
 import { StoryboardBeat } from './routes/StoryboardBeat.jsx';
@@ -28,9 +27,9 @@ function ProjectShell({ session, onLogout }) {
       <Header session={session} onLogout={onLogout} />
       <Routes>
         <Route path="/" element={<Toc session={session} />} />
-        <Route path="/beat/:order" element={<Beat session={session} />} />
+        <Route path="/beat/:order" element={<Beat session={session} section="writing" />} />
+        <Route path="/artwork/:order" element={<Beat session={session} section="artwork" />} />
         <Route path="/character/:name" element={<Character session={session} />} />
-        <Route path="/notes" element={<Notes session={session} />} />
         <Route path="/library" element={<Library session={session} />} />
         <Route path="/storyboard" element={<StoryboardIndex session={session} />} />
         <Route path="/storyboard/:order" element={<StoryboardBeat session={session} />} />

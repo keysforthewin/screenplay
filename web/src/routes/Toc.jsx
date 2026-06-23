@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { apiGet } from '../api.js';
-import { NotesPanel } from '../widgets/NotesPanel.jsx';
 import { LibraryPanel } from '../widgets/LibraryPanel.jsx';
 
 const TABS = [
@@ -9,7 +8,6 @@ const TABS = [
   { id: 'beats', label: 'Beats' },
   { id: 'dialog', label: 'Dialog' },
   { id: 'storyboards', label: 'Storyboards' },
-  { id: 'notes', label: "Director's notes" },
   { id: 'library', label: 'Library' },
 ];
 const TAB_IDS = TABS.map((t) => t.id);
@@ -28,7 +26,6 @@ function readInitialTab() {
 
 export function Toc({ session }) {
   const [toc, setToc] = useState(null);
-  const [notesData, setNotesData] = useState(null);
   const [libraryData, setLibraryData] = useState(null);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState('');
@@ -47,15 +44,6 @@ export function Toc({ session }) {
     return () => { cancelled = true; };
   }, []);
 
-  const refetchNotes = useCallback(async () => {
-    try {
-      const r = await apiGet('/notes');
-      setNotesData(r);
-    } catch (e) {
-      setError(e.message);
-    }
-  }, []);
-
   const refetchLibrary = useCallback(async () => {
     try {
       const r = await apiGet('/library');
@@ -65,7 +53,6 @@ export function Toc({ session }) {
     }
   }, []);
 
-  useEffect(() => { refetchNotes(); }, [refetchNotes]);
   useEffect(() => { refetchLibrary(); }, [refetchLibrary]);
 
   function selectTab(tab) {
@@ -180,11 +167,6 @@ export function Toc({ session }) {
     })
     .filter((b) => matches(b.searchLabel, b.searchText));
 
-  const allNotes = notesData?.notes || [];
-  const filteredNotes = !filter
-    ? allNotes
-    : allNotes.filter((n) => (n.text || '').toLowerCase().includes(filter));
-
   const libraryImages = libraryData?.images || [];
   const stripForFilter = (s) =>
     String(s || '')
@@ -213,7 +195,6 @@ export function Toc({ session }) {
     beats: beats.length,
     dialog: dialogBeats.length,
     storyboards: storyboardBeats.length,
-    notes: filteredNotes.length,
     library: libraryVisible ? Math.max(libraryMatchCount, matches('Library') ? 1 : 0) : 0,
   };
   // While the filter is active, hide tabs whose contents don't match. With no
@@ -383,18 +364,6 @@ export function Toc({ session }) {
               })}
             </ul>
           </section>
-        )}
-      </div>
-
-      <div className="tab-panel" hidden={displayedTab !== 'notes' || noResults}>
-        {notesData ? (
-          <NotesPanel
-            notes={filteredNotes}
-            session={session}
-            onChange={refetchNotes}
-          />
-        ) : (
-          <p style={{ color: 'var(--fg-muted)' }}>Loading notes…</p>
         )}
       </div>
 

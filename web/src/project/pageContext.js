@@ -20,6 +20,13 @@ export function pageContextFromPath(pathname) {
     const ref = decodeURIComponent(beat[1]);
     return { kind: 'beat', ref, label: `Beat ${ref}` };
   }
+  // The artwork section is a sub-view of a beat — it shares the beat's server
+  // context (there is no distinct 'artwork' kind), only the chip label differs.
+  const artworkBeat = remainder.match(/^\/artwork\/(.+)$/);
+  if (artworkBeat) {
+    const ref = decodeURIComponent(artworkBeat[1]);
+    return { kind: 'beat', ref, label: `Artwork · Beat ${ref}` };
+  }
   const character = remainder.match(/^\/character\/(.+)$/);
   if (character) {
     const ref = decodeURIComponent(character[1]);

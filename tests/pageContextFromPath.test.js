@@ -14,6 +14,12 @@ describe('pageContextFromPath', () => {
     expect(pageContextFromPath('/p/Heist/beat/2')).toEqual({ kind: 'beat', ref: '2', label: 'Beat 2' });
   });
 
+  it('maps the artwork beat section to the beat context (no separate server kind)', () => {
+    expect(pageContextFromPath('/p/Heist/artwork/2')).toEqual({
+      kind: 'beat', ref: '2', label: 'Artwork · Beat 2',
+    });
+  });
+
   it('maps a character path to its (decoded) name', () => {
     expect(pageContextFromPath('/p/Heist/character/Steve')).toEqual({
       kind: 'character', ref: 'Steve', label: 'Character: Steve',

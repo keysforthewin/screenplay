@@ -186,6 +186,7 @@ import {
   streamLibraryZip,
   streamNotesZip,
 } from './downloads.js';
+import { exportToPdf, slugifyFilename } from '../pdf/export.js';
 
 const HEX24 = /^[a-f0-9]{24}$/i;
 
@@ -1053,6 +1054,24 @@ export function buildApiRouter() {
   router.get('/notes/download', async (req, res, next) => {
     try {
       await streamNotesZip(req, res);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Full-screenplay PDF (cover, director's notes, characters, plot, library) —
+  // the About page's "Download Screenplay" button. Mirrors the agent's
+  // export_pdf tool with no filters. Generation can take a few seconds.
+  router.get('/export/pdf', async (req, res, next) => {
+    try {
+      const result = await exportToPdf({ projectId: req.projectId });
+      if (result?.error) {
+        return res.status(400).json({ error: result.error });
+      }
+      const filename = `${slugifyFilename(req.projectTitle || 'screenplay')}.pdf`;
+      res.download(result.path, filename, (err) => {
+        if (err && !res.headersSent) next(err);
+      });
     } catch (e) {
       next(e);
     }
