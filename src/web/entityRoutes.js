@@ -1749,7 +1749,7 @@ export function buildApiRouter() {
 
       // Fire-and-forget cast-change announcement (after the response).
       if (patch.characters) {
-        const { added, removed } = diffCast(before?.characters || [], patch.characters);
+        const { added, removed } = diffCast(before?.characters || [], result.characters || []);
         if (added.length || removed.length) {
           maybeAnnounceCast({
             projectId: req.projectId,

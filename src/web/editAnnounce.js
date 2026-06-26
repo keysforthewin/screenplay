@@ -11,6 +11,7 @@ import { fragmentToMarkdown } from './headlessEditor.js';
 import { announceMediaEvent } from '../discord/announcer.js';
 import { claimAnnouncement } from '../mongo/editAnnouncements.js';
 import { logger } from '../log.js';
+import { beatLabel, characterLabel } from './announceHelpers.js';
 
 const BEAT_WRITING_FIELDS = ['name', 'body', 'desc'];
 
@@ -44,19 +45,6 @@ export function joinNames(names) {
   if (arr.length <= 1) return arr.join('');
   if (arr.length === 2) return `${arr[0]} and ${arr[1]}`;
   return `${arr.slice(0, -1).join(', ')}, and ${arr[arr.length - 1]}`;
-}
-
-export function beatLabel(beat) {
-  if (!beat) return 'a beat';
-  const name = stripMarkdown(beat.name || '').trim();
-  const order = Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
-  return name ? `${order}: ${name}` : order;
-}
-
-export function characterLabel(character) {
-  if (!character) return 'a character';
-  const name = stripMarkdown(character.name || '').trim() || 'character';
-  return `Character: ${name}`;
 }
 
 export function buildWritingPayload({ who, beat, projectTitle }) {
@@ -107,8 +95,39 @@ export function buildCastPayload({ who, beat, projectTitle, added, removed }) {
 // roomName -> { type: 'beat'|'character', announceFields: string[], values: Map }
 const roomCache = new Map();
 
+// Process-local throttle memo: once an editor has been announced (or confirmed
+// already-throttled) for a target this window, skip the Mongo round-trips on
+// subsequent keystrokes. claimAnnouncement (Mongo + TTL) remains the
+// cross-process / cross-restart source of truth; this only suppresses redundant
+// DB hits within one process. Keyed `${targetType}:${targetId}|${editor}` ->
+// expiry epoch ms.
+const THROTTLE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const recentClaims = new Map();
+
+function memoKey(targetType, targetId, editor) {
+  return `${targetType}:${targetId}|${editor}`;
+}
+
+function isRecentlyClaimed(targetType, targetId, editor) {
+  const until = recentClaims.get(memoKey(targetType, targetId, editor));
+  return until !== undefined && Date.now() < until;
+}
+
+// Claim through Mongo unless the process-local memo already covers this window.
+// Records the window after a successful Mongo determination (regardless of which
+// caller won the claim) so neither the writing nor the cast path re-hits Mongo
+// for this editor+target until the window lapses. On a Mongo throw the memo is
+// NOT set, so a later edit retries.
+async function throttledClaim({ projectId, targetType, targetId, editor }) {
+  if (isRecentlyClaimed(targetType, targetId, editor)) return false;
+  const claimed = await claimAnnouncement({ projectId, targetType, targetId, editor });
+  recentClaims.set(memoKey(targetType, targetId, editor), Date.now() + THROTTLE_WINDOW_MS);
+  return claimed;
+}
+
 export function _resetCacheForTests() {
   roomCache.clear();
+  recentClaims.clear();
 }
 
 // Called from afterLoadDocument. Captures the announce-relevant field list and
@@ -180,20 +199,29 @@ export async function handleRoomChange({ documentName, document, context }) {
     const editor = context?.user?.name;
     if (!editor) return;
 
+    // Attribution is best-effort, not strict per-editor: onChange runs
+    // synchronously per update, so if two editors change a field to identical
+    // text near-simultaneously the second render sees no diff and is skipped.
+    // This only ever SUPPRESSES a would-be announcement — it never
+    // misattributes — and per-editor buckets still gate channel noise.
+
     const m = documentName.match(/^(beat|character):([a-f0-9]{24})$/i);
     if (!m) return;
     const [, type, id] = m;
 
+    // Skip all DB work if this editor was already handled for this target.
+    if (isRecentlyClaimed(type, id, editor)) return;
+
     if (type === 'beat') {
       const found = await lookupBeat(id);
       if (!found?.projectId) return;
-      if (!(await claimAnnouncement({ projectId: found.projectId, targetType: 'beat', targetId: id, editor }))) return;
+      if (!(await throttledClaim({ projectId: found.projectId, targetType: 'beat', targetId: id, editor }))) return;
       const projectTitle = await projectTitleFor(found.projectId);
       fire(buildWritingPayload({ who: editor, beat: found.beat, projectTitle }));
     } else {
       const found = await lookupCharacter(id);
       if (!found?.projectId) return;
-      if (!(await claimAnnouncement({ projectId: found.projectId, targetType: 'character', targetId: id, editor }))) return;
+      if (!(await throttledClaim({ projectId: found.projectId, targetType: 'character', targetId: id, editor }))) return;
       const projectTitle = await projectTitleFor(found.projectId);
       fire(buildCharacterPayload({ who: editor, character: found.character, projectTitle }));
     }
@@ -209,7 +237,7 @@ export async function maybeAnnounceCast({ projectId, projectTitle, beat, editor,
     if (!(added?.length) && !(removed?.length)) return;
     const beatIdHex = beat?._id?.toString?.();
     if (!beatIdHex) return;
-    if (!(await claimAnnouncement({ projectId, targetType: 'beat', targetId: beatIdHex, editor }))) return;
+    if (!(await throttledClaim({ projectId, targetType: 'beat', targetId: beatIdHex, editor }))) return;
     fire(buildCastPayload({ who: editor, beat, projectTitle, added, removed }));
   } catch (e) {
     logger.warn(`editAnnounce maybeAnnounceCast failed: ${e?.message || e}`);

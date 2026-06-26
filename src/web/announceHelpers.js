@@ -11,14 +11,14 @@ function usernameFromReq(req) {
   return req?.session?.username || 'Someone';
 }
 
-function beatLabel(beat) {
+export function beatLabel(beat) {
   if (!beat) return 'a beat';
   const name = stripMarkdown(beat.name || '').trim();
   const order = Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
   return name ? `${order}: ${name}` : order;
 }
 
-function characterLabel(character) {
+export function characterLabel(character) {
   if (!character) return 'a character';
   const name = stripMarkdown(character.name || '').trim() || 'character';
   return `Character: ${name}`;
