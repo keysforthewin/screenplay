@@ -390,7 +390,72 @@ describe('searchMessages', () => {
   });
 });
 
+describe('searchMessages recent mode (no regex)', () => {
+  async function seedN(n) {
+    for (let i = 0; i < n; i++) {
+      await seed({ content: `msg ${i}`, created_at: new Date(1000 + i) });
+    }
+  }
+
+  it('returns the newest messages first, paginated by offset', async () => {
+    await seedN(5); // msg 0 (oldest) .. msg 4 (newest)
+    const page1 = await searchMessages({
+      channelId: CHANNEL,
+      regex: null,
+      role: 'any',
+      limit: 3,
+      contextChars: 100,
+      offset: 0,
+    });
+    expect(page1.mode).toBe('recent');
+    expect(page1.results.map((r) => r.excerpt)).toEqual(['msg 4', 'msg 3', 'msg 2']);
+    expect(page1.has_more).toBe(true);
+
+    const page2 = await searchMessages({
+      channelId: CHANNEL,
+      regex: null,
+      role: 'any',
+      limit: 3,
+      contextChars: 100,
+      offset: 3,
+    });
+    expect(page2.results.map((r) => r.excerpt)).toEqual(['msg 1', 'msg 0']);
+    expect(page2.has_more).toBe(false);
+  });
+
+  it('truncates each excerpt to contextChars', async () => {
+    await seed({ content: 'x'.repeat(500), created_at: new Date(1000) });
+    const { results } = await searchMessages({
+      channelId: CHANNEL,
+      regex: null,
+      role: 'any',
+      limit: 10,
+      contextChars: 50,
+      offset: 0,
+    });
+    expect(results[0].excerpt.length).toBeLessThanOrEqual(51); // 50 + ellipsis
+    expect(results[0].excerpt.endsWith('…')).toBe(true);
+  });
+});
+
 describe('search_message_history handler', () => {
+  it('returns a newest-first recent dump when no pattern is given', async () => {
+    await seed({ content: 'older', created_at: new Date(1000) });
+    await seed({ content: 'newer', created_at: new Date(2000) });
+    const out = await HANDLERS.search_message_history({});
+    const parsed = JSON.parse(out);
+    expect(parsed.mode).toBe('recent');
+    expect(parsed.results[0].excerpt).toBe('newer');
+    expect(parsed.results[1].excerpt).toBe('older');
+  });
+
+  it('reports mode "search" in regex mode', async () => {
+    await seed({ content: 'mustache' });
+    const out = await HANDLERS.search_message_history({ pattern: 'mustache' });
+    const parsed = JSON.parse(out);
+    expect(parsed.mode).toBe('search');
+  });
+
   it('returns parsable JSON with results', async () => {
     await seed({ content: 'I want a character with a mustache' });
     const out = await HANDLERS.search_message_history({ pattern: 'mustache' });

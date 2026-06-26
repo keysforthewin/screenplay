@@ -1,4 +1,5 @@
 import { balanceToolUses } from '../mongo/messages.js';
+import { isRealUserMessage, floorStartIndex } from '../util/turns.js';
 
 const STUB_PREFIX = '[Truncated tool_result for ';
 
@@ -48,16 +49,6 @@ const TOOL_POLICY = {
   read_director_note: { stubAtAge: 2 },
   read_character_field: { stubAtAge: 2 },
 };
-
-function isRealUserMessage(m) {
-  if (!m || m.role !== 'user') return false;
-  if (typeof m.content === 'string') return true;
-  if (!Array.isArray(m.content)) return true;
-  // A "real" user message has at least one non-tool_result block (text, image,
-  // etc.). A user message that's all tool_result blocks is an agent-loop
-  // dispatch, not a Discord turn.
-  return m.content.some((b) => !b || b.type !== 'tool_result');
-}
 
 // Age = how many real-user messages come AFTER this one in the array.
 // Most recent turn (the one currently being responded to or just answered) is age 0.
@@ -213,7 +204,13 @@ export function applyTokenBudget(messages, opts = {}) {
     snap += 1;
   }
 
-  const cut = snap;
+  // Never cut below the configured turn floor. The floor is opt-in via
+  // opts.minKeptUserTurns (production threads it from config.trim); when absent
+  // or 0 the budget alone decides the cut, as before. floorStartIndex returns a
+  // real-user-message index, so the clamped slice still starts on a turn boundary.
+  const minKept = Number.isFinite(opts.minKeptUserTurns) ? opts.minKeptUserTurns : 0;
+  const floor = minKept > 0 ? floorStartIndex(messages, minKept) : snap;
+  const cut = Math.min(snap, floor);
   const kept = messages.slice(cut);
   // Heal orphan tool_uses at the new head if any prior assistant tool_use was sliced off.
   const balanced = balanceToolUses(kept);

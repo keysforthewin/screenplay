@@ -5,6 +5,7 @@ import {
   applyTokenBudget,
   estimateMessageTokens,
 } from '../src/agent/historyTrim.js';
+import { isRealUserMessage } from '../src/util/turns.js';
 
 // A "Discord turn" in this test fixture is:
 //   user (string)
@@ -269,6 +270,46 @@ describe('applyTokenBudget', () => {
     expect(total).toBeLessThanOrEqual(2000); // budget 1500 + at most one full turn balanced in
     // Pairing intact: every tool_use has a matching tool_result.
     expect(unmatchedToolUseIds(kept)).toEqual([]);
+  });
+
+  it('never cuts below the configured turn floor even when over budget', () => {
+    const history = [];
+    for (let i = 0; i < 8; i++) {
+      history.push(
+        ...makeTurn({
+          userText: `t${i}`,
+          toolName: 'tavily_search',
+          toolUseId: `u${i}`,
+          toolResultContent: bigJson(2000),
+          replyText: `r${i}`,
+        }),
+      );
+    }
+    // Budget alone would keep far fewer than 6 turns; the floor forces 6.
+    const { messages: kept } = applyTokenBudget(history, {
+      tokenBudget: 1500,
+      minKeptUserTurns: 6,
+    });
+    expect(kept.filter(isRealUserMessage).length).toBe(6);
+    expect(unmatchedToolUseIds(kept)).toEqual([]);
+  });
+
+  it('honors a smaller token budget when no floor is configured (default)', () => {
+    const history = [];
+    for (let i = 0; i < 8; i++) {
+      history.push(
+        ...makeTurn({
+          userText: `t${i}`,
+          toolName: 'tavily_search',
+          toolUseId: `u${i}`,
+          toolResultContent: bigJson(2000),
+          replyText: `r${i}`,
+        }),
+      );
+    }
+    // Without minKeptUserTurns the floor is off → budget cuts below 6 turns.
+    const { messages: kept } = applyTokenBudget(history, { tokenBudget: 1500 });
+    expect(kept.filter(isRealUserMessage).length).toBeLessThan(6);
   });
 
   it('returns input unchanged when total tokens are below the budget', () => {

@@ -37,6 +37,9 @@ export const config = {
     summarizeStale: !process.env.HISTORY_SUMMARIZE_DISABLED,
     tokenBudget: Number(process.env.HISTORY_TOKEN_BUDGET) || 30000,
     historyWindowMs: Number(process.env.HISTORY_WINDOW_MS) || 60 * 60 * 1000,
+    // The last N user turns (with their agent responses) are never pruned by the
+    // age window or the token budget — so walking away never wipes the thread.
+    minKeptUserTurns: Number(process.env.HISTORY_MIN_KEPT_TURNS) || 6,
   },
   mongo: {
     uri: process.env.MONGO_URI || 'mongodb://localhost:27017',

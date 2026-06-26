@@ -3,6 +3,7 @@ import { ALLOWED_IMAGE_TYPES } from './imageBytes.js';
 import { logger } from '../log.js';
 import { config } from '../config.js';
 import { resolveProjectId } from './projects.js';
+import { floorStartIndex } from '../util/turns.js';
 
 const HISTORY_LIMIT = 60;
 const DEFAULT_HISTORY_WINDOW_MS = 60 * 60 * 1000;
@@ -289,6 +290,12 @@ function makeExcerpt(text, start, len, contextChars) {
   return snippet;
 }
 
+function truncateExcerpt(text, max) {
+  const flat = String(text || '').replace(/\s+/g, ' ').trim();
+  if (flat.length <= max) return flat;
+  return `${flat.slice(0, max)}…`;
+}
+
 export async function searchMessages({
   projectId,
   channelId,
@@ -298,6 +305,7 @@ export async function searchMessages({
   role,
   limit,
   contextChars,
+  offset = 0,
 }) {
   const query = { channel_id: channelId };
   if (projectId) query.project_id = String(projectId);
@@ -312,6 +320,34 @@ export async function searchMessages({
     created.$lte = new Date(now - Number(untilDays) * 86400000);
   }
   if (Object.keys(created).length) query.created_at = created;
+
+  // Recent-dump mode: no regex → page back through full history newest-first.
+  if (!regex) {
+    const skip = Math.max(0, Number(offset) || 0);
+    const docs = await col()
+      .find(query)
+      .sort({ created_at: -1, _id: -1 })
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+    const results = docs.map((doc) => ({
+      _id: doc._id,
+      discord_message_id: doc.discord_message_id || null,
+      role: doc.role,
+      created_at: doc.created_at,
+      author_tag: doc.author?.tag || null,
+      excerpt: truncateExcerpt(extractSearchableText(doc), contextChars),
+      match: null,
+    }));
+    return {
+      results,
+      mode: 'recent',
+      scanned: docs.length,
+      scan_limit_hit: false,
+      has_more: docs.length === limit,
+      offset: skip,
+    };
+  }
 
   const docs = await col()
     .find(query)
@@ -345,6 +381,7 @@ export async function searchMessages({
 
   return {
     results,
+    mode: 'search',
     scanned: docs.length,
     scan_limit_hit: docs.length >= SEARCH_SCAN_LIMIT,
   };
@@ -366,18 +403,19 @@ export async function loadChannelMessagesSince(channelId, { since = null, limit 
 
 export async function loadHistoryForLlm(
   channelId,
-  { maxAgeMs = DEFAULT_HISTORY_WINDOW_MS, since = null } = {},
+  {
+    maxAgeMs = DEFAULT_HISTORY_WINDOW_MS,
+    since = null,
+    minKeptUserTurns = config.trim?.minKeptUserTurns ?? 6,
+  } = {},
 ) {
+  // The `since` (clear-history) watermark filters at the query so cleared
+  // messages are never fetched and the turn floor can't resurrect them. The age
+  // window, by contrast, is applied in JS below so the floor can override it —
+  // otherwise walking away longer than the window wipes the whole conversation.
   const query = { channel_id: channelId };
-  const createdAt = {};
-  if (maxAgeMs && maxAgeMs > 0) {
-    createdAt.$gte = new Date(Date.now() - maxAgeMs);
-  }
   if (since instanceof Date) {
-    createdAt.$gt = since;
-  }
-  if (Object.keys(createdAt).length) {
-    query.created_at = createdAt;
+    query.created_at = { $gt: since };
   }
   const docs = await col()
     .find(query)
@@ -385,8 +423,24 @@ export async function loadHistoryForLlm(
     .limit(HISTORY_LIMIT)
     .toArray();
   docs.reverse();
-  while (docs.length && isOrphanToolResultDoc(docs[0])) {
-    docs.shift();
+
+  const messages = docs.map(docToLlmMessage);
+
+  // Soft age cut: drop the leading run of docs older than the window, but never
+  // cut into the last `minKeptUserTurns` turns (the floor wins when idle).
+  const cutoff = maxAgeMs && maxAgeMs > 0 ? Date.now() - maxAgeMs : null;
+  let ageStart = 0;
+  if (cutoff !== null) {
+    while (ageStart < docs.length && !(docs[ageStart].created_at >= cutoff)) {
+      ageStart += 1;
+    }
   }
-  return balanceToolUses(docs.map(docToLlmMessage));
+  const floorStart = floorStartIndex(messages, minKeptUserTurns);
+  const start = Math.min(ageStart, floorStart);
+
+  const kept = messages.slice(start);
+  while (kept.length && isOrphanToolResultDoc(kept[0])) {
+    kept.shift();
+  }
+  return balanceToolUses(kept);
 }

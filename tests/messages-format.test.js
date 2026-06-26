@@ -356,41 +356,68 @@ describe('loadHistoryForLlm time window', () => {
     vi.useRealTimers();
   });
 
-  it('excludes messages older than the default 1-hour window', async () => {
+  // Insert N user turns (oldest first) all stamped `ageMs` before NOW.
+  async function seedUserTurns(channelId, n, ageMs) {
+    const docs = [];
+    for (let i = 0; i < n; i++) {
+      docs.push({
+        channel_id: channelId,
+        role: 'user',
+        content: `m${i}`,
+        attachments: [],
+        created_at: new Date(NOW - ageMs + i),
+      });
+    }
+    await fakeDb.collection('messages').insertMany(docs);
+  }
+
+  it('keeps the last 6 turns even when all are older than the window (walk-away)', async () => {
     const channelId = 'win-1';
+    await seedUserTurns(channelId, 8, 2 * 60 * 60 * 1000); // all 2h stale
+    const out = await loadHistoryForLlm(channelId);
+    // Floor protects the last 6 turns despite every doc being stale.
+    expect(out).toHaveLength(6);
+    expect(out[0]).toEqual({ role: 'user', content: [{ type: 'text', text: 'm2' }] });
+    expect(out[5]).toEqual({ role: 'user', content: [{ type: 'text', text: 'm7' }] });
+  });
+
+  it('keeps all turns when fewer than 6 exist, even if stale', async () => {
+    const channelId = 'win-2';
+    await seedUserTurns(channelId, 2, 2 * 60 * 60 * 1000); // 2 turns, both stale
+    const out = await loadHistoryForLlm(channelId);
+    expect(out).toHaveLength(2);
+  });
+
+  it('excludes a turn beyond the 6-turn floor that is also stale', async () => {
+    const channelId = 'win-1b';
     await fakeDb.collection('messages').insertMany([
       { channel_id: channelId, role: 'user', content: 'ancient',
         attachments: [], created_at: new Date(NOW - 2 * 60 * 60 * 1000) },
-      { channel_id: channelId, role: 'user', content: 'fresh',
-        attachments: [], created_at: new Date(NOW - 5 * 60 * 1000) },
     ]);
+    // 6 fresh turns after the ancient one → ancient is the 7th-from-last, beyond
+    // the floor, and stale → dropped.
+    const fresh = [];
+    for (let i = 0; i < 6; i++) {
+      fresh.push({
+        channel_id: channelId, role: 'user', content: `fresh${i}`,
+        attachments: [], created_at: new Date(NOW - 5 * 60 * 1000 + i),
+      });
+    }
+    await fakeDb.collection('messages').insertMany(fresh);
     const out = await loadHistoryForLlm(channelId);
-    expect(out).toHaveLength(1);
-    expect(out[0]).toEqual({ role: 'user', content: [{ type: 'text', text: 'fresh' }] });
+    expect(out).toHaveLength(6);
+    expect(out.some((m) => JSON.stringify(m).includes('ancient'))).toBe(false);
   });
 
-  it('returns empty history when every doc is stale', async () => {
-    const channelId = 'win-2';
-    await fakeDb.collection('messages').insertMany([
-      { channel_id: channelId, role: 'user', content: 'old1',
-        attachments: [], created_at: new Date(NOW - 2 * 60 * 60 * 1000) },
-      { channel_id: channelId, role: 'assistant', content: 'old2',
-        attachments: [], created_at: new Date(NOW - 90 * 60 * 1000) },
-    ]);
-    const out = await loadHistoryForLlm(channelId);
-    expect(out).toEqual([]);
-  });
-
-  it('honors a custom maxAgeMs', async () => {
+  it('honors a custom maxAgeMs beyond the floor', async () => {
     const channelId = 'win-3';
-    await fakeDb.collection('messages').insertMany([
-      { channel_id: channelId, role: 'user', content: 'thirty min old',
-        attachments: [], created_at: new Date(NOW - 30 * 60 * 1000) },
-    ]);
+    await seedUserTurns(channelId, 8, 30 * 60 * 1000); // 8 turns, each 30m old
+    // Tight window excludes everything by age, but the floor still returns 6.
     const tight = await loadHistoryForLlm(channelId, { maxAgeMs: 10 * 60 * 1000 });
-    expect(tight).toEqual([]);
+    expect(tight).toHaveLength(6);
+    // Loose default window (1h) keeps all 8.
     const loose = await loadHistoryForLlm(channelId);
-    expect(loose).toHaveLength(1);
+    expect(loose).toHaveLength(8);
   });
 
   it('disables the time filter when maxAgeMs is 0', async () => {

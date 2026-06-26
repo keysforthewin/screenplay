@@ -139,6 +139,7 @@ export async function handleMessage(msg) {
         loadHistoryForLlm(msg.channelId, {
           maxAgeMs: config.trim.historyWindowMs,
           since: clearedAt,
+          minKeptUserTurns: config.trim.minKeptUserTurns,
         }),
       );
       logger.info(`history loaded ${rawHistory.length} msgs (mongo total ${Date.now() - histT0}ms)`);
@@ -146,6 +147,7 @@ export async function handleMessage(msg) {
         ? trimHistoryForLlm(rawHistory, {
             tokenBudget: config.trim.tokenBudget,
             summarizeStale: config.trim.summarizeStale,
+            minKeptUserTurns: config.trim.minKeptUserTurns,
           })
         : { messages: rawHistory, stats: { tokensBefore: 0, tokensAfter: 0, summarized: 0, budgetCut: 0 } };
       if (config.trim.enabled) {

@@ -194,11 +194,13 @@ async function executeChatRun({ run, channelId, projectId, projectTitle, session
     const rawHistory = await loadHistoryForLlm(channelId, {
       maxAgeMs: config.trim.historyWindowMs,
       since: clearedAt,
+      minKeptUserTurns: config.trim.minKeptUserTurns,
     });
     const { messages: history } = config.trim.enabled
       ? trimHistoryForLlm(rawHistory, {
           tokenBudget: config.trim.tokenBudget,
           summarizeStale: config.trim.summarizeStale,
+          minKeptUserTurns: config.trim.minKeptUserTurns,
         })
       : { messages: rawHistory };
 

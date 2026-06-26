@@ -243,9 +243,14 @@ function makeCursor(arr) {
   let docs = [...arr];
   let sortSpec = null;
   let limitN = null;
+  let skipN = 0;
   return {
     sort(spec) {
       sortSpec = spec;
+      return this;
+    },
+    skip(n) {
+      skipN = n || 0;
       return this;
     },
     limit(n) {
@@ -266,6 +271,7 @@ function makeCursor(arr) {
           return 0;
         });
       }
+      if (skipN > 0) out = out.slice(skipN);
       if (limitN !== null) out = out.slice(0, limitN);
       return out.map(deepClone);
     },

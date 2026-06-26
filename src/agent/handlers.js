@@ -9,7 +9,7 @@ import * as Files from '../mongo/files.js';
 import * as Images from '../mongo/images.js';
 import * as Attachments from '../mongo/attachments.js';
 import { getProjectByTitle, listProjects } from '../mongo/projects.js';
-import { setCurrentProjectId } from '../mongo/channelState.js';
+import { setCurrentProjectId, setHistoryClearedAt } from '../mongo/channelState.js';
 import * as Gateway from '../web/gateway.js';
 import { kickoffLibraryVisionSeed } from '../web/libraryVisionWorker.js';
 import { aboutUrl, beatUrl, characterUrl, notesUrl, withSpaLink } from '../web/links.js';
@@ -3327,30 +3327,37 @@ export const HANDLERS = {
     role,
     limit,
     context_chars,
+    offset,
   } = {}, context = null) {
-    if (!pattern || typeof pattern !== 'string') {
-      return 'Error: `pattern` is required.';
+    // No pattern → recent-dump mode (page back through full history newest-first).
+    const hasPattern = typeof pattern === 'string' && pattern.trim() !== '';
+    let regex = null;
+    let safeFlags = String(flags || 'i').replace(/[^imsu]/g, '');
+    if (hasPattern) {
+      try {
+        regex = new RegExp(pattern, safeFlags);
+      } catch (e) {
+        return `Error: invalid regex /${pattern}/${safeFlags}: ${e.message}`;
+      }
     }
-    const safeFlags = String(flags || 'i').replace(/[^imsu]/g, '');
-    let regex;
-    try {
-      regex = new RegExp(pattern, safeFlags);
-    } catch (e) {
-      return `Error: invalid regex /${pattern}/${safeFlags}: ${e.message}`;
-    }
-    const { results, scanned, scan_limit_hit } = await Messages.searchMessages({
-      projectId: context?.projectId,
-      channelId: context?.channelId || config.discord.movieChannelId,
-      regex,
-      sinceDays: since_days,
-      untilDays: until_days,
-      role: role === 'user' || role === 'assistant' ? role : 'any',
-      limit: Math.min(50, Math.max(1, Number(limit) || 20)),
-      contextChars: Math.min(500, Math.max(40, Number(context_chars) || 200)),
-    });
+    const { results, scanned, scan_limit_hit, mode, has_more, offset: usedOffset } =
+      await Messages.searchMessages({
+        projectId: context?.projectId,
+        channelId: context?.channelId || config.discord.movieChannelId,
+        regex,
+        sinceDays: since_days,
+        untilDays: until_days,
+        role: role === 'user' || role === 'assistant' ? role : 'any',
+        limit: Math.min(50, Math.max(1, Number(limit) || 20)),
+        contextChars: Math.min(500, Math.max(40, Number(context_chars) || 200)),
+        offset: Math.max(0, Number(offset) || 0),
+      });
     return compact({
-      pattern,
-      flags: safeFlags,
+      mode,
+      pattern: hasPattern ? pattern : null,
+      flags: hasPattern ? safeFlags : null,
+      offset: mode === 'recent' ? usedOffset : null,
+      has_more: mode === 'recent' ? has_more : null,
       scanned,
       scan_limit_hit,
       match_count: results.length,
@@ -3364,6 +3371,20 @@ export const HANDLERS = {
         match: r.match,
       })),
     });
+  },
+
+  async clear_context(_input = {}, context = null) {
+    const channelId = context?.channelId;
+    if (!channelId) {
+      return 'Error: no channel context — cannot clear conversation memory here.';
+    }
+    const when = await setHistoryClearedAt(channelId);
+    return (
+      `Cleared the short-term conversation memory for this channel (watermark ${when.toISOString()}). ` +
+      'Messages before now are dropped from future context windows; this reply still has its context, ' +
+      'and the clear takes full effect on the next message. Nothing was deleted — the full history is ' +
+      'still searchable with search_message_history.'
+    );
   },
 
   async screenplay_search({ query, k, entity_types } = {}, context = null) {

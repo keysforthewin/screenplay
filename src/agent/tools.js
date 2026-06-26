@@ -1578,16 +1578,32 @@ export const TOOLS = [
     },
   },
   {
-    name: 'search_message_history',
-    keywords: ['search', 'history', 'past', 'previous', 'earlier', 'recall', 'memory', 'conversation', 'channel', 'mentioned', 'remember'],
+    name: 'clear_context',
+    keywords: ['clear', 'reset', 'forget', 'wipe', 'fresh', 'start over', 'new conversation', 'amnesia', 'context', 'history', 'clean slate', 'blank'],
     description:
-      "Search the channel's full message history (beyond the recent 60-message window already in your context) using a regex. Use when the operator asks you to recall something they mentioned earlier — names, descriptions, decisions — that isn't in your immediate history. CRAFT THE REGEX TO COVER ALTERNATE SPELLINGS, PLURALS, AND RELATED WORDS. Examples: for \"mustache\" use `must(?:a|ac)he?|moustache|stache|mustachio`; for \"the diner scene\" use `diner|coffee.?shop|caf[eé]|restaurant`. Default flag is case-insensitive. Use `since_days` and/or `until_days` for time windows (\"last week\" → since_days:7; \"about 2-3 weeks ago\" → since_days:21, until_days:7). Returns role/timestamp/excerpt/match for each hit, plus a `scan_limit_hit` flag warning that older messages weren't reached. Includes attachment filenames; skips image bytes and tool_use ids.",
+      "Clear this channel's SHORT-TERM conversation memory: sets a watermark so messages before now drop out of future context windows. Use ONLY when the operator explicitly asks to start fresh / clear context / forget the current thread — never on your own initiative. Takes effect on the NEXT message (this reply still has its context). Nothing is deleted from storage; the full history stays searchable via search_message_history.",
+    input_schema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'search_message_history',
+    keywords: ['search', 'history', 'past', 'previous', 'earlier', 'recall', 'memory', 'conversation', 'channel', 'mentioned', 'remember', 'last time', 'page back', 'scroll back'],
+    description:
+      "Recall the channel's full message history (beyond the recent window already in your context). TWO MODES, both gated on the operator referencing an earlier conversation: (1) REGEX SEARCH — pass `pattern` to grep for something specific they mentioned (names, descriptions, decisions). CRAFT THE REGEX TO COVER ALTERNATE SPELLINGS, PLURALS, AND RELATED WORDS. Examples: for \"mustache\" use `must(?:a|ac)he?|moustache|stache|mustachio`; for \"the diner scene\" use `diner|coffee.?shop|caf[eé]|restaurant`. Default flag is case-insensitive. (2) RECENT DUMP — OMIT `pattern` to page back through full history newest-first when they reference an earlier conversation but you have no specific term to grep; use `offset` to page further back (0, then limit, then 2×limit…) and watch `has_more`. Use `since_days`/`until_days` for time windows (\"last week\" → since_days:7; \"about 2-3 weeks ago\" → since_days:21, until_days:7). Returns role/timestamp/excerpt for each item plus `mode` (\"search\"|\"recent\"); search mode also returns `match` and a `scan_limit_hit` flag. Includes attachment filenames; skips image bytes and tool_use ids.",
     input_schema: {
       type: 'object',
       properties: {
         pattern: {
           type: 'string',
-          description: 'JS regex pattern (no slashes/flags). Be liberal with alternation.',
+          description: 'JS regex pattern (no slashes/flags). Be liberal with alternation. OMIT for newest-first recent dump.',
+        },
+        offset: {
+          type: 'integer',
+          minimum: 0,
+          description: 'Recent-dump mode only: skip this many newest messages to page further back. Default 0.',
         },
         flags: {
           type: 'string',
@@ -1616,10 +1632,9 @@ export const TOOLS = [
           type: 'integer',
           minimum: 40,
           maximum: 500,
-          description: 'Chars of context around each match. Default 200.',
+          description: 'Chars of context around each match (search) or per-message excerpt cap (recent). Default 200.',
         },
       },
-      required: ['pattern'],
       additionalProperties: false,
     },
   },
