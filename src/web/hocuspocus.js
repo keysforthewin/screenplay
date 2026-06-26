@@ -17,6 +17,7 @@ import { logger } from '../log.js';
 import { fetchYjsState, storeYjsState } from '../mongo/yjsDocs.js';
 import { getSession, touchSession } from '../mongo/auth.js';
 import { assertRoomProjectKnown, parseRoomName, resolveRoom } from './roomRegistry.js';
+import { primeRoomCache, forgetRoomCache, handleRoomChange } from './editAnnounce.js';
 
 let server;
 
@@ -78,6 +79,7 @@ async function makeServer() {
               }
             }
           }
+          primeRoomCache(documentName, desc);
         },
 
         // On every store tick (Hocuspocus debounces writes), render every
@@ -113,6 +115,15 @@ async function makeServer() {
           } catch (e) {
             logger.warn(`hocuspocus persist failed ${documentName}: ${e.message}`);
           }
+        },
+
+        async onChange({ documentName, document, context }) {
+          // Best-effort announcement of human writing/character text edits.
+          await handleRoomChange({ documentName, document, context });
+        },
+
+        afterUnloadDocument({ documentName }) {
+          forgetRoomCache(documentName);
         },
       },
     ],
