@@ -119,6 +119,15 @@ export async function connectMongo() {
     { project_id: 1 },
     { unique: true, partialFilterExpression: { project_id: { $type: 'string' } } },
   );
+  await db
+    .collection('edit_announcements')
+    .createIndex(
+      { project_id: 1, target_type: 1, target_id: 1, editor: 1 },
+      { unique: true },
+    );
+  await db
+    .collection('edit_announcements')
+    .createIndex({ created_at: 1 }, { expireAfterSeconds: 86400 });
 
   return db;
 }
