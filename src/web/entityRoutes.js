@@ -40,6 +40,7 @@ import {
   announceLibraryMedia,
   announceBatchSummary,
 } from './announceHelpers.js';
+import { diffCast, maybeAnnounceCast } from './editAnnounce.js';
 import {
   startVideoGenerationJob,
   getVideoGenerationJob,
@@ -1739,8 +1740,27 @@ export function buildApiRouter() {
       if (Array.isArray(characters)) patch.characters = characters;
       if (typeof order === 'number') patch.order = order;
       if (!Object.keys(patch).length) return res.status(400).json({ error: 'no patch fields' });
+
+      // Snapshot the cast before the update so we can diff for the announcement.
+      const before = patch.characters ? await getBeat(req.projectId, beatId) : null;
+
       const result = await updateBeatViaGateway(req.projectId, beatId, patch);
       res.json({ beat: result });
+
+      // Fire-and-forget cast-change announcement (after the response).
+      if (patch.characters) {
+        const { added, removed } = diffCast(before?.characters || [], patch.characters);
+        if (added.length || removed.length) {
+          maybeAnnounceCast({
+            projectId: req.projectId,
+            projectTitle: req.projectTitle ?? null,
+            beat: result,
+            editor: req.session?.username || null,
+            added,
+            removed,
+          });
+        }
+      }
     } catch (e) {
       next(e);
     }
