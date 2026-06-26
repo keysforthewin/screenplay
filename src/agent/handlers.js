@@ -1866,6 +1866,19 @@ export const HANDLERS = {
     return `Deleted beat "${res.name}" and ${res.image_ids.length} image(s).`;
   },
 
+  async normalize_beat({ beat } = {}, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
+    // Dynamic import keeps handlers.js's static import graph unchanged (matches
+    // the entityRoutes.js convention). normalizeBeat reformats the body to
+    // screenplay style and stashes the prior body in the single Undo slot.
+    const { normalizeBeat } = await import('../web/beatRewrite.js');
+    const { body } = await normalizeBeat(context?.projectId, target._id.toString());
+    return withSpaLink(
+      `Reformatted beat "${target.name}" to standard screenplay format (${body.length} chars). The previous body was saved, so the change can be undone.`,
+      beatUrl(context?.projectTitle, target),
+    );
+  },
+
   async link_character_to_beat({ beat, character }, context = null) {
     const target = await resolveBeat(context?.projectId, beat);
     const updated = await Plots.linkCharacterToBeat(context?.projectId, target._id.toString(), character);

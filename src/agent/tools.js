@@ -647,6 +647,20 @@ export const TOOLS = [
     },
   },
   {
+    name: 'normalize_beat',
+    keywords: ['normalize', 'reformat', 'format', 'screenplay', 'screenwriting', 'standard', 'cleanup', 'tidy', 'slugline', 'style', 'body', 'beat', 'rewrite'],
+    description:
+      "Reformat a beat's body into standard screenplay format WITHOUT changing its content, meaning, or events — fixes sluglines, action, character cues, dialogue, and parentheticals to follow the screenplay style guide. The previous body is saved so the change can be undone. Use when the user asks to clean up, normalize, or reformat a beat into screenplay style. If `beat` is omitted, the current beat is used.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'delete_beat',
     keywords: ['delete', 'remove', 'drop', 'destroy', 'beat', 'scene', 'moment'],
     description: 'Delete a beat and any images attached to it. If the deleted beat was the current beat, the current pointer is cleared.',

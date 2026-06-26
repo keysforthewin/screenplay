@@ -106,12 +106,7 @@ export function Beat({ session, section = 'writing' }) {
 
   function onRefresh() { setRefreshKey((k) => k + 1); }
 
-  const [bgBusy, setBgBusy] = useState(null); // 'normalize' | 'undo' | null
-  async function normalizeBody() {
-    setBgBusy('normalize');
-    try { await apiPostJson(`/beat/${beat._id}/normalize`, {}); onRefresh(); }
-    catch (e) { setError(e.message); } finally { setBgBusy(null); }
-  }
+  const [bgBusy, setBgBusy] = useState(null); // 'undo' | null
   async function undoBody() {
     setBgBusy('undo');
     try { await apiPostJson(`/beat/${beat._id}/restore-body`, {}); onRefresh(); }
@@ -164,16 +159,13 @@ export function Beat({ session, section = 'writing' }) {
       <CollabSurface room={room} session={session} onPing={onRefresh}>
         {tabs.includes('background') && (
           <div className="tab-panel" hidden={currentTab !== 'background'}>
-            <div className="tab-actions">
-              <button type="button" disabled={bgBusy} onClick={normalizeBody}>
-                {bgBusy === 'normalize' ? 'Normalizing…' : 'Normalize to screenplay format'}
-              </button>
-              {beat.previous_body && (
+            {beat.previous_body && (
+              <div className="tab-actions">
                 <button type="button" disabled={bgBusy} onClick={undoBody}>
                   {bgBusy === 'undo' ? 'Undoing…' : 'Undo'}
                 </button>
-              )}
-            </div>
+              </div>
+            )}
             <CollabField label="Name" field="name" />
             <CollabField label="Body" field="body" multiline />
           </div>
