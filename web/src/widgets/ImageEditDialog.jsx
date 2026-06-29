@@ -9,13 +9,13 @@ import {
 const MODEL_STORAGE_KEY = 'screenplay.imageEdit.model';
 
 // Per-image edit/regenerate modal used by ImageGallery on beat and character
-// pages. Two modes:
-// - 'edit'     → the existing image bytes + the prompt go to the chosen model.
-//                Use for small inline tweaks ("change her jacket to red").
-// - 'generate' → pure text-to-image with no reference. The existing image is
-//                replaced by a fresh one built from the prompt alone.
-// In both cases the result REPLACES the existing image in its slot (preserving
-// the slot's position; main-image status carries over if applicable).
+// pages. Two modes, both of which use the existing image as a reference:
+// - 'edit'    → existing image bytes + prompt go to the model, and the result
+//               REPLACES the existing image in its slot (preserving position;
+//               main-image status carries over). Use for small inline tweaks.
+// - 'variant' → existing image is fed in as a reference and the result is ADDED
+//               as a NEW image in the gallery; the original is kept untouched.
+// (Pure text-to-image with no reference lives in the "+ Add image" picker.)
 export function ImageEditDialog({ open, onClose, onSubmit }) {
   const [mode, setMode] = useState('edit');
   const [imageModel, setImageModel] = useState(() => readStoredImageModel(MODEL_STORAGE_KEY));
@@ -39,7 +39,7 @@ export function ImageEditDialog({ open, onClose, onSubmit }) {
     onSubmit({ mode, imageModel, prompt: trimmed });
   }
 
-  const submitLabel = mode === 'edit' ? 'Edit image' : 'Generate replacement';
+  const submitLabel = mode === 'edit' ? 'Edit image' : 'Create variant';
 
   return (
     <Modal
@@ -89,14 +89,14 @@ export function ImageEditDialog({ open, onClose, onSubmit }) {
               <input
                 type="radio"
                 name="image-edit-mode"
-                value="generate"
-                checked={mode === 'generate'}
-                onChange={() => setMode('generate')}
+                value="variant"
+                checked={mode === 'variant'}
+                onChange={() => setMode('variant')}
                 style={{ marginTop: 3 }}
               />
               <span>
-                <strong>Generate new</strong> — replace this image entirely with
-                a brand-new one built from your prompt alone.
+                <strong>Create variant</strong> — keep this image and add a
+                brand-new one to the gallery, using this image as a reference.
               </span>
             </label>
           </div>
@@ -104,7 +104,7 @@ export function ImageEditDialog({ open, onClose, onSubmit }) {
 
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <span className="field-label">
-            {mode === 'edit' ? 'Edit prompt' : 'New image prompt'}
+            {mode === 'edit' ? 'Edit prompt' : 'Variant prompt'}
           </span>
           <textarea
             value={prompt}
@@ -113,13 +113,13 @@ export function ImageEditDialog({ open, onClose, onSubmit }) {
             placeholder={
               mode === 'edit'
                 ? 'e.g. "change her jacket to red"'
-                : 'e.g. "moody portrait, dim warm light, 35mm film grain"'
+                : 'e.g. "same character, three-quarter profile, golden hour"'
             }
           />
           <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
             {mode === 'edit'
-              ? 'Sent verbatim with the existing image as reference.'
-              : 'Sent verbatim with no reference image.'}
+              ? 'Sent verbatim with the existing image as reference; replaces this image.'
+              : 'Sent verbatim with the existing image as reference; adds a new image.'}
           </span>
         </label>
 

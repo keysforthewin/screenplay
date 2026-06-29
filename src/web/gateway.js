@@ -790,7 +790,7 @@ export async function addCharacterImageViaGateway({ projectId, character, imageM
 export async function setCharacterMainImageViaGateway({ projectId, character, imageId }) {
   const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
-  const result = await setMainCharacterImage({ character: c._id.toString(), imageId });
+  const result = await setMainCharacterImage({ projectId, character: c._id.toString(), imageId });
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
     changed: ['main_image_id'],
   });
@@ -800,7 +800,7 @@ export async function setCharacterMainImageViaGateway({ projectId, character, im
 export async function removeCharacterImageViaGateway({ projectId, character, imageId }) {
   const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
-  const result = await removeCharacterImage({ character: c._id.toString(), imageId });
+  const result = await removeCharacterImage({ projectId, character: c._id.toString(), imageId });
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
     changed: ['images', 'main_image_id'],
   });

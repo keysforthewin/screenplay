@@ -70,17 +70,30 @@ export function ImageGallery({
   }
 
   async function submitEdit({ mode, imageModel, prompt }) {
-    if (!editPath || !editingImageId) return;
+    if (!editingImageId) return;
     const id = editingImageId;
     setEditingImageId(null);
     setRegenBusyId(id);
     setError(null);
     try {
-      await apiPostJson(editPath(id), {
-        mode,
-        image_model: imageModel,
-        prompt,
-      });
+      if (mode === 'variant') {
+        // Add a brand-new gallery image, anchored on the existing one (passed
+        // as a reference) rather than replacing it.
+        if (!generatePath) throw new Error('Variant generation is not available here.');
+        await apiPostJson(generatePath, {
+          prompt,
+          model: imageModel,
+          reference_image_ids: [id],
+        });
+      } else {
+        // Edit-in-place: regenerate replaces the existing image in its slot.
+        if (!editPath) throw new Error('Editing is not available here.');
+        await apiPostJson(editPath(id), {
+          mode,
+          image_model: imageModel,
+          prompt,
+        });
+      }
       await onChange?.();
     } catch (e) {
       setError(e.message);
