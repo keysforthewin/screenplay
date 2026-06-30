@@ -11,6 +11,7 @@ import { logger } from '../log.js';
 import { contentTypeFromFilename } from '../util/contentType.js';
 import { convertToMp3 } from './audioTranscode.js';
 import { requireSession } from './auth.js';
+import { runAsEditor } from './editAttribution.js';
 import { resolveProject } from './projectMiddleware.js';
 import { createProject, getProjectByTitle, listProjects, normalizeProjectTitle } from '../mongo/projects.js';
 import { seedProjectDefaults } from '../seed/defaults.js';
@@ -548,6 +549,13 @@ export function buildApiRouter() {
   });
 
   router.use(requireSession());
+
+  // Attribute every gateway text/cast edit made during an authenticated request
+  // to the logged-in user, so AI-assist features (beat rewrite, restore, dialog
+  // edits, etc.) announce like manual edits. Pure reads and edits to
+  // non-announce-worthy rooms wrap harmlessly. The chat run sets its own scope
+  // (chatRuns.js) because it detaches onto the channel mutex.
+  router.use((req, _res, next) => runAsEditor(req.session?.username, () => next()));
 
   // Start a web chat agent run against the viewer's current project. The
   // agent shares the Discord channel's conversation history but the run is
