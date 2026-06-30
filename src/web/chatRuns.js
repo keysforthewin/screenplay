@@ -32,6 +32,7 @@ import { recordAnthropicTextUsage } from '../mongo/tokenUsage.js';
 import { pdfLink } from '../server/index.js';
 import { resolvePageContextNote } from './pageContext.js';
 import { webChannelId, computeHistoryStats } from './chatHistory.js';
+import { runAsEditor } from './editAttribution.js';
 
 const runs = new Map();      // runId -> run (live mutable object)
 const listeners = new Map(); // runId -> Set<(snapshot) => void>
@@ -257,7 +258,7 @@ async function executeChatRun({ run, channelId, projectId, projectTitle, session
     }
 
     addProgress(run, 'thinking…');
-    const result = await runAgent({
+    const result = await runAsEditor(session?.username, () => runAgent({
       history,
       userText: text,
       attachments: [],
@@ -273,7 +274,7 @@ async function executeChatRun({ run, channelId, projectId, projectTitle, session
           for (const name of ev.tools || []) addProgress(run, `calling ${name}…`);
         }
       },
-    });
+    }));
     attachmentPaths = result.attachmentPaths || [];
 
     try {
