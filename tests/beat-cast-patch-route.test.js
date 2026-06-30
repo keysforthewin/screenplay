@@ -1,12 +1,12 @@
 // Tests for PATCH /api/beat/:id — the endpoint the SPA calls to update a
 // beat's cast (characters array) and/or order. Cast-change announcing was
-// centralized into updateBeatViaGateway and now fires only inside an active
-// currentEditor() scope (see tests/web-edit-attribution.test.js for the
-// positive case). This file mocks requireSession() as a pass-through that
-// never sets req.session, so the router's attribution middleware always
-// calls runAsEditor(undefined, ...) here and activates no editor scope —
-// that's why a plain PATCH stays silent below. In production this route DOES
-// announce, attributed to the logged-in user.
+// centralized into updateBeatViaGateway and fires only inside an active
+// currentEditor() scope. By default, this file's requireSession() mock leaves
+// req.session unset (sessionState.current defaults to undefined, reset in
+// beforeEach), so the router's attribution middleware activates no scope and
+// cast changes stay silent. The positive test near the bottom overrides
+// sessionState.current to exercise the attributed (announcing) path. In
+// production this REST route DOES announce, attributed to the logged-in user.
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import express from 'express';
