@@ -2,8 +2,11 @@
 // beat's cast (characters array) and/or order. Cast-change announcing was
 // centralized into updateBeatViaGateway and now fires only inside an active
 // currentEditor() scope (see tests/web-edit-attribution.test.js for the
-// positive case). This route doesn't establish that scope itself, so a plain
-// PATCH here stays silent until the request-attribution middleware lands.
+// positive case). This file mocks requireSession() as a pass-through that
+// never sets req.session, so the router's attribution middleware always
+// calls runAsEditor(undefined, ...) here and activates no editor scope —
+// that's why a plain PATCH stays silent below. In production this route DOES
+// announce, attributed to the logged-in user.
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import express from 'express';
@@ -15,8 +18,16 @@ vi.mock('../src/mongo/client.js', () => ({
   getDb: () => fakeDb,
   connectMongo: async () => fakeDb,
 }));
+// Mutable module-level session, read by the requireSession mock below. Tests
+// that want a logged-in user set sessionState.current and must reset it
+// (e.g. in afterEach) so the other tests' "no session" assumption holds.
+const sessionState = vi.hoisted(() => ({ current: undefined }));
+
 vi.mock('../src/web/auth.js', () => ({
-  requireSession: () => (_req, _res, next) => next(),
+  requireSession: () => (req, _res, next) => {
+    req.session = sessionState.current;
+    next();
+  },
 }));
 vi.mock('../src/log.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -69,6 +80,7 @@ let projectId;
 beforeEach(async () => {
   fakeDb.reset();
   vi.clearAllMocks();
+  sessionState.current = undefined;
   projectId = (await createProject('Test Project'))._id.toString();
 });
 
@@ -94,8 +106,10 @@ describe('PATCH /api/beat/:id (cast)', () => {
 
   it('does NOT call maybeAnnounceCast when characters change but no editor scope is active', async () => {
     // Announcing now happens inside updateBeatViaGateway, gated on
-    // currentEditor() (AsyncLocalStorage). This route doesn't wrap the
-    // request in runAsEditor(), so even a real cast change stays silent here.
+    // currentEditor() (AsyncLocalStorage). This test mocks out requireSession
+    // and never sets a session, so the attribution middleware activates no
+    // editor scope and the cast change stays silent. In production this
+    // route DOES announce, attributed to the logged-in user.
     const beat = await Plots.createBeat({
       projectId,
       name: 'Scene 1',
@@ -125,6 +139,33 @@ describe('PATCH /api/beat/:id (cast)', () => {
     await patch(`/api/beat/${beat._id}`, { order: beat.order });
     await new Promise((r) => setTimeout(r, 0));
     expect(maybeAnnounceCast).not.toHaveBeenCalled();
+  });
+
+  it('calls maybeAnnounceCast attributed to the logged-in user when a real session is present', async () => {
+    // Exercises the production chain: requireSession -> attribution
+    // middleware -> req.session.username -> runAsEditor scope ->
+    // updateBeatViaGateway -> maybeAnnounceCast. The other tests in this file
+    // leave sessionState.current undefined (no session); this is the one
+    // positive case.
+    sessionState.current = { username: 'Steve' };
+    const beat = await Plots.createBeat({
+      projectId,
+      name: 'Scene 1',
+      body: 'body',
+      characters: ['Alice'],
+    });
+    await patch(`/api/beat/${beat._id}`, { characters: ['Alice', 'Bob'] });
+    // Allow the event loop to finish the fire-and-forget maybeAnnounceCast call.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(maybeAnnounceCast).toHaveBeenCalledTimes(1);
+    expect(maybeAnnounceCast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        editor: 'Steve',
+        added: ['Bob'],
+        removed: [],
+      }),
+    );
+    sessionState.current = undefined;
   });
 
   it('returns 400 when no recognized fields provided', async () => {

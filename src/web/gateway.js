@@ -631,7 +631,8 @@ export async function updateBeatViaGateway(projectId, identifier, patch) {
   // Attribute a cast change to the in-scope web user (chat agent / AI feature).
   // Bot/Discord edits have no editor scope and stay silent. maybeAnnounceCast is
   // fire-and-forget and applies its own 24h throttle, so we don't await it.
-  if (Array.isArray(patch.characters) && currentEditor()) {
+  const editor = currentEditor();
+  if (Array.isArray(patch.characters) && editor) {
     const { added, removed } = diffCast(beat.characters || [], after.characters || []);
     if (added.length || removed.length) {
       const proj = await getProjectById(projectId).catch(() => null);
@@ -639,7 +640,7 @@ export async function updateBeatViaGateway(projectId, identifier, patch) {
         projectId,
         projectTitle: proj?.title ?? null,
         beat: after,
-        editor: currentEditor(),
+        editor,
         added,
         removed,
       });
