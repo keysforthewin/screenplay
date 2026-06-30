@@ -1,6 +1,9 @@
 // Tests for PATCH /api/beat/:id — the endpoint the SPA calls to update a
-// beat's cast (characters array) and/or order. Verifies that a cast change
-// triggers maybeAnnounceCast fire-and-forget after the response.
+// beat's cast (characters array) and/or order. Cast-change announcing was
+// centralized into updateBeatViaGateway and now fires only inside an active
+// currentEditor() scope (see tests/web-edit-attribution.test.js for the
+// positive case). This route doesn't establish that scope itself, so a plain
+// PATCH here stays silent until the request-attribution middleware lands.
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import express from 'express';
@@ -89,7 +92,10 @@ describe('PATCH /api/beat/:id (cast)', () => {
     expect(json.beat.characters).toContain('Alice');
   });
 
-  it('calls maybeAnnounceCast when characters change', async () => {
+  it('does NOT call maybeAnnounceCast when characters change but no editor scope is active', async () => {
+    // Announcing now happens inside updateBeatViaGateway, gated on
+    // currentEditor() (AsyncLocalStorage). This route doesn't wrap the
+    // request in runAsEditor(), so even a real cast change stays silent here.
     const beat = await Plots.createBeat({
       projectId,
       name: 'Scene 1',
@@ -97,12 +103,9 @@ describe('PATCH /api/beat/:id (cast)', () => {
       characters: ['Alice'],
     });
     await patch(`/api/beat/${beat._id}`, { characters: ['Alice', 'Bob'] });
-    // Allow the event loop to finish the fire-and-forget call.
+    // Allow the event loop to finish any fire-and-forget call.
     await new Promise((r) => setTimeout(r, 0));
-    expect(maybeAnnounceCast).toHaveBeenCalledOnce();
-    const call = maybeAnnounceCast.mock.calls[0][0];
-    expect(call.added).toEqual(['Bob']);
-    expect(call.removed).toEqual([]);
+    expect(maybeAnnounceCast).not.toHaveBeenCalled();
   });
 
   it('does NOT call maybeAnnounceCast when characters are unchanged', async () => {

@@ -32,7 +32,7 @@ import {
 } from './hocuspocus.js';
 import * as Plots from '../mongo/plots.js';
 import { buildRoomName } from './roomRegistry.js';
-import { resolveProjectId } from '../mongo/projects.js';
+import { resolveProjectId, getProjectById } from '../mongo/projects.js';
 
 // Lazy-load the heavy headless-editor module (jsdom + Tiptap). It's only
 // needed when Hocuspocus is actually running, which is never the case in
@@ -139,6 +139,7 @@ import { enqueueReindex } from '../rag/queue.js';
 import { deleteEntity } from '../rag/indexer.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { currentEditor } from './editAttribution.js';
+import { maybeAnnounceCast, diffCast } from './editAnnounce.js';
 
 let botDisplayName = 'Screenplay Bot';
 
@@ -626,7 +627,25 @@ export async function updateBeatViaGateway(projectId, identifier, patch) {
       changed: Object.keys(onlyDiscrete),
     });
   }
-  return getBeat(projectId, beatId);
+  const after = await getBeat(projectId, beatId);
+  // Attribute a cast change to the in-scope web user (chat agent / AI feature).
+  // Bot/Discord edits have no editor scope and stay silent. maybeAnnounceCast is
+  // fire-and-forget and applies its own 24h throttle, so we don't await it.
+  if (Array.isArray(patch.characters) && currentEditor()) {
+    const { added, removed } = diffCast(beat.characters || [], after.characters || []);
+    if (added.length || removed.length) {
+      const proj = await getProjectById(projectId).catch(() => null);
+      maybeAnnounceCast({
+        projectId,
+        projectTitle: proj?.title ?? null,
+        beat: after,
+        editor: currentEditor(),
+        added,
+        removed,
+      });
+    }
+  }
+  return after;
 }
 
 export async function updateCharacterViaGateway(projectId, identifier, patch) {
