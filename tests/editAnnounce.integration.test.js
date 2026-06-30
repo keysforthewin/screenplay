@@ -118,6 +118,28 @@ describe('handleRoomChange (beat writing edits)', () => {
     });
     expect(announceCalls).toHaveLength(0);
   });
+
+  it('announces a web-user (AI-on-behalf-of) body edit', async () => {
+    primeRoomCache(beatRoom(), beatDesc());
+    await handleRoomChange({
+      documentName: beatRoom(),
+      document: fakeDoc({ name: 'Scene One', body: 'NEW body', desc: '' }),
+      context: { actor: 'web-user', user: { name: 'Steve' } },
+    });
+    expect(announceCalls).toHaveLength(1);
+    expect(announceCalls[0].username).toBe('Steve');
+    expect(announceCalls[0].verb).toBe('edited the writing in');
+  });
+
+  it('still skips bot edits', async () => {
+    primeRoomCache(beatRoom(), beatDesc());
+    await handleRoomChange({
+      documentName: beatRoom(),
+      document: fakeDoc({ name: 'Scene One', body: 'NEW body', desc: '' }),
+      context: { actor: 'bot', user: { name: 'Screenplay Bot' } },
+    });
+    expect(announceCalls).toHaveLength(0);
+  });
 });
 
 describe('maybeAnnounceCast', () => {
