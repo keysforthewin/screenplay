@@ -1,4 +1,25 @@
-import { describe, it, expect } from 'vitest';
+// --- add these mocks at the very top of the file, before any import of gateway ---
+import { describe, it, expect, vi } from 'vitest';
+import { createFakeDb } from './_fakeMongo.js';
+
+const fakeDb = createFakeDb();
+vi.mock('../src/mongo/client.js', () => ({
+  getDb: () => fakeDb,
+  connectMongo: async () => fakeDb,
+}));
+vi.mock('../src/log.js', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+vi.mock('../src/rag/queue.js', () => ({ enqueueReindex: () => {} }));
+vi.mock('../src/rag/indexer.js', () => ({ deleteEntity: () => Promise.resolve() }));
+
+const announceCalls = [];
+vi.mock('../src/discord/announcer.js', () => ({
+  announceMediaEvent: async (payload) => { announceCalls.push(payload); },
+  announceText: async () => {},
+}));
+
+const Gateway = await import('../src/web/gateway.js');
 
 const { runAsEditor, currentEditor } = await import('../src/web/editAttribution.js');
 
@@ -32,5 +53,16 @@ describe('editAttribution', () => {
     const out = runAsEditor('Outer', () =>
       runAsEditor('Inner', () => currentEditor()));
     expect(out).toBe('Inner');
+  });
+});
+
+describe('gatewayEditContext', () => {
+  it('returns the bot actor outside an editor scope', () => {
+    expect(Gateway.gatewayEditContext()).toEqual({ actor: 'bot' });
+  });
+
+  it('returns a web-user actor inside an editor scope', () => {
+    const ctx = runAsEditor('Steve', () => Gateway.gatewayEditContext());
+    expect(ctx).toEqual({ actor: 'web-user', user: { name: 'Steve' } });
   });
 });

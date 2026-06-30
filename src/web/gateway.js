@@ -138,6 +138,7 @@ import { probeAudioDurationSeconds } from '../fal/videoPricing.js';
 import { enqueueReindex } from '../rag/queue.js';
 import { deleteEntity } from '../rag/indexer.js';
 import { stripMarkdown } from '../util/markdown.js';
+import { currentEditor } from './editAttribution.js';
 
 let botDisplayName = 'Screenplay Bot';
 
@@ -147,6 +148,17 @@ export function setBotDisplayName(name) {
 
 export function getBotDisplayName() {
   return botDisplayName;
+}
+
+// Context passed to withDirectDocument → surfaces as `context` in the Hocuspocus
+// onChange announce hook (editAnnounce.handleRoomChange). When a text edit is
+// performed on behalf of a logged-in web user (chat agent or any AI feature
+// running inside a runAsEditor scope), attribute it to them so the edit is
+// announced + throttled exactly like a manual keyboard edit. Otherwise it's a
+// bot/Discord edit and stays silent (handleRoomChange skips actor === 'bot').
+export function gatewayEditContext() {
+  const editor = currentEditor();
+  return editor ? { actor: 'web-user', user: { name: editor } } : { actor: 'bot' };
 }
 
 function botAwarenessUser(field) {
@@ -469,7 +481,7 @@ export async function setEntityFieldMarkdown({ projectId, entityType, entityId, 
   }
   const { setFragmentMarkdown } = await he();
   const roomName = roomNameFor(entityType, entityId, projectId);
-  await withDirectDocument(roomName, { actor: 'bot' }, (document) => {
+  await withDirectDocument(roomName, gatewayEditContext(), (document) => {
     withBotPresence(roomName, field, () => {
       setFragmentMarkdown(document, field, String(markdown ?? ''));
     });
@@ -497,7 +509,7 @@ export async function editEntityFieldMarkdown({ projectId, entityType, entityId,
   const { editFragmentMarkdown } = await he();
   const roomName = roomNameFor(entityType, entityId, projectId);
   let outcome;
-  await withDirectDocument(roomName, { actor: 'bot' }, (document) => {
+  await withDirectDocument(roomName, gatewayEditContext(), (document) => {
     withBotPresence(roomName, field, () => {
       outcome = editFragmentMarkdown(document, field, edits);
     });
@@ -519,7 +531,7 @@ export async function appendEntityFieldMarkdown({ projectId, entityType, entityI
   const { appendToFragmentMarkdown } = await he();
   const roomName = roomNameFor(entityType, entityId, projectId);
   let next;
-  await withDirectDocument(roomName, { actor: 'bot' }, (document) => {
+  await withDirectDocument(roomName, gatewayEditContext(), (document) => {
     withBotPresence(roomName, field, () => {
       next = appendToFragmentMarkdown(document, field, content);
     });
@@ -2378,7 +2390,7 @@ export async function getEntityFieldMarkdown({ projectId, entityType, entityId, 
   const { fragmentToMarkdown } = await he();
   const roomName = roomNameFor(entityType, entityId, projectId);
   let out;
-  await withDirectDocument(roomName, { actor: 'bot' }, (document) => {
+  await withDirectDocument(roomName, gatewayEditContext(), (document) => {
     out = fragmentToMarkdown(document, field);
   });
   return out;
