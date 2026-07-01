@@ -672,6 +672,23 @@ export const TOOLS = [
     },
   },
   {
+    name: 'reorder_beats',
+    description:
+      'Reorder ALL beats into a new sequence; they are renumbered 1..N automatically. Pass every beat _id exactly once, in the order you want. Beat numbers are always kept sequential automatically — do NOT set beat.order by hand to renumber. To move a single beat, either use this with the full new order, or set its order to its target position (that also renumbers).',
+    keywords: ['move', 'reorder', 'renumber', 'sequence', 'rearrange', 'sort', 'order beats'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'All beat _ids (24-hex strings) in the desired order. Must include every beat exactly once.',
+        },
+      },
+      required: ['beat_ids'],
+    },
+  },
+  {
     name: 'link_character_to_beat',
     keywords: ['link', 'add', 'attach', 'connect', 'character', 'beat', 'scene', 'present'],
     description: "Add a character (by name) to a beat's character list. Idempotent — duplicates are silently ignored. If `beat` is omitted, the current beat is used.",
