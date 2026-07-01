@@ -24,6 +24,7 @@ beforeEach(async () => {
   fakeDb.reset();
   const project = await Projects.createProject('Western');
   pid = project._id.toString();
+  await Plots.createBeat({ projectId: pid, name: 'Opening', desc: 'setup', body: 'setup' });
   await Plots.createBeat({ projectId: pid, name: 'The Heist', desc: 'heist', body: 'rob bank', order: 2 });
   await Characters.createCharacter({ projectId: pid, name: 'Steve' });
 });

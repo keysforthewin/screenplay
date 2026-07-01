@@ -1222,7 +1222,9 @@ export const HANDLERS = {
       const display =
         field === 'characters'
           ? `[${value.map((s) => JSON.stringify(s)).join(', ')}]`
-          : JSON.stringify(value);
+          : field === 'order'
+            ? String(beat.order)
+            : JSON.stringify(value);
       return withSpaLink(
         `Set beat "${beat.name}".${field} = ${display}.`,
         beatUrl(context?.projectTitle, beat),
