@@ -67,17 +67,19 @@ describe('set_field handler — input validation', () => {
 
 // ─── beat ────────────────────────────────────────────────────────────────────
 describe('set_field handler — beat', () => {
-  it('sets order', async () => {
-    const a = await Plots.createBeat({ projectId, name: 'A', desc: 'd' });
-    await Plots.createBeat({ projectId, name: 'B', desc: 'd' });
+  it('sets order (moves the beat to that position and renumbers)', async () => {
+    const a = await Plots.createBeat({ projectId, name: 'A', desc: 'd' }); // order 1
+    const b = await Plots.createBeat({ projectId, name: 'B', desc: 'd' }); // order 2
+    // order=5 is past the end → A clamps to the last position; beats renumber 1..N.
     const out = await HANDLERS.set_field({
       collection: 'beat',
       identifier: a._id.toString(),
       field: 'order',
       value: 5,
     }, { projectId });
-    expect(out).toMatch(/Set beat "A"\.order = 5/);
-    expect((await Plots.getBeat(projectId, a._id.toString())).order).toBe(5);
+    expect(out).toMatch(/Set beat "A"\.order = 2/);
+    expect((await Plots.getBeat(projectId, a._id.toString())).order).toBe(2);
+    expect((await Plots.getBeat(projectId, b._id.toString())).order).toBe(1);
   });
 
   it('rejects non-number for order', async () => {

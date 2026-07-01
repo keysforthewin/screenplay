@@ -176,7 +176,10 @@ describe('similarity post-hook on edit (beat)', () => {
       field: 'order',
       value: 99,
     }, { projectId });
-    expect(out).toMatch(/\.order = 99/);
+    // value=99 is past the end; with 2 beats total, B (already order 2) clamps
+    // to the last position, i.e. stays at order 2 — the handler now reports the
+    // resulting position, not the requested value.
+    expect(out).toMatch(/\.order = 2/);
     expect(out).not.toMatch(/Heads up/);
   });
 });

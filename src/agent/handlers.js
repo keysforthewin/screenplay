@@ -12,7 +12,7 @@ import { getProjectByTitle, listProjects } from '../mongo/projects.js';
 import { setCurrentProjectId, setHistoryClearedAt } from '../mongo/channelState.js';
 import * as Gateway from '../web/gateway.js';
 import { kickoffLibraryVisionSeed } from '../web/libraryVisionWorker.js';
-import { aboutUrl, beatUrl, characterUrl, notesUrl, withSpaLink } from '../web/links.js';
+import { aboutUrl, beatUrl, characterUrl, homeUrl, notesUrl, withSpaLink } from '../web/links.js';
 import * as Tmdb from '../tmdb/client.js';
 import * as Tavily from '../tavily/client.js';
 import { buildImagePrompt } from '../gemini/promptBuilder.js';
@@ -1216,13 +1216,15 @@ export const HANDLERS = {
           return 'Tool error (set_field): beat.scene_sheet_image_id must be a 24-char hex string or null.';
         }
       } else {
-        return `Tool error (set_field): beat field must be one of order, characters, scene_sheet_image_id; got "${field}". For text fields (name, desc, body) use \`edit\` instead.`;
+        return `Tool error (set_field): beat field must be one of order, characters, scene_sheet_image_id; got "${field}". Setting order=N moves the beat to position N and renumbers all beats automatically (you never set beat numbers by hand). For text fields (name, desc, body) use \`edit\` instead.`;
       }
       const beat = await Gateway.updateBeatViaGateway(context?.projectId, identifier, { [field]: value });
       const display =
         field === 'characters'
           ? `[${value.map((s) => JSON.stringify(s)).join(', ')}]`
-          : JSON.stringify(value);
+          : field === 'order'
+            ? String(beat.order)
+            : JSON.stringify(value);
       return withSpaLink(
         `Set beat "${beat.name}".${field} = ${display}.`,
         beatUrl(context?.projectTitle, beat),
@@ -1718,11 +1720,25 @@ export const HANDLERS = {
   },
 
   async create_beat({ name, desc, body, characters, order }, context = null) {
-    const b = await Plots.createBeat({ projectId: context?.projectId, name, desc, body, characters, order });
+    const b = await Gateway.createBeatViaGateway({ projectId: context?.projectId, name, desc, body, characters, order });
     const base = `Created beat "${b.name}" (order ${b.order}, _id ${b._id}). It is now the current beat if none was set.`;
     return withSpaLink(
       await appendSimilarityHeadsUp(context?.projectId, 'beat', b, base),
       beatUrl(context?.projectTitle, b),
+    );
+  },
+
+  async reorder_beats({ beat_ids } = {}, context = null) {
+    if (!Array.isArray(beat_ids)) {
+      return 'Tool error (reorder_beats): `beat_ids` must be an array of beat _id strings.';
+    }
+    const beats = await Gateway.reorderBeatsViaGateway({
+      projectId: context?.projectId,
+      orderedIds: beat_ids,
+    });
+    return withSpaLink(
+      `Reordered ${beats.length} beat(s) and renumbered them 1–${beats.length}.`,
+      homeUrl(context?.projectTitle),
     );
   },
 
@@ -1861,7 +1877,7 @@ export const HANDLERS = {
   },
 
   async delete_beat({ identifier }, context = null) {
-    const res = await Plots.deleteBeat(context?.projectId, identifier);
+    const res = await Gateway.deleteBeatViaGateway(context?.projectId, identifier);
     await Images.deleteImages(res.image_ids);
     return `Deleted beat "${res.name}" and ${res.image_ids.length} image(s).`;
   },

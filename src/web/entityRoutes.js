@@ -98,6 +98,7 @@ import {
   moveBeatImageToLibraryViaGateway,
   moveCharacterImageToLibraryViaGateway,
   reorderDialogsViaGateway,
+  reorderBeatsViaGateway,
   reorderStoryboardsViaGateway,
   setBeatMainImageViaGateway,
   setCharacterMainImageViaGateway,
@@ -5496,6 +5497,22 @@ export function buildApiRouter() {
           verb: 'deleted dialog audio from',
         });
       }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/beats/reorder', async (req, res, next) => {
+    try {
+      const orderedIds = req.body?.ordered_ids;
+      if (!Array.isArray(orderedIds)) {
+        return res.status(400).json({ error: 'ordered_ids must be an array' });
+      }
+      const beats = await reorderBeatsViaGateway({
+        projectId: req.projectId,
+        orderedIds,
+      });
+      res.json({ beats });
     } catch (e) {
       next(e);
     }
