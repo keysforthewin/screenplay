@@ -544,6 +544,37 @@ export async function deleteBeat(projectId, identifier) {
   };
 }
 
+// Positional reorder: `orderedIds` must be every beat _id in the desired
+// sequence. Assigns order = i+1 by array position (mirrors
+// reorderDialogsForBeat). The dedicated path the drag-and-drop UI and the
+// agent's reorder_beats tool call.
+export async function reorderBeats(projectId, orderedIds) {
+  projectId = await resolveProjectId(projectId);
+  if (!Array.isArray(orderedIds)) throw new Error('orderedIds must be an array');
+  const plot = await getPlot(projectId);
+  const beats = plot.beats || [];
+  if (orderedIds.length !== beats.length) {
+    throw new Error(
+      `reorder: orderedIds length ${orderedIds.length} != current ${beats.length}`,
+    );
+  }
+  const byId = new Map(beats.map((b) => [b._id.toString(), b]));
+  const seen = new Set();
+  const reordered = [];
+  for (const rawId of orderedIds) {
+    const key = String(rawId);
+    if (seen.has(key)) throw new Error(`reorder: duplicate id ${key}`);
+    seen.add(key);
+    const beat = byId.get(key);
+    if (!beat) throw new Error(`reorder: id ${key} not in this plot`);
+    reordered.push(beat);
+  }
+  const normalized = reordered.map((b, i) => (b.order === i + 1 ? b : { ...b, order: i + 1 }));
+  await persistBeatsFullArray(projectId, normalized);
+  logger.info(`mongo: beats reorder count=${normalized.length}`);
+  return normalized;
+}
+
 export async function linkCharacterToBeat(projectId, identifier, characterName) {
   projectId = await resolveProjectId(projectId);
   const plot = await getPlot(projectId);

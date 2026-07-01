@@ -87,3 +87,41 @@ describe('beat mutations keep order contiguous 1..N', () => {
     expect(await orders()).toEqual([1, 2, 3]);
   });
 });
+
+describe('reorderBeats', () => {
+  it('renumbers by array position', async () => {
+    const A = await Plots.createBeat({ projectId, name: 'A', body: 'x' });
+    const B = await Plots.createBeat({ projectId, name: 'B', body: 'x' });
+    const C = await Plots.createBeat({ projectId, name: 'C', body: 'x' });
+    const out = await Plots.reorderBeats(projectId, [
+      C._id.toString(), A._id.toString(), B._id.toString(),
+    ]);
+    expect(out.map((x) => x.name)).toEqual(['C', 'A', 'B']);
+    expect(out.map((x) => x.order)).toEqual([1, 2, 3]);
+    const persisted = await Plots.listBeats(projectId);
+    expect(persisted.map((x) => x.name)).toEqual(['C', 'A', 'B']);
+  });
+
+  it('rejects a mismatched length', async () => {
+    const A = await Plots.createBeat({ projectId, name: 'A', body: 'x' });
+    await Plots.createBeat({ projectId, name: 'B', body: 'x' });
+    await expect(Plots.reorderBeats(projectId, [A._id.toString()])).rejects.toThrow(/length/);
+  });
+
+  it('rejects a duplicate id', async () => {
+    const A = await Plots.createBeat({ projectId, name: 'A', body: 'x' });
+    const B = await Plots.createBeat({ projectId, name: 'B', body: 'x' });
+    await expect(
+      Plots.reorderBeats(projectId, [A._id.toString(), A._id.toString()]),
+    ).rejects.toThrow(/duplicate/);
+  });
+
+  it('rejects an unknown id', async () => {
+    const A = await Plots.createBeat({ projectId, name: 'A', body: 'x' });
+    await Plots.createBeat({ projectId, name: 'B', body: 'x' });
+    const { ObjectId } = await import('mongodb');
+    await expect(
+      Plots.reorderBeats(projectId, [A._id.toString(), new ObjectId().toString()]),
+    ).rejects.toThrow(/not in this plot/);
+  });
+});
