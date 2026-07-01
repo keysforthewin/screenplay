@@ -307,6 +307,18 @@ async function persistBeatsFullArray(projectId, beats, extraSet = {}) {
   }
 }
 
+// Beat numbers are a maintained invariant: always the contiguous sequence
+// 1..N with no gaps or ties. This is the single place that enforces it —
+// callers that change beat membership or position run their array through it
+// before persisting. Pure: sorts a copy by current order, then rewrites order
+// to 1-based position. Members already at the right number are returned as-is
+// (referential identity preserved) so writes stay minimal.
+export function normalizeBeatOrders(beats) {
+  return [...(beats || [])]
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    .map((b, i) => (b.order === i + 1 ? b : { ...b, order: i + 1 }));
+}
+
 export async function createBeat({ projectId, name, desc = '', body = '', characters = [], order } = {}) {
   projectId = await resolveProjectId(projectId);
   const finalDesc = String(desc || '').trim();
