@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { apiGet } from '../api.js';
 import { LibraryPanel } from '../widgets/LibraryPanel.jsx';
+import { SortableBeatList } from '../widgets/SortableBeatList.jsx';
+import { useRoomBroadcast } from '../hooks/useRoomBroadcast.js';
+import { useProject } from '../project/ProjectContext.jsx';
 
 const TABS = [
   { id: 'characters', label: 'Characters' },
@@ -31,18 +34,28 @@ export function Toc({ session }) {
   const [query, setQuery] = useState('');
   const [activeTab, setActiveTab] = useState(readInitialTab);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const t = await apiGet('/toc');
-        if (!cancelled) setToc(t);
-      } catch (e) {
-        if (!cancelled) setError(e.message);
-      }
-    })();
-    return () => { cancelled = true; };
+  const { id: projectId } = useProject();
+
+  const refetchToc = useCallback(async () => {
+    try {
+      const t = await apiGet('/toc');
+      setToc(t);
+    } catch (e) {
+      setError(e.message);
+    }
   }, []);
+
+  useEffect(() => { refetchToc(); }, [refetchToc]);
+
+  // Live update: the server pings plot:<projectId> with {changed:['beats']}
+  // whenever the beat list is reordered/renumbered (drag, or the AI agent).
+  useRoomBroadcast(
+    projectId ? `plot:${projectId}` : null,
+    session,
+    useCallback((msg) => {
+      if (msg?.changed?.includes('beats')) refetchToc();
+    }, [refetchToc]),
+  );
 
   const refetchLibrary = useCallback(async () => {
     try {
@@ -293,18 +306,17 @@ export function Toc({ session }) {
           <p style={{ color: 'var(--fg-muted)' }}>No beats yet.</p>
         ) : (
           <section className="toc-section">
-            <ul>
-              {beats.map((b) => (
-                <li key={b.key}>
-                  <Link
-                    to={b.to}
-                    title={b.bodyEmpty ? 'Beat body is empty' : undefined}
-                  >
-                    {`${b.bodyEmpty ? '* ' : ''}${b.label}`}
-                  </Link>
-                </li>
-              ))}
-            </ul>
+            <SortableBeatList
+              disabled={!!filter}
+              onReordered={refetchToc}
+              onError={setError}
+              items={beats.map((b) => ({
+                id: b.key,
+                to: b.to,
+                title: b.bodyEmpty ? 'Beat body is empty' : undefined,
+                content: `${b.bodyEmpty ? '* ' : ''}${b.label}`,
+              }))}
+            />
           </section>
         )}
       </div>
@@ -318,22 +330,17 @@ export function Toc({ session }) {
           <p style={{ color: 'var(--fg-muted)' }}>No beats yet.</p>
         ) : (
           <section className="toc-section">
-            <ul>
-              {dialogBeats.map((b) => {
-                const prefix = b.missing ? '* ' : '';
-                const suffix = b.missing ? '' : ` (${b.count})`;
-                return (
-                  <li key={b.key}>
-                    <Link
-                      to={b.to}
-                      title={b.missing ? 'No dialog for this beat yet' : undefined}
-                    >
-                      {`${prefix}#${b.order} — ${b.title}${suffix}`}
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
+            <SortableBeatList
+              disabled={!!filter}
+              onReordered={refetchToc}
+              onError={setError}
+              items={dialogBeats.map((b) => ({
+                id: b.key,
+                to: b.to,
+                title: b.missing ? 'No dialog for this beat yet' : undefined,
+                content: `${b.missing ? '* ' : ''}#${b.order} — ${b.title}${b.missing ? '' : ` (${b.count})`}`,
+              }))}
+            />
           </section>
         )}
       </div>
@@ -347,22 +354,17 @@ export function Toc({ session }) {
           <p style={{ color: 'var(--fg-muted)' }}>No beats yet.</p>
         ) : (
           <section className="toc-section">
-            <ul>
-              {storyboardBeats.map((b) => {
-                const prefix = b.missing ? '* ' : '';
-                const suffix = b.missing ? '' : ` (${b.count})`;
-                return (
-                  <li key={b.key}>
-                    <Link
-                      to={b.to}
-                      title={b.missing ? 'No storyboards for this beat yet' : undefined}
-                    >
-                      {`${prefix}#${b.order} — ${b.title}${suffix}`}
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
+            <SortableBeatList
+              disabled={!!filter}
+              onReordered={refetchToc}
+              onError={setError}
+              items={storyboardBeats.map((b) => ({
+                id: b.key,
+                to: b.to,
+                title: b.missing ? 'No storyboards for this beat yet' : undefined,
+                content: `${b.missing ? '* ' : ''}#${b.order} — ${b.title}${b.missing ? '' : ` (${b.count})`}`,
+              }))}
+            />
           </section>
         )}
       </div>
