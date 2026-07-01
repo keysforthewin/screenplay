@@ -626,7 +626,7 @@ export async function updateBeatViaGateway(projectId, identifier, patch) {
     broadcastFieldsUpdated(buildRoomName('beat', beatId), {
       changed: Object.keys(onlyDiscrete),
     });
-    if (onlyDiscrete.order !== undefined) broadcastBeatsChanged(projectId);
+    if (onlyDiscrete.order !== undefined) await broadcastBeatsChanged(projectId);
   }
   const after = await getBeat(projectId, beatId);
   // Attribute a cast change to the in-scope web user (chat agent / AI feature).
@@ -2183,7 +2183,8 @@ export async function deleteAllDialogsForBeatViaGateway({ projectId, beatId }) {
 // Ping the project-wide singleton room so any open Table of Contents refetches
 // its beat list. Beat CONTENT lives in per-beat rooms; this only signals "the
 // beat list/order changed". No-op (returns false) when no clients are connected.
-export function broadcastBeatsChanged(projectId) {
+export async function broadcastBeatsChanged(projectId) {
+  projectId = await resolveProjectId(projectId);
   return broadcastFieldsUpdated(buildRoomName('plot', String(projectId)), {
     changed: ['beats'],
   });
@@ -2192,21 +2193,21 @@ export function broadcastBeatsChanged(projectId) {
 export async function reorderBeatsViaGateway({ projectId, orderedIds }) {
   const { reorderBeats } = await import('../mongo/plots.js');
   const beats = await reorderBeats(projectId, orderedIds);
-  broadcastBeatsChanged(projectId);
+  await broadcastBeatsChanged(projectId);
   return beats;
 }
 
 export async function createBeatViaGateway(opts) {
   const { createBeat } = await import('../mongo/plots.js');
   const beat = await createBeat(opts);
-  broadcastBeatsChanged(opts.projectId);
+  await broadcastBeatsChanged(opts.projectId);
   return beat;
 }
 
 export async function deleteBeatViaGateway(projectId, identifier) {
   const { deleteBeat } = await import('../mongo/plots.js');
   const res = await deleteBeat(projectId, identifier);
-  broadcastBeatsChanged(projectId);
+  await broadcastBeatsChanged(projectId);
   return res;
 }
 

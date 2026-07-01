@@ -418,9 +418,16 @@ export async function updateBeat(projectId, identifier, patch) {
   if (sheetImageIdProvided) set['beats.$.scene_sheet_image_id'] = sheetImageId;
 
   const orderChanging = patch.order !== undefined && patch.order !== null;
-  // "Move to position N": write a fractional sort key so the beat lands just
-  // before whoever currently holds N, then renumber the whole array to 1..N.
-  if (orderChanging) set['beats.$.order'] = Number(patch.order) - 0.5;
+  if (orderChanging) {
+    // "Move to position N": pick the fractional sort key by direction so the
+    // beat lands exactly at N after normalize. Moving DOWN (to a higher
+    // position) must sort just AFTER the current occupant of N, because the
+    // beat's own removal shifts the beats between old and new position up by
+    // one; moving UP sorts just BEFORE it. `beat.order` is the current 1..N
+    // position (the invariant guarantees it is an integer).
+    const target = Number(patch.order);
+    set['beats.$.order'] = target > beat.order ? target + 0.5 : target - 0.5;
+  }
 
   await updateBeatFields(projectId, beat._id, set);
   const patchFields = Object.keys(patch || {});

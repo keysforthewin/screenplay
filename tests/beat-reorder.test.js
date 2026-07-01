@@ -73,6 +73,14 @@ describe('beat mutations keep order contiguous 1..N', () => {
     expect(await orders()).toEqual([1, 2, 3, 4]);
   });
 
+  it('updateBeat order=N moves a beat DOWN to position N and renumbers', async () => {
+    const [a] = await makeBeats(['A', 'B', 'C', 'D']); // 1,2,3,4
+    const moved = await Plots.updateBeat(projectId, a._id.toString(), { order: 3 });
+    expect(moved.order).toBe(3);
+    expect(await names()).toEqual(['B', 'C', 'A', 'D']);
+    expect(await orders()).toEqual([1, 2, 3, 4]);
+  });
+
   it('updateBeat order past the end clamps to last', async () => {
     const [a, b, c] = await makeBeats(['A', 'B', 'C']);
     await Plots.updateBeat(projectId, a._id.toString(), { order: 99 });
