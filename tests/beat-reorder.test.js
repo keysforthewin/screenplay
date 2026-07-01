@@ -38,3 +38,52 @@ describe('normalizeBeatOrders', () => {
     expect(input.map((x) => x.order)).toEqual([1, 2]); // input untouched
   });
 });
+
+describe('beat mutations keep order contiguous 1..N', () => {
+  async function makeBeats(names) {
+    const beats = [];
+    for (const n of names) beats.push(await Plots.createBeat({ projectId, name: n, body: 'x' }));
+    return beats;
+  }
+  const orders = async () =>
+    (await Plots.listBeats(projectId)).map((b) => b.order);
+  const names = async () =>
+    (await Plots.listBeats(projectId)).map((b) => b.name);
+
+  it('createBeat with order=N inserts at position N and renumbers', async () => {
+    await makeBeats(['A', 'B', 'C']); // 1,2,3
+    const inserted = await Plots.createBeat({ projectId, name: 'NEW', body: 'x', order: 2 });
+    expect(inserted.order).toBe(2);
+    expect(await names()).toEqual(['A', 'NEW', 'B', 'C']);
+    expect(await orders()).toEqual([1, 2, 3, 4]);
+  });
+
+  it('createBeat without order appends at the end', async () => {
+    await makeBeats(['A', 'B']);
+    const inserted = await Plots.createBeat({ projectId, name: 'Z', body: 'x' });
+    expect(inserted.order).toBe(3);
+    expect(await names()).toEqual(['A', 'B', 'Z']);
+  });
+
+  it('updateBeat order=N moves the beat to position N and renumbers', async () => {
+    const [a, b, c, d] = await makeBeats(['A', 'B', 'C', 'D']);
+    const moved = await Plots.updateBeat(projectId, d._id.toString(), { order: 2 });
+    expect(moved.order).toBe(2);
+    expect(await names()).toEqual(['A', 'D', 'B', 'C']);
+    expect(await orders()).toEqual([1, 2, 3, 4]);
+  });
+
+  it('updateBeat order past the end clamps to last', async () => {
+    const [a, b, c] = await makeBeats(['A', 'B', 'C']);
+    await Plots.updateBeat(projectId, a._id.toString(), { order: 99 });
+    expect(await names()).toEqual(['B', 'C', 'A']);
+    expect(await orders()).toEqual([1, 2, 3]);
+  });
+
+  it('deleteBeat closes the numbering gap', async () => {
+    const [a, b, c, d] = await makeBeats(['A', 'B', 'C', 'D']);
+    await Plots.deleteBeat(projectId, b._id.toString());
+    expect(await names()).toEqual(['A', 'C', 'D']);
+    expect(await orders()).toEqual([1, 2, 3]);
+  });
+});

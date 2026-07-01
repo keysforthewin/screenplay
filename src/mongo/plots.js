@@ -329,14 +329,16 @@ export async function createBeat({ projectId, name, desc = '', body = '', charac
   }
   const plot = await getPlot(projectId);
   const existing = plot.beats || [];
-  let nextOrder = order;
-  if (nextOrder === undefined || nextOrder === null) {
-    nextOrder = existing.length ? Math.max(...existing.map((b) => b.order || 0)) + 1 : 1;
-  }
   const now = new Date();
+  const insertKey =
+    order === undefined || order === null
+      ? (existing.length ? Math.max(...existing.map((b) => b.order || 0)) + 1 : 1)
+      // "Insert at position N": land just before whoever currently holds N,
+      // then normalize turns the fractional key into a clean integer.
+      : Number(order) - 0.5;
   const beat = {
     _id: new ObjectId(),
-    order: Number(nextOrder),
+    order: insertKey,
     name: finalName,
     desc: finalDesc,
     body: String(body || ''),
@@ -350,11 +352,12 @@ export async function createBeat({ projectId, name, desc = '', body = '', charac
     created_at: now,
     updated_at: now,
   };
-  const beats = [...existing, beat].sort((a, b) => (a.order || 0) - (b.order || 0));
+  const beats = normalizeBeatOrders([...existing, beat]);
+  const persisted = beats.find((b) => b._id.equals(beat._id));
   const extra = plot.current_beat_id ? {} : { current_beat_id: beat._id };
   await persistBeatsFullArray(projectId, beats, extra);
-  logger.info(`mongo: beat create id=${beat._id} order=${beat.order} name="${beat.name}"`);
-  return beat;
+  logger.info(`mongo: beat create id=${beat._id} order=${persisted.order} name="${beat.name}"`);
+  return persisted;
 }
 
 export async function updateBeat(projectId, identifier, patch) {
@@ -415,20 +418,19 @@ export async function updateBeat(projectId, identifier, patch) {
   if (sheetImageIdProvided) set['beats.$.scene_sheet_image_id'] = sheetImageId;
 
   const orderChanging = patch.order !== undefined && patch.order !== null;
-  if (orderChanging) set['beats.$.order'] = Number(patch.order);
+  // "Move to position N": write a fractional sort key so the beat lands just
+  // before whoever currently holds N, then renumber the whole array to 1..N.
+  if (orderChanging) set['beats.$.order'] = Number(patch.order) - 0.5;
 
   await updateBeatFields(projectId, beat._id, set);
   const patchFields = Object.keys(patch || {});
   logger.info(`mongo: beat update id=${beat._id} fields=[${patchFields.join(',')}]`);
 
   if (orderChanging) {
-    // Re-sort the array. The atomic update can't reorder; do it as a
-    // dedicated full-array write. By construction, reordering doesn't race
-    // with field edits because sort is order-only.
     const fresh = await getPlot(projectId);
-    const sorted = [...(fresh.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
-    await persistBeatsFullArray(projectId, sorted);
-    return sorted.find((b) => b._id && b._id.equals(beat._id));
+    const normalized = normalizeBeatOrders(fresh.beats || []);
+    await persistBeatsFullArray(projectId, normalized);
+    return normalized.find((b) => b._id && b._id.equals(beat._id));
   }
   return fetchBeat(projectId, beat._id);
 }
@@ -529,12 +531,11 @@ export async function deleteBeat(projectId, identifier) {
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   const wasCurrent =
     plot.current_beat_id && plot.current_beat_id.equals(beat._id);
-  const update = { $pull: { beats: { _id: beat._id } }, $set: { updated_at: new Date() } };
-  if (wasCurrent) update.$set.current_beat_id = null;
-  const result = await col().updateOne({ project_id: projectId }, update);
-  if (!result || result.matchedCount === 0) {
-    throw new Error(`deleteBeat: plot doc {project_id: "${projectId}"} not found — write did not apply.`);
-  }
+  const remaining = normalizeBeatOrders(
+    (plot.beats || []).filter((b) => !b._id.equals(beat._id)),
+  );
+  const extra = wasCurrent ? { current_beat_id: null } : {};
+  await persistBeatsFullArray(projectId, remaining, extra);
   logger.info(`mongo: beat delete id=${beat._id} name="${beat.name}"`);
   return {
     _id: beat._id,
