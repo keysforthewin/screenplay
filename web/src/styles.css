@@ -2915,3 +2915,10 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   color: var(--fg-muted);
   font: inherit;
 }
+.toc-sortable-list { list-style: none; padding-left: 0; }
+.toc-sortable-row { display: flex; align-items: center; gap: 8px; }
+.toc-drag-handle {
+  cursor: grab; background: none; border: none; color: var(--fg-muted);
+  padding: 2px 4px; font-size: 14px; line-height: 1; touch-action: none;
+}
+.toc-drag-handle:active { cursor: grabbing; }
