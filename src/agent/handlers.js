@@ -2535,9 +2535,11 @@ export const HANDLERS = {
     if (!prompt || !String(prompt).trim()) {
       return 'Error: prompt is required (describe the change to make).';
     }
-    if (typeof replace_source !== 'boolean') {
-      return 'Error: replace_source is required (true = delete source after editing, false = keep both).';
-    }
+    // Models sometimes emit booleans as strings ('false') or omit the field
+    // entirely; the Anthropic API does not coerce tool-input types. Only an
+    // unambiguous "true" deletes the source — everything else keeps both,
+    // so a malformed value can never destroy an image or stall the edit.
+    const replaceSource = replace_source === true || replace_source === 'true';
     if (attach_to_character && attach_to_beat) {
       return 'Error: specify at most one of attach_to_character or attach_to_beat.';
     }
@@ -2722,7 +2724,7 @@ export const HANDLERS = {
       where = `attached to director's note ${targetNoteId}`;
     }
 
-    if (replace_source) {
+    if (replaceSource) {
       try {
         if (srcOwnerType === 'character' && srcOwnerCharacter) {
           await Files.removeCharacterImage({
@@ -2750,9 +2752,9 @@ export const HANDLERS = {
 
     const { path: filepath } = await Images.streamImageToTmp(file._id);
     logger.info(
-      `edit_image: dest=${targetOwnerType || 'library'} replaced=${!!replace_source} bytes=${buffer.length} ${Date.now() - editT0}ms`,
+      `edit_image: dest=${targetOwnerType || 'library'} replaced=${replaceSource} bytes=${buffer.length} ${Date.now() - editT0}ms`,
     );
-    const replacedNote = replace_source ? ', original deleted' : '';
+    const replacedNote = replaceSource ? ', original deleted' : ', original kept';
     return `__IMAGE_PATH__:${filepath}|Edited image (${file._id.toString()}) ${where}${replacedNote}.|${file._id.toString()}`;
   },
 

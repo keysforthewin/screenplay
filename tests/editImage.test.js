@@ -380,15 +380,51 @@ describe('edit_image', () => {
     expect(deletions).toContain(imageId.toString());
   });
 
-  it('returns an error when replace_source is missing', async () => {
+  it('defaults to keeping the source when replace_source is missing', async () => {
     const { imageId } = await seedCharacterWithImage('Quiet Hawthorn');
     const out = await HANDLERS.edit_image({
       source_image_id: imageId.toString(),
       prompt: 'darker mood',
     }, { projectId });
-    expect(out).toMatch(/replace_source is required/);
-    expect(geminiCalls).toHaveLength(0);
-    expect(uploads).toHaveLength(0);
+    expect(out).toMatch(/^__IMAGE_PATH__:/);
+    expect(uploads).toHaveLength(1);
+    expect(deletions).toHaveLength(0);
+    expect(fakeBucket.has(imageId.toString())).toBe(true);
+  });
+
+  it('coerces the string "false" to keep the source', async () => {
+    const { imageId } = await seedCharacterWithImage('String False');
+    const out = await HANDLERS.edit_image({
+      source_image_id: imageId.toString(),
+      prompt: 'darker mood',
+      replace_source: 'false',
+    }, { projectId });
+    expect(out).toMatch(/^__IMAGE_PATH__:/);
+    expect(deletions).toHaveLength(0);
+    expect(fakeBucket.has(imageId.toString())).toBe(true);
+  });
+
+  it('coerces the string "true" to delete the source', async () => {
+    const { imageId } = await seedCharacterWithImage('String True');
+    const out = await HANDLERS.edit_image({
+      source_image_id: imageId.toString(),
+      prompt: 'darker mood',
+      replace_source: 'true',
+    }, { projectId });
+    expect(out).toMatch(/^__IMAGE_PATH__:/);
+    expect(deletions).toContain(imageId.toString());
+    expect(fakeBucket.has(imageId.toString())).toBe(false);
+  });
+
+  it('treats an unrecognized replace_source value as keep-both, never delete', async () => {
+    const { imageId } = await seedCharacterWithImage('Weird Value');
+    const out = await HANDLERS.edit_image({
+      source_image_id: imageId.toString(),
+      prompt: 'darker mood',
+      replace_source: 'yes please',
+    }, { projectId });
+    expect(out).toMatch(/^__IMAGE_PATH__:/);
+    expect(deletions).toHaveLength(0);
   });
 
   it('returns an error when both attach_to_character and attach_to_beat are set', async () => {
