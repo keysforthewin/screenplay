@@ -139,7 +139,12 @@ import { enqueueReindex } from '../rag/queue.js';
 import { deleteEntity } from '../rag/indexer.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { currentEditor } from './editAttribution.js';
-import { maybeAnnounceCast, diffCast } from './editAnnounce.js';
+import {
+  maybeAnnounceCast,
+  diffCast,
+  announceBeatLifecycle,
+  announceBeatsReordered,
+} from './editAnnounce.js';
 
 let botDisplayName = 'Screenplay Bot';
 
@@ -630,15 +635,14 @@ export async function updateBeatViaGateway(projectId, identifier, patch) {
   }
   const after = await getBeat(projectId, beatId);
   // Attribute a cast change to the in-scope web user (chat agent / AI feature).
-  // Bot/Discord edits have no editor scope and stay silent. maybeAnnounceCast is
-  // fire-and-forget and applies its own 24h throttle, so we don't await it.
+  // Bot/Discord edits have no editor scope and stay silent. maybeAnnounceCast
+  // is fire-and-forget, so we don't await it.
   const editor = currentEditor();
   if (Array.isArray(patch.characters) && editor) {
     const { added, removed } = diffCast(beat.characters || [], after.characters || []);
     if (added.length || removed.length) {
       const proj = await getProjectById(projectId).catch(() => null);
       maybeAnnounceCast({
-        projectId,
         projectTitle: proj?.title ?? null,
         beat: after,
         editor,
@@ -646,6 +650,12 @@ export async function updateBeatViaGateway(projectId, identifier, patch) {
         removed,
       });
     }
+  }
+  // A single-beat position move (update_beat with `order`) announces like the
+  // bulk reorder path — only when the position actually changed.
+  if (patch.order !== undefined && editor && after.order !== beat.order) {
+    const pid = await resolveProjectId(projectId);
+    announceBeatLifecycle({ projectId: pid, beat: after, editor, verb: 'moved' });
   }
   return after;
 }
@@ -2194,6 +2204,11 @@ export async function reorderBeatsViaGateway({ projectId, orderedIds }) {
   const { reorderBeats } = await import('../mongo/plots.js');
   const beats = await reorderBeats(projectId, orderedIds);
   await broadcastBeatsChanged(projectId);
+  const editor = currentEditor();
+  if (editor) {
+    const pid = await resolveProjectId(projectId);
+    announceBeatsReordered({ projectId: pid, editor });
+  }
   return beats;
 }
 
@@ -2201,6 +2216,14 @@ export async function createBeatViaGateway(opts) {
   const { createBeat } = await import('../mongo/plots.js');
   const beat = await createBeat(opts);
   await broadcastBeatsChanged(opts.projectId);
+  // Attribute the create to the in-scope web user (SPA request or web chat
+  // agent). Discord-run agents have no editor scope and surface the result in
+  // their own channel reply instead. Fire-and-forget, like maybeAnnounceCast.
+  const editor = currentEditor();
+  if (editor) {
+    const pid = await resolveProjectId(opts.projectId);
+    announceBeatLifecycle({ projectId: pid, beat, editor, verb: 'created' });
+  }
   return beat;
 }
 
@@ -2208,6 +2231,11 @@ export async function deleteBeatViaGateway(projectId, identifier) {
   const { deleteBeat } = await import('../mongo/plots.js');
   const res = await deleteBeat(projectId, identifier);
   await broadcastBeatsChanged(projectId);
+  const editor = currentEditor();
+  if (editor) {
+    const pid = await resolveProjectId(projectId);
+    announceBeatLifecycle({ projectId: pid, beat: res, editor, verb: 'deleted' });
+  }
   return res;
 }
 

@@ -131,6 +131,29 @@ describe('handleRoomChange (beat writing edits)', () => {
     expect(announceCalls[0].verb).toBe('edited the writing in');
   });
 
+  it('announces every web-user (agent) edit — no daily throttle', async () => {
+    primeRoomCache(beatRoom(), beatDesc());
+    const ctx = { actor: 'web-user', user: { name: 'Steve' } };
+    await handleRoomChange({ documentName: beatRoom(), document: fakeDoc({ name: 'Scene One', body: 'b1', desc: '' }), context: ctx });
+    await handleRoomChange({ documentName: beatRoom(), document: fakeDoc({ name: 'Scene One', body: 'b2', desc: '' }), context: ctx });
+    expect(announceCalls).toHaveLength(2);
+  });
+
+  it('a web-user edit does not consume the human editor throttle window', async () => {
+    primeRoomCache(beatRoom(), beatDesc());
+    await handleRoomChange({
+      documentName: beatRoom(),
+      document: fakeDoc({ name: 'Scene One', body: 'agent edit', desc: '' }),
+      context: { actor: 'web-user', user: { name: 'Alice' } },
+    });
+    await handleRoomChange({
+      documentName: beatRoom(),
+      document: fakeDoc({ name: 'Scene One', body: 'human edit', desc: '' }),
+      context: { user: { name: 'Alice' } },
+    });
+    expect(announceCalls).toHaveLength(2);
+  });
+
   it('still skips bot edits', async () => {
     primeRoomCache(beatRoom(), beatDesc());
     await handleRoomChange({
@@ -143,15 +166,16 @@ describe('handleRoomChange (beat writing edits)', () => {
 });
 
 describe('maybeAnnounceCast', () => {
-  it('announces a cast add once, then throttles the same editor on that beat', async () => {
+  it('announces every cast change — no throttle', async () => {
     const beat = { _id: beatId, order: 1, name: 'Scene One' };
     await maybeAnnounceCast({ projectId, projectTitle: 'Film', beat, editor: 'Alice', added: ['Mary'], removed: [] });
     await maybeAnnounceCast({ projectId, projectTitle: 'Film', beat, editor: 'Alice', added: ['Bob'], removed: [] });
-    expect(announceCalls).toHaveLength(1);
+    expect(announceCalls).toHaveLength(2);
     expect(announceCalls[0].verb).toBe('added Mary to');
+    expect(announceCalls[1].verb).toBe('added Bob to');
   });
 
-  it('shares the beat bucket with writing edits (writing first → cast suppressed)', async () => {
+  it('announces a cast change even after a writing edit by the same editor', async () => {
     primeRoomCache(beatRoom(), beatDesc());
     await handleRoomChange({
       documentName: beatRoom(),
@@ -160,6 +184,6 @@ describe('maybeAnnounceCast', () => {
     });
     const beat = { _id: beatId, order: 1, name: 'Scene One' };
     await maybeAnnounceCast({ projectId, projectTitle: 'Film', beat, editor: 'Alice', added: ['Mary'], removed: [] });
-    expect(announceCalls).toHaveLength(1); // only the writing edit
+    expect(announceCalls).toHaveLength(2);
   });
 });

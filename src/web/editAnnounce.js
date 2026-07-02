@@ -4,7 +4,7 @@
 
 import { ObjectId } from 'mongodb';
 import { stripMarkdown } from '../util/markdown.js';
-import { beatUrl, characterUrl } from './links.js';
+import { beatUrl, characterUrl, homeUrl } from './links.js';
 import { getDb } from '../mongo/client.js';
 import { getProjectById } from '../mongo/projects.js';
 import { fragmentToMarkdown } from './headlessEditor.js';
@@ -209,19 +209,25 @@ export async function handleRoomChange({ documentName, document, context }) {
     if (!m) return;
     const [, type, id] = m;
 
+    // Gateway edits on behalf of a web user (actor 'web-user': the chat agent
+    // and other AI features) are discrete operations — announce every one.
+    // Human keystrokes arrive as a stream of y-doc updates over the websocket
+    // (no actor field), so those stay behind the per-editor daily claim.
+    const throttled = context?.actor !== 'web-user';
+
     // Skip all DB work if this editor was already handled for this target.
-    if (isRecentlyClaimed(type, id, editor)) return;
+    if (throttled && isRecentlyClaimed(type, id, editor)) return;
 
     if (type === 'beat') {
       const found = await lookupBeat(id);
       if (!found?.projectId) return;
-      if (!(await throttledClaim({ projectId: found.projectId, targetType: 'beat', targetId: id, editor }))) return;
+      if (throttled && !(await throttledClaim({ projectId: found.projectId, targetType: 'beat', targetId: id, editor }))) return;
       const projectTitle = await projectTitleFor(found.projectId);
       fire(buildWritingPayload({ who: editor, beat: found.beat, projectTitle }));
     } else {
       const found = await lookupCharacter(id);
       if (!found?.projectId) return;
-      if (!(await throttledClaim({ projectId: found.projectId, targetType: 'character', targetId: id, editor }))) return;
+      if (throttled && !(await throttledClaim({ projectId: found.projectId, targetType: 'character', targetId: id, editor }))) return;
       const projectTitle = await projectTitleFor(found.projectId);
       fire(buildCharacterPayload({ who: editor, character: found.character, projectTitle }));
     }
@@ -230,16 +236,53 @@ export async function handleRoomChange({ documentName, document, context }) {
   }
 }
 
-// Best-effort: called from PATCH /beat/:id after a cast change is detected.
-export async function maybeAnnounceCast({ projectId, projectTitle, beat, editor, added, removed }) {
+// Best-effort: called from the gateway after a cast change is detected.
+// Cast changes are discrete operations (a click or an agent tool call), so
+// every one announces — no throttle.
+export async function maybeAnnounceCast({ projectTitle, beat, editor, added, removed }) {
   try {
     if (!editor) return;
     if (!(added?.length) && !(removed?.length)) return;
-    const beatIdHex = beat?._id?.toString?.();
-    if (!beatIdHex) return;
-    if (!(await throttledClaim({ projectId, targetType: 'beat', targetId: beatIdHex, editor }))) return;
+    if (!beat?._id?.toString?.()) return;
     fire(buildCastPayload({ who: editor, beat, projectTitle, added, removed }));
   } catch (e) {
     logger.warn(`editAnnounce maybeAnnounceCast failed: ${e?.message || e}`);
+  }
+}
+
+// Best-effort: called from the gateway after a beat create/delete performed
+// on behalf of a web user (SPA REST or the web chat agent). Lifecycle events
+// are discrete, so they always announce. A deleted beat has no order, so
+// beatUrl returns null and the embed simply carries no link.
+export async function announceBeatLifecycle({ projectId, beat, editor, verb }) {
+  try {
+    if (!editor || !beat) return;
+    const projectTitle = await projectTitleFor(projectId ? String(projectId) : null);
+    fire({
+      username: editor,
+      verb,
+      entityLabel: beatLabel(beat),
+      entityUrl: beatUrl(projectTitle, beat),
+    });
+  } catch (e) {
+    logger.warn(`editAnnounce announceBeatLifecycle failed: ${e?.message || e}`);
+  }
+}
+
+// Best-effort: called from the gateway after a bulk beat reorder (the TOC
+// drag-and-drop or the agent's reorder_beats tool) on behalf of a web user.
+// One announcement per reorder call, linking to the Table of Contents.
+export async function announceBeatsReordered({ projectId, editor }) {
+  try {
+    if (!editor) return;
+    const projectTitle = await projectTitleFor(projectId ? String(projectId) : null);
+    fire({
+      username: editor,
+      verb: 'reordered the beats in',
+      entityLabel: projectTitle || 'the screenplay',
+      entityUrl: homeUrl(projectTitle),
+    });
+  } catch (e) {
+    logger.warn(`editAnnounce announceBeatsReordered failed: ${e?.message || e}`);
   }
 }

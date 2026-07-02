@@ -4,10 +4,13 @@
 // to a user message in the bot's agent loop; this fires unsolicited embeds
 // for SPA-initiated work so the channel stays aware of browser activity.
 //
-// Agent-initiated mutations already surface their result via sendReply's
-// __IMAGE_PATH__ attachment path, so we deliberately only wire this into
-// the REST endpoints in src/web/entityRoutes.js (and the async job
-// completion callbacks). The gateway is not hooked.
+// Discord-run agent mutations surface their result via sendReply's
+// __IMAGE_PATH__ attachment path, so media announcements are wired into the
+// REST endpoints in src/web/entityRoutes.js (and the async job completion
+// callbacks). Web-run agent work never reaches Discord via sendReply, so its
+// mutations announce from the gateway/editAnnounce layer instead (attributed
+// to the web user via runAsEditor): beat create/delete, cast changes, and
+// every text edit — see src/web/editAnnounce.js.
 
 import { EmbedBuilder } from 'discord.js';
 import { config } from '../config.js';
