@@ -5,7 +5,9 @@ services:
     volumes:
       - mongo-data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      # Pure-bash TCP connect — mongosh spawns a whole Node.js runtime per
+      # check, which is far too heavy for a 10s-interval health probe.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/27017"]
       interval: 10s
       timeout: 5s
       retries: 5
