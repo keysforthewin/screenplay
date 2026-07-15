@@ -8,14 +8,23 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
+let serverStatusImpl;
+vi.mock('../src/mongo/client.js', () => ({
+  getDb: () => ({
+    admin: () => ({ command: async () => serverStatusImpl() }),
+  }),
+}));
+
 const { spawn } = await import('node:child_process');
 const {
   runBackup,
+  runBackupIfChanged,
   pruneOldBackups,
   formatBackupFilename,
   isBackupFilename,
   killActiveBackup,
 } = await import('../src/backup/runner.js');
+const { readBackupState, stateFilePath } = await import('../src/backup/changes.js');
 const { startBackupScheduler, stopBackupScheduler, _resetForTests } = await import(
   '../src/backup/scheduler.js'
 );
@@ -46,6 +55,7 @@ let tmpdir;
 beforeEach(async () => {
   spawn.mockReset();
   _resetForTests();
+  serverStatusImpl = () => ({ opcounters: { insert: 0, update: 0, delete: 0 } });
   tmpdir = await fsp.mkdtemp(path.join(os.tmpdir(), 'backup-test-'));
 });
 
@@ -96,6 +106,119 @@ describe('pruneOldBackups', () => {
     const missing = path.join(tmpdir, 'does-not-exist');
     const removed = await pruneOldBackups({ dir: missing, retentionMs: 1000 });
     expect(removed).toEqual([]);
+  });
+
+  it('anchors retention to the newest backup, not the wall clock', async () => {
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    // Both far older than 24h from now, but only 10h apart from each other.
+    const older = path.join(tmpdir, 'screenplay-2026-04-01T00-00-00.archive.gz');
+    const newer = path.join(tmpdir, 'screenplay-2026-04-01T10-00-00.archive.gz');
+    await fsp.writeFile(older, 'a');
+    await fsp.writeFile(newer, 'b');
+    await fsp.utimes(older, (now - 40 * HOUR) / 1000, (now - 40 * HOUR) / 1000);
+    await fsp.utimes(newer, (now - 30 * HOUR) / 1000, (now - 30 * HOUR) / 1000);
+
+    const removed = await pruneOldBackups({ dir: tmpdir, retentionMs: 24 * HOUR });
+    expect(removed).toEqual([]);
+
+    // A file more than 24h older than the newest one does get pruned.
+    const ancient = path.join(tmpdir, 'screenplay-2026-03-01T00-00-00.archive.gz');
+    await fsp.writeFile(ancient, 'c');
+    await fsp.utimes(ancient, (now - 60 * HOUR) / 1000, (now - 60 * HOUR) / 1000);
+    const removed2 = await pruneOldBackups({ dir: tmpdir, retentionMs: 24 * HOUR });
+    expect(removed2).toEqual([path.basename(ancient)]);
+  });
+});
+
+describe('runBackupIfChanged', () => {
+  const HOUR = 60 * 60 * 1000;
+
+  function mockDumpSuccess() {
+    spawn.mockImplementation((cmd, args) => {
+      const archive = args.find((a) => a.startsWith('--archive='))?.slice('--archive='.length);
+      return fakeChild({ code: 0, writeArchive: archive });
+    });
+  }
+
+  it('dumps on first run and records the write signature', async () => {
+    mockDumpSuccess();
+    serverStatusImpl = () => ({ opcounters: { insert: 5, update: 2, delete: 1 } });
+
+    const out = await runBackupIfChanged({
+      dir: tmpdir,
+      uri: 'mongodb://x',
+      retentionMs: 24 * HOUR,
+      now: () => new Date('2026-07-15T10:00:00Z'),
+    });
+
+    expect(out).not.toBeNull();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const state = await readBackupState(tmpdir);
+    expect(state.signature).toEqual({ insert: 5, update: 2, delete: 1 });
+  });
+
+  it('skips the dump when counters have not moved since the last backup', async () => {
+    mockDumpSuccess();
+    serverStatusImpl = () => ({ opcounters: { insert: 5, update: 2, delete: 1 } });
+    await runBackupIfChanged({ dir: tmpdir, uri: 'mongodb://x', retentionMs: 24 * HOUR });
+
+    spawn.mockClear();
+    const out = await runBackupIfChanged({ dir: tmpdir, uri: 'mongodb://x', retentionMs: 24 * HOUR });
+    expect(out).toBeNull();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('dumps again once counters move', async () => {
+    mockDumpSuccess();
+    serverStatusImpl = () => ({ opcounters: { insert: 5, update: 2, delete: 1 } });
+    await runBackupIfChanged({ dir: tmpdir, uri: 'mongodb://x', retentionMs: 24 * HOUR });
+
+    spawn.mockClear();
+    serverStatusImpl = () => ({ opcounters: { insert: 6, update: 2, delete: 1 } });
+    const out = await runBackupIfChanged({
+      dir: tmpdir,
+      uri: 'mongodb://x',
+      retentionMs: 24 * HOUR,
+      now: () => new Date(Date.now() + 1000),
+    });
+    expect(out).not.toBeNull();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const state = await readBackupState(tmpdir);
+    expect(state.signature).toEqual({ insert: 6, update: 2, delete: 1 });
+  });
+
+  it('dumps when the state file matches but no backup files exist', async () => {
+    mockDumpSuccess();
+    serverStatusImpl = () => ({ opcounters: { insert: 5, update: 2, delete: 1 } });
+    const out = await runBackupIfChanged({ dir: tmpdir, uri: 'mongodb://x', retentionMs: 24 * HOUR });
+    await fsp.unlink(out);
+
+    spawn.mockClear();
+    const out2 = await runBackupIfChanged({ dir: tmpdir, uri: 'mongodb://x', retentionMs: 24 * HOUR });
+    expect(out2).not.toBeNull();
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to dumping when the write counters cannot be read', async () => {
+    mockDumpSuccess();
+    serverStatusImpl = () => {
+      throw new Error('not authorized');
+    };
+    const out = await runBackupIfChanged({ dir: tmpdir, uri: 'mongodb://x', retentionMs: 24 * HOUR });
+    expect(out).not.toBeNull();
+    expect(spawn).toHaveBeenCalledTimes(1);
+    // No state written on a blind dump — the next readable tick decides fresh.
+    await expect(fsp.stat(stateFilePath(tmpdir))).rejects.toThrow();
+  });
+
+  it('does not record a new signature when the dump fails', async () => {
+    serverStatusImpl = () => ({ opcounters: { insert: 9, update: 0, delete: 0 } });
+    spawn.mockImplementation(() => fakeChild({ code: 1, stderr: 'boom' }));
+    await expect(
+      runBackupIfChanged({ dir: tmpdir, uri: 'mongodb://x', retentionMs: 24 * HOUR }),
+    ).rejects.toThrow(/mongodump exited 1/);
+    expect(await readBackupState(tmpdir)).toBeNull();
   });
 });
 

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { config } from '../config.js';
 import { logger } from '../log.js';
-import { runBackup, killActiveBackup } from './runner.js';
+import { runBackupIfChanged, killActiveBackup } from './runner.js';
 
 let timer = null;
 let inFlight = null;
@@ -22,7 +22,7 @@ function probeMongodump() {
 
 async function tick() {
   if (stopped) return;
-  inFlight = runBackup().catch((err) => {
+  inFlight = runBackupIfChanged().catch((err) => {
     logger.warn(`backup: dump failed: ${err.message}`);
   });
   await inFlight;
@@ -46,7 +46,7 @@ export async function startBackupScheduler() {
   logger.info(
     `backup: scheduler armed (dir=${config.backup.dir}, every ${Math.round(
       config.backup.intervalMs / 1000,
-    )}s, retain ${Math.round(config.backup.retentionMs / 3600000)}h)`,
+    )}s, retain ${Math.round(config.backup.retentionMs / 3600000)}h window, skip when unchanged)`,
   );
   timer = setTimeout(tick, config.backup.startupDelayMs);
   timer.unref?.();
