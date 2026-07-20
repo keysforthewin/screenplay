@@ -5,7 +5,7 @@ Status: approved pending user review
 
 ## Goal
 
-A Play button on the beat editing page (`/p/:projectTitle/beat/:order`) that reads the beat's **body text** aloud using fully client-side TTS. Playback must start near-instantly even for wall-of-text beats (streaming synthesis), run in Chrome with WebGPU acceleration, cost $0, and send nothing off the machine.
+A Play button on the beat editing page (`/p/:projectTitle/beat/:order`) that reads the beat's **body text** aloud using fully client-side TTS, and a "Play all" button on the table of contents that reads every beat in succession (see "Full read-through"). Playback must start near-instantly even for wall-of-text beats (streaming synthesis), run in Chrome with WebGPU acceleration, cost $0, and send nothing off the machine.
 
 ## Decisions (confirmed with user)
 
@@ -48,6 +48,16 @@ Rendered in the Beat page header row (inside `CollabSurface` so `useCollabRoom()
 - Voice `<select>` beside the button; changing voice mid-playback takes effect on the next Play.
 - kokoro-js is only referenced inside the worker, and the worker is only constructed on first Play — the main SPA bundle does not grow.
 
+## Full read-through (TOC page)
+
+A "Play all" button (plus the same voice dropdown) in the Beats tab section header of `web/src/routes/Toc.jsx` reads every beat in order, entirely client-side, reusing the same worker and hook.
+
+- **Worker sharing**: the kokoro worker becomes a lazily-created module-level singleton (`web/src/tts/workerSingleton.js` or equivalent), so the model loaded on a beat page is reused on the TOC and vice versa within the tab.
+- **Queue orchestration** (`useTtsQueue` layered on `useTts`, or a `playQueue(items)` extension of the hook): items are `{order, name, body}`. For each beat, speak `"Beat <order>: <name>."` as a chapter announcement, then the body; advance to the next item on the worker's `done`. Beats with empty bodies are skipped entirely (no announcement). The queue is snapshotted at Play time — mid-playback reorders don't reshuffle it.
+- **Text source**: `GET /beat?order=N` per beat (markdown; ~2 s staleness acceptable here). Beat N+1 is prefetched while beat N plays so transitions are gapless. A failed fetch skips that beat (console warning) instead of aborting the run.
+- **Markdown → text**: new `markdownToText(md)` helper — transient headless Tiptap editor with the Markdown extension, `editor.getText()` — shared with `readFragmentText` so both paths strip markdown identically.
+- **Controls**: Play all ↔ Stop, plus Skip (⏭) which aborts the current beat's synthesis/audio and jumps to the next item. The currently-playing beat's row in the TOC beats list gets a highlight class that advances with playback. No pause/seek.
+
 ## Error handling
 
 - No WebGPU → silent q8/WASM fallback (slower but works).
@@ -56,7 +66,7 @@ Rendered in the Beat page header row (inside `CollabSurface` so `useCollabRoom()
 
 ## Testing
 
-- Vitest: markdown→plain-text stripping; useTts reducer/state transitions with a mocked worker + mocked AudioContext (chunk scheduling math, stop behavior, stale-generation guard).
+- Vitest: markdown→plain-text stripping; useTts reducer/state transitions with a mocked worker + mocked AudioContext (chunk scheduling math, stop behavior, stale-generation guard); queue orchestration (announcement text, empty-body skip, skip control, fetch-failure skip, snapshot-at-play).
 - Manual in Chrome (DevTools MCP): first-use download progress, playback starts <~2 s on a long beat, voice switch, stop, WASM fallback via `--disable-features` if desired.
 - The existing suite must stay green; no server code is touched.
 
