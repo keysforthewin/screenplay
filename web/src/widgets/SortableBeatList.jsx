@@ -23,7 +23,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { apiPostJson } from '../api.js';
 
-function SortableRow({ id, to, content, title }) {
+function SortableRow({ id, to, content, title, className }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id });
   const style = {
@@ -32,7 +32,11 @@ function SortableRow({ id, to, content, title }) {
     opacity: isDragging ? 0.6 : 1,
   };
   return (
-    <li ref={setNodeRef} style={style} className="toc-sortable-row">
+    <li
+      ref={setNodeRef}
+      style={style}
+      className={`toc-sortable-row${className ? ` ${className}` : ''}`}
+    >
       <button
         type="button"
         className="toc-drag-handle"
@@ -63,7 +67,7 @@ export function SortableBeatList({ items, onReordered, onError, disabled }) {
     return (
       <ul>
         {items.map((i) => (
-          <li key={i.id}><Link to={i.to} title={i.title}>{i.content}</Link></li>
+          <li key={i.id} className={i.className}><Link to={i.to} title={i.title}>{i.content}</Link></li>
         ))}
       </ul>
     );
@@ -92,7 +96,7 @@ export function SortableBeatList({ items, onReordered, onError, disabled }) {
       <SortableContext items={order} strategy={verticalListSortingStrategy}>
         <ul className="toc-sortable-list">
           {rows.map((i) => (
-            <SortableRow key={i.id} id={i.id} to={i.to} content={i.content} title={i.title} />
+            <SortableRow key={i.id} id={i.id} to={i.to} content={i.content} title={i.title} className={i.className} />
           ))}
         </ul>
       </SortableContext>

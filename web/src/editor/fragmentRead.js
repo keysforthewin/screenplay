@@ -28,3 +28,22 @@ export function readFragmentMarkdown(ydoc, field) {
     editor.destroy();
   }
 }
+
+// Same transient-editor trick, but returning speakable plain text instead of
+// markdown — used by the beat TTS Play button so markdown syntax is never
+// read aloud.
+export function readFragmentText(ydoc, field) {
+  if (!ydoc || !field) return '';
+  const editor = new Editor({
+    extensions: [
+      StarterKit.configure({ history: false }),
+      Markdown.configure({ transformPastedText: true, breaks: false }),
+      Collaboration.configure({ document: ydoc, field }),
+    ],
+  });
+  try {
+    return editor.getText({ blockSeparator: '\n\n' }).trim();
+  } finally {
+    editor.destroy();
+  }
+}
