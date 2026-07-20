@@ -26,6 +26,7 @@ async function loadModel() {
   }
   const dtype = device === 'webgpu' ? 'fp32' : 'q8';
   const files = new Map();
+  let lastPct = -1;
   return KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
     dtype,
     device,
@@ -38,6 +39,12 @@ async function loadModel() {
         loaded += f.loaded;
         total += f.total;
       }
+      // Raw callbacks fire per network chunk (thousands per download) and each
+      // posted message becomes a React render on the main thread — only post
+      // when the whole-percent value moves.
+      const pct = Math.floor((loaded / total) * 100);
+      if (pct === lastPct) return;
+      lastPct = pct;
       postMessage({ type: 'progress', loaded, total });
     },
   });
