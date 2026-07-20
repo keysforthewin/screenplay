@@ -12,6 +12,9 @@ import { ReferenceExtrasSection } from '../widgets/ReferenceExtrasSection.jsx';
 import { BeatPager } from '../widgets/BeatPager.jsx';
 import { BeatTabs } from '../widgets/BeatTabs.jsx';
 import { CritiqueTab } from '../widgets/CritiqueTab.jsx';
+import { PlayBeatButton } from '../widgets/PlayBeatButton.jsx';
+import { VoiceSelect } from '../widgets/VoiceSelect.jsx';
+import { readFragmentText } from '../editor/fragmentRead.js';
 
 // The beat editor is split into two page-level sections, reached via <BeatTabs>:
 //   writing  (/beat/:order)    → Story, Characters, Critique
@@ -46,6 +49,7 @@ export function Beat({ session, section = 'writing' }) {
   const [activeTab, setActiveTab] = useState(() => readInitialTab(section));
   const [imagePickerOpen, setImagePickerOpen] = useState(false);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
+  const [liveDoc, setLiveDoc] = useState(null);
 
   // <BeatTabs> reuses this component across the writing/artwork routes (same
   // type, same router slot), so switching sections updates `section` without a
@@ -131,6 +135,12 @@ export function Beat({ session, section = 'writing' }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
         <h1 style={{ marginTop: 0 }}>Beat #{beat.order}</h1>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <VoiceSelect />
+          <PlayBeatButton
+            key={beat._id}
+            disabled={!liveDoc}
+            getText={() => readFragmentText(liveDoc, 'body')}
+          />
           <DownloadAllButton
             path={`/beat/${beat._id}/download`}
             filename={`beat-${beat.order}.zip`}
@@ -156,7 +166,7 @@ export function Beat({ session, section = 'writing' }) {
         ))}
       </div>
 
-      <CollabSurface room={room} session={session} onPing={onRefresh}>
+      <CollabSurface room={room} session={session} onPing={onRefresh} onDocReady={setLiveDoc}>
         {tabs.includes('background') && (
           <div className="tab-panel" hidden={currentTab !== 'background'}>
             {beat.previous_body && (

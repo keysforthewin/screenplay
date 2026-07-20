@@ -21,13 +21,15 @@ export function useCollabRoom() {
   return ctx;
 }
 
-export function CollabSurface({ room, session, onPing, children }) {
+export function CollabSurface({ room, session, onPing, onDocReady, children }) {
   const [provider, setProvider] = useState(null);
   const [ydoc, setYdoc] = useState(null);
   const [error, setError] = useState(null);
   const { setUsers, setSaveStatus } = usePresenceSetters();
   const onPingRef = useRef(onPing);
   onPingRef.current = onPing;
+  const onDocReadyRef = useRef(onDocReady);
+  onDocReadyRef.current = onDocReady;
 
   useEffect(() => {
     if (!room || !session?.session_id) return;
@@ -110,12 +112,14 @@ export function CollabSurface({ room, session, onPing, children }) {
       }
       setProvider(nextProvider);
       setYdoc(nextDoc);
+      onDocReadyRef.current?.(nextDoc);
     })();
 
     return () => {
       cancelled = true;
       setUsers([]);
       setSaveStatus({ state: 'idle', lastSaved: null });
+      onDocReadyRef.current?.(null);
       try { nextProvider?.destroy(); } catch {}
       try { nextDoc?.destroy(); } catch {}
     };

@@ -18,6 +18,13 @@ export default defineConfig({
   root,
   base,
   plugins: [react()],
+  // kokoroWorker.js dynamically imports kokoro-js, which forces Rollup to
+  // code-split the worker bundle — the default 'iife' worker format can't
+  // support that, so the TTS worker (only reachable once something imports
+  // tts/controller.js, as of the beat-page Play button) needs 'es'.
+  worker: {
+    format: 'es',
+  },
   build: {
     outDir: path.resolve(root, 'dist'),
     emptyOutDir: true,
