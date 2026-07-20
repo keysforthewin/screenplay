@@ -13,9 +13,14 @@ async function loadModel() {
   const { KokoroTTS } = await import('kokoro-js');
   let device = 'wasm';
   try {
-    if (globalThis.navigator?.gpu && (await globalThis.navigator.gpu.requestAdapter())) {
-      device = 'webgpu';
-    }
+    // requestAdapter() can hang indefinitely on some platforms (observed on
+    // WSL Chrome) — race it against a timeout so a broken GPU stack degrades
+    // to wasm instead of stalling the model load forever.
+    const adapter = await Promise.race([
+      Promise.resolve(globalThis.navigator?.gpu?.requestAdapter() ?? null),
+      new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
+    ]);
+    if (adapter) device = 'webgpu';
   } catch {
     // adapter probe failed — stay on wasm
   }
