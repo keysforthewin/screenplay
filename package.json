@@ -43,6 +43,7 @@
     "express": "^5.2.1",
     "image-size": "^2.0.2",
     "jsdom": "^25.0.1",
+    "kokoro-js": "^1.2.1",
     "mathjs": "^15.2.0",
     "mongodb": "^6.21.0",
     "multer": "^2.0.1",
