@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { apiGet } from '../api.js';
 import { LibraryPanel } from '../widgets/LibraryPanel.jsx';
+import { PlayAllButton } from '../widgets/PlayAllButton.jsx';
 import { SortableBeatList } from '../widgets/SortableBeatList.jsx';
 import { useRoomBroadcast } from '../hooks/useRoomBroadcast.js';
 import { useProject } from '../project/ProjectContext.jsx';
@@ -33,6 +34,7 @@ export function Toc({ session }) {
   const [error, setError] = useState(null);
   const [query, setQuery] = useState('');
   const [activeTab, setActiveTab] = useState(readInitialTab);
+  const [playingOrder, setPlayingOrder] = useState(null);
 
   const { id: projectId } = useProject();
 
@@ -138,6 +140,7 @@ export function Toc({ session }) {
       to: `/beat/${b.order}`,
       label: `#${b.order} — ${b.plain_name || b.name || 'Untitled'}`,
       bodyEmpty: !!b.body_empty,
+      order: b.order,
       searchText: b.search_text || '',
     }))
     .filter((b) => matches(b.label, b.searchText));
@@ -302,6 +305,9 @@ export function Toc({ session }) {
       </div>
 
       <div className="tab-panel" hidden={displayedTab !== 'beats' || noResults}>
+        <div className="tab-actions">
+          <PlayAllButton beats={toc.beats || []} onBeatChange={setPlayingOrder} />
+        </div>
         {beats.length === 0 ? (
           <p style={{ color: 'var(--fg-muted)' }}>No beats yet.</p>
         ) : (
@@ -315,6 +321,7 @@ export function Toc({ session }) {
                 to: b.to,
                 title: b.bodyEmpty ? 'Beat body is empty' : undefined,
                 content: `${b.bodyEmpty ? '* ' : ''}${b.label}`,
+                className: playingOrder === b.order ? 'toc-beat-playing' : undefined,
               }))}
             />
           </section>

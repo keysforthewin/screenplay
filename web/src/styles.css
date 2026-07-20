@@ -2922,3 +2922,11 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   padding: 2px 4px; font-size: 14px; line-height: 1; touch-action: none;
 }
 .toc-drag-handle:active { cursor: grabbing; }
+/* TOC row currently being read aloud by the TTS read-through. */
+.toc-beat-playing {
+  background: rgba(122, 162, 255, 0.14);
+  border-radius: 4px;
+}
+.toc-beat-playing a {
+  font-weight: 600;
+}
