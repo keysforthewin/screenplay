@@ -9,8 +9,11 @@
 let ttsPromise = null;
 let activeId = 0;
 
+let TextSplitterStreamCtor = null;
+
 async function loadModel() {
-  const { KokoroTTS } = await import('kokoro-js');
+  const { KokoroTTS, TextSplitterStream } = await import('kokoro-js');
+  TextSplitterStreamCtor = TextSplitterStream;
   let device = 'wasm';
   try {
     // requestAdapter() can hang indefinitely on some platforms (observed on
@@ -62,7 +65,13 @@ self.onmessage = async (e) => {
     ttsPromise ||= loadModel();
     const tts = await ttsPromise;
     if (activeId !== msg.id) return; // stopped while loading
-    for await (const { text, audio } of tts.stream(msg.text, { voice: msg.voice })) {
+    // kokoro-js never close()s the splitter it creates for plain-string input,
+    // so its generator withholds the final sentence and never terminates
+    // (no `done`, UI stuck on Stop). Own the splitter lifecycle instead.
+    const splitter = new TextSplitterStreamCtor();
+    splitter.push(msg.text);
+    splitter.close();
+    for await (const { text, audio } of tts.stream(splitter, { voice: msg.voice })) {
       if (activeId !== msg.id) return; // stopped mid-generation
       const samples = audio.audio;
       postMessage(
