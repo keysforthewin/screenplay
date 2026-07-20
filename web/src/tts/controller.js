@@ -66,10 +66,9 @@ export class TtsController {
       return false;
     }
     await player.finished(); // all chunks emitted — wait for audio to drain
-    if (this.player === player) {
-      this.player = null;
-      this.#set({ status: 'idle', progress: null });
-    }
+    if (this.player !== player) return false; // stop() raced the drain
+    this.player = null;
+    this.#set({ status: 'idle', progress: null });
     return true;
   }
 

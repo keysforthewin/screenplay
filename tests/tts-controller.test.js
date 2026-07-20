@@ -78,4 +78,27 @@ describe('TtsController', () => {
     expect(await controller.play('   ', 'af_heart')).toBe(true);
     expect(controller.getState().status).toBe('idle');
   });
+
+  it('stop() during the final drain resolves play false', async () => {
+    const { client, players, controller } = make();
+    const p = controller.play('hello', 'af_heart');
+    client.opts.onChunk(new Float32Array(4), 24000);
+    client.resolve({ status: 'done' });
+    await Promise.resolve(); await Promise.resolve(); // play() now awaits finished()
+    controller.stop(); // FakePlayer.stop resolves the pending finished()
+    expect(await p).toBe(false);
+    expect(controller.getState().status).toBe('idle');
+  });
+
+  it('a newer play() supersedes the old one, which resolves false', async () => {
+    const { client, players, controller } = make();
+    const first = controller.play('one', 'af_heart');
+    const second = controller.play('two', 'af_heart'); // stops the first
+    expect(await first).toBe(false);
+    client.opts.onChunk(new Float32Array(4), 24000);
+    client.resolve({ status: 'done' });
+    await Promise.resolve(); await Promise.resolve();
+    players[1].finish();
+    expect(await second).toBe(true);
+  });
 });
