@@ -946,7 +946,6 @@ export function buildScenePlanUserText({ beat, characters, targetCount, directio
     `First write the scene_bible (the unified look). Then produce ${count} cinematic shots in narrative order, ` +
     'with embellishment shots interleaved among the narrative beats. Each shot must be visually distinct from ' +
     'the previous AND continuous with it. Pick a shot_type and duration_seconds for every shot. ' +
-    'Re-interpret any reveals/entries/camera-moves the beat describes per the reveal rules. ' +
     `Use the plan_scene tool. Reminder: exactly ${count} frames.`;
   return `${lead}\n\n${ctx}\n\n${instruction}`;
 }

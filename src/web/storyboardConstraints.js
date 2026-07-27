@@ -30,11 +30,11 @@ export const STILL_FRAMING_RULES = [
   '- Readable text or logos the audience is meant to read (signs, screens, books, plates) warp to gibberish — keep them out of frame or out of focus.',
 ].join('\n');
 
-// The output contract for the video_prompt: motion only, in a fixed order
-// (camera → one directional motion → at most one temporal change → stillness),
-// with every static/scene detail stripped (the start frame already carries it).
-// Owns ORDERING/FORMAT; CAMERA_MOTION_RULES / SUBJECT_MOTION_RULES own which
-// moves are allowed.
+// The output contract for the video_prompt: what CHANGES over the clip, in a
+// fixed order (camera → blocking → performance → at most one environmental
+// event), with every static/scene detail stripped (the start frame already
+// carries it). Owns ORDERING/FORMAT; CAMERA_MOTION_RULES owns which camera
+// moves are available, PERFORMANCE_RULES owns the acting content.
 export const VIDEO_PROMPT_RULES = [
   'Video-prompt structure — describe what happens over the clip; the start frame already holds the scene. 4-8 sentences, in this order:',
   '1. CAMERA FIRST, explicitly, as the opening words. For a held shot write "Static, locked-off camera." verbatim — never bury the camera mid-sentence. For a moving shot, name the move and its motivation as the first clause.',
