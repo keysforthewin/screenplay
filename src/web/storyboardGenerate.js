@@ -617,6 +617,7 @@ async function runStoryboardGenerationJob({
   // Director's notes are project-wide guidance; fetch once and pass to both
   // passes so every shot sees the same notes without re-querying.
   const directorNotes = await loadDirectorNotesForPlanner(projectId);
+  const dialogs = await loadDialogsForPlanner(projectId, beat._id);
   const { frames: planned, sceneBible } = await planFramesV2({
     projectId,
     beat,
@@ -624,6 +625,7 @@ async function runStoryboardGenerationJob({
     targetCount: targetCount || DEFAULT_TARGET_COUNT,
     direction: direction || '',
     directorNotes,
+    dialogs,
     onProgress: (fields) => recordProgress(job, fields),
   });
   // Persist the scene bible on the beat as soon as the plan succeeds, so it
@@ -844,6 +846,41 @@ function formatCharacterLines(characters) {
     .join('\n');
 }
 
+// The beat's spoken lines, for TURN ORDER and DELIVERY only. The words
+// themselves must never reach a generated prompt — real voices are recorded
+// and lip-synced in post — but the expander cannot choreograph who speaks when
+// without seeing the exchange, and `direction` is an authored performance note
+// that is otherwise wasted.
+export function formatDialogLines(dialogs) {
+  if (!Array.isArray(dialogs) || !dialogs.length) return null;
+  const items = dialogs
+    .map((d) => {
+      const speaker = stripMarkdown(typeof d?.character === 'string' ? d.character : '').trim();
+      const body = clipField(d?.body, 400);
+      if (!speaker && !body) return null;
+      const dir = clipField(d?.direction, 300);
+      const head = `${speaker || 'UNKNOWN'}: ${body || '(no line)'}`;
+      return dir ? `${head}\n       direction: ${dir}` : head;
+    })
+    .filter(Boolean);
+  if (!items.length) return null;
+  return items.map((t, i) => `  ${i + 1}. ${t}`).join('\n');
+}
+
+// Fetch the beat's dialogue for the planner prompts. Swallows errors (returns
+// []) for the same reason loadDirectorNotesForPlanner does — context, not
+// load-bearing state.
+export async function loadDialogsForPlanner(projectId, beatId) {
+  try {
+    const { listDialogs } = await import('../mongo/dialogs.js');
+    const rows = await listDialogs({ projectId, beatId });
+    return Array.isArray(rows) ? rows : [];
+  } catch (e) {
+    logger.warn(`storyboard gen: loadDialogsForPlanner failed: ${e?.message || e}`);
+    return [];
+  }
+}
+
 export function formatDirectorNotes(directorNotes) {
   if (!Array.isArray(directorNotes) || !directorNotes.length) return null;
   const items = directorNotes
@@ -863,7 +900,7 @@ export function formatDirectorNotes(directorNotes) {
 // directorNotes is the project-wide list (from getDirectorNotes(projectId).notes) —
 // every note appears in every shot's prompt because notes are global tone /
 // style / continuity guidance, not scene-scoped.
-export function buildBeatContextBlock({ beat, characters, direction, directorNotes = [] }) {
+export function buildBeatContextBlock({ beat, characters, direction, directorNotes = [], dialogs = [] }) {
   const lines = [
     `# Beat #${beat.order}: ${stripMarkdown(beat.name || '') || 'Untitled'}`,
     '',
@@ -882,6 +919,15 @@ export function buildBeatContextBlock({ beat, characters, direction, directorNot
     lines.push("Director's notes (project-wide guidance — apply to every shot):");
     lines.push(notesBlock);
   }
+  const dialogBlock = formatDialogLines(dialogs);
+  if (dialogBlock) {
+    lines.push('');
+    lines.push(
+      'Dialogue in this beat — use it for TURN ORDER (who speaks, in what sequence), who is on which line, and how each line is delivered.',
+      'NEVER write these words, or any words, into a prompt: the real performance is recorded by actors and lip-synced in post.',
+    );
+    lines.push(dialogBlock);
+  }
   const cleanDirection = sanitizeDirection(direction);
   if (cleanDirection) {
     lines.push('');
@@ -891,8 +937,8 @@ export function buildBeatContextBlock({ beat, characters, direction, directorNot
   return lines.join('\n');
 }
 
-export function buildScenePlanUserText({ beat, characters, targetCount, direction, directorNotes = [] }) {
-  const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes });
+export function buildScenePlanUserText({ beat, characters, targetCount, direction, directorNotes = [], dialogs = [] }) {
+  const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes, dialogs });
   const count = clampTargetCount(targetCount);
   const lead =
     `Target shot count: EXACTLY ${count} frames. Your frames array MUST contain ${count} entries.`;
@@ -908,11 +954,11 @@ export function buildScenePlanUserText({ beat, characters, targetCount, directio
 // Pass 1. Returns { sceneBible, outline } where sceneBible is a normalized
 // bible object and outline is the raw frames array (cleaned later). Returns
 // { sceneBible: null, outline: [] } on model failure.
-async function planScene({ beat, characters, targetCount, direction, directorNotes = [] }) {
+async function planScene({ beat, characters, targetCount, direction, directorNotes = [], dialogs = [] }) {
   if (scenePlannerOverride) {
-    return scenePlannerOverride({ beat, characters, targetCount, direction, directorNotes });
+    return scenePlannerOverride({ beat, characters, targetCount, direction, directorNotes, dialogs });
   }
-  const userText = buildScenePlanUserText({ beat, characters, targetCount, direction, directorNotes });
+  const userText = buildScenePlanUserText({ beat, characters, targetCount, direction, directorNotes, dialogs });
   const client = getAnthropic();
   // Stream (then collect the final message): the non-streaming create() is
   // rejected by the SDK when max_tokens exceeds a model's 8192 non-streaming
@@ -1073,8 +1119,8 @@ function formatSkeletonForExpand(outline) {
     .join('\n');
 }
 
-export function buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes = [], revisionNotes = '', candidates = [] }) {
-  const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes });
+export function buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes = [], dialogs = [], revisionNotes = '', candidates = [] }) {
+  const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes, dialogs });
   const bibleBlock = renderSceneBibleBlock(sceneBible);
   const lines = [ctx];
   if (bibleBlock) {
@@ -1115,11 +1161,11 @@ function synthesizeFallbackShot(frame) {
 // Pass 2. One call expands the whole skeleton. Returns an array aligned to the
 // skeleton (index i -> shot i+1); omitted entries are filled with a synthesized
 // fallback so downstream persistence always gets a usable prompt.
-async function expandShots({ beat, characters, sceneBible, outline, direction, directorNotes = [], revisionNotes = '', candidates = [] }) {
+async function expandShots({ beat, characters, sceneBible, outline, direction, directorNotes = [], dialogs = [], revisionNotes = '', candidates = [] }) {
   if (shotExpanderOverride) {
-    return shotExpanderOverride({ beat, characters, sceneBible, outline, direction, directorNotes, revisionNotes, candidates });
+    return shotExpanderOverride({ beat, characters, sceneBible, outline, direction, directorNotes, dialogs, revisionNotes, candidates });
   }
-  const userText = buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes, revisionNotes, candidates });
+  const userText = buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes, dialogs, revisionNotes, candidates });
   const client = getAnthropic();
   // Stream (then collect the final message): see planScene above — the
   // non-streaming create() is rejected at max_tokens > the model's 8192
@@ -1186,6 +1232,7 @@ export function mergeCritiqueComments(critique) {
 export async function reExpandShotInner({ projectId, sb, beat, critiqueGuidance = '' }) {
   const characters = await findCharactersInBeat(projectId, beat);
   const directorNotes = await loadDirectorNotesForPlanner(projectId);
+  const dialogs = await loadDialogsForPlanner(projectId, beat._id);
   const outlineFrame = {
     description: stripMarkdown(sb.summary || '').trim(),
     shot_type: sb.shot_type ?? null,
@@ -1195,7 +1242,7 @@ export async function reExpandShotInner({ projectId, sb, beat, critiqueGuidance 
   };
   const expanded = await expandShots({
     beat, characters, sceneBible: beat.scene_bible, outline: [outlineFrame],
-    direction: '', directorNotes, revisionNotes: critiqueGuidance || '',
+    direction: '', directorNotes, dialogs, revisionNotes: critiqueGuidance || '',
   });
   if (!expanded.length || !expanded[0]?.start_frame_prompt || !expanded[0]?.video_prompt) {
     logger.warn(`storyboard reExpandShot: empty/invalid expansion for ${sb._id}; keeping existing prompts`);
@@ -1424,9 +1471,9 @@ function cleanPlannedFrameV2(f) {
 // New two-pass planner. Returns { frames, sceneBible }. frames carry
 // start_frame_prompt + video_prompt (no end_frame_prompt). On planner failure
 // returns { frames: [], sceneBible } (bible may still be present/null).
-async function planFramesV2({ projectId, beat, characters, targetCount, direction = '', directorNotes = [], imageModel = null, onProgress = null }) {
+async function planFramesV2({ projectId, beat, characters, targetCount, direction = '', directorNotes = [], dialogs = [], imageModel = null, onProgress = null }) {
   onProgress?.({ phase: 'planning', step: 'plan_scene_start', message: 'Planning scene bible + shot list…' });
-  const { sceneBible, outline: outlineRaw } = await planScene({ beat, characters, targetCount, direction, directorNotes });
+  const { sceneBible, outline: outlineRaw } = await planScene({ beat, characters, targetCount, direction, directorNotes, dialogs });
   if (!Array.isArray(outlineRaw) || !outlineRaw.length) {
     onProgress?.({ phase: 'planning', step: 'plan_scene_empty', message: 'Scene planner returned no shots.' });
     return { frames: [], sceneBible };
@@ -1444,7 +1491,7 @@ async function planFramesV2({ projectId, beat, characters, targetCount, directio
   const perCharacter = await gatherCandidatesFromDocs(characters);
 
   onProgress?.({ phase: 'expanding', step: 'expand_start', total: outline.length, message: `Expanding ${outline.length} shots…` });
-  const expanded = await expandShots({ beat, characters, sceneBible, outline, direction, directorNotes, candidates: perCharacter });
+  const expanded = await expandShots({ beat, characters, sceneBible, outline, direction, directorNotes, dialogs, candidates: perCharacter });
   onProgress?.({ phase: 'expanding', step: 'expand_done', total: outline.length, message: 'Shot expansion complete.' });
 
   const frames = outline.flatMap((f, i) => {
