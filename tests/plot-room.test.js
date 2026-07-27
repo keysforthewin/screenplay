@@ -41,19 +41,21 @@ describe('plot room', () => {
     expect(buildRoomName('plot', p)).toBe(`plot:${p}`);
   });
 
-  it('describePlotRoom exposes title/synopsis/dialogue_style seeded from Mongo', async () => {
+  it('describePlotRoom exposes every plot text field seeded from Mongo', async () => {
     await Plots.updatePlot(projectId, {
       title: 'Neon City',
       synopsis: 'A detective hunts a ghost.',
       dialogue_style: '1970s neo-noir.',
+      directorial_voice: 'Observational naturalist; motivated light only.',
     });
 
     const desc = await resolveRoom(`plot:${await pid()}`);
     expect(desc.type).toBe('plot');
-    expect(desc.fields).toEqual(['title', 'synopsis', 'dialogue_style']);
+    expect(desc.fields).toEqual(['title', 'synopsis', 'dialogue_style', 'directorial_voice']);
     expect(desc.seed.title).toBe('Neon City');
     expect(desc.seed.synopsis).toBe('A detective hunts a ghost.');
     expect(desc.seed.dialogue_style).toBe('1970s neo-noir.');
+    expect(desc.seed.directorial_voice).toBe('Observational naturalist; motivated light only.');
   });
 
   it('persistFields writes only changed fields back to Mongo', async () => {

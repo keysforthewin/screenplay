@@ -8,6 +8,10 @@ import {
   CAMERA_COHERENCE_RULES,
   PERFORMANCE_RULES,
   CONTINUITY_STATE_RULES,
+  ANTI_SLOP_RULES,
+  SHOT_SIZE_FIDELITY_RULES,
+  ENDING_PROFILE_RULES,
+  FRAGILITY_RULES,
 } from '../src/web/storyboardConstraints.js';
 
 describe('storyboard constraints', () => {
@@ -20,6 +24,10 @@ describe('storyboard constraints', () => {
       CAMERA_COHERENCE_RULES,
       PERFORMANCE_RULES,
       CONTINUITY_STATE_RULES,
+      ANTI_SLOP_RULES,
+      SHOT_SIZE_FIDELITY_RULES,
+      ENDING_PROFILE_RULES,
+      FRAGILITY_RULES,
     ]) {
       expect(typeof block).toBe('string');
       expect(block.trim().length).toBeGreaterThan(0);
@@ -169,6 +177,67 @@ describe('storyboard constraints', () => {
     expect(t).toContain('state before it');
     expect(t).toContain('video_prompt performs the change');
     expect(t).toContain('state after');
+  });
+
+  it('anti-slop rules name the banned evaluators and give the visibility test', () => {
+    const t = ANTI_SLOP_RULES.toLowerCase();
+    for (const word of ['cinematic', 'epic', 'stunning', 'beautiful', 'dramatic', '8k', 'masterpiece']) {
+      expect(t).toContain(word);
+    }
+    expect(t).toContain('light meter');
+    expect(t).toContain('stopwatch');
+  });
+
+  it('anti-slop rules ban negation and demand the positive state instead', () => {
+    const t = ANTI_SLOP_RULES.toLowerCase();
+    expect(t).toContain('no negation');
+    expect(t).toContain('summon exactly what they forbid');
+    expect(t).toContain('positive state');
+  });
+
+  it('anti-slop rules spare genre language that carries concrete direction', () => {
+    const t = ANTI_SLOP_RULES.toLowerCase();
+    expect(t).toContain('venetian-blind');
+    expect(t).toContain('is allowed');
+  });
+
+  it('shot-size rules refuse facial acting at wide sizes and force one primary spend', () => {
+    const t = SHOT_SIZE_FIDELITY_RULES.toLowerCase();
+    expect(t).toContain('establishing');
+    expect(t).toContain('too small to act');
+    expect(t).toContain('one primary spend per shot');
+    expect(t).toContain('two shots');
+  });
+
+  it('ending rules demand a completed endpoint without prescribing stillness', () => {
+    const t = ENDING_PROFILE_RULES.toLowerCase();
+    expect(t).toContain('edit point');
+    expect(t).toContain('motion handoff');
+    expect(t).toContain('unmatched');
+    expect(t).toContain('must differ from the first');
+    // The purged doctrine must not come back in through the endpoint door.
+    expect(t).not.toContain('everything else holds still');
+  });
+
+  it('video-prompt rules close on the endpoint and ask for cause-and-consequence', () => {
+    const t = VIDEO_PROMPT_RULES.toLowerCase();
+    expect(t).toContain('endpoint');
+    expect(t).toContain('cause and consequence, not a list');
+  });
+
+  it('performance rules convert emotion into behavior and assign ensemble tiers', () => {
+    const t = PERFORMANCE_RULES.toLowerCase();
+    expect(t).toContain('emotion is not directable');
+    expect(t).toContain('persistent micro-motion');
+    expect(t).toContain('one focused beat');
+    expect(t).toContain('large action');
+  });
+
+  it('fragility rules cover the known-breaking areas', () => {
+    const t = FRAGILITY_RULES.toLowerCase();
+    for (const risk of ['logos', 'hands', 'contact', 'camera move']) {
+      expect(t).toContain(risk);
+    }
   });
 
   it('the retired blocks are gone from the module', async () => {

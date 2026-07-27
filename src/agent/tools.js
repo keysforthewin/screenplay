@@ -73,7 +73,7 @@ export const TOOLS = [
       'Field map:\n' +
       '- `beat`: `body`, `name`, or `desc` (identifier = beat _id, order, or name; omit to use the current beat).\n' +
       '- `character`: `name`, `hollywood_actor`, `fields.<custom>`, or a bare custom field name (auto-prefixed with `fields.`). Identifier = character name (case-insensitive) or _id.\n' +
-      '- `plot`: `title`, `synopsis`, `dialogue_style`, `notes` (singleton; omit identifier). `dialogue_style` is the project-wide GLOBAL dialogue style; per-beat dialogue notes are edited via the beat instead.\n' +
+      '- `plot`: `title`, `synopsis`, `dialogue_style`, `directorial_voice`, `notes` (singleton; omit identifier). `dialogue_style` is the project-wide GLOBAL dialogue style; per-beat dialogue notes are edited via the beat instead. `directorial_voice` is the project-wide directing hand (how the camera tends to sit, how faces are lit, how scenes are cut and performed) — it steers scene bibles, storyboard prompts, and dialogue register, so keep it to a few concrete sentences.\n' +
       '- `director_note`: `text` (identifier = note _id from `list_director_notes`).\n\n' +
       'On error (e.g. find string not present, ambiguous, or invalid field) the tool returns `is_error: true` with a message. **Do not retry by switching to a wholesale rewrite or guessing.** Re-read the field with the appropriate read tool and retry with verbatim text, or surface the error to the user.',
     input_schema: {

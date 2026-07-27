@@ -32,6 +32,9 @@ const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const Dialogs = await import('../src/mongo/dialogs.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
+const { SCENE_PLAN_SYSTEM_PROMPT, SHOT_EXPAND_SYSTEM_PROMPT } = await import(
+  '../src/web/storyboardGenerate.js'
+);
 
 let server;
 let baseUrl;
@@ -189,6 +192,62 @@ describe('POST /api/storyboards/preview-prompt', () => {
       beat_id: '0000aaaa0000aaaa0000aaaa',
     });
     expect(status).toBe(404);
+  });
+});
+
+describe('directorial voice in the preview', () => {
+  it('leads the user block with the project voice when one is set', async () => {
+    await Plots.updatePlot(projectId, {
+      directorial_voice: 'Observational naturalist: invisible camera, available light, late cuts.',
+    });
+    const beat = await Plots.createBeat({ projectId, name: 'V', desc: 'd', body: 'b', characters: [] });
+
+    const { status, json } = await postJson('/api/storyboards/preview-prompt', {
+      beat_id: beat._id.toString(),
+      count: 5,
+    });
+
+    expect(status).toBe(200);
+    expect(json.user).toContain('# Directorial voice (project-wide');
+    expect(json.user).toContain('Observational naturalist');
+    // It leads: the voice biases everything under it, so it must precede the beat.
+    expect(json.user.indexOf('# Directorial voice')).toBeLessThan(json.user.indexOf('# Beat #'));
+    await Plots.updatePlot(projectId, { directorial_voice: '' });
+  });
+
+  it('omits the voice section entirely when the project has none', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'NV', desc: 'd', body: 'b', characters: [] });
+    const { status, json } = await postJson('/api/storyboards/preview-prompt', {
+      beat_id: beat._id.toString(),
+      count: 5,
+    });
+    expect(status).toBe(200);
+    expect(json.user).not.toContain('Directorial voice');
+  });
+});
+
+describe('the directing spine reaches both passes', () => {
+  it('Pass 1 asks for the read, the intention, and the turn', () => {
+    // Asserted against the shipped system prompt so the spine cannot be
+    // silently dropped from the planner.
+    expect(SCENE_PLAN_SYSTEM_PROMPT).toContain('THE TURN');
+    expect(SCENE_PLAN_SYSTEM_PROMPT).toContain('SUBTEXT');
+    expect(SCENE_PLAN_SYSTEM_PROMPT).toContain('INTENTION in one sentence');
+    expect(SCENE_PLAN_SYSTEM_PROMPT).toContain('felt_intent');
+    expect(SCENE_PLAN_SYSTEM_PROMPT).toContain('primary_spend');
+  });
+
+  it('Pass 2 is told the intent fields are the brief, not decoration', () => {
+    expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain('felt_intent');
+    expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain('primary_spend');
+    expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain('emotionally inert');
+  });
+
+  it('both passes carry the anti-slop ban', () => {
+    for (const p of [SCENE_PLAN_SYSTEM_PROMPT, SHOT_EXPAND_SYSTEM_PROMPT]) {
+      expect(p).toContain('FORBIDDEN as prompt words');
+      expect(p).toContain('NO NEGATION');
+    }
   });
 });
 

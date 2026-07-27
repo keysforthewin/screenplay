@@ -171,7 +171,7 @@ export async function updatePlot(projectId, patch) {
       }.`,
     );
   }
-  const recognized = ['title', 'synopsis', 'notes', 'dialogue_style'];
+  const recognized = ['title', 'synopsis', 'notes', 'dialogue_style', 'directorial_voice'];
   if (!recognized.some((k) => patch[k] !== undefined)) {
     throw new Error(
       `update_plot: \`patch\` has no recognized fields. Expected one of: ${recognized.join(', ')}. Got keys: [${Object.keys(patch).join(', ')}].`,
@@ -188,6 +188,7 @@ export async function updatePlot(projectId, patch) {
   if (patch.synopsis !== undefined) set.synopsis = patch.synopsis;
   if (patch.notes !== undefined) set.notes = patch.notes;
   if (patch.dialogue_style !== undefined) set.dialogue_style = patch.dialogue_style;
+  if (patch.directorial_voice !== undefined) set.directorial_voice = patch.directorial_voice;
   const result = await col().updateOne({ project_id: projectId }, { $set: set });
   if (!result || result.matchedCount === 0) {
     const msg = `updatePlot: plot doc {project_id: "${projectId}"} not found — write did not apply.`;

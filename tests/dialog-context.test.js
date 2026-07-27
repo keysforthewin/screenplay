@@ -78,6 +78,24 @@ describe('buildDialogContext', () => {
     expect(ctx).toContain('Chinatown');
   });
 
+  it('includes the project directorial voice, framed as performance register', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'Quiet', desc: 'd', body: 'b' });
+    await Plots.updatePlot(projectId, {
+      directorial_voice: 'Intimate minimalist: small moves, single soft source, withheld performances.',
+    });
+
+    const ctx = await buildDialogContext(projectId, beat);
+    expect(ctx).toContain('# Directorial voice (project-wide)');
+    expect(ctx).toContain('Intimate minimalist');
+    expect(ctx).toContain('register');
+  });
+
+  it('omits the directorial-voice section when the project has none', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'None', desc: 'd', body: 'b' });
+    const ctx = await buildDialogContext(projectId, beat);
+    expect(ctx).not.toContain('Directorial voice');
+  });
+
   it('includes character bios for the beat speakers', async () => {
     await Characters.createCharacter({
       projectId,

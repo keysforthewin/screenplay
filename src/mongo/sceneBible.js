@@ -6,7 +6,15 @@
 
 // Ordered list of the editable text fields. The order here is the order they
 // render in the prompt block and (later) the SPA editor.
+// `intention` and `turn` lead deliberately: they are the scene's dramatic job,
+// and every look decision below them is supposed to serve it. A bible that
+// fixes the palette but never names what the scene DOES to the audience
+// produces coverage that is individually competent and collectively inert.
+// Both are new as of the directing-spine pass; bibles written before it simply
+// carry '' for them and render without those lines.
 export const SCENE_BIBLE_FIELDS = Object.freeze([
+  'intention',
+  'turn',
   'location',
   'time_of_day',
   'lighting_key',
@@ -19,6 +27,8 @@ export const SCENE_BIBLE_FIELDS = Object.freeze([
 
 // Human labels for prompt rendering. Keyed by field.
 const FIELD_LABELS = Object.freeze({
+  intention: 'Intention',
+  turn: 'The turn',
   location: 'Location',
   time_of_day: 'Time of day',
   lighting_key: 'Lighting key',

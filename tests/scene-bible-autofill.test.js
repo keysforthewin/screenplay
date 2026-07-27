@@ -1,4 +1,4 @@
-// Scene Bible auto-fill: the module that turns a beat into the 8 scene-bible
+// Scene Bible auto-fill: the module that turns a beat into the scene-bible
 // fields via one forced-tool LLM pass, the REST endpoint that drives it, and the
 // gateway fallback that persists scene_bible.* writes when Hocuspocus is off.
 //
@@ -63,6 +63,8 @@ const { autofillSceneBible, buildSceneBibleContext } = await import(
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
 
 const FULL = {
+  intention: 'Make the audience feel her decision has already been made',
+  turn: 'Waiting to resolved',
   location: 'Corner diner, booth by the window',
   time_of_day: 'Dusk, rain starting',
   lighting_key: 'Cold blue fill + warm sodium practicals',
@@ -101,7 +103,7 @@ async function whileBeatLocked(beatId, fn) {
 }
 
 describe('autofillSceneBible (module)', () => {
-  it('fills all 8 fields and persists them to beat.scene_bible', async () => {
+  it('fills every field and persists them to beat.scene_bible', async () => {
     const beat = await Plots.createBeat({ projectId, name: 'Diner', body: 'Sarah waits in the rain.' });
 
     const result = await autofillSceneBible({ projectId, beatId: beat._id.toString() });
@@ -118,7 +120,7 @@ describe('autofillSceneBible (module)', () => {
     expect(h.createCalls[0].tool_choice).toEqual({ type: 'tool', name: 'fill_scene_bible' });
   });
 
-  it('normalizes partial/garbage model output into all 8 keys', async () => {
+  it('normalizes partial/garbage model output into every key', async () => {
     const beat = await Plots.createBeat({ projectId, name: 'Sparse' });
     h.toolInput = { location: 'Rooftop', mood: 'Tense', bogus_field: 'ignored', palette: 42 };
 

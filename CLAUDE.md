@@ -44,7 +44,7 @@ Discord bot + collaborative editor SPA in one Node process: every non-bot messag
 - `beat:<beat _id hex>` — fields `body`, `name`, `desc`
 - `character:<character _id hex>` — fields `name`, `hollywood_actor`, `fields.<each non-core template field>`
 - `storyboards:<beat _id hex>` / `dialogs:<beat _id hex>` — per-beat storyboard and dialog rooms
-- **Three project-scoped singleton rooms**: `plot:<projectId>` (fields `title`, `synopsis`, `dialogue_style`), `notes:<projectId>` (one y-doc for all of a project's director's notes; each note's text is fragment `note:<note _id>:text`), `library:<projectId>` (library image/attachment names and descriptions)
+- **Three project-scoped singleton rooms**: `plot:<projectId>` (fields `title`, `synopsis`, `dialogue_style`, `directorial_voice`), `notes:<projectId>` (one y-doc for all of a project's director's notes; each note's text is fragment `note:<note _id>:text`), `library:<projectId>` (library image/attachment names and descriptions)
 
 Entity rooms are ObjectId-derived and carry no project segment — `resolveRoom` resolves (and verifies) the owning project from the entity doc itself. URLs use the human-meaningful identifier under the project prefix (`/p/<projectTitle>/beat/2` for the beat at order=2; `/p/<projectTitle>/character/Steve` for the character whose stripped name is "Steve") and the route resolver maps to the stable `_id` for the y-doc room name. Reordering beats breaks shared URLs but never shuffles y-doc state across the wrong rooms.
 

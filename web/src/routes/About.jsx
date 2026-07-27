@@ -92,6 +92,14 @@ export function About({ session }) {
               placeholder="The logline and overview of the whole project."
             />
           </div>
+          <div style={{ marginTop: 20 }}>
+            <CollabField
+              label="Directorial voice"
+              field="directorial_voice"
+              multiline
+              placeholder="The single directing hand for the whole film: how the camera tends to sit, how faces are lit, how it's cut, how performances are pitched. Steers every scene bible, storyboard prompt, and dialogue pass. A few concrete sentences beats a list of adjectives."
+            />
+          </div>
         </div>
 
         <div className="tab-panel" hidden={activeTab !== 'dialogue'}>

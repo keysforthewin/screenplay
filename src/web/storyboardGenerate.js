@@ -76,6 +76,10 @@ import {
   CAMERA_COHERENCE_RULES,
   PERFORMANCE_RULES,
   CONTINUITY_STATE_RULES,
+  ANTI_SLOP_RULES,
+  SHOT_SIZE_FIDELITY_RULES,
+  ENDING_PROFILE_RULES,
+  FRAGILITY_RULES,
 } from './storyboardConstraints.js';
 import { renderSceneBibleBlock, normalizeSceneBible, isEmptySceneBible } from '../mongo/sceneBible.js';
 
@@ -132,6 +136,16 @@ const SCENE_PLAN_TOOL = {
         description:
           'The unified visual plan for the whole scene. Every shot inherits this, so keep each field concrete and consistent.',
         properties: {
+          intention: {
+            type: 'string',
+            description:
+              'ONE sentence naming what this scene must do to the AUDIENCE — the effect, not the subject. e.g. "Make the audience feel her certainty crack." Every look field below must serve it.',
+          },
+          turn: {
+            type: 'string',
+            description:
+              'The single value flip the scene delivers, as X to Y: safe to threatened, hope to despair, control to helplessness. If nothing flips, name what the scene establishes instead.',
+          },
           location: { type: 'string', description: 'Where the scene takes place, concretely.' },
           time_of_day: { type: 'string', description: 'Time of day / part of day.' },
           lighting_key: { type: 'string', description: 'Lighting key and sources, e.g. "warm low practical + cool fill".' },
@@ -141,7 +155,7 @@ const SCENE_PLAN_TOOL = {
           continuity_anchors: { type: 'string', description: 'Props, wardrobe states, weather that must stay constant across shots.' },
           camera_language: { type: 'string', description: 'The scene default camera grammar, e.g. "mostly locked-off, occasional slow push".' },
         },
-        required: ['location', 'time_of_day', 'lighting_key'],
+        required: ['intention', 'turn', 'location', 'time_of_day', 'lighting_key'],
         additionalProperties: false,
       },
       frames: {
@@ -151,6 +165,17 @@ const SCENE_PLAN_TOOL = {
           type: 'object',
           properties: {
             description: { type: 'string', description: 'One-sentence narrative summary of what happens in this shot.' },
+            felt_intent: {
+              type: 'string',
+              description:
+                "One short line: what the VIEWER should feel or notice in this shot — the scene's intention narrowed to this moment. e.g. \"she is already gone and he hasn't caught up yet.\" Never a mood word on its own; it must be answerable with concrete camera / light / performance choices.",
+            },
+            primary_spend: {
+              type: 'string',
+              enum: ['identity', 'motion', 'world'],
+              description:
+                'What this shot spends its fidelity budget on — these compete, so pick ONE. "identity": a face/likeness must read (close coverage, small action). "motion": committed physical action or a camera move is the event (ration facial detail). "world": geography, scale, weather or crowd is the event (no close subject).',
+            },
             shot_type: {
               type: 'string',
               enum: [...SHOT_TYPES],
@@ -169,7 +194,7 @@ const SCENE_PLAN_TOOL = {
               description: 'Names of EVERY character visible in this shot, exactly as listed in the beat metadata. List everyone who appears in frame — however many that is.',
             },
           },
-          required: ['description', 'shot_type', 'duration_seconds'],
+          required: ['description', 'felt_intent', 'primary_spend', 'shot_type', 'duration_seconds'],
           additionalProperties: false,
         },
       },
@@ -182,8 +207,17 @@ const SCENE_PLAN_TOOL = {
 export const SCENE_PLAN_SYSTEM_PROMPT = [
   'You are a Hollywood storyboard artist and DP planning a whole scene from a screenplay beat. Return your plan via the plan_scene tool.',
   '',
+  '# Read the scene before you design it',
+  'Answer these to yourself first — the answers, not adjectives, decide every choice below:',
+  '- FUNCTION: what is this beat for in the larger story — introduce, deepen, turn, or pay off?',
+  '- THE TURN: the single value flip the scene delivers (safe to threatened, hope to despair, control to helplessness). A scene that earns its place changes something.',
+  '- POV: whose experience are we inside? That decides where the audience gets to stand.',
+  '- POWER: who has it, who wants it, where does it move? Power is height, size, who looks and who is looked at, who holds space and who is pushed to the frame edge.',
+  '- SUBTEXT: what is true but unsaid? The gap between what a character says and what they want is where the performance lives.',
+  'Then state the INTENTION in one sentence — what the scene must do to the audience — and make camera, light, blocking, and performance all express that ONE thing. Instruments that are individually competent but point in different directions produce coverage that looks expensive and means nothing.',
+  '',
   '# Two jobs',
-  '1. Write the SCENE BIBLE — a compact, unified visual plan (location, time of day, lighting key, palette, mood, blocking, continuity anchors, camera language). Every shot will inherit this, so make it concrete and self-consistent. Derive it from the beat body, description, characters, and director guidance.',
+  '1. Write the SCENE BIBLE — intention and turn first, then the unified visual plan (location, time of day, lighting key, palette, mood, blocking, continuity anchors, camera language) that CARRIES them. Every shot will inherit this, so make it concrete and self-consistent. Derive it from the beat body, description, characters, and director guidance.',
   '   Beat bodies are written in screenplay format (Fountain-flavored): read sluglines (INT./EXT. LOCATION — TIME) for location, time of day, and lighting; action lines for blocking and staging; mini-slugs (BACK SEAT, AT THE WINDOW) for the sub-location a moment happens in; and shot cues (CLOSE ON, WIDE, PUSH IN) for camera language. Lean on that structure when deriving the scene bible.',
   '   For blocking, capture who is where INCLUDING the exact sub-location the beat names (the back seat vs the front, the doorway, the head of the table) — do not flatten "the back seat of the minivan" into "the minivan". Every shot inherits this bible, so an imprecise blocking line misplaces characters in every downstream still.',
   '2. Plan the ordered SHOT SKELETON — one entry per shot, covering the whole beat with cinematic rhythm.',
@@ -196,6 +230,11 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   '- Open with an establishing wide. Vary framing (wides, mediums, close-ups in rotation, not three close-ups in a row). Use over_the_shoulder for two-person dialogue.',
   '- Adjacent shots must hand off cleanly: a shared subject, a matching motion vector, or a deliberate match cut. State the link in transition_in.',
   '- Plan for performance: give dialogue exchanges enough coverage that both the speaker and the listener get their own shots. A reaction shot is not filler — it is where the scene lands.',
+  '- Give every shot a felt_intent — what the viewer feels or notices HERE. Shots that cannot answer it are decoration; replace them with coverage that can.',
+  '- Track the arc across the skeleton: as the beat tightens toward its turn, scale generally closes in, camera and cutting grow more active or pointedly stiller, and contrast deepens. Mark the turn by BREAKING the pattern you established — the one held frame in a moving scene, the one wide in a tight one. Contrast only means something when there is a rule to break.',
+  '',
+  '# Where each shot spends its budget',
+  SHOT_SIZE_FIDELITY_RULES,
   '',
   '# Performance to plan around',
   PERFORMANCE_RULES,
@@ -206,11 +245,18 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   '# Camera vantage (one coherent eyeline per shot)',
   CAMERA_COHERENCE_RULES,
   '',
+  '# What breaks in generation — plan around it',
+  FRAGILITY_RULES,
+  '',
+  '# Language',
+  ANTI_SLOP_RULES,
+  '',
   '# Hard constraints',
   '- List EVERY named character visible in a shot in characters_in_scene — there is no cap. You may still vary which characters are prominent across shots, but anyone visible in frame must be listed.',
   '- BUT on tight single-subject shots (shot_type close_up, insert, reaction), list ONLY the character(s) physically in the frame — not everyone in the location. A close-up on one person names that one person, even if others are in the scene off-frame.',
   '- shot_type drives duration_seconds: establishing/cinematic_wide/insert ≤ 15s, medium ≤ 10s, close_up/reaction/two_shot/over_the_shoulder ≤ 5s. Prefer the lower half of the range — shorter clips survive video gen better.',
   "- Don't invent characters not in the beat's character list.",
+  '- primary_spend must match the framing: a close_up/reaction shot spends on identity, a wide on world, an action beat on motion. A shot that wants all three is two shots — split it.',
   '- Emit EXACTLY the requested number of frames.',
 ].join('\n');
 
@@ -618,6 +664,7 @@ async function runStoryboardGenerationJob({
   // passes so every shot sees the same notes without re-querying.
   const directorNotes = await loadDirectorNotesForPlanner(projectId);
   const dialogs = await loadDialogsForPlanner(projectId, beat._id);
+  const directorialVoice = await loadDirectorialVoice(projectId);
   const { frames: planned, sceneBible } = await planFramesV2({
     projectId,
     beat,
@@ -626,6 +673,7 @@ async function runStoryboardGenerationJob({
     direction: direction || '',
     directorNotes,
     dialogs,
+    directorialVoice,
     onProgress: (fields) => recordProgress(job, fields),
   });
   // Persist the scene bible on the beat as soon as the plan succeeds, so it
@@ -867,6 +915,20 @@ export function formatDialogLines(dialogs) {
   return items.map((t, i) => `  ${i + 1}. ${t}`).join('\n');
 }
 
+// The project-wide directorial voice (plots.directorial_voice) — the single
+// directing hand every beat inherits. Swallowed errors return '' for the same
+// reason the notes loader does: it is steering, not load-bearing state.
+export async function loadDirectorialVoice(projectId) {
+  try {
+    const { getPlot } = await import('../mongo/plots.js');
+    const plot = await getPlot(projectId);
+    return stripMarkdown(typeof plot?.directorial_voice === 'string' ? plot.directorial_voice : '').trim();
+  } catch (e) {
+    logger.warn(`storyboard gen: loadDirectorialVoice failed: ${e?.message || e}`);
+    return '';
+  }
+}
+
 // Fetch the beat's dialogue for the planner prompts. Swallows errors (returns
 // []) for the same reason loadDirectorNotesForPlanner does — context, not
 // load-bearing state.
@@ -900,8 +962,22 @@ export function formatDirectorNotes(directorNotes) {
 // directorNotes is the project-wide list (from getDirectorNotes(projectId).notes) —
 // every note appears in every shot's prompt because notes are global tone /
 // style / continuity guidance, not scene-scoped.
-export function buildBeatContextBlock({ beat, characters, direction, directorNotes = [], dialogs = [] }) {
-  const lines = [
+export function buildBeatContextBlock({ beat, characters, direction, directorNotes = [], dialogs = [], directorialVoice = '' }) {
+  const lines = [];
+  // The project's single directing hand leads the block: it biases every choice
+  // beneath it, so it has to be read before the beat rather than after.
+  const voice = stripMarkdown(typeof directorialVoice === 'string' ? directorialVoice : '').trim();
+  if (voice) {
+    lines.push(
+      '# Directorial voice (project-wide — every shot of every beat is shot by this same hand)',
+      'Bias every camera, lighting, blocking, and performance choice toward this voice. Deviating',
+      'from it should be a deliberate signal that a major turn has arrived, never an accident.',
+      '',
+      voice,
+      '',
+    );
+  }
+  lines.push(
     `# Beat #${beat.order}: ${stripMarkdown(beat.name || '') || 'Untitled'}`,
     '',
     'Beat description:',
@@ -912,7 +988,7 @@ export function buildBeatContextBlock({ beat, characters, direction, directorNot
     '',
     'Characters in this beat:',
     formatCharacterLines(characters),
-  ];
+  );
   const notesBlock = formatDirectorNotes(directorNotes);
   if (notesBlock) {
     lines.push('');
@@ -937,13 +1013,13 @@ export function buildBeatContextBlock({ beat, characters, direction, directorNot
   return lines.join('\n');
 }
 
-export function buildScenePlanUserText({ beat, characters, targetCount, direction, directorNotes = [], dialogs = [] }) {
-  const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes, dialogs });
+export function buildScenePlanUserText({ beat, characters, targetCount, direction, directorNotes = [], dialogs = [], directorialVoice = '' }) {
+  const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes, dialogs, directorialVoice });
   const count = clampTargetCount(targetCount);
   const lead =
     `Target shot count: EXACTLY ${count} frames. Your frames array MUST contain ${count} entries.`;
   const instruction =
-    `First write the scene_bible (the unified look). Then produce ${count} cinematic shots in narrative order, ` +
+    `First write the scene_bible — its intention and turn, then the look that carries them. Then produce ${count} cinematic shots in narrative order, ` +
     'with embellishment shots interleaved among the narrative beats. Each shot must be visually distinct from ' +
     'the previous AND continuous with it. Pick a shot_type and duration_seconds for every shot. ' +
     `Use the plan_scene tool. Reminder: exactly ${count} frames.`;
@@ -953,11 +1029,11 @@ export function buildScenePlanUserText({ beat, characters, targetCount, directio
 // Pass 1. Returns { sceneBible, outline } where sceneBible is a normalized
 // bible object and outline is the raw frames array (cleaned later). Returns
 // { sceneBible: null, outline: [] } on model failure.
-async function planScene({ beat, characters, targetCount, direction, directorNotes = [], dialogs = [] }) {
+async function planScene({ beat, characters, targetCount, direction, directorNotes = [], dialogs = [], directorialVoice = '' }) {
   if (scenePlannerOverride) {
-    return scenePlannerOverride({ beat, characters, targetCount, direction, directorNotes, dialogs });
+    return scenePlannerOverride({ beat, characters, targetCount, direction, directorNotes, dialogs, directorialVoice });
   }
-  const userText = buildScenePlanUserText({ beat, characters, targetCount, direction, directorNotes, dialogs });
+  const userText = buildScenePlanUserText({ beat, characters, targetCount, direction, directorNotes, dialogs, directorialVoice });
   const client = getAnthropic();
   // Stream (then collect the final message): the non-streaming create() is
   // rejected by the SDK when max_tokens exceeds a model's 8192 non-streaming
@@ -1024,7 +1100,7 @@ const SHOT_EXPAND_TOOL = {
             video_prompt: {
               type: 'string',
               description:
-                'Clip-gen motion prompt, 4–8 sentences. Camera FIRST (write "Static, locked-off camera." verbatim for held shots, otherwise name the move and its motivation), then the BLOCKING, then the PERFORMANCE: who speaks in what order (mouth and jaw working — NEVER the words themselves), the facial beat as a change from one state to another, the listener behavior for every non-speaking character on screen, and any state change during the clip. NO subject identity, setting, composition, or framing — the start frame already holds those. Never close with a stillness clause.',
+                'Clip-gen motion prompt, 4–8 sentences. Camera FIRST (write "Static, locked-off camera." verbatim for held shots, otherwise name the move and its motivation), then the BLOCKING, then the PERFORMANCE: who speaks in what order (mouth and jaw working — NEVER the words themselves), the facial beat as a change from one state to another, the listener behavior for every non-speaking character on screen, and any state change during the clip. Close on the ENDPOINT — the completed state the clip arrives at, written so the cut to the next shot lands cleanly. Prefer one physical cause with visible consequences over a list of separate instructions. NO subject identity, setting, composition, or framing — the start frame already holds those. No stillness closer, and no negation anywhere ("no…", "does not…") — state the positive instead.',
             },
             references: {
               type: 'array',
@@ -1055,6 +1131,8 @@ export const SHOT_EXPAND_SYSTEM_PROMPT = [
   '',
   'You see the SCENE BIBLE (the unified look) and the FULL shot skeleton at once, so you can compose the whole scene coherently: each shot picks up its neighbor, and every shot honors the same bible.',
   '',
+  "The bible opens with the scene's INTENTION and its TURN, and each skeleton shot carries a felt_intent and a primary_spend. These are not decoration — they are the brief. Every camera, light, blocking, and performance choice you write must serve that shot's felt_intent inside the scene's intention, and must spend its detail where primary_spend says. A prompt that is technically correct and emotionally inert has failed.",
+  '',
   '# Two outputs per shot (NO end frame)',
   '1. start_frame_prompt — the opening still the image-to-video model conditions on. Capture the subject as a frozen moment of the action: its pose, orientation, heading, and where it sits in the geography the beat requires, in the continuity state the story has left them in. ~2–3 sentences. This is the ONLY place the subject/scene appearance is described.',
   '2. video_prompt — what HAPPENS over the clip: the camera first, then the blocking, then the performance, assuming the start frame already exists. 4–8 sentences. Strip every static/scene detail; never re-describe the start composition.',
@@ -1081,6 +1159,18 @@ export const SHOT_EXPAND_SYSTEM_PROMPT = [
   '',
   '# Video-prompt structure (for video_prompt)',
   VIDEO_PROMPT_RULES,
+  '',
+  '# Endpoint (for video_prompt)',
+  ENDING_PROFILE_RULES,
+  '',
+  '# What the framing can hold (for both)',
+  SHOT_SIZE_FIDELITY_RULES,
+  '',
+  '# What breaks in generation (for both)',
+  FRAGILITY_RULES,
+  '',
+  '# Language (for both)',
+  ANTI_SLOP_RULES,
   '',
   '# Camera vantage (for start_frame_prompt)',
   CAMERA_COHERENCE_RULES,
@@ -1109,6 +1199,8 @@ function formatSkeletonForExpand(outline) {
       const parts = [
         `${i + 1}. [${f.shot_type || 'shot'} · ${f.duration_seconds || '?'}s] ${f.description || ''}`,
       ];
+      if (f.felt_intent) parts.push(`   felt_intent: ${f.felt_intent}`);
+      if (f.primary_spend) parts.push(`   primary_spend: ${f.primary_spend}`);
       if (f.transition_in) parts.push(`   transition_in: ${f.transition_in}`);
       if (Array.isArray(f.characters_in_scene) && f.characters_in_scene.length) {
         parts.push(`   characters_in_scene: ${f.characters_in_scene.join(', ')}`);
@@ -1118,8 +1210,8 @@ function formatSkeletonForExpand(outline) {
     .join('\n');
 }
 
-export function buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes = [], dialogs = [], revisionNotes = '', candidates = [] }) {
-  const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes, dialogs });
+export function buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes = [], dialogs = [], revisionNotes = '', candidates = [], directorialVoice = '' }) {
+  const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes, dialogs, directorialVoice });
   const bibleBlock = renderSceneBibleBlock(sceneBible);
   const lines = [ctx];
   if (bibleBlock) {
@@ -1160,11 +1252,11 @@ function synthesizeFallbackShot(frame) {
 // Pass 2. One call expands the whole skeleton. Returns an array aligned to the
 // skeleton (index i -> shot i+1); omitted entries are filled with a synthesized
 // fallback so downstream persistence always gets a usable prompt.
-async function expandShots({ beat, characters, sceneBible, outline, direction, directorNotes = [], dialogs = [], revisionNotes = '', candidates = [] }) {
+async function expandShots({ beat, characters, sceneBible, outline, direction, directorNotes = [], dialogs = [], revisionNotes = '', candidates = [], directorialVoice = '' }) {
   if (shotExpanderOverride) {
-    return shotExpanderOverride({ beat, characters, sceneBible, outline, direction, directorNotes, dialogs, revisionNotes, candidates });
+    return shotExpanderOverride({ beat, characters, sceneBible, outline, direction, directorNotes, dialogs, revisionNotes, candidates, directorialVoice });
   }
-  const userText = buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes, dialogs, revisionNotes, candidates });
+  const userText = buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes, dialogs, revisionNotes, candidates, directorialVoice });
   const client = getAnthropic();
   // Stream (then collect the final message): see planScene above — the
   // non-streaming create() is rejected at max_tokens > the model's 8192
@@ -1239,9 +1331,11 @@ export async function reExpandShotInner({ projectId, sb, beat, critiqueGuidance 
     transition_in: sb.transition_in || '',
     characters_in_scene: Array.isArray(sb.characters_in_scene) ? sb.characters_in_scene : [],
   };
+  const directorialVoice = await loadDirectorialVoice(projectId);
   const expanded = await expandShots({
     beat, characters, sceneBible: beat.scene_bible, outline: [outlineFrame],
     direction: '', directorNotes, dialogs, revisionNotes: critiqueGuidance || '',
+    directorialVoice,
   });
   if (!expanded.length || !expanded[0]?.start_frame_prompt || !expanded[0]?.video_prompt) {
     logger.warn(`storyboard reExpandShot: empty/invalid expansion for ${sb._id}; keeping existing prompts`);
@@ -1470,9 +1564,9 @@ function cleanPlannedFrameV2(f) {
 // New two-pass planner. Returns { frames, sceneBible }. frames carry
 // start_frame_prompt + video_prompt (no end_frame_prompt). On planner failure
 // returns { frames: [], sceneBible } (bible may still be present/null).
-async function planFramesV2({ projectId, beat, characters, targetCount, direction = '', directorNotes = [], dialogs = [], imageModel = null, onProgress = null }) {
+async function planFramesV2({ projectId, beat, characters, targetCount, direction = '', directorNotes = [], dialogs = [], directorialVoice = '', imageModel = null, onProgress = null }) {
   onProgress?.({ phase: 'planning', step: 'plan_scene_start', message: 'Planning scene bible + shot list…' });
-  const { sceneBible, outline: outlineRaw } = await planScene({ beat, characters, targetCount, direction, directorNotes, dialogs });
+  const { sceneBible, outline: outlineRaw } = await planScene({ beat, characters, targetCount, direction, directorNotes, dialogs, directorialVoice });
   if (!Array.isArray(outlineRaw) || !outlineRaw.length) {
     onProgress?.({ phase: 'planning', step: 'plan_scene_empty', message: 'Scene planner returned no shots.' });
     return { frames: [], sceneBible };
@@ -1490,7 +1584,7 @@ async function planFramesV2({ projectId, beat, characters, targetCount, directio
   const perCharacter = await gatherCandidatesFromDocs(characters);
 
   onProgress?.({ phase: 'expanding', step: 'expand_start', total: outline.length, message: `Expanding ${outline.length} shots…` });
-  const expanded = await expandShots({ beat, characters, sceneBible, outline, direction, directorNotes, dialogs, candidates: perCharacter });
+  const expanded = await expandShots({ beat, characters, sceneBible, outline, direction, directorNotes, dialogs, candidates: perCharacter, directorialVoice });
   onProgress?.({ phase: 'expanding', step: 'expand_done', total: outline.length, message: 'Shot expansion complete.' });
 
   const frames = outline.flatMap((f, i) => {

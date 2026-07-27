@@ -615,3 +615,11 @@ Search the channel's full message history (beyond the recent 60-message window t
 **API key:** none.
 **Ask for it like:** *"What did we say about the diner scene last month?"* · *"Find that thing I mentioned about Alice's accent."*
 **Tips:** Works best with **liberal regexes** that cover spelling variants and synonyms — for "mustache", `must(?:a|ac)he?|moustache|stache`; for "the diner scene", `diner|coffee.?shop|caf[eé]|restaurant`. Use `since_days` / `until_days` for time windows ("last week" → `since_days: 7`; "two-to-three weeks ago" → `since_days: 21, until_days: 7`). Returns role, timestamp, and excerpt for each hit, plus a warning when the scan limit was reached before the bot got to older messages. For meaning-based recall instead of regex, use `screenplay_search` above.
+
+## Attribution
+
+The storyboard and dialogue prompt-generation craft rules draw on
+[**seedance-2.0**](https://github.com/Emily2040/seedance-2.0) by Emily
+([@Emily2040](https://github.com/Emily2040), MIT) — an exceptionally well-researched agent
+skill pack for AI video prompting. See [ATTRIBUTION.md](ATTRIBUTION.md) for exactly what we
+adopted, where each idea lives in this codebase, and what we deliberately did not take.

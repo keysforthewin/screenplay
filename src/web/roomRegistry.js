@@ -760,9 +760,11 @@ async function describeLibraryRoom(projectId) {
 // One singleton y-doc for the whole project (room: "plot"). It carries the
 // project-level text fields edited on the SPA's About page. `title` doubles as
 // the screenplay's display name in the header; `dialogue_style` is the *global*
-// dialogue style (distinct from each beat's per-beat `dialog_notes`).
+// dialogue style (distinct from each beat's per-beat `dialog_notes`);
+// `directorial_voice` is the project's single directing hand, inherited by every
+// scene bible and every dialogue pass so the whole film reads as one author.
 
-const PLOT_FIELDS = ['title', 'synopsis', 'dialogue_style'];
+const PLOT_FIELDS = ['title', 'synopsis', 'dialogue_style', 'directorial_voice'];
 
 async function describePlotRoom(projectId) {
   if (!(await getProjectById(projectId))) return null;

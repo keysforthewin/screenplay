@@ -25,7 +25,7 @@ describe('buildShotCritiqueContext', () => {
 });
 
 describe('critiquePanel', () => {
-  it('runs all four lenses and aggregates (strict cap)', async () => {
+  it('runs every lens and aggregates (strict cap)', async () => {
     _setLensJudgeForTests(async ({ lens }) => {
       const score = lens.key === 'bible' ? 2 : 9;
       return { score, comments: `${lens.key} says ${score}` };
@@ -38,9 +38,9 @@ describe('critiquePanel', () => {
       prevShot: null,
       nextShot: null,
     });
-    expect(result.lenses).toHaveLength(4);
+    expect(result.lenses).toHaveLength(5);
     expect(result.lenses.map((l) => l.lens).sort()).toEqual(
-      ['bible', 'cinematic', 'continuity', 'director_notes'],
+      ['bible', 'cinematic', 'continuity', 'director_notes', 'fragility'],
     );
     expect(result.overall).toBe(2);
     expect(result.lowest_lens).toBe('bible');
@@ -81,11 +81,11 @@ describe('critiquePanel', () => {
       prevShot: null,
       nextShot: null,
     });
-    // all four lenses still listed; the errored one carries error:true
-    expect(result.lenses).toHaveLength(4);
+    // every lens still listed; the errored one carries error:true
+    expect(result.lenses).toHaveLength(5);
     const bible = result.lenses.find((l) => l.lens === 'bible');
     expect(bible.error).toBe(true);
-    // overall reflects ONLY the three successful 8s — NOT capped to 1
+    // overall reflects ONLY the successful 8s — NOT capped to 1
     expect(result.overall).toBe(8);
     expect(result.lowest_lens).not.toBe('bible');
     _setLensJudgeForTests(null);

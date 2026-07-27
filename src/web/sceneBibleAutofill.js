@@ -1,7 +1,7 @@
 // Scene Bible auto-fill.
 //
 // Reads one beat (its prose + project context) and runs a single LLM pass that
-// produces a compact, structured "look book" for the beat — the eight scene
+// produces a compact, structured "look book" for the beat — every scene
 // bible fields every shot inherits. Mirrors the one-shot forced-tool pattern in
 // dialogCritique.js: build context → call Anthropic with a forced tool → coerce
 // the result with normalizeSceneBible → write each field back through the
@@ -24,6 +24,12 @@ import { BeatBusyError } from './storyboardGenerate.js';
 // mirrors the header comment in src/mongo/sceneBible.js so the model returns
 // compact, comma-separated descriptors rather than prose.
 const FIELD_GUIDANCE = Object.freeze({
+  intention:
+    'ONE sentence naming what this scene must do to the audience — the effect, not the subject. ' +
+    "e.g. 'Make the audience feel her certainty crack'. Never a mood word on its own.",
+  turn:
+    'The single value flip the scene delivers, written as X to Y. ' +
+    "e.g. 'Safe to hunted', 'Stranger to ally', 'Control to helplessness'. If nothing flips, name what the scene establishes instead.",
   location: "Where the scene happens, concrete and specific. e.g. 'Corner diner, booth by the window'",
   time_of_day: "Time of day + weather/season context. e.g. 'Dusk, rain starting'",
   lighting_key: "Primary + fill light scheme. e.g. 'Cold blue fill + warm sodium practicals'",
@@ -55,7 +61,7 @@ const FILL_TOOL = {
 };
 
 const SYSTEM_PROMPT = [
-  'You are a cinematographer and production designer building the visual "scene bible"',
+  'You are a director, cinematographer and production designer building the "scene bible"',
   'for ONE beat of a screenplay. The scene bible is a compact look book that every',
   'storyboard shot of the beat inherits, so the scene stays visually unified.',
   '',
@@ -64,6 +70,18 @@ const SYSTEM_PROMPT = [
   'infer sensible, evocative choices where the text is silent, but stay consistent',
   'with the story and characters. Keep each value to a short comma-separated phrase',
   '(a few words), never a paragraph. Always return all fields.',
+  '',
+  'Decide `intention` and `turn` FIRST, then let them drive every look field beneath them.',
+  'The intention is what the scene must do to the audience; the turn is the value flip it',
+  'delivers. Lighting key, palette, and camera language are then the instruments that carry',
+  "that intention — a reveal is not lit, framed, or staged like a goodbye. Don't pick a look",
+  'and attach a feeling to it afterwards.',
+  '',
+  'Write in observable production language. Words like cinematic, epic, moody, dramatic,',
+  'beautiful, or atmospheric are banned: name the physical cause that would produce the',
+  'feeling instead (a source and its direction, a contrast ratio, a specific color, a',
+  'material behavior). The one exception is `intention`, which names an intended effect on',
+  'the audience by design.',
 ].join('\n');
 
 // Assemble the steering context for one beat: logline, the beat itself,
@@ -80,6 +98,20 @@ export async function buildSceneBibleContext(projectId, beat) {
     if (title) lines.push(`Title: ${title}`);
     if (synopsis) lines.push(`Logline: ${synopsis}`);
     sections.push(lines.join('\n'));
+  }
+
+  // The project's single directing hand — every scene bible is biased toward it
+  // so the whole film reads as authored by one person.
+  const voice = stripMarkdown(plot?.directorial_voice || '').trim();
+  if (voice) {
+    sections.push(
+      [
+        '# Directorial voice (project-wide)',
+        'Bias every choice below toward this voice; deviate only to mark a major turn.',
+        '',
+        voice,
+      ].join('\n'),
+    );
   }
 
   const beatName = stripMarkdown(beat?.name || '').trim() || 'Untitled';

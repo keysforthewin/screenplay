@@ -5,6 +5,8 @@ import { ConfirmDialog } from './Modal.jsx';
 import { apiGet, apiPostJson } from '../api.js';
 
 const BIBLE_FIELDS = [
+  ['intention', 'Intention'],
+  ['turn', 'The turn'],
   ['location', 'Location'],
   ['time_of_day', 'Time of day'],
   ['lighting_key', 'Lighting key'],
@@ -25,7 +27,7 @@ export function SceneBiblePanel({ beatId, session, shotCount, onRefresh }) {
   const pollRef = useRef(null);
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
-  // Auto-fill all 8 scene bible fields from the beat. Confirm first only when
+  // Auto-fill every scene bible field from the beat. Confirm first only when
   // the bible already has content, so an empty bible fills with zero friction.
   async function onAutofillClick(e) {
     e.stopPropagation();

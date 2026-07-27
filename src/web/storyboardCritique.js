@@ -17,9 +17,9 @@ export const CRITIQUE_LENSES = Object.freeze([
   {
     key: 'bible',
     label: 'Bible adherence',
-    focus: 'how faithfully the shot honors the scene bible',
+    focus: "how faithfully the shot honors the scene bible and serves the scene's intention",
     instruction:
-      'Judge ONLY whether the shot honors the scene bible — location, time of day, lighting key, palette, mood, blocking, and camera language. Reward consistency; penalize drift or contradiction.',
+      "Judge ONLY whether the shot honors the scene bible — its INTENTION and TURN first, then location, time of day, lighting key, palette, mood, blocking, and camera language. The intention is what the scene must do to the audience: ask whether this shot's camera, light, blocking, and performance all point at that one thing, or whether they are individually competent and collectively aimless. Reward consistency and coherent aim; penalize drift, contradiction, and shots that honor the look while serving no dramatic purpose.",
   },
   {
     key: 'director_notes',
@@ -33,7 +33,14 @@ export const CRITIQUE_LENSES = Object.freeze([
     label: 'Cinematic quality',
     focus: 'the cinematic merit and AI-video readiness of the shot',
     instruction:
-      "Judge ONLY cinematic merit and AI-video readiness. START FRAME: is the subject's pose, orientation, heading and placement concrete and correct for the moment (a car squarely in its lane nose-forward, not slewed across the road; a person mid-action, not limp)? Is composition / shot value strong and does the shot earn its place? Does it state any continuity state the story has changed (jacket off, shirt bloodied, hair soaked) rather than silently defaulting to the reference look? VIDEO_PROMPT: does it lead with the camera and its motivation, then the blocking, then the PERFORMANCE — who speaks in what order (mouth and jaw only, never the words themselves), the facial beat as a change from one state to another, what every non-speaking listener on screen is doing, and any state change during the clip? Penalize ambiguous stills, buried or wandering camera, static re-description, a listener left neutral, and any stillness closer such as \"everything else holds still\". Ignore bible/notes adherence (other lenses cover those).",
+      "Judge ONLY cinematic merit and AI-video readiness. START FRAME: is the subject's pose, orientation, heading and placement concrete and correct for the moment (a car squarely in its lane nose-forward, not slewed across the road; a person mid-action, not limp)? Is composition / shot value strong and does the shot earn its place? Does it state any continuity state the story has changed (jacket off, shirt bloodied, hair soaked) rather than silently defaulting to the reference look? VIDEO_PROMPT: does it lead with the camera and its motivation, then the blocking, then the PERFORMANCE — who speaks in what order (mouth and jaw only, never the words themselves), the facial beat as a change from one state to another, what every non-speaking listener on screen is doing, and any state change during the clip — and does it CLOSE on a completed endpoint the next cut can land on? Does it read as cause-and-consequence rather than a list of disconnected instructions? Is the performance detail matched to the framing (no micro-expressions demanded of a face that is tiny in an establishing wide)? Penalize ambiguous stills, buried or wandering camera, static re-description, a listener left neutral, a clip with no changed end state, any stillness closer such as \"everything else holds still\", empty evaluation words (cinematic, epic, dramatic, beautiful, stunning, moody, 8K), stacked synonyms, and any negation (\"no…\", \"does not…\") where a positive statement belongs. Ignore bible/notes adherence (other lenses cover those).",
+  },
+  {
+    key: 'fragility',
+    label: 'Generation fragility',
+    focus: 'whether this shot will survive image and video generation intact',
+    instruction:
+      'Judge ONLY the risk that this shot breaks in generation, independent of how good it reads on paper. Penalize: readable text or logos the audience is meant to read (signs, screens, plates) left in frame and in focus; detail that matters but is small, distant or fast-moving (background faces, busy fingers, tiny props); complex or fast hand action; character-to-prop contact (lifting, passing, handing over) with several people on screen; more than one camera move, or a big move into a complicated destination space; a shot asked to deliver a stable likeness AND committed physical action AND a dense frame at once; and multi-person shots where everyone is given an action instead of one focused beat over a bed of persistent micro-motion. Reward shots that keep the fragile thing large, still, off-frame, or in a shot of its own. A shot can be beautifully written and still score low here — say plainly what will break and what to simplify.',
   },
   {
     key: 'continuity',

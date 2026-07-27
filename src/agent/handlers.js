@@ -997,7 +997,9 @@ function formatPerEditSummary(applied) {
 // room) so the agent shows up as a live caret on the About page and never
 // clobbers a human editing there. `dialogue_style` is the *global* dialogue
 // style (each beat also has its own `dialog_notes`, edited via the dialogs room).
-const PLOT_EDIT_FIELDS = ['title', 'synopsis', 'dialogue_style', 'notes'];
+// `directorial_voice` is the project's single directing hand, inherited by scene
+// bibles, storyboard prompts, and dialogue.
+const PLOT_EDIT_FIELDS = ['title', 'synopsis', 'dialogue_style', 'directorial_voice', 'notes'];
 
 async function editPlotEntity(context, { field, edits, isWholeReplace }) {
   if (!PLOT_EDIT_FIELDS.includes(field)) {

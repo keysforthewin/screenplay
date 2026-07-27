@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { CRITIQUE_LENSES, aggregateCritique, clampScore } from '../src/web/storyboardCritique.js';
 
 describe('CRITIQUE_LENSES', () => {
-  it('defines the four lenses with key + instruction', () => {
+  it('defines the five lenses with key + instruction', () => {
     const keys = CRITIQUE_LENSES.map((l) => l.key);
-    expect(keys).toEqual(['bible', 'director_notes', 'cinematic', 'continuity']);
+    expect(keys).toEqual(['bible', 'director_notes', 'cinematic', 'fragility', 'continuity']);
     for (const l of CRITIQUE_LENSES) expect(l.instruction.length).toBeGreaterThan(0);
   });
 });

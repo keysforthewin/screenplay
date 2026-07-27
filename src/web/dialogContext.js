@@ -4,6 +4,8 @@
 // everything the model should know before it writes, regenerates, or critiques
 // dialogue for a beat:
 //   - the logline (plot title + synopsis)
+//   - the project-level directorial voice (plot.directorial_voice), read here
+//     for performance register
 //   - the project-level dialogue style / influences (plot.dialogue_style)
 //   - cross-beat continuity: the previous beat and its closing lines
 //   - per-beat steering (beat.dialog_notes)
@@ -72,6 +74,22 @@ export async function buildDialogContext(projectId, beat) {
     if (title) lines.push(`Title: ${title}`);
     if (synopsis) lines.push(`Logline: ${synopsis}`);
     sections.push(lines.join('\n'));
+  }
+
+  // Project directorial voice — the single directing hand every beat inherits.
+  // Dialogue reads it for REGISTER (restrained vs heightened vs deadpan), not
+  // for camera or light; the storyboard passes read the same field for those.
+  const voice = stripMarkdown(plot?.directorial_voice || '').trim();
+  if (voice) {
+    sections.push(
+      [
+        '# Directorial voice (project-wide)',
+        'The single directing hand this whole film is shot and performed with. Keep the dialogue in',
+        'the performance register it implies, and hold that register consistently.',
+        '',
+        voice,
+      ].join('\n'),
+    );
   }
 
   // Project dialogue style / influences.

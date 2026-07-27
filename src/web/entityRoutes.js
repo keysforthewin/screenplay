@@ -5070,12 +5070,14 @@ export function buildApiRouter() {
         buildScenePlanUserText,
         loadDirectorNotesForPlanner,
         loadDialogsForPlanner,
+        loadDirectorialVoice,
         SCENE_PLAN_SYSTEM_PROMPT,
         SHOT_EXPAND_SYSTEM_PROMPT,
       } = await import('./storyboardGenerate.js');
       const characters = await findCharactersInBeat(req.projectId, beat);
       const directorNotes = await loadDirectorNotesForPlanner(req.projectId);
       const dialogs = await loadDialogsForPlanner(req.projectId, beat._id);
+      const directorialVoice = await loadDirectorialVoice(req.projectId);
       const user = buildScenePlanUserText({
         beat,
         characters,
@@ -5083,6 +5085,7 @@ export function buildApiRouter() {
         direction,
         directorNotes,
         dialogs,
+        directorialVoice,
       });
       // `system`/`user` describe Pass 1 (scene plan), preserving the original
       // single-prompt response shape; `expand_system` adds the Pass-2 system

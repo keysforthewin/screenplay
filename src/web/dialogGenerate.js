@@ -39,10 +39,14 @@ const POPULATE_TOOL = {
       plan: {
         type: 'string',
         description:
-          "A 2-3 sentence sketch of the scene's dramatic shape BEFORE you write any " +
-          'lines: who is present, what each character wants, the central tension, and the ' +
-          'turn (the moment something shifts). Write this first — it disciplines the lines ' +
-          'that follow so they play the scene rather than narrate the action top-to-bottom.',
+          "A short sketch of the scene's dramatic shape BEFORE you write any lines. Cover, in a " +
+          'few sentences: who is present; for EACH speaker their OBJECTIVE (what they want out ' +
+          'of this exchange, stated as something the other person can give or refuse), the ' +
+          'OBSTACLE (what stands in the way — usually the other person wanting something ' +
+          'incompatible), and the TACTIC (how they try to get it — charm, deflect, stall, ' +
+          'threaten, confess, change the subject); the central tension; and the TURN, the moment ' +
+          'something shifts and the scene cannot go back. Write this first — it disciplines the ' +
+          'lines that follow so they play the scene rather than narrate the action top-to-bottom.',
       },
       entries: {
         type: 'array',
@@ -81,10 +85,27 @@ const SYSTEM_PROMPT = [
   'Return your result via the populate_dialog tool, in story order.',
   '',
   'Plan first, then write:',
-  '- Fill the `plan` field BEFORE the lines. Name who is present, what each character wants, the',
-  '  central tension, and the turn. Then write lines that PLAY that scene.',
+  '- Fill the `plan` field BEFORE the lines. Give every speaker an OBJECTIVE, an OBSTACLE, and a',
+  '  TACTIC, then name the central tension and the turn. Then write lines that PLAY that scene.',
+  '- A character in a scene is always trying to get something from someone. Lines are moves toward',
+  '  that thing, not reports about it. If a line is not a move, cut it.',
   '- The beat description and body are GUIDANCE, not a transcript. Capture the gist of the beat in',
   '  the characters\' voices — do not walk the prose sentence by sentence.',
+  '',
+  'Subtext:',
+  '- The strongest lines show the GAP between what a character says and what they want. Let them',
+  '  agree while pulling away, joke while frightened, talk about the dishes because they cannot say',
+  '  the real thing. Contradiction between word and want is where the performance lives.',
+  '- A line should do work the action line cannot. If a stage direction could carry the same',
+  '  information more cleanly, the line is redundant — cut it or replace it with what the character',
+  '  would actually say instead.',
+  '- Characters may talk around a subject, refuse to answer, answer a different question, or stop',
+  '  mid-thought. Silence and evasion are dialogue.',
+  '',
+  'Register:',
+  '- Pick ONE register for the scene — restrained realism, heightened theatricality, stylized',
+  '  deadpan, rapid overlap — consistent with the project\'s directorial voice and dialogue style,',
+  '  and hold it. Mixing registers inside one beat reads as a mistake, not as range.',
   '',
   'Continuity:',
   '- You are given the story logline, the previous beat, and how its dialogue ended. Let this beat\'s',
