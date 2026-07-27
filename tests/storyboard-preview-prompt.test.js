@@ -30,6 +30,7 @@ vi.mock('../src/mongo/images.js', () => ({
 const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
+const Dialogs = await import('../src/mongo/dialogs.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
 
 let server;
@@ -188,5 +189,29 @@ describe('POST /api/storyboards/preview-prompt', () => {
       beat_id: '0000aaaa0000aaaa0000aaaa',
     });
     expect(status).toBe(404);
+  });
+});
+
+describe('dialogue in the preview', () => {
+  it('includes the beat dialogue block with the no-words warning', async () => {
+    const beat = await Plots.createBeat({ projectId,
+      name: 'The Argument',
+      desc: 'They fight.',
+      body: 'INT. KITCHEN — NIGHT',
+      characters: [],
+    });
+    const d1 = await Dialogs.createDialog({
+      projectId, beatId: beat._id, order: 1, body: "You said you'd be here.", character: 'Sarah',
+    });
+    await Dialogs.updateDialog(projectId, d1._id, { direction: 'quiet, not accusing' });
+
+    const { status, json } = await postJson('/api/storyboards/preview-prompt', {
+      beat_id: beat._id.toString(),
+    });
+    expect(status).toBe(200);
+    expect(json.user).toContain('Dialogue in this beat');
+    expect(json.user).toContain('1. Sarah:');
+    expect(json.user).toContain('direction: quiet, not accusing');
+    expect(json.user).toContain('NEVER write these words');
   });
 });
