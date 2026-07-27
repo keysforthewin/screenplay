@@ -47,7 +47,7 @@ describe('auto prompt-critique (Pass 4)', () => {
       ],
     }));
     gen._setShotExpanderForTests(({ outline }) =>
-      outline.map((f, i) => ({ start_frame_prompt: `s${i}`, video_prompt: `v${i}`, reverse_in_post: false })),
+      outline.map((f, i) => ({ start_frame_prompt: `s${i}`, video_prompt: `v${i}` })),
     );
     gen._setImageDispatcherForTests(() => { throw new Error('no render'); });
     let panelCalls = 0;
@@ -148,7 +148,7 @@ describe('reExpandShot (regenerate prompt from critique)', () => {
     let sawNotes = null;
     gen._setShotExpanderForTests(({ revisionNotes, outline }) => {
       sawNotes = revisionNotes;
-      return outline.map(() => ({ start_frame_prompt: 'NEW start', video_prompt: 'NEW video', reverse_in_post: false }));
+      return outline.map(() => ({ start_frame_prompt: 'NEW start', video_prompt: 'NEW video' }));
     });
 
     await gen.reExpandShot({ projectId, storyboardId: sb._id.toString(), critiqueGuidance: 'colder light' });
@@ -177,7 +177,7 @@ describe('reExpandShot (regenerate prompt from critique)', () => {
 
     // Re-expansion introduces Tom in the new video prompt.
     gen._setShotExpanderForTests(({ outline }) =>
-      outline.map(() => ({ start_frame_prompt: 'Sarah and Tom at the counter.', video_prompt: 'Tom leans in.', reverse_in_post: false })),
+      outline.map(() => ({ start_frame_prompt: 'Sarah and Tom at the counter.', video_prompt: 'Tom leans in.' })),
     );
 
     await gen.reExpandShot({ projectId, storyboardId: sb._id.toString() });

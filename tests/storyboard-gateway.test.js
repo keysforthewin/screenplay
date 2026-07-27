@@ -348,31 +348,19 @@ beforeEach(async () => {
     });
   });
 
-  describe('reverse_in_post (reveal-shot flag)', () => {
-    it('defaults to false on a freshly created storyboard', async () => {
+  describe('reverse_in_post (removed feature)', () => {
+    it('createStoryboard does not surface a reverse_in_post key', async () => {
       const beat = await makeBeat();
-      const sb = await Gateway.createStoryboardViaGateway({ projectId, beatId: beat._id });
-      expect(sb.reverse_in_post).toBe(false);
+      const sb = await Storyboards.createStoryboard({ projectId, beatId: beat._id, order: 1 });
+      expect(sb).not.toHaveProperty('reverse_in_post');
     });
 
-    it('round-trips reverseInPost: true through createStoryboardViaGateway', async () => {
+    it('updateStoryboard rejects reverse_in_post as an unknown field', async () => {
       const beat = await makeBeat();
-      const sb = await Gateway.createStoryboardViaGateway({ projectId,
-        beatId: beat._id,
-        reverseInPost: true,
-      });
-      expect(sb.reverse_in_post).toBe(true);
-      const fresh = await Storyboards.getStoryboard(projectId, sb._id);
-      expect(fresh.reverse_in_post).toBe(true);
-    });
-
-    it('updateStoryboard can toggle reverse_in_post on and off', async () => {
-      const beat = await makeBeat();
-      const sb = await Gateway.createStoryboardViaGateway({ projectId, beatId: beat._id });
-      let next = await Storyboards.updateStoryboard(projectId, sb._id, { reverse_in_post: true });
-      expect(next.reverse_in_post).toBe(true);
-      next = await Storyboards.updateStoryboard(projectId, sb._id, { reverse_in_post: false });
-      expect(next.reverse_in_post).toBe(false);
+      const sb = await Storyboards.createStoryboard({ projectId, beatId: beat._id, order: 1 });
+      await expect(
+        Storyboards.updateStoryboard(projectId, sb._id, { reverse_in_post: true }),
+      ).rejects.toThrow(/unknown field/);
     });
   });
 });

@@ -116,20 +116,6 @@ function ShotMetaRow({ sb, sbId, tocCharacters, onRefresh }) {
         disabled={busy}
         onChange={(next) => patch({ characters_in_scene: next })}
       />
-      <button
-        type="button"
-        className={`storyboard-reverse-toggle${sb.reverse_in_post ? ' is-active' : ''}`}
-        disabled={busy}
-        aria-pressed={Boolean(sb.reverse_in_post)}
-        title={
-          sb.reverse_in_post
-            ? 'This shot was generated for reverse playback (reveal pattern). Click to unmark.'
-            : 'Mark this as a reveal shot: generate it backwards (subject centered → camera pulls away) and reverse the clip in post.'
-        }
-        onClick={() => patch({ reverse_in_post: !sb.reverse_in_post })}
-      >
-        ↺ {sb.reverse_in_post ? 'REVERSE IN POST' : 'reverse'}
-      </button>
       {error && <span className="error-banner small">{error}</span>}
     </div>
   );

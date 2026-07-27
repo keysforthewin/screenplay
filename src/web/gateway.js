@@ -1510,7 +1510,6 @@ export async function createStoryboardViaGateway({
   shotType = null,
   transitionIn = null,
   charactersInScene = [],
-  reverseInPost = false,
 }) {
   const sb = await mongoCreateStoryboard({
     projectId,
@@ -1522,7 +1521,6 @@ export async function createStoryboardViaGateway({
     shotType,
     transitionIn,
     charactersInScene,
-    reverseInPost,
   });
   // Seed the y-doc fragment(s) BEFORE broadcasting the ping. Otherwise the
   // SPA refetches and mounts its CollabField on an empty fragment before the

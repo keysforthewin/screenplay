@@ -168,7 +168,6 @@ const SCENE_PLAN_TOOL = {
               items: { type: 'string' },
               description: 'Names of EVERY character visible in this shot, exactly as listed in the beat metadata. List everyone who appears in frame — however many that is.',
             },
-            reverse_in_post: { type: 'boolean', description: 'True for spatial reveal/entry shots that must be generated backwards and reversed in post.' },
           },
           required: ['description', 'shot_type', 'duration_seconds'],
           additionalProperties: false,
@@ -982,11 +981,6 @@ const SHOT_EXPAND_TOOL = {
               description:
                 'Clip-gen motion prompt, 4–8 sentences. Camera FIRST (write "Static, locked-off camera." verbatim for held shots, otherwise name the move and its motivation), then the BLOCKING, then the PERFORMANCE: who speaks in what order (mouth and jaw working — NEVER the words themselves), the facial beat as a change from one state to another, the listener behavior for every non-speaking character on screen, and any state change during the clip. NO subject identity, setting, composition, or framing — the start frame already holds those. Never close with a stillness clause.',
             },
-            reverse_in_post: {
-              type: 'boolean',
-              description:
-                'Override the skeleton if you detect a reveal it missed. When true, invert: start_frame_prompt = final revealed state, video_prompt = the pull-back/generation-direction move (reversed in post). Omit to inherit the skeleton value.',
-            },
             references: {
               type: 'array',
               description: "One entry per character in this shot's characters_in_scene. Pick the candidate reference image (by 1-based index from that character's list) that best matches how they appear in THIS shot — age, wardrobe, framing. Omit a character to use their default.",
@@ -1074,7 +1068,6 @@ function formatSkeletonForExpand(outline) {
       if (Array.isArray(f.characters_in_scene) && f.characters_in_scene.length) {
         parts.push(`   characters_in_scene: ${f.characters_in_scene.join(', ')}`);
       }
-      if (f.reverse_in_post) parts.push('   reverse_in_post: true (invert temporal direction)');
       return parts.join('\n');
     })
     .join('\n');
@@ -1167,10 +1160,9 @@ async function expandShots({ beat, characters, sceneBible, outline, direction, d
     const vp = typeof s?.video_prompt === 'string' ? s.video_prompt.trim() : '';
     if (!sfp || !vp) {
       logger.warn(`storyboard expand_shots: missing output for shot ${i + 1}; using fallback`);
-      return { ...synthesizeFallbackShot(f), reverse_in_post: Boolean(f.reverse_in_post), references: [] };
+      return { ...synthesizeFallbackShot(f), references: [] };
     }
-    const rev = typeof s.reverse_in_post === 'boolean' ? s.reverse_in_post : Boolean(f.reverse_in_post);
-    return { start_frame_prompt: sfp, video_prompt: vp, reverse_in_post: rev, references: Array.isArray(s.references) ? s.references : [] };
+    return { start_frame_prompt: sfp, video_prompt: vp, references: Array.isArray(s.references) ? s.references : [] };
   });
 }
 
@@ -1200,7 +1192,6 @@ export async function reExpandShotInner({ projectId, sb, beat, critiqueGuidance 
     duration_seconds: sb.duration_seconds ?? null,
     transition_in: sb.transition_in || '',
     characters_in_scene: Array.isArray(sb.characters_in_scene) ? sb.characters_in_scene : [],
-    reverse_in_post: Boolean(sb.reverse_in_post),
   };
   const expanded = await expandShots({
     beat, characters, sceneBible: beat.scene_bible, outline: [outlineFrame],
@@ -1215,7 +1206,6 @@ export async function reExpandShotInner({ projectId, sb, beat, critiqueGuidance 
     ...outlineFrame,
     start_frame_prompt: e.start_frame_prompt,
     video_prompt: e.video_prompt,
-    reverse_in_post: typeof e.reverse_in_post === 'boolean' ? e.reverse_in_post : outlineFrame.reverse_in_post,
   };
   const newTextPrompt = buildTextPrompt(newFrame);
   const newStartPrompt = stripMarkdown(newFrame.start_frame_prompt || '').trim();
@@ -1428,7 +1418,6 @@ function cleanPlannedFrameV2(f) {
     transition_in: transition,
     characters_in_scene: rawChars,
     references: refs,
-    reverse_in_post: Boolean(f.reverse_in_post),
   }];
 }
 
@@ -1450,7 +1439,6 @@ async function planFramesV2({ projectId, beat, characters, targetCount, directio
     duration_seconds: f?.duration_seconds ?? null,
     transition_in: typeof f?.transition_in === 'string' ? f.transition_in : '',
     characters_in_scene: Array.isArray(f?.characters_in_scene) ? f.characters_in_scene : [],
-    reverse_in_post: Boolean(f?.reverse_in_post),
   }));
 
   const perCharacter = await gatherCandidatesFromDocs(characters);
@@ -1466,7 +1454,6 @@ async function planFramesV2({ projectId, beat, characters, targetCount, directio
       start_frame_prompt: e.start_frame_prompt,
       video_prompt: e.video_prompt,
       references: e.references,
-      reverse_in_post: typeof e.reverse_in_post === 'boolean' ? e.reverse_in_post : f.reverse_in_post,
     });
   });
 
@@ -1543,7 +1530,6 @@ async function createPlannedStoryboardEntry({
     shotType: frame.shot_type ?? null,
     transitionIn: frame.transition_in ?? null,
     charactersInScene: frame.characters_in_scene ?? [],
-    reverseInPost: Boolean(frame.reverse_in_post),
   });
 
   // Reference ids + relevance scores are resolved during planning

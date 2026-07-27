@@ -1794,32 +1794,6 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   padding: 4px 8px;
   border-left: 2px solid var(--border);
 }
-.storyboard-reverse-toggle {
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  color: var(--fg-muted);
-  background: transparent;
-  border: 1px dashed var(--border);
-  border-radius: 999px;
-  padding: 2px 10px;
-  cursor: pointer;
-  line-height: 1.4;
-}
-.storyboard-reverse-toggle:hover:not(:disabled) {
-  color: var(--fg);
-  border-color: var(--accent);
-}
-.storyboard-reverse-toggle.is-active {
-  color: var(--bg);
-  background: var(--accent);
-  border-style: solid;
-  border-color: var(--accent);
-  font-weight: 600;
-}
-.storyboard-reverse-toggle:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
 .storyboard-runtime-tally {
   margin: 4px 0 12px;
   padding: 6px 12px;

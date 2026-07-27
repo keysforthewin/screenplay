@@ -39,7 +39,7 @@ beforeEach(async () => {
     let calls = 0;
     gen._setShotExpanderForTests(({ outline }) => {
       calls += 1;
-      return outline.map(() => ({ start_frame_prompt: `NS${calls}`, video_prompt: `NV${calls}`, reverse_in_post: false }));
+      return outline.map(() => ({ start_frame_prompt: `NS${calls}`, video_prompt: `NV${calls}` }));
     });
 
     const jobId = await gen.startReExpandAllJob({ projectId, beatId: beat._id.toString() });

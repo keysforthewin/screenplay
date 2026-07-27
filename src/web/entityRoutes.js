@@ -3093,7 +3093,6 @@ export function buildApiRouter() {
         shot_type,
         transition_in,
         characters_in_scene,
-        reverse_in_post,
       } = req.body || {};
       const patch = {};
       if (duration_seconds !== undefined) patch.duration_seconds = duration_seconds;
@@ -3101,7 +3100,6 @@ export function buildApiRouter() {
       if (transition_in !== undefined) patch.transition_in = transition_in;
       if (characters_in_scene !== undefined)
         patch.characters_in_scene = characters_in_scene;
-      if (reverse_in_post !== undefined) patch.reverse_in_post = reverse_in_post;
       if (!Object.keys(patch).length)
         return res.status(400).json({ error: 'no patch fields' });
       try {

@@ -3,7 +3,7 @@
 // Drives the background job via the NEW pipeline overrides:
 //   - _setScenePlannerForTests : returns { sceneBible, outline } (Pass 1)
 //   - _setShotExpanderForTests : returns one
-//       { start_frame_prompt, video_prompt, reverse_in_post } per skeleton shot
+//       { start_frame_prompt, video_prompt } per skeleton shot
 //       (Pass 2)
 // Then verifies the storyboards land in Mongo with the expected fields. No
 // images are rendered during generation — the image dispatcher must stay idle.
@@ -11,8 +11,8 @@
 // (The narrower Pass-1 / Pass-2 / planFramesV2 unit tests live in
 // tests/storyboardSceneGeneration.test.js; this file covers the end-to-end job:
 // target-count handling, row metadata persistence, multi-row creation, the
-// empty-planner-preserves-existing path, reference seeding, the reverse_in_post
-// override, progress events, and crash recording.)
+// empty-planner-preserves-existing path, reference seeding, progress events,
+// and crash recording.)
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ObjectId } from 'mongodb';
@@ -119,7 +119,6 @@ const TWO_SHOT_PLAN = {
       duration_seconds: 12,
       transition_in: '',
       characters_in_scene: ['Alice'],
-      reverse_in_post: false,
       start_frame_prompt: 'Wide shot of Alice entering through the diner door, dusk light.',
       video_prompt: 'Alice steps through the doorway and scans the room. Camera holds.',
     },
@@ -129,7 +128,6 @@ const TWO_SHOT_PLAN = {
       duration_seconds: 4,
       transition_in: 'Picks up Alice mid-stride from #1.',
       characters_in_scene: ['Alice', 'Bob'],
-      reverse_in_post: false,
       start_frame_prompt: 'Two-shot of Alice approaching the booth.',
       video_prompt: 'Alice slides into the booth opposite Bob; Bob lifts his gaze. Camera holds.',
     },
@@ -151,7 +149,6 @@ function installPlanner(plan) {
     ol.map((f, i) => ({
       start_frame_prompt: plan.shots[i]?.start_frame_prompt ?? '',
       video_prompt: plan.shots[i]?.video_prompt ?? '',
-      reverse_in_post: Boolean(plan.shots[i]?.reverse_in_post),
     })),
   );
 }
@@ -276,7 +273,6 @@ describe('storyboard auto-generation (two-pass)', () => {
           duration_seconds: 12, // close_up cap is 5
           transition_in: '',
           characters_in_scene: ['Alice'],
-          reverse_in_post: false,
           start_frame_prompt: 'Tight close-up of Alice, looking down.',
           video_prompt: 'Alice lifts her gaze; eyes well. Camera holds.',
         },
@@ -310,7 +306,6 @@ describe('storyboard auto-generation (two-pass)', () => {
           duration_seconds: 8,
           transition_in: '',
           characters_in_scene: ['Alice', 'Bob', 'Carol', 'Dave'],
-          reverse_in_post: false,
           start_frame_prompt: 'Wide shot of the diner.',
           video_prompt: 'Subtle handheld breath on the wide; background figures drift slightly.',
         },
@@ -342,7 +337,6 @@ describe('storyboard auto-generation (two-pass)', () => {
           duration_seconds: 5,
           transition_in: '',
           characters_in_scene: ['Alice'], // planner forgot Bob
-          reverse_in_post: false,
           start_frame_prompt: 'Alice and Bob at the counter.',
           video_prompt: 'Bob leans in; Alice reacts.',
         },
@@ -374,7 +368,6 @@ describe('storyboard auto-generation (two-pass)', () => {
           duration_seconds: 5,
           transition_in: '',
           characters_in_scene: [],
-          reverse_in_post: false,
           start_frame_prompt: 'Wide of the diner exterior at dusk.',
           video_prompt: 'Camera holds locked-off on the diner exterior; light drains from the sky.',
         },
@@ -384,7 +377,6 @@ describe('storyboard auto-generation (two-pass)', () => {
           duration_seconds: 3,
           transition_in: 'Match cut from neon glow to steam.',
           characters_in_scene: [],
-          reverse_in_post: false,
           start_frame_prompt: 'Macro shot of a coffee cup, steam rising.',
           video_prompt: 'Steam rises from the coffee cup in a slow curl. Camera holds.',
         },
@@ -502,7 +494,6 @@ describe('storyboard auto-generation (two-pass)', () => {
       return args.outline.map(() => ({
         start_frame_prompt: 's',
         video_prompt: 'v',
-        reverse_in_post: false,
       }));
     });
 
@@ -670,7 +661,7 @@ describe('auto-populated reference images', () => {
     Generate._setScenePlannerForTests(async () => ({
       sceneBible: { location: 'Bar' },
       outline: [{ description: 'cu on Keys', shot_type: 'close_up', duration_seconds: 4,
-        transition_in: '', characters_in_scene: ['Keys'], reverse_in_post: false }],
+        transition_in: '', characters_in_scene: ['Keys'] }],
     }));
     Generate._setShotExpanderForTests(async ({ outline }) =>
       outline.map(() => ({
@@ -770,67 +761,6 @@ describe('auto-populated reference images', () => {
         expect(frame.reference_ids).toEqual([]);
       }
     }
-  });
-});
-
-describe('reverse_in_post override flow', () => {
-  // The scene planner is supposed to mark reveal shots with reverse_in_post:
-  // true, but it can miss them when the beat narrative uses forward-reveal
-  // language. The shot expander is a second line of defense: it can return
-  // reverse_in_post in its output to override the skeleton's value.
-
-  async function runOne({ skeletonReverse, expanderReverse }) {
-    Generate._setScenePlannerForTests(async () => ({
-      sceneBible: { location: 'Street' },
-      outline: [
-        {
-          description: 'Skyscraper looms into view as we slowly tilt up.',
-          shot_type: 'cinematic_wide',
-          duration_seconds: 5,
-          transition_in: '',
-          characters_in_scene: [],
-          reverse_in_post: skeletonReverse,
-        },
-      ],
-    }));
-    Generate._setShotExpanderForTests(async ({ outline }) =>
-      outline.map((f) => ({
-        start_frame_prompt: 'Skyscraper fills the frame, glass facade reflecting overcast sky.',
-        video_prompt: 'Heroes shift weight subtly at frame bottom; camera holds locked-off.',
-        // When expanderReverse is undefined the expander inherits the skeleton.
-        reverse_in_post:
-          expanderReverse !== undefined ? expanderReverse : Boolean(f.reverse_in_post),
-      })),
-    );
-    const beat = await Plots.createBeat({ projectId,
-      name: 'Reveal',
-      desc: 'd',
-      body: 'b',
-      characters: [],
-    });
-    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
-      beatId: beat._id.toString(),
-    });
-    const job = await waitForJob(jobId);
-    expect(job.status).toBe('done');
-    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
-    expect(stored).toHaveLength(1);
-    return stored[0];
-  }
-
-  it('expander can flip reverse_in_post from false to true when the skeleton missed a reveal', async () => {
-    const sb = await runOne({ skeletonReverse: false, expanderReverse: true });
-    expect(sb.reverse_in_post).toBe(true);
-  });
-
-  it('expander can flip reverse_in_post from true to false when it disagrees', async () => {
-    const sb = await runOne({ skeletonReverse: true, expanderReverse: false });
-    expect(sb.reverse_in_post).toBe(false);
-  });
-
-  it('skeleton value is preserved when the expander inherits it', async () => {
-    const sb = await runOne({ skeletonReverse: true, expanderReverse: undefined });
-    expect(sb.reverse_in_post).toBe(true);
   });
 });
 

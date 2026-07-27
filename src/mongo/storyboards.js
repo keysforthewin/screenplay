@@ -80,14 +80,6 @@
 //   shot_type: string | null          (one of SHOT_TYPES)
 //   transition_in: string | null      (short continuity note, ≤ MAX_TRANSITION_LEN)
 //   characters_in_scene: string[]     (deduped, stripped names)
-//   reverse_in_post: boolean          (when true, this is a reveal shot whose
-//                                      generated video should be played in
-//                                      reverse during post — the start_prompt
-//                                      describes the FINAL revealed state and
-//                                      the end_prompt describes the INITIAL
-//                                      hidden state. AI video models can't
-//                                      synthesize forward reveals coherently.
-//                                      Default false.)
 //   created_at, updated_at: Date
 
 import { ObjectId } from 'mongodb';
@@ -372,7 +364,6 @@ function backfill(doc) {
     characters_in_scene: Array.isArray(doc.characters_in_scene)
       ? doc.characters_in_scene.filter((s) => typeof s === 'string')
       : [],
-    reverse_in_post: Boolean(doc.reverse_in_post),
   };
 }
 
@@ -454,7 +445,6 @@ export async function createStoryboard({
   shotType = null,
   transitionIn = null,
   charactersInScene = [],
-  reverseInPost = false,
 } = {}) {
   if (!beatId) throw new Error('beatId required');
   const pid = await resolveProjectId(projectId);
@@ -507,7 +497,6 @@ export async function createStoryboard({
     shot_type: normalizedShotType,
     transition_in: sanitizeTransition(transitionIn),
     characters_in_scene: sanitizeCharacterList(charactersInScene),
-    reverse_in_post: Boolean(reverseInPost),
     created_at: now,
     updated_at: now,
   };
@@ -650,8 +639,6 @@ export async function updateStoryboard(projectId, id, patch) {
       } else {
         set[k] = v;
       }
-    } else if (k === 'reverse_in_post') {
-      set[k] = Boolean(v);
     } else {
       throw new Error(`update_storyboard: unknown field "${k}"`);
     }

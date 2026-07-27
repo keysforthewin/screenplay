@@ -139,7 +139,6 @@ describe('expandShots (Pass 2)', () => {
       outline.map((f, i) => ({
         start_frame_prompt: `start ${i}`,
         video_prompt: `move ${i}`,
-        reverse_in_post: Boolean(f.reverse_in_post),
       })),
     );
     const outline = [
@@ -178,8 +177,8 @@ describe('expandShots (Pass 2)', () => {
       ],
     };
     const outline = [
-      { description: 'first beat', shot_type: 'medium', duration_seconds: 4, reverse_in_post: false },
-      { description: 'second beat', shot_type: 'close_up', duration_seconds: 3, reverse_in_post: false },
+      { description: 'first beat', shot_type: 'medium', duration_seconds: 4 },
+      { description: 'second beat', shot_type: 'close_up', duration_seconds: 3 },
     ];
     const shots = await gen._expandShotsForTest({
       beat: { name: 'X', order: 1, body: '', desc: '', characters: [] },
@@ -210,7 +209,7 @@ describe('planFramesV2 (two-pass orchestration)', () => {
       ],
     }));
     gen._setShotExpanderForTests(({ outline }) =>
-      outline.map((f, i) => ({ start_frame_prompt: `s${i}`, video_prompt: `v${i}`, reverse_in_post: false })),
+      outline.map((f, i) => ({ start_frame_prompt: `s${i}`, video_prompt: `v${i}` })),
     );
 
     const { frames, sceneBible } = await gen._planFramesV2ForTest({
@@ -285,7 +284,7 @@ describe('end-to-end generation job (overrides)', () => {
       outline: [{ description: 'wide', shot_type: 'establishing', duration_seconds: 6 }],
     }));
     gen._setShotExpanderForTests(({ outline }) =>
-      outline.map((f, i) => ({ start_frame_prompt: `start${i}`, video_prompt: `vid${i}`, reverse_in_post: false })),
+      outline.map((f, i) => ({ start_frame_prompt: `start${i}`, video_prompt: `vid${i}` })),
     );
     gen._setImageDispatcherForTests(() => { throw new Error('should not render during generation'); });
 
@@ -328,5 +327,10 @@ describe('tool schemas', () => {
 
   it('the start_frame_prompt schema description demands continuity state', () => {
     expect(src).toContain('CONTINUITY STATE');
+  });
+
+  it('the feature is gone from the generator source', () => {
+    expect(src).not.toContain('reverse_in_post');
+    expect(src).not.toContain('reverseInPost');
   });
 });
