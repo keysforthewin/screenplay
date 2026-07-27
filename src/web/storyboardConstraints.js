@@ -92,6 +92,33 @@ export const OCCUPANT_PLACEHOLDER_RULES = [
   '- Still-frame detail only — occupants do NOT move in the video_prompt; figures seen through glass warp if animated.',
 ].join('\n');
 
+// The acting layer. Every shot with a character on screen carries a performance
+// objective, not just a camera move. Replaces the old SUBJECT_MOTION_RULES,
+// which capped a clip at one motion and banned dialogue outright — and which
+// is where the "no words in a prompt" rule used to live. That rule survives
+// here, narrowed: mouths move, words never appear, because the real voices are
+// recorded and lip-synced in post.
+export const PERFORMANCE_RULES = [
+  'Performance — every shot with a character on screen carries an acting objective. Write these into the video_prompt, in this order, including only what the shot actually contains:',
+  '- BLOCKING — where each character moves through the frame over the clip: who crosses to whom, who stands, who turns away, who closes distance. Give direction and endpoint. If no one relocates, say the blocking holds and describe the weight shift instead.',
+  '- SPEECH TURNS — exactly who is speaking at each point and in what order: "the woman speaks through the first half, then falls silent as the man answers over her." Describe the mouth and jaw working, the breath, the head punctuating. NEVER write the words themselves, quoted lines, voice-over, or sound effects — real performances are dubbed and lip-synced in post, and a synthesized voice would have to be thrown away.',
+  '- FACIAL BEATS — the expression CHANGE, never a static expression. Name the start state and the end state: "the flat courtesy drains out of her face into open alarm." Brows, eyes, mouth corners, jaw, a swallow, a blink held a beat too long.',
+  '- LISTENER BEHAVIOR — what every non-speaking character on screen does while the other talks. A listener is never neutral: holds the speaker\'s eyes, looks away, nods, stiffens, starts to answer and stops. Name one for each listener present. Silence is a performance.',
+  '- STATE CHANGE — any change to dress, held props, or physical condition occurring during the clip: a jacket pulled off and dropped, a tie loosened, a weapon drawn, rain soaking through. Give it a beginning and an end inside the clip.',
+].join('\n');
+
+// The still's half of the state story: the character's condition AT THIS POINT
+// IN THE STORY. Reference photos pin the DEFAULT look, so anything the story
+// has since changed must be said out loud or the image model silently reverts.
+// The last bullet is the seam where this meets PERFORMANCE_RULES' STATE CHANGE.
+export const CONTINUITY_STATE_RULES = [
+  "Continuity state — the character's condition at THIS point in the story, written into the start_frame_prompt:",
+  '- Reference photos and the scene bible carry the DEFAULT look. Anything the story has changed since must be stated explicitly or the image model reverts to the reference: jacket now off, sleeves rolled, shirt bloodied, hair soaked, the bag she picked up two beats ago now in her hand.',
+  '- This is the SECOND sanctioned exception to "do not re-describe wardrobe" (the first is the subject\'s sub-location). State only what DIFFERS from the default — not a full costume description.',
+  '- Carry it forward: once a beat has changed a state, every later shot shows the changed state until something changes it again. Check the earlier shots in the skeleton before writing each still.',
+  "- When a state change happens DURING a clip, the still opens in the state BEFORE it, the video_prompt performs the change, and the next shot's still opens in the state AFTER.",
+].join('\n');
+
 // A shot is ONE camera position. The failure this prevents: a prompt that names
 // a from-behind vantage ("looking forward up the cabin") and then describes the
 // subjects' faces / frontal gestures — physically two shots, which makes the

@@ -9,6 +9,8 @@ import {
   VIDEO_PROMPT_RULES,
   OCCUPANT_PLACEHOLDER_RULES,
   CAMERA_COHERENCE_RULES,
+  PERFORMANCE_RULES,
+  CONTINUITY_STATE_RULES,
 } from '../src/web/storyboardConstraints.js';
 
 describe('storyboard constraints', () => {
@@ -22,6 +24,8 @@ describe('storyboard constraints', () => {
       VIDEO_PROMPT_RULES,
       OCCUPANT_PLACEHOLDER_RULES,
       CAMERA_COHERENCE_RULES,
+      PERFORMANCE_RULES,
+      CONTINUITY_STATE_RULES,
     ]) {
       expect(typeof block).toBe('string');
       expect(block.trim().length).toBeGreaterThan(0);
@@ -111,5 +115,49 @@ describe('storyboard constraints', () => {
     const t = VIDEO_PROMPT_RULES.toLowerCase();
     expect(t).toContain('non-solid');
     expect(t).toContain('start frame');
+  });
+
+  it('performance rules name all five acting objectives', () => {
+    const t = PERFORMANCE_RULES.toLowerCase();
+    expect(t).toContain('blocking');
+    expect(t).toContain('speech turns');
+    expect(t).toContain('facial beats');
+    expect(t).toContain('listener behavior');
+    expect(t).toContain('state change');
+  });
+
+  it('performance rules forbid writing the words themselves (survives the SUBJECT_MOTION_RULES deletion)', () => {
+    const t = PERFORMANCE_RULES.toLowerCase();
+    expect(t).toContain('never write the words');
+    expect(t).toContain('voice-over');
+    expect(t).toContain('sound effects');
+    expect(t).toContain('lip-synced in post');
+  });
+
+  it('performance rules demand an expression change, not a static expression', () => {
+    const t = PERFORMANCE_RULES.toLowerCase();
+    expect(t).toContain('start state');
+    expect(t).toContain('end state');
+  });
+
+  it('performance rules require a beat for every non-speaking listener', () => {
+    const t = PERFORMANCE_RULES.toLowerCase();
+    expect(t).toContain('never neutral');
+    expect(t).toContain('each listener');
+  });
+
+  it('continuity-state rules make wardrobe drift explicit and carry it forward', () => {
+    const t = CONTINUITY_STATE_RULES.toLowerCase();
+    expect(t).toContain('default look');
+    expect(t).toContain('reverts to the reference');
+    expect(t).toContain('carry it forward');
+    expect(t).toContain('differs from the default');
+  });
+
+  it('continuity-state rules join the still to the in-clip state change', () => {
+    const t = CONTINUITY_STATE_RULES.toLowerCase();
+    expect(t).toContain('state before it');
+    expect(t).toContain('video_prompt performs the change');
+    expect(t).toContain('state after');
   });
 });
