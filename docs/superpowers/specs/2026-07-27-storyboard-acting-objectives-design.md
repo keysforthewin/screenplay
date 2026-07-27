@@ -210,12 +210,15 @@ Those assertions are **replaced, not deleted**:
 - `CAMERA_MOTION_RULES` no longer bans panning.
 - `buildBeatContextBlock` omits the dialogue block when no dialogs are passed (beat-sheet planner
   path unchanged), and includes it when they are.
-- Neither tool schema still declares `reverse_in_post`, while `updateStoryboard` still round-trips
-  the field (existing `tests/storyboard-gateway.test.js` coverage stands).
+- `reverse_in_post` survives nowhere in `src/`, `web/src/` or `tests/` except as assertions proving
+  its absence: `createStoryboard` no longer surfaces the key, and `updateStoryboard` rejects it as
+  an unknown field.
 
-`tests/storyboard-generate.test.js`, `tests/storyboardReExpandAll.test.js` and
-`tests/storyboardCritiqueGeneration.test.js` pass `reverse_in_post` through fake planners; these
-continue to pass because the field survives on the frame.
+`tests/storyboard-generate.test.js`, `tests/storyboardReExpandAll.test.js`,
+`tests/storyboardCritiqueGeneration.test.js` and `tests/storyboardSceneGeneration.test.js` carried
+`reverse_in_post` in their fake-planner fixtures; those inert fields are stripped, and
+`storyboard-generate.test.js`'s `reverse_in_post override flow` block is deleted outright since it
+only ever tested the removed feature.
 
 ## Out of scope
 
