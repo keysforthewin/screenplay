@@ -158,16 +158,31 @@ Threaded through:
 - `src/web/entityRoutes.js:5079` — the SPA prompt-preview endpoint must pass dialogs too, or the
   preview diverges from what actually runs.
 
-### `reverse_in_post`
+### `reverse_in_post` — removed entirely
 
-Removed from **both tool schemas** (`plan_scene` at `storyboardGenerate.js:168`, `expand_shots` at
-`:981`) and from both system prompts, so the model stops reasoning about reveals and stops emitting
-the flag.
+**Revised 2026-07-27 during execution planning.** The original design kept the field and the manual
+toggle, making reverse-in-post a deliberate director's choice. Rejected: the feature only ever
+existed as a workaround for models that glitched on reveals, and with `REVEAL_HANDLING` retired
+there is nothing left for it to work around. Keeping a half-feature whose instructions had been
+deleted was worse than deleting it.
 
-**Retained:** the Mongo field, `sanitize`/`update` handling in `src/mongo/storyboards.js`, the
-renderer's `reverseInPost` pass-through, the `PATCH` route in `entityRoutes.js:3104`, and the manual
-`↺ REVERSE IN POST` toggle in `web/src/widgets/StoryboardItem.jsx:121`. Reverse-in-post becomes a
-deliberate director's choice rather than an automatic model workaround. Existing frames keep working.
+The whole feature comes out:
+
+- **Prompts:** `REVEAL_HANDLING` and the `reverse_in_post` line in `SHOT_EXPAND_SYSTEM_PROMPT`.
+- **Tool schemas:** the property on both `plan_scene` and `expand_shots`.
+- **Generator:** the `formatSkeletonForExpand` injection (`storyboardGenerate.js:1077`) and every
+  pass-through in `cleanPlannedFrameV2`, `planFramesV2`, `reExpandShotInner`, and the
+  `addStoryboard` call.
+- **Mongo:** the schema comment, the `backfill` coercion, the `addStoryboard` `reverseInPost`
+  parameter, and the `updateStoryboard` patch key — which means `PATCH` with `reverse_in_post` now
+  correctly throws `unknown field`.
+- **REST:** the destructure and patch assignment in `entityRoutes.js:3096-3104`.
+- **SPA:** the `↺ reverse` button in `StoryboardItem.jsx:118-132` and its four
+  `.storyboard-reverse-toggle` rules in `styles.css:1797-1821`.
+
+No data migration. The stale `reverse_in_post` key on existing storyboard docs is simply never read
+again; `backfill` stops surfacing it and nothing writes it. Dropping it from Mongo is not worth a
+migration script for a boolean nothing consumes.
 
 ### Cut type
 

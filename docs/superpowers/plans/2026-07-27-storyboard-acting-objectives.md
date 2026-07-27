@@ -13,7 +13,7 @@
 - **Never write dialogue words into any prompt.** Speech is choreography only (mouth, jaw, breath, turn order). Real voices are dubbed and lip-synced in post. This rule currently lives inside `SUBJECT_MOTION_RULES`, which Task 3 deletes — it must survive in `PERFORMANCE_RULES`.
 - Run the full suite with `npm test`; a single file with `npx vitest run tests/<file>`; a single test with `npx vitest run -t "<name>"`.
 - Every constraint export is a `[...].join('\n')` string array in `src/web/storyboardConstraints.js`. Keep that shape.
-- `reverse_in_post` is removed from the LLM tool schemas ONLY. The Mongo field, the `PATCH` route, and the manual SPA toggle stay.
+- **`reverse_in_post` is deleted outright** (Task 4b) — schema, storage, REST, SPA, CSS, tests. No data migration; the stale key on existing docs is simply never read again. This supersedes the spec's original "keep the field and the manual toggle".
 - `transition_in` stays a free-form string. Do not convert it to a JSON enum — existing stored values would be rejected.
 - Commit after every task. No `Co-Authored-By` or attribution trailers (repo policy).
 - Spec: `docs/superpowers/specs/2026-07-27-storyboard-acting-objectives-design.md`
@@ -24,7 +24,10 @@
 | --- | --- | --- |
 | `src/web/storyboardConstraints.js` | Modify | Single source of truth for the shared prompt rule blocks. Gains `PERFORMANCE_RULES` + `CONTINUITY_STATE_RULES`; loses `SUBJECT_MOTION_RULES`, `REVEAL_HANDLING`, `FRAMING_RULES`. |
 | `src/web/storyboardGenerate.js` | Modify | Both system prompts, both tool schemas, and the dialogue plumbing. |
-| `src/web/entityRoutes.js` | Modify (`~5072`) | Preview endpoint passes dialogs so the preview matches the real run. |
+| `src/mongo/storyboards.js` | Modify | Drops the `reverse_in_post` field from the schema, `backfill`, `addStoryboard` and `updateStoryboard`. |
+| `src/web/entityRoutes.js` | Modify (`~3096`, `~5072`) | Drops `reverse_in_post` from the storyboard PATCH route; preview endpoint passes dialogs so the preview matches the real run. |
+| `web/src/widgets/StoryboardItem.jsx` | Modify | Drops the `↺ reverse` toggle button. |
+| `web/src/styles.css` | Modify | Drops the four `.storyboard-reverse-toggle` rules. |
 | `tests/storyboardConstraints.test.js` | Modify | Asserts on the rule-block text. |
 | `tests/storyboardSceneGeneration.test.js` | Modify | Asserts the blocks reach the two system prompts. |
 | `tests/storyboardDialogueContext.test.js` | Create | Covers the dialogue block in `buildBeatContextBlock`. |
@@ -482,34 +485,27 @@ git commit -m "🔥 Storyboard prompts: retire subject-motion, reveal, and frami
 
 ---
 
-### Task 4: Update both tool schemas
+### Task 4: Update both tool schema descriptions
 
-Schema descriptions are what the model reads at the point of writing each field, so they must mirror the system prompt. Also drops `reverse_in_post` from both schemas and adds the cut vocabulary.
+Schema descriptions are what the model reads at the point of writing each field, so they must mirror the system prompt. `reverse_in_post` removal is NOT part of this task — Task 4b removes that feature wholesale.
 
 **Files:**
-- Modify: `src/web/storyboardGenerate.js:162` (`transition_in`), `:168` (`plan_scene` `reverse_in_post`), `:971-985` (`expand_shots` fields)
+- Modify: `src/web/storyboardGenerate.js:162` (`transition_in`), `:971-980` (`expand_shots` prompt fields)
 - Test: `tests/storyboardSceneGeneration.test.js`
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: `SCENE_PLAN_TOOL` and `SHOT_EXPAND_TOOL` (module-private) with no `reverse_in_post` property. `cleanPlannedFrameV2` and `reExpandShotInner` keep reading `reverse_in_post` off the skeleton frame, which now always comes from the stored value rather than the model.
+- Produces: no signature changes — description text only.
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `tests/storyboardSceneGeneration.test.js` (the module exports the prompts but not the tools, so assert through the prompts plus a direct source read):
+Add to `tests/storyboardSceneGeneration.test.js` (the module exports the prompts but not the tools, so assert via a direct source read):
 
 ```js
 import { readFileSync } from 'node:fs';
 
 describe('tool schemas', () => {
   const src = readFileSync(new URL('../src/web/storyboardGenerate.js', import.meta.url), 'utf8');
-
-  it('neither tool schema declares reverse_in_post any more', () => {
-    // The Mongo field, the PATCH route and the SPA toggle survive; only the
-    // model-facing schemas drop it.
-    expect(src).not.toContain("reverse_in_post: { type: 'boolean'");
-    expect(src).not.toMatch(/reverse_in_post:\s*\{\s*\n\s*type: 'boolean'/);
-  });
 
   it('transition_in names the cut vocabulary', () => {
     expect(src).toContain('J-cut');
@@ -520,13 +516,17 @@ describe('tool schemas', () => {
   it('the video_prompt schema description demands performance', () => {
     expect(src).toContain('listener behavior');
   });
+
+  it('the start_frame_prompt schema description demands continuity state', () => {
+    expect(src).toContain('CONTINUITY STATE');
+  });
 });
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `npx vitest run tests/storyboardSceneGeneration.test.js -t "tool schemas"`
-Expected: FAIL — `reverse_in_post: { type: 'boolean'` is still present at `:168`.
+Expected: FAIL — `expected '…' to contain 'J-cut'`.
 
 - [ ] **Step 3: Edit the schemas**
 
@@ -539,10 +539,6 @@ At `:162`, replace the `transition_in` property with:
                 'How this shot picks up from the previous one: name the cut type — hard cut, match cut, smash cut, cutaway, dissolve, J-cut (sound leads the picture), L-cut (sound lags into the next shot) — plus a one-line continuity note. Empty for the first shot.',
             },
 ```
-
-At `:168`, delete the `plan_scene` `reverse_in_post` property line entirely.
-
-At `:981-985`, delete the `expand_shots` `reverse_in_post` property entirely.
 
 At `:971-975`, replace the `start_frame_prompt` description with:
 
@@ -561,16 +557,115 @@ At `:976-980`, replace the `video_prompt` description with:
 Run: `npx vitest run tests/storyboardSceneGeneration.test.js`
 Expected: PASS.
 
-- [ ] **Step 5: Verify the surviving `reverse_in_post` paths still work**
-
-Run: `npx vitest run tests/storyboard-gateway.test.js tests/storyboard-generate.test.js`
-Expected: PASS — these cover `updateStoryboard` round-tripping the field and the fake-planner override flow. The `reverse_in_post override flow` describe block in `storyboard-generate.test.js` drives a stubbed expander directly, so it is unaffected by the schema change.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/web/storyboardGenerate.js tests/storyboardSceneGeneration.test.js
-git commit -m "✨ Storyboard tool schemas: performance in video_prompt, cut vocabulary, drop model-side reverse_in_post"
+git commit -m "✨ Storyboard tool schemas: performance in video_prompt, cut vocabulary"
+```
+
+---
+
+### Task 4b: Remove the reverse-in-post feature entirely
+
+**Scope decision made during execution planning, superseding the spec's original "keep the field and the manual toggle".** Reverse-in-post existed only as a workaround for video models that glitched on reveals. Task 3 retires that doctrine, so the feature has nothing left to work around. It comes out completely — schema, storage, REST, SPA, and CSS.
+
+This runs BEFORE Task 5 because both tasks edit `planFramesV2` and `reExpandShotInner`.
+
+Nothing in the video pipeline reads the flag — `src/fal/*` and `src/web/falVideoGenerate.js` have no reference to it. It is metadata plus a UI badge, so removal has no runtime blast radius.
+
+**No data migration.** The stale `reverse_in_post` key on existing storyboard docs is simply never read again. Do not write a migration script.
+
+**Files:**
+- Modify: `src/mongo/storyboards.js` — schema comment (`:83-90`), `backfill` (`:375`), `addStoryboard` param (`:455`) and doc (`:510`), `updateStoryboard` patch key (`:653-654`)
+- Modify: `src/web/storyboardGenerate.js` — `:168`, `:981-985`, `:1056`, `:1077`, `:1170`, `:1172-1173`, `:1203`, `:1218`, `:1431`, `:1453`, `:1469`, `:1546`
+- Modify: `src/web/entityRoutes.js:3096`, `:3104`
+- Modify: `web/src/widgets/StoryboardItem.jsx:118-132`
+- Modify: `web/src/styles.css:1797-1821`
+- Test: `tests/storyboard-gateway.test.js`, `tests/storyboard-generate.test.js`, `tests/storyboardSceneGeneration.test.js`, `tests/storyboardReExpandAll.test.js`, `tests/storyboardCritiqueGeneration.test.js`
+
+**Interfaces:**
+- Consumes: nothing from Task 4.
+- Produces: `addStoryboard({ … })` no longer accepts `reverseInPost`. `updateStoryboard` throws `update_storyboard: unknown field "reverse_in_post"`. Storyboard docs returned by `listStoryboards`/`getStoryboard` no longer carry a `reverse_in_post` key.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `tests/storyboard-gateway.test.js`, **replace** the entire `describe('reverse_in_post (reveal-shot flag)', …)` block (`:351-376`) with:
+
+```js
+  describe('reverse_in_post (removed feature)', () => {
+    it('addStoryboard does not surface a reverse_in_post key', async () => {
+      const sb = await Storyboards.addStoryboard({ projectId, beatId: beat._id, order: 1 });
+      expect(sb).not.toHaveProperty('reverse_in_post');
+    });
+
+    it('updateStoryboard rejects reverse_in_post as an unknown field', async () => {
+      const sb = await Storyboards.addStoryboard({ projectId, beatId: beat._id, order: 1 });
+      await expect(
+        Storyboards.updateStoryboard(projectId, sb._id, { reverse_in_post: true }),
+      ).rejects.toThrow(/unknown field/);
+    });
+  });
+```
+
+Match the surrounding block's existing setup for `projectId` / `beat` — read the neighbouring describes and follow their pattern exactly rather than inventing new fixtures.
+
+In `tests/storyboard-generate.test.js`, delete the entire `describe('reverse_in_post override flow', …)` block (`:776-834`) and its explanatory comment. Remove `reverse_in_post` from the comment at `:6` and `:14`, and from every fake-planner/expander fixture object (`:122`, `:132`, `:154`, `:279`, `:313`, `:345`, `:377`, `:387`, `:505`, `:673`).
+
+In `tests/storyboardSceneGeneration.test.js` (`:132`, `:171-172`, `:203`, `:278`), `tests/storyboardReExpandAll.test.js` (`:42`) and `tests/storyboardCritiqueGeneration.test.js` (`:50`, `:151`, `:180`), remove `reverse_in_post` from the fixture objects.
+
+Add to `tests/storyboardSceneGeneration.test.js`'s `describe('tool schemas', …)`:
+
+```js
+  it('the feature is gone from the generator source', () => {
+    expect(src).not.toContain('reverse_in_post');
+    expect(src).not.toContain('reverseInPost');
+  });
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `npx vitest run tests/storyboard-gateway.test.js tests/storyboardSceneGeneration.test.js`
+Expected: FAIL — `addStoryboard` still returns the key, `updateStoryboard` still accepts it, and the source still contains `reverse_in_post`.
+
+- [ ] **Step 3: Remove it from the Mongo layer**
+
+In `src/mongo/storyboards.js`: delete the `reverse_in_post:` schema-comment block (`:83-90`); delete `reverse_in_post: Boolean(doc.reverse_in_post),` from `backfill`; delete `reverseInPost = false,` from the `addStoryboard` destructure and `reverse_in_post: Boolean(reverseInPost),` from the inserted doc; delete the `else if (k === 'reverse_in_post')` branch from `updateStoryboard` so the field falls through to the existing `unknown field` throw.
+
+- [ ] **Step 4: Remove it from the generator**
+
+In `src/web/storyboardGenerate.js`, delete: the `plan_scene` `reverse_in_post` property (`:168`); the `expand_shots` `reverse_in_post` property (`:981-985`); the `'For a reverse_in_post shot, …'` prompt line (`:1056`); the `if (f.reverse_in_post) parts.push(…)` line in `formatSkeletonForExpand` (`:1077`); and every remaining read/write of `reverse_in_post` / `reverseInPost` in `cleanPlannedFrameV2`, `planFramesV2`, `reExpandShotInner`, `synthesizeFallbackShot`'s callers, and the `addStoryboard({ … })` call at `:1546`.
+
+Grep to confirm nothing remains: `grep -n 'reverse_in_post\|reverseInPost' src/web/storyboardGenerate.js` must print nothing.
+
+- [ ] **Step 5: Remove it from REST and the SPA**
+
+In `src/web/entityRoutes.js`, delete `reverse_in_post,` from the destructure (`:3096`) and the `if (reverse_in_post !== undefined) …` line (`:3104`).
+
+In `web/src/widgets/StoryboardItem.jsx`, delete the entire `<button className={\`storyboard-reverse-toggle…\`}>` element (`:118-132`).
+
+In `web/src/styles.css`, delete all four `.storyboard-reverse-toggle` rules (`:1797-1821`).
+
+- [ ] **Step 6: Verify nothing references it anywhere**
+
+Run: `grep -rn 'reverse_in_post\|reverseInPost\|storyboard-reverse-toggle' src web/src tests`
+Expected: only the two `tests/storyboard-gateway.test.js` assertions that prove the field is gone.
+
+- [ ] **Step 7: Run the tests**
+
+Run: `npm test`
+Expected: PASS.
+
+- [ ] **Step 8: Verify the SPA still builds**
+
+Run: `npm run build:web`
+Expected: build succeeds. This is the only task touching SPA source, so it is the only one that needs this check.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/mongo/storyboards.js src/web/storyboardGenerate.js src/web/entityRoutes.js web/src/widgets/StoryboardItem.jsx web/src/styles.css tests/
+git commit -m "🔥 Remove the reverse-in-post feature entirely"
 ```
 
 ---
@@ -905,4 +1000,4 @@ After Task 6, the acceptance check is a real generation against a beat with dial
 - [ ] Start the app (`npm run dev`), open a beat that has at least two dialogue lines and two characters, and open the storyboard generation dialog's **Prompt Preview** tab. Confirm the Pass-1 user message shows the dialogue block, and the Pass-2 system prompt shows the `# Performance` and `# Continuity state` sections and no `# Reveals` section.
 - [ ] Generate a storyboard for that beat. Spot-check three shots' `video_prompt`: each should name the camera first, then blocking, then who is speaking and what the listener is doing. None should end with "Everything else holds still."
 - [ ] Confirm no generated shot contains quoted dialogue or the characters' actual lines.
-- [ ] Confirm the `↺ reverse` toggle still works manually on a shot (it is no longer set by the model).
+- [ ] Confirm the `↺ reverse` toggle is gone from the storyboard shot row and the page renders without it.
