@@ -4,18 +4,16 @@
 // guidance is written once. Each export is a ready-to-embed text block.
 
 export const CAMERA_MOTION_RULES = [
-  'Camera motion — pick at most one per shot, and prefer the top of this list:',
-  '- Locked-off / tripod static. Most reliable; the camera does not move, only the subject does. When in doubt, pick this.',
+  'Camera motion — pick the move the shot needs and name it explicitly. This is a preference ordering, not a ban list: every move below is available, and the earlier ones are the most reliable.',
+  '- Locked-off / tripod static. The camera does not move, only the subject does. Still the best choice when the performance is the event.',
   '- Subtle handheld breath — micro-shake or small drift while the camera stays essentially in place.',
-  '- Slow push-in toward the subject along the subject axis.',
-  '- Slow pull-out along the subject axis (keep it short; the model must invent peripheral background).',
-  '- Slow lateral truck — only when the destination space is continuous and simple.',
-  'NEVER (these break the model):',
-  '- Turning / panning in place to look off-frame (yaw rotation): "the camera pans to…", "we pan from Alice to Bob".',
-  '- Tilting up/down to reveal a new subject (pitch rotation).',
-  '- Whip pans, fast zooms, dolly-zooms, rolls, sweeps, orbits.',
-  '- Crane / jib / drone / aerial / Steadicam-following moves; any arcing or subject-tracking trajectory.',
-  '- Two-stage moves in one shot (push-in then tilt; lateral then turn).',
+  '- Slow push-in toward the subject, or slow pull-out, along the subject axis.',
+  '- Lateral truck or dolly, following or crossing the subject.',
+  '- Pan or tilt to hold or find a subject.',
+  '- Crane, jib, drone, Steadicam, orbit, or a compound two-stage move.',
+  'Craft notes:',
+  '- Name ONE primary move per shot and give its MOTIVATION — what the move is following or revealing. An unmotivated move reads as drift.',
+  '- The bigger the move, the more peripheral space the model must invent. Give a big move a simple, continuous destination space.',
 ].join('\n');
 
 export const SUBJECT_MOTION_RULES = [
@@ -55,7 +53,7 @@ export const FRAMING_RULES = [
 export const STILL_FRAMING_RULES = [
   'Still-frame composition (for the start_frame_prompt that anchors the clip):',
   `- This still is a FROZEN MOMENT of a live action, not a posed product shot. Translate the shot's motion into a concrete pose: a moving car sits squarely in its lane, body aligned with the road, nose pointed the way it travels; a walking person is caught mid-stride, weight shifting, facing their heading. Never leave the subject in a limp, ambiguous, or default stance.`,
-  `- The still is the clip's FIRST frame — the INITIAL STATE at t=0. Render only what is present at that instant. Any NON-SOLID effect that occurs LATER in the clip — a shooting star, a lightning flash, a firework burst, a muzzle flare, a breaking wave, spray, rain or snow starting, smoke or dust kicking up, a glow swelling — has not happened yet at t=0: leave it OUT of the still (a calm, blank sky — never a star caught mid-streak) and introduce it only in the video_prompt as the hero temporal change. This does NOT change how you pose an already-ongoing subject: a car already travelling is still shown mid-travel — only effects that newly occur mid-clip are withheld.`,
+  `- The still is the clip's FIRST frame — the INITIAL STATE at t=0. Render the moment the clip opens on, then let the video_prompt carry everything that happens afterward.`,
   `- State the subject's ORIENTATION and HEADING explicitly — which way it faces and, for anything in motion, the direction it is traveling. Pair every framing term ("three-quarter rear", "profile") with that heading so the model cannot invent a nonsensical pose (a car slewed diagonally across the road, a figure facing the wrong way).`,
   `- State WHERE the subject sits in the geography the beat requires — the exact sub-location the beat or a mini-slug names (the back seat vs the front, at the head of the table, in the doorway, in its travel lane to one side of the centerline). REQUIRED in EVERY still that frames that subject, INCLUDING tight close-ups where the location seems invisible: the image model defaults an unplaced subject to the most generic position (a child at a car window → the front passenger seat), so saying nothing renders the WRONG place. This is shot-specific blocking — write it; it is NOT a forbidden restatement of the scene bible.`,
   `- Pin the sub-location with a POSITIVE ANCHORING CUE held in frame, not just the words: for a back-seat child, show the back of the front-row headrest ahead of him and the rear side-window line, and keep the steering wheel and dashboard OUT of frame; for the head of the table, show the table receding away from him; for the doorway, show the jamb framing him. One or two such cues are enough to fix the placement.`,
@@ -63,6 +61,7 @@ export const STILL_FRAMING_RULES = [
   `- Compose the subject (or both, in a two-shot) within the frame so it reads clearly and is not clipped at the edge — but "centered in frame" never means "centered in the world": a vehicle still sits in its travel lane, not on the centerline. Keep it unoccluded and the foreground clear of its silhouette.`,
   '- Specify a simple, separable background when the set allows ("dark interior", "soft blurred street lights") — but never simplify away the one or two anchoring cues that fix the subject\'s sub-location (see above).',
   '- The opening still is the WHOLE composition — do NOT describe the camera arriving on the subject from off-frame.',
+  '- Readable text or logos the audience is meant to read (signs, screens, books, plates) warp to gibberish — keep them out of frame or out of focus.',
 ].join('\n');
 
 // The output contract for the video_prompt: motion only, in a fixed order
@@ -71,12 +70,13 @@ export const STILL_FRAMING_RULES = [
 // Owns ORDERING/FORMAT; CAMERA_MOTION_RULES / SUBJECT_MOTION_RULES own which
 // moves are allowed.
 export const VIDEO_PROMPT_RULES = [
-  'Video-prompt structure — describe ONLY what changes over time; the start frame already holds the scene. 2–4 sentences, in this order:',
-  '1. CAMERA FIRST, explicitly, as the opening words. For a held shot write "Static, locked-off camera." verbatim — never bury the camera mid-sentence. For a moving shot, name the single move from the camera-motion list as the first clause.',
-  '2. ONE primary motion, directional, with an endpoint. Give a vector AND a destination — "recedes straight down the street toward the vanishing point, shrinking", not "glides forward and slightly away". State that motion exactly ONCE; never repeat it in a later sentence.',
-  '3. At most ONE hero temporal change — the single time-based event that defines the clip (e.g. the sodium glow sweeping across the body as it passes each lamp). Make it the centerpiece; do not scatter competing "pulsing / warm / glowing" clauses. This hero change MAY be a NON-SOLID effect that is absent from the start frame (a shooting star streaking across the blank sky, a flash, a wave breaking); when it is, the start frame must depict the pre-event state and the effect appears ONLY here, not in the still.',
-  '4. End with the stillness constraint, verbatim: "Everything else holds still — no other movement." This stops the model inventing background motion.',
+  'Video-prompt structure — describe what happens over the clip; the start frame already holds the scene. 4-8 sentences, in this order:',
+  '1. CAMERA FIRST, explicitly, as the opening words. For a held shot write "Static, locked-off camera." verbatim — never bury the camera mid-sentence. For a moving shot, name the move and its motivation as the first clause.',
+  '2. BLOCKING — how the bodies move through the frame, with direction and endpoint.',
+  '3. PERFORMANCE — the speech turns, the facial beats, the listener behavior, and any state change, per the performance rules. This is the SUBSTANCE of the shot. Do not skip it because the shot looks simple: a shot of two people talking is a shot about two performances, not about a camera.',
+  '4. At most ONE environmental event — weather turning, a light source changing, a passing vehicle. Keep it in service of the performance, never competing with it.',
   'Strip ALL static description from the video_prompt: no subject identity (make / model / color / year / name), no setting or location, no composition or framing. Those live in the start_frame_prompt only — the video_prompt assumes the frame is already correct.',
+  'Do NOT write a stillness closer. The line "Everything else holds still — no other movement." and any variant of it are FORBIDDEN: they freeze every listener, every reaction, and every background life cue, and a scene where exactly one thing moves reads as dead.',
 ].join('\n');
 
 // When the beat puts characters INSIDE something the shot frames from the
@@ -89,7 +89,6 @@ export const OCCUPANT_PLACEHOLDER_RULES = [
   '- Render the right NUMBER of figures, dimly visible through the glass, roughly matching each named occupant\'s build, hair, and wardrobe color from the character list. They are low-detail PLACEHOLDERS — silhouetted heads and shoulders, not rendered faces — to be replaced later.',
   '- Keep occupants INSIDE and low-contrast behind the glass; do NOT promote them to framed subjects. The exterior object (the vehicle / the building) stays the hero of the shot.',
   '- This is the ONE exception to "do not describe character appearance": there are no reference photos reaching tiny through-glass figures, so a rough build / hair / wardrobe cue is what keeps the count and silhouettes right.',
-  '- Still-frame detail only — occupants do NOT move in the video_prompt; figures seen through glass warp if animated.',
 ].join('\n');
 
 // The acting layer. Every shot with a character on screen carries a performance

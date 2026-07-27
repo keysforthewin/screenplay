@@ -32,18 +32,44 @@ describe('storyboard constraints', () => {
     }
   });
 
-  it('camera rules name the locked-off default and forbid yaw/pan', () => {
-    expect(CAMERA_MOTION_RULES.toLowerCase()).toContain('locked-off');
-    expect(CAMERA_MOTION_RULES.toLowerCase()).toContain('pan');
+  it('camera rules offer a preference ordering, not a ban list', () => {
+    const t = CAMERA_MOTION_RULES.toLowerCase();
+    expect(t).toContain('locked-off');
+    expect(t).toContain('pan');
+    // The NEVER list is gone — pans and cranes are available again.
+    expect(t).not.toContain('never (these break the model)');
+    expect(t).toContain('motivation');
   });
 
   it('reveal handling names reverse_in_post', () => {
     expect(REVEAL_HANDLING).toContain('reverse_in_post');
   });
 
-  it('video-prompt rules put the camera first and end on a stillness constraint', () => {
-    expect(VIDEO_PROMPT_RULES.toLowerCase()).toContain('locked-off');
-    expect(VIDEO_PROMPT_RULES.toLowerCase()).toContain('no other movement');
+  it('video-prompt rules put the camera first and then demand performance', () => {
+    const t = VIDEO_PROMPT_RULES.toLowerCase();
+    expect(t).toContain('locked-off');
+    expect(t).toContain('blocking');
+    expect(t).toContain('performance');
+  });
+
+  it('video-prompt rules ban the stillness closer that killed listener beats', () => {
+    const t = VIDEO_PROMPT_RULES.toLowerCase();
+    // Present only as a prohibition, never as a template to emit.
+    expect(t).toContain('do not write');
+    expect(t).toContain('everything else holds still');
+    expect(t).not.toContain('verbatim: "everything else holds still');
+  });
+
+  it('video-prompt rules no longer cap the clip at one motion', () => {
+    const t = VIDEO_PROMPT_RULES.toLowerCase();
+    expect(t).not.toContain('one primary motion');
+    expect(t).not.toContain('at most one hero temporal change');
+  });
+
+  it('video-prompt rules still strip static description into the still', () => {
+    const t = VIDEO_PROMPT_RULES.toLowerCase();
+    expect(t).toContain('strip all static description');
+    expect(t).toContain('start_frame_prompt');
   });
 
   it('still-framing rules require explicit subject orientation/heading', () => {
@@ -95,12 +121,15 @@ describe('storyboard constraints', () => {
     expect(t).toContain('first frame');
   });
 
-  it('still-framing rules withhold mid-clip non-solid effects from the still (shooting-star fix)', () => {
+  it('still-framing rules drop the t=0 non-solid-effect withholding clause', () => {
     const t = STILL_FRAMING_RULES.toLowerCase();
-    expect(t).toContain('non-solid');
-    expect(t).toContain('shooting star');
-    // The withheld effect belongs in the video_prompt, not the opening still.
-    expect(t).toContain('video_prompt');
+    expect(t).not.toContain('shooting star');
+    expect(t).not.toContain('non-solid');
+  });
+
+  it('still-framing rules keep the readable-text warning rescued from FRAMING_RULES', () => {
+    const t = STILL_FRAMING_RULES.toLowerCase();
+    expect(t).toContain('gibberish');
   });
 
   it('subject-motion rules scope the "already in the start frame" ban to solids and exempt non-solid effects', () => {
@@ -111,10 +140,9 @@ describe('storyboard constraints', () => {
     expect(t).toContain('exception');
   });
 
-  it('video-prompt hero temporal change may be a non-solid effect absent from the start frame', () => {
-    const t = VIDEO_PROMPT_RULES.toLowerCase();
-    expect(t).toContain('non-solid');
-    expect(t).toContain('start frame');
+  it('occupant placeholders may now move', () => {
+    const t = OCCUPANT_PLACEHOLDER_RULES.toLowerCase();
+    expect(t).not.toContain('do not move');
   });
 
   it('performance rules name all five acting objectives', () => {
