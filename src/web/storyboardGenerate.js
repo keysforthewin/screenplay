@@ -158,7 +158,11 @@ const SCENE_PLAN_TOOL = {
                 'Framing/coverage class. establishing/cinematic_wide/insert ≤ 15s, medium ≤ 10s, close_up/reaction/two_shot/over_the_shoulder ≤ 5s.',
             },
             duration_seconds: { type: 'integer', minimum: 1, maximum: 15, description: 'On-screen hold time; respect the shot_type cap.' },
-            transition_in: { type: 'string', description: 'One-line continuity note: how this shot picks up from the previous one. Empty for the first shot.' },
+            transition_in: {
+              type: 'string',
+              description:
+                'How this shot picks up from the previous one: name the cut type — hard cut, match cut, smash cut, cutaway, dissolve, J-cut (sound leads the picture), L-cut (sound lags into the next shot) — plus a one-line continuity note. Empty for the first shot.',
+            },
             characters_in_scene: {
               type: 'array',
               items: { type: 'string' },
@@ -971,12 +975,12 @@ const SHOT_EXPAND_TOOL = {
             start_frame_prompt: {
               type: 'string',
               description:
-                'Still-image prompt for the opening composition. Capture the subject as a FROZEN MOMENT of the action — pose, orientation, heading, and placement in the required geography — so the still reads as the intended moment (a car squarely in its lane, nose down the street, not slewed across it). ~2–3 sentences. Do NOT restate the scene bible (location/lighting/palette/blocking) or character faces/wardrobe — reference them (EXCEPTION: always state the framed subject\'s precise sub-location, e.g. back seat vs front — the image model never sees the bible and will otherwise default to the wrong position). This is the clip\'s FIRST frame (the initial state at t=0): a NON-SOLID effect that only occurs later in the clip (a shooting star, a flash, a breaking wave) is NOT in this frame — it belongs solely in the video_prompt.',
+                'Still-image prompt for the opening composition. Capture the subject as a FROZEN MOMENT of the action — pose, orientation, heading, and placement in the required geography — so the still reads as the intended moment (a car squarely in its lane, nose down the street, not slewed across it). ~2–3 sentences. Do NOT restate the scene bible (location/lighting/palette/blocking) or character faces/wardrobe — reference them. TWO EXCEPTIONS, both REQUIRED when they apply: (1) always state the framed subject\'s precise sub-location, e.g. back seat vs front — the image model never sees the bible and will otherwise default to the wrong position; (2) always state any CONTINUITY STATE the story has changed since the reference photos — jacket off, shirt bloodied, hair soaked, a prop now in hand — or the model silently reverts to the reference look.',
             },
             video_prompt: {
               type: 'string',
               description:
-                'Clip-gen motion prompt. Camera FIRST (write "Static, locked-off camera." verbatim for held shots), then ONE directional motion with an endpoint, optionally ONE hero temporal change, then "Everything else holds still — no other movement." 2–4 sentences. NO subject identity, setting, composition, or framing — the start frame already holds those.',
+                'Clip-gen motion prompt, 4–8 sentences. Camera FIRST (write "Static, locked-off camera." verbatim for held shots, otherwise name the move and its motivation), then the BLOCKING, then the PERFORMANCE: who speaks in what order (mouth and jaw working — NEVER the words themselves), the facial beat as a change from one state to another, the listener behavior for every non-speaking character on screen, and any state change during the clip. NO subject identity, setting, composition, or framing — the start frame already holds those. Never close with a stillness clause.',
             },
             reverse_in_post: {
               type: 'boolean',

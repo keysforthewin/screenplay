@@ -1,4 +1,5 @@
 // tests/storyboardSceneGeneration.test.js
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vitest';
 import { createFakeDb } from './_fakeMongo.js';
 import {
@@ -309,5 +310,23 @@ describe('end-to-end generation job (overrides)', () => {
     gen._setScenePlannerForTests(null);
     gen._setShotExpanderForTests(null);
     gen._setImageDispatcherForTests(null);
+  });
+});
+
+describe('tool schemas', () => {
+  const src = readFileSync(new URL('../src/web/storyboardGenerate.js', import.meta.url), 'utf8');
+
+  it('transition_in names the cut vocabulary', () => {
+    expect(src).toContain('J-cut');
+    expect(src).toContain('L-cut');
+    expect(src).toContain('smash cut');
+  });
+
+  it('the video_prompt schema description demands performance', () => {
+    expect(src).toContain('listener behavior');
+  });
+
+  it('the start_frame_prompt schema description demands continuity state', () => {
+    expect(src).toContain('CONTINUITY STATE');
   });
 });
