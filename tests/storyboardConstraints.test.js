@@ -2,9 +2,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   CAMERA_MOTION_RULES,
-  SUBJECT_MOTION_RULES,
-  REVEAL_HANDLING,
-  FRAMING_RULES,
   STILL_FRAMING_RULES,
   VIDEO_PROMPT_RULES,
   OCCUPANT_PLACEHOLDER_RULES,
@@ -17,9 +14,6 @@ describe('storyboard constraints', () => {
   it('every block is a non-empty string', () => {
     for (const block of [
       CAMERA_MOTION_RULES,
-      SUBJECT_MOTION_RULES,
-      REVEAL_HANDLING,
-      FRAMING_RULES,
       STILL_FRAMING_RULES,
       VIDEO_PROMPT_RULES,
       OCCUPANT_PLACEHOLDER_RULES,
@@ -39,10 +33,6 @@ describe('storyboard constraints', () => {
     // The NEVER list is gone — pans and cranes are available again.
     expect(t).not.toContain('never (these break the model)');
     expect(t).toContain('motivation');
-  });
-
-  it('reveal handling names reverse_in_post', () => {
-    expect(REVEAL_HANDLING).toContain('reverse_in_post');
   });
 
   it('video-prompt rules put the camera first and then demand performance', () => {
@@ -132,14 +122,6 @@ describe('storyboard constraints', () => {
     expect(t).toContain('gibberish');
   });
 
-  it('subject-motion rules scope the "already in the start frame" ban to solids and exempt non-solid effects', () => {
-    const t = SUBJECT_MOTION_RULES.toLowerCase();
-    expect(t).toContain('solid');
-    // Non-solid effects are the sanctioned exception that may appear mid-clip.
-    expect(t).toContain('non-solid');
-    expect(t).toContain('exception');
-  });
-
   it('occupant placeholders may now move', () => {
     const t = OCCUPANT_PLACEHOLDER_RULES.toLowerCase();
     expect(t).not.toContain('do not move');
@@ -187,5 +169,12 @@ describe('storyboard constraints', () => {
     expect(t).toContain('state before it');
     expect(t).toContain('video_prompt performs the change');
     expect(t).toContain('state after');
+  });
+
+  it('the retired blocks are gone from the module', async () => {
+    const mod = await import('../src/web/storyboardConstraints.js');
+    expect(mod.SUBJECT_MOTION_RULES).toBeUndefined();
+    expect(mod.REVEAL_HANDLING).toBeUndefined();
+    expect(mod.FRAMING_RULES).toBeUndefined();
   });
 });

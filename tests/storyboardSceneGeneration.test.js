@@ -3,11 +3,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { createFakeDb } from './_fakeMongo.js';
 import {
   CAMERA_MOTION_RULES,
-  REVEAL_HANDLING,
-  SUBJECT_MOTION_RULES,
   STILL_FRAMING_RULES,
   VIDEO_PROMPT_RULES,
   CAMERA_COHERENCE_RULES,
+  PERFORMANCE_RULES,
+  CONTINUITY_STATE_RULES,
 } from '../src/web/storyboardConstraints.js';
 import { normalizeSceneBible as normalizeBibleForTest } from '../src/mongo/sceneBible.js';
 
@@ -39,8 +39,12 @@ describe('scene-plan building blocks (Pass 1)', () => {
 
   it('the scene-plan prompt embeds the shared constraint blocks (no duplication)', () => {
     expect(SCENE_PLAN_SYSTEM_PROMPT).toContain(CAMERA_MOTION_RULES);
-    expect(SCENE_PLAN_SYSTEM_PROMPT).toContain(REVEAL_HANDLING);
     expect(SCENE_PLAN_SYSTEM_PROMPT).toContain(CAMERA_COHERENCE_RULES);
+    expect(SCENE_PLAN_SYSTEM_PROMPT).toContain(PERFORMANCE_RULES);
+  });
+
+  it('the scene-plan prompt no longer teaches reveal inversion', () => {
+    expect(SCENE_PLAN_SYSTEM_PROMPT).not.toContain('reverse_in_post');
   });
 
   it('planScene (via override) returns { sceneBible, outline }', async () => {
@@ -62,12 +66,17 @@ describe('scene-plan building blocks (Pass 1)', () => {
 });
 
 describe('shot-expand building blocks (Pass 2)', () => {
-  it('exports SHOT_EXPAND_SYSTEM_PROMPT embedding subject + still-framing + video-prompt rules', () => {
+  it('exports SHOT_EXPAND_SYSTEM_PROMPT embedding performance + continuity + still-framing + video-prompt rules', () => {
     expect(typeof SHOT_EXPAND_SYSTEM_PROMPT).toBe('string');
-    expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(SUBJECT_MOTION_RULES);
+    expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(PERFORMANCE_RULES);
+    expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(CONTINUITY_STATE_RULES);
     expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(STILL_FRAMING_RULES);
     expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(VIDEO_PROMPT_RULES);
     expect(SHOT_EXPAND_SYSTEM_PROMPT).toContain(CAMERA_COHERENCE_RULES);
+  });
+
+  it('the shot-expand prompt no longer teaches reveal inversion', () => {
+    expect(SHOT_EXPAND_SYSTEM_PROMPT).not.toContain('reverse_in_post');
   });
 
   it('forbids proper names and requires a visual handle (actor likeness / described look)', () => {
