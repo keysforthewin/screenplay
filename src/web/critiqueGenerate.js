@@ -4,6 +4,7 @@
 // falVideoGenerate.js). Latest-only persistence via src/mongo/critiques.js.
 
 import { ObjectId } from 'mongodb';
+import { config } from '../config.js';
 import { logger } from '../log.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { resolveProjectId } from '../mongo/projects.js';
@@ -16,7 +17,7 @@ import {
   finalizeCritique,
 } from '../mongo/critiques.js';
 
-export const CRITIQUE_MODEL = 'claude-opus-4-8';
+export const CRITIQUE_MODEL = config.anthropic.model;
 const TERMINAL_RETENTION_MS = 5 * 60 * 1000;
 
 const jobs = new Map();
@@ -126,7 +127,7 @@ async function generateFacet(facet, ctx) {
   const client = getAnthropic();
   const resp = await client.messages.create({
     model: CRITIQUE_MODEL,
-    max_tokens: 1024,
+    max_tokens: 5000,
     system: facet.systemPrompt,
     tools: [CRITIQUE_FACET_TOOL],
     tool_choice: { type: 'tool', name: 'critique_facet' },

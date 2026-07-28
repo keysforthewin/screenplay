@@ -9,7 +9,7 @@ import { config } from '../config.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
 
-const SELECTOR_MODEL = config.anthropic.enhancerModel || 'claude-haiku-4-5-20251001';
+const SELECTOR_MODEL = config.anthropic.enhancerModel;
 
 function buildCatalogText(candidates) {
   return candidates
@@ -100,7 +100,7 @@ export async function scoreFrameReferences({ frameText, candidates }) {
     const client = getAnthropic();
     const resp = await client.messages.create({
       model: SELECTOR_MODEL,
-      max_tokens: 600,
+      max_tokens: 3000,
       system: SCORE_SYSTEM,
       messages: [{ role: 'user', content: userText }],
     });

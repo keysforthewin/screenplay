@@ -113,8 +113,9 @@ export async function inferExportTitle(meta) {
     const text = await analyzeText({
       system,
       user,
-      model: 'claude-haiku-4-5',
-      maxTokens: 60,
+      model: config.anthropic.enhancerModel,
+      // The title itself is ~15 tokens; the rest is thinking headroom.
+      maxTokens: 2000,
     });
     const slug = slugifyFilename(text, { maxLen: 60 });
     return slug || fallback;

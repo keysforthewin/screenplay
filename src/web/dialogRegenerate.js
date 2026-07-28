@@ -86,7 +86,7 @@ export async function generateAlternatives({ projectId, dialogId, count = ALTERN
   const client = getAnthropic();
   const resp = await client.messages.create({
     model: config.anthropic.model,
-    max_tokens: 1024,
+    max_tokens: 5000,
     system: SYSTEM_PROMPT,
     tools: [PROPOSE_TOOL],
     tool_choice: { type: 'tool', name: 'propose_alternatives' },

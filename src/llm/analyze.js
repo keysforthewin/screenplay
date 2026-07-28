@@ -8,7 +8,7 @@ export async function analyzeText({ system, user, model, maxTokens } = {}) {
   const client = getAnthropic();
   const resp = await client.messages.create({
     model: model || config.anthropic.model,
-    max_tokens: maxTokens || 2048,
+    max_tokens: maxTokens || 4000,
     system: system || undefined,
     messages: [{ role: 'user', content: user }],
   });

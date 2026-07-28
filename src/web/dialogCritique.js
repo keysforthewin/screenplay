@@ -101,7 +101,7 @@ export async function critiqueDialog({ projectId, beatId } = {}) {
   const client = getAnthropic();
   const resp = await client.messages.create({
     model: config.anthropic.model,
-    max_tokens: 2048,
+    max_tokens: 6000,
     system: SYSTEM_PROMPT,
     tools: [SCORE_TOOL],
     tool_choice: { type: 'tool', name: 'score_dialog' },

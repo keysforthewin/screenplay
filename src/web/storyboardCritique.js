@@ -3,6 +3,7 @@
 // combines them with a strict cap (any lens <= CRITICAL_SCORE pins the overall
 // so one hard failure can't be averaged away).
 
+import { config } from '../config.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
 import { stripMarkdown } from '../util/markdown.js';
@@ -85,8 +86,8 @@ export function aggregateCritique(lensResults) {
   return { overall, lowest_lens: lowest.lens };
 }
 
-// Hardcoded top-tier model, matching the rest of the storyboard surface.
-const CRITIQUE_MODEL = 'claude-opus-4-8';
+// Top-tier model, matching the rest of the storyboard surface.
+const CRITIQUE_MODEL = config.anthropic.model;
 
 // Forced-tool schema: every lens judge returns one score + comments.
 const JUDGE_TOOL = {
@@ -169,7 +170,7 @@ async function runLensJudge({ lens, target, context, imageInput }) {
   const client = getAnthropic();
   const resp = await client.messages.create({
     model: CRITIQUE_MODEL,
-    max_tokens: 1024,
+    max_tokens: 5000,
     system,
     tools: [JUDGE_TOOL],
     tool_choice: { type: 'tool', name: 'judge_shot' },

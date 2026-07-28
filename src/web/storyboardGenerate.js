@@ -85,10 +85,10 @@ import { renderSceneBibleBlock, normalizeSceneBible, isEmptySceneBible } from '.
 
 const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
 // Every LLM call in the storyboard pipeline runs on the top-tier model.
-// Hardcoded (not config-driven) on purpose — this surface is meant to be
-// "primo", so we don't want silent downgrades via ANTHROPIC_MODEL or similar.
-// Exported so the image-sheet beat planner runs on the same top-tier model.
-export const STORYBOARD_MODEL = 'claude-opus-4-8';
+// Config-driven via ANTHROPIC_MODEL so a model bump is one env change rather
+// than a code change — set that var to a top-tier model, never a cheap one.
+// Exported so the image-sheet beat planner runs on the same model.
+export const STORYBOARD_MODEL = config.anthropic.model;
 export const DEFAULT_TARGET_COUNT = 11;
 export const MIN_TARGET_COUNT = 3;
 export const MAX_TARGET_COUNT = 30;

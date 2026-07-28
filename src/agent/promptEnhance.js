@@ -89,7 +89,7 @@ export async function enhancePrompt({
   try {
     resp = await client.messages.create({
       model: config.anthropic.enhancerModel,
-      max_tokens: 600,
+      max_tokens: 3000,
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: userContent }],
     });

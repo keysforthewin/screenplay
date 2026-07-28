@@ -8,7 +8,7 @@ import { config } from '../config.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
 
-const VISION_MODEL = config.anthropic.enhancerModel || 'claude-haiku-4-5-20251001';
+const VISION_MODEL = config.anthropic.enhancerModel;
 const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const MAX_RAW = 4 * 1024 * 1024; // ~5 MB cap on raw vision input bytes.
 
@@ -60,7 +60,7 @@ export async function analyzeLibraryImage(buffer, contentType) {
     const client = getAnthropic();
     const resp = await client.messages.create({
       model: VISION_MODEL,
-      max_tokens: 400,
+      max_tokens: 3000,
       system: SYSTEM,
       messages: [
         {

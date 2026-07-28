@@ -106,8 +106,8 @@ export async function analyzeStoryboardCount({
   try {
     const client = getAnthropic();
     const resp = await client.messages.create({
-      model: 'claude-opus-4-8',
-      max_tokens: 400,
+      model: config.anthropic.model,
+      max_tokens: 2000,
       system: SYSTEM_PROMPT,
       tools: [SUGGEST_COUNT_TOOL],
       tool_choice: { type: 'tool', name: 'suggest_count' },

@@ -26,7 +26,7 @@ describe('analyzeText', () => {
     const arg = messagesCreate.mock.calls[0][0];
     expect(arg.system).toBe('sys');
     expect(arg.messages).toEqual([{ role: 'user', content: 'usr' }]);
-    expect(arg.max_tokens).toBe(2048);
+    expect(arg.max_tokens).toBe(4000);
     expect(typeof arg.model).toBe('string');
     expect(arg.model.length).toBeGreaterThan(0);
   });

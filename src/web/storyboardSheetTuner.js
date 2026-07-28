@@ -109,7 +109,7 @@ export async function scanShotForPlateGap({ sb, existingPlates = [] }) {
     const client = getAnthropic();
     const resp = await client.messages.create({
       model: STORYBOARD_MODEL,
-      max_tokens: 1200,
+      max_tokens: 5000,
       system: SHOT_PLATE_SCAN_SYSTEM_PROMPT,
       tools: [SHOT_PLATE_SCAN_TOOL],
       tool_choice: { type: 'tool', name: 'scan_shot_plate' },
@@ -205,7 +205,7 @@ export async function consolidatePlateProposals({ proposals, existingPlates = []
     const client = getAnthropic();
     const resp = await client.messages.create({
       model: STORYBOARD_MODEL,
-      max_tokens: 4000,
+      max_tokens: 8000,
       system: CONSOLIDATE_PLATES_SYSTEM_PROMPT,
       tools: [CONSOLIDATE_PLATES_TOOL],
       tool_choice: { type: 'tool', name: 'consolidate_plates' },

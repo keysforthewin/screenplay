@@ -118,7 +118,7 @@ export async function generateDirectionForLine({ projectId, dialogId } = {}) {
   const client = getAnthropic();
   const resp = await client.messages.create({
     model: config.anthropic.model,
-    max_tokens: 1024,
+    max_tokens: 5000,
     system: SYSTEM_PROMPT,
     tools: [WRITE_DIRECTION_TOOL],
     tool_choice: { type: 'tool', name: 'write_direction' },
@@ -169,7 +169,7 @@ export async function generateDirectionForBeat({ projectId, beatId } = {}) {
   const client = getAnthropic();
   const resp = await client.messages.create({
     model: config.anthropic.model,
-    max_tokens: 4096,
+    max_tokens: 8000,
     system: SYSTEM_PROMPT,
     tools: [WRITE_DIRECTIONS_TOOL],
     tool_choice: { type: 'tool', name: 'write_directions' },

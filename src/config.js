@@ -14,9 +14,14 @@ export const config = {
   },
   anthropic: {
     apiKey: required('ANTHROPIC_API_KEY'),
-    model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-8',
+    // Every Claude call in the app resolves its model from one of these two.
+    // Thinking is always on for Fable 5 and its tokens count against
+    // max_tokens, so callers leave generous headroom even on short replies.
+    model: process.env.ANTHROPIC_MODEL || 'claude-fable-5',
     maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS) || 16000,
-    enhancerModel: process.env.ANTHROPIC_ENHANCER_MODEL || 'claude-haiku-4-5-20251001',
+    // Short auxiliary passes: prompt enhancement, vision captioning,
+    // reference selection, PDF filename inference.
+    enhancerModel: process.env.ANTHROPIC_ENHANCER_MODEL || 'claude-fable-5',
   },
   enhance: {
     enabled: !process.env.ENHANCE_PROMPTS_DISABLED,

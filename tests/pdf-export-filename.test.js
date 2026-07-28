@@ -6,6 +6,7 @@ vi.mock('../src/llm/analyze.js', () => ({
   analyzeText: (...args) => analyzeTextMock(...args),
 }));
 
+const { config } = await import('../src/config.js');
 const { slugifyFilename, inferExportTitle } = await import('../src/pdf/export.js');
 
 beforeEach(() => {
@@ -114,6 +115,9 @@ describe('inferExportTitle', () => {
     expect(args.user).toMatch(/Alice, Bob, Steve/);
     expect(args.user).toMatch(/Working title: "Caper"/);
     expect(args.user).toMatch(/Today is /);
-    expect(args.model).toBe('claude-haiku-4-5');
+    // Filename inference is an auxiliary pass, so it rides the enhancer model
+    // rather than a hardcoded id — asserted against config so a model bump is
+    // an env change, not a test edit.
+    expect(args.model).toBe(config.anthropic.enhancerModel);
   });
 });

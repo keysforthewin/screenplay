@@ -361,7 +361,7 @@ async function callPhase2Anthropic({ beat, characters, direction, directorNotes,
   const resp = await client.messages
     .stream({
       model: STORYBOARD_MODEL,
-      max_tokens: 2000,
+      max_tokens: 6000,
       system: SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT,
       tools: [SCENE_PLATE_CRITIQUE_TOOL],
       tool_choice: { type: 'tool', name: 'critique_scene_plate' },

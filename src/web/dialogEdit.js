@@ -133,7 +133,7 @@ export async function editDialog({ projectId, beatId, instructions }) {
   const client = getAnthropic();
   const resp = await client.messages.create({
     model: config.anthropic.model,
-    max_tokens: 2048,
+    max_tokens: 6000,
     system: SYSTEM_PROMPT,
     tools: EDIT_TOOLS,
     messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
