@@ -45,6 +45,10 @@ function matchOperator(dv, op) {
       case '$exists':
         if (Boolean(v) !== (dv !== undefined)) return false;
         break;
+      case '$in':
+        // matchesScalar so ObjectId members compare by value, not identity.
+        if (!Array.isArray(v) || !v.some((candidate) => matchesScalar(dv, candidate))) return false;
+        break;
       default:
         return false;
     }
@@ -385,6 +389,13 @@ function makeCollection() {
       if (idx < 0) return { deletedCount: 0 };
       docs.splice(idx, 1);
       return { deletedCount: 1 };
+    },
+    async deleteMany(query = {}) {
+      const keep = docs.filter((d) => !matchQuery(d, query));
+      const deletedCount = docs.length - keep.length;
+      docs.length = 0;
+      docs.push(...keep);
+      return { deletedCount };
     },
     find(query = {}) {
       return makeCursor(docs.filter((d) => matchQuery(d, query)));

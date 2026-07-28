@@ -38,6 +38,39 @@ export async function createProject(title) {
   return doc;
 }
 
+// Rename in place. Safe by construction: every room name, GridFS file, and
+// content row keys off project_id, never the title — only the displayed name
+// and the /p/<title>/ URL change.
+export async function renameProject(id, title) {
+  const project = await getProjectById(id);
+  if (!project) return null;
+  const t = normalizeProjectTitle(title);
+  const title_lower = t.toLowerCase();
+  // Same duplicate-check shape as createProject; excludes this project so a
+  // case-only rename ("noir" → "Noir") is allowed.
+  const clash = await col().findOne({ title_lower });
+  if (clash && String(clash._id) !== String(project._id)) {
+    const err = new Error(`duplicate project title: ${t}`);
+    err.code = 11000;
+    throw err;
+  }
+  await col().updateOne({ _id: project._id }, { $set: { title: t, title_lower } });
+  logger.info(`mongo: project rename id=${project._id} "${project.title}" -> "${t}"`);
+  return { ...project, title: t, title_lower };
+}
+
+export async function deleteProject(id) {
+  const project = await getProjectById(id);
+  if (!project) return false;
+  await col().deleteOne({ _id: project._id });
+  logger.info(`mongo: project delete id=${project._id} title="${project.title}"`);
+  return true;
+}
+
+export async function countProjects() {
+  return (await col().find({}).toArray()).length;
+}
+
 export async function listProjects() {
   return col().find({}).sort({ created_at: 1, _id: 1 }).toArray();
 }

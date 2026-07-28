@@ -13,7 +13,16 @@ import { convertToMp3 } from './audioTranscode.js';
 import { requireSession } from './auth.js';
 import { runAsEditor } from './editAttribution.js';
 import { resolveProject } from './projectMiddleware.js';
-import { createProject, getProjectByTitle, listProjects, normalizeProjectTitle } from '../mongo/projects.js';
+import {
+  countProjects,
+  createProject,
+  getProjectById,
+  getProjectByTitle,
+  listProjects,
+  normalizeProjectTitle,
+  renameProject,
+} from '../mongo/projects.js';
+import { deleteProjectCascade } from './projectDelete.js';
 import { seedProjectDefaults } from '../seed/defaults.js';
 import { ALLOWED_IMAGE_MODELS } from './imageReplaceDispatch.js';
 import { listImageModelInfo } from './imageModelInfo.js';
@@ -674,6 +683,55 @@ export function buildApiRouter() {
       }
       await seedProjectDefaults(project._id.toString());
       res.status(201).json({ id: project._id.toString(), title: project.title });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Rename. Addressed by path id (not the X-Project-Id header) so renaming a
+  // project you aren't currently viewing works. Only the title changes — every
+  // room name, GridFS file, and content row keys off project_id.
+  router.patch('/projects/:id', async (req, res, next) => {
+    try {
+      let title;
+      try {
+        title = normalizeProjectTitle(req.body?.title ?? '');
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+      if (!await getProjectById(req.params.id)) {
+        return res.status(404).json({ error: 'unknown project' });
+      }
+      let renamed;
+      try {
+        renamed = await renameProject(req.params.id, title);
+      } catch (e) {
+        if (e?.code === 11000) {
+          return res.status(409).json({ error: 'a project with that title already exists' });
+        }
+        throw e;
+      }
+      if (!renamed) return res.status(404).json({ error: 'unknown project' });
+      res.json({ id: renamed._id.toString(), title: renamed.title });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Irreversible full delete of one project and everything it owns. Refuses to
+  // delete the last remaining project: an empty projects collection makes the
+  // bot lazily recreate a blank "Screenplay" mid-request, which is a confusing
+  // way to end up with a project you didn't ask for.
+  router.delete('/projects/:id', async (req, res, next) => {
+    try {
+      const project = await getProjectById(req.params.id);
+      if (!project) return res.status(404).json({ error: 'unknown project' });
+      if ((await countProjects()) <= 1) {
+        return res.status(409).json({ error: 'cannot delete the only project' });
+      }
+      const result = await deleteProjectCascade(req.params.id);
+      if (!result) return res.status(404).json({ error: 'unknown project' });
+      res.json({ ok: true, id: result.id, title: result.title, deleted: result.deleted });
     } catch (e) {
       next(e);
     }

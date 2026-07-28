@@ -6,6 +6,7 @@ import { CollabField } from '../editor/CollabField.jsx';
 import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
 import { NotesPanel } from '../widgets/NotesPanel.jsx';
 import { useProject } from '../project/ProjectContext.jsx';
+import { ProjectRenameField, ProjectDangerZone } from '../widgets/ProjectSettings.jsx';
 
 const TABS = [
   { id: 'about', label: 'About' },
@@ -21,7 +22,8 @@ const TABS = [
 // its own `notes` room via <NotesPanel>. The header offers a full-screenplay PDF.
 export function About({ session }) {
   const navigate = useNavigate();
-  const { id: projectId } = useProject();
+  const project = useProject();
+  const { id: projectId } = project;
   const [activeTab, setActiveTab] = useState('about');
   const [notesData, setNotesData] = useState(null);
   const [error, setError] = useState(null);
@@ -83,7 +85,12 @@ export function About({ session }) {
 
       <CollabSurface room={`plot:${projectId}`} session={session}>
         <div className="tab-panel" hidden={activeTab !== 'about'}>
-          <CollabField label="Project name" field="title" />
+          <ProjectRenameField project={project} />
+          <CollabField label="Screenplay title" field="title" />
+          <p style={{ color: 'var(--fg-muted)', fontSize: 12, margin: '6px 0 0' }}>
+            The title on the screenplay's cover page — separate from the project
+            title above.
+          </p>
           <div style={{ marginTop: 20 }}>
             <CollabField
               label="Synopsis"
@@ -100,6 +107,7 @@ export function About({ session }) {
               placeholder="The single directing hand for the whole film: how the camera tends to sit, how faces are lit, how it's cut, how performances are pitched. Steers every scene bible, storyboard prompt, and dialogue pass. A few concrete sentences beats a list of adjectives."
             />
           </div>
+          <ProjectDangerZone project={project} />
         </div>
 
         <div className="tab-panel" hidden={activeTab !== 'dialogue'}>

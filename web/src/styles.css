@@ -2904,3 +2904,25 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .toc-beat-playing a {
   font-weight: 600;
 }
+
+/* About page danger zone — project delete. Deliberately set apart from the
+   editable fields above it so it can't be mistaken for one of them. */
+.danger-zone {
+  margin-top: 48px;
+  padding: 16px 18px;
+  border: 1px solid var(--danger, #f06a6a);
+  border-radius: 8px;
+  background: rgba(240, 106, 106, 0.06);
+}
+.danger-zone h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--danger, #f06a6a);
+}
+.danger-zone p {
+  margin: 0 0 12px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}

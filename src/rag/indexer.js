@@ -7,6 +7,7 @@
 //   indexDirectorNote(noteId)
 //   indexMessage(messageDoc)
 //   deleteEntity(entityType, entityId)
+//   deleteProjectChunks(projectId)
 //   pruneMessagesOlderThan(channelId, n)
 //   reindexByKey(entityType, entityId)   -- queue dispatcher hook
 //
@@ -315,6 +316,22 @@ export async function deleteEntity(entityType, entityId) {
       });
     } catch (e) {
       logger.warn(`rag: deleteEntity failed: ${e.message}`);
+    }
+  });
+}
+
+// Drop every chunk belonging to a project. Called from the project-delete
+// cascade; like the rest of this module it never throws, so an unreachable
+// Chroma leaves stale vectors behind rather than failing the delete.
+export async function deleteProjectChunks(projectId) {
+  const pid = idStr(projectId);
+  if (!pid) return false;
+  return safeRun(`delete:project:${pid}`, async (col) => {
+    try {
+      await col.delete({ where: { project_id: pid } });
+      logger.info(`rag: deleted all chunks for project=${pid}`);
+    } catch (e) {
+      logger.warn(`rag: deleteProjectChunks failed: ${e.message}`);
     }
   });
 }

@@ -53,10 +53,27 @@ export function loadStoredProject() {
   }
 }
 
+// Forget this browser's last-used project. Called after deleting the project
+// the viewer is standing in, so RedirectToProject doesn't send the next
+// navigation back into a project that no longer exists.
+export function clearStoredProject() {
+  currentProject = null;
+  try {
+    localStorage.removeItem(PROJECT_KEY);
+  } catch {
+    // localStorage unavailable — nothing to forget.
+  }
+}
+
 // Canonical URL of a project's TOC. Full-reload project switches use
 // location.assign(projectHomeUrl(title)).
 export function projectHomeUrl(title) {
   return withBase(`/p/${encodeURIComponent(title)}/`);
+}
+
+// The SPA's root; '/' redirects into the default project.
+export function appRootUrl() {
+  return withBase('/');
 }
 
 function authHeaders(extra = {}) {

@@ -1,7 +1,9 @@
 // ProjectManagerDialog
 //
-// v1 scope: list + switch + create (rename/delete deferred). Opened from
-// the Header brand and from the "project not found" screen. Switching
+// Scope: list + switch + create. Rename and delete live on the About page
+// (web/src/widgets/ProjectSettings.jsx), where the project being changed is
+// unambiguously the one you're standing in. Opened from the Header brand and
+// from the "project not found" screen. Switching
 // navigates with a FULL page load (location.assign) so every Hocuspocus
 // socket, EventSource, and poller from the old project is torn down.
 
