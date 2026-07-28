@@ -618,7 +618,7 @@ export const TOOLS = [
   {
     name: 'search_in_beat_body',
     keywords: ['search', 'grep', 'find', 'locate', 'where', 'occurrence', 'pattern', 'body', 'beat', 'lookup', 'large'],
-    description: 'Search a beat body for a pattern, returning each match with surrounding context lines. Substring search is case-insensitive by default. Pass `regex: true` to use a JavaScript regex (case-sensitive unless `case_insensitive: true`). Useful for locating the right snippet to edit in a long body before calling edit_beat_body.',
+    description: 'Search a beat body for a pattern, returning each match with surrounding context lines. Substring search is case-insensitive by default. Pass `regex: true` to use a JavaScript regex (case-sensitive unless `case_insensitive: true`). Useful for locating the right snippet to edit in a long body before calling `edit`.',
     input_schema: {
       type: 'object',
       properties: {
