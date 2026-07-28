@@ -227,7 +227,7 @@ export const TOOLS = [
     name: 'bulk_update_character_field',
     keywords: ['bulk', 'batch', 'mass', 'fill', 'populate', 'every', 'all', 'characters', 'field'],
     description:
-      'Update ONE field across many characters in a SINGLE tool call. Use this — never fan out individual `update_character` calls — when the user asks to populate, set, or fill a field for "all", "every", or many characters (e.g. "give every character a role"). Decide each value in your reasoning, then submit them all here as one call. The handler writes them in batches and logs progress. `field_name` may be a core field (`name`, `hollywood_actor`) or any custom template field — custom fields are stored under `fields.<name>` automatically; do NOT prefix `fields.` yourself. Returns a summary listing successes and failures.',
+      'Update ONE field across many characters in a SINGLE tool call. Use this — never fan out individual `edit` calls — when the user asks to populate, set, or fill a field for "all", "every", or many characters (e.g. "give every character a role"). Decide each value in your reasoning, then submit them all here as one call. The handler writes them in batches and logs progress. `field_name` may be a core field (`name`, `hollywood_actor`) or any custom template field — custom fields are stored under `fields.<name>` automatically; do NOT prefix `fields.` yourself. Returns a summary listing successes and failures.',
     input_schema: {
       type: 'object',
       properties: {
@@ -271,7 +271,7 @@ export const TOOLS = [
     name: 'revise_character',
     keywords: ['revise', 'rewrite', 'sweep', 'remove', 'reference', 'mention', 'cleanup', 'edit', 'across', 'every', 'all', 'character'],
     description:
-      'Apply natural-language revision instructions across every custom field of ONE character in a single tool call. The handler reads each `fields.X` value, asks an internal LLM to decide per-field whether to edit (provide new text), delete the field, or keep it unchanged, then writes the resulting patch in one round-trip. Use for sweeping requests that span multiple fields ("remove all references to X", "clean up mentions of the heist subplot", "rewrite the bio without the romance angle"). For a single specific edit (rename, set one field, change one value), use `update_character` instead. For deletion of one named field, also use `update_character` with `patch.unset`.',
+      'Apply natural-language revision instructions across every custom field of ONE character in a single tool call. The handler reads each `fields.X` value, asks an internal LLM to decide per-field whether to edit (provide new text), delete the field, or keep it unchanged, then writes the resulting patch in one round-trip. Use for sweeping requests that span multiple fields ("remove all references to X", "clean up mentions of the heist subplot", "rewrite the bio without the romance angle"). For a single specific edit (rename, set one field, change one value), use `edit` with `collection: \'character\'` instead. To delete one named field, use `set_field({collection: \'character\', identifier, field: \'unset\', value: [\'<field_name>\']})`.',
     input_schema: {
       type: 'object',
       properties: {
@@ -354,7 +354,7 @@ export const TOOLS = [
   {
     name: 'add_director_note',
     keywords: ['add', 'create', 'new', 'director', 'note', 'rule', 'directive', 'standing', 'screenplay-wide'],
-    description: "Append a new screenplay-wide rule to the director's notes. Use this when the user states a directive that applies to the screenplay overall but does NOT belong on a specific character or beat — e.g. \"from now on all unnamed extras are Feral Ewoks\", \"keep the tone deadpan\", \"no anachronisms unless I flag them\". Do NOT use this for character-specific facts (use update_character) or beat-specific content (use update_beat / append_to_beat_body). Returns a status string with the new note's _id.",
+    description: "Append a new screenplay-wide rule to the director's notes. Use this when the user states a directive that applies to the screenplay overall but does NOT belong on a specific character or beat — e.g. \"from now on all unnamed extras are Feral Ewoks\", \"keep the tone deadpan\", \"no anachronisms unless I flag them\". Do NOT use this for character-specific facts or beat-specific content (use `edit` on that character or beat). Returns a status string with the new note's _id.",
     input_schema: {
       type: 'object',
       properties: {
@@ -573,7 +573,7 @@ export const TOOLS = [
   {
     name: 'search_beats',
     keywords: ['search', 'find', 'beat', 'scene', 'moment', 'fuzzy', 'lookup', 'substring'],
-    description: 'Substring search across beat name, desc, and body (case-insensitive). Returns ranked candidates so you can disambiguate when the user gestures at a beat ("the diner argument", "that scene where Alice leaves"). Use this before set_current_beat / update_beat when the user references a beat by description rather than an exact name. Each result is { _id, order, name, desc_preview, matched_field, score }.',
+    description: 'Substring search across beat name, desc, and body (case-insensitive). Returns ranked candidates so you can disambiguate when the user gestures at a beat ("the diner argument", "that scene where Alice leaves"). Use this before set_current_beat / `edit` when the user references a beat by description rather than an exact name. Each result is { _id, order, name, desc_preview, matched_field, score }.',
     input_schema: {
       type: 'object',
       properties: {
@@ -586,13 +586,13 @@ export const TOOLS = [
   {
     name: 'create_beat',
     keywords: ['create', 'new', 'add', 'make', 'beat', 'scene', 'moment', 'introduce'],
-    description: 'Create a new beat. A beat has THREE text fields: `name` (short identifier, ~3-6 words), `desc` (1-2 sentence summary set on creation — the elevator pitch for the beat), and `body` (long-form developing content that grows over time as the user adds lore). Always pass `desc`. You SHOULD pass `name` too — generate a concise title-cased phrase from the user\'s description (e.g., "Diner Argument", "Alice Confronts Bob"). If `name` is omitted the system derives one from `desc`. Pass `body` only if the user gave you initial body content; otherwise leave it empty and use append_to_beat_body later. The first beat created automatically becomes the current beat.',
+    description: 'Create a new beat. A beat has THREE text fields: `name` (short identifier, ~3-6 words), `desc` (1-2 sentence summary set on creation — the elevator pitch for the beat), and `body` (long-form developing content that grows over time as the user adds lore). Always pass `desc`. You SHOULD pass `name` too — generate a concise title-cased phrase from the user\'s description (e.g., "Diner Argument", "Alice Confronts Bob"). If `name` is omitted the system derives one from `desc`. **If the user\'s message also describes what actually happens in the beat, creating it is only half the job — finish the writing in this same turn:** call `load_writing_context({ beat, characters })` for the new beat, then `edit({collection: \'beat\', identifier, field: \'body\', edits: [{find: \'\', replace: \'<the scene>\'}]})`. Do not create an empty beat and wait to be asked again. Leave `body` unset and write it through `edit` — that path loads the characters\' voices first, which writing at creation time would skip. Only leave the body empty when the user gave you nothing but a title or a one-line premise. The first beat created automatically becomes the current beat.',
     input_schema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Short identifier (3-6 words). Generate from the user\'s prose.' },
         desc: { type: 'string', description: '1-2 sentence summary of what the beat is about.' },
-        body: { type: 'string', description: 'Optional initial long-form content. Usually omit on creation; add later with append_to_beat_body.' },
+        body: { type: 'string', description: 'Rarely used. Prefer writing the body in the same turn via load_writing_context + edit, which loads character voices first; this arg bypasses that.' },
         characters: { type: 'array', items: { type: 'string' }, description: 'Names of characters present in this beat.' },
         order: { type: 'number', description: 'Optional explicit order. Omit to append.' },
       },
