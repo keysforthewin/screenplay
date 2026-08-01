@@ -2926,3 +2926,212 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   color: var(--fg-muted);
   font-size: 13px;
 }
+
+/* ── Playground ─────────────────────────────────────────────────────────
+   Scratchpad page for trying any fal.ai model (web/src/routes/Playground.jsx).
+   The drop zone reuses .ref-picker-drop; everything else is below. */
+.playground-intro {
+  color: var(--fg-muted);
+  margin-top: -8px;
+}
+.playground-drop {
+  margin: 16px 0;
+  min-height: 120px;
+}
+.playground textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 84px;
+  font: inherit;
+}
+.playground-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+.playground-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  font-size: 13px;
+  max-width: 260px;
+}
+.playground-chip img {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+.playground-chip-glyph {
+  font-size: 20px;
+}
+.playground-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.playground-chip button {
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 15px;
+  padding: 0 2px;
+}
+.playground-chip button:hover {
+  color: var(--danger);
+}
+.playground-model-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 20px;
+}
+.playground-model-head input[type='search'] {
+  flex: 0 1 260px;
+}
+.playground-model-count {
+  color: var(--fg-muted);
+  font-weight: normal;
+  font-size: 12px;
+}
+.playground-model-list {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 340px;
+  overflow-y: auto;
+  margin: 8px 0 16px;
+}
+.playground-empty {
+  color: var(--fg-muted);
+  padding: 16px;
+  margin: 0;
+}
+.playground-model-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 13px;
+}
+.playground-model-row:last-child {
+  border-bottom: none;
+}
+.playground-model-row:hover {
+  background: rgba(122, 166, 255, 0.06);
+}
+.playground-model-row.is-selected {
+  background: rgba(122, 166, 255, 0.12);
+}
+.playground-model-row.is-not-ready {
+  opacity: 0.6;
+}
+.playground-model-icon {
+  flex: none;
+}
+.playground-model-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.playground-model-name .playground-model-id {
+  color: var(--fg-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.playground-model-badge {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+.playground-model-missing {
+  flex: none;
+  font-size: 11px;
+  color: var(--warning);
+  white-space: nowrap;
+}
+.playground-model-cost {
+  flex: none;
+  font-size: 12px;
+  color: var(--ok);
+  white-space: nowrap;
+  min-width: 90px;
+  text-align: right;
+}
+.playground-generate-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 24px;
+}
+.playground-job-status {
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.playground-job-log {
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 380px;
+}
+.playground-results h2 {
+  font-size: 16px;
+  margin: 0 0 12px;
+}
+.playground-result {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.playground-result img {
+  max-width: 240px;
+  max-height: 240px;
+  border-radius: 6px;
+  display: block;
+}
+.playground-result video {
+  max-width: 420px;
+  width: 100%;
+  border-radius: 6px;
+  background: #000;
+}
+.playground-result audio {
+  min-width: 280px;
+}
+.playground-result-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  min-width: 0;
+}
+.playground-result-model {
+  font-weight: 600;
+}
+.playground-result-prompt {
+  color: var(--fg-muted);
+}

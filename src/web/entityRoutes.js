@@ -63,6 +63,14 @@ import {
   UnknownVideoModelError,
 } from './falVideoGenerate.js';
 import {
+  startPlaygroundJob,
+  getPlaygroundJob,
+  subscribeToPlaygroundJob,
+  unsubscribeFromPlaygroundJob,
+  serializePlaygroundJob,
+} from './playgroundGenerate.js';
+import { loadPlaygroundCatalog } from '../fal/playgroundModels.js';
+import {
   startChatRun,
   getChatRun,
   subscribeToChatRun,
@@ -556,6 +564,68 @@ export function buildApiRouter() {
       keepalive.unref?.();
       req.on('close', () => { clearInterval(keepalive); unsubscribeFromCritiqueJob(req.params.jobId, listener); });
     } catch (e) { next(e); }
+  });
+
+  // Server-Sent Events stream of a playground generation job. Registered
+  // BEFORE requireSession() for the same EventSource-can't-set-headers
+  // reason as the video-job stream above.
+  router.get('/playground/job/:jobId/events', async (req, res, next) => {
+    try {
+      const sid = String(req.query?.session_id || '');
+      if (!sid) {
+        res.status(401).json({ error: 'missing session' });
+        return;
+      }
+      const session = await getSession(sid);
+      if (!session) {
+        res.status(401).json({ error: 'invalid session' });
+        return;
+      }
+      touchSession(sid).catch(() => {});
+      req.session = session;
+
+      const job = getPlaygroundJob(req.params.jobId);
+      if (!job) {
+        res.status(404).json({ error: 'job not found' });
+        return;
+      }
+      res.set({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      res.flushHeaders?.();
+      res.write(`event: snapshot\ndata: ${JSON.stringify(serializePlaygroundJob(job))}\n\n`);
+
+      const listener = (snap) => {
+        const terminal = snap.status === 'done' || snap.status === 'error';
+        const eventName = terminal ? snap.status : 'update';
+        res.write(`event: ${eventName}\ndata: ${JSON.stringify(snap)}\n\n`);
+        if (terminal) {
+          unsubscribeFromPlaygroundJob(snap.job_id, listener);
+          res.end();
+        }
+      };
+      subscribeToPlaygroundJob(req.params.jobId, listener);
+
+      if (job.status === 'done' || job.status === 'error') {
+        unsubscribeFromPlaygroundJob(req.params.jobId, listener);
+        res.end();
+        return;
+      }
+
+      const keepalive = setInterval(() => {
+        res.write(`: keepalive ${Date.now()}\n\n`);
+      }, 20_000);
+      keepalive.unref?.();
+      req.on('close', () => {
+        clearInterval(keepalive);
+        unsubscribeFromPlaygroundJob(req.params.jobId, listener);
+      });
+    } catch (e) {
+      next(e);
+    }
   });
 
   router.use(requireSession());
@@ -4964,6 +5034,121 @@ export function buildApiRouter() {
       });
     } catch (err) {
       next(err);
+    }
+  });
+
+  // ── Playground ────────────────────────────────────────────────────────
+  // A scratchpad for trying any fal.ai model with drag-and-dropped reference
+  // media. Models come from data/fal-playground-models.json (see
+  // scripts/build-fal-playground-catalog.js); outputs persist as
+  // project-scoped GridFS files tagged owner_type 'playground'.
+
+  router.get('/playground/models', async (_req, res, next) => {
+    try {
+      const { config } = await import('../config.js');
+      const catalog = await loadPlaygroundCatalog();
+      res.json({
+        configured: Boolean(config.fal.apiKey),
+        catalog_generated_at: catalog.generated_at ?? null,
+        catalog_error: catalog.catalog_error,
+        models: catalog.models,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Upload one reference file (image/audio/video). Images land in the images
+  // bucket (magic-byte validated inside uploadGeneratedImage); audio/video in
+  // the attachments bucket.
+  router.post('/playground/upload', upload.single('file'), async (req, res, next) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: 'file required' });
+      const mime = String(req.file.mimetype || '');
+      const kind = mime.startsWith('image/') ? 'image'
+        : mime.startsWith('audio/') ? 'audio'
+        : mime.startsWith('video/') ? 'video'
+        : null;
+      if (!kind) {
+        return res.status(400).json({ error: 'file must be an image, audio, or video file' });
+      }
+      let file;
+      if (kind === 'image') {
+        try {
+          file = await uploadGeneratedImage(req.projectId, {
+            buffer: req.file.buffer,
+            contentType: mime,
+            ownerType: 'playground',
+            filename: safeFilename(req.file.originalname, `playground-${Date.now()}.png`),
+          });
+        } catch (e) {
+          return res.status(400).json({ error: `invalid image: ${e.message}` });
+        }
+      } else {
+        file = await uploadAttachmentBuffer(req.projectId, {
+          buffer: req.file.buffer,
+          filename: safeFilename(req.file.originalname, `playground-${Date.now()}.bin`),
+          contentType: mime,
+          ownerType: 'playground',
+        });
+      }
+      res.json({
+        ref: {
+          file_id: file._id.toString(),
+          kind,
+          filename: file.filename,
+          size: file.size ?? req.file.buffer.length,
+          content_type: file.content_type ?? mime,
+        },
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/playground/generate', async (req, res, next) => {
+    try {
+      const { job_id } = await startPlaygroundJob({
+        projectId: req.projectId,
+        modelId: String(req.body?.model_id || ''),
+        prompt: typeof req.body?.prompt === 'string' ? req.body.prompt : null,
+        refs: Array.isArray(req.body?.refs) ? req.body.refs : [],
+      });
+      res.status(202).json({ job_id });
+    } catch (err) {
+      if (err?.code === 'FAL_NOT_CONFIGURED') {
+        return res.status(503).json({ error: err.message });
+      }
+      if (err?.code === 'UNKNOWN_MODEL') {
+        return res.status(404).json({ error: err.message });
+      }
+      if (err?.code === 'MISSING_INPUTS') {
+        return res.status(400).json({ error: err.message, missing: err.missing || [] });
+      }
+      next(err);
+    }
+  });
+
+  // Remove an uploaded reference. Only files this project uploaded through
+  // the playground are deletable — anything else behaves as not-found.
+  router.delete('/playground/ref/:kind/:id', async (req, res, next) => {
+    try {
+      const kind = String(req.params.kind || '');
+      if (!['image', 'audio', 'video'].includes(kind)) {
+        return res.status(404).json({ error: 'not found' });
+      }
+      const file = kind === 'image'
+        ? await findImageFile(req.params.id).catch(() => null)
+        : await findAttachmentFile(req.params.id).catch(() => null);
+      const meta = file?.metadata || null;
+      if (!meta || String(meta.project_id) !== String(req.projectId) || meta.owner_type !== 'playground') {
+        return res.status(404).json({ error: 'not found' });
+      }
+      if (kind === 'image') await deleteImage(req.params.id);
+      else await deleteAttachment(req.params.id);
+      res.json({ ok: true });
+    } catch (e) {
+      next(e);
     }
   });
 

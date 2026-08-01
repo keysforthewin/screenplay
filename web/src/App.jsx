@@ -10,6 +10,7 @@ import { StoryboardBeat } from './routes/StoryboardBeat.jsx';
 import { DialogIndex } from './routes/DialogIndex.jsx';
 import { DialogBeat } from './routes/DialogBeat.jsx';
 import { About } from './routes/About.jsx';
+import { Playground } from './routes/Playground.jsx';
 import { ChatWindow } from './routes/ChatWindow.jsx';
 import { Header } from './widgets/Header.jsx';
 import { ProjectProvider } from './project/ProjectContext.jsx';
@@ -36,6 +37,7 @@ function ProjectShell({ session, onLogout }) {
         <Route path="/dialog" element={<DialogIndex session={session} />} />
         <Route path="/dialog/:order" element={<DialogBeat session={session} />} />
         <Route path="/about" element={<About session={session} />} />
+        <Route path="/playground" element={<Playground />} />
         {/* Unknown subpath: bounce via the app-root catch-all
             (RedirectToProject re-enters this project from the per-tab store). */}
         <Route path="*" element={<Navigate to="/" replace />} />
