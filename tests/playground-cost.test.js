@@ -93,4 +93,35 @@ describe('rowPriceLabel', () => {
     expect(rowPriceLabel(model(null))).toBe('from $0.30');
     expect(rowPriceLabel({ ...model(null), price_min_usd: null })).toBe('pricing varies');
   });
+
+  it('shows the smallest-duration total for per-second models with a duration control', () => {
+    const m = model({ kind: 'per_second', perSecondUsd: 0.14 }, 'video', [
+      { name: 'resolution', type: 'enum', options: ['720p', '1080p'], default: '1080p' },
+      { name: 'duration', type: 'enum', options: [3, 4, 5, 10], default: 5 },
+    ]);
+    expect(rowPriceLabel(m)).toBe('from $0.42');
+  });
+
+  it('uses int-control minimums for duration', () => {
+    const m = model({ kind: 'per_second', perSecondUsd: 0.2 }, 'video', [
+      { name: 'duration', type: 'int', default: 5, min: 2, max: 12 },
+    ]);
+    expect(rowPriceLabel(m)).toBe('from $0.40');
+  });
+
+  it('shows the smallest-size total for per-megapixel image models', () => {
+    const m = model({ kind: 'per_megapixel', perMpUsd: 0.02 }, 'image', [
+      { name: 'image_size', type: 'enum', options: ['square_hd', 'square', 'landscape_4_3'], default: 'landscape_4_3' },
+    ]);
+    // smallest = square 512×512 ≈ 0.262 MP → $0.00524
+    expect(rowPriceLabel(m)).toBe('from $0.005');
+  });
+
+  it('labels per_unit machine pricing as a rate', () => {
+    const m = model({ kind: 'per_unit', unitPriceUsd: 0.0002, unit: 'compute-s' }, 'video');
+    expect(rowPriceLabel(m)).toBe('$0.0002/compute-s');
+    const e = estimatePlaygroundCost(m, {});
+    expect(e.totalUsd).toBe(null);
+    expect(e.label).toBe('$0.0002/compute-s');
+  });
 });

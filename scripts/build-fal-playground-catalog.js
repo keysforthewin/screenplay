@@ -26,7 +26,7 @@ import {
   sleep,
 } from './lib/falDiscovery.js';
 import { classifyInputs, detectOutput, extractControls } from './lib/playgroundClassify.js';
-import { parsePlaygroundPricing } from './lib/playgroundPricing.js';
+import { parsePlaygroundPricing, pricingFromMachine, mergePricing } from './lib/playgroundPricing.js';
 
 const FAL_KEY = process.env.FAL_KEY;
 if (!FAL_KEY) {
@@ -47,6 +47,50 @@ function extractPriceMinUsd(text) {
   const valid = matches.filter(n => Number.isFinite(n) && n > 0);
   if (!valid.length) return null;
   return Math.min(...valid);
+}
+
+// Batch-fetch fal's machine pricing table (the billing-system truth — covers
+// most models that publish no pricing markdown). This API rate-limits hard
+// (~10 quick requests), so: 40 ids per call, generous spacing, and patient
+// backoff on 429.
+const PRICING_API = 'https://api.fal.ai/v1/models/pricing';
+const PRICING_BATCH = 40;
+const PRICING_DELAY_MS = 1500;
+
+async function fetchMachinePrices(ids) {
+  const byId = new Map();
+  for (let i = 0; i < ids.length; i += PRICING_BATCH) {
+    const chunk = ids.slice(i, i + PRICING_BATCH);
+    const url = `${PRICING_API}?endpoint_id=${encodeURIComponent(chunk.join(','))}`;
+    let attempt = 0;
+    for (;;) {
+      attempt += 1;
+      try {
+        const data = await falFetchRaw(url);
+        for (const p of data.prices || []) {
+          if (!byId.has(p.endpoint_id)) byId.set(p.endpoint_id, p);
+        }
+        break;
+      } catch (err) {
+        if (attempt >= 5) {
+          console.error(`  pricing chunk ${i / PRICING_BATCH + 1}: giving up (${err.message})`);
+          break;
+        }
+        const wait = /429/.test(err.message) ? 15000 * attempt : 2000;
+        console.error(`  pricing chunk ${i / PRICING_BATCH + 1}: ${err.message} — retrying in ${wait / 1000}s`);
+        await sleep(wait);
+      }
+    }
+    console.error(`  pricing: ${Math.min(i + PRICING_BATCH, ids.length)}/${ids.length} ids checked, ${byId.size} priced`);
+    await sleep(PRICING_DELAY_MS);
+  }
+  return byId;
+}
+
+async function falFetchRaw(url) {
+  const res = await fetch(url, { headers: { Authorization: `Key ${FAL_KEY}` } });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for pricing API`);
+  return res.json();
 }
 
 async function fetchSpecWithRetry(endpointId) {
@@ -132,6 +176,25 @@ async function main() {
   await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
 
   kept.sort((a, b) => a.endpoint_id.localeCompare(b.endpoint_id));
+
+  console.error(`\nFetching machine pricing for ${kept.length} models...`);
+  const machinePrices = await fetchMachinePrices(kept.map((k) => k.endpoint_id));
+  let machineApplied = 0;
+  for (const k of kept) {
+    const mp = machinePrices.get(k.endpoint_id) || null;
+    const machine = pricingFromMachine(mp);
+    const merged = mergePricing(k.pricing, machine);
+    if (machine && merged === machine) machineApplied += 1;
+    k.pricing = merged;
+    k.machine_price = mp ? { unit_price: mp.unit_price, unit: mp.unit } : null;
+    if (k.price_min_usd == null && Number.isFinite(mp?.unit_price)) {
+      k.price_min_usd = mp.unit_price;
+    }
+  }
+  const kindHistogram = {};
+  for (const k of kept) kindHistogram[k.pricing?.kind || 'none'] = (kindHistogram[k.pricing?.kind || 'none'] || 0) + 1;
+  console.error(`Machine pricing applied to ${machineApplied} models. Final pricing kinds:`);
+  console.error(`  ${JSON.stringify(kindHistogram)}`);
 
   const manifest = {
     generated_at: new Date().toISOString(),

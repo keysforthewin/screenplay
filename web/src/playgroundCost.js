@@ -126,6 +126,15 @@ export function estimatePlaygroundCost(model, { selections = {}, promptLength = 
     return { totalUsd: null, exact: false, label: `${formatUsd(pricing.perMinuteUsd)}/min`, basis: 'per minute' };
   }
 
+  if (pricing.kind === 'per_unit') {
+    return {
+      totalUsd: null,
+      exact: false,
+      label: `$${pricing.unitPriceUsd}/${pricing.unit}`,
+      basis: pricing.basis || `per ${pricing.unit}`,
+    };
+  }
+
   if (pricing.kind === 'per_audio_second') {
     return {
       totalUsd: null,
@@ -142,10 +151,53 @@ export function estimatePlaygroundCost(model, { selections = {}, promptLength = 
   return null;
 }
 
-// Compact per-unit price for a model-list row.
+// The cheapest configuration the model offers: shortest duration option and
+// smallest output size. Used to price list rows as "from $X".
+export function minimalSelections(model) {
+  const sel = {};
+  for (const c of model?.controls || []) {
+    if (['duration', 'duration_seconds', 'video_duration'].includes(c.name)) {
+      if (c.type === 'enum') {
+        const nums = c.options
+          .map((o) => parseFloat(String(o).replace(/s$/i, '')))
+          .filter((n) => Number.isFinite(n) && n > 0);
+        if (nums.length) sel[c.name] = Math.min(...nums);
+      } else if (c.type === 'int' && c.min != null) {
+        sel[c.name] = c.min;
+      } else if (c.type === 'int' && c.default != null) {
+        sel[c.name] = c.default;
+      }
+    } else if (c.name === 'image_size' && c.type === 'enum') {
+      const sized = c.options.filter((o) => IMAGE_SIZE_DIMS[o]);
+      if (sized.length) {
+        sel.image_size = sized.reduce((a, b) =>
+          (IMAGE_SIZE_DIMS[a][0] * IMAGE_SIZE_DIMS[a][1] <= IMAGE_SIZE_DIMS[b][0] * IMAGE_SIZE_DIMS[b][1] ? a : b));
+      }
+    } else if (c.name === 'resolution' && c.type === 'enum') {
+      const sized = c.options.filter((o) => RES_DIMS[String(o).toLowerCase()]);
+      if (sized.length) {
+        sel.resolution = sized.reduce((a, b) => {
+          const da = RES_DIMS[String(a).toLowerCase()];
+          const db = RES_DIMS[String(b).toLowerCase()];
+          return da[0] * da[1] <= db[0] * db[1] ? a : b;
+        });
+      }
+    }
+  }
+  return sel;
+}
+
+// Compact price for a model-list row: a computed smallest-configuration
+// total ("from $0.42") when the pricing depends on size/duration and the
+// model's controls tell us the minimum, otherwise a per-unit rate.
 export function rowPriceLabel(model) {
   const pricing = model?.pricing;
   if (pricing) {
+    // Size/duration-dependent kinds: try the cheapest configuration first.
+    if (['per_second', 'per_second_tiered', 'per_megapixel', 'per_minute'].includes(pricing.kind)) {
+      const est = estimatePlaygroundCost(model, { selections: minimalSelections(model) });
+      if (est?.totalUsd != null) return `from ${formatUsd(est.totalUsd)}`;
+    }
     switch (pricing.kind) {
       case 'per_image': return `${formatUsd(pricing.perImageUsd)}/image`;
       case 'per_second': return `${formatUsd(pricing.perSecondUsd)}/s`;
@@ -159,6 +211,7 @@ export function rowPriceLabel(model) {
       case 'per_audio_second': return `${formatUsd(pricing.perAudioSecondUsd)}/audio-s`;
       case 'per_minute': return `${formatUsd(pricing.perMinuteUsd)}/min`;
       case 'per_megapixel': return `$${pricing.perMpUsd}/MP`;
+      case 'per_unit': return `$${pricing.unitPriceUsd}/${pricing.unit}`;
       case 'flat_per_clip': return `~${formatUsd(pricing.flatUsd)}`;
       default: break;
     }

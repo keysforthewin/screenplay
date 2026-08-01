@@ -79,3 +79,59 @@ export function parsePlaygroundPricing(priceText) {
 
   return parseCatalogPriceText(t);
 }
+
+/**
+ * Map a machine-pricing row from GET https://api.fal.ai/v1/models/pricing
+ * ({ endpoint_id, unit_price, unit, currency }) onto the same structured
+ * kinds the text parser emits. Machine prices are authoritative, so exact
+ * quantity units get `exact: true`. Opaque units (compute seconds, tokens,
+ * credits) become a rate-only `per_unit` — honest, but not totalable.
+ */
+export function pricingFromMachine(row) {
+  const price = Number(row?.unit_price);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const unit = String(row.unit || '').toLowerCase().trim();
+  const basis = `fal machine pricing (per ${unit})`;
+
+  if (unit === 'megapixels' || unit === 'processed megapixels') {
+    return { kind: 'per_megapixel', perMpUsd: price, basis, exact: true };
+  }
+  if (unit === 'images' || unit === 'image') {
+    return { kind: 'per_image', perImageUsd: price, basis, exact: true };
+  }
+  if (unit === 'seconds' || unit === 'second') {
+    return { kind: 'per_second', perSecondUsd: price, basis, exact: true };
+  }
+  const nSeconds = /^(\d+)\s*seconds$/.exec(unit);
+  if (nSeconds) {
+    return { kind: 'per_second', perSecondUsd: price / parseInt(nSeconds[1], 10), basis, exact: true };
+  }
+  if (unit === 'minutes' || unit === 'minute') {
+    return { kind: 'per_minute', perMinuteUsd: price, basis, exact: true };
+  }
+  if (unit === '1000 characters') {
+    return { kind: 'per_1k_chars', per1kCharsUsd: price, basis, exact: true };
+  }
+  if (unit === 'videos' || unit === 'video' || unit === 'generations' || unit === 'generation' || unit === '1') {
+    return { kind: 'flat_per_clip', flatUsd: price, basis, exact: true };
+  }
+
+  const UNIT_LABELS = {
+    'compute seconds': 'compute-s',
+    '1000 tokens': '1k tokens',
+    '1m tokens': '1M tokens',
+    credits: 'credit',
+    units: 'unit',
+  };
+  return { kind: 'per_unit', unitPriceUsd: price, unit: UNIT_LABELS[unit] || unit, basis };
+}
+
+/**
+ * Combine text-parsed and machine pricing. Machine numbers win (they're
+ * billing-system truth), except a text-parsed tier table is richer than a
+ * single machine rate and keeps resolution awareness.
+ */
+export function mergePricing(textPricing, machinePricing) {
+  if (textPricing?.kind === 'per_second_tiered') return textPricing;
+  return machinePricing || textPricing || null;
+}
