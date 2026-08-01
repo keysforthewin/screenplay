@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { modelAcceptsAttachments, modelReadiness } from '../web/src/playgroundFilter.js';
+import { modelMatchesFilters, modelReadiness, defaultFilters } from '../web/src/playgroundFilter.js';
 
-function model(inputs) {
+function model(inputs, outputKind = 'image') {
   return {
     endpoint_id: 'test/x',
+    output: { kind: outputKind, path: 'x.url' },
     inputs: {
       prompt: 'unused',
       prompt_param: null,
@@ -16,10 +17,11 @@ function model(inputs) {
 }
 
 const T2I = model({ prompt: 'required', prompt_param: 'prompt' });
+const T2V = model({ prompt: 'required', prompt_param: 'prompt' }, 'video');
 const I2V = model({
   prompt: 'optional', prompt_param: 'prompt',
   image: { need: 'required', params: [{ name: 'image_url', list: false, required: true }], required_count: 1, max: 1 },
-});
+}, 'video');
 const MULTI_IMG = model({
   prompt: 'required', prompt_param: 'prompt',
   image: { need: 'optional', params: [{ name: 'image_urls', list: true, required: false }], required_count: 0, max: null },
@@ -27,45 +29,85 @@ const MULTI_IMG = model({
 const LIPSYNC = model({
   video: { need: 'required', param: 'video_url', list: false },
   audio: { need: 'required', param: 'audio_url', list: false },
+}, 'video');
+const UPSCALER = model({ video: { need: 'required', param: 'video_url', list: false } }, 'video');
+const TTS = model({ prompt: 'required', prompt_param: 'text' }, 'audio');
+
+function filters(overrides = {}) {
+  return { ...defaultFilters(), ...overrides };
+}
+
+describe('defaultFilters', () => {
+  it('starts with no inputs checked and every output kind on', () => {
+    expect(defaultFilters()).toEqual({
+      prompt: false, image: false, audio: false, video: false,
+      imageCount: 0,
+      outputs: { image: true, video: true, audio: true },
+    });
+  });
 });
-const UPSCALER = model({ video: { need: 'required', param: 'video_url', list: false } });
 
-const none = { image: 0, audio: 0, video: 0 };
-
-describe('modelAcceptsAttachments', () => {
-  it('shows every model on an empty form', () => {
-    for (const m of [T2I, I2V, MULTI_IMG, LIPSYNC, UPSCALER]) {
-      expect(modelAcceptsAttachments(m, none, false)).toBe(true);
-    }
+describe('modelMatchesFilters — inputs', () => {
+  it('with nothing checked, hides every model that requires an input', () => {
+    const f = filters();
+    expect(modelMatchesFilters(T2I, f)).toBe(false);
+    expect(modelMatchesFilters(I2V, f)).toBe(false);
+    expect(modelMatchesFilters(LIPSYNC, f)).toBe(false);
   });
 
-  it('hides models that cannot take an attached image', () => {
-    const counts = { ...none, image: 1 };
-    expect(modelAcceptsAttachments(T2I, counts, false)).toBe(false);
-    expect(modelAcceptsAttachments(I2V, counts, false)).toBe(true);
-    expect(modelAcceptsAttachments(UPSCALER, counts, false)).toBe(false);
+  it('prompt checked shows prompt models and hides prompt-less ones', () => {
+    const f = filters({ prompt: true });
+    expect(modelMatchesFilters(T2I, f)).toBe(true);
+    expect(modelMatchesFilters(MULTI_IMG, f)).toBe(true); // image optional, not required
+    expect(modelMatchesFilters(UPSCALER, f)).toBe(false); // no prompt slot
+    expect(modelMatchesFilters(I2V, f)).toBe(false); // still requires an image
   });
 
-  it('respects the image count cap (null max = unbounded)', () => {
-    const two = { ...none, image: 2 };
-    expect(modelAcceptsAttachments(I2V, two, false)).toBe(false);
-    expect(modelAcceptsAttachments(MULTI_IMG, two, true)).toBe(true);
+  it('image checked requires the model to accept images', () => {
+    const f = filters({ image: true, imageCount: 1 });
+    expect(modelMatchesFilters(I2V, f)).toBe(true); // prompt optional
+    expect(modelMatchesFilters(T2I, f)).toBe(false); // cannot take an image
   });
 
-  it('hides prompt-less models once a prompt is entered', () => {
-    expect(modelAcceptsAttachments(UPSCALER, { ...none, video: 1 }, true)).toBe(false);
-    expect(modelAcceptsAttachments(LIPSYNC, { ...none, video: 1, audio: 1 }, true)).toBe(false);
-    expect(modelAcceptsAttachments(I2V, { ...none, image: 1 }, true)).toBe(true);
+  it('respects the attached image count against the model cap', () => {
+    expect(modelMatchesFilters(I2V, filters({ image: true, imageCount: 2 }))).toBe(false);
+    expect(modelMatchesFilters(MULTI_IMG, filters({ prompt: true, image: true, imageCount: 5 }))).toBe(true);
   });
 
-  it('requires every attached kind to be accepted', () => {
-    expect(modelAcceptsAttachments(LIPSYNC, { image: 0, audio: 1, video: 1 }, false)).toBe(true);
-    expect(modelAcceptsAttachments(LIPSYNC, { image: 1, audio: 1, video: 1 }, false)).toBe(false);
+  it('image checked with no images yet applies no count constraint', () => {
+    expect(modelMatchesFilters(I2V, filters({ image: true, imageCount: 0 }))).toBe(true);
+  });
+
+  it('audio+video checked matches lip-sync models exactly', () => {
+    const f = filters({ audio: true, video: true });
+    expect(modelMatchesFilters(LIPSYNC, f)).toBe(true);
+    expect(modelMatchesFilters(UPSCALER, f)).toBe(false); // does not use the audio
+    expect(modelMatchesFilters(T2V, f)).toBe(false);
+  });
+
+  it('hides models whose required inputs exceed what is checked', () => {
+    expect(modelMatchesFilters(LIPSYNC, filters({ video: true }))).toBe(false);
+    expect(modelMatchesFilters(UPSCALER, filters({ video: true }))).toBe(true);
+  });
+});
+
+describe('modelMatchesFilters — output kinds', () => {
+  it('filters by output kind checkboxes', () => {
+    const onlyVideo = filters({ prompt: true, outputs: { image: false, video: true, audio: false } });
+    expect(modelMatchesFilters(T2V, onlyVideo)).toBe(true);
+    expect(modelMatchesFilters(T2I, onlyVideo)).toBe(false);
+    expect(modelMatchesFilters(TTS, onlyVideo)).toBe(false);
+
+    const onlyAudio = filters({ prompt: true, outputs: { image: false, video: false, audio: true } });
+    expect(modelMatchesFilters(TTS, onlyAudio)).toBe(true);
+    expect(modelMatchesFilters(T2I, onlyAudio)).toBe(false);
   });
 });
 
 describe('modelReadiness', () => {
-  it('reports missing required slots', () => {
+  const none = { image: 0, audio: 0, video: 0 };
+
+  it('reports missing required slots against actual attachments', () => {
     expect(modelReadiness(T2I, none, false)).toEqual({ ready: false, missing: ['prompt'] });
     expect(modelReadiness(I2V, none, false)).toEqual({ ready: false, missing: ['image'] });
     expect(modelReadiness(LIPSYNC, none, false)).toEqual({ ready: false, missing: ['audio', 'video'] });

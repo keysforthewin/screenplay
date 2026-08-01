@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiGet, apiPostJson, apiPostMultipart, apiDelete, apiSseUrl, imageUrl, thumbUrl, attachmentUrl } from '../api.js';
-import { modelAcceptsAttachments, modelReadiness } from '../playgroundFilter.js';
+import { defaultFilters, modelMatchesFilters, modelReadiness } from '../playgroundFilter.js';
 
 // Scratchpad for trying any fal.ai model: drop reference media, type a
 // prompt, pick a model (the list live-filters to models that can accept
@@ -75,18 +75,41 @@ export function Playground() {
   }, [refs]);
   const hasPrompt = prompt.trim().length > 0;
 
+  // Checkbox filters. The input boxes auto-check/uncheck as the matching
+  // input appears/disappears, but only that kind's box moves — a manual
+  // toggle survives unrelated changes (prevPresence tracks the transitions).
+  const [filterState, setFilterState] = useState(() => defaultFilters());
+  const prevPresence = useRef({ prompt: false, image: false, audio: false, video: false });
+  useEffect(() => {
+    const presence = {
+      prompt: hasPrompt,
+      image: counts.image > 0,
+      audio: counts.audio > 0,
+      video: counts.video > 0,
+    };
+    const changed = Object.keys(presence).filter((k) => presence[k] !== prevPresence.current[k]);
+    prevPresence.current = presence;
+    if (changed.length) {
+      setFilterState((prev) => {
+        const next = { ...prev };
+        for (const k of changed) next[k] = presence[k];
+        return next;
+      });
+    }
+  }, [hasPrompt, counts]);
   const visible = useMemo(() => {
     const models = registry?.models || [];
+    const filters = { ...filterState, imageCount: counts.image };
     const q = search.trim().toLowerCase();
     return models
-      .filter((m) => modelAcceptsAttachments(m, counts, hasPrompt))
+      .filter((m) => modelMatchesFilters(m, filters))
       .filter((m) => !q
         || m.endpoint_id.toLowerCase().includes(q)
         || (m.display_name || '').toLowerCase().includes(q)
         || (m.category || '').toLowerCase().includes(q))
       .sort((a, b) => (a.category || '').localeCompare(b.category || '')
         || (a.display_name || '').localeCompare(b.display_name || ''));
-  }, [registry, counts, hasPrompt, search]);
+  }, [registry, filterState, counts.image, search]);
 
   // Drop the selection when the chosen model filters out.
   useEffect(() => {
@@ -290,10 +313,44 @@ export function Playground() {
         />
       </div>
 
+      <div className="playground-filters">
+        <span className="playground-filter-group">
+          <span className="playground-filter-label">Inputs</span>
+          {['prompt', 'image', 'audio', 'video'].map((k) => (
+            <label key={k} className="playground-filter-check">
+              <input
+                type="checkbox"
+                checked={filterState[k]}
+                onChange={(e) => setFilterState((prev) => ({ ...prev, [k]: e.target.checked }))}
+              />
+              {k}
+            </label>
+          ))}
+        </span>
+        <span className="playground-filter-group">
+          <span className="playground-filter-label">Output</span>
+          {['image', 'video', 'audio'].map((k) => (
+            <label key={k} className="playground-filter-check">
+              <input
+                type="checkbox"
+                checked={filterState.outputs[k]}
+                onChange={(e) => setFilterState((prev) => ({
+                  ...prev,
+                  outputs: { ...prev.outputs, [k]: e.target.checked },
+                }))}
+              />
+              {OUTPUT_ICONS[k]} {k}
+            </label>
+          ))}
+        </span>
+      </div>
+
       <div className="playground-model-list">
         {!registry && !registryError && <p className="playground-empty">Loading models…</p>}
         {registry && visible.length === 0 && (
-          <p className="playground-empty">No models can take this combination of inputs.</p>
+          <p className="playground-empty">
+            No models match these filters — attach media, type a prompt, or adjust the checkboxes above.
+          </p>
         )}
         {visible.map((m) => {
           const r = modelReadiness(m, counts, hasPrompt);
@@ -303,7 +360,6 @@ export function Playground() {
               className={
                 'playground-model-row'
                 + (m.endpoint_id === selectedId ? ' is-selected' : '')
-                + (r.ready ? '' : ' is-not-ready')
               }
               title={m.price_text || undefined}
             >

@@ -3001,6 +3001,35 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   font-weight: normal;
   font-size: 12px;
 }
+.playground-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 28px;
+  align-items: center;
+  margin: 10px 0 2px;
+  font-size: 13px;
+}
+.playground-filter-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.playground-filter-label {
+  color: var(--fg-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.playground-filter-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  user-select: none;
+}
+.playground-filter-check input {
+  accent-color: var(--accent);
+}
 .playground-model-list {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -3030,9 +3059,6 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .playground-model-row.is-selected {
   background: rgba(122, 166, 255, 0.12);
-}
-.playground-model-row.is-not-ready {
-  opacity: 0.6;
 }
 .playground-model-icon {
   flex: none;
