@@ -127,10 +127,20 @@ export function summarizeProp(spec, propSchema) {
   } else if (propSchema.type) {
     out.type = propSchema.type;
   } else if (propSchema.anyOf || propSchema.oneOf) {
-    const variants = (propSchema.anyOf || propSchema.oneOf).map(v =>
+    const raw = propSchema.anyOf || propSchema.oneOf;
+    const variants = raw.map(v =>
       v.$ref ? v.$ref.split('/').pop() : (v.type || 'any')
     );
     out.type = variants.join('|');
+    // Surface an enum hidden inside a variant (fal's image_size is
+    // anyOf[preset enum, {width,height} object]) so it can drive UI controls.
+    for (const v of raw) {
+      const resolved = v.$ref ? resolveRef(spec, v.$ref) : v;
+      if (resolved?.enum) {
+        out.enum = resolved.enum;
+        break;
+      }
+    }
   } else {
     out.type = 'unknown';
   }

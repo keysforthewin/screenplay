@@ -3100,6 +3100,36 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   min-width: 90px;
   text-align: right;
 }
+.playground-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 24px;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+.playground-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.playground-control-name {
+  color: var(--fg-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.playground-control input[type='number'] {
+  width: 76px;
+}
+.playground-cost-estimate {
+  font-size: 13px;
+  color: var(--ok);
+  white-space: nowrap;
+}
 .playground-generate-row {
   display: flex;
   align-items: center;

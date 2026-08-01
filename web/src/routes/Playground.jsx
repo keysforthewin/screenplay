@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiGet, apiPostJson, apiPostMultipart, apiDelete, apiSseUrl, imageUrl, thumbUrl, attachmentUrl } from '../api.js';
 import { defaultFilters, modelMatchesFilters, modelReadiness } from '../playgroundFilter.js';
+import { estimatePlaygroundCost, rowPriceLabel } from '../playgroundCost.js';
 
 // Scratchpad for trying any fal.ai model: drop reference media, type a
 // prompt, pick a model (the list live-filters to models that can accept
@@ -22,12 +23,6 @@ function formatBytes(n) {
 
 function refGlyph(kind) {
   return kind === 'audio' ? '🔊' : kind === 'video' ? '🎬' : '🖼️';
-}
-
-function costLabel(m) {
-  if (!Number.isFinite(m.price_min_usd)) return 'pricing varies';
-  const v = m.price_min_usd;
-  return `from $${v < 0.01 ? v.toFixed(4) : v.toFixed(2)}`;
 }
 
 function safeParse(s) {
@@ -121,6 +116,23 @@ export function Playground() {
   const selected = visible.find((m) => m.endpoint_id === selectedId) || null;
   const readiness = selected ? modelReadiness(selected, counts, hasPrompt) : { ready: false, missing: [] };
 
+  // Output controls (size / resolution / duration) for the selected model.
+  // Reset to the model's schema defaults whenever the selection changes.
+  const [optionSel, setOptionSel] = useState({});
+  useEffect(() => {
+    const next = {};
+    for (const c of selected?.controls || []) {
+      if (c.default !== null && c.default !== undefined) next[c.name] = c.default;
+    }
+    setOptionSel(next);
+    // Depends on selectedId only: `selected` gets a new identity on every
+    // render, and re-running would stomp the user's in-flight selections.
+  }, [selectedId]);
+
+  const costEstimate = selected
+    ? estimatePlaygroundCost(selected, { selections: optionSel, promptLength: prompt.trim().length })
+    : null;
+
   async function addFiles(fileList) {
     const files = Array.from(fileList || []);
     if (!files.length) return;
@@ -175,6 +187,7 @@ export function Playground() {
         model_id: selected.endpoint_id,
         prompt: prompt.trim() || null,
         refs: refs.map(({ file_id, kind }) => ({ file_id, kind })),
+        options: optionSel,
       });
       const jobId = r?.job_id;
       if (!jobId) {
@@ -378,11 +391,48 @@ export function Playground() {
               {!r.ready && (
                 <span className="playground-model-missing">needs {r.missing.join(', ')}</span>
               )}
-              <span className="playground-model-cost">{costLabel(m)}</span>
+              <span className="playground-model-cost">{rowPriceLabel(m)}</span>
             </label>
           );
         })}
       </div>
+
+      {selected && (selected.controls?.length ?? 0) > 0 && (
+        <div className="playground-controls">
+          {selected.controls.map((c) => (
+            <label key={c.name} className="playground-control">
+              <span className="playground-control-name">{c.name.replace(/_/g, ' ')}</span>
+              {c.type === 'enum' ? (
+                <select
+                  value={optionSel[c.name] ?? ''}
+                  onChange={(e) => setOptionSel((prev) => ({ ...prev, [c.name]: e.target.value }))}
+                >
+                  {(c.default === null || c.default === undefined) && (
+                    <option value="">(model default)</option>
+                  )}
+                  {c.options.map((o) => (
+                    <option key={String(o)} value={o}>{String(o)}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="number"
+                  value={optionSel[c.name] ?? ''}
+                  min={c.min ?? undefined}
+                  max={c.max ?? undefined}
+                  placeholder={c.default != null ? String(c.default) : ''}
+                  onChange={(e) => setOptionSel((prev) => {
+                    const next = { ...prev };
+                    if (e.target.value === '') delete next[c.name];
+                    else next[c.name] = e.target.value;
+                    return next;
+                  })}
+                />
+              )}
+            </label>
+          ))}
+        </div>
+      )}
 
       <div className="playground-generate-row">
         <button
@@ -394,6 +444,16 @@ export function Playground() {
         >
           {generating ? 'Generating…' : 'Generate'}
         </button>
+        {selected && (
+          <span
+            className="playground-cost-estimate"
+            title={costEstimate?.basis ? `Basis: ${costEstimate.basis}` : (selected.price_text || undefined)}
+          >
+            {costEstimate?.label
+              ? `${costEstimate.exact ? 'Cost' : 'Est. cost'}: ${costEstimate.label}`
+              : rowPriceLabel(selected)}
+          </span>
+        )}
         {job && job.status !== 'done' && (
           <span className="playground-job-status">
             {job.step || job.status}

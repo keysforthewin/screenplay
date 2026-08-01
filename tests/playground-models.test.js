@@ -6,6 +6,7 @@ import {
   loadPlaygroundCatalog,
   getPlaygroundModel,
   buildPlaygroundInput,
+  validateControlOptions,
   extractOutputMedia,
   classifyMediaKind,
 } from '../src/fal/playgroundModels.js';
@@ -115,6 +116,53 @@ describe('buildPlaygroundInput', () => {
   it('omits the prompt param when no prompt is given and the slot is optional', () => {
     const r = row({ inputs: { ...row().inputs, prompt: 'optional' } });
     expect(buildPlaygroundInput(r, {})).toEqual({});
+  });
+
+  it('merges control options over defaults', () => {
+    const r = row({ defaults: { resolution: '720p' } });
+    const input = buildPlaygroundInput(r, {
+      prompt: 'p',
+      options: { resolution: '1080p', image_size: 'square_hd' },
+    });
+    expect(input).toEqual({ prompt: 'p', resolution: '1080p', image_size: 'square_hd' });
+  });
+});
+
+describe('validateControlOptions', () => {
+  const r = row({
+    controls: [
+      { name: 'image_size', type: 'enum', options: ['square_hd', 'portrait_16_9'], default: 'square_hd' },
+      { name: 'duration', type: 'int', default: 5, min: 3, max: 12 },
+    ],
+  });
+
+  it('accepts valid enum and int values (coercing int strings)', () => {
+    expect(validateControlOptions(r, { image_size: 'portrait_16_9', duration: '8' }))
+      .toEqual({ clean: { image_size: 'portrait_16_9', duration: 8 }, errors: [] });
+  });
+
+  it('matches numeric enum options sent as strings and restores their type', () => {
+    // HTML <select> values are always strings; catalog enums may be numbers.
+    const numeric = row({
+      controls: [{ name: 'duration', type: 'enum', options: [3, 5, 10], default: 5 }],
+    });
+    expect(validateControlOptions(numeric, { duration: '5' }))
+      .toEqual({ clean: { duration: 5 }, errors: [] });
+    expect(validateControlOptions(numeric, { duration: '7' }).errors).toHaveLength(1);
+  });
+
+  it('rejects unknown option names, bad enum values, and out-of-range ints', () => {
+    const { clean, errors } = validateControlOptions(r, {
+      seed: 42, image_size: 'huge', duration: 99,
+    });
+    expect(clean).toEqual({});
+    expect(errors).toHaveLength(3);
+  });
+
+  it('returns empty for a model with no controls', () => {
+    expect(validateControlOptions(row(), { anything: 'x' }))
+      .toEqual({ clean: {}, errors: ['anything is not a supported option'] });
+    expect(validateControlOptions(row(), {})).toEqual({ clean: {}, errors: [] });
   });
 });
 

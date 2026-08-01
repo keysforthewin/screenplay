@@ -20,6 +20,7 @@ import { prepareImageForFal } from '../fal/prepareImage.js';
 import {
   getPlaygroundModel,
   buildPlaygroundInput,
+  validateControlOptions,
   extractOutputMedia,
   classifyMediaKind,
 } from '../fal/playgroundModels.js';
@@ -41,6 +42,14 @@ export class UnknownPlaygroundModelError extends Error {
   constructor(modelId) {
     super(`Unknown playground model: ${modelId}`);
     this.code = 'UNKNOWN_MODEL';
+  }
+}
+
+export class PlaygroundBadOptionsError extends Error {
+  constructor(errors) {
+    super(`Invalid options: ${errors.join('; ')}`);
+    this.code = 'BAD_OPTIONS';
+    this.errors = errors;
   }
 }
 
@@ -207,7 +216,7 @@ async function loadRef(projectId, ref) {
   return read;
 }
 
-async function runJob(job, { projectId, row, prompt, refs }) {
+async function runJob(job, { projectId, row, prompt, refs, options }) {
   // 1. Load refs from GridFS and upload to fal storage.
   setStep(job, 'uploading', 'Uploading reference files');
   const imageUrls = [];
@@ -235,7 +244,7 @@ async function runJob(job, { projectId, row, prompt, refs }) {
 
   // 2. Build the input and submit to fal's queue (submit + subscribeToStatus
   //    so the request_id lands in the snapshot for reconnects).
-  const input = buildPlaygroundInput(row, { prompt, imageUrls, audioUrl, videoUrl });
+  const input = buildPlaygroundInput(row, { prompt, imageUrls, audioUrl, videoUrl, options });
   setStep(job, 'submitting', `Submitting to ${row.display_name}`);
   const submission = await fal.queue.submit(row.endpoint_id, { input });
   job.request_id = submission.request_id;
@@ -302,7 +311,7 @@ async function runJob(job, { projectId, row, prompt, refs }) {
  * Validate synchronously (throws the typed errors above), then run the job in
  * the background. Returns { job_id } immediately.
  */
-export async function startPlaygroundJob({ projectId, modelId, prompt = null, refs = [], catalogPath } = {}) {
+export async function startPlaygroundJob({ projectId, modelId, prompt = null, refs = [], options = {}, catalogPath } = {}) {
   if (!projectId) throw new Error('projectId required');
   if (!falIsConfigured()) throw new PlaygroundNotConfiguredError();
   const row = await getPlaygroundModel(modelId, catalogPath ? { catalogPath } : {});
@@ -315,6 +324,11 @@ export async function startPlaygroundJob({ projectId, modelId, prompt = null, re
 
   const missing = computeMissing(row, { prompt, refs: cleanRefs });
   if (missing.length) throw new PlaygroundMissingInputsError(missing, row.display_name);
+  const { clean: cleanOptions, errors: optionErrors } = validateControlOptions(
+    row,
+    options && typeof options === 'object' ? options : {},
+  );
+  if (optionErrors.length) throw new PlaygroundBadOptionsError(optionErrors);
   const max = row.inputs?.image?.max;
   const imageCount = cleanRefs.filter((r) => r.kind === 'image').length;
   if (max !== null && max !== undefined && imageCount > max) {
@@ -339,7 +353,7 @@ export async function startPlaygroundJob({ projectId, modelId, prompt = null, re
   };
   jobs.set(job.job_id, job);
 
-  runJob(job, { projectId, row, prompt, refs: cleanRefs })
+  runJob(job, { projectId, row, prompt, refs: cleanRefs, options: cleanOptions })
     .catch((err) => {
       logger.warn(`playground gen job ${job.job_id} failed: ${err.message}`);
       job.status = 'error';

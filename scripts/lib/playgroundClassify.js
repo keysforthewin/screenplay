@@ -122,6 +122,45 @@ export function classifyInputs(requiredParams = {}, optionalParams = {}) {
   return result;
 }
 
+// Output-shaping params surfaced as user controls in the playground UI
+// (size/resolution/duration — the knobs that determine output dimensions and
+// drive pricing). Whitelist order = display order. Enum params become
+// selects; integer DURATION-ish params become bounded number inputs.
+const CONTROL_NAMES = [
+  'image_size', 'size', 'resolution', 'aspect_ratio',
+  'duration', 'duration_seconds', 'video_duration', 'num_frames',
+];
+const INT_CONTROL_NAMES = new Set(['duration', 'duration_seconds', 'video_duration', 'num_frames']);
+
+export function extractControls(requiredParams = {}, optionalParams = {}) {
+  const all = { ...optionalParams, ...requiredParams };
+  const controls = [];
+  for (const name of CONTROL_NAMES) {
+    const summary = all[name];
+    if (!summary) continue;
+    if (Array.isArray(summary.enum) && summary.enum.length) {
+      controls.push({
+        name,
+        type: 'enum',
+        options: summary.enum,
+        default: summary.default !== undefined ? summary.default : null,
+      });
+    } else if (
+      (summary.type === 'integer' || summary.type === 'number')
+      && INT_CONTROL_NAMES.has(name)
+    ) {
+      controls.push({
+        name,
+        type: 'int',
+        default: summary.default !== undefined ? summary.default : null,
+        min: summary.minimum !== undefined ? summary.minimum : null,
+        max: summary.maximum !== undefined ? summary.maximum : null,
+      });
+    }
+  }
+  return controls;
+}
+
 // Output props scanned in priority order. First classifiable prop wins.
 const OUTPUT_CANDIDATES = [
   'video', 'videos', 'video_url',

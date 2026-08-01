@@ -170,16 +170,17 @@ describe('POST /api/playground/upload', () => {
 });
 
 describe('POST /api/playground/generate', () => {
-  it('returns 202 with the job id and threads the project id', async () => {
+  it('returns 202 with the job id and threads project id and options', async () => {
     let seenArgs;
     generateImpl = async (args) => { seenArgs = args; return { job_id: 'job-9' }; };
     const { status, body } = await postJson('/playground/generate', {
-      model_id: 'test/t2i', prompt: 'hi', refs: [],
+      model_id: 'test/t2i', prompt: 'hi', refs: [], options: { image_size: 'square_hd' },
     });
     expect(status).toBe(202);
     expect(body.job_id).toBe('job-9');
     expect(seenArgs.modelId).toBe('test/t2i');
     expect(seenArgs.projectId).toMatch(/^[a-f0-9]{24}$/);
+    expect(seenArgs.options).toEqual({ image_size: 'square_hd' });
   });
 
   it('maps typed generate errors to HTTP statuses', async () => {
@@ -193,6 +194,12 @@ describe('POST /api/playground/generate', () => {
     expect(missing.body.missing).toEqual(['prompt']);
     generateImpl = async () => { throw Object.assign(new Error('no key'), { code: 'FAL_NOT_CONFIGURED' }); };
     expect((await postJson('/playground/generate', { model_id: 'x' })).status).toBe(503);
+    generateImpl = async () => {
+      throw Object.assign(new Error('bad size'), { code: 'BAD_OPTIONS', errors: ['image_size must be one of: square_hd'] });
+    };
+    const bad = await postJson('/playground/generate', { model_id: 'x' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.errors).toHaveLength(1);
   });
 });
 

@@ -110,6 +110,22 @@ const T2I = {
   },
   defaults: {},
 };
+const T2I_SIZED = {
+  endpoint_id: 'test/t2i-sized',
+  display_name: 'Test T2I Sized',
+  output: { kind: 'image', path: 'images[0].url' },
+  inputs: {
+    prompt: 'required',
+    prompt_param: 'prompt',
+    image: { need: 'unused', params: [], required_count: 0, max: 0 },
+    audio: { need: 'unused', param: null, list: false },
+    video: { need: 'unused', param: null, list: false },
+  },
+  controls: [
+    { name: 'image_size', type: 'enum', options: ['square_hd', 'portrait_16_9'], default: 'square_hd' },
+  ],
+  defaults: {},
+};
 const I2V = {
   endpoint_id: 'test/i2v',
   display_name: 'Test I2V',
@@ -135,7 +151,7 @@ beforeEach(async () => {
   fetchContentType = 'image/png';
   const dir = await mkdtemp(path.join(tmpdir(), 'pg-gen-'));
   catalogPath = path.join(dir, 'catalog.json');
-  await writeFile(catalogPath, JSON.stringify({ generated_at: 'now', models: [T2I, I2V] }));
+  await writeFile(catalogPath, JSON.stringify({ generated_at: 'now', models: [T2I, T2I_SIZED, I2V] }));
 });
 
 async function waitForTerminal(jobId, timeoutMs = 2000) {
@@ -215,6 +231,24 @@ describe('startPlaygroundJob', () => {
     await expect(Playground.startPlaygroundJob({
       projectId: PROJECT_A, modelId: 'test/i2v', refs: [], catalogPath,
     })).rejects.toMatchObject({ code: 'MISSING_INPUTS', missing: ['image'] });
+  });
+
+  it('passes validated control options into the fal input', async () => {
+    const { job_id } = await Playground.startPlaygroundJob({
+      projectId: PROJECT_A, modelId: 'test/t2i-sized', prompt: 'a fish',
+      options: { image_size: 'portrait_16_9' }, catalogPath,
+    });
+    const job = await waitForTerminal(job_id);
+    expect(job.status).toBe('done');
+    expect(falStubs.submitCalls[0].args.input)
+      .toEqual({ prompt: 'a fish', image_size: 'portrait_16_9' });
+  });
+
+  it('rejects invalid control options with BAD_OPTIONS', async () => {
+    await expect(Playground.startPlaygroundJob({
+      projectId: PROJECT_A, modelId: 'test/t2i-sized', prompt: 'x',
+      options: { image_size: 'gigantic' }, catalogPath,
+    })).rejects.toMatchObject({ code: 'BAD_OPTIONS' });
   });
 
   it('throws PlaygroundNotConfiguredError without a fal key', async () => {

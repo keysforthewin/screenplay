@@ -25,7 +25,8 @@ import {
   pickDescription,
   sleep,
 } from './lib/falDiscovery.js';
-import { classifyInputs, detectOutput } from './lib/playgroundClassify.js';
+import { classifyInputs, detectOutput, extractControls } from './lib/playgroundClassify.js';
+import { parsePlaygroundPricing } from './lib/playgroundPricing.js';
 
 const FAL_KEY = process.env.FAL_KEY;
 if (!FAL_KEY) {
@@ -110,6 +111,8 @@ async function main() {
             description: pickDescription(m, spec),
             output,
             inputs: inputSlots,
+            controls: extractControls(io.requiredParams, io.optionalParams),
+            pricing: parsePlaygroundPricing(m.pricingInfoOverride ?? null),
             defaults,
             inputs_required: Object.keys(io.requiredParams),
             inputs_optional: Object.keys(io.optionalParams),

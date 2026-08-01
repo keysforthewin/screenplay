@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyInputs, detectOutput } from '../scripts/lib/playgroundClassify.js';
+import { classifyInputs, detectOutput, extractControls } from '../scripts/lib/playgroundClassify.js';
 
 // Param maps below mirror what extractIO() in scripts/lib/falDiscovery.js
 // produces: { name: { type, default?, title?, ... } }.
@@ -95,6 +95,63 @@ describe('classifyInputs', () => {
     );
     expect(c.audio.param).toBe('first_audio_url');
     expect(c.unsatisfied_required).toEqual(['second_audio_url']);
+  });
+});
+
+describe('extractControls', () => {
+  it('captures size/duration enums with defaults, in whitelist order', () => {
+    const controls = extractControls(
+      { prompt: { type: 'string' } },
+      {
+        image_size: { type: 'enum', enum: ['square_hd', 'portrait_16_9'], default: 'square_hd' },
+        num_images: { type: 'integer', default: 1 },
+        seed: { type: 'integer' },
+        aspect_ratio: { type: 'enum', enum: ['16:9', '1:1'], default: '16:9' },
+      },
+    );
+    expect(controls).toEqual([
+      { name: 'image_size', type: 'enum', options: ['square_hd', 'portrait_16_9'], default: 'square_hd' },
+      { name: 'aspect_ratio', type: 'enum', options: ['16:9', '1:1'], default: '16:9' },
+    ]);
+  });
+
+  it('captures integer duration params with bounds', () => {
+    const controls = extractControls(
+      {},
+      { duration: { type: 'integer', default: 5, minimum: 3, maximum: 12 } },
+    );
+    expect(controls).toEqual([
+      { name: 'duration', type: 'int', default: 5, min: 3, max: 12 },
+    ]);
+  });
+
+  it('captures resolution enums even when required (already in defaults)', () => {
+    const controls = extractControls(
+      { resolution: { type: 'enum', enum: ['720p', '1080p'], default: '720p' } },
+      {},
+    );
+    expect(controls).toEqual([
+      { name: 'resolution', type: 'enum', options: ['720p', '1080p'], default: '720p' },
+    ]);
+  });
+
+  it('captures enum options surfaced from anyOf variants (fal image_size)', () => {
+    // summarizeProp exposes `.enum` for anyOf schemas whose variant is an
+    // enum, even though `.type` stays the variant join ('ImageSize|Enum').
+    const controls = extractControls(
+      {},
+      { image_size: { type: 'ImageSize|Enum', enum: ['square_hd', 'landscape_4_3'], default: 'landscape_4_3' } },
+    );
+    expect(controls).toEqual([
+      { name: 'image_size', type: 'enum', options: ['square_hd', 'landscape_4_3'], default: 'landscape_4_3' },
+    ]);
+  });
+
+  it('ignores non-whitelisted and non-enum params', () => {
+    expect(extractControls({}, {
+      style: { type: 'enum', enum: ['anime'] },
+      width: { type: 'integer', default: 1024 },
+    })).toEqual([]);
   });
 });
 

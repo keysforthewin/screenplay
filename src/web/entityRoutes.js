@@ -5113,6 +5113,7 @@ export function buildApiRouter() {
         modelId: String(req.body?.model_id || ''),
         prompt: typeof req.body?.prompt === 'string' ? req.body.prompt : null,
         refs: Array.isArray(req.body?.refs) ? req.body.refs : [],
+        options: req.body?.options && typeof req.body.options === 'object' ? req.body.options : {},
       });
       res.status(202).json({ job_id });
     } catch (err) {
@@ -5124,6 +5125,9 @@ export function buildApiRouter() {
       }
       if (err?.code === 'MISSING_INPUTS') {
         return res.status(400).json({ error: err.message, missing: err.missing || [] });
+      }
+      if (err?.code === 'BAD_OPTIONS') {
+        return res.status(400).json({ error: err.message, errors: err.errors || [] });
       }
       next(err);
     }

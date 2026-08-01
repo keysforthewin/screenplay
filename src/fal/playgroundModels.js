@@ -50,7 +50,7 @@ export async function getPlaygroundModel(endpointId, opts = {}) {
  * unclassified optional param is left unset (API defaults apply); required
  * params that carried a schema default are sent verbatim via row.defaults.
  */
-export function buildPlaygroundInput(row, { prompt, imageUrls = [], audioUrl, videoUrl } = {}) {
+export function buildPlaygroundInput(row, { prompt, imageUrls = [], audioUrl, videoUrl, options = {} } = {}) {
   const input = { ...(row.defaults || {}) };
   const slots = row.inputs || {};
 
@@ -76,7 +76,49 @@ export function buildPlaygroundInput(row, { prompt, imageUrls = [], audioUrl, vi
     input[slots.video.param] = slots.video.list ? [videoUrl] : videoUrl;
   }
 
+  // User-selected output controls (validated upstream by
+  // validateControlOptions) override any schema defaults.
+  Object.assign(input, options);
+
   return input;
+}
+
+/**
+ * Validate user-selected control values against the catalog row's `controls`
+ * (extracted at build time). Returns { clean, errors } — clean holds only the
+ * valid values, with int controls coerced to numbers.
+ */
+export function validateControlOptions(row, options = {}) {
+  const controls = new Map((row.controls || []).map((c) => [c.name, c]));
+  const clean = {};
+  const errors = [];
+  for (const [name, value] of Object.entries(options)) {
+    const control = controls.get(name);
+    if (!control) {
+      errors.push(`${name} is not a supported option`);
+      continue;
+    }
+    if (control.type === 'enum') {
+      // HTML select values are strings; catalog enums may be numbers.
+      // Match loosely and restore the option's original type.
+      const match = control.options.find((o) => o === value || String(o) === String(value));
+      if (match === undefined) {
+        errors.push(`${name} must be one of: ${control.options.join(', ')}`);
+        continue;
+      }
+      clean[name] = match;
+    } else if (control.type === 'int') {
+      const n = Number(value);
+      if (!Number.isFinite(n)
+        || (control.min != null && n < control.min)
+        || (control.max != null && n > control.max)) {
+        errors.push(`${name} must be a number between ${control.min ?? '-∞'} and ${control.max ?? '∞'}`);
+        continue;
+      }
+      clean[name] = n;
+    }
+  }
+  return { clean, errors };
 }
 
 export function classifyMediaKind(contentType) {
