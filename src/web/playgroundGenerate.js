@@ -306,6 +306,8 @@ async function runJob(job, { projectId, row, prompt, refs, options }) {
         filename: `playground-${Date.now()}.${extForType(contentType)}`,
         contentType: contentType || 'application/octet-stream',
         ownerType: 'playground',
+        prompt: prompt || null,
+        generatedBy: row.endpoint_id,
       });
       outputs.push({ kind, file_id: file._id.toString() });
     }

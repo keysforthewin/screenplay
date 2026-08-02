@@ -184,6 +184,23 @@ export async function listImagesByOwnerType(projectId, ownerType) {
     .toArray();
 }
 
+// Generated playground outputs, newest first. Reference uploads share
+// owner_type 'playground' but never carry generated_by — filtered in JS
+// because Mongo's `$ne: null` also-matches-missing semantics differ from the
+// test fake's.
+export async function listPlaygroundGeneratedImages(projectId) {
+  const pid = await resolveProjectId(projectId);
+  const files = await filesCol()
+    .find({
+      'metadata.project_id': pid,
+      'metadata.owner_type': 'playground',
+      'metadata.kind': { $ne: 'thumbnail' },
+    })
+    .sort({ uploadDate: -1 })
+    .toArray();
+  return files.filter((f) => f.metadata?.generated_by);
+}
+
 export async function setImageOwner(imageId, { ownerType, ownerId }) {
   const oid = toObjectId(imageId);
   await filesCol().updateOne(

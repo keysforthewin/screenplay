@@ -204,6 +204,10 @@ describe('startPlaygroundJob', () => {
     expect(storedAttachments).toHaveLength(1);
     expect(storedAttachments[0].ownerType).toBe('playground');
     expect(storedAttachments[0].contentType).toBe('video/mp4');
+    // Model + prompt are stamped so the history endpoint can tell outputs
+    // apart from reference uploads.
+    expect(storedAttachments[0].generatedBy).toBe('test/i2v');
+    expect(storedAttachments[0].prompt).toBe('move it');
   });
 
   it('rejects a ref belonging to another project as a job error', async () => {

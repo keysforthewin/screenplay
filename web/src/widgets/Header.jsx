@@ -62,6 +62,7 @@ export function Header({ session, onLogout }) {
       </button>
       <div className="meta">
         <Link to="/about" title="Project name, synopsis & global dialogue style">About</Link>
+        <Link to="/" title="Table of contents — all beats in this project">TOC</Link>
         <Link to="/playground" title="Try any fal.ai model with your own reference media">Playground</Link>
         <SavedIndicator />
         <div className="presence-dots">{list.map((u, i) => <Dot key={i} user={u} />)}</div>

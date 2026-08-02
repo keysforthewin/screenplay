@@ -3203,3 +3203,10 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .playground-result-prompt {
   color: var(--fg-muted);
 }
+.playground-result-date {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+.playground-history {
+  margin-top: 4px;
+}

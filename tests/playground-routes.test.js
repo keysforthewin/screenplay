@@ -142,6 +142,75 @@ describe('GET /api/playground/models', () => {
   });
 });
 
+describe('GET /api/playground/history', () => {
+  // Seeds GridFS file docs straight into the fake — the listers run real
+  // queries against these collections (only the upload/delete helpers are
+  // mocked above).
+  async function seedHistory() {
+    const project = await Projects.getDefaultProject();
+    const pid = project._id.toString();
+    const imgCol = fakeDb.collection('images.files');
+    const attCol = fakeDb.collection('attachments.files');
+    const ids = { img: new ObjectId(), vid: new ObjectId(), legacy: new ObjectId() };
+    await imgCol.insertOne({
+      _id: ids.img, filename: 'generated-3.png', length: 100, contentType: 'image/png',
+      uploadDate: new Date('2026-08-02T03:00:00Z'),
+      metadata: { project_id: pid, owner_type: 'playground', source: 'generated', generated_by: 'test/t2i', prompt: 'a fish' },
+    });
+    await imgCol.insertOne({ // thumbnail of an output — excluded
+      _id: new ObjectId(), filename: 'thumb.png', length: 5, contentType: 'image/png',
+      uploadDate: new Date('2026-08-02T03:00:01Z'),
+      metadata: { project_id: pid, owner_type: 'playground', generated_by: 'test/t2i', kind: 'thumbnail' },
+    });
+    await imgCol.insertOne({ // image reference upload — excluded (no generated_by)
+      _id: new ObjectId(), filename: 'my-photo.png', length: 50, contentType: 'image/png',
+      uploadDate: new Date('2026-08-02T02:30:00Z'),
+      metadata: { project_id: pid, owner_type: 'playground', source: 'generated', generated_by: null, prompt: null },
+    });
+    await imgCol.insertOne({ // another project's output — excluded
+      _id: new ObjectId(), filename: 'other.png', length: 50, contentType: 'image/png',
+      uploadDate: new Date('2026-08-02T02:00:00Z'),
+      metadata: { project_id: new ObjectId().toString(), owner_type: 'playground', generated_by: 'test/t2i' },
+    });
+    await attCol.insertOne({ // video output with generated_by stamped
+      _id: ids.vid, filename: 'playground-1754000000000.mp4', length: 999, contentType: 'video/mp4',
+      uploadDate: new Date('2026-08-02T02:45:00Z'),
+      metadata: { project_id: pid, owner_type: 'playground', content_type: 'video/mp4', generated_by: 'test/i2v', prompt: 'move it' },
+    });
+    await attCol.insertOne({ // legacy output: no generated_by, playground-<ts> filename
+      _id: ids.legacy, filename: 'playground-1753000000000.mp4', length: 500, contentType: 'video/mp4',
+      uploadDate: new Date('2026-08-01T01:00:00Z'),
+      metadata: { project_id: pid, owner_type: 'playground', content_type: 'video/mp4', source: 'upload' },
+    });
+    await attCol.insertOne({ // audio reference upload — excluded
+      _id: new ObjectId(), filename: 'song.mp3', length: 300, contentType: 'audio/mpeg',
+      uploadDate: new Date('2026-08-02T01:00:00Z'),
+      metadata: { project_id: pid, owner_type: 'playground', content_type: 'audio/mpeg', source: 'upload' },
+    });
+    return ids;
+  }
+
+  it('lists generated outputs newest-first, excluding refs, thumbnails, and other projects', async () => {
+    const ids = await seedHistory();
+    const { status, body } = await getJson('/playground/history');
+    expect(status).toBe(200);
+    expect(body.items.map((i) => i.file_id)).toEqual([ids.img, ids.vid, ids.legacy].map(String));
+    expect(body.items[0]).toMatchObject({
+      kind: 'image', model: 'test/t2i', prompt: 'a fish',
+      content_type: 'image/png', size: 100, filename: 'generated-3.png',
+    });
+    expect(body.items[0].created_at).toBeTruthy();
+    expect(body.items[1].kind).toBe('video');
+    expect(body.items[2]).toMatchObject({ kind: 'video', model: null, prompt: null });
+  });
+
+  it('respects the limit query param', async () => {
+    await seedHistory();
+    const { body } = await getJson('/playground/history?limit=1');
+    expect(body.items).toHaveLength(1);
+  });
+});
+
 describe('POST /api/playground/upload', () => {
   it('stores an image in the images bucket tagged playground', async () => {
     const { status, body } = await uploadFile([1, 2, 3], 'image/png', 'ref.png');

@@ -45,6 +45,8 @@ export async function uploadAttachmentBuffer(projectId, {
   contentType,
   ownerType = null,
   ownerId = null,
+  prompt = null,
+  generatedBy = null,
 } = {}) {
   const pid = await resolveProjectId(projectId);
   const ct = contentType || 'application/octet-stream';
@@ -53,8 +55,10 @@ export async function uploadAttachmentBuffer(projectId, {
     project_id: pid,
     owner_type: ownerType,
     owner_id: ownerId ? toObjectId(ownerId) : null,
-    source: 'upload',
+    source: generatedBy ? 'generated' : 'upload',
     content_type: ct,
+    prompt: prompt || null,
+    generated_by: generatedBy || null,
   };
   const id = await uploadBuffer({ buffer, filename: finalFilename, contentType: ct, metadata });
   return {
@@ -148,6 +152,23 @@ export async function listAttachmentsForDirectorNote(noteId) {
     .find({ 'metadata.owner_type': 'director_note', 'metadata.owner_id': toObjectId(noteId) })
     .sort({ uploadDate: 1 })
     .toArray();
+}
+
+// Generated playground outputs, newest first. Outputs are stamped with
+// generated_by; outputs persisted before that stamp existed are recognized by
+// the pipeline's synthetic `playground-<timestamp>.<ext>` filename (reference
+// uploads keep their original name). The legacy branch can be retired once
+// pre-stamp files age out.
+const LEGACY_PLAYGROUND_OUTPUT_RE = /^playground-\d+\./;
+export async function listPlaygroundGeneratedAttachments(projectId) {
+  const pid = await resolveProjectId(projectId);
+  const files = await filesCol()
+    .find({ 'metadata.project_id': pid, 'metadata.owner_type': 'playground' })
+    .sort({ uploadDate: -1 })
+    .toArray();
+  return files.filter(
+    (f) => f.metadata?.generated_by || LEGACY_PLAYGROUND_OUTPUT_RE.test(f.filename || ''),
+  );
 }
 
 export async function setAttachmentOwner(attachmentId, { ownerType, ownerId }) {

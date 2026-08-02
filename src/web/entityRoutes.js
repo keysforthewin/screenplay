@@ -69,7 +69,7 @@ import {
   unsubscribeFromPlaygroundJob,
   serializePlaygroundJob,
 } from './playgroundGenerate.js';
-import { loadPlaygroundCatalog } from '../fal/playgroundModels.js';
+import { loadPlaygroundCatalog, classifyMediaKind } from '../fal/playgroundModels.js';
 import {
   startChatRun,
   getChatRun,
@@ -177,6 +177,7 @@ import {
   listImagesForBeat,
   listImagesForCharacter,
   listImagesByOwnerType,
+  listPlaygroundGeneratedImages,
   imageFileToMeta,
   uploadGeneratedImage,
   findImageFile,
@@ -186,6 +187,7 @@ import { copyImageToNewOwner } from '../mongo/imageCopy.js';
 import { validateImageBuffer } from '../mongo/imageBytes.js';
 import {
   listLibraryAttachments,
+  listPlaygroundGeneratedAttachments,
   attachmentFileToMeta,
   uploadAttachmentBuffer,
   deleteAttachment,
@@ -5053,6 +5055,39 @@ export function buildApiRouter() {
         catalog_error: catalog.catalog_error,
         models: catalog.models,
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Past generated outputs for this project, newest first, both buckets
+  // merged. Reference uploads are excluded (see the listers).
+  router.get('/playground/history', async (req, res, next) => {
+    try {
+      const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
+      const [images, attachments] = await Promise.all([
+        listPlaygroundGeneratedImages(req.projectId),
+        listPlaygroundGeneratedAttachments(req.projectId),
+      ]);
+      const toItem = (f) => ({
+        file_id: String(f._id),
+        filename: f.filename || null,
+        content_type: f.contentType || f.metadata?.content_type || null,
+        size: f.length ?? null,
+        prompt: f.metadata?.prompt || null,
+        model: f.metadata?.generated_by || null,
+        created_at: f.uploadDate || null,
+      });
+      const items = [
+        ...images.map((f) => ({ ...toItem(f), kind: 'image' })),
+        ...attachments.map((f) => {
+          const item = toItem(f);
+          return { ...item, kind: classifyMediaKind(item.content_type) || 'file' };
+        }),
+      ]
+        .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+        .slice(0, limit);
+      res.json({ items });
     } catch (err) {
       next(err);
     }

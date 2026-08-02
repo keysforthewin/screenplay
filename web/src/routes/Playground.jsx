@@ -44,8 +44,27 @@ export function Playground() {
   const [job, setJob] = useState(null);
   const [generating, setGenerating] = useState(false);
   const [results, setResults] = useState([]);
+  const [tab, setTab] = useState('create');
+  const [history, setHistory] = useState(null); // null = not loaded yet
+  const [historyError, setHistoryError] = useState(null);
   const fileInputRef = useRef(null);
   const esRef = useRef(null);
+
+  // (Re)fetch on every switch to the tab so fresh generations show up.
+  useEffect(() => {
+    if (tab !== 'history') return undefined;
+    let cancelled = false;
+    setHistoryError(null);
+    (async () => {
+      try {
+        const r = await apiGet('/playground/history');
+        if (!cancelled) setHistory(r.items || []);
+      } catch (e) {
+        if (!cancelled) setHistoryError(e.message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -261,6 +280,62 @@ export function Playground() {
       )}
       {error && <div className="error-banner">{error}</div>}
 
+      <div className="tab-nav" role="tablist">
+        {[['create', 'Create'], ['history', 'History']].map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={tab === id}
+            className={`tab-button${tab === id ? ' is-active' : ''}`}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'history' && (
+        <div className="playground-results playground-history">
+          {historyError && <div className="error-banner">{historyError}</div>}
+          {!history && !historyError && <p className="playground-empty">Loading history…</p>}
+          {history && history.length === 0 && (
+            <p className="playground-empty">No generations yet in this project.</p>
+          )}
+          {(history || []).map((r) => (
+            <div key={r.file_id} className="playground-result">
+              {r.kind === 'image' && (
+                <a href={imageUrl(r.file_id)} target="_blank" rel="noreferrer">
+                  <img src={thumbUrl(r.file_id)} alt={r.prompt || 'generated image'} />
+                </a>
+              )}
+              {r.kind === 'video' && (
+                <video controls src={attachmentUrl(r.file_id)} preload="metadata" playsInline />
+              )}
+              {r.kind === 'audio' && (
+                <audio controls src={attachmentUrl(r.file_id)} preload="metadata" />
+              )}
+              <div className="playground-result-meta">
+                {r.model && <span className="playground-result-model">{r.model}</span>}
+                {r.prompt && <span className="playground-result-prompt">{r.prompt}</span>}
+                {r.created_at && (
+                  <span className="playground-result-date">
+                    {new Date(r.created_at).toLocaleString()}
+                  </span>
+                )}
+                <a
+                  href={r.kind === 'image' ? imageUrl(r.file_id) : attachmentUrl(r.file_id)}
+                  download
+                >
+                  Download
+                </a>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab === 'create' && (<>
       <div
         className={'ref-picker-drop playground-drop' + (dragging ? ' is-dragging' : '')}
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -519,6 +594,7 @@ export function Playground() {
           ))}
         </div>
       )}
+      </>)}
     </main>
   );
 }
