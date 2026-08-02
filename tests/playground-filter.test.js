@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { modelMatchesFilters, modelReadiness, defaultFilters } from '../web/src/playgroundFilter.js';
+import { modelMatchesFilters, modelMatchesSearch, modelReadiness, defaultFilters } from '../web/src/playgroundFilter.js';
 
 function model(inputs, outputKind = 'image') {
   return {
@@ -42,6 +42,7 @@ describe('defaultFilters', () => {
     expect(defaultFilters()).toEqual({
       prompt: false, image: false, audio: false, video: false,
       imageCount: 0,
+      category: null,
       outputs: { image: true, video: true, audio: true },
     });
   });
@@ -101,6 +102,54 @@ describe('modelMatchesFilters — output kinds', () => {
     const onlyAudio = filters({ prompt: true, outputs: { image: false, video: false, audio: true } });
     expect(modelMatchesFilters(TTS, onlyAudio)).toBe(true);
     expect(modelMatchesFilters(T2I, onlyAudio)).toBe(false);
+  });
+});
+
+describe('modelMatchesFilters — category', () => {
+  const catModel = { ...T2I, category: 'text-to-image' };
+
+  it('matches every category when filters.category is null', () => {
+    expect(modelMatchesFilters(catModel, filters({ prompt: true }))).toBe(true);
+  });
+
+  it('matches only the selected category', () => {
+    expect(modelMatchesFilters(catModel, filters({ prompt: true, category: 'text-to-image' }))).toBe(true);
+    expect(modelMatchesFilters(catModel, filters({ prompt: true, category: 'text-to-video' }))).toBe(false);
+  });
+
+  it('hides category-less models when a category is selected', () => {
+    expect(modelMatchesFilters(T2I, filters({ prompt: true, category: 'text-to-image' }))).toBe(false);
+  });
+});
+
+describe('modelMatchesSearch', () => {
+  const m = {
+    endpoint_id: 'fal-ai/happy-horse',
+    display_name: 'Happy Horse',
+    category: 'image-to-video',
+    description: 'Generate 1080p video with synchronized native audio and multilingual lip-sync.',
+  };
+
+  it('matches everything on an empty or whitespace query', () => {
+    expect(modelMatchesSearch(m, '')).toBe(true);
+    expect(modelMatchesSearch(m, '   ')).toBe(true);
+  });
+
+  it('matches endpoint id, display name, and category case-insensitively', () => {
+    expect(modelMatchesSearch(m, 'happy-horse')).toBe(true);
+    expect(modelMatchesSearch(m, 'HAPPY HORSE')).toBe(true);
+    expect(modelMatchesSearch(m, 'image-to-video')).toBe(true);
+  });
+
+  it('matches against the description', () => {
+    expect(modelMatchesSearch(m, 'lip-sync')).toBe(true);
+    expect(modelMatchesSearch(m, 'Multilingual')).toBe(true);
+    expect(modelMatchesSearch(m, 'watercolor')).toBe(false);
+  });
+
+  it('tolerates models with missing fields', () => {
+    expect(modelMatchesSearch({ endpoint_id: 'x/y' }, 'y')).toBe(true);
+    expect(modelMatchesSearch({ endpoint_id: 'x/y' }, 'z')).toBe(false);
   });
 });
 

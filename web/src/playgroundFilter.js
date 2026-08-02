@@ -17,6 +17,7 @@ export function defaultFilters() {
     audio: false,
     video: false,
     imageCount: 0,
+    category: null,
     outputs: { image: true, video: true, audio: true },
   };
 }
@@ -24,6 +25,7 @@ export function defaultFilters() {
 export function modelMatchesFilters(model, filters) {
   const slots = model?.inputs || {};
   if (!filters.outputs?.[model?.output?.kind]) return false;
+  if (filters.category && (model?.category || '') !== filters.category) return false;
 
   if (filters.prompt) {
     if (!slots.prompt || slots.prompt === 'unused') return false;
@@ -53,6 +55,15 @@ export function modelMatchesFilters(model, filters) {
   }
 
   return true;
+}
+
+// Free-text search across the fields a user might remember a model by:
+// id, display name, category, and the catalog description.
+export function modelMatchesSearch(model, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  return [model?.endpoint_id, model?.display_name, model?.category, model?.description]
+    .some((f) => (f || '').toLowerCase().includes(q));
 }
 
 // Readiness is about the ACTUAL attachments/prompt (not the checkboxes): it

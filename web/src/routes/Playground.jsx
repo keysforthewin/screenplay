@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiGet, apiPostJson, apiPostMultipart, apiDelete, apiSseUrl, imageUrl, thumbUrl, attachmentUrl } from '../api.js';
-import { defaultFilters, modelMatchesFilters, modelReadiness } from '../playgroundFilter.js';
+import { defaultFilters, modelMatchesFilters, modelMatchesSearch, modelReadiness } from '../playgroundFilter.js';
 import { estimatePlaygroundCost, rowPriceLabel } from '../playgroundCost.js';
 
 // Scratchpad for trying any fal.ai model: drop reference media, type a
@@ -95,16 +95,24 @@ export function Playground() {
   const visible = useMemo(() => {
     const models = registry?.models || [];
     const filters = { ...filterState, imageCount: counts.image };
-    const q = search.trim().toLowerCase();
     return models
       .filter((m) => modelMatchesFilters(m, filters))
-      .filter((m) => !q
-        || m.endpoint_id.toLowerCase().includes(q)
-        || (m.display_name || '').toLowerCase().includes(q)
-        || (m.category || '').toLowerCase().includes(q))
+      .filter((m) => modelMatchesSearch(m, search))
       .sort((a, b) => (a.category || '').localeCompare(b.category || '')
         || (a.display_name || '').localeCompare(b.display_name || ''));
   }, [registry, filterState, counts.image, search]);
+
+  // Distinct categories present in the catalog, with model counts, for the
+  // category dropdown. Data-driven — new categories appear automatically.
+  const categories = useMemo(() => {
+    const tally = new Map();
+    for (const m of registry?.models || []) {
+      const c = m.category || '';
+      if (!c) continue;
+      tally.set(c, (tally.get(c) || 0) + 1);
+    }
+    return [...tally.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [registry]);
 
   // Drop the selection when the chosen model filters out.
   useEffect(() => {
@@ -341,6 +349,19 @@ export function Playground() {
           ))}
         </span>
         <span className="playground-filter-group">
+          <span className="playground-filter-label">Category</span>
+          <select
+            className="playground-filter-category"
+            value={filterState.category || ''}
+            onChange={(e) => setFilterState((prev) => ({ ...prev, category: e.target.value || null }))}
+          >
+            <option value="">all categories</option>
+            {categories.map(([c, n]) => (
+              <option key={c} value={c}>{c} ({n})</option>
+            ))}
+          </select>
+        </span>
+        <span className="playground-filter-group">
           <span className="playground-filter-label">Output</span>
           {['image', 'video', 'audio'].map((k) => (
             <label key={k} className="playground-filter-check">
@@ -374,7 +395,7 @@ export function Playground() {
                 'playground-model-row'
                 + (m.endpoint_id === selectedId ? ' is-selected' : '')
               }
-              title={m.price_text || undefined}
+              title={[m.description, m.price_text].filter(Boolean).join('\n\n') || undefined}
             >
               <input
                 type="radio"
@@ -386,6 +407,9 @@ export function Playground() {
               <span className="playground-model-name">
                 {m.display_name}
                 <span className="playground-model-id">{m.endpoint_id}</span>
+                {m.description && (
+                  <span className="playground-model-desc">{m.description}</span>
+                )}
               </span>
               <span className="playground-model-badge">{m.category || m.output?.kind}</span>
               {!r.ready && (

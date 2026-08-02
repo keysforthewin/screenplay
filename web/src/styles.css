@@ -3077,6 +3077,18 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.playground-model-name .playground-model-desc {
+  color: var(--fg-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.playground-filter-category {
+  font-size: 13px;
+  padding: 2px 6px;
+  max-width: 220px;
+}
 .playground-model-badge {
   flex: none;
   font-size: 11px;
