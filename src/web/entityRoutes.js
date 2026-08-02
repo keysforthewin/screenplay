@@ -13,6 +13,7 @@ import { convertToMp3 } from './audioTranscode.js';
 import { requireSession } from './auth.js';
 import { runAsEditor } from './editAttribution.js';
 import { resolveProject } from './projectMiddleware.js';
+import { buildElevenRouter } from './elevenRoutes.js';
 import {
   countProjects,
   createProject,
@@ -631,6 +632,10 @@ export function buildApiRouter() {
   });
 
   router.use(requireSession());
+
+  // ElevenLabs playground backend — voice library/collection, TTS, voice
+  // changer, isolator, STT, cloning, design. Kept in its own module.
+  router.use('/eleven', buildElevenRouter());
 
   // Attribute every gateway text/cast edit made during an authenticated request
   // to the logged-in user, so AI-assist features (beat rewrite, restore, dialog
