@@ -82,6 +82,11 @@ export const config = {
   tmdb: {
     readAccessToken: process.env.TMDB_READ_ACCESS_TOKEN || null,
   },
+  eleven: {
+    // ElevenLabs audio toolkit for the web playground. Optional — without
+    // the key the ElevenLabs tab reports unconfigured and stays disabled.
+    apiKey: process.env.ELEVEN_LABS_KEY || null,
+  },
   fal: {
     // fal.ai serverless models for video generation. Optional — without the
     // key the "Generate video" button on a storyboard scene surfaces a
