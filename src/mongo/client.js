@@ -115,6 +115,7 @@ export async function connectMongo() {
   await db.collection('storyboards').createIndex({ beat_id: 1, order: 1 });
   await db.collection('storyboards').createIndex({ project_id: 1, beat_id: 1 });
   await db.collection('dialogs').createIndex({ project_id: 1, beat_id: 1 });
+  await db.collection('eleven_voices').createIndex({ project_id: 1, voice_id: 1 }, { unique: true });
   await db.collection('plots').createIndex(
     { project_id: 1 },
     { unique: true, partialFilterExpression: { project_id: { $type: 'string' } } },

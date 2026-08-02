@@ -37,6 +37,7 @@ const CONTENT_COLLECTIONS = [
   'storyboards',
   'dialogs',
   'edit_announcements',
+  'eleven_voices',
 ];
 
 const PROMPT_KEYS = ['character_template', 'plot_template', 'director_notes'];

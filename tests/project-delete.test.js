@@ -270,4 +270,18 @@ describe('DELETE /api/projects/:id', () => {
     const r = await del(`/projects/${doomed._id}`, { 'X-Project-Id': new ObjectId().toString() });
     expect(r.status).toBe(200);
   });
+
+  it('deletes eleven_voices rows for the project and spares other projects', async () => {
+    const keep = await Projects.createProject('Keeper');
+    const doomed = await Projects.createProject('Doomed');
+    const pid = doomed._id.toString();
+    const otherPid = keep._id.toString();
+    await fakeDb.collection('eleven_voices').insertMany([
+      { _id: new ObjectId(), project_id: pid, voice_id: 'v1', name: 'Mine' },
+      { _id: new ObjectId(), project_id: otherPid, voice_id: 'v1', name: 'Theirs' },
+    ]);
+    await del(`/projects/${pid}`);
+    expect(await fakeDb.collection('eleven_voices').find({}).toArray()).toHaveLength(1);
+    expect((await fakeDb.collection('eleven_voices').find({}).toArray())[0].project_id).toBe(otherPid);
+  });
 });
