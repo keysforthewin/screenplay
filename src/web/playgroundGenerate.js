@@ -24,6 +24,16 @@ import {
   extractOutputMedia,
   classifyMediaKind,
 } from '../fal/playgroundModels.js';
+import { extractFalDetail } from '../fal/imageClient.js';
+
+// The fal SDK's ApiError carries the useful message in body.detail; its
+// .message is just the HTTP status text ("Unprocessable Entity"). Prefer the
+// detail when present so job.error reads as an actual explanation.
+function describeJobError(err, modelLabel) {
+  const detail = extractFalDetail(err?.body);
+  if (detail) return `${modelLabel} failed: ${detail}`;
+  return err?.message || String(err);
+}
 
 // In-memory job registry. Single-process runtime; jobs are lost on restart
 // and evicted a few minutes after reaching a terminal state.
@@ -355,9 +365,14 @@ export async function startPlaygroundJob({ projectId, modelId, prompt = null, re
 
   runJob(job, { projectId, row, prompt, refs: cleanRefs, options: cleanOptions })
     .catch((err) => {
-      logger.warn(`playground gen job ${job.job_id} failed: ${err.message}`);
+      logger.warn(
+        `playground gen job ${job.job_id} failed: ${err?.message || err}` +
+          (err?.status ? ` status=${err.status}` : '') +
+          (err?.body ? ` body=${JSON.stringify(err.body).slice(0, 500)}` : '') +
+          (err?.requestId ? ` request_id=${err.requestId}` : ''),
+      );
       job.status = 'error';
-      job.error = err.message;
+      job.error = describeJobError(err, row.display_name);
       job.finished_at = new Date();
       publish(job);
     })

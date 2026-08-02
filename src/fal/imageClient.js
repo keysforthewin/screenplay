@@ -320,7 +320,7 @@ export async function generateFlux2KleinImage({
   return callFal({ modelId, payload });
 }
 
-function extractFalDetail(body) {
+export function extractFalDetail(body) {
   if (!body) return null;
   if (typeof body === 'string') return body;
   if (typeof body.detail === 'string') return body.detail;
@@ -329,7 +329,11 @@ function extractFalDetail(body) {
       .map((d) => {
         if (!d) return '';
         if (typeof d === 'string') return d;
-        const loc = Array.isArray(d.loc) ? d.loc.join('.') : '';
+        // fal's validation locs are FastAPI-style and always lead with
+        // "body" — drop it so messages read "prompt: ..." not "body.prompt: ...".
+        const loc = Array.isArray(d.loc)
+          ? d.loc.filter((seg, i) => !(i === 0 && seg === 'body')).join('.')
+          : '';
         const msg = d.msg || d.message || JSON.stringify(d);
         return loc ? `${loc}: ${msg}` : msg;
       })

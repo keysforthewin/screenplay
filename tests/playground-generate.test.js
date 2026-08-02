@@ -258,6 +258,29 @@ describe('startPlaygroundJob', () => {
     })).rejects.toMatchObject({ code: 'FAL_NOT_CONFIGURED' });
   });
 
+  it('surfaces fal ApiError body.detail instead of the bare status text', async () => {
+    falStubs.resultImpl = async () => {
+      const err = new Error('Unprocessable Entity');
+      err.status = 422;
+      err.body = {
+        detail: [{
+          loc: ['body', 'prompt'],
+          msg: 'Could not generate a video with the given inputs. Please try again with different inputs.',
+          type: 'invalid_request',
+        }],
+      };
+      throw err;
+    };
+    const { job_id } = await Playground.startPlaygroundJob({
+      projectId: PROJECT_A, modelId: 'test/t2i', prompt: 'x', catalogPath,
+    });
+    const job = await waitForTerminal(job_id);
+    expect(job.status).toBe('error');
+    expect(job.error).toMatch(/Could not generate a video with the given inputs/);
+    expect(job.error).toMatch(/Test T2I/);
+    expect(job.error).not.toBe('Unprocessable Entity');
+  });
+
   it('surfaces fal queue failures as job errors', async () => {
     falStubs.subscribeImpl = async () => { throw new Error('boom at fal'); };
     const { job_id } = await Playground.startPlaygroundJob({

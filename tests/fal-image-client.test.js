@@ -148,7 +148,7 @@ describe('generateFluxKontextImage', () => {
     subscribeMock.mockRejectedValue(upstream);
 
     await expect(generateFluxKontextImage({ prompt: 'p' })).rejects.toThrow(
-      /body\.image_url: value is not a valid url; body\.prompt: ensure/,
+      /image_url: value is not a valid url; prompt: ensure/,
     );
   });
 
