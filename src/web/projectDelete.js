@@ -27,6 +27,7 @@
 import { getDb } from '../mongo/client.js';
 import { logger } from '../log.js';
 import { getProjectById, deleteProject } from '../mongo/projects.js';
+import { removeProjectFromUsers } from '../mongo/users.js';
 import { deleteProjectChunks } from '../rag/indexer.js';
 
 // Content collections carrying a plain `project_id` string field.
@@ -107,6 +108,10 @@ export async function deleteProjectCascade(projectId) {
 
   // 6. Chroma — best-effort, swallowed inside the indexer.
   await deleteProjectChunks(pid);
+
+  // 6b. Drop the project from every user's granted-project set (permission
+  //     system). The user docs themselves stay.
+  deleted.user_grants = await removeProjectFromUsers(pid);
 
   // 7. Repoint any Discord channel that was pointed at this project. Done
   //    before the project doc is removed so getDefaultProject() can never

@@ -33,8 +33,14 @@ export function Login({ onAuthed }) {
     try {
       const status = await pollStatus(id);
       if (status.status === 'approved') {
-        saveSession({ session_id: status.session_id, username: status.username });
-        onAuthed({ session_id: status.session_id, username: status.username });
+        const session = {
+          session_id: status.session_id,
+          username: status.username,
+          is_admin: !!status.is_admin,
+          permissions_enabled: status.permissions_enabled !== false,
+        };
+        saveSession(session);
+        onAuthed(session);
         return;
       }
       if (status.status === 'denied') {

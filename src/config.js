@@ -67,6 +67,14 @@ export const config = {
     staticDir: process.env.WEB_STATIC_DIR || path.resolve(process.cwd(), 'web/dist'),
     authRequestTtlMs: Number(process.env.AUTH_REQUEST_TTL_MS) || 5 * 60 * 1000,
     botColor: process.env.BOT_PRESENCE_COLOR || '#ffb86b',
+    // Permission system master switch. When set, the login name matching this
+    // value (case-insensitive) is the admin: only they can create/rename/delete
+    // projects and grant per-project access; everyone else sees only granted
+    // projects. Unset = legacy open mode (no per-project authorization). Live
+    // getter so tests can toggle it per-case (same precedent as rag.enabled).
+    get adminUsername() {
+      return process.env.ADMIN_USERNAME || null;
+    },
   },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || null,

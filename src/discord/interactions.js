@@ -12,6 +12,8 @@ import { ApplicationCommandType, EmbedBuilder } from 'discord.js';
 import { logger } from '../log.js';
 import { approveAuthRequest, denyAuthRequest } from '../mongo/auth.js';
 import { setHistoryClearedAt } from '../mongo/channelState.js';
+import { GRANT_RE, postGrantMenu, handleGrantSelect } from './grantMenu.js';
+import { permissionsEnabled, isAdmin } from '../web/permissions.js';
 
 export const SLASH_COMMANDS = [
   {
@@ -108,6 +110,21 @@ export function installInteractionHandlers(client) {
       }
       return;
     }
+    if (interaction.isStringSelectMenu?.()) {
+      if (GRANT_RE.test(interaction.customId || '')) {
+        try {
+          await handleGrantSelect(interaction);
+        } catch (e) {
+          logger.error(`grant select failure (${interaction.customId})`, e);
+          try {
+            if (!interaction.replied && !interaction.deferred) {
+              await interaction.reply({ content: `Error: ${e.message}`, ephemeral: true });
+            }
+          } catch {}
+        }
+      }
+      return;
+    }
     if (!interaction.isButton?.()) return;
     const id = interaction.customId || '';
     const approveMatch = id.match(APPROVE_RE);
@@ -120,13 +137,24 @@ export function installInteractionHandlers(client) {
 
     try {
       if (approveMatch) {
-        const { result, request } = await approveAuthRequest({
+        const { result, request, user } = await approveAuthRequest({
           requestId,
           deciderTag,
           deciderId,
         });
         if (result === 'approved') {
           await ackResolution(interaction, { kind: 'approved', deciderTag });
+          // Follow up with the project-grant menu — new users start with zero
+          // projects until someone grants them. Skipped for the admin (their
+          // access is implicit) and in legacy open mode. Never let a menu
+          // failure break the approval that already happened.
+          if (permissionsEnabled() && user && !isAdmin(user.name)) {
+            try {
+              await postGrantMenu({ interaction, user });
+            } catch (e) {
+              logger.error(`grant menu post failed for ${user.name}`, e);
+            }
+          }
         } else if (result === 'already_decided') {
           await ackAlreadyDecided(interaction, request);
         } else {

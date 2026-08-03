@@ -13,6 +13,7 @@ vi.mock('../src/log.js', () => ({
 }));
 
 const Auth = await import('../src/mongo/auth.js');
+const Users = await import('../src/mongo/users.js');
 
 describe('auth_requests / auth_sessions', () => {
   beforeEach(() => fakeDb.reset());
@@ -41,6 +42,27 @@ describe('auth_requests / auth_sessions', () => {
     expect(updated.status).toBe('approved');
     expect(updated.session_id).toBe(out.sessionId);
     expect(updated.decided_by).toBe('pal#0001');
+  });
+
+  it('approveAuthRequest find-or-creates the user and links the session to it', async () => {
+    const req = await Auth.createAuthRequest({ username: 'Steve', ttlMs: 60_000 });
+    const out = await Auth.approveAuthRequest({ requestId: req.request_id, deciderTag: 'a' });
+    expect(out.user.name).toBe('Steve');
+    const session = await Auth.getSession(out.sessionId);
+    expect(String(session.user_id)).toBe(String(out.user._id));
+    expect((await Users.listUsers()).length).toBe(1);
+  });
+
+  it('same name in a different casing reuses the user and canonicalizes the session username', async () => {
+    const first = await Auth.createAuthRequest({ username: 'Steve', ttlMs: 60_000 });
+    const a = await Auth.approveAuthRequest({ requestId: first.request_id, deciderTag: 'a' });
+    const second = await Auth.createAuthRequest({ username: 'sTEVE', ttlMs: 60_000 });
+    const b = await Auth.approveAuthRequest({ requestId: second.request_id, deciderTag: 'b' });
+    expect(String(b.user._id)).toBe(String(a.user._id));
+    expect((await Users.listUsers()).length).toBe(1);
+    // Second device's session carries the first-seen display casing.
+    const session = await Auth.getSession(b.sessionId);
+    expect(session.username).toBe('Steve');
   });
 
   it('denyAuthRequest marks denied without creating a session', async () => {

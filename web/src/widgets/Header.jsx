@@ -61,6 +61,9 @@ export function Header({ session, onLogout }) {
         ✨ AI chat
       </button>
       <div className="meta">
+        {session?.is_admin && (
+          <Link to="/admin" title="Manage user project access">Admin</Link>
+        )}
         <Link to="/about" title="Project name, synopsis & global dialogue style">About</Link>
         <Link to="/" title="Table of contents — all beats in this project">TOC</Link>
         <Link to="/playground" title="Try any fal.ai model with your own reference media">Playground</Link>

@@ -19,6 +19,7 @@ import {
   setRequestDiscordMessage,
   touchSession,
 } from '../mongo/auth.js';
+import { isAdmin, permissionsEnabled } from './permissions.js';
 
 const USERNAME_RE = /^[\p{L}\p{N}_\- .']{1,40}$/u;
 
@@ -121,10 +122,18 @@ export function buildAuthRouter() {
       return res.json({ status: 'expired' });
     }
     if (r.status === 'approved') {
+      // The session carries the user's canonical first-seen casing (which may
+      // differ from what was typed into this request) — prefer it.
+      const session = r.session_id ? await getSession(r.session_id) : null;
+      const username = session?.username || r.username;
       return res.json({
         status: 'approved',
         session_id: r.session_id,
-        username: r.username,
+        username,
+        is_admin: isAdmin(username),
+        // Lets the SPA keep create/rename/delete UI visible for everyone in
+        // legacy open mode (ADMIN_USERNAME unset), matching the server.
+        permissions_enabled: permissionsEnabled(),
       });
     }
     if (r.status === 'denied') {
@@ -139,7 +148,12 @@ export function buildAuthRouter() {
     const s = await getSession(sessionId);
     if (!s) return res.json({ valid: false });
     touchSession(sessionId).catch(() => {});
-    return res.json({ valid: true, username: s.username });
+    return res.json({
+      valid: true,
+      username: s.username,
+      is_admin: isAdmin(s.username),
+      permissions_enabled: permissionsEnabled(),
+    });
   });
 
   return router;

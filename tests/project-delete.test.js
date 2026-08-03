@@ -193,6 +193,24 @@ describe('DELETE /api/projects/:id', () => {
     expect(await Projects.getProjectById(keep._id)).toBeTruthy();
   });
 
+  it('pulls the deleted project from every user\'s grants, keeping other grants', async () => {
+    const keep = await Projects.createProject('Keeper');
+    const doomed = await Projects.createProject('Doomed');
+    const Users = await import('../src/mongo/users.js');
+    const steve = await Users.findOrCreateUserByName('Steve');
+    await Users.setUserProjects(steve._id.toString(), [
+      keep._id.toString(),
+      doomed._id.toString(),
+    ]);
+    const bob = await Users.findOrCreateUserByName('Bob');
+    await Users.setUserProjects(bob._id.toString(), [doomed._id.toString()]);
+
+    expect((await del(`/projects/${doomed._id.toString()}`)).status).toBe(200);
+
+    expect((await Users.findUserByName('Steve')).project_ids).toEqual([keep._id.toString()]);
+    expect((await Users.findUserByName('Bob')).project_ids).toEqual([]);
+  });
+
   it('leaves another project\'s rows completely intact', async () => {
     const keep = await Projects.createProject('Keeper');
     const doomed = await Projects.createProject('Doomed');

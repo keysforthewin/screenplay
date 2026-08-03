@@ -17,6 +17,7 @@ import { logger } from '../log.js';
 import { fetchYjsState, storeYjsState } from '../mongo/yjsDocs.js';
 import { getSession, touchSession } from '../mongo/auth.js';
 import { assertRoomProjectKnown, parseRoomName, resolveRoom } from './roomRegistry.js';
+import { assertRoomAccess } from './permissions.js';
 import { primeRoomCache, forgetRoomCache, handleRoomChange } from './editAnnounce.js';
 
 let server;
@@ -35,6 +36,12 @@ async function makeServer() {
       await assertRoomProjectKnown(documentName);
       const session = await getSession(token);
       if (!session) throw new Error('invalid session');
+      // Per-project authorization (no-op unless ADMIN_USERNAME is set). Only
+      // browser websockets pass through here — the bot/gateway writes via
+      // openDirectConnection, which never runs onAuthenticate. An already-open
+      // socket of a just-revoked user survives until reload/project-switch;
+      // accepted for this trust model.
+      await assertRoomAccess(session.username, documentName);
       // Refresh last_seen but don't await — auth check should be fast.
       touchSession(token).catch(() => {});
       return { user: { name: session.username, sessionId: session.session_id } };

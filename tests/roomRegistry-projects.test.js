@@ -16,7 +16,7 @@ vi.mock('../src/log.js', () => ({
 vi.mock('../src/rag/queue.js', () => ({ enqueueReindex: () => {} }));
 vi.mock('../src/rag/indexer.js', () => ({}));
 
-const { buildRoomName, parseRoomName, resolveRoom, assertRoomProjectKnown } =
+const { buildRoomName, parseRoomName, resolveRoom, assertRoomProjectKnown, projectIdForRoom } =
   await import('../src/web/roomRegistry.js');
 const Projects = await import('../src/mongo/projects.js');
 const DirectorNotes = await import('../src/mongo/directorNotes.js');
@@ -60,6 +60,36 @@ describe('project-scoped room names', () => {
       assertRoomProjectKnown(`notes:${new ObjectId().toString()}`),
     ).rejects.toThrow(/unknown project/i);
     await expect(assertRoomProjectKnown('garbage-room')).rejects.toThrow(/unknown room/i);
+  });
+
+  it('projectIdForRoom resolves the owning project for every room type', async () => {
+    const p = await Projects.createProject('Western');
+    const pid = p._id.toString();
+    const beatId = new ObjectId();
+    const charId = new ObjectId();
+    await fakeDb.collection('plots').insertOne({
+      _id: new ObjectId(),
+      project_id: pid,
+      beats: [{ _id: beatId, name: 'B1' }],
+    });
+    await fakeDb.collection('characters').insertOne({
+      _id: charId,
+      project_id: pid,
+      name: 'Steve',
+      name_lower: 'steve',
+    });
+
+    for (const room of ['plot', 'notes', 'library'].map((t) => `${t}:${pid}`)) {
+      expect(await projectIdForRoom(room)).toBe(pid);
+    }
+    expect(await projectIdForRoom(`beat:${beatId.toString()}`)).toBe(pid);
+    expect(await projectIdForRoom(`storyboards:${beatId.toString()}`)).toBe(pid);
+    expect(await projectIdForRoom(`dialogs:${beatId.toString()}`)).toBe(pid);
+    expect(await projectIdForRoom(`character:${charId.toString()}`)).toBe(pid);
+    // Unparseable rooms and unknown entities resolve to null.
+    expect(await projectIdForRoom('garbage')).toBeNull();
+    expect(await projectIdForRoom(`beat:${new ObjectId().toString()}`)).toBeNull();
+    expect(await projectIdForRoom(`character:${new ObjectId().toString()}`)).toBeNull();
   });
 
   it('resolveRoom returns null for a singleton room of an unknown project', async () => {

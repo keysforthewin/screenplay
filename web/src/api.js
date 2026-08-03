@@ -93,7 +93,18 @@ async function check(res) {
   }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(extractErrorMessage(body) || `${res.status}`);
+    const message = extractErrorMessage(body);
+    // Access to the current project was revoked (or a stale localStorage
+    // project points at one this user was never granted). Forget it and bounce
+    // to the app root, which redirects into a project they CAN see — otherwise
+    // ProjectProvider's sync short-circuit would keep rendering the shell over
+    // endless 403 banners. Other 403s (admin-only, etc.) throw normally.
+    if (res.status === 403 && message === 'forbidden project') {
+      clearStoredProject();
+      location.assign(appRootUrl());
+      throw new Error('no access to this project');
+    }
+    throw new Error(message || `${res.status}`);
   }
   return res;
 }
@@ -121,6 +132,16 @@ export async function apiGet(path) {
 export async function apiPostJson(path, body) {
   const res = await fetch(withBase(`/api${path}`), {
     method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body || {}),
+  });
+  await check(res);
+  return res.json();
+}
+
+export async function apiPutJson(path, body) {
+  const res = await fetch(withBase(`/api${path}`), {
+    method: 'PUT',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body || {}),
   });

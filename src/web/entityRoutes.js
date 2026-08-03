@@ -13,6 +13,8 @@ import { convertToMp3 } from './audioTranscode.js';
 import { requireSession } from './auth.js';
 import { runAsEditor } from './editAttribution.js';
 import { resolveProject } from './projectMiddleware.js';
+import { requireProjectAccess, requireAdmin, listProjectsFor } from './permissions.js';
+import { buildAdminRouter } from './adminRoutes.js';
 import { buildElevenRouter } from './elevenRoutes.js';
 import {
   countProjects,
@@ -633,6 +635,18 @@ export function buildApiRouter() {
 
   router.use(requireSession());
 
+  // Per-project authorization (no-op unless ADMIN_USERNAME is set — see
+  // src/web/permissions.js). Mounted right after requireSession so every
+  // project-scoped route below (including /eleven) 403s a user who was never
+  // granted req.projectId — this also covers resolveProject's default-project
+  // fallback for headerless requests, which fails closed here. Note the four
+  // SSE routes above run BEFORE this: they validate a session inline and are
+  // capability-keyed by unguessable in-memory job ids, accepted for v1.
+  router.use(requireProjectAccess());
+
+  // Admin page backend: list users, set a user's granted projects.
+  router.use('/admin', requireAdmin(), buildAdminRouter());
+
   // ElevenLabs playground backend — voice library/collection, TTS, voice
   // changer, isolator, STT, cloning, design. Kept in its own module.
   router.use('/eleven', buildElevenRouter());
@@ -718,9 +732,12 @@ export function buildApiRouter() {
   // resolveProject() skips this path (see projectMiddleware.js, carried
   // improvement 3) so a stale header pointing at a vanished project can't
   // 404 the recovery fetch.
-  router.get('/projects', async (_req, res, next) => {
+  router.get('/projects', async (req, res, next) => {
     try {
-      const projects = await listProjects();
+      // Filtered to the viewer's grants (admin sees all; legacy open mode
+      // returns everything). The SPA treats this list as its authorization
+      // oracle — selector contents, URL resolution, redirect targets.
+      const projects = await listProjectsFor(req.session?.username);
       res.json({
         projects: projects.map((p) => ({
           id: p._id.toString(),
@@ -733,7 +750,7 @@ export function buildApiRouter() {
     }
   });
 
-  router.post('/projects', async (req, res, next) => {
+  router.post('/projects', requireAdmin(), async (req, res, next) => {
     try {
       // Pre-validate with normalizeProjectTitle so validation errors always
       // map to 400 (covers empty, slash, >120-char, and "."/"..").
@@ -768,7 +785,7 @@ export function buildApiRouter() {
   // Rename. Addressed by path id (not the X-Project-Id header) so renaming a
   // project you aren't currently viewing works. Only the title changes — every
   // room name, GridFS file, and content row keys off project_id.
-  router.patch('/projects/:id', async (req, res, next) => {
+  router.patch('/projects/:id', requireAdmin(), async (req, res, next) => {
     try {
       let title;
       try {
@@ -799,7 +816,7 @@ export function buildApiRouter() {
   // delete the last remaining project: an empty projects collection makes the
   // bot lazily recreate a blank "Screenplay" mid-request, which is a confusing
   // way to end up with a project you didn't ask for.
-  router.delete('/projects/:id', async (req, res, next) => {
+  router.delete('/projects/:id', requireAdmin(), async (req, res, next) => {
     try {
       const project = await getProjectById(req.params.id);
       if (!project) return res.status(404).json({ error: 'unknown project' });

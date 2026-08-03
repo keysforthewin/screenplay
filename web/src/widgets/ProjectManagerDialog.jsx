@@ -10,8 +10,13 @@
 import { useEffect, useState } from 'react';
 import { Modal } from './Modal.jsx';
 import { apiGet, apiPostJson, projectHomeUrl } from '../api.js';
+import { loadSession, canManageProjects } from '../auth/session.js';
 
 export function ProjectManagerDialog({ open, onClose, currentProjectId = null }) {
+  // Creating projects is admin-only (enforced server-side too; open to all in
+  // legacy open mode). Read from the stored session rather than a prop: the
+  // ProjectNotFound screen also opens this dialog and has no session in scope.
+  const isAdmin = canManageProjects(loadSession());
   const [projects, setProjects] = useState(null); // null = loading
   const [error, setError] = useState(null);
   const [title, setTitle] = useState('');
@@ -95,19 +100,21 @@ export function ProjectManagerDialog({ open, onClose, currentProjectId = null })
         </ul>
       )}
 
-      <form onSubmit={create} style={{ marginTop: 16, display: 'flex', gap: 8 }}>
-        <input
-          type="text"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder="New project title"
-          maxLength={120}
-          style={{ flex: 1 }}
-        />
-        <button type="submit" className="primary" disabled={busy || !title.trim()}>
-          {busy ? 'Creating…' : 'Create'}
-        </button>
-      </form>
+      {isAdmin && (
+        <form onSubmit={create} style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="New project title"
+            maxLength={120}
+            style={{ flex: 1 }}
+          />
+          <button type="submit" className="primary" disabled={busy || !title.trim()}>
+            {busy ? 'Creating…' : 'Create'}
+          </button>
+        </form>
+      )}
     </Modal>
   );
 }

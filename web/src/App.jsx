@@ -15,7 +15,8 @@ import { ChatWindow } from './routes/ChatWindow.jsx';
 import { Header } from './widgets/Header.jsx';
 import { ProjectProvider } from './project/ProjectContext.jsx';
 import { RedirectToProject } from './project/RedirectToProject.jsx';
-import { loadSession, validateSession, clearSession } from './auth/session.js';
+import { loadSession, saveSession, validateSession, clearSession } from './auth/session.js';
+import { Admin } from './routes/Admin.jsx';
 
 // Everything project-scoped lives under /p/:projectTitle/*. ProjectProvider
 // resolves the title (and blocks children until the api.js store is set);
@@ -37,6 +38,10 @@ function ProjectShell({ session, onLogout }) {
         <Route path="/dialog" element={<DialogIndex session={session} />} />
         <Route path="/dialog/:order" element={<DialogBeat session={session} />} />
         <Route path="/about" element={<About session={session} />} />
+        <Route
+          path="/admin"
+          element={session?.is_admin ? <Admin session={session} /> : <Navigate to="/" replace />}
+        />
         <Route path="/playground" element={<Playground />} />
         {/* Unknown subpath: bounce via the app-root catch-all
             (RedirectToProject re-enters this project from the per-tab store). */}
@@ -60,7 +65,16 @@ export function App() {
       const ok = await validateSession(stored.session_id);
       if (cancelled) return;
       if (ok?.valid) {
-        setSession({ session_id: stored.session_id, username: ok.username });
+        const fresh = {
+          session_id: stored.session_id,
+          username: ok.username,
+          is_admin: !!ok.is_admin,
+          permissions_enabled: ok.permissions_enabled !== false,
+        };
+        // Re-save: refreshes legacy localStorage entries that predate is_admin
+        // and keeps the flag current if ADMIN_USERNAME changed server-side.
+        saveSession(fresh);
+        setSession(fresh);
       } else {
         clearSession();
         setSession(null);

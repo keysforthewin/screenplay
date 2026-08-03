@@ -26,9 +26,13 @@ export function resolveProject() {
       // The /projects* routes are project-agnostic (they list, or address a
       // project by path id); skip resolution so a stale header for a vanished
       // project doesn't block the SPA's recovery fetch — or a rename/delete
-      // aimed at some other project.
+      // aimed at some other project. Same story for /admin*: those routes
+      // address users, not the viewer's current project.
       const path = String(req.path || '');
-      if (path === '/projects' || path.startsWith('/projects/')) {
+      if (
+        path === '/projects' || path.startsWith('/projects/') ||
+        path === '/admin' || path.startsWith('/admin/')
+      ) {
         return next();
       }
       const fromHeader = typeof req.get === 'function' ? req.get('x-project-id') : null;

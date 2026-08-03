@@ -40,7 +40,9 @@ export function RedirectToProject() {
       }
       if (cancelled) return;
       if (!target) {
-        setError('No projects exist yet.');
+        // Either no projects exist (fresh install) or — with the permission
+        // system on — this user has not been granted any yet.
+        setError('No projects are assigned to you yet — ask the admin to grant you access.');
         return;
       }
       const suffix = `${location.pathname}${location.search}${location.hash}`;

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { getDb } from './client.js';
+import { findOrCreateUserByName } from './users.js';
 import { logger } from '../log.js';
 
 const REQUESTS_COL = 'auth_requests';
@@ -58,6 +59,11 @@ export async function approveAuthRequest({ requestId, deciderTag, deciderId }) {
   if (existing.status !== 'pending') return { result: 'already_decided', request: existing };
   const sessionId = newId('sess');
   const now = new Date();
+  // Same name (case-insensitive) = same account: the session is a device
+  // credential, the user doc is the identity behind it. The session takes the
+  // user's canonical first-seen casing so downstream username keys (chat
+  // history channel ids, presence colors) converge across devices.
+  const user = await findOrCreateUserByName(existing.username);
   await requests().updateOne(
     { request_id: requestId, status: 'pending' },
     {
@@ -72,13 +78,14 @@ export async function approveAuthRequest({ requestId, deciderTag, deciderId }) {
   );
   await sessions().insertOne({
     session_id: sessionId,
-    username: existing.username,
+    username: user.name,
+    user_id: user._id,
     created_at: now,
     last_seen: now,
   });
-  logger.info(`auth: approved id=${requestId} user="${existing.username}" by=${deciderTag}`);
+  logger.info(`auth: approved id=${requestId} user="${user.name}" by=${deciderTag}`);
   const updated = await requests().findOne({ request_id: requestId });
-  return { result: 'approved', request: updated, sessionId };
+  return { result: 'approved', request: updated, sessionId, user };
 }
 
 export async function denyAuthRequest({ requestId, deciderTag, deciderId }) {

@@ -375,6 +375,35 @@ function makeCollection() {
             for (const parts of resolved) setAtPath(target, parts, deepClone(value));
           }
         }
+        if (update.$push) {
+          for (const [path, value] of Object.entries(update.$push)) {
+            const resolved = resolveUpdatePath(target, path, positional, arrayFilters);
+            for (const parts of resolved) {
+              let arr = getAtPath(target, parts);
+              if (!Array.isArray(arr)) {
+                setAtPath(target, parts, []);
+                arr = getAtPath(target, parts);
+              }
+              arr.push(deepClone(value));
+            }
+          }
+        }
+        if (update.$pull) {
+          for (const [path, cond] of Object.entries(update.$pull)) {
+            const resolved = resolveUpdatePath(target, path, positional, arrayFilters);
+            for (const parts of resolved) {
+              const arr = getAtPath(target, parts);
+              if (!Array.isArray(arr)) continue;
+              const filtered = arr.filter((item) => {
+                if (cond && typeof cond === 'object' && !isObjectId(cond) && !isOperatorQuery(cond)) {
+                  return !matchQuery(item, cond);
+                }
+                return !matchesScalar(item, cond);
+              });
+              setAtPath(target, parts, filtered);
+            }
+          }
+        }
         if (update.$unset) {
           for (const path of Object.keys(update.$unset)) {
             const resolved = resolveUpdatePath(target, path, positional, arrayFilters);

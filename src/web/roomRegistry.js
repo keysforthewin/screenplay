@@ -107,6 +107,19 @@ export async function assertRoomProjectKnown(roomName) {
   return parsed;
 }
 
+// Owning project of any room, for permission checks (src/web/permissions.js).
+// Singleton rooms carry the project id in the name; entity rooms resolve it
+// from the entity doc (`storyboards:`/`dialogs:` rooms key on the beat _id, so
+// they resolve through the beat like `beat:` rooms). Null when unparseable or
+// the entity is unknown.
+export async function projectIdForRoom(roomName) {
+  const parsed = parseRoomName(roomName);
+  if (!parsed) return null;
+  if (parsed.projectId) return parsed.projectId;
+  if (parsed.type === 'character') return projectIdForCharacter(parsed.id);
+  return projectIdForBeat(parsed.id);
+}
+
 // Owning-project resolution for entity rooms. The room name only carries the
 // entity ObjectId; the project comes from the entity doc itself.
 async function projectIdForBeat(beatIdHex) {

@@ -14,8 +14,24 @@ export function loadSession() {
   }
 }
 
-export function saveSession({ session_id, username }) {
-  localStorage.setItem(KEY, JSON.stringify({ session_id, username }));
+export function saveSession({ session_id, username, is_admin = false, permissions_enabled = true }) {
+  localStorage.setItem(
+    KEY,
+    JSON.stringify({
+      session_id,
+      username,
+      is_admin: !!is_admin,
+      permissions_enabled: !!permissions_enabled,
+    }),
+  );
+}
+
+// Whether this viewer may create/rename/delete projects: the admin — or
+// anyone, when the server runs in legacy open mode (ADMIN_USERNAME unset).
+// Defaults to false for a session object that predates these flags; App.jsx
+// refreshes stored sessions on every boot revalidate.
+export function canManageProjects(session) {
+  return !!session && (!!session.is_admin || session.permissions_enabled === false);
 }
 
 export function clearSession() {
