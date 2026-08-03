@@ -1,6 +1,8 @@
 import { useRef, useState } from 'react';
 import { apiDelete } from '../api.js';
 import { VoiceLibraryBrowser } from './VoiceLibraryBrowser.jsx';
+import { VoiceClonePanel } from './VoiceClonePanel.jsx';
+import { VoiceDesignPanel } from './VoiceDesignPanel.jsx';
 
 // The voice half of the ElevenLabs panel: pick from the project's saved
 // collection, or expand into Browse library / Clone / Design to grow it.
@@ -112,10 +114,10 @@ export function ElevenVoiceSection({ voices, activeVoiceId, onSelect, onRefresh 
       )}
 
       {subTab === 'clone' && (
-        <p className="playground-empty">{/* TASK-7: <VoiceClonePanel> replaces this */}Voice cloning coming soon.</p>
+        <VoiceClonePanel onCreated={(voice) => { onRefresh(); onSelect(voice.voice_id); setSubTab('collection'); }} />
       )}
       {subTab === 'design' && (
-        <p className="playground-empty">{/* TASK-7: <VoiceDesignPanel> replaces this */}Voice design coming soon.</p>
+        <VoiceDesignPanel onCreated={(voice) => { onRefresh(); onSelect(voice.voice_id); setSubTab('collection'); }} />
       )}
     </div>
   );

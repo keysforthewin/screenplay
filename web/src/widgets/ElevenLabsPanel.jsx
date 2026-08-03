@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { apiGet, apiPostJson, apiDelete, attachmentUrl } from '../api.js';
 import { AudioTagPalette } from './AudioTagPalette.jsx';
 import { ElevenVoiceSection } from './ElevenVoiceSection.jsx';
+import { ElevenAudioInput } from './ElevenAudioInput.jsx';
 
 // ElevenLabs playground: TTS with v3 audio tags, voice changer, voice
 // isolator, speech-to-text — plus the project's voice collection with
@@ -221,7 +222,12 @@ export function ElevenLabsPanel() {
       )}
 
       {needsAudio && (
-        <p className="playground-empty">{/* TASK-7: <ElevenAudioInput> replaces this */}Audio input coming soon.</p>
+        <>
+          <label className="field-label">
+            {tool === 'changer' ? 'Audio to convert' : tool === 'isolate' ? 'Audio to clean up' : 'Audio to transcribe'}
+          </label>
+          <ElevenAudioInput value={audioRef} onChange={setAudioRef} />
+        </>
       )}
 
       <div className="playground-generate-row">
