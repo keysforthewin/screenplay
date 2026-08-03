@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { apiGet, apiPostJson, apiDelete, attachmentUrl } from '../api.js';
+import { apiGet, apiPostJson, attachmentUrl } from '../api.js';
 import { AudioTagPalette } from './AudioTagPalette.jsx';
 import { ElevenVoiceSection } from './ElevenVoiceSection.jsx';
 import { ElevenAudioInput } from './ElevenAudioInput.jsx';

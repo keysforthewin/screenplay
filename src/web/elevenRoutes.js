@@ -225,6 +225,10 @@ export function buildElevenRouter() {
       res.status(400).json({ error: 'text required' });
       return;
     }
+    if (text.length > MAX_TTS_CHARS) {
+      res.status(400).json({ error: `text too long (max ${MAX_TTS_CHARS} characters)` });
+      return;
+    }
     try {
       res.json({ text: await enhanceWithAudioTags(text) });
     } catch (e) {
@@ -312,13 +316,19 @@ export function buildElevenRouter() {
   router.post('/clone', requireConfigured, async (req, res) => {
     try {
       const name = String(req.body?.name || '').trim();
-      const refs = Array.isArray(req.body?.refs) ? req.body.refs : [];
+      const rawRefs = Array.isArray(req.body?.refs) ? req.body.refs : [];
       if (!name) throw Object.assign(new Error('name required'), { status: 400 });
-      if (!refs.length) {
+      if (!rawRefs.length) {
         throw Object.assign(new Error('at least one audio sample required'), { status: 400 });
       }
+      // Dedupe by file_id (keeping first occurrence) before capping, so a
+      // client can't OOM the process by repeating the same large file id.
+      const dedupedRefs = [...new Map(rawRefs.map((ref) => [String(ref?.file_id || ''), ref])).values()];
+      if (dedupedRefs.length > 10) {
+        throw Object.assign(new Error('too many audio samples (max 10)'), { status: 400 });
+      }
       const samples = [];
-      for (const ref of refs) samples.push(await loadAudioRef(req.projectId, ref));
+      for (const ref of dedupedRefs) samples.push(await loadAudioRef(req.projectId, ref));
       const created = await eleven.createIvcVoice({
         name,
         description: String(req.body?.description || '').trim() || null,

@@ -57,7 +57,7 @@ Unique compound index `(project_id, voice_id)`. Helpers: `listCollectionVoices`,
 - `POST /tts` `{ voice_id, text, model_id? }` → ensure-usable dance → audio → GridFS → `{ outputs: [{kind:'audio', file_id}] }`
 - `POST /voice-changer` `{ voice_id, ref: {file_id} }` → same shape
 - `POST /isolate` `{ ref: {file_id} }` → same shape
-- `POST /stt` `{ ref: {file_id} }` → `{ transcript, language, outputs: [{kind:'attachment', file_id}] }` (transcript also saved as a `.txt` attachment, `owner_type: 'playground'`)
+- `POST /stt` `{ ref: {file_id} }` → `{ transcript, language, outputs: [{kind:'text', file_id}] }` (transcript also saved as a `.txt` attachment, `owner_type: 'playground'`)
 
 Audio refs reuse the existing `POST /api/playground/upload` endpoint and its GridFS `owner_type: 'playground'` + project verification (`loadRef` semantics: cross-project or non-playground ids behave as not-found). Voice previews play directly from ElevenLabs' CDN `preview_url` (no proxy). Design previews are returned to the client as base64 data URLs (never persisted).
 

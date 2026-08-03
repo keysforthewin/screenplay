@@ -27,6 +27,7 @@ export function AudioRecorder({ onRecorded, disabled = false }) {
   const recorderRef = useRef(null);
   const timerRef = useRef(null);
   const blobRef = useRef(null);
+  const startingRef = useRef(false);
 
   useEffect(() => () => {
     clearInterval(timerRef.current);
@@ -35,6 +36,7 @@ export function AudioRecorder({ onRecorded, disabled = false }) {
   }, [previewUrl]);
 
   async function start() {
+    if (startingRef.current) return;
     if (recorderRef.current && recorderRef.current.state !== 'inactive') return;
     setError(null);
     if (previewUrl) {
@@ -46,6 +48,7 @@ export function AudioRecorder({ onRecorded, disabled = false }) {
       setError('Recording needs a secure (HTTPS) connection and a microphone.');
       return;
     }
+    startingRef.current = true;
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -53,6 +56,7 @@ export function AudioRecorder({ onRecorded, disabled = false }) {
       setError(e.name === 'NotAllowedError'
         ? 'Microphone permission denied — allow it in the browser and retry.'
         : `Could not open the microphone: ${e.message}`);
+      startingRef.current = false;
       return;
     }
     const mimeType = pickMimeType();
@@ -71,6 +75,7 @@ export function AudioRecorder({ onRecorded, disabled = false }) {
     setRecording(true);
     setSeconds(0);
     timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
+    startingRef.current = false;
   }
 
   function stop() {

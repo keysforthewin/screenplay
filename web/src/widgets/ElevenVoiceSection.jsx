@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { apiDelete } from '../api.js';
 import { VoiceLibraryBrowser } from './VoiceLibraryBrowser.jsx';
 import { VoiceClonePanel } from './VoiceClonePanel.jsx';
@@ -19,6 +19,8 @@ const SOURCE_GLYPHS = { library: '📚', clone: '🧬', design: '🎨' };
 export function ElevenVoiceSection({ voices, activeVoiceId, onSelect, onRefresh }) {
   const [subTab, setSubTab] = useState('collection');
   const playerRef = useRef(null);
+
+  useEffect(() => () => playerRef.current?.pause(), []);
 
   function preview(url) {
     if (!url) return;

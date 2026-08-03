@@ -171,6 +171,16 @@ describe('POST /enhance', () => {
     });
     expect(r.status).toBe(400);
   });
+
+  it('text over the max length is a 400', async () => {
+    const r = await fetch(`${baseUrl}/api/eleven/enhance`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'a'.repeat(10_001) }),
+    });
+    expect(r.status).toBe(400);
+    expect((await r.json()).error).toBe('text too long (max 10000 characters)');
+    expect(enhanceMock.enhanceWithAudioTags).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /tts', () => {
@@ -322,6 +332,28 @@ describe('clone + design', () => {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ refs: [] }),
     })).status).toBe(400);
+  });
+
+  it('clone with more than 10 refs is a 400 without calling createIvcVoice', async () => {
+    const refs = Array.from({ length: 11 }, (_, i) => ({ file_id: `f${i}` }));
+    const r = await fetch(`${baseUrl}/api/eleven/clone`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Me', refs }),
+    });
+    expect(r.status).toBe(400);
+    expect((await r.json()).error).toBe('too many audio samples (max 10)');
+    expect(elevenMock.createIvcVoice).not.toHaveBeenCalled();
+  });
+
+  it('clone dedupes repeated file_ids into a single sample', async () => {
+    attachmentsMock.readAttachmentBuffer.mockResolvedValue(playgroundRef());
+    elevenMock.createIvcVoice.mockResolvedValueOnce({ voice_id: 'cloned2' });
+    const r = await fetch(`${baseUrl}/api/eleven/clone`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Me', refs: [{ file_id: 'a' }, { file_id: 'a' }, { file_id: 'a' }] }),
+    });
+    expect(r.status).toBe(200);
+    expect(elevenMock.createIvcVoice.mock.calls[0][0].samples).toHaveLength(1);
   });
 
   it('design returns previews as data urls; design/save persists to the collection', async () => {
