@@ -405,6 +405,41 @@ describe('buildSystemPrompt', () => {
     expect(s2.text).toContain('**Mira**');
   });
 
+  describe('twoTier parameter', () => {
+    const baseArgs = {
+      characters: [],
+      characterTemplate: { fields: [] },
+      plotTemplate: { synopsis_guidance: '', beat_guidance: '' },
+      plot: { synopsis: '', beats: [] },
+      cache: false,
+    };
+
+    it('legacy default keeps the direct-edit workflow and never mentions delegate_writing', () => {
+      _resetStableTextCacheForTests();
+      const [stable] = buildSystemPrompt({ ...baseArgs, twoTier: false });
+      expect(stable.text).toContain('`edit`');
+      expect(stable.text).toContain('load_writing_context');
+      expect(stable.text).not.toContain('delegate_writing');
+    });
+
+    it('twoTier routes all writing through delegate_writing with a self-contained brief', () => {
+      _resetStableTextCacheForTests();
+      const [stable] = buildSystemPrompt({ ...baseArgs, twoTier: true });
+      expect(stable.text).toContain('delegate_writing');
+      expect(stable.text).toMatch(/verbatim/i);
+      expect(stable.text).toMatch(/cannot see this conversation/i);
+      // Writer-side mechanics must not leak into the orchestrator prompt.
+      expect(stable.text).not.toContain('load_writing_context');
+    });
+
+    it('twoTier is part of the stable-text cache key', () => {
+      _resetStableTextCacheForTests();
+      const [s1] = buildSystemPrompt({ ...baseArgs, twoTier: false });
+      const [s2] = buildSystemPrompt({ ...baseArgs, twoTier: true });
+      expect(s1.text).not.toBe(s2.text);
+    });
+  });
+
   describe('reviewMode parameter', () => {
     it('returns 2 blocks when reviewMode is false (default)', () => {
       const blocks = buildSystemPrompt({

@@ -4,8 +4,6 @@ import { useConnectedUsers } from '../editor/PresenceContext.jsx';
 import { useProject } from '../project/ProjectContext.jsx';
 import { SavedIndicator } from './SavedIndicator.jsx';
 import { ProjectManagerDialog } from './ProjectManagerDialog.jsx';
-import { openChatWindow } from './openChatWindow.js';
-import { useBroadcastPageContext } from '../project/usePageContextSync.js';
 
 function colorForUser(name) {
   let hash = 0;
@@ -29,11 +27,10 @@ function Dot({ user }) {
   );
 }
 
-export function Header({ session, onLogout }) {
+export function Header({ session, onLogout, chatOpen, onToggleChat }) {
   const users = useConnectedUsers();
   const project = useProject();
   const [managerOpen, setManagerOpen] = useState(false);
-  useBroadcastPageContext(project.id);
   const seen = new Map();
   for (const u of users) {
     const key = u?.name || Math.random();
@@ -52,14 +49,6 @@ export function Header({ session, onLogout }) {
       >
         {brand}
       </button>
-      <button
-        type="button"
-        className="chat-launch"
-        title="Chat with the AI agent about this project"
-        onClick={() => openChatWindow(window, project)}
-      >
-        ✨ AI chat
-      </button>
       <div className="meta">
         {session?.is_admin && (
           <Link to="/admin" title="Manage user project access">Admin</Link>
@@ -71,6 +60,16 @@ export function Header({ session, onLogout }) {
         <div className="presence-dots">{list.map((u, i) => <Dot key={i} user={u} />)}</div>
         <span>signed in as <strong>{session.username}</strong></span>
         <button onClick={onLogout} title="Clear local session">Logout</button>
+        <button
+          type="button"
+          className={'chat-toggle' + (chatOpen ? ' is-active' : '')}
+          aria-pressed={chatOpen}
+          aria-label="Toggle AI chat panel"
+          title={chatOpen ? 'Close AI chat panel' : 'Chat with the AI agent about this project'}
+          onClick={onToggleChat}
+        >
+          ✨
+        </button>
       </div>
       <ProjectManagerDialog
         open={managerOpen}

@@ -2691,15 +2691,92 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .scene-bible-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px 16px; padding:14px; }
 .scene-bible-field .field-label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#7b8290; margin-bottom:4px; }
 
-/* ── AI chat dialog ─────────────────────────────────────────────────────── */
+/* ── AI chat panel ──────────────────────────────────────────────────────── */
 
-.app-header .chat-launch {
-  font-size: 13px;
-  color: var(--fg);
+/* Inline chat layout: >1400px the panel docks as a right column below the
+   sticky header and .chat-shell frees the space via margin-right (.app is
+   margin:0 auto, so pages re-center in what's left); ≤1400px it overlays the
+   page as a slide-in drawer with a backdrop. Keep the breakpoint in sync
+   with DRAWER_MQ in ChatSidePanel.jsx. */
+:root {
+  --chat-w: 440px;
+  --header-h: 55px; /* fallback; ChatSidePanel measures the real header height */
+}
+
+.app-header .chat-toggle {
+  font-size: 16px;
+  padding: 4px 10px;
+}
+
+.app-header .chat-toggle.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.chat-shell {
+  transition: margin-right 200ms ease;
+}
+
+@media (min-width: 1401px) {
+  .chat-shell.chat-open {
+    margin-right: var(--chat-w);
+  }
+}
+
+.chat-side {
+  position: fixed;
+  top: var(--header-h);
+  right: 0;
+  bottom: 0;
+  width: var(--chat-w);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border-left: 1px solid var(--border);
+  z-index: 9; /* under the sticky header (10) in docked column mode */
+  transform: translateX(100%);
+  visibility: hidden; /* keeps the closed panel out of tab order (React 18: no inert prop) */
+  transition: transform 200ms ease, visibility 0s linear 200ms;
+}
+
+.chat-side.open {
+  transform: none;
+  visibility: visible;
+  transition: transform 200ms ease;
+}
+
+.chat-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 29;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+
+@media (max-width: 1400px) {
+  .chat-side {
+    top: 0;
+    width: min(var(--chat-w), 92vw);
+    z-index: 30; /* over the header, under .modal-backdrop (100) */
+    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4);
+  }
+  .chat-backdrop {
+    display: block;
+  }
+  .chat-backdrop.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .chat-window {
-  height: 100vh;
+  height: 100%;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 12px;
@@ -2843,6 +2920,10 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 0.85rem;
   padding: 2px 10px;
   cursor: pointer;
+}
+
+.chat-history-row .chat-clear-btn {
+  margin-left: auto;
 }
 
 .chat-history-btn:disabled {

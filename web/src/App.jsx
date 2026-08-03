@@ -11,8 +11,9 @@ import { DialogIndex } from './routes/DialogIndex.jsx';
 import { DialogBeat } from './routes/DialogBeat.jsx';
 import { About } from './routes/About.jsx';
 import { Playground } from './routes/Playground.jsx';
-import { ChatWindow } from './routes/ChatWindow.jsx';
 import { Header } from './widgets/Header.jsx';
+import { ChatSidePanel } from './widgets/ChatSidePanel.jsx';
+import { loadChatOpen, saveChatOpen } from './widgets/chatPanelState.js';
 import { ProjectProvider } from './project/ProjectContext.jsx';
 import { RedirectToProject } from './project/RedirectToProject.jsx';
 import { loadSession, saveSession, validateSession, clearSession } from './auth/session.js';
@@ -23,30 +24,59 @@ import { Admin } from './routes/Admin.jsx';
 // the descendant <Routes> match against the splat remainder, so the
 // existing route paths are unchanged. The Header moves inside the provider
 // because it shows the project title (Task 17).
+// Old bookmarks point at the popup-era /p/:title/chat route. Flip the
+// persisted flag and bounce to the project root — the redirect remounts
+// ProjectShell, whose useState(loadChatOpen) initializer opens the panel.
+function LegacyChatRedirect() {
+  useEffect(() => {
+    saveChatOpen(true);
+  }, []);
+  return <Navigate to="/" replace />;
+}
+
 function ProjectShell({ session, onLogout }) {
+  const [chatOpen, setChatOpen] = useState(() => loadChatOpen());
+  // Mount the chat on first open, then keep it mounted (hidden via CSS) so an
+  // in-flight SSE run survives toggling and history isn't refetched.
+  const [chatMounted, setChatMounted] = useState(chatOpen);
+  useEffect(() => {
+    saveChatOpen(chatOpen);
+    if (chatOpen) setChatMounted(true);
+  }, [chatOpen]);
   return (
     <ProjectProvider>
-      <Header session={session} onLogout={onLogout} />
-      <Routes>
-        <Route path="/" element={<Toc session={session} />} />
-        <Route path="/beat/:order" element={<Beat session={session} section="writing" />} />
-        <Route path="/artwork/:order" element={<Beat session={session} section="artwork" />} />
-        <Route path="/character/:name" element={<Character session={session} />} />
-        <Route path="/library" element={<Library session={session} />} />
-        <Route path="/storyboard" element={<StoryboardIndex session={session} />} />
-        <Route path="/storyboard/:order" element={<StoryboardBeat session={session} />} />
-        <Route path="/dialog" element={<DialogIndex session={session} />} />
-        <Route path="/dialog/:order" element={<DialogBeat session={session} />} />
-        <Route path="/about" element={<About session={session} />} />
-        <Route
-          path="/admin"
-          element={session?.is_admin ? <Admin session={session} /> : <Navigate to="/" replace />}
-        />
-        <Route path="/playground" element={<Playground />} />
-        {/* Unknown subpath: bounce via the app-root catch-all
-            (RedirectToProject re-enters this project from the per-tab store). */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <Header
+        session={session}
+        onLogout={onLogout}
+        chatOpen={chatOpen}
+        onToggleChat={() => setChatOpen((o) => !o)}
+      />
+      <div className={'chat-shell' + (chatOpen ? ' chat-open' : '')}>
+        <Routes>
+          <Route path="/" element={<Toc session={session} />} />
+          <Route path="/beat/:order" element={<Beat session={session} section="writing" />} />
+          <Route path="/artwork/:order" element={<Beat session={session} section="artwork" />} />
+          <Route path="/character/:name" element={<Character session={session} />} />
+          <Route path="/library" element={<Library session={session} />} />
+          <Route path="/storyboard" element={<StoryboardIndex session={session} />} />
+          <Route path="/storyboard/:order" element={<StoryboardBeat session={session} />} />
+          <Route path="/dialog" element={<DialogIndex session={session} />} />
+          <Route path="/dialog/:order" element={<DialogBeat session={session} />} />
+          <Route path="/about" element={<About session={session} />} />
+          <Route
+            path="/admin"
+            element={session?.is_admin ? <Admin session={session} /> : <Navigate to="/" replace />}
+          />
+          <Route path="/playground" element={<Playground />} />
+          <Route path="/chat" element={<LegacyChatRedirect />} />
+          {/* Unknown subpath: bounce via the app-root catch-all
+              (RedirectToProject re-enters this project from the per-tab store). */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </div>
+      {chatMounted && (
+        <ChatSidePanel open={chatOpen} onClose={() => setChatOpen(false)} />
+      )}
     </ProjectProvider>
   );
 }
@@ -102,14 +132,6 @@ export function App() {
 
   return (
     <Routes>
-      <Route
-        path="/p/:projectTitle/chat"
-        element={
-          <ProjectProvider>
-            <ChatWindow />
-          </ProjectProvider>
-        }
-      />
       <Route
         path="/p/:projectTitle/*"
         element={

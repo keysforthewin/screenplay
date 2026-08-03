@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createFakeDb } from './_fakeMongo.js';
 
+// Pin two-tier mode so the delegate_writing review-block test is deterministic.
+process.env.ANTHROPIC_MODEL = 'claude-fable-5';
+process.env.ANTHROPIC_AGENT_MODEL = 'claude-sonnet-5';
+
 const fakeDb = createFakeDb();
 
 const messagesCreate = vi.fn();
@@ -49,6 +53,13 @@ const dispatchToolMock = vi.fn();
 vi.mock('../src/agent/handlers.js', () => ({
   dispatchTool: (...args) => dispatchToolMock(...args),
   HANDLERS: {},
+}));
+
+// Mock the writer subagent so we can assert review mode blocks delegation
+// before the writer ever runs.
+const runWriterAgentMock = vi.fn();
+vi.mock('../src/agent/writerAgent.js', () => ({
+  runWriterAgent: (...args) => runWriterAgentMock(...args),
 }));
 
 const { runAgent } = await import('../src/agent/loop.js');
@@ -126,6 +137,44 @@ describe('runAgent review-mode', () => {
 
     // Final reply text contains the plan disclosure.
     expect(result.text).toMatch(/No changes will be made until you confirm/);
+  });
+
+  it('blocks delegate_writing before the writer subagent runs', async () => {
+    messagesCreate.mockResolvedValueOnce({
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 100, output_tokens: 10 },
+      content: [
+        {
+          type: 'tool_use',
+          id: 'd1',
+          name: 'delegate_writing',
+          input: { task: 'rewrite beat 3' },
+        },
+      ],
+    });
+    messagesCreate.mockResolvedValueOnce({
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 100, output_tokens: 10 },
+      content: [{ type: 'text', text: 'plan: No changes will be made until you confirm.' }],
+    });
+
+    await runAgent({
+      history: [],
+      userText: 'rewrite beat 3 but let me review first',
+      attachments: [],
+      discordUser: { id: 'u', displayName: 'U' },
+      channelId: 'c1',
+    });
+
+    // The writer must never spawn and no handler must run.
+    expect(runWriterAgentMock).not.toHaveBeenCalled();
+    expect(dispatchToolMock).not.toHaveBeenCalled();
+
+    const iter2Msgs = messagesCreate.mock.calls[1][0].messages;
+    const tr = findToolResult(iter2Msgs, 'd1');
+    expect(tr).toBeTruthy();
+    expect(tr.content).toMatch(/Review mode is active/);
+    expect(tr.content).toContain('`delegate_writing`');
   });
 
   it('blocks revise_character (now caught by the revise_ prefix)', async () => {

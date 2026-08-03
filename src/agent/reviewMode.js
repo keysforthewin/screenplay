@@ -8,6 +8,39 @@
 // Trigger and override regexes are exported for tests and future tuning. The
 // override set is checked AFTER triggers — overrides win on tie.
 
+// Tool-name prefixes (or whole names) that mutate state visible in the volatile
+// system block (characters list, beats list, current beat, director notes).
+// Used both to intercept mutations during a review-mode turn and to invalidate
+// the cached system prompt after a mutation runs. Lives here (not loop.js) so
+// the writer subagent can share it without a loop↔writer import cycle.
+export const MUTATING_PREFIXES = [
+  'create_',
+  'update_',
+  'delete_',
+  'add_',
+  'remove_',
+  'edit_',
+  'set_',
+  'clear_',
+  'link_',
+  'unlink_',
+  'attach_',
+  'append_',
+  'reorder_',
+  'bulk_',
+  'revise_',
+  'generate_image',
+  // Delegation hands the pen to the writer subagent — it mutates state, so
+  // review mode must intercept it before the writer ever runs. (Plain `edit`
+  // is deliberately NOT in this list — matching historical loop behavior.)
+  'delegate_writing',
+];
+
+export function isMutatingTool(name) {
+  if (!name) return false;
+  return MUTATING_PREFIXES.some((p) => name === p || name.startsWith(p));
+}
+
 export const TRIGGER_REGEXES = [
   /\blet me review\b/i,
   /\bfor (my|our) review\b/i,

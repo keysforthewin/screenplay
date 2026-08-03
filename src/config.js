@@ -19,6 +19,14 @@ export const config = {
     // max_tokens, so callers leave generous headroom even on short replies.
     model: process.env.ANTHROPIC_MODEL || 'claude-fable-5',
     maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS) || 16000,
+    // Orchestrator (agent loop) model. When this differs from `model`, the loop
+    // runs two-tier: creative text tools move to a writer subagent on `model`
+    // (Fable) and the loop itself runs on this cheaper model, delegating via
+    // the delegate_writing tool. Set equal to `model` to restore single-model
+    // behavior (creative tools inline, no delegation).
+    agentModel: process.env.ANTHROPIC_AGENT_MODEL || 'claude-sonnet-5',
+    // Output cap for the writer subagent (Fable thinking counts against it).
+    writerMaxTokens: Number(process.env.ANTHROPIC_WRITER_MAX_TOKENS) || 16000,
     // Short auxiliary passes: prompt enhancement, vision captioning,
     // reference selection, PDF filename inference.
     enhancerModel: process.env.ANTHROPIC_ENHANCER_MODEL || 'claude-fable-5',

@@ -54,6 +54,7 @@ export const TOOLS = [
   },
   {
     name: 'edit',
+    writerOnly: true,
     keywords: [
       'edit', 'update', 'change', 'modify', 'fix', 'tweak', 'patch', 'replace',
       'find', 'reword', 'rewrite', 'revise', 'append', 'extend', 'add',
@@ -119,6 +120,7 @@ export const TOOLS = [
   },
   {
     name: 'add_film_dialogue_sample',
+    writerOnly: true,
     keywords: [
       'dialogue', 'dialog', 'sample', 'example', 'movie', 'film', 'script',
       'style', 'voice', 'tone', 'reference', 'influence', 'inspiration',
@@ -190,6 +192,7 @@ export const TOOLS = [
   },
   {
     name: 'create_character',
+    writerOnly: true,
     keywords: ['create', 'new', 'add', 'make', 'introduce', 'character', 'person', 'role', 'cast', 'protagonist', 'antagonist', 'stub'],
     description: 'Create a new character. Only `name` is required — call this as soon as the user names someone, even if other fields aren\'t known yet. Use `edit` later to fill in details as the conversation provides them.',
     input_schema: {
@@ -225,6 +228,7 @@ export const TOOLS = [
   },
   {
     name: 'bulk_update_character_field',
+    writerOnly: true,
     keywords: ['bulk', 'batch', 'mass', 'fill', 'populate', 'every', 'all', 'characters', 'field'],
     description:
       'Update ONE field across many characters in a SINGLE tool call. Use this — never fan out individual `edit` calls — when the user asks to populate, set, or fill a field for "all", "every", or many characters (e.g. "give every character a role"). Decide each value in your reasoning, then submit them all here as one call. The handler writes them in batches and logs progress. `field_name` may be a core field (`name`, `hollywood_actor`) or any custom template field — custom fields are stored under `fields.<name>` automatically; do NOT prefix `fields.` yourself. Returns a summary listing successes and failures.',
@@ -322,6 +326,7 @@ export const TOOLS = [
   },
   {
     name: 'update_character_template',
+    writerOnly: true,
     keywords: ['template', 'schema', 'fields', 'character', 'modify', 'add', 'remove', 'change'],
     description: 'Modify the character schema. Use when the user wants to add or remove fields from the universal template (e.g., "all characters should have favorite color"). Cannot remove core fields.',
     input_schema: {
@@ -353,6 +358,7 @@ export const TOOLS = [
   },
   {
     name: 'add_director_note',
+    writerOnly: true,
     keywords: ['add', 'create', 'new', 'director', 'note', 'rule', 'directive', 'standing', 'screenplay-wide'],
     description: "Append a new screenplay-wide rule to the director's notes. Use this when the user states a directive that applies to the screenplay overall but does NOT belong on a specific character or beat — e.g. \"from now on all unnamed extras are Feral Ewoks\", \"keep the tone deadpan\", \"no anachronisms unless I flag them\". Do NOT use this for character-specific facts or beat-specific content (use `edit` on that character or beat). Returns a status string with the new note's _id.",
     input_schema: {
@@ -558,6 +564,7 @@ export const TOOLS = [
   },
   {
     name: 'load_writing_context',
+    writerOnly: true,
     keywords: ['write', 'writing', 'compose', 'dialogue', 'dialog', 'prose', 'story', 'scene', 'context', 'character', 'bio', 'voice', 'body', 'before'],
     description: 'MANDATORY before composing or editing a beat body. Loads scoped steering context for writing into a beat: the named characters\' FULL sheets (bios, custom fields, casting), plus the beat (name, desc, dialogue notes, current body), the logline, and the project dialogue style. Pass `characters` = the small subset of characters the passage you are about to write actually features (typically 1–5) — NOT every character linked to the beat. `beat` defaults to the current beat. Call this FIRST, then edit the body: the `edit` tool blocks beat-body writes until this has run for that beat in the current turn.',
     input_schema: {
@@ -585,6 +592,7 @@ export const TOOLS = [
   },
   {
     name: 'create_beat',
+    writerOnly: true,
     keywords: ['create', 'new', 'add', 'make', 'beat', 'scene', 'moment', 'introduce'],
     description: 'Create a new beat. A beat has THREE text fields: `name` (short identifier, ~3-6 words), `desc` (1-2 sentence summary set on creation — the elevator pitch for the beat), and `body` (long-form developing content that grows over time as the user adds lore). Always pass `desc`. You SHOULD pass `name` too — generate a concise title-cased phrase from the user\'s description (e.g., "Diner Argument", "Alice Confronts Bob"). If `name` is omitted the system derives one from `desc`. **If the user\'s message also describes what actually happens in the beat, creating it is only half the job — finish the writing in this same turn:** call `load_writing_context({ beat, characters })` for the new beat, then `edit({collection: \'beat\', identifier, field: \'body\', edits: [{find: \'\', replace: \'<the scene>\'}]})`. Do not create an empty beat and wait to be asked again. Leave `body` unset and write it through `edit` — that path loads the characters\' voices first, which writing at creation time would skip. Only leave the body empty when the user gave you nothing but a title or a one-line premise. The first beat created automatically becomes the current beat.',
     input_schema: {
@@ -1771,12 +1779,49 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    // Two-tier mode only: intercepted by the agent loop (metaTool, no HANDLERS
+    // entry — same pattern as tool_search). Spawns the Fable writer subagent.
+    name: 'delegate_writing',
+    metaTool: true,
+    keywords: [
+      'write', 'writing', 'compose', 'draft', 'rewrite', 'revise', 'fix', 'typo',
+      'scene', 'body', 'prose', 'dialogue', 'create', 'beat', 'character',
+      'director', 'note', 'sample', 'template', 'edit', 'update', 'change',
+      'text', 'append', 'add', 'fill', 'populate', 'bulk',
+    ],
+    description:
+      'Delegate ALL text writing and text mutation to the writing specialist: composing/editing beat bodies, names and descs, creating beats and characters, bulk character-field fills, director notes, film dialogue samples, character-template changes, plot title/synopsis/dialogue-style edits — and mechanical fixes like typos. The writer CANNOT see this conversation: `task` must be fully self-contained (include the user\'s instructions verbatim, target entity names/ids, constraints, and any content the user supplied). The writer reads the project itself, decides what to change, and applies the edits; its report of what changed comes back as this tool\'s result — source your bullet-list reply from it. Make ONE call covering everything the user asked for this turn, not one call per entity.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task: {
+          type: 'string',
+          description: 'Complete, self-contained brief for the writer: the user\'s instructions verbatim plus targets and constraints.',
+        },
+        beat: {
+          type: 'string',
+          description: 'Optional beat identifier hint (_id, order number, or name) when the task centers on one beat.',
+        },
+        characters: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional names of characters the passage features.',
+        },
+      },
+      required: ['task'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 // Tools always present in the model's tools list, regardless of any
 // tool_search calls. Keep this small — these are loaded on every iteration
 // and contribute to per-call input tokens. Everything else is loaded lazily
 // via the `tool_search` meta-tool.
+//
+// Two-tier core: text mutation happens through the writer subagent, so the
+// orchestrator gets `delegate_writing` instead of `edit`/`load_writing_context`.
 export const CORE_TOOL_NAMES = new Set([
   'tool_search',
   'get_overview',
@@ -1786,19 +1831,81 @@ export const CORE_TOOL_NAMES = new Set([
   'get_current_beat',
   'search_message_history',
   'screenplay_search',
+  'delegate_writing',
+]);
+
+// Single-model fallback core (agentModel === model): the pre-two-tier set —
+// the loop model edits text directly, no delegation tool.
+export const LEGACY_CORE_TOOL_NAMES = new Set([
+  ...[...CORE_TOOL_NAMES].filter((n) => n !== 'delegate_writing'),
   'edit',
   'load_writing_context',
 ]);
 
-// API-shaped tool def per name (internal-only `keywords`/`metaTool` stripped),
-// plus the canonical TOOLS index, both computed once at module load.
+// Search space for the orchestrator's tool_search in two-tier mode: everything
+// except the writer-only creative tools (those live behind delegate_writing).
+export const ORCHESTRATOR_SEARCHABLE_TOOLS = TOOLS.filter((t) => !t.writerOnly);
+
+// The writer subagent's static tool surface: the writer-only creative tools
+// plus the read/navigation tools it needs to ground its writing. No
+// tool_search — a fixed list keeps the writer's tools prefix byte-stable for
+// its own (model-scoped) prompt cache.
+export const WRITER_TOOL_NAMES = [
+  // creative / text mutation
+  'edit',
+  'load_writing_context',
+  'create_beat',
+  'create_character',
+  'bulk_update_character_field',
+  'add_director_note',
+  'add_film_dialogue_sample',
+  'update_character_template',
+  // reads & navigation
+  'get_overview',
+  'list_characters',
+  'get_character',
+  'read_character_field',
+  'search_characters',
+  'get_character_template',
+  'get_plot',
+  'list_beats',
+  'get_beat',
+  'search_beats',
+  'read_beat_body',
+  'search_in_beat_body',
+  'outline_beat_body',
+  'get_current_beat',
+  'list_director_notes',
+  'read_director_note',
+  'screenplay_search',
+];
+
+// API-shaped tool def per name (internal-only `keywords`/`metaTool`/
+// `writerOnly` stripped), plus the canonical TOOLS index, both computed once
+// at module load.
 const TOOL_DEF_BY_NAME = new Map(
   TOOLS.map((t) => {
-    const { keywords, metaTool, ...api } = t;
+    const { keywords, metaTool, writerOnly, ...api } = t;
     return [t.name, api];
   }),
 );
 const TOOL_INDEX_BY_NAME = new Map(TOOLS.map((t, i) => [t.name, i]));
+
+// API-shaped defs for the writer subagent, in canonical TOOLS order (stable
+// byte prefix). Computed lazily once.
+let writerToolDefsCache = null;
+export function writerToolDefs() {
+  if (!writerToolDefsCache) {
+    writerToolDefsCache = [...WRITER_TOOL_NAMES]
+      .sort((a, b) => TOOL_INDEX_BY_NAME.get(a) - TOOL_INDEX_BY_NAME.get(b))
+      .map((name) => {
+        const def = TOOL_DEF_BY_NAME.get(name);
+        if (!def) throw new Error(`WRITER_TOOL_NAMES references unknown tool: ${name}`);
+        return def;
+      });
+  }
+  return writerToolDefsCache;
+}
 
 // Returns API-shaped tool definitions for the given names in **append-only**
 // order: all loaded CORE tools first (in a fixed canonical order), then any

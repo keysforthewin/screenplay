@@ -1,9 +1,16 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
 import { logger } from '../log.js';
-import { TOOLS, CORE_TOOL_NAMES, toolDefsForApi } from './tools.js';
+import {
+  TOOLS,
+  CORE_TOOL_NAMES,
+  LEGACY_CORE_TOOL_NAMES,
+  ORCHESTRATOR_SEARCHABLE_TOOLS,
+  toolDefsForApi,
+} from './tools.js';
 import { searchTools } from './toolSearch.js';
 import { dispatchTool } from './handlers.js';
+import { runWriterAgent } from './writerAgent.js';
 import {
   recordEntityTouch,
   resolveEntityLinks,
@@ -12,7 +19,11 @@ import {
   clearTouchedEntities,
 } from './entityLinks.js';
 import { buildSystemPrompt } from './systemPrompt.js';
-import { detectReviewIntent, reviewInterceptText } from './reviewMode.js';
+import {
+  detectReviewIntent,
+  reviewInterceptText,
+  isMutatingTool,
+} from './reviewMode.js';
 import { getBotDisplayName } from '../web/gateway.js';
 import { withMessageCacheBreakpoint } from './historyCache.js';
 import { listCharacters } from '../mongo/characters.js';
@@ -31,33 +42,8 @@ const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
 const MAX_TOOL_ITERATIONS = 32;
 
-// Tool-name prefixes (or whole names) that mutate state visible in the volatile
-// system block (characters list, beats list, current beat, director notes).
-// When any tool with one of these prefixes runs in an iteration, the cached
-// system prompt is invalidated so the next iteration rebuilds it from Mongo.
-const MUTATING_PREFIXES = [
-  'create_',
-  'update_',
-  'delete_',
-  'add_',
-  'remove_',
-  'edit_',
-  'set_',
-  'clear_',
-  'link_',
-  'unlink_',
-  'attach_',
-  'append_',
-  'reorder_',
-  'bulk_',
-  'revise_',
-  'generate_image',
-];
-
-function isMutatingTool(name) {
-  if (!name) return false;
-  return MUTATING_PREFIXES.some((p) => name === p || name.startsWith(p));
-}
+// isMutatingTool / MUTATING_PREFIXES moved to reviewMode.js so the writer
+// subagent can share them without a loop↔writer import cycle.
 
 // Wrap an array of API-shaped tool definitions with a cache_control breakpoint
 // on the last entry, when caching is enabled. The input array is not mutated.
@@ -139,6 +125,7 @@ async function buildSystem({
   reviewMode = false,
   projectId = null,
   projectTitle = null,
+  twoTier = false,
 } = {}) {
   const [characters, characterTemplate, plotTemplate, plot, directorNotes] =
     await Promise.all([
@@ -160,6 +147,7 @@ async function buildSystem({
     senderName,
     reviewMode,
     projectTitle,
+    twoTier,
   });
 }
 
@@ -452,8 +440,16 @@ export async function runAgent({
   const context = {
     discordUser, channelId, projectId, projectTitle, webRun,
     writingContextBeats: new Set(),
+    // Shared with the writer subagent so its tool calls surface entity links
+    // in this turn's final reply.
+    touchedEntities,
   };
-  const model = config.anthropic.model;
+  // Two-tier: the loop runs on the (cheaper) orchestrator model and creative
+  // text tools live behind the delegate_writing → writer subagent, which runs
+  // on `config.anthropic.model`. When both models are the same, delegation is
+  // pointless overhead — revert to the legacy single-model surface.
+  const model = config.anthropic.agentModel;
+  const twoTier = config.anthropic.agentModel !== config.anthropic.model;
 
   const anthropicTotals = {
     input_tokens: 0,
@@ -469,7 +465,7 @@ export async function runAgent({
   // read-only inspection tools + tool_search). The model expands it mid-turn
   // by calling tool_search, which is intercepted in the iteration loop and
   // mutates this set directly.
-  const loadedToolNames = new Set(CORE_TOOL_NAMES);
+  const loadedToolNames = new Set(twoTier ? CORE_TOOL_NAMES : LEGACY_CORE_TOOL_NAMES);
 
   const imageTokenInfo = await computeImageInputTokensForAttachments(attachments);
 
@@ -517,6 +513,7 @@ export async function runAgent({
       reviewMode,
       projectId: context.projectId,
       projectTitle: context.projectTitle,
+      twoTier,
     });
     let systemDirty = false;
 
@@ -527,6 +524,7 @@ export async function runAgent({
           reviewMode,
           projectId: context.projectId,
           projectTitle: context.projectTitle,
+          twoTier,
         });
         systemDirty = false;
       }
@@ -542,6 +540,7 @@ export async function runAgent({
           reviewMode,
           projectId: context.projectId,
           projectTitle: context.projectTitle,
+          twoTier,
         });
         sectionTokensPromise = measureSectionTokens({
           model,
@@ -634,6 +633,7 @@ export async function runAgent({
       const metaResults = [];
       const blockedResults = [];
       const realToolUses = [];
+      let writerRan = false;
       for (const tu of toolUses) {
         if (tu.name === 'tool_search') {
           const query = tu.input?.query ?? '';
@@ -641,7 +641,13 @@ export async function runAgent({
           const alreadyLoaded = new Set(loadedToolNames);
           const matches = searchTools(query, {
             limit: typeof limit === 'number' ? limit : 8,
-            exclude: new Set(['tool_search']),
+            // Two-tier: writer-only creative tools are not searchable — they
+            // live behind delegate_writing. Legacy: everything is searchable
+            // except the delegation tool itself.
+            tools: twoTier ? ORCHESTRATOR_SEARCHABLE_TOOLS : TOOLS,
+            exclude: new Set(
+              twoTier ? ['tool_search'] : ['tool_search', 'delegate_writing'],
+            ),
           });
           for (const n of matches) loadedToolNames.add(n);
           const content = buildToolSearchResultText(query, matches, alreadyLoaded);
@@ -662,6 +668,34 @@ export async function runAgent({
             slot.count += 1;
             slot.result_tokens += Math.ceil(content.length / 4);
             toolStats.set(tu.name, slot);
+          }
+        } else if (twoTier && tu.name === 'delegate_writing') {
+          // Two-tier only: spawn the Fable writer subagent. Intercepted here
+          // (like tool_search) rather than dispatched through HANDLERS so it
+          // can share this turn's context and emit progress events. The
+          // review-mode branch above already blocked it when review is active.
+          logger.info(`delegate_writing → writer subagent (${config.anthropic.model})`);
+          const { ok, text } = await runWriterAgent({
+            task: tu.input?.task,
+            beat: tu.input?.beat ?? null,
+            characters: tu.input?.characters ?? null,
+            context,
+            onEvent,
+          });
+          // Even a failed delegation may have partially mutated state (e.g.
+          // iteration cap after some edits) — always refresh the state header.
+          writerRan = true;
+          metaResults.push({
+            type: 'tool_result',
+            tool_use_id: tu.id,
+            content: text,
+            ...(ok ? {} : { is_error: true }),
+          });
+          if (toolStats instanceof Map) {
+            const slot = toolStats.get('delegate_writing') || { count: 0, result_tokens: 0 };
+            slot.count += 1;
+            slot.result_tokens += Math.ceil(text.length / 4);
+            toolStats.set('delegate_writing', slot);
           }
         } else {
           realToolUses.push(tu);
@@ -738,7 +772,9 @@ export async function runAgent({
 
       // Only flip systemDirty for mutations that actually ran. Blocked mutations
       // changed nothing in Mongo, so the cached system prompt is still accurate.
-      if (realToolUses.some((tu) => isMutatingTool(tu.name))) {
+      // Writer delegations bypass realToolUses (intercepted above) but mutate
+      // state, so they force a rebuild explicitly.
+      if (writerRan || realToolUses.some((tu) => isMutatingTool(tu.name))) {
         systemDirty = true;
       }
     }

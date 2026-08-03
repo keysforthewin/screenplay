@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
-import { ConfirmDialog } from './Modal.jsx';
 import { apiGet, apiPatchJson, apiPostJson, apiSseUrl } from '../api.js';
 import {
   emptyHistory,
@@ -10,8 +10,7 @@ import {
   canUndo,
   canRedo,
 } from './beatEditHistory.js';
-import { useProject } from '../project/ProjectContext.jsx';
-import { useReceivedPageContext } from '../project/usePageContextSync.js';
+import { pageContextFromPath } from '../project/pageContext.js';
 
 function safeParse(raw) {
   try {
@@ -72,14 +71,15 @@ function ChatMessage({ m }) {
   );
 }
 
-// Self-contained AI chat panel rendered in its own popup window. Each send
-// POSTs /api/chat (running the shared agent loop against the browser's current
-// project) and follows the run via SSE. The transcript is reloaded from the
-// server on mount, so it survives the window being closed and reopened. The
-// page context ("which scene am I on") is live-synced from the editor window.
-export function ChatPanel() {
-  const project = useProject();
-  const pageCtx = useReceivedPageContext(project.id);
+// AI chat panel rendered inline beside the editor (inside ChatSidePanel).
+// Each send POSTs /api/chat (running the shared agent loop against the
+// browser's current project) and follows the run via SSE. The transcript is
+// reloaded from the server on mount, so it survives the panel being closed
+// and reopened. The page context ("which scene am I on") comes straight from
+// the router location, so it tracks navigation live.
+export function ChatPanel({ onClose }) {
+  const location = useLocation();
+  const pageCtx = pageContextFromPath(location.pathname);
   const [messages, setMessages] = useState([]);
   const [beatHistories, setBeatHistories] = useState({});
   const [input, setInput] = useState('');
@@ -89,7 +89,6 @@ export function ChatPanel() {
   const [restoreStatus, setRestoreStatus] = useState(null);
   const [estimatedTokens, setEstimatedTokens] = useState(0);
   const [lastInputTokens, setLastInputTokens] = useState(null);
-  const [confirmClear, setConfirmClear] = useState(false);
   const esRef = useRef(null);
   const listRef = useRef(null);
 
@@ -124,7 +123,8 @@ export function ChatPanel() {
     setRestoreStatus(null);
   }, [pageCtx.kind, pageCtx.ref]);
 
-  // Load persisted history once on mount (the window opening is the "open").
+  // Load persisted history once on mount (the panel stays mounted after its
+  // first open, so this runs once per page load, not per toggle).
   useEffect(() => {
     (async () => {
       try {
@@ -256,7 +256,6 @@ export function ChatPanel() {
   }
 
   async function doClear() {
-    setConfirmClear(false);
     setError(null);
     try {
       await apiPostJson('/chat/clear', {});
@@ -289,19 +288,10 @@ export function ChatPanel() {
           <span className="chat-toolbar-spacer" />
           <button
             type="button"
-            className="chat-history-btn"
-            onClick={() => setConfirmClear(true)}
-            disabled={busy || restoring || messages.length === 0}
-            title="Clear this conversation and start fresh"
-          >
-            🧹 Clear
-          </button>
-          <button
-            type="button"
             className="chat-close-btn"
-            onClick={() => window.close()}
-            title="Close window"
-            aria-label="Close chat window"
+            onClick={onClose}
+            title="Close chat panel"
+            aria-label="Close chat panel"
           >
             ✕
           </button>
@@ -320,8 +310,8 @@ export function ChatPanel() {
         {error && <div className="error-banner">{error}</div>}
         <div
           className="chat-context-chip"
-          title="The agent is told which page you're viewing in the editor window"
-          aria-label={`Page context: ${pageCtx.label} — the agent is told which page you're viewing in the editor`}
+          title="The agent is told which page you're currently viewing"
+          aria-label={`Page context: ${pageCtx.label} — the agent is told which page you're currently viewing`}
         >
           Context: {pageCtx.label}
         </div>
@@ -331,7 +321,7 @@ export function ChatPanel() {
             className="chat-history-btn"
             onClick={onUndo}
             disabled={busy || restoring || !beatRef || !canUndo(history)}
-            title={beatRef ? 'Undo the last AI edit to this beat' : 'Open a beat page in the editor to undo AI edits'}
+            title={beatRef ? 'Undo the last AI edit to this beat' : 'Open a beat page to undo AI edits'}
           >
             ↶ Undo
           </button>
@@ -340,11 +330,20 @@ export function ChatPanel() {
             className="chat-history-btn"
             onClick={onRedo}
             disabled={busy || restoring || !beatRef || !canRedo(history)}
-            title={beatRef ? 'Redo the last undone AI edit' : 'Open a beat page in the editor to redo AI edits'}
+            title={beatRef ? 'Redo the last undone AI edit' : 'Open a beat page to redo AI edits'}
           >
             ↷ Redo
           </button>
           {restoreStatus && <span className="chat-history-status">{restoreStatus}</span>}
+          <button
+            type="button"
+            className="chat-history-btn chat-clear-btn"
+            onClick={doClear}
+            disabled={busy || restoring || messages.length === 0}
+            title="Clear this conversation and start fresh"
+          >
+            🧹 Clear
+          </button>
         </div>
         <div className="chat-input-row">
           <textarea
@@ -359,16 +358,6 @@ export function ChatPanel() {
             {busy ? 'Working…' : 'Send'}
           </button>
         </div>
-        <ConfirmDialog
-          open={confirmClear}
-          title="Clear conversation?"
-          message="This hides the current conversation and starts fresh. It can't be undone here."
-          confirmLabel="Clear"
-          cancelLabel="Cancel"
-          danger
-          onConfirm={doClear}
-          onCancel={() => setConfirmClear(false)}
-        />
       </div>
     </div>
   );
