@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiGet, apiPostJson, apiPostMultipart, apiDelete, apiSseUrl, imageUrl, thumbUrl, attachmentUrl } from '../api.js';
 import { defaultFilters, modelMatchesFilters, modelMatchesSearch, modelReadiness } from '../playgroundFilter.js';
 import { estimatePlaygroundCost, rowPriceLabel } from '../playgroundCost.js';
+import { ElevenLabsPanel } from '../widgets/ElevenLabsPanel.jsx';
 
 // Scratchpad for trying any fal.ai model: drop reference media, type a
 // prompt, pick a model (the list live-filters to models that can accept
@@ -281,7 +282,7 @@ export function Playground() {
       {error && <div className="error-banner">{error}</div>}
 
       <div className="tab-nav" role="tablist">
-        {[['create', 'Create'], ['history', 'History']].map(([id, label]) => (
+        {[['create', 'Create'], ['elevenlabs', 'ElevenLabs'], ['history', 'History']].map(([id, label]) => (
           <button
             key={id}
             type="button"
@@ -334,6 +335,8 @@ export function Playground() {
           ))}
         </div>
       )}
+
+      {tab === 'elevenlabs' && <ElevenLabsPanel />}
 
       {tab === 'create' && (<>
       <div
