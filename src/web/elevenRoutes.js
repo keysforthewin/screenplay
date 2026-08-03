@@ -100,9 +100,9 @@ async function loadAudioRef(projectId, ref) {
 }
 
 // Shared-library voices can't be used for TTS/STS until they're in the
-// account's My Voices. Proactively add un-added library voices; an
-// "already added" style failure counts as success (e.g. added from another
-// project or the ElevenLabs site).
+// account's My Voices. Proactively add un-added library voices; only tolerate
+// "already in the account" failures (e.g. added from another project or the
+// ElevenLabs site directly). All other failures propagate.
 async function ensureVoiceUsable(projectId, voiceDoc) {
   if (voiceDoc.added_to_account || voiceDoc.source !== 'library' || !voiceDoc.public_owner_id) return;
   try {
@@ -112,7 +112,7 @@ async function ensureVoiceUsable(projectId, voiceDoc) {
       newName: voiceDoc.name,
     });
   } catch (e) {
-    if (!/already|exist|added|duplicate/i.test(e?.message || '')) throw e;
+    if (!/already/i.test(e?.message || '')) throw e;
   }
   await markVoiceAddedToAccount(projectId, voiceDoc.voice_id);
 }

@@ -215,6 +215,19 @@ describe('POST /tts', () => {
     expect((await getCollectionVoice(PID, 'v1')).added_to_account).toBe(true);
   });
 
+  it('rejects non-"already" addSharedVoice errors without marking voice added', async () => {
+    await addVoiceToCollection(PID, { voice_id: 'v1', public_owner_id: 'o1', name: 'Lib', source: 'library' });
+    elevenMock.addSharedVoice.mockRejectedValueOnce(new Error('Voice does not exist'));
+    const r = await fetch(`${baseUrl}/api/eleven/tts`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ voice_id: 'v1', text: 'hello' }),
+    });
+    expect(r.status).toBe(502);
+    expect((await r.json()).error).toBe('Voice does not exist');
+    expect(elevenMock.textToSpeech).not.toHaveBeenCalled();
+    expect((await getCollectionVoice(PID, 'v1')).added_to_account).not.toBe(true);
+  });
+
   it('voice not in the project collection is a 404; missing text a 400', async () => {
     expect((await fetch(`${baseUrl}/api/eleven/tts`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
