@@ -65,29 +65,31 @@ export function ElevenVoiceSection({ voices, activeVoiceId, onSelect, onRefresh 
             </p>
           )}
           {voices.map((v) => (
-            <label
+            <div
               key={v.voice_id}
               className={`eleven-collection-voice${v.voice_id === activeVoiceId ? ' is-selected' : ''}`}
               title={v.description || undefined}
             >
-              <input
-                type="radio"
-                name="eleven-active-voice"
-                checked={v.voice_id === activeVoiceId}
-                onChange={() => onSelect(v.voice_id)}
-              />
+              <label>
+                <input
+                  type="radio"
+                  name="eleven-active-voice"
+                  checked={v.voice_id === activeVoiceId}
+                  onChange={() => onSelect(v.voice_id)}
+                />
+                <span className="eleven-voice-name">
+                  {SOURCE_GLYPHS[v.source] || ''} {v.name}
+                </span>
+              </label>
               <button
                 type="button"
                 className="eleven-preview-btn"
                 title="Preview"
                 disabled={!v.preview_url}
-                onClick={(e) => { e.preventDefault(); preview(v.preview_url); }}
+                onClick={() => preview(v.preview_url)}
               >
                 ▶
               </button>
-              <span className="eleven-voice-name">
-                {SOURCE_GLYPHS[v.source] || ''} {v.name}
-              </span>
               <span className="eleven-voice-labels">
                 {Object.values(v.labels || {}).filter(Boolean).slice(0, 4).map((l) => (
                   <span key={l} className="eleven-voice-label">{l}</span>
@@ -96,11 +98,11 @@ export function ElevenVoiceSection({ voices, activeVoiceId, onSelect, onRefresh 
               <button
                 type="button"
                 title="Remove from this project's collection (stays in your ElevenLabs account)"
-                onClick={(e) => { e.preventDefault(); remove(v.voice_id); }}
+                onClick={() => remove(v.voice_id)}
               >
                 ×
               </button>
-            </label>
+            </div>
           ))}
         </div>
       )}

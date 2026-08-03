@@ -59,6 +59,7 @@ export function VoiceLibraryBrowser({ collectionIds, onAdded }) {
   const [addingId, setAddingId] = useState(null);
   const debounceRef = useRef(null);
   const playerRef = useRef(null);
+  const reqIdRef = useRef(0);
 
   function setFilter(key, value) {
     setFilters((prev) => ({ ...prev, [key]: value }));
@@ -68,6 +69,7 @@ export function VoiceLibraryBrowser({ collectionIds, onAdded }) {
   useEffect(() => {
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
+      const reqId = ++reqIdRef.current;
       setLoading(true);
       setError(null);
       try {
@@ -78,12 +80,16 @@ export function VoiceLibraryBrowser({ collectionIds, onAdded }) {
         }
         params.set('page', String(page));
         const r = await apiGet(`/eleven/library?${params}`);
+        if (reqId !== reqIdRef.current) return;
         setItems(r.voices || []);
         setHasMore(Boolean(r.has_more));
       } catch (e) {
+        if (reqId !== reqIdRef.current) return;
         setError(e.message);
       } finally {
-        setLoading(false);
+        if (reqId === reqIdRef.current) {
+          setLoading(false);
+        }
       }
     }, 400);
     return () => clearTimeout(debounceRef.current);
