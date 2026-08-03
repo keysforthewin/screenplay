@@ -7,8 +7,8 @@
 // it can run with exactly the checked inputs —
 //   checked kind   → the model accepts it (need !== 'unused'),
 //   unchecked kind → the model does not require it.
-// Non-matching models are hidden entirely (never greyed out). Output-kind
-// checkboxes narrow further by what the model produces.
+// Non-matching models are hidden entirely (never greyed out). The output
+// select narrows further by what the model produces (null = any kind).
 
 export function defaultFilters() {
   return {
@@ -18,13 +18,38 @@ export function defaultFilters() {
     video: false,
     imageCount: 0,
     category: null,
-    outputs: { image: true, video: true, audio: true },
+    output: null,
+  };
+}
+
+// Catalog categories are '<input>-to-<output>' slugs. Parsing one yields the
+// input checkboxes and output kind that make the filters match its models —
+// so picking a category in the UI can preset both. Returns null for slugs
+// that don't fit the pattern ('vision', 'json', ...): those set only the
+// category filter itself.
+const CATEGORY_INPUTS = {
+  text: { prompt: true },
+  image: { image: true },
+  audio: { audio: true },
+  video: { video: true },
+};
+const CATEGORY_OUTPUTS = { image: 'image', video: 'video', audio: 'audio', speech: 'audio' };
+
+export function categoryImplications(category) {
+  const m = /^([a-z]+)-to-([a-z]+)$/.exec(String(category || ''));
+  if (!m) return null;
+  const inputs = CATEGORY_INPUTS[m[1]];
+  const output = CATEGORY_OUTPUTS[m[2]];
+  if (!inputs || !output) return null;
+  return {
+    inputs: { prompt: false, image: false, audio: false, video: false, ...inputs },
+    output,
   };
 }
 
 export function modelMatchesFilters(model, filters) {
   const slots = model?.inputs || {};
-  if (!filters.outputs?.[model?.output?.kind]) return false;
+  if (filters.output && model?.output?.kind !== filters.output) return false;
   if (filters.category && (model?.category || '') !== filters.category) return false;
 
   if (filters.prompt) {

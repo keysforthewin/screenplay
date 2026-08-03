@@ -3115,7 +3115,8 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.playground-filter-category {
+.playground-filter-category,
+.playground-filter-output {
   font-size: 13px;
   max-width: 220px;
 }

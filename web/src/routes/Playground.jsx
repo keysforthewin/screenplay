@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiGet, apiPostJson, apiPostMultipart, apiDelete, apiSseUrl, imageUrl, thumbUrl, attachmentUrl } from '../api.js';
-import { defaultFilters, modelMatchesFilters, modelMatchesSearch, modelReadiness } from '../playgroundFilter.js';
+import { categoryImplications, defaultFilters, modelMatchesFilters, modelMatchesSearch, modelReadiness } from '../playgroundFilter.js';
 import { estimatePlaygroundCost, rowPriceLabel } from '../playgroundCost.js';
 import { ElevenLabsPanel } from '../widgets/ElevenLabsPanel.jsx';
 
@@ -431,7 +431,15 @@ export function Playground() {
           <select
             className="playground-filter-category"
             value={filterState.category || ''}
-            onChange={(e) => setFilterState((prev) => ({ ...prev, category: e.target.value || null }))}
+            onChange={(e) => {
+              const category = e.target.value || null;
+              // A '<input>-to-<output>' category presets the input checkboxes
+              // and the output kind so its models actually match the filters.
+              const implied = categoryImplications(category);
+              setFilterState((prev) => (implied
+                ? { ...prev, category, ...implied.inputs, output: implied.output }
+                : { ...prev, category }));
+            }}
           >
             <option value="">all categories</option>
             {categories.map(([c, n]) => (
@@ -441,19 +449,16 @@ export function Playground() {
         </span>
         <span className="playground-filter-group">
           <span className="playground-filter-label">Output</span>
-          {['image', 'video', 'audio'].map((k) => (
-            <label key={k} className="playground-filter-check">
-              <input
-                type="checkbox"
-                checked={filterState.outputs[k]}
-                onChange={(e) => setFilterState((prev) => ({
-                  ...prev,
-                  outputs: { ...prev.outputs, [k]: e.target.checked },
-                }))}
-              />
-              {OUTPUT_ICONS[k]} {k}
-            </label>
-          ))}
+          <select
+            className="playground-filter-output"
+            value={filterState.output || ''}
+            onChange={(e) => setFilterState((prev) => ({ ...prev, output: e.target.value || null }))}
+          >
+            <option value="">any output</option>
+            {['image', 'video', 'audio'].map((k) => (
+              <option key={k} value={k}>{OUTPUT_ICONS[k]} {k}</option>
+            ))}
+          </select>
         </span>
       </div>
 

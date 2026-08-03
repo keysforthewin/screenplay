@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { modelMatchesFilters, modelMatchesSearch, modelReadiness, defaultFilters } from '../web/src/playgroundFilter.js';
+import { categoryImplications, modelMatchesFilters, modelMatchesSearch, modelReadiness, defaultFilters } from '../web/src/playgroundFilter.js';
 
 function model(inputs, outputKind = 'image') {
   return {
@@ -38,12 +38,12 @@ function filters(overrides = {}) {
 }
 
 describe('defaultFilters', () => {
-  it('starts with no inputs checked and every output kind on', () => {
+  it('starts with no inputs checked and any output kind', () => {
     expect(defaultFilters()).toEqual({
       prompt: false, image: false, audio: false, video: false,
       imageCount: 0,
       category: null,
-      outputs: { image: true, video: true, audio: true },
+      output: null,
     });
   });
 });
@@ -92,16 +92,56 @@ describe('modelMatchesFilters — inputs', () => {
   });
 });
 
-describe('modelMatchesFilters — output kinds', () => {
-  it('filters by output kind checkboxes', () => {
-    const onlyVideo = filters({ prompt: true, outputs: { image: false, video: true, audio: false } });
+describe('modelMatchesFilters — output kind', () => {
+  it('matches every kind when output is null', () => {
+    const f = filters({ prompt: true });
+    expect(modelMatchesFilters(T2I, f)).toBe(true);
+    expect(modelMatchesFilters(T2V, f)).toBe(true);
+    expect(modelMatchesFilters(TTS, f)).toBe(true);
+  });
+
+  it('matches only the selected output kind', () => {
+    const onlyVideo = filters({ prompt: true, output: 'video' });
     expect(modelMatchesFilters(T2V, onlyVideo)).toBe(true);
     expect(modelMatchesFilters(T2I, onlyVideo)).toBe(false);
     expect(modelMatchesFilters(TTS, onlyVideo)).toBe(false);
 
-    const onlyAudio = filters({ prompt: true, outputs: { image: false, video: false, audio: true } });
+    const onlyAudio = filters({ prompt: true, output: 'audio' });
     expect(modelMatchesFilters(TTS, onlyAudio)).toBe(true);
     expect(modelMatchesFilters(T2I, onlyAudio)).toBe(false);
+  });
+});
+
+describe('categoryImplications', () => {
+  it('derives inputs and output from <input>-to-<output> slugs', () => {
+    expect(categoryImplications('text-to-image')).toEqual({
+      inputs: { prompt: true, image: false, audio: false, video: false },
+      output: 'image',
+    });
+    expect(categoryImplications('image-to-video')).toEqual({
+      inputs: { prompt: false, image: true, audio: false, video: false },
+      output: 'video',
+    });
+    expect(categoryImplications('audio-to-audio')).toEqual({
+      inputs: { prompt: false, image: false, audio: true, video: false },
+      output: 'audio',
+    });
+  });
+
+  it('maps speech output to the audio kind', () => {
+    expect(categoryImplications('text-to-speech')).toEqual({
+      inputs: { prompt: true, image: false, audio: false, video: false },
+      output: 'audio',
+    });
+  });
+
+  it('returns null for non-slug categories', () => {
+    expect(categoryImplications('vision')).toBe(null);
+    expect(categoryImplications('json')).toBe(null);
+    expect(categoryImplications('unknown')).toBe(null);
+    expect(categoryImplications('')).toBe(null);
+    expect(categoryImplications(null)).toBe(null);
+    expect(categoryImplications('text-to-json')).toBe(null);
   });
 });
 
