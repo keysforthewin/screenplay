@@ -7,7 +7,6 @@ import { ImageGallery } from '../widgets/ImageGallery.jsx';
 import { AttachmentList } from '../widgets/AttachmentList.jsx';
 import { BeatCharacters } from '../widgets/BeatCharacters.jsx';
 import { ArtworkTab } from '../widgets/ArtworkTab.jsx';
-import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
 import { ReferenceExtrasSection } from '../widgets/ReferenceExtrasSection.jsx';
 import { BeatPager } from '../widgets/BeatPager.jsx';
 import { BeatTabs } from '../widgets/BeatTabs.jsx';
@@ -140,11 +139,6 @@ export function Beat({ session, section = 'writing' }) {
             key={beat._id}
             disabled={!liveDoc}
             getText={() => readFragmentText(liveDoc, 'body')}
-          />
-          <DownloadAllButton
-            path={`/beat/${beat._id}/download`}
-            filename={`beat-${beat.order}.zip`}
-            label="Download beat"
           />
         </div>
       </div>

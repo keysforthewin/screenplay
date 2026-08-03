@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiGet } from '../api.js';
-import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
 import { LibraryPanel } from '../widgets/LibraryPanel.jsx';
 
 export function Library({ session }) {
@@ -28,14 +27,7 @@ export function Library({ session }) {
       <p>
         <a href="#" onClick={(e) => { e.preventDefault(); navigate('/'); }}>← Back to TOC</a>
       </p>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
-        <h1 style={{ marginTop: 0 }}>Library</h1>
-        <DownloadAllButton
-          path="/library/download"
-          filename="library.zip"
-          disabled={data.images.length === 0 && data.attachments.length === 0}
-        />
-      </div>
+      <h1 style={{ marginTop: 0 }}>Library</h1>
 
       <LibraryPanel data={data} session={session} onChange={load} />
     </main>

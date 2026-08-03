@@ -6,7 +6,6 @@ import { CollabField } from '../editor/CollabField.jsx';
 import { ImageGallery } from '../widgets/ImageGallery.jsx';
 import { AttachmentList } from '../widgets/AttachmentList.jsx';
 import { ArtworkTab } from '../widgets/ArtworkTab.jsx';
-import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
 import { ReferenceExtrasSection } from '../widgets/ReferenceExtrasSection.jsx';
 
 const TABS = ['background', 'attachments', 'references', 'artwork'];
@@ -90,13 +89,7 @@ export function Character({ session }) {
       <p>
         <a href="#" onClick={(e) => { e.preventDefault(); navigate('/'); }}>← Back to TOC</a>
       </p>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
-        <h1 style={{ marginTop: 0 }}>{character.name || 'Character'}</h1>
-        <DownloadAllButton
-          path={`/character/${character._id}/download`}
-          filename={`${(character.name || 'character').replace(/[^a-zA-Z0-9._-]+/g, '_')}.zip`}
-        />
-      </div>
+      <h1 style={{ marginTop: 0 }}>{character.name || 'Character'}</h1>
 
       <div className="tab-nav" role="tablist">
         {TABS.map((t) => (
