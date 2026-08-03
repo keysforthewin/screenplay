@@ -243,7 +243,7 @@ export function ElevenLabsPanel() {
                   <p>{r.transcript}</p>
                   <button
                     type="button"
-                    onClick={() => navigator.clipboard?.copyText(r.transcript)}
+                    onClick={() => navigator.clipboard?.writeText(r.transcript)}
                   >
                     Copy transcript
                   </button>
