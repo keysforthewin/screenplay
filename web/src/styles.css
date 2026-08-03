@@ -3210,3 +3210,232 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .playground-history {
   margin-top: 4px;
 }
+
+/* ── ElevenLabs playground ─────────────────────────────────────────── */
+.eleven-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.eleven-tool-nav {
+  margin-top: 4px;
+}
+.eleven-voice-section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.eleven-voice-subtabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.eleven-subtab {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  padding: 2px 0;
+  opacity: 0.8;
+}
+.eleven-subtab:hover {
+  color: var(--fg);
+}
+.eleven-subtab.is-active {
+  color: var(--fg);
+  opacity: 1;
+  font-weight: 600;
+  text-decoration: underline;
+}
+.eleven-library,
+.eleven-tts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.eleven-collection {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.eleven-collection-voice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.eleven-collection-voice.is-selected {
+  background: rgba(122, 166, 255, 0.12);
+}
+.eleven-collection-voice label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.eleven-preview-btn {
+  min-width: 28px;
+}
+.eleven-voice-name {
+  font-weight: 600;
+}
+.eleven-voice-labels {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.eleven-voice-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+.eleven-library-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.eleven-library-filters input[type='search'] {
+  flex: 1 1 220px;
+}
+.eleven-facet {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+.eleven-voice-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.eleven-voice-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.eleven-voice-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.eleven-voice-desc {
+  font-size: 13px;
+  color: var(--fg-muted);
+  margin: 0;
+  max-height: 3.6em;
+  overflow: hidden;
+}
+.eleven-library-pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.eleven-tts-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.eleven-tag-palette {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.eleven-tag-group {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.eleven-tag-group-name {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  min-width: 84px;
+}
+.eleven-tag-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.eleven-tag-chip {
+  font-family: monospace;
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+.eleven-audio-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.eleven-audio-or {
+  color: var(--fg-muted);
+}
+.eleven-recorder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.eleven-recorder-live {
+  color: var(--danger);
+  font-variant-numeric: tabular-nums;
+}
+.eleven-recorder-error {
+  color: var(--danger);
+  font-size: 13px;
+}
+.eleven-transcript {
+  border-left: 3px solid var(--border);
+  padding: 4px 12px;
+}
+.eleven-clone,
+.eleven-design {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.eleven-clone-fields {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.eleven-hint {
+  font-size: 13px;
+  color: var(--fg-muted);
+  margin: 0;
+}
+.eleven-design-previews {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.eleven-design-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.eleven-design-preview.is-selected {
+  font-weight: 600;
+}
+.eleven-design-save {
+  display: flex;
+  gap: 8px;
+}
