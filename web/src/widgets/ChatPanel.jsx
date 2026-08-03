@@ -76,8 +76,10 @@ function ChatMessage({ m }) {
 // browser's current project) and follows the run via SSE. The transcript is
 // reloaded from the server on mount, so it survives the panel being closed
 // and reopened. The page context ("which scene am I on") comes straight from
-// the router location, so it tracks navigation live.
-export function ChatPanel({ onClose }) {
+// the router location, so it tracks navigation live. Open/close lives
+// entirely in the header's ✨ toggle (plus backdrop/ESC in drawer mode) —
+// the panel has no close control of its own.
+export function ChatPanel() {
   const location = useLocation();
   const pageCtx = pageContextFromPath(location.pathname);
   const [messages, setMessages] = useState([]);
@@ -285,16 +287,6 @@ export function ChatPanel({ onClose }) {
               <span className="chat-token-secondary"> · last run {lastInputTokens.toLocaleString()}</span>
             )}
           </span>
-          <span className="chat-toolbar-spacer" />
-          <button
-            type="button"
-            className="chat-close-btn"
-            onClick={onClose}
-            title="Close chat panel"
-            aria-label="Close chat panel"
-          >
-            ✕
-          </button>
         </div>
         <div className="chat-messages" ref={listRef}>
           {messages.length === 0 && (

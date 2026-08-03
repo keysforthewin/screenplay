@@ -57,7 +57,7 @@ export function ChatSidePanel({ open, onClose }) {
         aria-hidden="true"
       />
       <aside className={'chat-side' + (open ? ' open' : '')} aria-label="AI chat panel">
-        <ChatPanel onClose={onClose} />
+        <ChatPanel />
       </aside>
     </>
   );

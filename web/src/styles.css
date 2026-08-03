@@ -2699,7 +2699,10 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
    page as a slide-in drawer with a backdrop. Keep the breakpoint in sync
    with DRAWER_MQ in ChatSidePanel.jsx. */
 :root {
-  --chat-w: 440px;
+  /* Docked chat fills everything right of the content column (.app is 960px
+     centered; the extra 32px keeps a visible gutter between them), capped at
+     the column's own width on very wide screens. */
+  --chat-w: min(960px, calc(100vw - 992px));
   --header-h: 55px; /* fallback; ChatSidePanel measures the real header height */
 }
 
@@ -2758,14 +2761,16 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 
 @media (max-width: 1400px) {
+  /* Drawer starts below the header so the ✨ toggle stays reachable — it is
+     the only open/close control now that the panel has no close button. */
   .chat-side {
-    top: 0;
-    width: min(var(--chat-w), 92vw);
-    z-index: 30; /* over the header, under .modal-backdrop (100) */
+    width: min(960px, 92vw);
+    z-index: 30; /* over page content, under .modal-backdrop (100) */
     box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4);
   }
   .chat-backdrop {
     display: block;
+    top: var(--header-h);
   }
   .chat-backdrop.open {
     opacity: 1;
@@ -2954,23 +2959,6 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .chat-token-secondary {
   opacity: 0.75;
-}
-.chat-toolbar-spacer {
-  flex: 1 1 auto;
-}
-.chat-close-btn {
-  background: transparent;
-  border: 1px solid var(--border, #333);
-  color: var(--text, #e8e8e8);
-  border-radius: 6px;
-  width: 30px;
-  height: 30px;
-  cursor: pointer;
-  line-height: 1;
-  font-size: 0.95rem;
-}
-.chat-close-btn:hover {
-  background: var(--bg-elevated, #2a2a2e);
 }
 .critique-scope {
   font-size: 11px;
