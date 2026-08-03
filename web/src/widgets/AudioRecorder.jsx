@@ -23,8 +23,8 @@ export function AudioRecorder({ onRecorded, disabled = false }) {
   const [seconds, setSeconds] = useState(0);
   const [previewUrl, setPreviewUrl] = useState(null);
   const [error, setError] = useState(null);
+  const [finalizing, setFinalizing] = useState(false);
   const recorderRef = useRef(null);
-  const chunksRef = useRef([]);
   const timerRef = useRef(null);
   const blobRef = useRef(null);
 
@@ -35,6 +35,7 @@ export function AudioRecorder({ onRecorded, disabled = false }) {
   }, [previewUrl]);
 
   async function start() {
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') return;
     setError(null);
     if (previewUrl) {
       URL.revokeObjectURL(previewUrl);
@@ -56,13 +57,14 @@ export function AudioRecorder({ onRecorded, disabled = false }) {
     }
     const mimeType = pickMimeType();
     const rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-    chunksRef.current = [];
-    rec.ondataavailable = (e) => { if (e.data?.size) chunksRef.current.push(e.data); };
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
     rec.onstop = () => {
       stream.getTracks().forEach((t) => t.stop());
-      const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' });
+      const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
       blobRef.current = blob;
       setPreviewUrl(URL.createObjectURL(blob));
+      setFinalizing(false);
     };
     rec.start();
     recorderRef.current = rec;
@@ -73,6 +75,7 @@ export function AudioRecorder({ onRecorded, disabled = false }) {
 
   function stop() {
     clearInterval(timerRef.current);
+    setFinalizing(true);
     recorderRef.current?.stop();
     setRecording(false);
   }
@@ -94,7 +97,7 @@ export function AudioRecorder({ onRecorded, disabled = false }) {
     <div className="eleven-recorder">
       {error && <span className="eleven-recorder-error">{error}</span>}
       {!recording && (
-        <button type="button" disabled={disabled} onClick={start}>🎙️ Record</button>
+        <button type="button" disabled={disabled || finalizing} onClick={start}>🎙️ Record</button>
       )}
       {recording && (
         <>
