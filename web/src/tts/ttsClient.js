@@ -17,8 +17,23 @@ export class TtsClient {
     if (!this.worker) {
       this.worker = this.createWorker();
       this.worker.onmessage = (e) => this.#onMessage(e.data);
+      // Without these, a worker that crashes (iOS OOM-kills, top-level script
+      // errors) never posts anything and the UI hangs on "Generating…" forever.
+      this.worker.onerror = (e) => this.#workerFailed(e?.message || 'TTS worker crashed');
+      this.worker.onmessageerror = () => this.#workerFailed('TTS worker message error');
     }
     return this.worker;
+  }
+
+  #workerFailed(message) {
+    // The worker is in an unknown state — discard it so the next speak()
+    // starts fresh (model files re-fetch from HTTP cache, not the network).
+    try { this.worker?.terminate?.(); } catch { /* already dead */ }
+    this.worker = null;
+    const active = this.active;
+    if (!active) return;
+    this.active = null;
+    active.resolve({ status: 'error', message });
   }
 
   #onMessage(msg) {

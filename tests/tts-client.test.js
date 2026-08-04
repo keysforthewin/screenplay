@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { TtsClient } from '../web/src/tts/ttsClient.js';
 
 class FakeWorker {
-  constructor() { this.posted = []; this.onmessage = null; }
+  constructor() { this.posted = []; this.onmessage = null; this.onerror = null; }
   postMessage(msg) { this.posted.push(msg); }
+  terminate() { this.terminated = true; }
   emit(msg) { this.onmessage?.({ data: msg }); }
 }
 
@@ -63,5 +64,27 @@ describe('TtsClient', () => {
     const p = client.speak({ text: 'hi', voice: 'af_heart', onChunk: () => {} });
     worker.emit({ type: 'error', id: 1, message: 'boom' });
     expect(await p).toEqual({ status: 'error', message: 'boom' });
+  });
+
+  it('worker crash (onerror) resolves the speak as error and discards the worker', async () => {
+    const workers = [];
+    const client = new TtsClient(() => {
+      const w = new FakeWorker();
+      workers.push(w);
+      return w;
+    });
+    const p = client.speak({ text: 'hi', voice: 'af_heart', onChunk: () => {} });
+    workers[0].onerror?.({ message: 'worker died' });
+    expect(await p).toEqual({ status: 'error', message: 'worker died' });
+    expect(workers[0].terminated).toBe(true);
+    client.speak({ text: 'again', voice: 'af_heart', onChunk: () => {} });
+    expect(workers).toHaveLength(2); // fresh worker after the crash
+  });
+
+  it('worker messageerror resolves the speak as error', async () => {
+    const { worker, client } = make();
+    const p = client.speak({ text: 'hi', voice: 'af_heart', onChunk: () => {} });
+    worker.onmessageerror?.({});
+    expect((await p).status).toBe('error');
   });
 });

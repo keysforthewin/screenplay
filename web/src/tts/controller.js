@@ -35,6 +35,9 @@ export class TtsController {
     const trimmed = String(text || '').trim();
     if (!trimmed) return true;
     const player = (this.player = this.createPlayer());
+    // Still synchronously inside the Play click here — the only moment iOS
+    // lets us create/resume an audible AudioContext.
+    player.unlock?.();
     let gotChunk = false;
     this.#set({ status: 'generating', progress: null, error: null });
     const result = await this.client.speak({
@@ -68,6 +71,7 @@ export class TtsController {
     await player.finished(); // all chunks emitted — wait for audio to drain
     if (this.player !== player) return false; // stop() raced the drain
     this.player = null;
+    player.stop(); // release the player on natural completion too
     this.#set({ status: 'idle', progress: null });
     return true;
   }

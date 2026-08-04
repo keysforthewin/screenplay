@@ -62,4 +62,26 @@ describe('ChunkPlayer', () => {
     expect(ctx.started[0].stopped).toBe(true);
     await fin; // must not hang
   });
+
+  it('stop() never closes the context — it is shared across players', () => {
+    const ctx = new FakeCtx();
+    let closed = false;
+    ctx.close = () => { closed = true; };
+    const p = new ChunkPlayer(() => ctx);
+    p.enqueue(new Float32Array(10), 24000);
+    p.stop();
+    expect(closed).toBe(false);
+  });
+
+  it('unlock() eagerly creates the context and resumes a suspended one', () => {
+    const ctx = new FakeCtx();
+    ctx.state = 'suspended';
+    let resumed = false;
+    ctx.resume = () => { resumed = true; return Promise.resolve(); };
+    const p = new ChunkPlayer(() => ctx);
+    p.unlock();
+    expect(resumed).toBe(true);
+    p.enqueue(new Float32Array(10), 24000); // reuses the unlocked ctx
+    expect(ctx.started).toHaveLength(1);
+  });
 });

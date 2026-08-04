@@ -3,9 +3,19 @@
 // clamped to ctx.currentTime when synthesis falls behind playback (brief
 // silence, never overlap). The AudioContext resamples 24kHz output to the
 // device rate for us.
+//
+// All players share ONE AudioContext, created on demand and never closed:
+// iOS caps concurrent AudioContexts (~4) and only plays audio from a context
+// created/resumed inside a user gesture. Controllers call unlock() while the
+// Play tap is still on the stack; later plays reuse the already-unlocked ctx.
+
+let sharedCtx = null;
+function sharedAudioContext() {
+  return (sharedCtx ||= new AudioContext());
+}
 
 export class ChunkPlayer {
-  constructor(createContext = () => new AudioContext()) {
+  constructor(createContext = sharedAudioContext) {
     this.createContext = createContext;
     this.ctx = null;
     this.sources = new Set();
@@ -14,8 +24,16 @@ export class ChunkPlayer {
     this.drainResolvers = [];
   }
 
-  enqueue(samples, sampleRate) {
+  // Create (or adopt) the context and kick a suspended one — must be called
+  // synchronously within a user gesture for audio to be audible on iOS.
+  unlock() {
     const ctx = (this.ctx ||= this.createContext());
+    if (ctx.state === 'suspended') ctx.resume?.()?.catch?.(() => {});
+    return ctx;
+  }
+
+  enqueue(samples, sampleRate) {
+    const ctx = this.unlock();
     const buffer = ctx.createBuffer(1, samples.length, sampleRate);
     buffer.copyToChannel(samples, 0);
     const source = ctx.createBufferSource();
@@ -47,8 +65,7 @@ export class ChunkPlayer {
     this.sources.clear();
     this.ended = true;
     this.#maybeDrain();
-    try { this.ctx?.close(); } catch { /* already closed */ }
-    this.ctx = null;
+    this.ctx = null; // the shared context stays open for the next player
   }
 
   #maybeDrain() {

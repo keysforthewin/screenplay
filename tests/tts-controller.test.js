@@ -12,6 +12,7 @@ class FakeClient {
 
 class FakePlayer {
   constructor() { this.chunks = []; }
+  unlock() { this.unlocked = true; }
   enqueue(s, r) { this.chunks.push([s, r]); }
   finished() { return (this.fin = new Promise((res) => { this.finish = res; })); }
   stop() { this.stoppedPlayer = true; this.finish?.(); }
@@ -34,6 +35,9 @@ describe('TtsController', () => {
     controller.subscribe((s) => seen.push(s.status));
     const p = controller.play('hello', 'af_heart');
     expect(controller.getState().status).toBe('generating');
+    // unlock must happen synchronously inside play() — that call is the only
+    // moment still inside the user gesture, which iOS requires for audio.
+    expect(players[0].unlocked).toBe(true);
     client.opts.onChunk(new Float32Array(4), 24000);
     expect(controller.getState().status).toBe('playing');
     expect(players[0].chunks).toHaveLength(1);
@@ -41,6 +45,7 @@ describe('TtsController', () => {
     await Promise.resolve(); await Promise.resolve();
     players[0].finish();
     expect(await p).toBe(true);
+    expect(players[0].stoppedPlayer).toBe(true); // released on natural completion
     expect(controller.getState().status).toBe('idle');
     expect(seen).toEqual(['generating', 'playing', 'idle']);
   });

@@ -1,10 +1,13 @@
 // Module worker running Kokoro-82M via kokoro-js/Transformers.js. This is the
 // ONLY file allowed to import kokoro-js — keeping the heavy dependency out of
-// the main SPA bundle. Loads fp32 on WebGPU when an adapter is available,
-// q8 on WASM otherwise. The model is loaded once and cached for the worker's
-// lifetime (network layer caches the ~310MB download across sessions).
+// the main SPA bundle. Loads fp32 on WebGPU when the browser is Blink AND an
+// adapter is available, q8 on WASM otherwise. The model is loaded once and
+// cached for the worker's lifetime (network layer caches the download across
+// sessions).
 //
 // Protocol: see web/src/tts/ttsClient.js.
+
+import { preferWebGpu } from './ttsDevice.js';
 
 let ttsPromise = null;
 let activeId = 0;
@@ -15,17 +18,19 @@ async function loadModel() {
   const { KokoroTTS, TextSplitterStream } = await import('kokoro-js');
   TextSplitterStreamCtor = TextSplitterStream;
   let device = 'wasm';
-  try {
-    // requestAdapter() can hang indefinitely on some platforms (observed on
-    // WSL Chrome) — race it against a timeout so a broken GPU stack degrades
-    // to wasm instead of stalling the model load forever.
-    const adapter = await Promise.race([
-      Promise.resolve(globalThis.navigator?.gpu?.requestAdapter() ?? null),
-      new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
-    ]);
-    if (adapter) device = 'webgpu';
-  } catch {
-    // adapter probe failed — stay on wasm
+  if (preferWebGpu(globalThis.navigator?.userAgent)) {
+    try {
+      // requestAdapter() can hang indefinitely on some platforms (observed on
+      // WSL Chrome) — race it against a timeout so a broken GPU stack degrades
+      // to wasm instead of stalling the model load forever.
+      const adapter = await Promise.race([
+        Promise.resolve(globalThis.navigator?.gpu?.requestAdapter() ?? null),
+        new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
+      ]);
+      if (adapter) device = 'webgpu';
+    } catch {
+      // adapter probe failed — stay on wasm
+    }
   }
   const dtype = device === 'webgpu' ? 'fp32' : 'q8';
   const files = new Map();
