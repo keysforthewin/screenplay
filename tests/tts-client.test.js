@@ -116,6 +116,21 @@ describe('TtsClient', () => {
     }
   });
 
+  it('forces wasm on the speak after a crash/watchdog failure', async () => {
+    const workers = [];
+    const client = new TtsClient(() => {
+      const w = new FakeWorker();
+      workers.push(w);
+      return w;
+    });
+    const p = client.speak({ text: 'hi', voice: 'af_heart', onChunk: () => {} });
+    expect(workers[0].posted[0].forceWasm).toBeUndefined(); // first attempt may try GPU
+    workers[0].onerror?.({ message: 'worker died' });
+    await p;
+    client.speak({ text: 'again', voice: 'af_heart', onChunk: () => {} });
+    expect(workers[1].posted[0]).toMatchObject({ type: 'speak', forceWasm: true });
+  });
+
   it('watchdog does not fire after done/stop', async () => {
     vi.useFakeTimers();
     try {

@@ -1,7 +1,10 @@
-// Main-thread handle on the Kokoro synthesis worker. One worker (and one
-// loaded model) per tab, shared by the beat-page Play button and the TOC
-// read-through. Generation ids guard against stale chunks after stop():
-// only messages carrying the active id are delivered.
+// Main-thread handle on the Kokoro synthesis engine (worker or inline — see
+// ttsTransport.js). One transport (and one loaded model) per tab, shared by
+// the beat-page Play button and the TOC read-through. Generation ids guard
+// against stale chunks after stop(): only messages carrying the active id
+// are delivered.
+
+import { createTtsTransport } from './ttsTransport.js';
 
 // Any worker message resets this deadline. WASM synthesis blocks the worker
 // thread, so a slow-but-alive device can legitimately go quiet for a while —
@@ -10,14 +13,18 @@ const WATCHDOG_MS = 90_000;
 
 export class TtsClient {
   constructor(createWorker) {
-    this.createWorker =
-      createWorker ||
-      (() => new Worker(new URL('./kokoroWorker.js', import.meta.url), { type: 'module' }));
+    // Default transport picks worker vs main-thread placement (WebGPU
+    // availability differs between the two on WebKit) behind a Worker-shaped
+    // facade; tests inject a plain fake worker.
+    this.createWorker = createWorker || (() => createTtsTransport());
     this.worker = null;
     this.nextId = 1;
     this.active = null; // { id, onChunk, onProgress, onStatus, resolve }
     this.lastStatus = null;
     this.watchdog = null;
+    // Once a generation dies (crash or watchdog), later speaks force the
+    // wasm backend — a hanging WebGPU stack would otherwise hang every retry.
+    this.preferWasm = false;
   }
 
   #ensureWorker() {
@@ -34,6 +41,7 @@ export class TtsClient {
 
   #workerFailed(message) {
     clearTimeout(this.watchdog);
+    this.preferWasm = true;
     // The worker is in an unknown state — discard it so the next speak()
     // starts fresh (model files re-fetch from HTTP cache, not the network).
     try { this.worker?.terminate?.(); } catch { /* already dead */ }
@@ -81,6 +89,10 @@ export class TtsClient {
       active.resolve({ status: 'done' });
     } else if (msg.type === 'error') {
       clearTimeout(this.watchdog);
+      // An error out of a GPU attempt poisons future attempts too — the
+      // engine's in-load fallback ladder only covers load-time failures, not
+      // mid-synthesis ones, so pin the next speak to wasm.
+      if (/webgpu/.test(this.lastStatus || '')) this.preferWasm = true;
       this.active = null;
       active.resolve({ status: 'error', message: msg.message });
     }
@@ -95,7 +107,9 @@ export class TtsClient {
     return new Promise((resolve) => {
       this.active = { id, onChunk, onProgress, onStatus, resolve };
       this.lastStatus = null;
-      worker.postMessage({ type: 'speak', id, text, voice });
+      const msg = { type: 'speak', id, text, voice };
+      if (this.preferWasm) msg.forceWasm = true;
+      worker.postMessage(msg);
       this.#armWatchdog();
     });
   }
