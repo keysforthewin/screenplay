@@ -45,11 +45,18 @@ export class TtsController {
       voice,
       onChunk: (samples, sampleRate) => {
         if (this.player !== player) return; // stale
+        player.enqueue(samples, sampleRate);
         if (!gotChunk) {
           gotChunk = true;
-          this.#set({ status: 'playing', progress: null, detail: null });
+          // A non-running AudioContext means silence with a happy UI — say so.
+          const cs = player.contextState?.();
+          const blocked = cs && cs !== 'running';
+          this.#set({
+            status: 'playing',
+            progress: null,
+            detail: blocked ? `no sound? audio context is ${cs}` : null,
+          });
         }
-        player.enqueue(samples, sampleRate);
       },
       onProgress: (loaded, total) => {
         if (this.player === player && !gotChunk) {

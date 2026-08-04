@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ChunkPlayer } from '../web/src/tts/playback.js';
 
 class FakeSource {
@@ -83,5 +83,25 @@ describe('ChunkPlayer', () => {
     expect(resumed).toBe(true);
     p.enqueue(new Float32Array(10), 24000); // reuses the unlocked ctx
     expect(ctx.started).toHaveLength(1);
+  });
+
+  it('unlock() declares media playback via navigator.audioSession when present', () => {
+    const audioSession = {};
+    vi.stubGlobal('navigator', { audioSession });
+    try {
+      new ChunkPlayer(() => new FakeCtx()).unlock();
+      expect(audioSession.type).toBe('playback'); // iOS: ignore the mute switch
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('contextState() reflects the live AudioContext state', () => {
+    const ctx = new FakeCtx();
+    const p = new ChunkPlayer(() => ctx);
+    expect(p.contextState()).toBe(null);
+    ctx.state = 'suspended';
+    p.unlock();
+    expect(p.contextState()).toBe('suspended');
   });
 });

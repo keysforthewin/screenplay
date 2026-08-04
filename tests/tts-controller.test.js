@@ -59,6 +59,19 @@ describe('TtsController', () => {
     expect(controller.getState()).toMatchObject({ status: 'playing', detail: null });
   });
 
+  it('flags a non-running audio context in the playing detail', async () => {
+    const client = new FakeClient();
+    const player = new FakePlayer();
+    player.contextState = () => 'suspended';
+    const controller = new TtsController({ client, createPlayer: () => player });
+    controller.play('hello', 'af_heart');
+    client.opts.onChunk(new Float32Array(4), 24000);
+    expect(controller.getState()).toMatchObject({
+      status: 'playing',
+      detail: 'no sound? audio context is suspended',
+    });
+  });
+
   it('reports download progress while loading', async () => {
     const { client, controller } = make();
     controller.play('hello', 'af_heart');

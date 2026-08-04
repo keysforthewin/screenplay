@@ -27,9 +27,21 @@ export class ChunkPlayer {
   // Create (or adopt) the context and kick a suspended one — must be called
   // synchronously within a user gesture for audio to be audible on iOS.
   unlock() {
+    // iOS mutes Web Audio under the ringer/silent switch unless the page
+    // declares itself media playback (iOS 17+). Harmless elsewhere.
+    try {
+      const session = globalThis.navigator?.audioSession;
+      if (session) session.type = 'playback';
+    } catch { /* not supported */ }
     const ctx = (this.ctx ||= this.createContext());
     if (ctx.state === 'suspended') ctx.resume?.()?.catch?.(() => {});
     return ctx;
+  }
+
+  // 'running' | 'suspended' | 'interrupted' | 'closed' | null — lets the UI
+  // say WHY nothing is audible instead of playing convincing silence.
+  contextState() {
+    return this.ctx?.state || null;
   }
 
   enqueue(samples, sampleRate) {

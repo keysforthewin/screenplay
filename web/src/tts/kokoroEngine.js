@@ -9,18 +9,32 @@
 //        {type:'gpucheck'}
 //   out: {type:'chunk'|'done'|'error'|'progress'|'status'|'gpucaps', ...}
 //
-// Device policy: try WebGPU whenever an adapter materializes — fp16 when the
-// GPU advertises shader-f16, else fp32 — falling back to wasm/q8 when a load
-// fails. A GPU attempt that HANGS (WebKit has form here) is killed by the
-// client's watchdog, which then sets forceWasm on the next speak.
+// Device policy: try WebGPU whenever an adapter materializes — fp32 only
+// (upstream kokoro-js explicitly recommends fp32 on WebGPU; fp16 is known to
+// produce silent/NaN audio) — falling back to wasm/q8 when a load fails or
+// the first generated chunk carries no audible signal. A GPU attempt that
+// HANGS (WebKit has form here) is killed by the client's watchdog, which
+// then sets forceWasm on the next speak.
 
 const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
+
+// True when the chunk contains at least one finite, non-negligible sample.
+// A backend that "works" but emits all-zero/NaN buffers (fp16-on-WebGPU's
+// signature failure) would otherwise play convincing silence.
+export function hasAudibleSignal(samples) {
+  for (let i = 0; i < samples.length; i++) {
+    const v = samples[i];
+    if (Number.isFinite(v) && Math.abs(v) > 1e-4) return true;
+  }
+  return false;
+}
 
 export function createKokoroEngine(post) {
   let ttsPromise = null;
   let loadedWith = null; // {device, dtype} of the model that actually loaded
   let activeId = 0;
   let TextSplitterStreamCtor = null;
+  let avoidWebGpu = false; // set after WebGPU emits silent audio
 
   const status = (text) => post({ type: 'status', text });
 
@@ -40,14 +54,10 @@ export function createKokoroEngine(post) {
 
   async function candidates(forceWasm) {
     const wasm = { device: 'wasm', dtype: 'q8' };
-    if (forceWasm) return [wasm];
+    if (forceWasm || avoidWebGpu) return [wasm];
     const adapter = await probeAdapter();
     if (!adapter) return [wasm];
-    const list = [];
-    if (adapter.features?.has?.('shader-f16')) list.push({ device: 'webgpu', dtype: 'fp16' });
-    list.push({ device: 'webgpu', dtype: 'fp32' });
-    list.push(wasm);
-    return list;
+    return [{ device: 'webgpu', dtype: 'fp32' }, wasm];
   }
 
   async function loadModel(forceWasm) {
@@ -135,9 +145,18 @@ export function createKokoroEngine(post) {
       const splitter = new TextSplitterStreamCtor();
       splitter.push(msg.text);
       splitter.close();
+      let firstChunk = true;
       for await (const { text, audio } of tts.stream(splitter, { voice: msg.voice })) {
         if (activeId !== msg.id) return; // stopped mid-generation
         const samples = audio.audio;
+        if (firstChunk) {
+          firstChunk = false;
+          if (!hasAudibleSignal(samples)) {
+            const e = new Error(`${loadedWith.device}/${loadedWith.dtype} produced silent audio`);
+            e.silentAudio = true;
+            throw e;
+          }
+        }
         post(
           { type: 'chunk', id: msg.id, samples, sampleRate: audio.sampling_rate, text },
           [samples.buffer],
@@ -145,8 +164,16 @@ export function createKokoroEngine(post) {
       }
       if (activeId === msg.id) post({ type: 'done', id: msg.id });
     } catch (err) {
+      const wasWebGpu = loadedWith?.device === 'webgpu';
       ttsPromise = null; // let a later speak retry the load
       loadedWith = null;
+      // Silent output from WebGPU: retry this same speak once on wasm rather
+      // than surfacing an error the user can only fix by pressing Play again.
+      if (err?.silentAudio && wasWebGpu && !avoidWebGpu && activeId === msg.id) {
+        avoidWebGpu = true;
+        status('webgpu produced silent audio — falling back to wasm');
+        return handle(msg);
+      }
       post({ type: 'error', id: msg.id, message: err?.message || String(err) });
     }
   }
