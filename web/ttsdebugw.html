@@ -1,21 +1,14 @@
 <!doctype html>
 <html>
-  <head><meta charset="utf-8"><title>tts debug (worker)</title></head>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>tts debug (worker)</title>
+    <style>body{font:13px monospace;background:#111;color:#ddd} #hb{color:#6c6}</style>
+  </head>
   <body>
+    <div id="hb">heartbeat: 0s</div>
     <pre id="out">starting worker…</pre>
-    <script type="module">
-      const out = [];
-      window.__log = out;
-      const log = (m) => {
-        out.push(`${(performance.now() / 1000).toFixed(1)}s ${m}`);
-        document.getElementById('out').textContent = out.join('\n');
-        console.log(m);
-      };
-      const w = new Worker(new URL('./ttsdebug.worker.js', import.meta.url), { type: 'module' });
-      w.onmessage = (e) => log(e.data.log);
-      w.onerror = (e) => log(`WORKER ONERROR: ${e.message} @ ${e.filename}:${e.lineno}`);
-      w.onmessageerror = () => log('WORKER MESSAGEERROR');
-      log('worker spawned');
-    </script>
+    <script type="module" src="/ttsdebugw.js"></script>
   </body>
 </html>

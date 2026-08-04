@@ -3,20 +3,21 @@
 const log = (m) => postMessage({ log: m });
 
 (async () => {
-  log(`worker alive; SharedArrayBuffer: ${typeof SharedArrayBuffer !== 'undefined'}, gpu: ${!!globalThis.navigator?.gpu}`);
+  log(`worker alive; SharedArrayBuffer: ${typeof SharedArrayBuffer !== 'undefined'}, gpu: ${!!globalThis.navigator?.gpu}, DecompressionStream: ${typeof DecompressionStream}`);
   try {
-    log('importing phonemizer');
-    const { phonemize } = await import('phonemizer');
-    log('phonemizer imported; phonemizing');
-    const ph = await phonemize('Hello world, this is a test.', 'en-us');
-    log(`phonemize ok: ${JSON.stringify(ph).slice(0, 80)}`);
+    log('phonemizer: importing module');
+    const mod = await import('phonemizer');
+    log('phonemizer: module evaluated');
+    const t = Date.now();
+    const ph = await mod.phonemize('Hello world, this is a test.', 'en-us');
+    log(`phonemizer: first call ok (${Date.now() - t}ms): ${JSON.stringify(ph).slice(0, 80)}`);
   } catch (e) {
     log(`phonemizer FAILED: ${e?.message || e}`);
   }
   try {
-    log('importing kokoro-js');
+    log('kokoro: importing module');
     const { KokoroTTS, TextSplitterStream } = await import('kokoro-js');
-    log('kokoro imported');
+    log('kokoro: module evaluated');
     if (typeof SharedArrayBuffer === 'undefined') {
       const { env } = await import('@huggingface/transformers');
       if (env?.backends?.onnx?.wasm) {

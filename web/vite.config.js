@@ -29,6 +29,17 @@ export default defineConfig({
     outDir: path.resolve(root, 'dist'),
     emptyOutDir: true,
     sourcemap: true,
+    rollupOptions: {
+      // The ttsdebug pages are a device-debugging harness for the client-side
+      // TTS stack (kokoro-js hangs on some iOS builds) — shipping them lets a
+      // real phone report per-phase timings at /ttsdebug.html (main thread)
+      // and /ttsdebugw.html (worker). Remove once the iOS TTS saga is over.
+      input: {
+        main: path.resolve(root, 'index.html'),
+        ttsdebug: path.resolve(root, 'ttsdebug.html'),
+        ttsdebugw: path.resolve(root, 'ttsdebugw.html'),
+      },
+    },
   },
   server: {
     host: '0.0.0.0',

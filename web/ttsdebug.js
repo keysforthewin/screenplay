@@ -1,6 +1,7 @@
-// Temporary WebKit-debug harness for the kokoro-js hang (not part of the SPA).
-// Runs the exact same stack as web/src/tts/kokoroEngine.js but with each
-// phase timed and logged to window.__log for a Playwright poller.
+// Temporary WebKit/iOS-debug harness for the kokoro-js hang (not part of the
+// SPA; also built into dist so real devices can run it at /ttsdebug.html).
+// Runs the same stack as web/src/tts/kokoroEngine.js with each phase timed
+// and logged to the page + window.__log.
 const out = [];
 window.__log = out;
 const log = (m) => {
@@ -11,24 +12,34 @@ const log = (m) => {
 window.addEventListener('error', (e) => log(`window error: ${e.message} @ ${e.filename}:${e.lineno}`));
 window.addEventListener('unhandledrejection', (e) => log(`unhandled rejection: ${e.reason?.message || e.reason}`));
 
+// Visible liveness signal: keeps counting while the JS thread is responsive.
+// If a step "hangs" but this keeps ticking → an await never resolved. If this
+// freezes too → the thread is blocked (or the page was killed).
+let beats = 0;
+setInterval(() => {
+  beats += 1;
+  document.getElementById('hb').textContent = `heartbeat: ${beats}s`;
+}, 1000);
+
 (async () => {
   log(`ua: ${navigator.userAgent}`);
-  log(`SharedArrayBuffer: ${typeof SharedArrayBuffer !== 'undefined'}, gpu: ${!!navigator.gpu}`);
+  log(`SharedArrayBuffer: ${typeof SharedArrayBuffer !== 'undefined'}, gpu: ${!!navigator.gpu}, DecompressionStream: ${typeof DecompressionStream}`);
 
   try {
-    log('importing phonemizer');
-    const { phonemize } = await import('phonemizer');
-    log('phonemizer imported; phonemizing test sentence');
-    const ph = await phonemize('Hello world, this is a test.', 'en-us');
-    log(`phonemize ok: ${JSON.stringify(ph).slice(0, 100)}`);
+    log('phonemizer: importing module');
+    const mod = await import('phonemizer');
+    log('phonemizer: module evaluated');
+    const t = performance.now();
+    const ph = await mod.phonemize('Hello world, this is a test.', 'en-us');
+    log(`phonemizer: first call ok (${(performance.now() - t).toFixed(0)}ms): ${JSON.stringify(ph).slice(0, 80)}`);
   } catch (e) {
     log(`phonemizer FAILED: ${e?.message || e}`);
   }
 
   try {
-    log('importing kokoro-js');
+    log('kokoro: importing module');
     const { KokoroTTS, TextSplitterStream } = await import('kokoro-js');
-    log('kokoro imported');
+    log('kokoro: module evaluated');
     if (typeof SharedArrayBuffer === 'undefined') {
       const { env } = await import('@huggingface/transformers');
       if (env?.backends?.onnx?.wasm) {
@@ -37,7 +48,7 @@ window.addEventListener('unhandledrejection', (e) => log(`unhandled rejection: $
         log('pinned ort wasm numThreads=1 proxy=false');
       }
     }
-    log('loading model wasm/q8');
+    log('kokoro: loading model wasm/q8');
     const tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
       dtype: 'q8',
       device: 'wasm',
@@ -45,7 +56,7 @@ window.addEventListener('unhandledrejection', (e) => log(`unhandled rejection: $
         if (p.status !== 'progress') log(`model ${p.status}${p.file ? ': ' + p.file : ''}`);
       },
     });
-    log('model ready; synthesizing');
+    log('kokoro: model ready; synthesizing');
     const splitter = new TextSplitterStream();
     splitter.push('Hello world. This is a longer second sentence to synthesize for timing.');
     splitter.close();
