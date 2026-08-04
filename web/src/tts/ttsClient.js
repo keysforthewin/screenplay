@@ -100,7 +100,7 @@ export class TtsClient {
 
   // Resolves {status:'done'} after the worker has emitted every chunk,
   // {status:'stopped'} if superseded/stopped, {status:'error', message} on failure.
-  speak({ text, voice, onChunk, onProgress, onStatus }) {
+  speak({ text, voice, onChunk, onProgress, onStatus, force }) {
     this.stop(); // one generation at a time
     const id = this.nextId++;
     const worker = this.#ensureWorker();
@@ -108,6 +108,7 @@ export class TtsClient {
       this.active = { id, onChunk, onProgress, onStatus, resolve };
       this.lastStatus = null;
       const msg = { type: 'speak', id, text, voice };
+      if (force) msg.force = force; // ?tts=device/dtype debug override
       if (this.preferWasm) msg.forceWasm = true;
       worker.postMessage(msg);
       this.#armWatchdog();

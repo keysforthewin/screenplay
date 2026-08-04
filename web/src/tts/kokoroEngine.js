@@ -52,7 +52,11 @@ export function createKokoroEngine(post) {
     }
   }
 
-  async function candidates(forceWasm) {
+  async function candidates(forceWasm, forcePair) {
+    // Debug override from the page URL (?tts=webgpu/q4f16 etc.) — lets us
+    // trial backends/quantizations on a real device without redeploying.
+    const m = /^(wasm|webgpu)\/(fp32|fp16|q8|q4|q4f16)$/.exec(forcePair || '');
+    if (m) return [{ device: m[1], dtype: m[2] }];
     const wasm = { device: 'wasm', dtype: 'q8' };
     if (forceWasm || avoidWebGpu) return [wasm];
     const adapter = await probeAdapter();
@@ -60,7 +64,8 @@ export function createKokoroEngine(post) {
     return [{ device: 'webgpu', dtype: 'fp32' }, wasm];
   }
 
-  async function loadModel(forceWasm) {
+  async function loadModel(forceWasm, forcePair) {
+    status(`env: ${typeof window === 'undefined' ? 'worker' : 'main-thread'}, gpu=${!!globalThis.navigator?.gpu}`);
     status('loading TTS engine');
     const { KokoroTTS, TextSplitterStream } = await import('kokoro-js');
     TextSplitterStreamCtor = TextSplitterStream;
@@ -77,7 +82,7 @@ export function createKokoroEngine(post) {
       }
     }
     let lastErr = null;
-    for (const cand of await candidates(forceWasm)) {
+    for (const cand of await candidates(forceWasm, forcePair)) {
       status(`loading model (${cand.device}/${cand.dtype})`);
       const files = new Map();
       let lastPct = -1;
@@ -132,12 +137,43 @@ export function createKokoroEngine(post) {
     if (msg.type !== 'speak') return;
     activeId = msg.id;
     try {
+      // A ?tts= override that doesn't match the loaded model forces a reload.
+      if (msg.force && loadedWith && `${loadedWith.device}/${loadedWith.dtype}` !== msg.force) {
+        ttsPromise = null;
+      }
       // A forceWasm retry after a GPU hang must not reuse the GPU-loaded (or
       // GPU-loading) model.
       if (msg.forceWasm && (!loadedWith || loadedWith.device !== 'wasm')) ttsPromise = null;
-      ttsPromise ||= loadModel(!!msg.forceWasm);
+      const needProbes = !ttsPromise; // first speak on a fresh model load
+      ttsPromise ||= loadModel(!!msg.forceWasm, msg.force);
       const tts = await ttsPromise;
       if (activeId !== msg.id) return; // stopped while loading
+      if (needProbes) {
+        // "synthesizing" hides three sub-steps (espeak phonemization, lazy
+        // voice-style fetch from HF, first inference). Time the first two
+        // explicitly so a device we can't debug tells us which one stalls.
+        status('probe: phonemizer');
+        const t0 = Date.now();
+        const { phonemize } = await import('phonemizer');
+        await phonemize('Hi.', 'en-us');
+        status(`probe: phonemizer ok (${Date.now() - t0}ms)`);
+        if (activeId !== msg.id) return;
+        status(`probe: voice fetch ${msg.voice}`);
+        const t1 = Date.now();
+        const res = await Promise.race([
+          fetch(`https://huggingface.co/${MODEL_ID}/resolve/main/voices/${msg.voice}.bin`)
+            .catch((e) => ({ error: e?.message || String(e) })),
+          new Promise((resolve) => setTimeout(() => resolve(null), 20_000)),
+        ]);
+        status(
+          res == null
+            ? 'probe: voice fetch TIMED OUT (20s)'
+            : res.error
+              ? `probe: voice fetch failed: ${res.error}`
+              : `probe: voice fetch ${res.status} (${Date.now() - t1}ms)`,
+        );
+        if (activeId !== msg.id) return;
+      }
       status(`synthesizing (${loadedWith.device}/${loadedWith.dtype})`);
       // kokoro-js never close()s the splitter it creates for plain-string
       // input, so its generator withholds the final sentence and never

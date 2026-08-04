@@ -40,9 +40,16 @@ export class TtsController {
     player.unlock?.();
     let gotChunk = false;
     this.#set({ status: 'generating', progress: null, error: null, detail: null });
+    // Debug override: append ?tts=webgpu/fp32 (or wasm/q4, webgpu/q4f16, …)
+    // to the page URL to pin the synthesis backend for this tab.
+    let force;
+    try {
+      force = new URLSearchParams(globalThis.location?.search || '').get('tts') || undefined;
+    } catch { force = undefined; }
     const result = await this.client.speak({
       text: trimmed,
       voice,
+      force,
       onChunk: (samples, sampleRate) => {
         if (this.player !== player) return; // stale
         player.enqueue(samples, sampleRate);
