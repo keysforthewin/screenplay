@@ -36,7 +36,7 @@ export function PlayBeatButton({ getText, disabled }) {
   }
 
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       <button
         type="button"
         onClick={onClick}
@@ -45,9 +45,12 @@ export function PlayBeatButton({ getText, disabled }) {
       >
         {label}
       </button>
+      {busy && state.detail && (
+        <span style={{ color: 'var(--fg-muted)', fontSize: 12 }}>{state.detail}</span>
+      )}
       {state.status === 'error' && (
-        <span style={{ color: 'var(--danger, #c66)', fontSize: 12 }} title={state.error}>
-          TTS unavailable
+        <span style={{ color: 'var(--danger, #c66)', fontSize: 12 }}>
+          TTS failed: {state.error}
         </span>
       )}
     </span>

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { TtsClient } from '../web/src/tts/ttsClient.js';
 
 class FakeWorker {
@@ -86,5 +86,50 @@ describe('TtsClient', () => {
     const p = client.speak({ text: 'hi', voice: 'af_heart', onChunk: () => {} });
     worker.onmessageerror?.({});
     expect((await p).status).toBe('error');
+  });
+
+  it('routes status messages to onStatus', () => {
+    const { worker, client } = make();
+    const stages = [];
+    client.speak({ text: 'hi', voice: 'af_heart', onChunk: () => {}, onStatus: (t) => stages.push(t) });
+    worker.emit({ type: 'status', text: 'loading TTS engine' });
+    worker.emit({ type: 'status', text: 'synthesizing' });
+    expect(stages).toEqual(['loading TTS engine', 'synthesizing']);
+  });
+
+  it('watchdog: total silence resolves as an error naming the last stage', async () => {
+    vi.useFakeTimers();
+    try {
+      const { worker, client } = make();
+      const p = client.speak({ text: 'hi', voice: 'af_heart', onChunk: () => {} });
+      worker.emit({ type: 'status', text: 'loading model' });
+      vi.advanceTimersByTime(89_000); // messages reset the timer — not yet
+      worker.emit({ type: 'status', text: 'synthesizing' });
+      vi.advanceTimersByTime(89_000);
+      expect(client.active).not.toBe(null); // still waiting, watchdog kept resetting
+      vi.advanceTimersByTime(2_000); // 91s since the last message
+      const result = await p;
+      expect(result.status).toBe('error');
+      expect(result.message).toContain('synthesizing');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('watchdog does not fire after done/stop', async () => {
+    vi.useFakeTimers();
+    try {
+      const { worker, client } = make();
+      const p = client.speak({ text: 'hi', voice: 'af_heart', onChunk: () => {} });
+      worker.emit({ type: 'done', id: 1 });
+      expect(await p).toEqual({ status: 'done' });
+      vi.advanceTimersByTime(200_000); // must not throw / resolve anything else
+      const p2 = client.speak({ text: 'again', voice: 'af_heart', onChunk: () => {} });
+      client.stop();
+      expect(await p2).toEqual({ status: 'stopped' });
+      vi.advanceTimersByTime(200_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

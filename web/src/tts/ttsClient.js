@@ -3,6 +3,11 @@
 // read-through. Generation ids guard against stale chunks after stop():
 // only messages carrying the active id are delivered.
 
+// Any worker message resets this deadline. WASM synthesis blocks the worker
+// thread, so a slow-but-alive device can legitimately go quiet for a while —
+// keep this generous; it exists to catch dead workers, not slow ones.
+const WATCHDOG_MS = 90_000;
+
 export class TtsClient {
   constructor(createWorker) {
     this.createWorker =
@@ -10,7 +15,9 @@ export class TtsClient {
       (() => new Worker(new URL('./kokoroWorker.js', import.meta.url), { type: 'module' }));
     this.worker = null;
     this.nextId = 1;
-    this.active = null; // { id, onChunk, onProgress, resolve }
+    this.active = null; // { id, onChunk, onProgress, onStatus, resolve }
+    this.lastStatus = null;
+    this.watchdog = null;
   }
 
   #ensureWorker() {
@@ -26,6 +33,7 @@ export class TtsClient {
   }
 
   #workerFailed(message) {
+    clearTimeout(this.watchdog);
     // The worker is in an unknown state — discard it so the next speak()
     // starts fresh (model files re-fetch from HTTP cache, not the network).
     try { this.worker?.terminate?.(); } catch { /* already dead */ }
@@ -36,19 +44,43 @@ export class TtsClient {
     active.resolve({ status: 'error', message });
   }
 
+  // A silently dead worker (iOS OOM-kill fires no onerror) would otherwise
+  // leave the UI on "Generating…" forever — turn prolonged total silence into
+  // an error that names the last stage the worker reported.
+  #armWatchdog() {
+    clearTimeout(this.watchdog);
+    if (!this.active) return;
+    this.watchdog = setTimeout(() => {
+      this.#workerFailed(
+        `No TTS output for ${WATCHDOG_MS / 1000}s (last stage: ${this.lastStatus || 'starting'}) — ` +
+          'the engine likely crashed or this device is too slow.',
+      );
+    }, WATCHDOG_MS);
+  }
+
   #onMessage(msg) {
+    this.#armWatchdog();
     const active = this.active;
+    if (msg.type === 'status') {
+      this.lastStatus = msg.text;
+      active?.onStatus?.(msg.text);
+      return;
+    }
     if (msg.type === 'progress') {
+      this.lastStatus = 'downloading model';
       active?.onProgress?.(msg.loaded, msg.total);
       return;
     }
     if (!active || msg.id !== active.id) return; // stale generation
     if (msg.type === 'chunk') {
+      this.lastStatus = 'streaming audio';
       active.onChunk(msg.samples, msg.sampleRate, msg.text);
     } else if (msg.type === 'done') {
+      clearTimeout(this.watchdog);
       this.active = null;
       active.resolve({ status: 'done' });
     } else if (msg.type === 'error') {
+      clearTimeout(this.watchdog);
       this.active = null;
       active.resolve({ status: 'error', message: msg.message });
     }
@@ -56,17 +88,20 @@ export class TtsClient {
 
   // Resolves {status:'done'} after the worker has emitted every chunk,
   // {status:'stopped'} if superseded/stopped, {status:'error', message} on failure.
-  speak({ text, voice, onChunk, onProgress }) {
+  speak({ text, voice, onChunk, onProgress, onStatus }) {
     this.stop(); // one generation at a time
     const id = this.nextId++;
     const worker = this.#ensureWorker();
     return new Promise((resolve) => {
-      this.active = { id, onChunk, onProgress, resolve };
+      this.active = { id, onChunk, onProgress, onStatus, resolve };
+      this.lastStatus = null;
       worker.postMessage({ type: 'speak', id, text, voice });
+      this.#armWatchdog();
     });
   }
 
   stop() {
+    clearTimeout(this.watchdog);
     const active = this.active;
     if (!active) return;
     this.active = null;

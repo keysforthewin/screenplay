@@ -12,7 +12,7 @@ export class TtsController {
     this.client = client || getSharedTtsClient();
     this.createPlayer = createPlayer || (() => new ChunkPlayer());
     this.player = null;
-    this.state = { status: 'idle', progress: null, error: null };
+    this.state = { status: 'idle', progress: null, error: null, detail: null };
     this.listeners = new Set();
   }
 
@@ -39,7 +39,7 @@ export class TtsController {
     // lets us create/resume an audible AudioContext.
     player.unlock?.();
     let gotChunk = false;
-    this.#set({ status: 'generating', progress: null, error: null });
+    this.#set({ status: 'generating', progress: null, error: null, detail: null });
     const result = await this.client.speak({
       text: trimmed,
       voice,
@@ -47,7 +47,7 @@ export class TtsController {
         if (this.player !== player) return; // stale
         if (!gotChunk) {
           gotChunk = true;
-          this.#set({ status: 'playing', progress: null });
+          this.#set({ status: 'playing', progress: null, detail: null });
         }
         player.enqueue(samples, sampleRate);
       },
@@ -56,15 +56,18 @@ export class TtsController {
           this.#set({ status: 'loading', progress: total ? loaded / total : null });
         }
       },
+      onStatus: (text) => {
+        if (this.player === player && !gotChunk) this.#set({ detail: text });
+      },
     });
     if (this.player !== player) return false; // stop() or newer play() won
     if (result.status !== 'done') {
       this.player = null;
       player.stop();
       if (result.status === 'error') {
-        this.#set({ status: 'error', progress: null, error: result.message || 'TTS failed' });
+        this.#set({ status: 'error', progress: null, error: result.message || 'TTS failed', detail: null });
       } else {
-        this.#set({ status: 'idle', progress: null });
+        this.#set({ status: 'idle', progress: null, detail: null });
       }
       return false;
     }
@@ -72,7 +75,7 @@ export class TtsController {
     if (this.player !== player) return false; // stop() raced the drain
     this.player = null;
     player.stop(); // release the player on natural completion too
-    this.#set({ status: 'idle', progress: null });
+    this.#set({ status: 'idle', progress: null, detail: null });
     return true;
   }
 
@@ -82,7 +85,7 @@ export class TtsController {
     this.player = null;
     this.client.stop(); // resolves the in-flight speak as 'stopped'
     player.stop();
-    this.#set({ status: 'idle', progress: null, error: null });
+    this.#set({ status: 'idle', progress: null, error: null, detail: null });
   }
 }
 

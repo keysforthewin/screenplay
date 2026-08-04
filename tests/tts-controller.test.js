@@ -50,6 +50,15 @@ describe('TtsController', () => {
     expect(seen).toEqual(['generating', 'playing', 'idle']);
   });
 
+  it('exposes worker stage detail while generating, clears it once playing', async () => {
+    const { client, controller } = make();
+    controller.play('hello', 'af_heart');
+    client.opts.onStatus('loading TTS engine');
+    expect(controller.getState()).toMatchObject({ status: 'generating', detail: 'loading TTS engine' });
+    client.opts.onChunk(new Float32Array(4), 24000);
+    expect(controller.getState()).toMatchObject({ status: 'playing', detail: null });
+  });
+
   it('reports download progress while loading', async () => {
     const { client, controller } = make();
     controller.play('hello', 'af_heart');

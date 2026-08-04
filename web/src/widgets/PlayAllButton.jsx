@@ -65,9 +65,12 @@ export function PlayAllButton({ beats, onBeatChange }) {
           ⏭ Skip
         </button>
       )}
+      {running && state.status !== 'error' && state.detail && (
+        <span style={{ color: 'var(--fg-muted)', fontSize: 12 }}>{state.detail}</span>
+      )}
       {state.status === 'error' && (
-        <span style={{ color: 'var(--danger, #c66)', fontSize: 12 }} title={state.error}>
-          TTS unavailable
+        <span style={{ color: 'var(--danger, #c66)', fontSize: 12 }}>
+          TTS failed: {state.error}
         </span>
       )}
     </span>

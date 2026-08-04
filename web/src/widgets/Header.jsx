@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useConnectedUsers } from '../editor/PresenceContext.jsx';
 import { useProject } from '../project/ProjectContext.jsx';
@@ -27,10 +27,14 @@ function Dot({ user }) {
   );
 }
 
+// On small screens (≤900px, .meta hidden via CSS) everything but the brand
+// and the ✨ chat toggle collapses into the hamburger menu; on desktop the
+// burger is hidden and .meta renders inline as before.
 export function Header({ session, onLogout, chatOpen, onToggleChat }) {
   const users = useConnectedUsers();
   const project = useProject();
   const [managerOpen, setManagerOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const seen = new Map();
   for (const u of users) {
     const key = u?.name || Math.random();
@@ -38,6 +42,26 @@ export function Header({ session, onLogout, chatOpen, onToggleChat }) {
   }
   const list = Array.from(seen.values());
   const brand = project.title;
+  const closeMenu = () => setMenuOpen(false);
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setMenuOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [menuOpen]);
+
+  const navLinks = (
+    <>
+      {session?.is_admin && (
+        <Link to="/admin" onClick={closeMenu} title="Manage user project access">Admin</Link>
+      )}
+      <Link to="/about" onClick={closeMenu} title="Project name, synopsis & global dialogue style">About</Link>
+      <Link to="/" onClick={closeMenu} title="Table of contents — all beats in this project">TOC</Link>
+      <Link to="/playground" onClick={closeMenu} title="Try any fal.ai model with your own reference media">Playground</Link>
+    </>
+  );
+
   return (
     <header className="app-header">
       <button
@@ -50,16 +74,23 @@ export function Header({ session, onLogout, chatOpen, onToggleChat }) {
         {brand}
       </button>
       <div className="meta">
-        {session?.is_admin && (
-          <Link to="/admin" title="Manage user project access">Admin</Link>
-        )}
-        <Link to="/about" title="Project name, synopsis & global dialogue style">About</Link>
-        <Link to="/" title="Table of contents — all beats in this project">TOC</Link>
-        <Link to="/playground" title="Try any fal.ai model with your own reference media">Playground</Link>
+        {navLinks}
         <SavedIndicator />
         <div className="presence-dots">{list.map((u, i) => <Dot key={i} user={u} />)}</div>
         <span>signed in as <strong>{session.username}</strong></span>
         <button onClick={onLogout} title="Clear local session">Logout</button>
+      </div>
+      <div className="header-actions">
+        <button
+          type="button"
+          className={'nav-burger' + (menuOpen ? ' is-active' : '')}
+          aria-expanded={menuOpen}
+          aria-controls="mobile-menu"
+          aria-label="Menu"
+          onClick={() => setMenuOpen((o) => !o)}
+        >
+          ☰
+        </button>
         <button
           type="button"
           className={'chat-toggle' + (chatOpen ? ' is-active' : '')}
@@ -71,6 +102,22 @@ export function Header({ session, onLogout, chatOpen, onToggleChat }) {
           ✨
         </button>
       </div>
+      {menuOpen && (
+        <>
+          <div className="mobile-menu-backdrop" onClick={closeMenu} />
+          <nav id="mobile-menu" className="mobile-menu">
+            {navLinks}
+            <div className="mobile-menu-row">
+              <SavedIndicator />
+              <div className="presence-dots">{list.map((u, i) => <Dot key={i} user={u} />)}</div>
+            </div>
+            <div className="mobile-menu-row">
+              <span>signed in as <strong>{session.username}</strong></span>
+              <button onClick={() => { closeMenu(); onLogout(); }} title="Clear local session">Logout</button>
+            </div>
+          </nav>
+        </>
+      )}
       <ProjectManagerDialog
         open={managerOpen}
         onClose={() => setManagerOpen(false)}

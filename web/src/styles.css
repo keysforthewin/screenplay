@@ -93,7 +93,7 @@ select option {
 .app-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 16px;
   padding: 12px 24px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elevated);
@@ -125,6 +125,93 @@ select option {
   gap: 16px;
   color: var(--fg-muted);
   font-size: 13px;
+  margin-left: auto; /* pins meta+actions to the right edge */
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.app-header .nav-burger {
+  display: none; /* mobile-only; see the ≤900px block below */
+  font-size: 16px;
+  padding: 4px 10px;
+}
+
+.app-header .nav-burger.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+/* Dropdown panel under the sticky header (its containing block). The links
+   duplicate .meta's; only one of the two is ever visible per breakpoint. */
+.mobile-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.mobile-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 20px 16px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.3);
+}
+
+.mobile-menu a {
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 15px;
+}
+
+.mobile-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 4px 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .app-header {
+    padding: 10px 16px;
+    gap: 12px;
+  }
+  .app-header .meta {
+    display: none;
+  }
+  .app-header .brand {
+    margin-right: auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .app-header .nav-burger {
+    display: inline-flex;
+  }
+}
+
+@media (min-width: 901px) {
+  /* Menu opened on a narrow window survives a resize — never show it wide. */
+  .mobile-menu,
+  .mobile-menu-backdrop {
+    display: none;
+  }
 }
 
 .presence-dots {

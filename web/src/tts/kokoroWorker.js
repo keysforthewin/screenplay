@@ -14,7 +14,15 @@ let activeId = 0;
 
 let TextSplitterStreamCtor = null;
 
+// Stage breadcrumbs shown under the Play button and named by the client's
+// watchdog when the worker goes silent — the only visibility we have into
+// where synthesis stalls on devices we can't attach a debugger to (iOS).
+function status(text) {
+  postMessage({ type: 'status', text });
+}
+
 async function loadModel() {
+  status('loading TTS engine');
   const { KokoroTTS, TextSplitterStream } = await import('kokoro-js');
   TextSplitterStreamCtor = TextSplitterStream;
   let device = 'wasm';
@@ -33,6 +41,7 @@ async function loadModel() {
     }
   }
   const dtype = device === 'webgpu' ? 'fp32' : 'q8';
+  status(`loading model (${device}/${dtype})`);
   const files = new Map();
   let lastPct = -1;
   return KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
@@ -70,6 +79,7 @@ self.onmessage = async (e) => {
     ttsPromise ||= loadModel();
     const tts = await ttsPromise;
     if (activeId !== msg.id) return; // stopped while loading
+    status('synthesizing');
     // kokoro-js never close()s the splitter it creates for plain-string input,
     // so its generator withholds the final sentence and never terminates
     // (no `done`, UI stuck on Stop). Own the splitter lifecycle instead.
