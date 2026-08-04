@@ -18,6 +18,15 @@ export default defineConfig({
   root,
   base,
   plugins: [react()],
+  resolve: {
+    alias: [
+      // kokoro-js's espeak dependency ("phonemizer") ships a 1.3MB asm.js
+      // bundle that crashes Apple WebKit's parser — every iOS browser freezes
+      // evaluating it. Swap in our shim over the real-WASM espeak-ng build
+      // (same engine, same output). Exact-match so only the bare id rewrites.
+      { find: /^phonemizer$/, replacement: path.resolve(root, 'src/tts/phonemizerShim.js') },
+    ],
+  },
   // kokoroWorker.js dynamically imports kokoro-js, which forces Rollup to
   // code-split the worker bundle — the default 'iife' worker format can't
   // support that, so the TTS worker (only reachable once something imports
