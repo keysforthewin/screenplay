@@ -1,6 +1,7 @@
 import { getBeat, getPlot } from '../mongo/plots.js';
 import { getCharacter } from '../mongo/characters.js';
-import { beatUrl, characterUrl, notesUrl } from '../web/links.js';
+import { getSet } from '../mongo/sets.js';
+import { beatUrl, characterUrl, notesUrl, setUrl } from '../web/links.js';
 
 const CURRENT_BEAT = ':current:';
 const MAX_URLS = 10;
@@ -20,6 +21,8 @@ const TOOL_TO_ENTITY = {
   append_to_beat_body: { kind: 'beat', from: 'beat', allowCurrent: true },
   link_character_to_beat: { kind: 'beat', from: 'beat', allowCurrent: true },
   unlink_character_from_beat: { kind: 'beat', from: 'beat', allowCurrent: true },
+  link_set_to_beat: { kind: 'beat', from: 'beat', allowCurrent: true },
+  unlink_set_from_beat: { kind: 'beat', from: 'beat', allowCurrent: true },
 
   // beats — resolved by name post-hoc
   create_beat: { kind: 'beat', from: 'name' },
@@ -30,6 +33,22 @@ const TOOL_TO_ENTITY = {
   revise_character: { kind: 'character', from: 'identifier' },
   create_character: { kind: 'character', from: 'name' },
   bulk_update_character_field: { kind: 'character', bulk: true },
+
+  // sets
+  get_set: { kind: 'set', from: 'identifier' },
+  create_set: { kind: 'set', from: 'name' },
+  delete_set: { kind: 'set', from: 'identifier' },
+
+  // sets — image/attachment tools, all identify the target via `set`
+  add_set_image: { kind: 'set', from: 'set' },
+  list_set_images: { kind: 'set', from: 'set' },
+  set_main_set_image: { kind: 'set', from: 'set' },
+  remove_set_image: { kind: 'set', from: 'set' },
+  attach_library_image_to_set: { kind: 'set', from: 'set' },
+  add_set_attachment: { kind: 'set', from: 'set' },
+  list_set_attachments: { kind: 'set', from: 'set' },
+  remove_set_attachment: { kind: 'set', from: 'set' },
+  attach_library_attachment_to_set: { kind: 'set', from: 'set' },
 
   // director's notes (singleton page — any touch resolves to /notes)
   list_director_notes: { kind: 'notes' },
@@ -82,6 +101,12 @@ export function recordEntityTouch(toolName, input, touched) {
     }
     const raw = String(inp[desc.from] ?? '').trim();
     if (raw) touched.characters.add(raw);
+    return;
+  }
+
+  if (desc.kind === 'set') {
+    const raw = String(inp[desc.from] ?? '').trim();
+    if (raw) touched.sets.add(raw);
   }
 }
 
@@ -136,6 +161,12 @@ export async function resolveEntityLinks(touched, context = null) {
     push(characterUrl(context?.projectTitle, character));
   }
 
+  for (const ref of touched.sets || []) {
+    if (urls.length >= MAX_URLS) break;
+    const set = await safeCall(() => getSet(context?.projectId, ref));
+    push(setUrl(context?.projectTitle, set));
+  }
+
   return urls.slice(0, MAX_URLS);
 }
 
@@ -152,7 +183,7 @@ export function appendEntityLinks(text, urls) {
 }
 
 export function createTouchedEntities() {
-  return { beats: new Set(), characters: new Set(), notes: false };
+  return { beats: new Set(), characters: new Set(), sets: new Set(), notes: false };
 }
 
 // Drop every touch accumulated so far. Called by the agent loop when a
@@ -162,5 +193,6 @@ export function clearTouchedEntities(touched) {
   if (!touched) return;
   touched.beats.clear();
   touched.characters.clear();
+  touched.sets.clear();
   touched.notes = false;
 }

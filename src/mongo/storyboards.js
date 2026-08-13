@@ -80,6 +80,7 @@
 //   shot_type: string | null          (one of SHOT_TYPES)
 //   transition_in: string | null      (short continuity note, ≤ MAX_TRANSITION_LEN)
 //   characters_in_scene: string[]     (deduped, stripped names)
+//   sets_in_scene: string[]           (deduped, stripped set names — where the shot plays)
 //   created_at, updated_at: Date
 
 import { ObjectId } from 'mongodb';
@@ -364,6 +365,9 @@ function backfill(doc) {
     characters_in_scene: Array.isArray(doc.characters_in_scene)
       ? doc.characters_in_scene.filter((s) => typeof s === 'string')
       : [],
+    sets_in_scene: Array.isArray(doc.sets_in_scene)
+      ? doc.sets_in_scene.filter((s) => typeof s === 'string')
+      : [],
   };
 }
 
@@ -445,6 +449,7 @@ export async function createStoryboard({
   shotType = null,
   transitionIn = null,
   charactersInScene = [],
+  setsInScene = [],
 } = {}) {
   if (!beatId) throw new Error('beatId required');
   const pid = await resolveProjectId(projectId);
@@ -497,6 +502,7 @@ export async function createStoryboard({
     shot_type: normalizedShotType,
     transition_in: sanitizeTransition(transitionIn),
     characters_in_scene: sanitizeCharacterList(charactersInScene),
+    sets_in_scene: sanitizeCharacterList(setsInScene),
     created_at: now,
     updated_at: now,
   };
@@ -570,10 +576,10 @@ export async function updateStoryboard(projectId, id, patch) {
       }
     } else if (k === 'transition_in') {
       set[k] = sanitizeTransition(v);
-    } else if (k === 'characters_in_scene') {
+    } else if (k === 'characters_in_scene' || k === 'sets_in_scene') {
       if (!Array.isArray(v)) {
         throw new Error(
-          `update_storyboard: characters_in_scene must be an array of strings`,
+          `update_storyboard: ${k} must be an array of strings`,
         );
       }
       set[k] = sanitizeCharacterList(v);

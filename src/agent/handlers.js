@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
 import * as Characters from '../mongo/characters.js';
 import * as Plots from '../mongo/plots.js';
+import * as Sets from '../mongo/sets.js';
 import * as Prompts from '../mongo/prompts.js';
 import * as DirectorNotes from '../mongo/directorNotes.js';
 import * as Files from '../mongo/files.js';
@@ -12,7 +13,7 @@ import { getProjectByTitle, listProjects } from '../mongo/projects.js';
 import { setCurrentProjectId, setHistoryClearedAt } from '../mongo/channelState.js';
 import * as Gateway from '../web/gateway.js';
 import { kickoffLibraryVisionSeed } from '../web/libraryVisionWorker.js';
-import { aboutUrl, beatUrl, characterUrl, homeUrl, notesUrl, withSpaLink } from '../web/links.js';
+import { aboutUrl, beatUrl, characterUrl, homeUrl, notesUrl, setUrl, withSpaLink } from '../web/links.js';
 import * as Tmdb from '../tmdb/client.js';
 import * as Tavily from '../tavily/client.js';
 import { buildImagePrompt } from '../gemini/promptBuilder.js';
@@ -82,6 +83,7 @@ function formatMovedFromSuffix(movedFrom) {
     beat: 'beat',
     character: 'character',
     director_note: "director's note",
+    set: 'set',
   };
   const label = labelByType[movedFrom.prior_owner_type] || movedFrom.prior_owner_type;
   if (movedFrom.prior_owner_name) {
@@ -963,6 +965,24 @@ async function resolveEditTarget(context, { collection, identifier, field }) {
       urlForLink: characterUrl(context?.projectTitle, c),
     };
   }
+  if (collection === 'set') {
+    if (typeof identifier !== 'string' || !identifier.trim()) {
+      throw new Error('`identifier` is required for set.');
+    }
+    const s = await Sets.getSet(context?.projectId, identifier);
+    if (!s) throw new Error(`No set found for "${identifier}".`);
+    if (field !== 'name' && field !== 'description') {
+      throw new Error(`set field must be name or description; got "${field}".`);
+    }
+    return {
+      entityType: 'set',
+      entityId: s._id.toString(),
+      gatewayField: field,
+      currentValue: String(s[field] || ''),
+      displayName: `${s.name}.${field}`,
+      urlForLink: setUrl(context?.projectTitle, s),
+    };
+  }
   if (collection === 'director_note') {
     if (field !== 'text') {
       throw new Error(`director_note field must be "text"; got "${field}".`);
@@ -1074,7 +1094,7 @@ export const HANDLERS = {
     }
     const { collection, identifier, field, edits } = input || {};
 
-    const VALID_COLLECTIONS = ['beat', 'character', 'plot', 'director_note'];
+    const VALID_COLLECTIONS = ['beat', 'character', 'plot', 'director_note', 'set'];
     if (!VALID_COLLECTIONS.includes(collection)) {
       return `Tool error (edit): \`collection\` must be one of ${VALID_COLLECTIONS.join(', ')}; got ${JSON.stringify(collection)}.`;
     }
@@ -1213,16 +1233,20 @@ export const HANDLERS = {
         if (!Array.isArray(value) || value.some((s) => typeof s !== 'string')) {
           return 'Tool error (set_field): beat.characters must be an array of strings.';
         }
+      } else if (field === 'sets') {
+        if (!Array.isArray(value) || value.some((s) => typeof s !== 'string')) {
+          return 'Tool error (set_field): beat.sets must be an array of strings.';
+        }
       } else if (field === 'scene_sheet_image_id') {
         if (value !== null && (typeof value !== 'string' || !/^[a-f0-9]{24}$/i.test(value))) {
           return 'Tool error (set_field): beat.scene_sheet_image_id must be a 24-char hex string or null.';
         }
       } else {
-        return `Tool error (set_field): beat field must be one of order, characters, scene_sheet_image_id; got "${field}". Setting order=N moves the beat to position N and renumbers all beats automatically (you never set beat numbers by hand). For text fields (name, desc, body) use \`edit\` instead.`;
+        return `Tool error (set_field): beat field must be one of order, characters, sets, scene_sheet_image_id; got "${field}". Setting order=N moves the beat to position N and renumbers all beats automatically (you never set beat numbers by hand). For text fields (name, desc, body) use \`edit\` instead.`;
       }
       const beat = await Gateway.updateBeatViaGateway(context?.projectId, identifier, { [field]: value });
       const display =
-        field === 'characters'
+        field === 'characters' || field === 'sets'
           ? `[${value.map((s) => JSON.stringify(s)).join(', ')}]`
           : field === 'order'
             ? String(beat.order)
@@ -1246,7 +1270,7 @@ export const HANDLERS = {
   },
 
   async create_character(input, context = null) {
-    const c = await Characters.createCharacter({ ...input, projectId: context?.projectId });
+    const c = await Gateway.createCharacterViaGateway({ ...input, projectId: context?.projectId });
     const note = await maybeAutoFetchActorPortrait(context?.projectId, c._id.toString());
     const base = `Created character ${c.name} (_id ${c._id}).${note || ''}`;
     return withSpaLink(
@@ -1430,6 +1454,53 @@ export const HANDLERS = {
     await Images.deleteImages(res.image_ids);
     await Attachments.deleteAttachments(res.attachment_ids);
     return `Deleted character "${res.name}" — unlinked from ${unlinked_from} beat(s), removed ${res.image_ids.length} image(s) and ${res.attachment_ids.length} attachment(s).`;
+  },
+
+  async list_sets(_input = {}, context = null) {
+    const list = await Sets.listSets(context?.projectId);
+    return compact(
+      list.map((s) => ({
+        _id: s._id.toString(),
+        name: s.name,
+        description: (s.description || '').trim().slice(0, 100),
+      })),
+    );
+  },
+
+  async get_set({ identifier } = {}, context = null) {
+    const s = await Sets.getSet(context?.projectId, identifier);
+    if (!s) return `No set found for "${identifier}".`;
+    return withSpaLink(
+      compact(withoutImageFilenames(s)),
+      setUrl(context?.projectTitle, s),
+    );
+  },
+
+  async create_set({ name, description } = {}, context = null) {
+    const s = await Gateway.createSetViaGateway({ projectId: context?.projectId, name, description });
+    return withSpaLink(
+      `Created set ${s.name} (_id ${s._id}).`,
+      setUrl(context?.projectTitle, s),
+    );
+  },
+
+  async delete_set({ identifier } = {}, context = null) {
+    const existing = await Sets.getSet(context?.projectId, identifier);
+    if (!existing) return `No set found for "${identifier}".`;
+    const res = await Gateway.deleteSetViaGateway(context?.projectId, existing._id.toString());
+    return `Deleted set "${res.name}" — unlinked from ${res.unlinked_from} beat(s), removed ${res.image_ids.length} image(s) and ${res.attachment_ids.length} attachment(s).`;
+  },
+
+  async search_sets({ query }, context = null) {
+    const results = await Sets.searchSets(context?.projectId, query);
+    return compact(
+      results.map((s) => ({
+        _id: s._id.toString(),
+        name: s.name,
+        matched_fields: s.matched_fields,
+        preview: s.preview,
+      })),
+    );
   },
 
   async get_character_template(_input = {}, context = null) {
@@ -1915,6 +1986,26 @@ export const HANDLERS = {
     );
   },
 
+  async link_set_to_beat({ beat, set } = {}, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
+    const existing = await Sets.getSet(context?.projectId, set);
+    if (!existing) return `No set found for "${set}". Create it first with create_set.`;
+    const updated = await Plots.linkSetToBeat(context?.projectId, target._id.toString(), existing.name);
+    return withSpaLink(
+      `Linked ${existing.name} to beat "${updated.name}". Sets now: ${(updated.sets || []).join(', ') || '(none)'}.`,
+      beatUrl(context?.projectTitle, updated),
+    );
+  },
+
+  async unlink_set_from_beat({ beat, set } = {}, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
+    const updated = await Plots.unlinkSetFromBeat(context?.projectId, target._id.toString(), set);
+    return withSpaLink(
+      `Unlinked ${set} from beat "${updated.name}". Sets now: ${(updated.sets || []).join(', ') || '(none)'}.`,
+      beatUrl(context?.projectTitle, updated),
+    );
+  },
+
   async set_current_beat({ identifier }, context = null) {
     const b = await Plots.setCurrentBeat(context?.projectId, identifier);
     return `Current beat is now "${b.name}" (_id ${b._id}).`;
@@ -1929,87 +2020,6 @@ export const HANDLERS = {
   async clear_current_beat(_input = {}, context = null) {
     await Plots.clearCurrentBeat(context?.projectId);
     return 'Current beat cleared.';
-  },
-
-  async add_beat_image({ beat, source_url, filename, caption, set_as_main }, context = null) {
-    const target = await resolveBeat(context?.projectId, beat);
-    const file = await Images.uploadImageFromUrl(context?.projectId, {
-      sourceUrl: source_url,
-      filename,
-      ownerType: 'beat',
-      ownerId: target._id,
-    });
-    const meta = {
-      _id: file._id,
-      filename: file.filename,
-      content_type: file.content_type,
-      size: file.size,
-      source: 'upload',
-      prompt: null,
-      generated_by: null,
-      caption: caption?.trim() || null,
-      uploaded_at: file.uploaded_at,
-    };
-    const { is_main } = await Gateway.addBeatImageViaGateway({
-      projectId: context?.projectId,
-      beatId: target._id.toString(),
-      imageMeta: meta,
-      setAsMain: set_as_main,
-    });
-    const text = `Added image to beat "${target.name}".\n${compact({
-      _id: meta._id.toString(),
-      content_type: meta.content_type,
-      size: meta.size,
-      is_main,
-    })}`;
-    return withSpaLink(text, beatUrl(context?.projectTitle, target));
-  },
-
-  async list_beat_images({ beat } = {}, context = null) {
-    const target = await resolveBeat(context?.projectId, beat);
-    const text = compact({
-      beat: { _id: target._id.toString(), name: target.name },
-      main_image_id: target.main_image_id ? target.main_image_id.toString() : null,
-      images: (target.images || []).map((i) => ({
-        _id: i._id.toString(),
-        content_type: i.content_type,
-        size: i.size,
-        source: i.source || 'upload',
-        prompt: i.prompt || null,
-        caption: i.caption || null,
-        uploaded_at: i.uploaded_at,
-      })),
-    });
-    return withSpaLink(text, beatUrl(context?.projectTitle, target));
-  },
-
-  async set_main_beat_image({ beat, image_id }, context = null) {
-    const target = await resolveBeat(context?.projectId, beat);
-    const updated = await Gateway.setBeatMainImageViaGateway({
-      projectId: context?.projectId,
-      beatId: target._id.toString(),
-      imageId: image_id,
-    });
-    return withSpaLink(
-      `Main image for beat "${updated.name}" set to ${updated.main_image_id.toString()}.`,
-      beatUrl(context?.projectTitle, updated),
-    );
-  },
-
-  async remove_beat_image({ beat, image_id }, context = null) {
-    const target = await resolveBeat(context?.projectId, beat);
-    const { removed, beat: updated } = await Gateway.removeBeatImageViaGateway({
-      projectId: context?.projectId,
-      beatId: target._id.toString(),
-      imageId: image_id,
-    });
-    await Images.deleteImage(removed);
-    return withSpaLink(
-      `Removed image ${removed.toString()} from beat "${updated.name}". Main image is now ${
-        updated.main_image_id ? updated.main_image_id.toString() : 'none'
-      }.`,
-      beatUrl(context?.projectTitle, updated),
-    );
   },
 
   async list_library_images(_input = {}, context = null) {
@@ -2070,41 +2080,6 @@ export const HANDLERS = {
     } catch (e) {
       return `Error: ${e.message}`;
     }
-  },
-
-  async attach_library_image_to_beat({ image_id, beat, set_as_main }, context = null) {
-    const target = await resolveBeat(context?.projectId, beat);
-    const file = await Images.findImageFile(image_id);
-    if (!file) throw new Error(`Image not found: ${image_id}`);
-    if (
-      file.metadata?.owner_type === 'beat' &&
-      file.metadata?.owner_id &&
-      file.metadata.owner_id.equals(target._id)
-    ) {
-      return withSpaLink(
-        `Image ${image_id} is already attached to beat "${target.name}".`,
-        beatUrl(context?.projectTitle, target),
-      );
-    }
-    const movedFrom = await Files.detachImageFromCurrentOwner(file);
-    await Images.setImageOwner(image_id, { ownerType: 'beat', ownerId: target._id });
-    const meta = {
-      _id: file._id,
-      filename: file.filename,
-      content_type: file.contentType,
-      size: file.length,
-      source: file.metadata?.source || 'upload',
-      prompt: file.metadata?.prompt || null,
-      generated_by: file.metadata?.generated_by || null,
-      caption: null,
-      uploaded_at: file.uploadDate,
-    };
-    const { is_main } = await Plots.pushBeatImage(context?.projectId, target._id.toString(), meta, set_as_main);
-    const moveSuffix = formatMovedFromSuffix(movedFrom);
-    return withSpaLink(
-      `Attached image to beat "${target.name}"${is_main ? ' (now main image)' : ''}${moveSuffix}.`,
-      beatUrl(context?.projectTitle, target),
-    );
   },
 
   async move_image_to_library({ image_id } = {}, context = null) {
@@ -2186,6 +2161,30 @@ export const HANDLERS = {
     );
   },
 
+  async attach_library_image_to_set({ image_id, set, set_as_main, caption } = {}, context = null) {
+    const res = await Files.attachExistingImageToSet({
+      projectId: context?.projectId,
+      set,
+      imageId: image_id,
+      caption,
+      setAsMain: set_as_main,
+    });
+    const url = setUrl(context?.projectTitle, { name: res.set });
+    if (res.already_attached) {
+      return withSpaLink(
+        `Image ${image_id} is already attached to set "${res.set}".`,
+        url,
+      );
+    }
+    const moveSuffix = formatMovedFromSuffix(res.moved_from);
+    return withSpaLink(
+      `Attached image to set "${res.set || set}"${
+        res.is_main ? ' (now main image)' : ''
+      }${moveSuffix}.`,
+      url,
+    );
+  },
+
   async add_library_attachment({ source_url, filename, caption } = {}, context = null) {
     const file = await Attachments.uploadAttachmentFromUrl(context?.projectId, {
       sourceUrl: source_url,
@@ -2212,27 +2211,6 @@ export const HANDLERS = {
     );
   },
 
-  async attach_library_attachment_to_beat({ attachment_id, beat, caption } = {}, context = null) {
-    const target = await resolveBeat(context?.projectId, beat);
-    const res = await Attachments.attachExistingAttachmentToBeat({
-      projectId: context?.projectId,
-      beat: target._id.toString(),
-      attachmentId: attachment_id,
-      caption,
-    });
-    if (res.already_attached) {
-      return withSpaLink(
-        `Attachment ${attachment_id} is already attached to beat "${target.name}".`,
-        beatUrl(context?.projectTitle, target),
-      );
-    }
-    const moveSuffix = formatMovedFromSuffix(res.moved_from);
-    return withSpaLink(
-      `Attached attachment to beat "${target.name}"${moveSuffix}.`,
-      beatUrl(context?.projectTitle, target),
-    );
-  },
-
   async attach_library_attachment_to_character({ attachment_id, character, caption } = {}, context = null) {
     const res = await Attachments.attachExistingAttachmentToCharacter({
       projectId: context?.projectId,
@@ -2250,6 +2228,27 @@ export const HANDLERS = {
     const moveSuffix = formatMovedFromSuffix(res.moved_from);
     return withSpaLink(
       `Attached attachment to character "${res.character}"${moveSuffix}.`,
+      url,
+    );
+  },
+
+  async attach_library_attachment_to_set({ attachment_id, set, caption } = {}, context = null) {
+    const res = await Attachments.attachExistingAttachmentToSet({
+      projectId: context?.projectId,
+      set,
+      attachmentId: attachment_id,
+      caption,
+    });
+    const url = setUrl(context?.projectTitle, { name: res.set });
+    if (res.already_attached) {
+      return withSpaLink(
+        `Attachment ${attachment_id} is already attached to set "${res.set}".`,
+        url,
+      );
+    }
+    const moveSuffix = formatMovedFromSuffix(res.moved_from);
+    return withSpaLink(
+      `Attached attachment to set "${res.set}"${moveSuffix}.`,
       url,
     );
   },
@@ -2837,60 +2836,54 @@ export const HANDLERS = {
     );
   },
 
-  async add_beat_attachment({ beat, source_url, filename, caption }, context = null) {
-    const target = await resolveBeat(context?.projectId, beat);
-    const file = await Attachments.uploadAttachmentFromUrl(context?.projectId, {
+  async add_set_image({ set, source_url, filename, caption, set_as_main }, context = null) {
+    const meta = await Files.attachImageToSet({
+      projectId: context?.projectId,
+      set,
       sourceUrl: source_url,
       filename,
-      ownerType: 'beat',
-      ownerId: target._id,
+      caption,
+      setAsMain: set_as_main,
     });
-    const meta = {
-      _id: file._id,
-      filename: file.filename,
-      content_type: file.content_type,
-      size: file.size,
-      caption: caption?.trim() || null,
-      uploaded_at: file.uploaded_at,
-    };
-    await Plots.pushBeatAttachment(context?.projectId, target._id.toString(), meta);
-    const text = `Added attachment to beat "${target.name}".\n${compact({
+    const text = `Added image to ${meta.set || set}.\n${compact({
       _id: meta._id.toString(),
-      filename: meta.filename,
       content_type: meta.content_type,
       size: meta.size,
-      caption: meta.caption,
+      is_main: meta.is_main,
     })}`;
-    return withSpaLink(text, beatUrl(context?.projectTitle, target));
+    return withSpaLink(text, setUrl(context?.projectTitle, { name: meta.set }));
   },
 
-  async list_beat_attachments({ beat } = {}, context = null) {
-    const target = await resolveBeat(context?.projectId, beat);
+  async list_set_images({ set }, context = null) {
+    const { set: name, images, main_image_id } = await Files.listSetImages(context?.projectId, set);
     const text = compact({
-      beat: { _id: target._id.toString(), name: target.name },
-      attachments: (target.attachments || []).map((a) => ({
-        _id: a._id.toString(),
-        filename: a.filename,
-        content_type: a.content_type,
-        size: a.size,
-        caption: a.caption || null,
-        uploaded_at: a.uploaded_at,
+      main_image_id: main_image_id ? main_image_id.toString() : null,
+      images: images.map((i) => ({
+        _id: i._id.toString(),
+        content_type: i.content_type,
+        size: i.size,
+        caption: i.caption,
+        uploaded_at: i.uploaded_at,
       })),
     });
-    return withSpaLink(text, beatUrl(context?.projectTitle, target));
+    return withSpaLink(text, setUrl(context?.projectTitle, { name }));
   },
 
-  async remove_beat_attachment({ beat, attachment_id }, context = null) {
-    const target = await resolveBeat(context?.projectId, beat);
-    const { removed, beat: updated } = await Plots.pullBeatAttachment(
-      context?.projectId,
-      target._id.toString(),
-      attachment_id,
-    );
-    await Attachments.deleteAttachment(removed);
+  async set_main_set_image({ set, image_id }, context = null) {
+    const res = await Files.setMainSetImage({ projectId: context?.projectId, set, imageId: image_id });
     return withSpaLink(
-      `Removed attachment ${removed.toString()} from beat "${updated.name}".`,
-      beatUrl(context?.projectTitle, updated),
+      `Main image for ${res.set} set to ${res.main_image_id.toString()}.`,
+      setUrl(context?.projectTitle, { name: res.set }),
+    );
+  },
+
+  async remove_set_image({ set, image_id }, context = null) {
+    const res = await Files.removeSetImage({ projectId: context?.projectId, set, imageId: image_id });
+    return withSpaLink(
+      `Removed image ${res.removed.toString()} from ${res.set}. Main image is now ${
+        res.main_image_id ? res.main_image_id.toString() : 'none'
+      }.`,
+      setUrl(context?.projectTitle, { name: res.set }),
     );
   },
 
@@ -2938,6 +2931,53 @@ export const HANDLERS = {
     return withSpaLink(
       `Removed attachment ${res.removed.toString()} from ${res.character}.`,
       characterUrl(context?.projectTitle, { name: res.character }),
+    );
+  },
+
+  async add_set_attachment({ set, source_url, filename, caption }, context = null) {
+    const meta = await Attachments.attachToSet({
+      projectId: context?.projectId,
+      set,
+      sourceUrl: source_url,
+      filename,
+      caption,
+    });
+    const text = `Added attachment to ${meta.set}.\n${compact({
+      _id: meta._id.toString(),
+      filename: meta.filename,
+      content_type: meta.content_type,
+      size: meta.size,
+      caption: meta.caption,
+    })}`;
+    return withSpaLink(text, setUrl(context?.projectTitle, { name: meta.set }));
+  },
+
+  async list_set_attachments({ set }, context = null) {
+    const { set: name, _id, attachments } =
+      await Attachments.listSetAttachments(context?.projectId, set);
+    const text = compact({
+      set: { _id: _id.toString(), name },
+      attachments: attachments.map((a) => ({
+        _id: a._id.toString(),
+        filename: a.filename,
+        content_type: a.content_type,
+        size: a.size,
+        caption: a.caption || null,
+        uploaded_at: a.uploaded_at,
+      })),
+    });
+    return withSpaLink(text, setUrl(context?.projectTitle, { name }));
+  },
+
+  async remove_set_attachment({ set, attachment_id }, context = null) {
+    const res = await Attachments.removeSetAttachment({
+      projectId: context?.projectId,
+      set,
+      attachmentId: attachment_id,
+    });
+    return withSpaLink(
+      `Removed attachment ${res.removed.toString()} from ${res.set}.`,
+      setUrl(context?.projectTitle, { name: res.set }),
     );
   },
 

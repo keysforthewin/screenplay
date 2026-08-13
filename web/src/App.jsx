@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { Login } from './routes/Login.jsx';
 import { Toc } from './routes/Toc.jsx';
 import { Beat } from './routes/Beat.jsx';
 import { Character } from './routes/Character.jsx';
+import { Set } from './routes/Set.jsx';
 import { Library } from './routes/Library.jsx';
 import { StoryboardIndex } from './routes/StoryboardIndex.jsx';
 import { StoryboardBeat } from './routes/StoryboardBeat.jsx';
@@ -34,6 +35,15 @@ function LegacyChatRedirect() {
   return <Navigate to="/" replace />;
 }
 
+// Beat artwork is retired — sets own artwork now. Old /artwork/:order
+// bookmarks bounce to the beat's writing page. `to` has no leading /p/ prefix
+// so it resolves relative to this nested <Routes>, same as the other routes
+// here — preserving the project prefix without knowing the project title.
+function ArtworkRedirect() {
+  const { order } = useParams();
+  return <Navigate to={`/beat/${order}`} replace />;
+}
+
 function ProjectShell({ session, onLogout }) {
   const [chatOpen, setChatOpen] = useState(() => loadChatOpen());
   // Mount the chat on first open, then keep it mounted (hidden via CSS) so an
@@ -55,8 +65,9 @@ function ProjectShell({ session, onLogout }) {
         <Routes>
           <Route path="/" element={<Toc session={session} />} />
           <Route path="/beat/:order" element={<Beat session={session} section="writing" />} />
-          <Route path="/artwork/:order" element={<Beat session={session} section="artwork" />} />
+          <Route path="/artwork/:order" element={<ArtworkRedirect />} />
           <Route path="/character/:name" element={<Character session={session} />} />
+          <Route path="/set/:name" element={<Set session={session} />} />
           <Route path="/library" element={<Library session={session} />} />
           <Route path="/storyboard" element={<StoryboardIndex session={session} />} />
           <Route path="/storyboard/:order" element={<StoryboardBeat session={session} />} />

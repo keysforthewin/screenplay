@@ -1,13 +1,18 @@
 // Auto-select reference images for a storyboard frame. Builds a candidate
-// pool from the beat's own artwork plus each scene character's artwork (the
-// "Artwork" sections — NOT every reference image owned by the beat/character),
+// pool from each scene set's artwork plus each scene character's artwork (the
+// "Artwork" sections — NOT every reference image owned by the set/character),
 // asks the LLM selector to pick the most useful ones, and persists them onto
 // the frame via the gateway so they show up in the SPA for review. Only fills
 // frames that have no references yet; never throws.
+//
+// The old 'beat' source is retired: beat artwork migrated onto set entities
+// (scripts/migrate-beat-artwork-to-sets.js), so location plates now arrive via
+// the shot's sets_in_scene (falling back to the beat's full set roster).
 
 import { logger } from '../log.js';
 import { getBeat } from '../mongo/plots.js';
 import { getCharacter } from '../mongo/characters.js';
+import { getSet } from '../mongo/sets.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { scoreFrameReferences } from '../llm/frameReferenceSelector.js';
 import { setStoryboardFrameReferenceImagesViaGateway } from './gateway.js';
@@ -15,8 +20,8 @@ import { maxReferenceImagesFor } from './imageModelInfo.js';
 
 export const AUTO_REFERENCE_MAX = 6;
 // Per-source floor: always keep the top-N scored candidates from each source
-// (the beat, and each in-scene character), even when they fall below
-// RELEVANCE_THRESHOLD. With one character that floor is 2 beat + 2 character = 4.
+// (each in-scene set, and each in-scene character), even when they fall below
+// RELEVANCE_THRESHOLD. A one-set one-character shot floors at 2 + 2 = 4.
 export const PER_SOURCE_MIN = 2;
 export const RELEVANCE_THRESHOLD = 0.5;
 // Hard ceiling on how many reference images we attach to one generation,
@@ -25,9 +30,10 @@ export const RELEVANCE_THRESHOLD = 0.5;
 export const MAX_ATTACHED_REFERENCE_IMAGES = 8;
 // Generous ceiling for the *stored* reference LIST (distinct from the per-model
 // send cap above). Seeding/auto-suggest fill the list up to here so the
-// per-source floor (2 beat + 2 per character) survives for multi-character
+// per-source floor (2 per set + 2 per character) survives for multi-character
 // shots; render-time loadFrameReferenceImages then trims best-first to the
-// model's send cap. Holds 2 beat + 2 each for up to 5 characters.
+// model's send cap. The two slots the retired beat source used to occupy now
+// belong to sets — holds 2 for one set + 2 each for up to 5 characters.
 export const REFERENCE_LIST_MAX = 12;
 
 // Map selected reference ids -> relevance score, so the generation step can
@@ -88,7 +94,9 @@ function artworkCandidates(host, { kind, source }) {
       id,
       kind,
       source,
-      name: (a.name || '').trim() || (kind === 'char' ? source : 'beat artwork'),
+      name:
+        (a.name || '').trim() ||
+        (kind === 'set' ? source.replace(/^set:/, '') : kind === 'char' ? source : 'artwork'),
       description: (a.prompt || '').trim(),
     });
   }
@@ -98,23 +106,43 @@ function artworkCandidates(host, { kind, source }) {
 export async function buildFrameReferenceCandidates({ projectId, sb, frameText = '' }) {
   const candidates = [];
 
-  // Beat artwork — the beat's "Artwork" section (done artworks only), tagged
-  // source 'beat' / kind 'art'. NOT every GridFS image owned by the beat:
-  // storyboard frames and uploaded references are excluded so auto-suggest
-  // scores only curated artwork.
+  // Scene sets — each in-scene set's "Artwork" section (done artworks only),
+  // one source per set so the per-source floor guarantees every set of a
+  // multi-set transition beat is represented. The source is prefixed
+  // ('set:<name>') so a set named like a character can't merge groups.
+  // Rows planned before sets_in_scene existed (and manual frames) fall back
+  // to the beat's full set roster.
   try {
-    const beatId = sb?.beat_id ? String(sb.beat_id) : null;
-    if (beatId) {
-      const beat = await getBeat(projectId, beatId);
-      candidates.push(...artworkCandidates(beat, { kind: 'art', source: 'beat' }));
+    let names = Array.isArray(sb?.sets_in_scene) ? sb.sets_in_scene.filter(Boolean) : [];
+    if (!names.length && sb?.beat_id) {
+      try {
+        const beat = await getBeat(projectId, String(sb.beat_id));
+        names = Array.isArray(beat?.sets) ? beat.sets : [];
+      } catch (e) {
+        logger.warn(`frameReferences: beat set-roster load failed: ${e.message}`);
+      }
+    }
+    for (const raw of names) {
+      const nm = stripMarkdown(String(raw ?? '')).trim();
+      if (!nm) continue;
+      let s = null;
+      try {
+        s = await getSet(projectId, nm);
+      } catch (e) {
+        logger.warn(`frameReferences: set lookup "${nm}" failed: ${e.message}`);
+        continue;
+      }
+      if (!s) continue;
+      const plain = stripMarkdown(s.name || nm).trim() || nm;
+      candidates.push(...artworkCandidates(s, { kind: 'set', source: `set:${plain}` }));
     }
   } catch (e) {
-    logger.warn(`frameReferences: beat artwork load failed: ${e.message}`);
+    logger.warn(`frameReferences: set candidates failed: ${e.message}`);
   }
 
   // Scene characters — each in-scene character's own "Artwork" section (done
   // artworks only), tagged with the character's name as its source. Same
-  // artwork-only rule as the beat: sheets/portraits/gallery are not auto-
+  // artwork-only rule as the sets: sheets/portraits/gallery are not auto-
   // suggested, only generated artworks.
   try {
     const names = Array.isArray(sb?.characters_in_scene) ? sb.characters_in_scene : [];
@@ -139,12 +167,13 @@ export async function buildFrameReferenceCandidates({ projectId, sb, frameText =
   return candidates;
 }
 
-// Pure selection. For every source (the beat, and each in-scene character),
-// guarantee the top PER_SOURCE_MIN scored candidates as a floor (kept even when
-// below RELEVANCE_THRESHOLD), then add any further candidates from that source
-// that clear RELEVANCE_THRESHOLD. So a one-character shot floors at 2 beat + 2
-// character = 4, and high-scoring extras push above that. Finally dedupe by id
-// and clamp to maxTotal, dropping the lowest-scored non-floor picks first.
+// Pure selection. For every source (each in-scene set, and each in-scene
+// character), guarantee the top PER_SOURCE_MIN scored candidates as a floor
+// (kept even when below RELEVANCE_THRESHOLD), then add any further candidates
+// from that source that clear RELEVANCE_THRESHOLD. So a one-set one-character
+// shot floors at 2 + 2 = 4, and high-scoring extras push above that. Finally
+// dedupe by id and clamp to maxTotal, dropping the lowest-scored non-floor
+// picks first.
 export function selectScoredFrameReferences({ candidates, scores, maxTotal }) {
   const scoreOf = (i) => (scores.get(i + 1) ?? 0);
   const bySource = new Map();

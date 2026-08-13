@@ -34,6 +34,7 @@ import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
 import { getBeat, setBeatSceneBible } from '../mongo/plots.js';
 import { getCharacter } from '../mongo/characters.js';
+import { getSet } from '../mongo/sets.js';
 import { readImageBuffer, uploadGeneratedImage } from '../mongo/images.js';
 import {
   getStoryboard,
@@ -193,6 +194,11 @@ const SCENE_PLAN_TOOL = {
               items: { type: 'string' },
               description: 'Names of EVERY character visible in this shot, exactly as listed in the beat metadata. List everyone who appears in frame — however many that is.',
             },
+            sets_in_scene: {
+              type: 'array',
+              items: { type: 'string' },
+              description: "Which of the beat's listed sets this shot takes place in — usually one. Copy names exactly from the beat metadata. Omit when the beat lists no sets.",
+            },
           },
           required: ['description', 'felt_intent', 'primary_spend', 'shot_type', 'duration_seconds'],
           additionalProperties: false,
@@ -256,6 +262,7 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   '- BUT on tight single-subject shots (shot_type close_up, insert, reaction), list ONLY the character(s) physically in the frame — not everyone in the location. A close-up on one person names that one person, even if others are in the scene off-frame.',
   '- shot_type drives duration_seconds: establishing/cinematic_wide/insert ≤ 15s, medium ≤ 10s, close_up/reaction/two_shot/over_the_shoulder ≤ 5s. Prefer the lower half of the range — shorter clips survive video gen better.',
   "- Don't invent characters not in the beat's character list.",
+  '- When the beat lists sets, tag every shot with the set it plays in via sets_in_scene (copy names exactly), and ground scene_bible.location and blocking in those sets. A shot that moves between sets lists both.',
   '- primary_spend must match the framing: a close_up/reaction shot spends on identity, a wide on world, an action beat on motion. A shot that wants all three is two shots — split it.',
   '- Emit EXACTLY the requested number of frames.',
 ].join('\n');
@@ -650,7 +657,30 @@ async function runStoryboardGenerationJob({
   direction,
   announceUsername = null,
 }) {
-  // Plan first. If the planner returns nothing (model failure, rate limit,
+  // Advisory readiness report first — an inventory of visual backing (do the
+  // linked characters/sets cover what the beat text calls for?). NEVER gates
+  // generation: the whole phase sits in a try/catch and failures only log.
+  job.status = 'validating';
+  recordProgress(job, {
+    phase: 'validating',
+    step: 'readiness_start',
+    message: 'Checking visual readiness…',
+  });
+  try {
+    const { buildReadinessReport } = await import('./storyboardReadiness.js');
+    const { setBeatReadinessReport } = await import('../mongo/plots.js');
+    job.readiness = await buildReadinessReport({ projectId, beat });
+    await setBeatReadinessReport(projectId, beat._id, job.readiness);
+    recordProgress(job, {
+      phase: 'validating',
+      step: 'readiness_done',
+      message: `Readiness: ${job.readiness.counts.warnings} warning(s) — generation proceeds.`,
+    });
+  } catch (e) {
+    logger.warn(`storyboard gen: readiness check failed (advisory, continuing): ${e.message}`);
+  }
+
+  // Plan next. If the planner returns nothing (model failure, rate limit,
   // empty body) we preserve the user's existing storyboards rather than
   // wiping them for no result.
   job.status = 'planning';
@@ -660,6 +690,7 @@ async function runStoryboardGenerationJob({
     message: `Planning scene with ${job.model}…`,
   });
   const characterDocs = await findCharactersInBeat(projectId, beat);
+  const setDocs = await findSetsInBeat(projectId, beat);
   // Director's notes are project-wide guidance; fetch once and pass to both
   // passes so every shot sees the same notes without re-querying.
   const directorNotes = await loadDirectorNotesForPlanner(projectId);
@@ -669,6 +700,7 @@ async function runStoryboardGenerationJob({
     projectId,
     beat,
     characters: characterDocs,
+    sets: setDocs,
     targetCount: targetCount || DEFAULT_TARGET_COUNT,
     direction: direction || '',
     directorNotes,
@@ -821,6 +853,24 @@ export async function findCharactersInBeat(projectId, beat) {
   return out;
 }
 
+// Resolve every set named in a beat's `sets` list to its current Mongo doc —
+// the set counterpart of findCharactersInBeat, shared by the planner context
+// and the scene-artworks aggregation.
+export async function findSetsInBeat(projectId, beat) {
+  const out = [];
+  for (const raw of beat?.sets || []) {
+    const stripped = stripMarkdown(raw || '').trim();
+    if (!stripped) continue;
+    try {
+      const s = await getSet(projectId, stripped);
+      if (s) out.push(s);
+    } catch (e) {
+      logger.warn(`storyboard gen: set lookup "${stripped}" failed: ${e.message}`);
+    }
+  }
+  return out;
+}
+
 // Load image bytes + content type + stored description from GridFS metadata.
 // The description (when present, populated by the vision seed worker) is
 // returned alongside the bytes so callers can build concordant text+image
@@ -858,6 +908,22 @@ export function clipField(raw, max = 300) {
 // we must not present them as "played by" (the image model would paint the
 // voice actor's face). The character's own look field carries the visuals.
 export const NON_VISUAL_CASTING = /\b(voice[\s-]?only|voice[\s-]?over|v\.?o\.?|motion[\s-]?capture|mo-?cap)\b/i;
+
+// Format the beat's linked sets for the planner/expander context: name plus a
+// clipped look line from the set's description. Sets are the reusable
+// settings/locations whose artwork backs the storyboard's location plates.
+function formatSetLines(sets) {
+  if (!sets?.length) return '(no sets linked to this beat)';
+  return sets
+    .map((s) => {
+      const name = stripMarkdown(s.name || '').trim();
+      const look = clipField(s.description);
+      const lines = [`- ${name}`];
+      if (look) lines.push(`    look: ${look}`);
+      return lines.join('\n');
+    })
+    .join('\n');
+}
 
 // Format the character list the same way for every LLM call so all passes
 // (planScene + expandShots) see consistent context. Surfaces the appearance-
@@ -962,7 +1028,7 @@ export function formatDirectorNotes(directorNotes) {
 // directorNotes is the project-wide list (from getDirectorNotes(projectId).notes) —
 // every note appears in every shot's prompt because notes are global tone /
 // style / continuity guidance, not scene-scoped.
-export function buildBeatContextBlock({ beat, characters, direction, directorNotes = [], dialogs = [], directorialVoice = '' }) {
+export function buildBeatContextBlock({ beat, characters, sets = [], direction, directorNotes = [], dialogs = [], directorialVoice = '' }) {
   const lines = [];
   // The project's single directing hand leads the block: it biases every choice
   // beneath it, so it has to be read before the beat rather than after.
@@ -988,6 +1054,9 @@ export function buildBeatContextBlock({ beat, characters, direction, directorNot
     '',
     'Characters in this beat:',
     formatCharacterLines(characters),
+    '',
+    'Sets in this beat (the settings/locations shots take place in):',
+    formatSetLines(sets),
   );
   const notesBlock = formatDirectorNotes(directorNotes);
   if (notesBlock) {
@@ -1013,8 +1082,8 @@ export function buildBeatContextBlock({ beat, characters, direction, directorNot
   return lines.join('\n');
 }
 
-export function buildScenePlanUserText({ beat, characters, targetCount, direction, directorNotes = [], dialogs = [], directorialVoice = '' }) {
-  const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes, dialogs, directorialVoice });
+export function buildScenePlanUserText({ beat, characters, sets = [], targetCount, direction, directorNotes = [], dialogs = [], directorialVoice = '' }) {
+  const ctx = buildBeatContextBlock({ beat, characters, sets, direction, directorNotes, dialogs, directorialVoice });
   const count = clampTargetCount(targetCount);
   const lead =
     `Target shot count: EXACTLY ${count} frames. Your frames array MUST contain ${count} entries.`;
@@ -1029,11 +1098,11 @@ export function buildScenePlanUserText({ beat, characters, targetCount, directio
 // Pass 1. Returns { sceneBible, outline } where sceneBible is a normalized
 // bible object and outline is the raw frames array (cleaned later). Returns
 // { sceneBible: null, outline: [] } on model failure.
-async function planScene({ beat, characters, targetCount, direction, directorNotes = [], dialogs = [], directorialVoice = '' }) {
+async function planScene({ beat, characters, sets = [], targetCount, direction, directorNotes = [], dialogs = [], directorialVoice = '' }) {
   if (scenePlannerOverride) {
-    return scenePlannerOverride({ beat, characters, targetCount, direction, directorNotes, dialogs, directorialVoice });
+    return scenePlannerOverride({ beat, characters, sets, targetCount, direction, directorNotes, dialogs, directorialVoice });
   }
-  const userText = buildScenePlanUserText({ beat, characters, targetCount, direction, directorNotes, dialogs, directorialVoice });
+  const userText = buildScenePlanUserText({ beat, characters, sets, targetCount, direction, directorNotes, dialogs, directorialVoice });
   const client = getAnthropic();
   // Stream (then collect the final message): the non-streaming create() is
   // rejected by the SDK when max_tokens exceeds a model's 8192 non-streaming
@@ -1210,8 +1279,8 @@ function formatSkeletonForExpand(outline) {
     .join('\n');
 }
 
-export function buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes = [], dialogs = [], revisionNotes = '', candidates = [], directorialVoice = '' }) {
-  const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes, dialogs, directorialVoice });
+export function buildShotExpandUserText({ beat, characters, sets = [], sceneBible, outline, direction, directorNotes = [], dialogs = [], revisionNotes = '', candidates = [], directorialVoice = '' }) {
+  const ctx = buildBeatContextBlock({ beat, characters, sets, direction, directorNotes, dialogs, directorialVoice });
   const bibleBlock = renderSceneBibleBlock(sceneBible);
   const lines = [ctx];
   if (bibleBlock) {
@@ -1252,11 +1321,11 @@ function synthesizeFallbackShot(frame) {
 // Pass 2. One call expands the whole skeleton. Returns an array aligned to the
 // skeleton (index i -> shot i+1); omitted entries are filled with a synthesized
 // fallback so downstream persistence always gets a usable prompt.
-async function expandShots({ beat, characters, sceneBible, outline, direction, directorNotes = [], dialogs = [], revisionNotes = '', candidates = [], directorialVoice = '' }) {
+async function expandShots({ beat, characters, sets = [], sceneBible, outline, direction, directorNotes = [], dialogs = [], revisionNotes = '', candidates = [], directorialVoice = '' }) {
   if (shotExpanderOverride) {
-    return shotExpanderOverride({ beat, characters, sceneBible, outline, direction, directorNotes, dialogs, revisionNotes, candidates, directorialVoice });
+    return shotExpanderOverride({ beat, characters, sets, sceneBible, outline, direction, directorNotes, dialogs, revisionNotes, candidates, directorialVoice });
   }
-  const userText = buildShotExpandUserText({ beat, characters, sceneBible, outline, direction, directorNotes, dialogs, revisionNotes, candidates, directorialVoice });
+  const userText = buildShotExpandUserText({ beat, characters, sets, sceneBible, outline, direction, directorNotes, dialogs, revisionNotes, candidates, directorialVoice });
   const client = getAnthropic();
   // Stream (then collect the final message): see planScene above — the
   // non-streaming create() is rejected at max_tokens > the model's 8192
@@ -1322,6 +1391,7 @@ export function mergeCritiqueComments(critique) {
 // beat lock (reExpandShot acquires it per-call; the bulk job holds it once).
 export async function reExpandShotInner({ projectId, sb, beat, critiqueGuidance = '' }) {
   const characters = await findCharactersInBeat(projectId, beat);
+  const sets = await findSetsInBeat(projectId, beat);
   const directorNotes = await loadDirectorNotesForPlanner(projectId);
   const dialogs = await loadDialogsForPlanner(projectId, beat._id);
   const outlineFrame = {
@@ -1330,10 +1400,11 @@ export async function reExpandShotInner({ projectId, sb, beat, critiqueGuidance 
     duration_seconds: sb.duration_seconds ?? null,
     transition_in: sb.transition_in || '',
     characters_in_scene: Array.isArray(sb.characters_in_scene) ? sb.characters_in_scene : [],
+    sets_in_scene: Array.isArray(sb.sets_in_scene) ? sb.sets_in_scene : [],
   };
   const directorialVoice = await loadDirectorialVoice(projectId);
   const expanded = await expandShots({
-    beat, characters, sceneBible: beat.scene_bible, outline: [outlineFrame],
+    beat, characters, sets, sceneBible: beat.scene_bible, outline: [outlineFrame],
     direction: '', directorNotes, dialogs, revisionNotes: critiqueGuidance || '',
     directorialVoice,
   });
@@ -1362,15 +1433,28 @@ export async function reExpandShotInner({ projectId, sb, beat, critiqueGuidance 
   const sameNames =
     linkedNames.length === prevNames.length &&
     linkedNames.every((n, i) => n.toLowerCase() === (prevNames[i] || '').toLowerCase());
-  if (!sameNames) {
+  // Sets re-link the same way: union of the existing sets_in_scene with any
+  // beat set named in the rewritten prompts — only ever ADDS.
+  const beatSets = Array.isArray(beat?.sets) ? beat.sets : [];
+  const linkedSetNames = linkBeatSetsForShot(newFrame, beatSets);
+  const prevSetNames = (Array.isArray(sb.sets_in_scene) ? sb.sets_in_scene : [])
+    .map((n) => stripMarkdown(String(n ?? '')).trim())
+    .filter(Boolean);
+  const sameSetNames =
+    linkedSetNames.length === prevSetNames.length &&
+    linkedSetNames.every((n, i) => n.toLowerCase() === (prevSetNames[i] || '').toLowerCase());
+  if (!sameNames || !sameSetNames) {
     try {
       await updateStoryboardScalarsViaGateway({
         projectId,
         storyboardId: sb._id,
-        patch: { characters_in_scene: linkedNames },
+        patch: {
+          ...(sameNames ? {} : { characters_in_scene: linkedNames }),
+          ...(sameSetNames ? {} : { sets_in_scene: linkedSetNames }),
+        },
       });
     } catch (e) {
-      logger.warn(`storyboard reExpandShot: re-link characters failed: ${e.message}`);
+      logger.warn(`storyboard reExpandShot: re-link characters/sets failed: ${e.message}`);
     }
   }
 
@@ -1493,19 +1577,16 @@ export function findAppearingBeatCharacters(text, beatCharacters) {
   return out;
 }
 
-// Union the planner's characters_in_scene with any beat characters detected in
-// the shot text, deduped case-insensitively. Planner picks lead the ordering.
-export function linkBeatCharactersForShot(frame, beatCharacters) {
-  const picks = Array.isArray(frame?.characters_in_scene) ? frame.characters_in_scene : [];
-  // Scan every text field a character can be named in — the still/image prompt,
-  // the motion/video prompt, and the shot summary — so a character referenced in
-  // ANY of them is linked to the shot. The candidate set is the beat cast only,
-  // so unrelated names can't leak in; scored reference selection then decides
-  // which of a linked character's artwork actually attaches.
+// Union planner picks with names detected in the shot text, deduped
+// case-insensitively. Planner picks lead the ordering. The scan covers every
+// text field an entity can be named in — the still/image prompt, the motion/
+// video prompt, and the shot summary. The candidate roster (beat cast or beat
+// set list) bounds detection, so unrelated names can't leak in.
+function unionPicksWithDetected(picks, frame, roster) {
   const text = [frame?.start_frame_prompt, frame?.video_prompt, frame?.description]
     .filter(Boolean)
     .join('\n');
-  const detected = findAppearingBeatCharacters(text, beatCharacters);
+  const detected = findAppearingBeatCharacters(text, roster);
   const out = [];
   const seen = new Set();
   for (const raw of [...picks, ...detected]) {
@@ -1517,6 +1598,18 @@ export function linkBeatCharactersForShot(frame, beatCharacters) {
     out.push(name);
   }
   return out;
+}
+
+export function linkBeatCharactersForShot(frame, beatCharacters) {
+  const picks = Array.isArray(frame?.characters_in_scene) ? frame.characters_in_scene : [];
+  return unionPicksWithDetected(picks, frame, beatCharacters);
+}
+
+// Set counterpart: findAppearingBeatCharacters is name-generic, so the same
+// whole-word detection works against the beat's set roster.
+export function linkBeatSetsForShot(frame, beatSets) {
+  const picks = Array.isArray(frame?.sets_in_scene) ? frame.sets_in_scene : [];
+  return unionPicksWithDetected(picks, frame, beatSets);
 }
 
 // Two-output validator. Drops a frame only if it lacks start_frame_prompt or
@@ -1542,6 +1635,9 @@ function cleanPlannedFrameV2(f) {
   const rawChars = Array.isArray(f.characters_in_scene)
     ? f.characters_in_scene.map((n) => stripMarkdown(String(n ?? '')).trim()).filter(Boolean)
     : [];
+  const rawSets = Array.isArray(f.sets_in_scene)
+    ? f.sets_in_scene.map((n) => stripMarkdown(String(n ?? '')).trim()).filter(Boolean)
+    : [];
   const refs = Array.isArray(f.references)
     ? f.references
         .map((r) => ({ character: stripMarkdown(String(r?.character ?? '')).trim(), image_index: Number(r?.image_index) }))
@@ -1557,6 +1653,7 @@ function cleanPlannedFrameV2(f) {
     duration_seconds: clampedDur,
     transition_in: transition,
     characters_in_scene: rawChars,
+    sets_in_scene: rawSets,
     references: refs,
   }];
 }
@@ -1564,9 +1661,9 @@ function cleanPlannedFrameV2(f) {
 // New two-pass planner. Returns { frames, sceneBible }. frames carry
 // start_frame_prompt + video_prompt (no end_frame_prompt). On planner failure
 // returns { frames: [], sceneBible } (bible may still be present/null).
-async function planFramesV2({ projectId, beat, characters, targetCount, direction = '', directorNotes = [], dialogs = [], directorialVoice = '', imageModel = null, onProgress = null }) {
+async function planFramesV2({ projectId, beat, characters, sets = [], targetCount, direction = '', directorNotes = [], dialogs = [], directorialVoice = '', imageModel = null, onProgress = null }) {
   onProgress?.({ phase: 'planning', step: 'plan_scene_start', message: 'Planning scene bible + shot list…' });
-  const { sceneBible, outline: outlineRaw } = await planScene({ beat, characters, targetCount, direction, directorNotes, dialogs, directorialVoice });
+  const { sceneBible, outline: outlineRaw } = await planScene({ beat, characters, sets, targetCount, direction, directorNotes, dialogs, directorialVoice });
   if (!Array.isArray(outlineRaw) || !outlineRaw.length) {
     onProgress?.({ phase: 'planning', step: 'plan_scene_empty', message: 'Scene planner returned no shots.' });
     return { frames: [], sceneBible };
@@ -1579,12 +1676,13 @@ async function planFramesV2({ projectId, beat, characters, targetCount, directio
     duration_seconds: f?.duration_seconds ?? null,
     transition_in: typeof f?.transition_in === 'string' ? f.transition_in : '',
     characters_in_scene: Array.isArray(f?.characters_in_scene) ? f.characters_in_scene : [],
+    sets_in_scene: Array.isArray(f?.sets_in_scene) ? f.sets_in_scene : [],
   }));
 
   const perCharacter = await gatherCandidatesFromDocs(characters);
 
   onProgress?.({ phase: 'expanding', step: 'expand_start', total: outline.length, message: `Expanding ${outline.length} shots…` });
-  const expanded = await expandShots({ beat, characters, sceneBible, outline, direction, directorNotes, dialogs, candidates: perCharacter, directorialVoice });
+  const expanded = await expandShots({ beat, characters, sets, sceneBible, outline, direction, directorNotes, dialogs, candidates: perCharacter, directorialVoice });
   onProgress?.({ phase: 'expanding', step: 'expand_done', total: outline.length, message: 'Shot expansion complete.' });
 
   const frames = outline.flatMap((f, i) => {
@@ -1598,9 +1696,11 @@ async function planFramesV2({ projectId, beat, characters, targetCount, directio
   });
 
   const beatCharacters = Array.isArray(beat?.characters) ? beat.characters : [];
+  const beatSets = Array.isArray(beat?.sets) ? beat.sets : [];
   const linkedFrames = await Promise.all(
     frames.map(async (fr) => {
       const names = linkBeatCharactersForShot(fr, beatCharacters);
+      const setNames = linkBeatSetsForShot(fr, beatSets);
       // Seed references from the same scored artwork selection the SPA's
       // auto-suggest uses: floor of 2 beat + 2 per in-scene character, plus
       // any extras that clear the relevance cutoff. The shot text is the union
@@ -1614,10 +1714,10 @@ async function planFramesV2({ projectId, beat, characters, targetCount, directio
       try {
         const sel = await selectFrameReferencesForShot({
           projectId,
-          sb: { beat_id: beat._id, characters_in_scene: names },
+          sb: { beat_id: beat._id, characters_in_scene: names, sets_in_scene: setNames },
           frameText,
           imageModel,
-          // Seed a generous list so the 2-per-character floor survives for big
+          // Seed a generous list so the 2-per-source floor survives for big
           // ensembles; render-time loadFrameReferenceImages trims best-first.
           maxTotal: REFERENCE_LIST_MAX,
         });
@@ -1626,7 +1726,7 @@ async function planFramesV2({ projectId, beat, characters, targetCount, directio
       } catch (e) {
         logger.warn(`storyboard gen: reference selection failed for shot: ${e.message}`);
       }
-      return { ...fr, characters_in_scene: names, reference_ids, reference_scores };
+      return { ...fr, characters_in_scene: names, sets_in_scene: setNames, reference_ids, reference_scores };
     }),
   );
   return { frames: linkedFrames, sceneBible };
@@ -1670,6 +1770,7 @@ async function createPlannedStoryboardEntry({
     shotType: frame.shot_type ?? null,
     transitionIn: frame.transition_in ?? null,
     charactersInScene: frame.characters_in_scene ?? [],
+    setsInScene: frame.sets_in_scene ?? [],
   });
 
   // Reference ids + relevance scores are resolved during planning
@@ -1737,6 +1838,14 @@ function buildSuggestedFramePrompt({ sb }) {
   if (Array.isArray(sb.characters_in_scene) && sb.characters_in_scene.length) {
     lines.push(
       `Characters in scene: ${sb.characters_in_scene
+        .map((n) => stripMarkdown(n))
+        .filter(Boolean)
+        .join(', ')}.`,
+    );
+  }
+  if (Array.isArray(sb.sets_in_scene) && sb.sets_in_scene.length) {
+    lines.push(
+      `Setting: ${sb.sets_in_scene
         .map((n) => stripMarkdown(n))
         .filter(Boolean)
         .join(', ')}.`,

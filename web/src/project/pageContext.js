@@ -32,6 +32,11 @@ export function pageContextFromPath(pathname) {
     const ref = decodeURIComponent(character[1]);
     return { kind: 'character', ref, label: `Character: ${ref}` };
   }
+  const set = remainder.match(/^\/set\/(.+)$/);
+  if (set) {
+    const ref = decodeURIComponent(set[1]);
+    return { kind: 'set', ref, label: `Set: ${ref}` };
+  }
   const storyboardBeat = remainder.match(/^\/storyboard\/(.+)$/);
   if (storyboardBeat) {
     const ref = decodeURIComponent(storyboardBeat[1]);

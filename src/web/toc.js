@@ -38,6 +38,7 @@ export function buildTocResponse(
   dialogCounts,
   options = {},
 ) {
+  const sets = options.sets || [];
   const counts = storyboardCounts || new Map();
   const dialogs = dialogCounts || new Map();
   const allDialogs = options.allDialogs || [];
@@ -68,6 +69,7 @@ export function buildTocResponse(
   }
 
   const beatsByCharacterKey = new Map();
+  const beatsBySetKey = new Map();
   const sortedBeats = [...(beats || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   for (const b of sortedBeats) {
     const ref = { order: b.order, plain_name: stripMarkdown(b.name || '') };
@@ -77,6 +79,13 @@ export function buildTocResponse(
       const list = beatsByCharacterKey.get(key) || [];
       list.push(ref);
       beatsByCharacterKey.set(key, list);
+    }
+    for (const raw of b.sets || []) {
+      const key = plainKey(raw);
+      if (!key) continue;
+      const list = beatsBySetKey.get(key) || [];
+      list.push(ref);
+      beatsBySetKey.set(key, list);
     }
   }
 
@@ -92,9 +101,23 @@ export function buildTocResponse(
         search_text: characterSearchText(c),
       };
     }),
+    sets: sets.map((s) => {
+      const plain = stripMarkdown(s.name || '');
+      return {
+        _id: s._id,
+        name: s.name,
+        plain_name: plain,
+        main_image_id: s.main_image_id || null,
+        beats: beatsBySetKey.get(plain.toLowerCase()) || [],
+        search_text: blob(s.name, s.description),
+      };
+    }),
     beats: sortedBeats.map((b) => {
       const id = b._id?.toString?.() || '';
       const charactersJoined = (b.characters || [])
+        .map((s) => stripMarkdown(String(s || '')))
+        .join(' ');
+      const setsJoined = (b.sets || [])
         .map((s) => stripMarkdown(String(s || '')))
         .join(' ');
       return {
@@ -105,7 +128,7 @@ export function buildTocResponse(
         body_empty: bodyIsEmpty(b.body),
         storyboard_count: counts.get(id) || 0,
         dialog_count: dialogs.get(id) || 0,
-        search_text: blob(b.name, b.body, charactersJoined),
+        search_text: blob(b.name, b.body, charactersJoined, setsJoined),
         dialog_search_text: dialogTextByBeat.get(id) || '',
         storyboard_search_text: storyboardTextByBeat.get(id) || '',
       };

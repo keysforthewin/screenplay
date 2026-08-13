@@ -160,6 +160,7 @@ export function Character({ session }) {
             generatePath={`/character/${character._id}/image/generate`}
             characterSourcesPath={`/images/by-owner/characters?exclude_id=${character._id}`}
             beatSourcesPath={`/images/by-owner/beats`}
+            setSourcesPath={`/images/by-owner/sets`}
             copyPath={`/character/${character._id}/image/copy`}
             pickerTitle="Add image to character"
             hideAddButton

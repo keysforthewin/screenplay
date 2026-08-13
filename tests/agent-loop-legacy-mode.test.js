@@ -46,6 +46,9 @@ vi.mock('../src/mongo/plots.js', () => ({
 vi.mock('../src/mongo/directorNotes.js', () => ({
   getDirectorNotes: async () => ({ _id: 'director_notes', notes: [] }),
 }));
+vi.mock('../src/mongo/sets.js', () => ({
+  listSets: async () => [],
+}));
 vi.mock('../src/mongo/imageBytes.js', () => ({
   fetchImageFromUrl: async () => ({ buffer: Buffer.alloc(0), contentType: 'image/png' }),
   ALLOWED_IMAGE_TYPES: new Set(['image/png', 'image/jpeg', 'image/webp']),

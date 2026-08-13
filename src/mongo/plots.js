@@ -63,6 +63,10 @@ async function ensureBeatIds(plot) {
       next.characters = [];
       changed = true;
     }
+    if (!Array.isArray(next.sets)) {
+      next.sets = [];
+      changed = true;
+    }
     if (next.scene_bible === undefined) {
       next.scene_bible = null;
       changed = true;
@@ -320,7 +324,7 @@ export function normalizeBeatOrders(beats) {
     .map((b, i) => (b.order === i + 1 ? b : { ...b, order: i + 1 }));
 }
 
-export async function createBeat({ projectId, name, desc = '', body = '', characters = [], order } = {}) {
+export async function createBeat({ projectId, name, desc = '', body = '', characters = [], sets = [], order } = {}) {
   projectId = await resolveProjectId(projectId);
   const finalDesc = String(desc || '').trim();
   let finalName = String(name || '').trim();
@@ -344,6 +348,7 @@ export async function createBeat({ projectId, name, desc = '', body = '', charac
     desc: finalDesc,
     body: String(body || ''),
     characters: dedupeNames(characters),
+    sets: dedupeNames(sets),
     dialog_notes: '',
     images: [],
     main_image_id: null,
@@ -376,11 +381,12 @@ export async function updateBeat(projectId, identifier, patch) {
     k === 'body' ||
     k === 'order' ||
     k === 'characters' ||
+    k === 'sets' ||
     k === 'dialog_notes' ||
     k === 'scene_sheet_image_id';
   if (!Object.keys(patch).some((k) => isRecognizedKey(k) && patch[k] !== undefined)) {
     throw new Error(
-      `update_beat: \`patch\` has no recognized fields. Expected one of: name, desc, body, order, characters, dialog_notes, scene_sheet_image_id. Got keys: [${Object.keys(patch).join(', ')}].`,
+      `update_beat: \`patch\` has no recognized fields. Expected one of: name, desc, body, order, characters, sets, dialog_notes, scene_sheet_image_id. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
 
@@ -415,6 +421,9 @@ export async function updateBeat(projectId, identifier, patch) {
   }
   if (patch.characters !== undefined && Array.isArray(patch.characters)) {
     set['beats.$.characters'] = dedupeNames(patch.characters);
+  }
+  if (patch.sets !== undefined && Array.isArray(patch.sets)) {
+    set['beats.$.sets'] = dedupeNames(patch.sets);
   }
   if (sheetImageIdProvided) set['beats.$.scene_sheet_image_id'] = sheetImageId;
 
@@ -459,6 +468,20 @@ export async function setBeatBody(projectId, identifier, body) {
 // Persist a beat's scene bible (the per-beat "look book" that all storyboard
 // shots inherit). Stored as a normalized sub-doc under beats.$.scene_bible.
 // Pass null/empty to clear. Uses the atomic per-beat write path.
+// Persist a beat's advisory readiness report (visual-backing inventory built
+// by src/web/storyboardReadiness.js). Same generation-derived-state precedent
+// as the scene bible; pass null to clear.
+export async function setBeatReadinessReport(projectId, identifier, report) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
+  const beat = findBeat(plot, identifier);
+  if (!beat) throw new Error(`Beat not found: ${identifier}`);
+  const value = report == null ? null : { ...report };
+  await updateBeatFields(projectId, beat._id, { 'beats.$.readiness_report': value });
+  logger.info(`mongo: beat readiness_report set id=${beat._id} cleared=${value === null}`);
+  return fetchBeat(projectId, beat._id);
+}
+
 export async function setBeatSceneBible(projectId, identifier, bible) {
   projectId = await resolveProjectId(projectId);
   const plot = await getPlot(projectId);
@@ -617,6 +640,44 @@ export async function unlinkCharacterFromAllBeats(projectId, characterName) {
   }
   if (touched > 0) {
     logger.info(`mongo: unlink "${characterName}" from ${touched} beat(s)`);
+  }
+  return { unlinked_from: touched };
+}
+
+export async function linkSetToBeat(projectId, identifier, setName) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
+  const beat = findBeat(plot, identifier);
+  if (!beat) throw new Error(`Beat not found: ${identifier}`);
+  const sets = dedupeNames([...(beat.sets || []), setName]);
+  await updateBeatFields(projectId, beat._id, { 'beats.$.sets': sets });
+  return fetchBeat(projectId, beat._id);
+}
+
+export async function unlinkSetFromBeat(projectId, identifier, setName) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
+  const beat = findBeat(plot, identifier);
+  if (!beat) throw new Error(`Beat not found: ${identifier}`);
+  const lower = String(setName).toLowerCase();
+  const sets = (beat.sets || []).filter((s) => String(s).toLowerCase() !== lower);
+  await updateBeatFields(projectId, beat._id, { 'beats.$.sets': sets });
+  return fetchBeat(projectId, beat._id);
+}
+
+export async function unlinkSetFromAllBeats(projectId, setName) {
+  projectId = await resolveProjectId(projectId);
+  const plot = await getPlot(projectId);
+  const lower = String(setName).toLowerCase();
+  let touched = 0;
+  for (const b of plot.beats || []) {
+    const filtered = (b.sets || []).filter((s) => String(s).toLowerCase() !== lower);
+    if (filtered.length === (b.sets || []).length) continue;
+    touched += 1;
+    await updateBeatFields(projectId, b._id, { 'beats.$.sets': filtered });
+  }
+  if (touched > 0) {
+    logger.info(`mongo: unlink set "${setName}" from ${touched} beat(s)`);
   }
   return { unlinked_from: touched };
 }

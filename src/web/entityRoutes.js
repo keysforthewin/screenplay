@@ -48,6 +48,7 @@ import { getSession, touchSession } from '../mongo/auth.js';
 import {
   announceBeatMedia,
   announceCharacterMedia,
+  announceSetMedia,
   announceNoteMedia,
   announceStoryboardMedia,
   announceLibraryMedia,
@@ -138,6 +139,18 @@ import {
   setEntityFieldMarkdown,
   updateBeatViaGateway,
   updateStoryboardScalarsViaGateway,
+  addSetImageViaGateway,
+  addSetAttachmentViaGateway,
+  removeSetImageViaGateway,
+  removeSetAttachmentViaGateway,
+  setSetMainImageViaGateway,
+  replaceSetImageViaGateway,
+  attachExistingImageToSetViaGateway,
+  attachExistingAttachmentToSetViaGateway,
+  moveSetImageToLibraryViaGateway,
+  createSetViaGateway,
+  deleteSetViaGateway,
+  createCharacterViaGateway,
 } from './gateway.js';
 import {
   kickoffLibraryVisionSeed,
@@ -173,12 +186,14 @@ import {
   listDialogs,
 } from '../mongo/dialogs.js';
 import { listCharacters, getCharacter, findAllCharacters } from '../mongo/characters.js';
+import { getSet, findAllSets } from '../mongo/sets.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import {
   deleteImage,
   listLibraryImages,
   listImagesForBeat,
   listImagesForCharacter,
+  listImagesForSet,
   listImagesByOwnerType,
   listPlaygroundGeneratedImages,
   imageFileToMeta,
@@ -833,9 +848,10 @@ export function buildApiRouter() {
     // listDialogs() / listStoryboards() unfiltered return every row; we group
     // them per beat in buildTocResponse to back the dialog/storyboard tab
     // filter without forcing N+1 round trips here.
-    const [characters, beatList, notes, storyboardCounts, dialogCounts, allDialogs, allStoryboards] =
+    const [characters, sets, beatList, notes, storyboardCounts, dialogCounts, allDialogs, allStoryboards] =
       await Promise.all([
         findAllCharacters(req.projectId),
+        findAllSets(req.projectId),
         listBeats(req.projectId),
         getDirectorNotes(req.projectId),
         countStoryboardsByBeat(req.projectId),
@@ -850,7 +866,7 @@ export function buildApiRouter() {
         (notes.notes || []).length,
         storyboardCounts,
         dialogCounts,
-        { allDialogs, allStoryboards },
+        { allDialogs, allStoryboards, sets },
       ),
     );
   });
@@ -945,22 +961,45 @@ export function buildApiRouter() {
   });
 
   // All "done" artworks reachable from this beat — used by the Storyboard
-  // start/end frame picker's Artwork tab. Combines the beat's own artworks
-  // with the artworks of every character listed in beat.characters[], so the
-  // user can pick a character portrait or beat moodboard as the frame image
-  // in a single click. Pending/error artworks are filtered out.
+  // start/end frame picker's Artwork tab. Combines the artworks of every set
+  // in beat.sets[] with those of every character in beat.characters[], so the
+  // user can pick a location plate or character portrait as the frame image
+  // in a single click. Pending/error artworks are filtered out. (Beat-owned
+  // artworks are retired — legacy rows may still carry them, so they're kept
+  // as a trailing source until the migration has swept every beat.)
   router.get('/beat/:id/scene-artworks', async (req, res, next) => {
     try {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const beat = await getBeat(req.projectId, beatId);
-      const { findCharactersInBeat } = await import('./storyboardGenerate.js');
+      const { findCharactersInBeat, findSetsInBeat } = await import('./storyboardGenerate.js');
       const charDocs = await findCharactersInBeat(req.projectId, beat);
+      const setDocs = await findSetsInBeat(req.projectId, beat);
 
       const items = [];
       const seen = new Set(); // dedupe by result_image_id
 
-      // Beat-owned artworks first.
+      // Each linked set's artworks first — location plates lead the picker.
+      for (const s of setDocs) {
+        const sName = stripMarkdown(s.name || '').trim();
+        for (const a of s.artworks || []) {
+          if (a.status !== 'done' || !a.result_image_id) continue;
+          const key = String(a.result_image_id);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          items.push({
+            _id: String(a._id),
+            result_image_id: key,
+            name: a.name || '',
+            prompt: a.prompt || '',
+            owner_kind: 'set',
+            owner_id: String(s._id),
+            owner_label: sName ? `Set: ${sName}` : 'Set',
+          });
+        }
+      }
+
+      // Legacy beat-owned artworks (pre-migration rows only).
       for (const a of beat.artworks || []) {
         if (a.status !== 'done' || !a.result_image_id) continue;
         const key = String(a.result_image_id);
@@ -1069,6 +1108,40 @@ export function buildApiRouter() {
     backfillOwnedImageCaptions('character', c._id?.toString?.(), c.images).catch(() => {});
   });
 
+  // Every GridFS image owned by this set — mirrors /character/:id/images
+  // (filters thumbnails + artwork result images so References stays disjoint
+  // from Artwork).
+  router.get('/set/:id/images', async (req, res, next) => {
+    try {
+      const s = await getSet(req.projectId, req.params.id);
+      if (!s) return res.status(404).json({ error: 'set not found' });
+      const files = await listImagesForSet(req.projectId, s._id);
+      const artworkImageIds = new Set(
+        (s.artworks || [])
+          .flatMap((a) => [a?.result_image_id, a?.previous_result_image_id])
+          .filter(Boolean)
+          .map((aid) => String(aid)),
+      );
+      const filtered = files.filter(
+        (f) =>
+          f.metadata?.kind !== 'thumbnail'
+          && !artworkImageIds.has(String(f._id)),
+      );
+      res.json({ images: filtered.map(imageFileToMeta) });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/set', async (req, res) => {
+    const name = String(req.query.name || '');
+    if (!name) return res.status(400).json({ error: 'name required' });
+    const s = await getSet(req.projectId, name);
+    if (!s) return res.status(404).json({ error: 'set not found' });
+    res.json({ set: s });
+    backfillOwnedImageCaptions('set', s._id?.toString?.(), s.images).catch(() => {});
+  });
+
   router.get('/notes', async (req, res) => {
     const doc = await getDirectorNotes(req.projectId);
     res.json({
@@ -1121,6 +1194,37 @@ export function buildApiRouter() {
           if (wantedKeys.has(key)) {
             nameById.set(key, c.name || '(unnamed)');
           }
+        }
+      }
+      const result = [];
+      for (const f of files) {
+        const ownerId = f.metadata?.owner_id?.toString?.() || null;
+        if (!ownerId) continue;
+        if (exclude && ownerId === exclude) continue;
+        result.push({
+          ...imageFileToMeta(f),
+          owner_id: ownerId,
+          owner_name: nameById.get(ownerId) || '(unknown)',
+        });
+      }
+      res.json({ images: result });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // All set-owned GridFS images, joined with the owning set's name. Used by
+  // the picker modal's "Sets" source tab. Optional ?exclude_id drops images
+  // owned by that set.
+  router.get('/images/by-owner/sets', async (req, res, next) => {
+    try {
+      const exclude = String(req.query?.exclude_id || '').trim();
+      const files = await listImagesByOwnerType(req.projectId, 'set');
+      const nameById = new Map();
+      const hasOwners = files.some((f) => f.metadata?.owner_id);
+      if (hasOwners) {
+        for (const s of await findAllSets(req.projectId)) {
+          nameById.set(s._id.toString(), s.name || '(unnamed)');
         }
       }
       const result = [];
@@ -2406,6 +2510,562 @@ export function buildApiRouter() {
     }
   });
 
+  // ── set mutations ────────────────────────────────────────────────────────
+  // Mirrors the character block above 1:1 (sets have a fixed schema of
+  // name + description; text edits flow through the set:<id> y-doc room).
+
+  async function resolveSetId(req) {
+    const { id } = req.params;
+    if (isOidHex(id)) return id;
+    const s = await getSet(req.projectId, id);
+    return s?._id?.toString() || null;
+  }
+
+  // Create/delete are SPA-first (characters are agent-only for historical
+  // reasons; sets get both surfaces — the agent has its own create_set tool).
+  router.post('/set', async (req, res, next) => {
+    try {
+      const name = String(req.body?.name || '').trim();
+      if (!name) return res.status(400).json({ error: 'name (non-empty) required' });
+      if (name.length > 200) return res.status(400).json({ error: 'name must be ≤ 200 chars' });
+      const description = typeof req.body?.description === 'string' ? req.body.description : '';
+      const set = await createSetViaGateway({ projectId: req.projectId, name, description });
+      res.status(201).json({ set });
+    } catch (e) {
+      if (e?.status === 409) return res.status(409).json({ error: e.message });
+      next(e);
+    }
+  });
+
+  router.delete('/set/:id', async (req, res, next) => {
+    try {
+      const sid = await resolveSetId(req);
+      if (!sid) return res.status(404).json({ error: 'set not found' });
+      const result = await deleteSetViaGateway(req.projectId, sid);
+      res.json({ ok: true, name: result.name, unlinked_from: result.unlinked_from });
+    } catch (e) {
+      if (/not found/i.test(e?.message || '')) {
+        return res.status(404).json({ error: e.message });
+      }
+      next(e);
+    }
+  });
+
+  router.post('/character', async (req, res, next) => {
+    try {
+      const name = String(req.body?.name || '').trim();
+      if (!name) return res.status(400).json({ error: 'name (non-empty) required' });
+      if (name.length > 200) return res.status(400).json({ error: 'name must be ≤ 200 chars' });
+      const hollywood_actor =
+        typeof req.body?.hollywood_actor === 'string' && req.body.hollywood_actor.trim()
+          ? req.body.hollywood_actor.trim()
+          : null;
+      const character = await createCharacterViaGateway({
+        projectId: req.projectId,
+        name,
+        hollywood_actor,
+      });
+      res.status(201).json({ character });
+    } catch (e) {
+      if (e?.status === 409) return res.status(409).json({ error: e.message });
+      next(e);
+    }
+  });
+
+  router.post('/set/:id/image', upload.single('file'), async (req, res, next) => {
+    try {
+      const sid = await resolveSetId(req);
+      if (!sid) return res.status(404).json({ error: 'set not found' });
+      if (!req.file) return res.status(400).json({ error: 'file required' });
+      const sniffed = validateImageBuffer(req.file.buffer);
+      const file = await uploadGeneratedImage(req.projectId, {
+        buffer: req.file.buffer,
+        contentType: req.file.mimetype,
+        ownerType: 'set',
+        ownerId: sid,
+        filename: safeFilename(req.file.originalname, `set-${sid}-${Date.now()}.png`),
+      });
+      const setAsMain = req.body?.set_as_main === 'true' || req.query.set_as_main === '1';
+      const result = await addSetImageViaGateway({
+        projectId: req.projectId,
+        set: sid,
+        imageMeta: {
+          _id: file._id,
+          filename: file.filename,
+          content_type: file.content_type,
+          size: file.size,
+          uploaded_at: file.uploaded_at,
+          caption: req.body?.caption || null,
+        },
+        setAsMain,
+      });
+      res.json({ ...result, image_id: String(file._id) });
+      announceSetMedia({
+        req,
+        set: await getSet(req.projectId, sid),
+        verb: 'uploaded an image to',
+        imageFileId: file._id,
+      });
+      kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
+        ownerType: 'set',
+        ownerId: sid,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete('/set/:id/image/:imageId', async (req, res, next) => {
+    try {
+      const sid = await resolveSetId(req);
+      if (!sid) return res.status(404).json({ error: 'set not found' });
+      const result = await removeSetImageViaGateway({
+        projectId: req.projectId,
+        set: sid,
+        imageId: req.params.imageId,
+      });
+      res.json(result);
+      announceSetMedia({
+        req,
+        set: await getSet(req.projectId, sid),
+        verb: 'deleted an image from',
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Delete a set-owned GridFS image that is NOT in set.images[] — the orphan
+  // counterpart, mirroring the character route.
+  router.delete('/set/:id/orphan-image/:imageId', async (req, res, next) => {
+    try {
+      const sid = await resolveSetId(req);
+      if (!sid) return res.status(404).json({ error: 'set not found' });
+      const imageId = req.params.imageId;
+      if (!isOidHex(imageId)) return res.status(400).json({ error: 'invalid image id' });
+      const file = await findImageFile(imageId);
+      if (!file) return res.status(404).json({ error: 'image not found' });
+      const ownerType = file.metadata?.owner_type;
+      const ownerId = file.metadata?.owner_id?.toString?.();
+      if (ownerType !== 'set' || ownerId !== String(sid)) {
+        return res.status(409).json({ error: 'image is not owned by this set' });
+      }
+      const set = await getSet(req.projectId, sid);
+      const inGallery = (set?.images || []).some(
+        (i) => (i._id?.toString?.() || String(i._id)) === String(imageId),
+      );
+      if (inGallery) {
+        return res.status(409).json({
+          error: 'image is in set.images[] — use DELETE /set/:id/image/:imageId',
+        });
+      }
+      await deleteImage(imageId);
+      res.json({ ok: true });
+      announceSetMedia({
+        req,
+        set: await getSet(req.projectId, sid),
+        verb: 'deleted an image from',
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Replace a set's image with a model-generated one — parallel to the beat
+  // and character regenerate endpoints.
+  router.post('/set/:id/image/:imageId/regenerate', async (req, res, next) => {
+    try {
+      const sid = await resolveSetId(req);
+      if (!sid) return res.status(404).json({ error: 'set not found' });
+      const oldImageId = req.params.imageId;
+      if (!isOidHex(oldImageId)) return res.status(400).json({ error: 'invalid image id' });
+      const mode = String(req.body?.mode ?? 'edit');
+      if (!['edit', 'generate'].includes(mode)) {
+        return res.status(400).json({ error: 'mode must be edit|generate' });
+      }
+      const imageModel = normalizeImageModel(req.body?.image_model);
+      if (!isValidImageModel(imageModel)) {
+        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
+      }
+      const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
+      if (!prompt) {
+        return res.status(400).json({ error: 'prompt (non-empty string) required' });
+      }
+      if (prompt.length > 4096) {
+        return res.status(400).json({ error: 'prompt must be ≤ 4096 chars' });
+      }
+
+      const refs = await loadReferenceImages(req.body?.reference_image_ids);
+      if (refs.error) {
+        return res.status(refs.status || 400).json({ error: refs.error });
+      }
+
+      let existingImage = null;
+      if (mode === 'edit') {
+        const r = await readImageBuffer(oldImageId);
+        if (!r) return res.status(404).json({ error: 'existing image not found' });
+        const declared = r.file.contentType || r.file.metadata?.contentType || null;
+        existingImage = { buffer: r.buffer, contentType: declared || 'image/png' };
+      }
+
+      const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
+      let result;
+      try {
+        result = await dispatchImageReplace({
+          prompt,
+          mode,
+          model: imageModel,
+          existingImage,
+          referenceImages: refs.images,
+          discordUser: webDiscordUser(req),
+        });
+      } catch (e) {
+        if (e?.status === 400) return res.status(400).json({ error: e.message });
+        throw e;
+      }
+
+      const file = await uploadGeneratedImage(req.projectId, {
+        buffer: result.buffer,
+        contentType: result.contentType,
+        prompt,
+        generatedBy: result.model,
+        ownerType: 'set',
+        ownerId: sid,
+        filename: `set-${sid}-${Date.now()}.png`,
+      });
+      const newMeta = {
+        _id: file._id,
+        filename: file.filename,
+        content_type: file.content_type,
+        size: file.size,
+        source: 'generated',
+        prompt,
+        generated_by: result.model,
+        uploaded_at: file.uploaded_at,
+        ...(refs.ids.length ? { reference_image_ids: refs.ids } : {}),
+      };
+      const replaceResult = await replaceSetImageViaGateway({
+        projectId: req.projectId,
+        set: sid,
+        oldImageId,
+        newImageMeta: newMeta,
+      });
+      res.json({
+        set: replaceResult.set,
+        image: { _id: file._id, content_type: file.content_type },
+        replaced: String(oldImageId),
+        was_main: replaceResult.was_main,
+        model: result.model,
+      });
+      announceSetMedia({
+        req,
+        set: await getSet(req.projectId, sid),
+        verb: mode === 'edit' ? 'edited an image on' : 'regenerated an image on',
+        imageFileId: file._id,
+        prompt,
+      });
+      kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
+        ownerType: 'set',
+        ownerId: sid,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Attach an existing GridFS image (from library or another entity) to a
+  // set's gallery. Picker uses this for the Library tab.
+  router.post('/set/:id/image/attach', async (req, res, next) => {
+    try {
+      const sid = await resolveSetId(req);
+      if (!sid) return res.status(404).json({ error: 'set not found' });
+      const imageId = String(req.body?.image_id || '').trim();
+      if (!isOidHex(imageId)) {
+        return res.status(400).json({ error: 'image_id (24-hex) required' });
+      }
+      const setAsMain = !!req.body?.set_as_main;
+      try {
+        const result = await attachExistingImageToSetViaGateway({
+          projectId: req.projectId,
+          set: sid,
+          imageId,
+          setAsMain,
+        });
+        res.json(result);
+        announceSetMedia({
+          req,
+          set: await getSet(req.projectId, sid),
+          verb: 'attached an image to',
+          imageFileId: imageId,
+        });
+      } catch (e) {
+        if (/not found/i.test(e?.message || '')) {
+          return res.status(404).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Copy a GridFS image (owned by any entity, or by library) into this set's
+  // gallery as a brand-new GridFS file. Source stays intact.
+  router.post('/set/:id/image/copy', async (req, res, next) => {
+    try {
+      const sid = await resolveSetId(req);
+      if (!sid) return res.status(404).json({ error: 'set not found' });
+      const imageId = String(req.body?.image_id || '').trim();
+      if (!isOidHex(imageId)) {
+        return res.status(400).json({ error: 'image_id (24-hex) required' });
+      }
+      const setAsMain = !!req.body?.set_as_main;
+      try {
+        const imageMeta = await copyImageToNewOwner({
+          projectId: req.projectId,
+          imageId,
+          ownerType: 'set',
+          ownerId: sid,
+          filenameBase: `set-${sid}`,
+        });
+        const result = await addSetImageViaGateway({
+          projectId: req.projectId,
+          set: sid,
+          imageMeta,
+          setAsMain,
+        });
+        res.json(result);
+        announceSetMedia({
+          req,
+          set: await getSet(req.projectId, sid),
+          verb: 'copied an image to',
+          imageFileId: imageMeta._id,
+        });
+      } catch (e) {
+        if (e?.status === 404) return res.status(404).json({ error: e.message });
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Generate a fresh image from a custom prompt and attach to a set's
+  // gallery — parallel to the character generate endpoint.
+  router.post('/set/:id/image/generate', async (req, res, next) => {
+    try {
+      const sid = await resolveSetId(req);
+      if (!sid) return res.status(404).json({ error: 'set not found' });
+      const prompt = String(req.body?.prompt || '').trim();
+      if (!prompt) {
+        return res.status(400).json({ error: 'prompt (non-empty) required' });
+      }
+      if (prompt.length > 4096) {
+        return res.status(400).json({ error: 'prompt must be ≤ 4096 chars' });
+      }
+      const model = normalizeImageModel(req.body?.model);
+      if (!isValidImageModel(model)) {
+        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
+      }
+      const refs = await loadReferenceImages(req.body?.reference_image_ids);
+      if (refs.error) {
+        return res.status(refs.status || 400).json({ error: refs.error });
+      }
+      const setAsMain = !!req.body?.set_as_main;
+      const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
+      const result = await dispatchImageReplace({
+        prompt,
+        mode: 'generate',
+        model,
+        referenceImages: refs.images,
+        discordUser: webDiscordUser(req),
+      });
+      const file = await uploadGeneratedImage(req.projectId, {
+        buffer: result.buffer,
+        contentType: result.contentType,
+        prompt,
+        generatedBy: result.model || model,
+        ownerType: 'set',
+        ownerId: sid,
+        filename: `set-${sid}-gen-${Date.now()}.png`,
+      });
+      const updated = await addSetImageViaGateway({
+        projectId: req.projectId,
+        set: sid,
+        imageMeta: {
+          _id: file._id,
+          filename: file.filename,
+          content_type: file.content_type,
+          size: file.size,
+          source: 'generated',
+          prompt,
+          generated_by: result.model || model,
+          uploaded_at: file.uploaded_at,
+          ...(refs.ids.length ? { reference_image_ids: refs.ids } : {}),
+        },
+        setAsMain,
+      });
+      res.json({
+        set: updated.set || updated,
+        image: { _id: file._id, content_type: file.content_type },
+      });
+      announceSetMedia({
+        req,
+        set: await getSet(req.projectId, sid),
+        verb:
+          refs.ids.length >= 2
+            ? 'composited images on'
+            : refs.ids.length === 1
+              ? 'edited an image on'
+              : 'generated an image on',
+        imageFileId: file._id,
+        prompt,
+      });
+      kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
+        ownerType: 'set',
+        ownerId: sid,
+      });
+    } catch (e) {
+      if (e?.status >= 400 && e?.status < 600) {
+        return res.status(e.status).json({ error: e.message });
+      }
+      next(e);
+    }
+  });
+
+  router.post('/set/:id/image/:imageId/move-to-library', async (req, res, next) => {
+    try {
+      const sid = await resolveSetId(req);
+      if (!sid) return res.status(404).json({ error: 'set not found' });
+      const imageId = req.params.imageId;
+      if (!isOidHex(imageId)) return res.status(400).json({ error: 'invalid image id' });
+      try {
+        const result = await moveSetImageToLibraryViaGateway({
+          projectId: req.projectId,
+          set: sid,
+          imageId,
+        });
+        res.json({ ok: true, image_id: imageId, set: result.set });
+      } catch (e) {
+        if (/not attached/i.test(e?.message || '')) {
+          return res.status(404).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/set/:id/main-image', async (req, res, next) => {
+    try {
+      const sid = await resolveSetId(req);
+      if (!sid) return res.status(404).json({ error: 'set not found' });
+      const imageId = req.body?.image_id;
+      if (!isOidHex(String(imageId))) return res.status(400).json({ error: 'image_id required' });
+      const result = await setSetMainImageViaGateway({ projectId: req.projectId, set: sid, imageId });
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/set/:id/attachment', upload.single('file'), async (req, res, next) => {
+    try {
+      const sid = await resolveSetId(req);
+      if (!sid) return res.status(404).json({ error: 'set not found' });
+      if (!req.file) return res.status(400).json({ error: 'file required' });
+      const file = await uploadAttachmentBuffer(req.projectId, {
+        buffer: req.file.buffer,
+        filename: safeFilename(req.file.originalname, `attach-${Date.now()}.bin`),
+        contentType: req.file.mimetype,
+        ownerType: 'set',
+        ownerId: sid,
+      });
+      const result = await addSetAttachmentViaGateway({
+        projectId: req.projectId,
+        set: sid,
+        attachmentMeta: {
+          _id: file._id,
+          filename: file.filename,
+          content_type: file.content_type,
+          size: file.size,
+          caption: req.body?.caption || null,
+          uploaded_at: file.uploaded_at,
+        },
+      });
+      res.json(result);
+      announceSetMedia({
+        req,
+        set: await getSet(req.projectId, sid),
+        verb: (file.content_type || '').startsWith('audio/')
+          ? 'added audio to'
+          : (file.content_type || '').startsWith('video/')
+            ? 'added video to'
+            : 'uploaded a file to',
+        mediaFileId: file._id,
+        mediaLabel: file.filename || 'file',
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete('/set/:id/attachment/:attachId', async (req, res, next) => {
+    try {
+      const sid = await resolveSetId(req);
+      if (!sid) return res.status(404).json({ error: 'set not found' });
+      const result = await removeSetAttachmentViaGateway({
+        projectId: req.projectId,
+        set: sid,
+        attachmentId: req.params.attachId,
+      });
+      res.json(result);
+      announceSetMedia({
+        req,
+        set: await getSet(req.projectId, sid),
+        verb: 'deleted a file from',
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Attach an existing GridFS attachment (from library or another entity) to
+  // a set. Picker uses this for the Library tab.
+  router.post('/set/:id/attachment/attach', async (req, res, next) => {
+    try {
+      const sid = await resolveSetId(req);
+      if (!sid) return res.status(404).json({ error: 'set not found' });
+      const attachmentId = String(req.body?.attachment_id || '').trim();
+      if (!isOidHex(attachmentId)) {
+        return res.status(400).json({ error: 'attachment_id (24-hex) required' });
+      }
+      try {
+        const result = await attachExistingAttachmentToSetViaGateway({
+          projectId: req.projectId,
+          set: sid,
+          attachmentId,
+        });
+        res.json(result);
+        announceSetMedia({
+          req,
+          set: await getSet(req.projectId, sid),
+          verb: 'attached a file to',
+          mediaFileId: attachmentId,
+          mediaLabel: 'file',
+        });
+      } catch (e) {
+        if (/not found/i.test(e?.message || '')) {
+          return res.status(404).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // ── artwork routes (character + beat) ────────────────────────────────────
   //
   // An "artwork" is a generated image bundled with the prompt + reference
@@ -2765,11 +3425,11 @@ export function buildApiRouter() {
       }
     });
 
-    // POST /beat/:id/shot-plan — start a two-phase plate DERIVATION job (beats
-    // only). Renders nothing; returns 202 + { job_id }. The SPA polls
-    // GET /image-sheet/:jobId until status==='derived', shows job.shots for
-    // review, then POSTs the reviewed list to /beat/:id/image-sheet.
-    if (hostType === 'beat') {
+    // POST /<host>/:id/shot-plan — start a two-phase plate DERIVATION job
+    // (beats and sets). Renders nothing; returns 202 + { job_id }. The SPA
+    // polls GET /image-sheet/:jobId until status==='derived', shows job.shots
+    // for review, then POSTs the reviewed list to /<host>/:id/image-sheet.
+    if (hostType === 'beat' || hostType === 'set') {
       router.post(`${basePath}/:id/shot-plan`, async (req, res, next) => {
         try {
           const hostId = await resolveHostId(req);
@@ -2781,6 +3441,7 @@ export function buildApiRouter() {
           const { startShotPlanJob } = await import('./imageSheetJobs.js');
           const result = await startShotPlanJob({
             projectId: req.projectId,
+            hostType,
             hostId,
             referenceImageIds: refs.ids,
             direction,
@@ -2792,6 +3453,32 @@ export function buildApiRouter() {
         }
       });
 
+      // GET /<host>/:id/image-sheet-references — the reference set to pre-fill
+      // the derive dialog with. Beats: saved set, else the beat's artwork refs.
+      // Sets: the set's own gallery images.
+      router.get(`${basePath}/:id/image-sheet-references`, async (req, res, next) => {
+        try {
+          const hostId = await resolveHostId(req);
+          if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
+          if (hostType === 'set') {
+            const s = await getSet(req.projectId, hostId);
+            if (!s) return res.status(404).json({ error: 'set not found' });
+            res.json({
+              reference_ids: (s.images || []).map((i) => String(i._id)).filter(Boolean),
+            });
+            return;
+          }
+          const { computeImageSheetPrefillIds } = await import('../mongo/plots.js');
+          const beat = await getBeat(req.projectId, hostId);
+          if (!beat) return res.status(404).json({ error: 'beat not found' });
+          res.json({ reference_ids: computeImageSheetPrefillIds(beat) });
+        } catch (e) {
+          next(e);
+        }
+      });
+    }
+
+    if (hostType === 'beat') {
       // POST /beat/:id/tune-scan — scan the beat's storyboard against its existing
       // plates and propose new ones. Renders nothing; returns 202 + { job_id }. The
       // SPA polls GET /image-sheet/:jobId until status==='derived', reviews
@@ -2813,21 +3500,6 @@ export function buildApiRouter() {
           handleArtworkError(e, res, next);
         }
       });
-
-      // GET /beat/:id/image-sheet-references — the reference set to pre-fill the
-      // Tune dialog with (saved set, else union of the beat's artwork refs).
-      router.get(`${basePath}/:id/image-sheet-references`, async (req, res, next) => {
-        try {
-          const hostId = await resolveHostId(req);
-          if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
-          const { computeImageSheetPrefillIds } = await import('../mongo/plots.js');
-          const beat = await getBeat(req.projectId, hostId);
-          if (!beat) return res.status(404).json({ error: 'beat not found' });
-          res.json({ reference_ids: computeImageSheetPrefillIds(beat) });
-        } catch (e) {
-          next(e);
-        }
-      });
     }
   }
 
@@ -2840,6 +3512,11 @@ export function buildApiRouter() {
     hostType: 'beat',
     basePath: '/beat',
     resolveHostId: resolveBeatId,
+  });
+  registerArtworkRoutes({
+    hostType: 'set',
+    basePath: '/set',
+    resolveHostId: resolveSetId,
   });
 
   // Picker support: returns every beat with its embedded images and
@@ -5367,6 +6044,35 @@ export function buildApiRouter() {
       const { getStoryboardGenerationJob } = await import('./storyboardGenerate.js');
       const job = getStoryboardGenerationJob(req.params.jobId);
       if (!job) return res.status(404).json({ error: 'job not found' });
+      res.json({ job });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Standalone advisory readiness check (also runs automatically as the first
+  // phase of every generate job). Read-only — no beat lock. 202 + poll.
+  router.post('/storyboards/readiness', async (req, res, next) => {
+    try {
+      const beatId = String(req.body?.beat_id || '');
+      if (!isOidHex(beatId)) return res.status(400).json({ error: 'beat_id (24-hex) required' });
+      const { startReadinessJob } = await import('./storyboardReadiness.js');
+      const result = await startReadinessJob({ projectId: req.projectId, beatId });
+      res.status(202).json(result);
+    } catch (e) {
+      if (e?.status === 404) return res.status(404).json({ error: e.message });
+      next(e);
+    }
+  });
+
+  router.get('/storyboards/readiness/:jobId', async (req, res, next) => {
+    try {
+      const { getReadinessJob } = await import('./storyboardReadiness.js');
+      const job = getReadinessJob(req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'job not found' });
+      if (job.project_id && String(job.project_id) !== String(req.projectId)) {
+        return res.status(404).json({ error: 'job not found' });
+      }
       res.json({ job });
     } catch (e) {
       next(e);

@@ -259,115 +259,95 @@ vi.mock('../src/mongo/attachments.js', async () => {
   const actual = await vi.importActual('../src/mongo/attachments.js');
   return {
     ...actual,
-    uploadAttachmentFromUrl: vi.fn(),
-    deleteAttachment: vi.fn(),
     attachToCharacter: vi.fn(),
     listCharacterAttachments: vi.fn(),
     removeCharacterAttachment: vi.fn(),
+    attachToSet: vi.fn(),
+    listSetAttachments: vi.fn(),
+    removeSetAttachment: vi.fn(),
   };
 });
 
 const Attachments = await import('../src/mongo/attachments.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
-const Plots = await import('../src/mongo/plots.js');
 
-async function seedBeat() {
-  const beat = await Plots.createBeat({ projectId, name: 'Diner Scene', desc: 'They meet at the diner.' });
-  return beat;
-}
-
-describe('beat attachment handlers', () => {
+describe('set attachment handlers', () => {
   beforeEach(() => {
-    Attachments.uploadAttachmentFromUrl.mockReset();
-    Attachments.deleteAttachment.mockReset();
+    Attachments.attachToSet.mockReset();
+    Attachments.listSetAttachments.mockReset();
+    Attachments.removeSetAttachment.mockReset();
   });
 
-  it('add_beat_attachment uploads, attaches to the beat, and returns metadata', async () => {
-    const beat = await seedBeat();
+  it('add_set_attachment delegates to Attachments.attachToSet', async () => {
     const fakeId = new ObjectId();
-    Attachments.uploadAttachmentFromUrl.mockResolvedValue({
+    Attachments.attachToSet.mockResolvedValue({
+      set: 'The Diner',
       _id: fakeId,
       filename: 'recording.ogg',
       content_type: 'audio/ogg',
       size: 5432,
+      caption: 'use at PAULY IS FULL DEEP',
       uploaded_at: new Date(),
     });
-    const out = await HANDLERS.add_beat_attachment({
-      beat: beat._id.toString(),
+    const out = await HANDLERS.add_set_attachment({
+      set: 'The Diner',
       source_url: 'https://cdn.discord.com/x/recording.ogg',
       caption: 'use at PAULY IS FULL DEEP',
     }, { projectId });
-    expect(Attachments.uploadAttachmentFromUrl).toHaveBeenCalledWith(
+    expect(Attachments.attachToSet).toHaveBeenCalledWith({
       projectId,
-      expect.objectContaining({
-        sourceUrl: 'https://cdn.discord.com/x/recording.ogg',
-        ownerType: 'beat',
-      }),
-    );
-    expect(out).toMatch(/Added attachment to beat "Diner Scene"/);
+      set: 'The Diner',
+      sourceUrl: 'https://cdn.discord.com/x/recording.ogg',
+      filename: undefined,
+      caption: 'use at PAULY IS FULL DEEP',
+    });
+    expect(out).toMatch(/Added attachment to The Diner/);
     expect(out).toContain('recording.ogg');
     expect(out).toContain('use at PAULY IS FULL DEEP');
-
-    const after = await Plots.getBeat(projectId, beat._id.toString());
-    expect(after.attachments).toHaveLength(1);
-    expect(after.attachments[0].filename).toBe('recording.ogg');
-    expect(after.attachments[0].caption).toBe('use at PAULY IS FULL DEEP');
   });
 
-  it('list_beat_attachments returns attachments on the beat', async () => {
-    const beat = await seedBeat();
-    const fakeId = new ObjectId();
-    Attachments.uploadAttachmentFromUrl.mockResolvedValue({
-      _id: fakeId,
-      filename: 'a.ogg',
-      content_type: 'audio/ogg',
-      size: 1,
-      uploaded_at: new Date(),
+  it('list_set_attachments delegates to Attachments.listSetAttachments', async () => {
+    const setId = new ObjectId();
+    const attId = new ObjectId();
+    Attachments.listSetAttachments.mockResolvedValue({
+      set: 'The Diner',
+      _id: setId,
+      attachments: [
+        {
+          _id: attId,
+          filename: 'a.ogg',
+          content_type: 'audio/ogg',
+          size: 1234,
+          caption: null,
+          uploaded_at: new Date(),
+        },
+      ],
     });
-    await HANDLERS.add_beat_attachment({
-      beat: beat._id.toString(),
-      source_url: 'https://x.test/a.ogg',
-    }, { projectId });
-    const raw = await HANDLERS.list_beat_attachments({ beat: beat._id.toString() }, { projectId });
+    const raw = await HANDLERS.list_set_attachments({ set: 'The Diner' }, { projectId });
     const out = JSON.parse(raw.replace(/\nEdit in browser:.*$/s, ''));
+    expect(out.set.name).toBe('The Diner');
     expect(out.attachments).toHaveLength(1);
     expect(out.attachments[0].filename).toBe('a.ogg');
-    expect(raw).toMatch(/Edit in browser: http:\/\/localhost:3000\/beat\/\d+/);
+    expect(raw).toMatch(/Edit in browser: http:\/\/localhost:3000\/set\/The%20Diner/);
   });
 
-  it('remove_beat_attachment pulls from beat and calls deleteAttachment', async () => {
-    const beat = await seedBeat();
-    const fakeId = new ObjectId();
-    Attachments.uploadAttachmentFromUrl.mockResolvedValue({
-      _id: fakeId,
-      filename: 'a.ogg',
-      content_type: 'audio/ogg',
-      size: 1,
-      uploaded_at: new Date(),
+  it('remove_set_attachment delegates and reports removal', async () => {
+    const removed = new ObjectId();
+    Attachments.removeSetAttachment.mockResolvedValue({
+      set: 'The Diner',
+      removed,
     });
-    await HANDLERS.add_beat_attachment({
-      beat: beat._id.toString(),
-      source_url: 'https://x.test/a.ogg',
+    const out = await HANDLERS.remove_set_attachment({
+      set: 'The Diner',
+      attachment_id: removed.toString(),
     }, { projectId });
-    const out = await HANDLERS.remove_beat_attachment({
-      beat: beat._id.toString(),
-      attachment_id: fakeId.toString(),
-    }, { projectId });
+    expect(Attachments.removeSetAttachment).toHaveBeenCalledWith({
+      projectId,
+      set: 'The Diner',
+      attachmentId: removed.toString(),
+    });
     expect(out).toMatch(/Removed attachment/);
-    expect(Attachments.deleteAttachment).toHaveBeenCalledTimes(1);
-    const after = await Plots.getBeat(projectId, beat._id.toString());
-    expect(after.attachments).toHaveLength(0);
-  });
-
-  it('propagates upload errors so dispatchTool can wrap them', async () => {
-    const beat = await seedBeat();
-    Attachments.uploadAttachmentFromUrl.mockRejectedValue(new Error('File too large: ...'));
-    await expect(
-      HANDLERS.add_beat_attachment({
-        beat: beat._id.toString(),
-        source_url: 'https://x.test/huge.bin',
-      }, { projectId }),
-    ).rejects.toThrow(/File too large/);
+    expect(out).toMatch(/The Diner/);
   });
 });
 

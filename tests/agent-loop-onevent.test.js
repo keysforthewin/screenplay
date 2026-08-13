@@ -41,6 +41,9 @@ vi.mock('../src/mongo/plots.js', () => ({
 vi.mock('../src/mongo/directorNotes.js', () => ({
   getDirectorNotes: async () => ({ _id: 'director_notes', notes: [] }),
 }));
+vi.mock('../src/mongo/sets.js', () => ({
+  listSets: async () => [],
+}));
 
 const dispatchToolMock = vi.hoisted(() => vi.fn(async () => 'ok'));
 vi.mock('../src/agent/handlers.js', () => ({

@@ -62,7 +62,7 @@ import { pathToFileURL } from 'node:url';
 import { connectMongo, closeMongo } from '../src/mongo/client.js';
 import { stripMarkdown } from '../src/util/markdown.js';
 
-const STAMPED_COLLECTIONS = ['plots', 'characters', 'messages', 'storyboards', 'dialogs'];
+const STAMPED_COLLECTIONS = ['plots', 'characters', 'sets', 'messages', 'storyboards', 'dialogs'];
 const GRIDFS_FILE_COLLECTIONS = ['images.files', 'attachments.files'];
 const PROMPT_KEYS = ['character_template', 'plot_template', 'director_notes'];
 const SINGLETON_ROOMS = ['plot', 'notes', 'library'];

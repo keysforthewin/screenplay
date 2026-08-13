@@ -636,10 +636,10 @@ async function makeRefCharacter(name, { sheets = [], mainId = null, images = [] 
 }
 
 describe('auto-populated reference images', () => {
-  it('seeds frame reference_ids from beat + character artwork (not sheets/main)', async () => {
-    // The beat and the character each have two "done" artworks; the character
-    // also has plain sheets. The scored selection floors at 2 beat + 2 character
-    // artworks and must NOT pull in the non-artwork sheets/main image.
+  it('seeds frame reference_ids from set + character artwork (not sheets/main)', async () => {
+    // The linked set and the character each have two "done" artworks; the
+    // character also has plain sheets. The scored selection floors at 2 set +
+    // 2 character artworks and must NOT pull in the non-artwork sheets/main.
     const sheet = await putImageMetaInDb({ name: 'Keys sheet', description: '' });
     const keys = await makeRefCharacter('Keys', { sheets: [sheet], mainId: sheet });
     const keysArt1 = new ObjectId();
@@ -647,16 +647,19 @@ describe('auto-populated reference images', () => {
     await appendDoneArtwork({ projectId, hostType: 'character', hostId: keys._id, resultImageId: keysArt1, name: 'Young Keys' });
     await appendDoneArtwork({ projectId, hostType: 'character', hostId: keys._id, resultImageId: keysArt2, name: 'Old Keys' });
 
+    const RefSets = await import('../src/mongo/sets.js');
+    const bar = await RefSets.createSet({ projectId, name: 'Bar' });
     const beat = await Plots.createBeat({ projectId,
       name: 'Keys solo',
       desc: 'k',
       body: 'Keys alone in the bar.',
       characters: ['Keys'],
+      sets: ['Bar'],
     });
     const beatArt1 = new ObjectId();
     const beatArt2 = new ObjectId();
-    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt1, name: 'Bar wide' });
-    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt2, name: 'Bar close' });
+    await appendDoneArtwork({ projectId, hostType: 'set', hostId: bar._id.toString(), resultImageId: beatArt1, name: 'Bar wide' });
+    await appendDoneArtwork({ projectId, hostType: 'set', hostId: bar._id.toString(), resultImageId: beatArt2, name: 'Bar close' });
 
     Generate._setScenePlannerForTests(async () => ({
       sceneBible: { location: 'Bar' },
@@ -680,7 +683,7 @@ describe('auto-populated reference images', () => {
     expect(stored).toHaveLength(1);
     const frame = stored[0].frames[0];
     const ids = frame.reference_ids.map((x) => x.toString());
-    // Floor: both beat artworks + both Keys artworks.
+    // Floor: both set artworks + both Keys artworks.
     expect(ids).toContain(beatArt1.toString());
     expect(ids).toContain(beatArt2.toString());
     expect(ids).toContain(keysArt1.toString());
@@ -691,17 +694,20 @@ describe('auto-populated reference images', () => {
     expect(frame.reference_scores[beatArt1.toString()]).toBeCloseTo(0.9);
   });
 
-  it('floors at 2 beat + 2 per character, scaling with the in-scene cast', async () => {
+  it('floors at 2 per set + 2 per character, scaling with the in-scene cast', async () => {
+    const RefSets = await import('../src/mongo/sets.js');
+    const diner = await RefSets.createSet({ projectId, name: 'Diner' });
     const beat = await Plots.createBeat({ projectId,
       name: 'Diner',
       desc: 'd',
       body: 'Alice walks in. Bob is waiting.',
       characters: ['Alice', 'Bob'],
+      sets: ['Diner'],
     });
     const beatArt1 = new ObjectId();
     const beatArt2 = new ObjectId();
-    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt1, name: 'Diner wide' });
-    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt2, name: 'Diner booth' });
+    await appendDoneArtwork({ projectId, hostType: 'set', hostId: diner._id.toString(), resultImageId: beatArt1, name: 'Diner wide' });
+    await appendDoneArtwork({ projectId, hostType: 'set', hostId: diner._id.toString(), resultImageId: beatArt2, name: 'Diner booth' });
 
     const alice = await makeRefCharacter('Alice');
     const bob = await makeRefCharacter('Bob');
@@ -725,7 +731,7 @@ describe('auto-populated reference images', () => {
     const stored = await Storyboards.listStoryboards({ beatId: beat._id });
     expect(stored).toHaveLength(2);
 
-    // Shot 1: Alice only → 2 beat + 2 Alice artworks; no Bob artwork.
+    // Shot 1: Alice only → 2 set + 2 Alice artworks; no Bob artwork.
     for (const frame of stored[0].frames) {
       const ids = frame.reference_ids.map((x) => x.toString());
       expect(ids).toContain(beatArt1.toString());
@@ -896,7 +902,7 @@ describe('planFramesV2 resolves per-frame reference_ids', () => {
     return PlanFramesCharacters.getCharacter(projectId, name);
   }
 
-  it('seeds reference_ids from scored beat + character artwork, and still feeds sheets to the expander', async () => {
+  it('seeds reference_ids from scored set + character artwork, and still feeds sheets to the expander', async () => {
     // Sheets feed the expander's candidate manifest (prompt context); the
     // reference list itself now comes from the scored artwork selection.
     const young = await putImageMeta({ name: 'Young Keys', description: 'teen' });
@@ -907,11 +913,13 @@ describe('planFramesV2 resolves per-frame reference_ids', () => {
     await appendDoneArtwork({ projectId, hostType: 'character', hostId: keys._id, resultImageId: keysArt1, name: 'Keys art 1' });
     await appendDoneArtwork({ projectId, hostType: 'character', hostId: keys._id, resultImageId: keysArt2, name: 'Keys art 2' });
 
-    const beat = await Plots.createBeat({ projectId, name: 'Bar', desc: 'd', body: 'Keys in the bar.', characters: ['Keys'] });
+    const RefSets2 = await import('../src/mongo/sets.js');
+    const bar = await RefSets2.createSet({ projectId, name: 'Bar' });
+    const beat = await Plots.createBeat({ projectId, name: 'Bar', desc: 'd', body: 'Keys in the bar.', characters: ['Keys'], sets: ['Bar'] });
     const beatArt1 = new ObjectId();
     const beatArt2 = new ObjectId();
-    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt1, name: 'Bar 1' });
-    await appendDoneArtwork({ projectId, hostType: 'beat', hostId: beat._id, resultImageId: beatArt2, name: 'Bar 2' });
+    await appendDoneArtwork({ projectId, hostType: 'set', hostId: bar._id.toString(), resultImageId: beatArt1, name: 'Bar 1' });
+    await appendDoneArtwork({ projectId, hostType: 'set', hostId: bar._id.toString(), resultImageId: beatArt2, name: 'Bar 2' });
 
     let capturedCandidates = null;
     Generate._setScenePlannerForTests(async () => ({

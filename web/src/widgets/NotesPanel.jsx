@@ -43,6 +43,7 @@ export function NotesPanel({ notes, session, onChange }) {
               mainPath={`/notes/${note._id}/main-image`}
               characterSourcesPath={`/images/by-owner/characters`}
               beatSourcesPath={`/images/by-owner/beats`}
+              setSourcesPath={`/images/by-owner/sets`}
               copyPath={`/notes/${note._id}/image/copy`}
             />
           </div>

@@ -60,7 +60,7 @@ const del = (path, headers = {}) =>
 const docs = (name) => fakeDb.collection(name)._docs;
 
 // Populate one project with a row in every place the cascade must reach.
-async function seedProjectContent(pid, { beatId, characterId, imageId, attachmentId }) {
+async function seedProjectContent(pid, { beatId, characterId, setId, imageId, attachmentId }) {
   await fakeDb.collection('plots').insertOne({
     _id: new ObjectId(),
     project_id: pid,
@@ -70,6 +70,9 @@ async function seedProjectContent(pid, { beatId, characterId, imageId, attachmen
   await fakeDb
     .collection('characters')
     .insertOne({ _id: characterId, project_id: pid, name: 'Steve', name_lower: 'steve' });
+  await fakeDb
+    .collection('sets')
+    .insertOne({ _id: setId, project_id: pid, name: 'Kitchen', name_lower: 'kitchen' });
   await fakeDb.collection('messages').insertOne({ _id: new ObjectId(), project_id: pid });
   await fakeDb
     .collection('storyboards')
@@ -99,6 +102,7 @@ async function seedProjectContent(pid, { beatId, characterId, imageId, attachmen
     `storyboards:${beatId.toString()}`,
     `dialogs:${beatId.toString()}`,
     `character:${characterId.toString()}`,
+    `set:${setId.toString()}`,
   ]) {
     await fakeDb.collection('yjs_docs').insertOne({ _id: room, state: 'x' });
   }
@@ -108,6 +112,7 @@ function makeIds() {
   return {
     beatId: new ObjectId(),
     characterId: new ObjectId(),
+    setId: new ObjectId(),
     imageId: new ObjectId(),
     attachmentId: new ObjectId(),
   };
@@ -174,6 +179,7 @@ describe('DELETE /api/projects/:id', () => {
     for (const name of [
       'plots',
       'characters',
+      'sets',
       'messages',
       'storyboards',
       'dialogs',
@@ -225,6 +231,7 @@ describe('DELETE /api/projects/:id', () => {
     for (const name of [
       'plots',
       'characters',
+      'sets',
       'messages',
       'storyboards',
       'dialogs',
@@ -246,6 +253,7 @@ describe('DELETE /api/projects/:id', () => {
         `storyboards:${keepIds.beatId}`,
         `dialogs:${keepIds.beatId}`,
         `character:${keepIds.characterId}`,
+        `set:${keepIds.setId}`,
       ].sort(),
     );
   });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { apiGet } from '../api.js';
+import { Link, useNavigate } from 'react-router-dom';
+import { apiGet, apiPostJson, thumbUrl } from '../api.js';
 import { LibraryPanel } from '../widgets/LibraryPanel.jsx';
 import { PlayAllButton } from '../widgets/PlayAllButton.jsx';
 import { SortableBeatList } from '../widgets/SortableBeatList.jsx';
@@ -9,6 +9,7 @@ import { useProject } from '../project/ProjectContext.jsx';
 
 const TABS = [
   { id: 'characters', label: 'Characters' },
+  { id: 'sets', label: 'Sets' },
   { id: 'beats', label: 'Beats' },
   { id: 'dialog', label: 'Dialog' },
   { id: 'storyboards', label: 'Storyboards' },
@@ -29,6 +30,7 @@ function readInitialTab() {
 }
 
 export function Toc({ session }) {
+  const navigate = useNavigate();
   const [toc, setToc] = useState(null);
   const [libraryData, setLibraryData] = useState(null);
   const [error, setError] = useState(null);
@@ -133,6 +135,36 @@ export function Toc({ session }) {
     })
     .filter((c) => matches(c.label, c.searchText));
 
+  const setDupCounts = (toc.sets || []).reduce((m, s) => {
+    const k = (s.plain_name || s.name || '').toLowerCase();
+    m.set(k, (m.get(k) || 0) + 1);
+    return m;
+  }, new Map());
+
+  const sets = [...(toc.sets || [])]
+    .sort((a, b) => {
+      const an = (a.plain_name || a.name || '').toLowerCase();
+      const bn = (b.plain_name || b.name || '').toLowerCase();
+      return an.localeCompare(bn);
+    })
+    .map((s) => {
+      const nameKey = (s.plain_name || s.name || '').toLowerCase();
+      const isDup = (setDupCounts.get(nameKey) || 0) > 1;
+      return {
+        key: s._id,
+        to: isDup
+          ? `/set/${s._id}`
+          : `/set/${encodeURIComponent(s.plain_name || s.name)}`,
+        label: s.plain_name || s.name || '',
+        beats: s.beats || [],
+        isDup,
+        idShort: String(s._id).slice(-6),
+        mainImageId: s.main_image_id,
+        searchText: s.search_text || '',
+      };
+    })
+    .filter((s) => matches(s.label, s.searchText));
+
   const beats = [...(toc.beats || [])]
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
     .map((b) => ({
@@ -208,6 +240,7 @@ export function Toc({ session }) {
 
   const tabCounts = {
     characters: characters.length,
+    sets: sets.length,
     beats: beats.length,
     dialog: dialogBeats.length,
     storyboards: storyboardBeats.length,
@@ -276,6 +309,20 @@ export function Toc({ session }) {
       )}
 
       <div className="tab-panel" hidden={displayedTab !== 'characters' || noResults}>
+        <div className="tab-actions">
+          <CreateEntityForm
+            buttonLabel="+ New character"
+            namePlaceholder="Character name…"
+            extraPlaceholder="Hollywood actor (optional)"
+            onCreate={async (name, actor) => {
+              const body = { name };
+              if (actor) body.hollywood_actor = actor;
+              const r = await apiPostJson('/character', body);
+              await refetchToc();
+              navigate(`/character/${encodeURIComponent(r.character.name)}`);
+            }}
+          />
+        </div>
         {characters.length === 0 ? (
           <p style={{ color: 'var(--fg-muted)' }}>No characters yet.</p>
         ) : (
@@ -300,6 +347,61 @@ export function Toc({ session }) {
                 </li>
               ))}
             </ul>
+          </section>
+        )}
+      </div>
+
+      <div className="tab-panel" hidden={displayedTab !== 'sets' || noResults}>
+        <div className="tab-actions">
+          <CreateEntityForm
+            buttonLabel="+ New set"
+            namePlaceholder="Set name…"
+            onCreate={async (name) => {
+              const r = await apiPostJson('/set', { name });
+              await refetchToc();
+              navigate(`/set/${encodeURIComponent(r.set.name)}`);
+            }}
+          />
+        </div>
+        {sets.length === 0 ? (
+          <p style={{ color: 'var(--fg-muted)' }}>No sets yet.</p>
+        ) : (
+          <section className="toc-section">
+            <div className="toc-set-list">
+              {sets.map((s) => {
+                const thumbId = s.mainImageId?.toString?.()
+                  || (typeof s.mainImageId === 'string' ? s.mainImageId : null);
+                return (
+                  <div key={s.key} className="toc-set-row">
+                    <div className="toc-set-thumb">
+                      {thumbId ? (
+                        <img src={thumbUrl(thumbId)} alt={s.label} loading="lazy" />
+                      ) : (
+                        <div className="toc-set-thumb-placeholder" aria-hidden="true">
+                          🏙️
+                        </div>
+                      )}
+                    </div>
+                    <div className="toc-set-name">
+                      <Link to={s.to}>{s.label}</Link>
+                      {s.isDup && <span className="toc-beat-refs"> · {s.idShort}</span>}
+                      {s.beats.length > 0 && (
+                        <span className="toc-beat-refs">
+                          {' ('}
+                          {s.beats.map((b, i) => (
+                            <span key={b.order}>
+                              {i > 0 && ' · '}
+                              <Link to={`/beat/${b.order}`}>{b.plain_name || `Beat ${b.order}`}</Link>
+                            </span>
+                          ))}
+                          {')'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </section>
         )}
       </div>
@@ -389,5 +491,79 @@ export function Toc({ session }) {
         )}
       </div>
     </main>
+  );
+}
+
+// Inline "+ New <entity>" affordance for the tab action rows above the
+// Characters and Sets lists. Collapsed to a single button until clicked, then
+// expands to a name field (plus an optional extra field, used for the
+// character's Hollywood actor) and Create/Cancel. `onCreate` does the POST +
+// refetch + navigate; a 409 duplicate-name error surfaces here via its
+// message (api.js#check() extracts the JSON {error} body into err.message).
+function CreateEntityForm({ buttonLabel, namePlaceholder, extraPlaceholder, onCreate }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [extra, setExtra] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  function cancel() {
+    setOpen(false);
+    setName('');
+    setExtra('');
+    setError(null);
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    const trimmed = name.trim();
+    if (!trimmed || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onCreate(trimmed, extra.trim());
+      cancel();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button type="button" className="primary" onClick={() => setOpen(true)}>
+        {buttonLabel}
+      </button>
+    );
+  }
+
+  return (
+    <form className="toc-create-form" onSubmit={submit}>
+      <input
+        type="text"
+        autoFocus
+        placeholder={namePlaceholder}
+        value={name}
+        disabled={busy}
+        onChange={(e) => setName(e.target.value)}
+      />
+      {extraPlaceholder && (
+        <input
+          type="text"
+          placeholder={extraPlaceholder}
+          value={extra}
+          disabled={busy}
+          onChange={(e) => setExtra(e.target.value)}
+        />
+      )}
+      <button type="submit" className="primary" disabled={busy || !name.trim()}>
+        {busy ? 'Creating…' : 'Create'}
+      </button>
+      <button type="button" onClick={cancel} disabled={busy}>
+        Cancel
+      </button>
+      {error && <div className="error-banner small">{error}</div>}
+    </form>
   );
 }

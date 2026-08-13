@@ -5,14 +5,18 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 
-// buildFrameReferenceCandidates now pools the beat's and each scene character's
-// "Artwork" section (done artworks only) — NOT every GridFS image owned by the
-// beat. Mock the entity loaders that supply those artwork arrays.
+// buildFrameReferenceCandidates pools each scene character's and each scene
+// set's "Artwork" section (done artworks only). The retired beat source is
+// gone — beat artwork migrated onto sets. Mock the entity loaders that supply
+// those artwork arrays.
 const getBeat = vi.fn();
 vi.mock('../src/mongo/plots.js', () => ({ getBeat }));
 
 const getCharacter = vi.fn();
 vi.mock('../src/mongo/characters.js', () => ({ getCharacter }));
+
+const getSet = vi.fn();
+vi.mock('../src/mongo/sets.js', () => ({ getSet }));
 
 const scoreFrameReferences = vi.fn();
 vi.mock('../src/llm/frameReferenceSelector.js', () => ({
@@ -35,7 +39,7 @@ const { buildFrameReferenceCandidates, autoFillFrameReferencesIfEmpty } =
 
 // ---- Fixture helpers -------------------------------------------------------
 
-// Minimal "done" artwork doc — what lives in beat.artworks[] / character.artworks[].
+// Minimal "done" artwork doc — what lives in set.artworks[] / character.artworks[].
 function artwork(resultImageId, name = '', prompt = '', overrides = {}) {
   return {
     _id: new ObjectId(),
@@ -50,6 +54,7 @@ function artwork(resultImageId, name = '', prompt = '', overrides = {}) {
 beforeEach(() => {
   getBeat.mockReset();
   getCharacter.mockReset();
+  getSet.mockReset();
   scoreFrameReferences.mockReset();
   setRefs.mockReset();
 });
@@ -59,14 +64,15 @@ beforeEach(() => {
 // ============================================================================
 
 describe('buildFrameReferenceCandidates', () => {
-  it('pools beat artwork and each character artwork, tagging source and kind', async () => {
-    const beatArt1 = new ObjectId();
-    const beatArt2 = new ObjectId();
-    getBeat.mockResolvedValueOnce({
-      _id: 'beat1',
+  it('pools set artwork and each character artwork, tagging source and kind', async () => {
+    const setArt1 = new ObjectId();
+    const setArt2 = new ObjectId();
+    getSet.mockResolvedValueOnce({
+      _id: 's1',
+      name: 'Diner',
       artworks: [
-        artwork(beatArt1, 'Rainy alley', 'neon reflections'),
-        artwork(beatArt2, 'Diner interior', ''),
+        artwork(setArt1, 'Rainy alley', 'neon reflections'),
+        artwork(setArt2, 'Diner interior', ''),
       ],
     });
 
@@ -81,7 +87,12 @@ describe('buildFrameReferenceCandidates', () => {
       ],
     });
 
-    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: ['Steve'] };
+    const sb = {
+      _id: 'sb1',
+      beat_id: 'beat1',
+      characters_in_scene: ['Steve'],
+      sets_in_scene: ['Diner'],
+    };
     const cands = await buildFrameReferenceCandidates({
       projectId: 'p',
       sb,
@@ -89,14 +100,14 @@ describe('buildFrameReferenceCandidates', () => {
     });
 
     const sources = new Set(cands.map((c) => c.source));
-    expect(sources.has('beat')).toBe(true);
+    expect(sources.has('set:Diner')).toBe(true);
     expect(sources.has('Steve')).toBe(true);
 
-    const beatCands = cands.filter((c) => c.source === 'beat');
-    expect(beatCands.length).toBe(2);
-    expect(beatCands.every((c) => c.kind === 'art')).toBe(true);
-    expect(beatCands.map((c) => c.id)).toContain(String(beatArt1));
-    expect(beatCands.map((c) => c.id)).toContain(String(beatArt2));
+    const setCands = cands.filter((c) => c.source === 'set:Diner');
+    expect(setCands.length).toBe(2);
+    expect(setCands.every((c) => c.kind === 'set')).toBe(true);
+    expect(setCands.map((c) => c.id)).toContain(String(setArt1));
+    expect(setCands.map((c) => c.id)).toContain(String(setArt2));
 
     const charCands = cands.filter((c) => c.source === 'Steve');
     expect(charCands.length).toBe(2);
@@ -105,11 +116,25 @@ describe('buildFrameReferenceCandidates', () => {
     expect(charCands.map((c) => c.id)).toContain(String(charArt2));
   });
 
-  it('beat artwork uses name and prompt (as description) from the artwork doc', async () => {
-    const id = new ObjectId();
-    getBeat.mockResolvedValueOnce({
+  it('ignores beat artwork entirely — the beat source is retired', async () => {
+    getBeat.mockResolvedValue({
       _id: 'beat1',
-      artworks: [artwork(id, 'Lighthouse', 'cliff scene at dusk')],
+      artworks: [artwork(new ObjectId(), 'Legacy beat art', 'should not appear')],
+      sets: [],
+    });
+
+    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: [], sets_in_scene: [] };
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: '' });
+    expect(cands).toEqual([]);
+  });
+
+  it('falls back to beat.sets when the row has no sets_in_scene', async () => {
+    const setArt = new ObjectId();
+    getBeat.mockResolvedValueOnce({ _id: 'beat1', artworks: [], sets: ['Kitchen'] });
+    getSet.mockResolvedValueOnce({
+      _id: 's1',
+      name: 'Kitchen',
+      artworks: [artwork(setArt, 'Kitchen wide', 'greasy diner kitchen')],
     });
 
     const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: [] };
@@ -117,24 +142,48 @@ describe('buildFrameReferenceCandidates', () => {
 
     expect(cands).toHaveLength(1);
     expect(cands[0]).toMatchObject({
-      id: String(id),
-      kind: 'art',
-      source: 'beat',
-      name: 'Lighthouse',
-      description: 'cliff scene at dusk',
+      id: String(setArt),
+      kind: 'set',
+      source: 'set:Kitchen',
+      name: 'Kitchen wide',
+      description: 'greasy diner kitchen',
     });
+  });
+
+  it('set source names are prefixed so a set cannot merge with a same-named character', async () => {
+    const charArt = new ObjectId();
+    const setArt = new ObjectId();
+    getCharacter.mockResolvedValueOnce({
+      _id: 'c1',
+      name: 'Kitchen',
+      artworks: [artwork(charArt, 'portrait', '')],
+    });
+    getSet.mockResolvedValueOnce({
+      _id: 's1',
+      name: 'Kitchen',
+      artworks: [artwork(setArt, 'plate', '')],
+    });
+
+    const sb = {
+      _id: 'sb1',
+      beat_id: 'beat1',
+      characters_in_scene: ['Kitchen'],
+      sets_in_scene: ['Kitchen'],
+    };
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: '' });
+    const sources = new Set(cands.map((c) => c.source));
+    expect(sources).toEqual(new Set(['Kitchen', 'set:Kitchen']));
   });
 
   it('each character becomes its own source tag, stripped of markdown', async () => {
     const img = new ObjectId();
-    getBeat.mockResolvedValueOnce({ _id: 'beat1', artworks: [] });
     getCharacter.mockResolvedValueOnce({
       _id: 'c1',
       name: '**Steve**',
       artworks: [artwork(img, 'portrait', '')],
     });
 
-    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: ['**Steve**'] };
+    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: ['**Steve**'], sets_in_scene: [] };
     const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: '' });
 
     expect(cands).toHaveLength(1);
@@ -144,8 +193,9 @@ describe('buildFrameReferenceCandidates', () => {
 
   it('excludes non-done artworks and artworks without a result image', async () => {
     const doneId = new ObjectId();
-    getBeat.mockResolvedValueOnce({
-      _id: 'beat1',
+    getSet.mockResolvedValueOnce({
+      _id: 's1',
+      name: 'Diner',
       artworks: [
         artwork(doneId, 'Done one', 'kept'),
         artwork(new ObjectId(), 'Pending', 'x', { status: 'pending' }),
@@ -155,73 +205,83 @@ describe('buildFrameReferenceCandidates', () => {
     });
     getCharacter.mockResolvedValueOnce({ _id: 'c1', name: 'Steve', artworks: [] });
 
-    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: ['Steve'] };
+    const sb = {
+      _id: 'sb1',
+      beat_id: 'beat1',
+      characters_in_scene: ['Steve'],
+      sets_in_scene: ['Diner'],
+    };
     const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: 'x' });
 
     expect(cands).toHaveLength(1);
     expect(cands[0].id).toBe(String(doneId));
   });
 
-  it('does NOT include the beat\'s plain reference images, only artwork', async () => {
-    // A beat may own dozens of GridFS images (storyboard frames, uploaded
-    // references) but no artworks — auto-suggest must surface none of them.
-    getBeat.mockResolvedValueOnce({ _id: 'beat1', artworks: [] });
-    getCharacter.mockResolvedValueOnce({ _id: 'c1', name: 'Steve', artworks: [] });
-
-    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: ['Steve'] };
-    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: 'x' });
-    expect(cands).toEqual([]);
-  });
-
-  it('returns [] when getBeat throws (never propagates)', async () => {
-    getBeat.mockRejectedValueOnce(new Error('mongo down'));
-    getCharacter.mockResolvedValueOnce({ _id: 'c1', name: 'Steve', artworks: [] });
-
-    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: ['Steve'] };
-    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: 'x' });
-    expect(cands).toEqual([]);
-  });
-
-  it('continues when a character lookup throws, returning beat artwork', async () => {
-    const beatArt = new ObjectId();
-    getBeat.mockResolvedValueOnce({
-      _id: 'beat1',
-      artworks: [artwork(beatArt, 'Alley', 'rain')],
+  it('continues when a character lookup throws, returning set artwork', async () => {
+    const setArt = new ObjectId();
+    getSet.mockResolvedValueOnce({
+      _id: 's1',
+      name: 'Alley',
+      artworks: [artwork(setArt, 'Alley', 'rain')],
     });
     getCharacter.mockRejectedValueOnce(new Error('lookup failed'));
 
-    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: ['Steve'] };
+    const sb = {
+      _id: 'sb1',
+      beat_id: 'beat1',
+      characters_in_scene: ['Steve'],
+      sets_in_scene: ['Alley'],
+    };
     const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: 'x' });
 
     expect(cands).toHaveLength(1);
-    expect(cands[0]).toMatchObject({ id: String(beatArt), kind: 'art', source: 'beat' });
+    expect(cands[0]).toMatchObject({ id: String(setArt), kind: 'set', source: 'set:Alley' });
+  });
+
+  it('continues when a set lookup throws, returning character artwork', async () => {
+    const charArt = new ObjectId();
+    getSet.mockRejectedValueOnce(new Error('lookup failed'));
+    getCharacter.mockResolvedValueOnce({
+      _id: 'c1',
+      name: 'Steve',
+      artworks: [artwork(charArt, 'portrait', '')],
+    });
+
+    const sb = {
+      _id: 'sb1',
+      beat_id: 'beat1',
+      characters_in_scene: ['Steve'],
+      sets_in_scene: ['Ghost Set'],
+    };
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: 'x' });
+    expect(cands).toHaveLength(1);
+    expect(cands[0].source).toBe('Steve');
   });
 
   it('deduplicates artworks that share a result_image_id within a source', async () => {
     const id = new ObjectId();
-    getBeat.mockResolvedValueOnce({
-      _id: 'beat1',
+    getSet.mockResolvedValueOnce({
+      _id: 's1',
+      name: 'Alley',
       artworks: [artwork(id, 'Alley', 'rain'), artwork(id, 'Alley copy', 'rain')],
     });
 
-    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: [] };
+    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: [], sets_in_scene: ['Alley'] };
     const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: '' });
     expect(cands).toHaveLength(1);
     expect(cands[0].id).toBe(String(id));
   });
 
-  it('returns [] when beat_id is absent', async () => {
-    const sb = { _id: 'sb1', characters_in_scene: [] }; // no beat_id
-    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: '' });
-    expect(cands).toEqual([]);
-    expect(getBeat).not.toHaveBeenCalled();
-  });
-
-  it('skips characters with no resolvable doc', async () => {
-    getBeat.mockResolvedValueOnce({ _id: 'beat1', artworks: [] });
+  it('skips characters and sets with no resolvable doc', async () => {
     getCharacter.mockResolvedValueOnce(null);
+    getSet.mockResolvedValueOnce(null);
 
-    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: ['Ghost'] };
+    const sb = {
+      _id: 'sb1',
+      beat_id: 'beat1',
+      characters_in_scene: ['Ghost'],
+      sets_in_scene: ['Nowhere'],
+    };
     const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: '' });
     expect(cands).toEqual([]);
   });
@@ -262,15 +322,16 @@ describe('autoFillFrameReferencesIfEmpty', () => {
   });
 
   it('persists scored picks via the gateway and mutates the frame', async () => {
-    const beatArt = new ObjectId();
-    getBeat.mockResolvedValueOnce({
-      _id: 'beat1',
-      artworks: [artwork(beatArt, 'Neon alley', 'rain')],
+    const setArt = new ObjectId();
+    getSet.mockResolvedValueOnce({
+      _id: 's1',
+      name: 'Alley',
+      artworks: [artwork(setArt, 'Neon alley', 'rain')],
     });
     scoreFrameReferences.mockResolvedValueOnce(new Map([[1, 0.9]]));
 
     const frame = { _id: 'f1', reference_ids: [] };
-    const sb = { _id: 's1', beat_id: 'beat1', characters_in_scene: [] };
+    const sb = { _id: 's1', beat_id: 'beat1', characters_in_scene: [], sets_in_scene: ['Alley'] };
     const out = await autoFillFrameReferencesIfEmpty({
       projectId: 'p',
       sb,
@@ -279,22 +340,22 @@ describe('autoFillFrameReferencesIfEmpty', () => {
       autoReferences: true,
     });
 
-    expect(out).toEqual([String(beatArt)]);
+    expect(out).toEqual([String(setArt)]);
     expect(setRefs).toHaveBeenCalledWith({
       projectId: 'p',
       storyboardId: 's1',
       frameId: 'f1',
-      imageIds: [String(beatArt)],
+      imageIds: [String(setArt)],
       mode: 'replace',
-      scores: { [String(beatArt)]: 0.9 },
+      scores: { [String(setArt)]: 0.9 },
     });
-    expect(frame.reference_ids).toEqual([String(beatArt)]);
+    expect(frame.reference_ids).toEqual([String(setArt)]);
     expect(scoreFrameReferences).toHaveBeenCalledOnce();
     expect(scoreFrameReferences.mock.calls[0][0].frameText).toBe('alley');
   });
 
   it('does not persist when there are no candidates', async () => {
-    getBeat.mockResolvedValueOnce({ _id: 'beat1', artworks: [] });
+    getBeat.mockResolvedValueOnce({ _id: 'beat1', artworks: [], sets: [] });
 
     const frame = { _id: 'f1', reference_ids: [] };
     const out = await autoFillFrameReferencesIfEmpty({
@@ -310,31 +371,33 @@ describe('autoFillFrameReferencesIfEmpty', () => {
   });
 
   it('falls back to first-per-source when scorer returns empty scores', async () => {
-    const beatArt = new ObjectId();
-    getBeat.mockResolvedValueOnce({
-      _id: 'beat1',
-      artworks: [artwork(beatArt, 'Neon alley', 'rain')],
+    const setArt = new ObjectId();
+    getSet.mockResolvedValueOnce({
+      _id: 's1',
+      name: 'Alley',
+      artworks: [artwork(setArt, 'Neon alley', 'rain')],
     });
     scoreFrameReferences.mockResolvedValueOnce(new Map());
 
     const frame = { _id: 'f1', reference_ids: [] };
     const out = await autoFillFrameReferencesIfEmpty({
       projectId: 'p',
-      sb: { _id: 's1', beat_id: 'beat1', characters_in_scene: [] },
+      sb: { _id: 's1', beat_id: 'beat1', characters_in_scene: [], sets_in_scene: ['Alley'] },
       frame,
       frameText: 'x',
       autoReferences: true,
     });
-    expect(out).toEqual([String(beatArt)]);
+    expect(out).toEqual([String(setArt)]);
     expect(setRefs).toHaveBeenCalled();
-    expect(frame.reference_ids).toEqual([String(beatArt)]);
+    expect(frame.reference_ids).toEqual([String(setArt)]);
   });
 
   it('swallows gateway errors and returns []', async () => {
-    const beatArt = new ObjectId();
-    getBeat.mockResolvedValueOnce({
-      _id: 'beat1',
-      artworks: [artwork(beatArt, 'Neon alley', 'rain')],
+    const setArt = new ObjectId();
+    getSet.mockResolvedValueOnce({
+      _id: 's1',
+      name: 'Alley',
+      artworks: [artwork(setArt, 'Neon alley', 'rain')],
     });
     scoreFrameReferences.mockResolvedValueOnce(new Map([[1, 0.9]]));
     setRefs.mockRejectedValueOnce(new Error('gateway down'));
@@ -342,7 +405,7 @@ describe('autoFillFrameReferencesIfEmpty', () => {
     const frame = { _id: 'f1', reference_ids: [] };
     const out = await autoFillFrameReferencesIfEmpty({
       projectId: 'p',
-      sb: { _id: 's1', beat_id: 'beat1', characters_in_scene: [] },
+      sb: { _id: 's1', beat_id: 'beat1', characters_in_scene: [], sets_in_scene: ['Alley'] },
       frame,
       frameText: 'x',
       autoReferences: true,

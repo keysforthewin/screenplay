@@ -3,7 +3,7 @@
 // Full cascade delete of ONE project. Everything a project owns lives in eight
 // places; the order below matters:
 //
-//   1. collect beat + character ids (needed to derive y-doc room names)
+//   1. collect beat + character + set ids (needed to derive y-doc room names)
 //   2. content collections keyed on project_id
 //   3. the three composite-keyed `prompts` docs
 //   4. GridFS files (images + attachments) whose metadata.project_id matches
@@ -34,6 +34,7 @@ import { deleteProjectChunks } from '../rag/indexer.js';
 const CONTENT_COLLECTIONS = [
   'plots',
   'characters',
+  'sets',
   'messages',
   'storyboards',
   'dialogs',
@@ -80,6 +81,9 @@ export async function deleteProjectCascade(projectId) {
   const characterIds = (await db.collection('characters').find({ project_id: pid }).toArray())
     .map((c) => hex(c._id))
     .filter(Boolean);
+  const setIds = (await db.collection('sets').find({ project_id: pid }).toArray())
+    .map((s) => hex(s._id))
+    .filter(Boolean);
 
   // 2. Content collections.
   for (const name of CONTENT_COLLECTIONS) {
@@ -102,6 +106,7 @@ export async function deleteProjectCascade(projectId) {
     ...SINGLETON_ROOMS.map((r) => `${r}:${pid}`),
     ...beatIds.flatMap((id) => [`beat:${id}`, `storyboards:${id}`, `dialogs:${id}`]),
     ...characterIds.map((id) => `character:${id}`),
+    ...setIds.map((id) => `set:${id}`),
   ];
   deleted.yjs_docs =
     (await db.collection('yjs_docs').deleteMany({ _id: { $in: rooms } }))?.deletedCount || 0;

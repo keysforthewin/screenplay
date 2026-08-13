@@ -4,7 +4,7 @@
  *
  * Flags:
  *   --since=<ISO>          Skip entities whose `rag_indexed_at` >= ISO timestamp
- *   --types=beat,character Comma list of {beat, character, director_note, message}
+ *   --types=beat,character Comma list of {beat, character, set, director_note, message}
  *   --messages=N           Cap how many recent messages per channel to index (default config.rag.messageWindow)
  *
  * Usage:
@@ -18,11 +18,13 @@ import { isRagEnabled, chromaHealthcheck } from '../src/rag/chromaClient.js';
 import {
   indexBeat,
   indexCharacter,
+  indexSet,
   indexDirectorNote,
   indexMessage,
 } from '../src/rag/indexer.js';
 import { getPlot } from '../src/mongo/plots.js';
 import { findAllCharacters } from '../src/mongo/characters.js';
+import { findAllSets } from '../src/mongo/sets.js';
 import { getDirectorNotes } from '../src/mongo/directorNotes.js';
 import { getDb } from '../src/mongo/client.js';
 import { listProjects, getDefaultProject } from '../src/mongo/projects.js';
@@ -116,6 +118,17 @@ async function main() {
         return 'ok';
       });
       console.log(`characters: ok=${stats.ok} skipped=${stats.skip} err=${stats.err}`);
+    }
+
+    if (want('set')) {
+      const sets = await findAllSets(pid);
+      console.log(`sets: ${sets.length} candidates`);
+      const stats = await runConcurrent(sets, async (s) => {
+        if (args.since && isAfter(s.rag_indexed_at, args.since)) return 'skip';
+        await indexSet(s._id);
+        return 'ok';
+      });
+      console.log(`sets: ok=${stats.ok} skipped=${stats.skip} err=${stats.err}`);
     }
 
     if (want('director_note')) {

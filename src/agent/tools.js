@@ -3,7 +3,7 @@ export const TOOLS = [
     name: 'tool_search',
     metaTool: true,
     description:
-      'Load additional tools by describing what you want to do. Most of the agent\'s tools are NOT in your tools list by default — call this to make them available. The matched tools become callable in the SAME turn (re-issue the tool call after the search returns). Examples: "add image to beat", "export PDF", "look up movie credits", "delete character", "find similar work", "check repeated phrases". Categories: characters, beats, director_notes, images, attachments, plot, export, tmdb, web_search, analysis, utility, current_state. You may call tool_search multiple times in a turn as you discover what you need.',
+      'Load additional tools by describing what you want to do. Most of the agent\'s tools are NOT in your tools list by default — call this to make them available. The matched tools become callable in the SAME turn (re-issue the tool call after the search returns). Examples: "add image to beat", "export PDF", "look up movie credits", "delete character", "find similar work", "check repeated phrases". Categories: characters, beats, sets, director_notes, images, attachments, plot, export, tmdb, web_search, analysis, utility, current_state. You may call tool_search multiple times in a turn as you discover what you need.',
     keywords: [
       'search', 'find', 'load', 'discover', 'lookup', 'tools', 'tool', 'available',
       'help', 'what', 'how', 'capability', 'feature',
@@ -29,7 +29,7 @@ export const TOOLS = [
   {
     name: 'get_overview',
     keywords: ['overview', 'summary', 'snapshot', 'rundown', 'state', 'everything', 'show', 'status', 'progress', 'where'],
-    description: 'Single-call snapshot of EVERYTHING in the screenplay: synopsis + notes preview, every character (with casting, voice, fill ratio, image counts, one descriptive field preview), every beat (with name, full desc, body length, characters, image counts, current marker), and overall counts. Use this whenever the user asks for a summary, "show me everything", "what do we have", "what state is this in", "give me a rundown", "what beats need bodies", "which characters are missing images", or any other holistic question. Returns rich JSON; render it as markdown for Discord (the bot will auto-split long messages). Don\'t bombard the user with the entire payload — pick the angle that answers their question.',
+    description: 'Single-call snapshot of EVERYTHING in the screenplay: synopsis + notes preview, every character (with casting, voice, fill ratio, image counts, one descriptive field preview), every beat (with name, full desc, body length, characters, image counts, current marker), every set (with description preview, image/artwork counts), and overall counts. Use this whenever the user asks for a summary, "show me everything", "what do we have", "what state is this in", "give me a rundown", "what beats need bodies", "which characters are missing images", or any other holistic question. Returns rich JSON; render it as markdown for Discord (the bot will auto-split long messages). Don\'t bombard the user with the entire payload — pick the angle that answers their question.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
@@ -64,6 +64,7 @@ export const TOOLS = [
       'fields', 'custom',
       'beat', 'scene', 'character', 'person', 'plot', 'screenplay',
       'director', 'note', 'rule',
+      'set', 'location', 'setting',
     ],
     description:
       'Apply find/replace edits to any text field on any entity. Universal text-mutation primitive — replaces all the legacy edit_*/set_*/append_*/update_* tools.\n\n' +
@@ -75,20 +76,21 @@ export const TOOLS = [
       '- `beat`: `body`, `name`, or `desc` (identifier = beat _id, order, or name; omit to use the current beat).\n' +
       '- `character`: `name`, `hollywood_actor`, `fields.<custom>`, or a bare custom field name (auto-prefixed with `fields.`). Identifier = character name (case-insensitive) or _id.\n' +
       '- `plot`: `title`, `synopsis`, `dialogue_style`, `directorial_voice`, `notes` (singleton; omit identifier). `dialogue_style` is the project-wide GLOBAL dialogue style; per-beat dialogue notes are edited via the beat instead. `directorial_voice` is the project-wide directing hand (how the camera tends to sit, how faces are lit, how scenes are cut and performed) — it steers scene bibles, storyboard prompts, and dialogue register, so keep it to a few concrete sentences.\n' +
-      '- `director_note`: `text` (identifier = note _id from `list_director_notes`).\n\n' +
+      '- `director_note`: `text` (identifier = note _id from `list_director_notes`).\n' +
+      '- `set`: `name` or `description` (identifier = set name (case-insensitive) or _id).\n\n' +
       'On error (e.g. find string not present, ambiguous, or invalid field) the tool returns `is_error: true` with a message. **Do not retry by switching to a wholesale rewrite or guessing.** Re-read the field with the appropriate read tool and retry with verbatim text, or surface the error to the user.',
     input_schema: {
       type: 'object',
       properties: {
         collection: {
           type: 'string',
-          enum: ['beat', 'character', 'plot', 'director_note'],
+          enum: ['beat', 'character', 'plot', 'director_note', 'set'],
           description: 'Which entity type to edit.',
         },
         identifier: {
           type: 'string',
           description:
-            'Entity identifier. Beat: _id, order number, or name. Character: name (case-insensitive) or _id. Director note: 24-hex _id from list_director_notes. Plot: omit (singleton).',
+            'Entity identifier. Beat: _id, order number, or name. Character: name (case-insensitive) or _id. Director note: 24-hex _id from list_director_notes. Plot: omit (singleton). Set: name (case-insensitive) or _id.',
         },
         field: {
           type: 'string',
@@ -158,12 +160,14 @@ export const TOOLS = [
       'unset', 'delete', 'remove', 'drop',
       'scene_sheet_image_id', 'image', 'metadata',
       'beat', 'character',
+      'sets', 'set', 'location',
     ],
     description:
       'Atomic value assignment for non-text fields. For text fields (name, body, desc, fields.*, etc.) use `edit` instead.\n\n' +
       'Supported field map:\n' +
       '- `beat.order` (number) — beat position in the screenplay sequence.\n' +
       '- `beat.characters` (array of strings) — replace the beat\'s character roster (names, not _ids).\n' +
+      '- `beat.sets` (array of strings) — replace the beat\'s set roster (names, not _ids).\n' +
       '- `beat.scene_sheet_image_id` (24-hex string or null) — attach/detach the scene-sheet image.\n' +
       '- `character.unset` (array of strings) — meta-op to delete custom field keys (`value` is the list of keys to remove).',
     input_schema: {
@@ -347,6 +351,65 @@ export const TOOLS = [
         },
         remove: { type: 'array', items: { type: 'string' } },
       },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'list_sets',
+    keywords: ['list', 'all', 'sets', 'settings', 'locations', 'places', 'environments', 'show', 'enumerate'],
+    description: 'Return a list of all sets (settings/locations) on file (id and name only). Use this to see what sets exist before creating a new one.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'get_set',
+    keywords: ['fetch', 'lookup', 'set', 'setting', 'location', 'place', 'environment', 'details', 'profile', 'sheet'],
+    description: "Fetch the full document for one set (setting/location) by name (case-insensitive) or _id. Returns name, description, images, main_image_id, attachments, and artworks.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        identifier: { type: 'string', description: "Set's name or _id" },
+      },
+      required: ['identifier'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'create_set',
+    writerOnly: true,
+    keywords: ['create', 'new', 'add', 'make', 'introduce', 'set', 'setting', 'location', 'place', 'environment', 'backdrop', 'scene'],
+    description: 'Create a new set (a reusable setting/location — e.g. "The Diner", "Alice\'s Apartment"). Only `name` is required — call this as soon as the user names a place, even if a description isn\'t known yet. Use `edit` later to fill in the description as the conversation provides it. Sets have a fixed schema (name + description only, no custom template fields) and are linked to beats by name via `link_set_to_beat`.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        description: { type: 'string', description: 'Optional description of the setting/location.' },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'delete_set',
+    keywords: ['delete', 'remove', 'drop', 'destroy', 'wipe', 'set', 'setting', 'location', 'place'],
+    description:
+      'Permanently delete a set. Cascades: removes the set from every beat\'s set list, deletes all of its images (GridFS), non-image attachments (GridFS), and artwork results. Use when the user says "delete", "remove", or "drop" a set. The deletion cannot be undone — confirm with the user first if there is any ambiguity about which set they mean.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        identifier: { type: 'string', description: "Set's name (case-insensitive) or 24-char hex _id." },
+      },
+      required: ['identifier'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'search_sets',
+    keywords: ['search', 'find', 'lookup', 'set', 'setting', 'location', 'place', 'substring', 'fuzzy'],
+    description: 'Find sets whose name or description contain a substring (case-insensitive).',
+    input_schema: {
+      type: 'object',
+      properties: { query: { type: 'string' } },
+      required: ['query'],
       additionalProperties: false,
     },
   },
@@ -602,6 +665,7 @@ export const TOOLS = [
         desc: { type: 'string', description: '1-2 sentence summary of what the beat is about.' },
         body: { type: 'string', description: 'Rarely used. Prefer writing the body in the same turn via load_writing_context + edit, which loads character voices first; this arg bypasses that.' },
         characters: { type: 'array', items: { type: 'string' }, description: 'Names of characters present in this beat.' },
+        sets: { type: 'array', items: { type: 'string' }, description: 'Names of sets/locations where this beat takes place.' },
         order: { type: 'number', description: 'Optional explicit order. Omit to append.' },
       },
       required: ['desc'],
@@ -725,6 +789,34 @@ export const TOOLS = [
     },
   },
   {
+    name: 'link_set_to_beat',
+    keywords: ['link', 'add', 'attach', 'connect', 'set', 'setting', 'location', 'beat', 'scene', 'present'],
+    description: "Add a set (by name) to a beat's set list. Idempotent — duplicates are silently ignored. If `beat` is omitted, the current beat is used.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
+        set: { type: 'string' },
+      },
+      required: ['set'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'unlink_set_from_beat',
+    keywords: ['unlink', 'remove', 'detach', 'set', 'setting', 'location', 'beat', 'scene'],
+    description: "Remove a set from a beat's set list. If `beat` is omitted, the current beat is used.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string' },
+        set: { type: 'string' },
+      },
+      required: ['set'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'set_current_beat',
     keywords: ['set', 'current', 'focus', 'beat', 'scene', 'pointer', 'switch'],
     description: 'Set the bot\'s "current beat" pointer. Tools that take an optional `beat` argument default to this one. Useful when the user is focused on a specific beat (e.g., "let\'s work on the diner scene").',
@@ -748,67 +840,9 @@ export const TOOLS = [
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
-    name: 'add_beat_image',
-    keywords: ['attach', 'add', 'upload', 'image', 'picture', 'photo', 'art', 'illustration', 'visual', 'still', 'storyboard', 'beat', 'scene'],
-    description:
-      'Attach an image (PNG, JPG, or WEBP, up to 25 MB) to a beat. The image is downloaded from `source_url` and stored in MongoDB GridFS (the `images` bucket). `source_url` may be either (a) one of the URLs listed in the "Attached images" prelude when the user uploaded an image via the Discord client, or (b) a public HTTP(S) URL the user pasted into chat. The first image attached to a beat automatically becomes its main image; pass `set_as_main: true` to override an existing main image. If `beat` is omitted, the current beat is used.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
-        source_url: { type: 'string', description: 'HTTP(S) URL to the image' },
-        filename: { type: 'string' },
-        caption: { type: 'string' },
-        set_as_main: { type: 'boolean' },
-      },
-      required: ['source_url'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'list_beat_images',
-    keywords: ['list', 'show', 'images', 'pictures', 'photos', 'beat', 'scene'],
-    description: 'List the images attached to a beat (filenames, sizes, types, source, generation prompt if any, and which one is currently the main image).',
-    input_schema: {
-      type: 'object',
-      properties: {
-        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'set_main_beat_image',
-    keywords: ['main', 'primary', 'featured', 'image', 'beat', 'scene', 'promote'],
-    description: "Promote an existing image to be the beat's main image. The image_id must already be attached to the beat (use list_beat_images to find it).",
-    input_schema: {
-      type: 'object',
-      properties: {
-        beat: { type: 'string' },
-        image_id: { type: 'string', description: 'GridFS file _id (24-char hex)' },
-      },
-      required: ['image_id'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'remove_beat_image',
-    keywords: ['remove', 'delete', 'image', 'picture', 'photo', 'beat', 'scene'],
-    description: "Delete an image from a beat. Removes both the GridFS file and the entry on the beat. If the deleted image was the main image, the next image (if any) is promoted automatically.",
-    input_schema: {
-      type: 'object',
-      properties: {
-        beat: { type: 'string' },
-        image_id: { type: 'string' },
-      },
-      required: ['image_id'],
-      additionalProperties: false,
-    },
-  },
-  {
     name: 'list_library_images',
     keywords: ['library', 'unassigned', 'images', 'pictures', 'list', 'show', 'orphan', 'pool'],
-    description: 'List unassigned (library) images — images that have been uploaded or generated but are not yet attached to any beat. Each entry includes the auto-generated `name` and `description` fields if the vision pass has completed. Useful when the user says "save that image to the diner beat" and you need to find the image_id.',
+    description: 'List unassigned (library) images — images that have been uploaded or generated but are not yet attached to any character or set. Each entry includes the auto-generated `name` and `description` fields if the vision pass has completed. Useful when the user says "use that image as the diner set\'s reference" and you need to find the image_id.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
@@ -855,24 +889,9 @@ export const TOOLS = [
     },
   },
   {
-    name: 'attach_library_image_to_beat',
-    keywords: ['attach', 'library', 'image', 'picture', 'beat', 'scene', 'assign'],
-    description: "Attach a library image (one with no current beat owner) to a beat. The image is moved out of the library — list_library_images will no longer show it. If `beat` is omitted, the current beat is used. If `set_as_main` is true, the image becomes the beat's main image.",
-    input_schema: {
-      type: 'object',
-      properties: {
-        image_id: { type: 'string' },
-        beat: { type: 'string' },
-        set_as_main: { type: 'boolean' },
-      },
-      required: ['image_id'],
-      additionalProperties: false,
-    },
-  },
-  {
     name: 'move_image_to_library',
     keywords: ['move', 'detach', 'unassign', 'library', 'image', 'picture', 'unattach', 'release', 'stash'],
-    description: "Move an entity-owned image (currently attached to a beat, character, or director note) back into the library. Detaches the image from the owner's images[] array, clears the GridFS owner metadata, and keeps the bytes intact so the image continues to render and can be re-attached later via attach_library_image_to_{beat,character,director_note}. Pass only the `image_id` — the current owner is read from the GridFS metadata, so the caller doesn't need to know it. Returns an error if the image is already a library image (no-op) or if the owner can no longer be found.",
+    description: "Move an entity-owned image (currently attached to a beat, character, set, or director note) back into the library. Detaches the image from the owner's images[] array, clears the GridFS owner metadata, and keeps the bytes intact so the image continues to render and can be re-attached later via attach_library_image_to_{character,set,director_note}. Pass only the `image_id` — the current owner is read from the GridFS metadata, so the caller doesn't need to know it. Returns an error if the image is already a library image (no-op) or if the owner can no longer be found.",
     input_schema: {
       type: 'object',
       properties: {
@@ -886,7 +905,7 @@ export const TOOLS = [
     name: 'add_library_attachment',
     keywords: ['library', 'upload', 'add', 'file', 'audio', 'video', 'pdf', 'document', 'unassigned', 'stash'],
     description:
-      "Upload a non-image file (audio, video, PDF, text, archive — anything up to 100 MB) to the library with no owner. The file is downloaded from `source_url` and stored in MongoDB GridFS — `list_library_attachments` will show it, and you can later attach it to one or more entities with `attach_library_attachment_to_{beat,character,director_note}`. Use this when the user wants to upload a file once and then attach it to multiple beats/characters/notes, or wants to stash a file before deciding where it goes. For images, do NOT use this tool — use the entity-specific add_*_image tools or generate_image (which writes to the library by default when no current beat is set).",
+      "Upload a non-image file (audio, video, PDF, text, archive — anything up to 100 MB) to the library with no owner. The file is downloaded from `source_url` and stored in MongoDB GridFS — `list_library_attachments` will show it, and you can later attach it to one or more entities with `attach_library_attachment_to_{character,set,director_note}`. Use this when the user wants to upload a file once and then attach it to multiple characters/sets/notes, or wants to stash a file before deciding where it goes. For images, do NOT use this tool — use the entity-specific add_*_image tools or generate_image (which writes to the library by default when no current beat is set).",
     input_schema: {
       type: 'object',
       properties: {
@@ -901,23 +920,8 @@ export const TOOLS = [
   {
     name: 'list_library_attachments',
     keywords: ['library', 'list', 'unassigned', 'files', 'attachments', 'documents'],
-    description: 'List unassigned (library) non-image attachments — files uploaded with `add_library_attachment` that are not yet attached to any beat, character, or director note. Useful when the user says "attach that PDF to the Diner Showdown beat" and you need to find the attachment_id.',
+    description: 'List unassigned (library) non-image attachments — files uploaded with `add_library_attachment` that are not yet attached to any character, set, or director note. Useful when the user says "attach that PDF to the Diner set" and you need to find the attachment_id.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
-  },
-  {
-    name: 'attach_library_attachment_to_beat',
-    keywords: ['attach', 'library', 'file', 'attachment', 'beat', 'scene', 'assign'],
-    description: 'Attach a library attachment (one with no current owner) to a beat. The attachment is moved out of the library — `list_library_attachments` will no longer show it. If `beat` is omitted, the current beat is used.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        attachment_id: { type: 'string', description: 'GridFS file _id (24-char hex) of the library attachment' },
-        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
-        caption: { type: 'string', description: 'Optional caption to store on the beat-side entry.' },
-      },
-      required: ['attachment_id'],
-      additionalProperties: false,
-    },
   },
   {
     name: 'attach_library_attachment_to_character',
@@ -952,7 +956,7 @@ export const TOOLS = [
   {
     name: 'show_image',
     keywords: ['show', 'display', 'view', 'see', 'image', 'picture', 'photo', 'render', 'embed'],
-    description: 'Display an existing image (any image_id — whether attached to a beat, attached to a character as a portrait, or sitting in the library) by attaching it to the bot\'s reply in Discord. Use when the user asks to "see" or "show" an image.',
+    description: 'Display an existing image (any image_id — whether attached to a beat, attached to a character as a portrait, attached to a set, or sitting in the library) by attaching it to the bot\'s reply in Discord. Use when the user asks to "see" or "show" an image.',
     input_schema: {
       type: 'object',
       properties: { image_id: { type: 'string' } },
@@ -985,7 +989,7 @@ export const TOOLS = [
   {
     name: 'show_attachment',
     keywords: ['show', 'display', 'send', 'retrieve', 'file', 'attachment', 'audio', 'video', 'pdf', 'document'],
-    description: "Re-deliver a stored non-image attachment (any attachment_id from a beat, character, or director's note) by uploading it to the Discord reply. Use when the user asks to retrieve a file they previously attached (\"send me back that recording\", \"give me the PDF I attached to that beat\"). For images, use show_image instead.",
+    description: "Re-deliver a stored non-image attachment (any attachment_id from a character, set, or director's note) by uploading it to the Discord reply. Use when the user asks to retrieve a file they previously attached (\"send me back that recording\", \"give me the PDF I attached to that set\"). For images, use show_image instead.",
     input_schema: {
       type: 'object',
       properties: { attachment_id: { type: 'string', description: 'GridFS file _id (24-char hex)' } },
@@ -1230,45 +1234,76 @@ export const TOOLS = [
     },
   },
   {
-    name: 'add_beat_attachment',
-    keywords: ['attach', 'add', 'upload', 'file', 'audio', 'video', 'pdf', 'document', 'recording', 'transcript', 'beat', 'scene'],
+    name: 'add_set_image',
+    keywords: ['attach', 'add', 'upload', 'image', 'picture', 'photo', 'art', 'illustration', 'reference', 'set', 'location', 'environment', 'backdrop', 'place', 'scene'],
     description:
-      'Attach a NON-IMAGE file (audio, video, PDF, text, archive — anything up to 100 MB) to a beat. The file is downloaded from `source_url` and stored in MongoDB GridFS (the `attachments` bucket). Use this for files that arrive in the "Attached files:" prelude (NOT the "Attached images:" prelude — those go through `add_beat_image` instead). `source_url` may be either (a) one of the URLs listed in the "Attached files" prelude when the user uploaded a file via the Discord client, or (b) a public HTTP(S) URL the user pasted into chat. If `beat` is omitted, the current beat is used.',
+      'Attach an image (PNG, JPG, or WEBP, up to 25 MB) to a set. The image is downloaded from `source_url` and stored in MongoDB GridFS. `source_url` may be either (a) one of the URLs listed in the "Attached images" prelude when the user uploaded an image via the Discord client, or (b) a public HTTP(S) URL the user pasted into chat. The first image attached to a set automatically becomes its main image; pass `set_as_main: true` to override an existing main image.',
     input_schema: {
       type: 'object',
       properties: {
-        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
-        source_url: { type: 'string', description: 'HTTP(S) URL to the file' },
-        filename: { type: 'string', description: 'Optional filename to store. Defaults to the URL basename or `attachment.<ext>`.' },
-        caption: { type: 'string', description: 'Optional short note about why this file is attached (e.g., "use for the PAULY IS FULL DEEP line").' },
+        set: { type: 'string', description: "Set's name or _id" },
+        source_url: { type: 'string', description: 'HTTP(S) URL to the image' },
+        filename: { type: 'string', description: 'Optional filename to store (recommended for URL-input cases without a clean filename)' },
+        caption: { type: 'string', description: 'Optional short caption' },
+        set_as_main: { type: 'boolean', description: 'If true, mark this image as the set\'s main image' },
       },
-      required: ['source_url'],
+      required: ['set', 'source_url'],
       additionalProperties: false,
     },
   },
   {
-    name: 'list_beat_attachments',
-    keywords: ['list', 'show', 'files', 'attachments', 'documents', 'beat', 'scene'],
-    description: 'List the non-image files attached to a beat (filenames, sizes, content types, captions). Image attachments are listed separately by `list_beat_images`.',
+    name: 'list_set_images',
+    keywords: ['list', 'show', 'images', 'pictures', 'photos', 'reference', 'set', 'location', 'environment', 'backdrop', 'place', 'scene'],
+    description: 'List the images attached to a set, including filenames, sizes, content types, and which one is currently the main image.',
     input_schema: {
       type: 'object',
-      properties: {
-        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
-      },
+      properties: { set: { type: 'string', description: "Set's name or _id" } },
+      required: ['set'],
       additionalProperties: false,
     },
   },
   {
-    name: 'remove_beat_attachment',
-    keywords: ['remove', 'delete', 'file', 'attachment', 'beat', 'scene'],
-    description: 'Delete a non-image attachment from a beat. Removes both the GridFS file and the entry on the beat.',
+    name: 'set_main_set_image',
+    keywords: ['main', 'primary', 'featured', 'image', 'set', 'location', 'environment', 'backdrop', 'place', 'scene', 'promote'],
+    description: "Promote an existing image to be the set's main image. The image_id must already be attached to the set (use list_set_images to find it).",
     input_schema: {
       type: 'object',
       properties: {
-        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
-        attachment_id: { type: 'string', description: 'GridFS file _id (24-char hex)' },
+        set: { type: 'string', description: "Set's name or _id" },
+        image_id: { type: 'string', description: 'GridFS file _id (24-char hex)' },
       },
-      required: ['attachment_id'],
+      required: ['set', 'image_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'remove_set_image',
+    keywords: ['remove', 'delete', 'image', 'picture', 'set', 'location', 'environment', 'backdrop', 'place', 'scene'],
+    description: 'Delete an image from a set. Removes the GridFS file and the entry from the set. If the deleted image was the main image, the next image (if any) is promoted automatically.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        set: { type: 'string', description: "Set's name or _id" },
+        image_id: { type: 'string', description: 'GridFS file _id (24-char hex)' },
+      },
+      required: ['set', 'image_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'attach_library_image_to_set',
+    keywords: ['attach', 'library', 'image', 'picture', 'reference', 'set', 'location', 'environment', 'backdrop', 'place', 'scene', 'assign'],
+    description:
+      "Attach a library image (one with no current owner) to a set. The image is moved out of the library — list_library_images will no longer show it. If `set_as_main` is true (or this is the set's first image), the image becomes the set's main image. Use this when the user wants a previously generated or library image used as a location reference.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        image_id: { type: 'string', description: 'GridFS file _id (24-char hex) of the library image' },
+        set: { type: 'string', description: "Set's name or _id" },
+        set_as_main: { type: 'boolean' },
+        caption: { type: 'string', description: 'Optional short caption' },
+      },
+      required: ['image_id', 'set'],
       additionalProperties: false,
     },
   },
@@ -1311,6 +1346,63 @@ export const TOOLS = [
         attachment_id: { type: 'string', description: 'GridFS file _id (24-char hex)' },
       },
       required: ['character', 'attachment_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'add_set_attachment',
+    keywords: ['attach', 'add', 'upload', 'file', 'audio', 'video', 'pdf', 'document', 'recording', 'set', 'location', 'environment', 'backdrop', 'place', 'scene'],
+    description:
+      'Attach a NON-IMAGE file (audio, video, PDF, text, archive — anything up to 100 MB) to a set. The file is downloaded from `source_url` and stored in MongoDB GridFS. Use this for files that arrive in the "Attached files:" prelude (NOT the "Attached images:" prelude — those go through `add_set_image` instead).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        set: { type: 'string', description: "Set's name or _id" },
+        source_url: { type: 'string', description: 'HTTP(S) URL to the file' },
+        filename: { type: 'string', description: 'Optional filename to store.' },
+        caption: { type: 'string', description: 'Optional short note about why this file is attached.' },
+      },
+      required: ['set', 'source_url'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'list_set_attachments',
+    keywords: ['list', 'show', 'files', 'attachments', 'documents', 'set', 'location', 'environment', 'backdrop', 'place', 'scene'],
+    description: 'List the non-image files attached to a set (filenames, sizes, content types, captions). Image attachments are listed separately by `list_set_images`.',
+    input_schema: {
+      type: 'object',
+      properties: { set: { type: 'string', description: "Set's name or _id" } },
+      required: ['set'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'remove_set_attachment',
+    keywords: ['remove', 'delete', 'file', 'attachment', 'set', 'location', 'environment', 'backdrop', 'place', 'scene'],
+    description: 'Delete a non-image attachment from a set. Removes the GridFS file and the entry from the set.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        set: { type: 'string', description: "Set's name or _id" },
+        attachment_id: { type: 'string', description: 'GridFS file _id (24-char hex)' },
+      },
+      required: ['set', 'attachment_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'attach_library_attachment_to_set',
+    keywords: ['attach', 'library', 'file', 'attachment', 'set', 'location', 'environment', 'backdrop', 'place', 'scene', 'assign'],
+    description: "Attach a library attachment (one with no current owner) to a set. The attachment is moved out of the library — `list_library_attachments` will no longer show it.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        attachment_id: { type: 'string', description: 'GridFS file _id (24-char hex) of the library attachment' },
+        set: { type: 'string', description: "Set's name or _id" },
+        caption: { type: 'string' },
+      },
+      required: ['attachment_id', 'set'],
       additionalProperties: false,
     },
   },
@@ -1667,7 +1759,7 @@ export const TOOLS = [
     name: 'screenplay_search',
     keywords: ['semantic', 'rag', 'vector', 'find', 'lookup', 'recall', 'remember', 'context', 'meaning', 'about', 'similar', 'meaning-based'],
     description:
-      "Semantic search across the entire screenplay: full beat bodies (chunked), character custom fields, director's notes, and recent Discord messages. Use whenever the user's question depends on screenplay content not already in your context — full beat bodies, character custom field details, prior conversation specifics, or any \"what was that about…\" / \"find where we said…\" question. Prefer over `search_beats` (regex over names+desc only) when the user describes a scene/topic by meaning rather than by exact name; prefer over `search_message_history` when looking for screenplay content rather than chat-history quotes. Returns top-k chunks as JSON: each entry has entity_type, entity_id, entity_label, field, similarity score, and the original markdown snippet. Returns a friendly error string when VOYAGE_API_KEY/CHROMA_URL are not configured.",
+      "Semantic search across the entire screenplay: full beat bodies (chunked), character custom fields, set (setting/location) descriptions, director's notes, and recent Discord messages. Use whenever the user's question depends on screenplay content not already in your context — full beat bodies, character custom field details, set descriptions, prior conversation specifics, or any \"what was that about…\" / \"find where we said…\" question. Prefer over `search_beats` (regex over names+desc only) when the user describes a scene/topic by meaning rather than by exact name; prefer over `search_message_history` when looking for screenplay content rather than chat-history quotes. Returns top-k chunks as JSON: each entry has entity_type, entity_id, entity_label, field, similarity score, and the original markdown snippet. Returns a friendly error string when VOYAGE_API_KEY/CHROMA_URL are not configured.",
     input_schema: {
       type: 'object',
       properties: {
@@ -1683,8 +1775,8 @@ export const TOOLS = [
         },
         entity_types: {
           type: 'array',
-          items: { type: 'string', enum: ['beat', 'character', 'director_note', 'message'] },
-          description: 'Optional filter to a subset of corpora. Default: all four.',
+          items: { type: 'string', enum: ['beat', 'character', 'set', 'director_note', 'message'] },
+          description: 'Optional filter to a subset of corpora. Default: all five.',
         },
       },
       required: ['query'],
@@ -1860,6 +1952,7 @@ export const WRITER_TOOL_NAMES = [
   'add_director_note',
   'add_film_dialogue_sample',
   'update_character_template',
+  'create_set',
   // reads & navigation
   'get_overview',
   'list_characters',
@@ -1877,6 +1970,9 @@ export const WRITER_TOOL_NAMES = [
   'get_current_beat',
   'list_director_notes',
   'read_director_note',
+  'list_sets',
+  'get_set',
+  'search_sets',
   'screenplay_search',
 ];
 

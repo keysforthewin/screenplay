@@ -30,6 +30,7 @@ import { listCharacters } from '../mongo/characters.js';
 import { getCharacterTemplate, getPlotTemplate } from '../mongo/prompts.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import { getPlot } from '../mongo/plots.js';
+import { listSets } from '../mongo/sets.js';
 import { fetchImageFromUrl } from '../mongo/imageBytes.js';
 import { imageLink, attachmentLink } from '../server/index.js';
 import { computeAnthropicImageTokens } from './imageTokens.js';
@@ -127,13 +128,14 @@ async function buildSystem({
   projectTitle = null,
   twoTier = false,
 } = {}) {
-  const [characters, characterTemplate, plotTemplate, plot, directorNotes] =
+  const [characters, characterTemplate, plotTemplate, plot, directorNotes, sets] =
     await Promise.all([
       listCharacters(projectId),
       getCharacterTemplate(projectId),
       getPlotTemplate(projectId),
       getPlot(projectId),
       getDirectorNotes(projectId),
+      listSets(projectId),
     ]);
   return buildSystemPrompt({
     characters,
@@ -141,6 +143,7 @@ async function buildSystem({
     plotTemplate,
     plot,
     directorNotes: omitDirectorNotes ? null : directorNotes,
+    sets,
     cache,
     systemTtl: config.cache.systemTtl,
     botName: getBotDisplayName(),

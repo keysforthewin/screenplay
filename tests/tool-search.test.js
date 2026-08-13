@@ -52,8 +52,8 @@ describe('toolSearch.searchTools', () => {
   const recallExpectations = [
     { query: 'export pdf', expectAny: ['export_pdf'] },
     { query: 'download the screenplay', expectAny: ['export_pdf'] },
-    { query: 'add image to beat', expectAny: ['add_beat_image', 'generate_image'] },
-    { query: 'attach picture to scene', expectAny: ['add_beat_image'] },
+    { query: 'add image to set', expectAny: ['add_set_image', 'generate_image'] },
+    { query: 'attach picture to location', expectAny: ['add_set_image'] },
     { query: 'delete a character', expectAny: ['delete_character'] },
     { query: 'remove a character', expectAny: ['delete_character'] },
     { query: 'create new beat', expectAny: ['create_beat'] },
@@ -71,7 +71,7 @@ describe('toolSearch.searchTools', () => {
     { query: 'list characters', expectAny: ['list_characters'] },
     { query: 'arithmetic calculator', expectAny: ['calculator'] },
     { query: 'run javascript code', expectAny: ['run_code'] },
-    { query: 'attach file to beat', expectAny: ['add_beat_attachment'] },
+    { query: 'attach file to set', expectAny: ['add_set_attachment'] },
   ];
 
   for (const { query, expectAny } of recallExpectations) {
@@ -148,14 +148,14 @@ describe('toolDefsForApi', () => {
 
     const loaded = new Set(CORE_TOOL_NAMES);
     loaded.add('create_beat');
-    loaded.add('add_beat_image');
+    loaded.add('add_set_image');
     const withLoaded = toolDefsForApi(loaded).map((t) => t.name);
 
     // Core prefix is byte-identical (append-only — preserves the upstream cache).
     expect(withLoaded.slice(0, coreOnly.length)).toEqual(coreOnly);
     // Loaded tools appended in the order they were added, regardless of their
     // (earlier) canonical index in TOOLS.
-    expect(withLoaded.slice(coreOnly.length)).toEqual(['create_beat', 'add_beat_image']);
+    expect(withLoaded.slice(coreOnly.length)).toEqual(['create_beat', 'add_set_image']);
   });
   it('strips internal-only fields (keywords, metaTool) before returning', () => {
     const out = toolDefsForApi(new Set(['tool_search']));

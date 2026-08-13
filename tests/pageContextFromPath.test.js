@@ -29,6 +29,15 @@ describe('pageContextFromPath', () => {
     });
   });
 
+  it('maps a set path to its (decoded) name', () => {
+    expect(pageContextFromPath('/p/Heist/set/Docks')).toEqual({
+      kind: 'set', ref: 'Docks', label: 'Set: Docks',
+    });
+    expect(pageContextFromPath('/p/Heist/set/Old%20Warehouse')).toEqual({
+      kind: 'set', ref: 'Old Warehouse', label: 'Set: Old Warehouse',
+    });
+  });
+
   it('distinguishes storyboard/dialog indexes from per-beat pages', () => {
     expect(pageContextFromPath('/p/Heist/storyboard')).toEqual({ kind: 'storyboard-index', ref: null, label: 'Storyboards' });
     expect(pageContextFromPath('/p/Heist/storyboard/3')).toEqual({ kind: 'storyboard', ref: '3', label: 'Storyboard · Beat 3' });

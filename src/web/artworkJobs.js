@@ -31,9 +31,10 @@ import {
 } from './gateway.js';
 import { ALLOWED_IMAGE_MODELS } from './imageReplaceDispatch.js';
 import { announceMediaEvent } from '../discord/announcer.js';
-import { beatUrl, characterUrl } from './links.js';
+import { beatUrl, characterUrl, setUrl } from './links.js';
 import { getBeat } from '../mongo/plots.js';
 import { getCharacter } from '../mongo/characters.js';
+import { getSet } from '../mongo/sets.js';
 import { getProjectById } from '../mongo/projects.js';
 import { stripMarkdown } from '../util/markdown.js';
 
@@ -58,6 +59,13 @@ async function announceArtwork({ projectId, hostType, hostId, username, verb, fi
         const name = stripMarkdown(character.name || '').trim() || 'character';
         entityLabel = `Character: ${name}`;
         entityUrl = characterUrl(projectTitle, character);
+      }
+    } else if (hostType === 'set') {
+      const set = await getSet(projectId, String(hostId));
+      if (set) {
+        const name = stripMarkdown(set.name || '').trim() || 'set';
+        entityLabel = `Set: ${name}`;
+        entityUrl = setUrl(projectTitle, set);
       }
     }
     announceMediaEvent({

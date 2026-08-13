@@ -162,6 +162,15 @@ export async function listImagesForCharacter(projectId, characterId) {
   return filterByProject(files, pid);
 }
 
+export async function listImagesForSet(projectId, setId) {
+  const pid = await resolveProjectId(projectId);
+  const files = await filesCol()
+    .find({ 'metadata.owner_type': 'set', 'metadata.owner_id': toObjectId(setId) })
+    .sort({ uploadDate: 1 })
+    .toArray();
+  return filterByProject(files, pid);
+}
+
 export async function listImagesForDirectorNote(noteId) {
   return filesCol()
     .find({ 'metadata.owner_type': 'director_note', 'metadata.owner_id': toObjectId(noteId) })

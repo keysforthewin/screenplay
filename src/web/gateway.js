@@ -55,6 +55,7 @@ import {
 } from '../mongo/plots.js';
 import {
   getCharacter,
+  createCharacter as mongoCreateCharacter,
   updateCharacter as mongoUpdateCharacter,
   pushCharacterImage,
   pullCharacterImage,
@@ -62,6 +63,17 @@ import {
   pushCharacterAttachment,
   pullCharacterAttachment,
 } from '../mongo/characters.js';
+import {
+  getSet,
+  createSet as mongoCreateSet,
+  updateSet as mongoUpdateSet,
+  deleteSet as mongoDeleteSet,
+  pushSetImage,
+  pullSetImage,
+  replaceSetImage,
+  pushSetAttachment,
+  pullSetAttachment,
+} from '../mongo/sets.js';
 import {
   createPendingArtwork as mongoCreatePendingArtwork,
   appendDoneArtwork as mongoAppendDoneArtwork,
@@ -114,6 +126,8 @@ import {
 import {
   setMainCharacterImage,
   removeCharacterImage,
+  setMainSetImage,
+  removeSetImage,
   detachImageFromCurrentOwner,
 } from '../mongo/files.js';
 import {
@@ -122,6 +136,7 @@ import {
   setImageOwner,
   findImageFile,
   deleteImage,
+  deleteImages,
 } from '../mongo/images.js';
 import { copyImageToNewOwner } from '../mongo/imageCopy.js';
 import {
@@ -133,6 +148,7 @@ import {
   attachExistingAttachmentToBeat,
   attachExistingAttachmentToCharacter,
   attachExistingAttachmentToDirectorNote,
+  deleteAttachments,
 } from '../mongo/attachments.js';
 import { probeAudioDurationSeconds } from '../fal/videoPricing.js';
 import { enqueueReindex } from '../rag/queue.js';
@@ -144,6 +160,8 @@ import {
   diffCast,
   announceBeatLifecycle,
   announceBeatsReordered,
+  announceSetLifecycle,
+  announceCharacterLifecycle,
 } from './editAnnounce.js';
 
 let botDisplayName = 'Screenplay Bot';
@@ -249,6 +267,10 @@ function enqueueRagAfterFallback({ entityType, entityId, field }) {
     enqueueReindex('character', String(entityId));
     return;
   }
+  if (entityType === 'set') {
+    enqueueReindex('set', String(entityId));
+    return;
+  }
   if (entityType === 'notes' && typeof field === 'string') {
     const m = field.match(/^note:([a-f0-9]{24}):text$/);
     if (m) enqueueReindex('director_note', m[1]);
@@ -316,6 +338,29 @@ async function readEntityField({ projectId, entityType, entityId, field }) {
       }
     }
     throw new Error(`gateway fallback: unknown character field "${field}"`);
+  }
+  if (entityType === 'set') {
+    const s = await getSet(projectId, entityId);
+    if (!s) throw new Error(`Set not found: ${entityId}`);
+    if (field === 'name') return String(s.name || '');
+    if (field === 'description') return String(s.description || '');
+    {
+      const m = field.match(/^image:([a-f0-9]{24}):(name|description)$/);
+      if (m) {
+        const file = await findImageFile(m[1]);
+        if (!file) throw new Error(`Image not found: ${m[1]}`);
+        return String(file.metadata?.[m[2]] || '');
+      }
+    }
+    {
+      const m = field.match(/^attachment:([a-f0-9]{24}):(name|description)$/);
+      if (m) {
+        const file = await findAttachmentFile(m[1]);
+        if (!file) throw new Error(`Attachment not found: ${m[1]}`);
+        return String(file.metadata?.[m[2]] || '');
+      }
+    }
+    throw new Error(`gateway fallback: unknown set field "${field}"`);
   }
   if (entityType === 'notes' && field.startsWith('note:') && field.endsWith(':text')) {
     const noteId = field.slice('note:'.length, -':text'.length);
@@ -440,6 +485,20 @@ async function fallbackTextWrite({ projectId, entityType, entityId, field, op, .
     if (field.startsWith('fields.')) {
       return updateCharacter(projectId, entityId, { [field]: args.markdown });
     }
+  }
+  if (entityType === 'set') {
+    {
+      const m = field.match(/^image:([a-f0-9]{24}):(name|description)$/);
+      if (m) return setOwnedImageMeta(m[1], { [m[2]]: args.markdown });
+    }
+    {
+      const m = field.match(/^attachment:([a-f0-9]{24}):(name|description)$/);
+      if (m) return setOwnedAttachmentMeta(m[1], { [m[2]]: args.markdown });
+    }
+    if (field === 'name' || field === 'description') {
+      return mongoUpdateSet(projectId, entityId, { [field]: args.markdown });
+    }
+    throw new Error(`gateway fallback: unknown set field "${field}"`);
   }
   if (entityType === 'notes' && field.startsWith('note:') && field.endsWith(':text')) {
     const noteId = field.slice('note:'.length, -':text'.length);
@@ -594,10 +653,11 @@ export async function updateBeatViaGateway(projectId, identifier, patch) {
     k === 'name' ||
     k === 'body' ||
     k === 'order' ||
-    k === 'characters';
+    k === 'characters' ||
+    k === 'sets';
   if (!Object.keys(patch).some((k) => isRecognizedKey(k) && patch[k] !== undefined)) {
     throw new Error(
-      `update_beat: \`patch\` has no recognized fields. Expected one of: name, body, order, characters. Got keys: [${Object.keys(patch).join(', ')}].`,
+      `update_beat: \`patch\` has no recognized fields. Expected one of: name, body, order, characters, sets. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
   const beat = await getBeat(projectId, identifier);
@@ -621,10 +681,11 @@ export async function updateBeatViaGateway(projectId, identifier, patch) {
       markdown: patch.body,
     });
   }
-  // order and characters are non-text → hit Mongo directly.
+  // order, characters, and sets are non-text → hit Mongo directly.
   const onlyDiscrete = {};
   if (patch.order !== undefined) onlyDiscrete.order = patch.order;
   if (Array.isArray(patch.characters)) onlyDiscrete.characters = patch.characters;
+  if (Array.isArray(patch.sets)) onlyDiscrete.sets = patch.sets;
   if (Object.keys(onlyDiscrete).length) {
     const { updateBeat: mongoUpdateBeat } = await import('../mongo/plots.js');
     await mongoUpdateBeat(projectId, beatId, onlyDiscrete);
@@ -717,6 +778,48 @@ export async function updateCharacterViaGateway(projectId, identifier, patch) {
     });
   }
   return getCharacter(projectId, cid);
+}
+
+export async function updateSetViaGateway(projectId, identifier, patch) {
+  if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
+    throw new Error(
+      `update_set: \`patch\` must be an object like {name: "..."} or {description: "..."}, got ${
+        Array.isArray(patch) ? 'array' : typeof patch
+      }.`,
+    );
+  }
+  const recognized = Object.keys(patch).some((k) => k === 'name' || k === 'description');
+  if (!recognized) {
+    throw new Error(
+      `update_set: \`patch\` has no recognized fields. Expected name or description. Got keys: [${Object.keys(patch).join(', ')}].`,
+    );
+  }
+  const s = await getSet(projectId, identifier);
+  if (!s) throw new Error(`Set not found: ${identifier}`);
+  const sid = s._id.toString();
+  for (const field of ['name', 'description']) {
+    if (patch[field] === undefined) continue;
+    await setEntityFieldMarkdown({
+      projectId,
+      entityType: 'set',
+      entityId: sid,
+      field,
+      markdown: patch[field],
+    });
+  }
+  return getSet(projectId, sid);
+}
+
+export async function editSetFieldViaGateway({ projectId, identifier, field, edits }) {
+  const s = await getSet(projectId, identifier);
+  if (!s) throw new Error(`Set not found: ${identifier}`);
+  return editEntityFieldMarkdown({
+    projectId,
+    entityType: 'set',
+    entityId: s._id.toString(),
+    field,
+    edits,
+  });
 }
 
 export async function editDirectorNoteViaGateway({ projectId, noteId, text }) {
@@ -855,6 +958,56 @@ export async function addCharacterAttachmentViaGateway({ projectId, character, a
   if (!c) throw new Error(`Character not found: ${character}`);
   const result = await pushCharacterAttachment(projectId, c._id.toString(), attachmentMeta);
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
+    changed: ['attachments'],
+  });
+  return result;
+}
+
+export async function addSetImageViaGateway({ projectId, set, imageMeta, setAsMain }) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  const result = await pushSetImage(projectId, s._id.toString(), imageMeta, !!setAsMain);
+  broadcastFieldsUpdated(buildRoomName('set', s._id.toString()), {
+    changed: ['images', 'main_image_id'],
+  });
+  return result;
+}
+
+export async function setSetMainImageViaGateway({ projectId, set, imageId }) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  const result = await setMainSetImage({ projectId, set: s._id.toString(), imageId });
+  broadcastFieldsUpdated(buildRoomName('set', s._id.toString()), {
+    changed: ['main_image_id'],
+  });
+  return result;
+}
+
+export async function removeSetImageViaGateway({ projectId, set, imageId }) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  const result = await removeSetImage({ projectId, set: s._id.toString(), imageId });
+  broadcastFieldsUpdated(buildRoomName('set', s._id.toString()), {
+    changed: ['images', 'main_image_id'],
+  });
+  return result;
+}
+
+export async function addSetAttachmentViaGateway({ projectId, set, attachmentMeta }) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  const result = await pushSetAttachment(projectId, s._id.toString(), attachmentMeta);
+  broadcastFieldsUpdated(buildRoomName('set', s._id.toString()), {
+    changed: ['attachments'],
+  });
+  return result;
+}
+
+export async function removeSetAttachmentViaGateway({ projectId, set, attachmentId }) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  const result = await pullSetAttachment(projectId, s._id.toString(), attachmentId);
+  broadcastFieldsUpdated(buildRoomName('set', s._id.toString()), {
     changed: ['attachments'],
   });
   return result;
@@ -1140,6 +1293,103 @@ function broadcastPriorAttachmentOwner(projectId, movedFrom) {
 // Attach an already-uploaded GridFS image to a beat's gallery. The image's
 // current owner is detached first (library or another entity), then ownership
 // is reassigned and beat.images[] gets a new entry. Both rooms broadcast.
+export async function replaceSetImageViaGateway({ projectId, set, oldImageId, newImageMeta }) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  const sid = s._id.toString();
+  const result = await replaceSetImage(projectId, sid, oldImageId, newImageMeta);
+  try {
+    await deleteImage(oldImageId);
+  } catch (e) {
+    logger.warn(`gateway: delete replaced set image ${oldImageId} failed: ${e.message}`);
+  }
+  broadcastFieldsUpdated(buildRoomName('set', sid), {
+    changed: ['images', 'main_image_id'],
+  });
+  return result;
+}
+
+export async function attachExistingImageToSetViaGateway({
+  projectId,
+  set,
+  imageId,
+  setAsMain = false,
+}) {
+  projectId = await resolveProjectId(projectId);
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  const file = await findImageFile(imageId);
+  if (!file) throw new Error(`Image not found: ${imageId}`);
+  if (
+    file.metadata?.owner_type === 'set' &&
+    file.metadata?.owner_id &&
+    file.metadata.owner_id.equals(s._id)
+  ) {
+    return { already_attached: true, set: s.name };
+  }
+  const movedFrom = await detachImageFromCurrentOwner(file);
+  await setImageOwner(imageId, {
+    ownerType: 'set',
+    ownerId: s._id,
+  });
+  const meta = {
+    _id: file._id,
+    filename: file.filename,
+    content_type: file.contentType || file.metadata?.content_type || null,
+    size: file.length,
+    source: file.metadata?.source || 'library',
+    prompt: file.metadata?.prompt || null,
+    generated_by: file.metadata?.generated_by || null,
+    uploaded_at: file.uploadDate,
+  };
+  const result = await pushSetImage(projectId, s._id.toString(), meta, !!setAsMain);
+  broadcastFieldsUpdated(buildRoomName('set', s._id.toString()), {
+    changed: ['images', 'main_image_id'],
+  });
+  broadcastPriorImageOwner(projectId, movedFrom);
+  return result;
+}
+
+export async function moveSetImageToLibraryViaGateway({ projectId, set, imageId }) {
+  projectId = await resolveProjectId(projectId);
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  const sid = s._id.toString();
+  const result = await pullSetImage(projectId, sid, imageId);
+  await setImageOwner(imageId, { ownerType: null, ownerId: null });
+  broadcastFieldsUpdated(buildRoomName('set', sid), {
+    changed: ['images', 'main_image_id'],
+  });
+  broadcastFieldsUpdated(buildRoomName('library', projectId), {
+    changed: ['library_images'],
+    added_image_id: String(imageId),
+  });
+  return result;
+}
+
+export async function attachExistingAttachmentToSetViaGateway({
+  projectId,
+  set,
+  attachmentId,
+}) {
+  projectId = await resolveProjectId(projectId);
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  const { attachExistingAttachmentToSet } = await import('../mongo/attachments.js');
+  const result = await attachExistingAttachmentToSet({
+    projectId,
+    set: s._id.toString(),
+    attachmentId,
+  });
+  if (!result?.already_attached) {
+    broadcastFieldsUpdated(buildRoomName('set', s._id.toString()), {
+      changed: ['attachments'],
+    });
+    broadcastPriorAttachmentOwner(projectId, result?.moved_from);
+  }
+  return result;
+}
+
 export async function attachExistingImageToBeatViaGateway({
   projectId,
   beatId,
@@ -1510,6 +1760,7 @@ export async function createStoryboardViaGateway({
   shotType = null,
   transitionIn = null,
   charactersInScene = [],
+  setsInScene = [],
 }) {
   const sb = await mongoCreateStoryboard({
     projectId,
@@ -1521,6 +1772,7 @@ export async function createStoryboardViaGateway({
     shotType,
     transitionIn,
     charactersInScene,
+    setsInScene,
   });
   // Seed the y-doc fragment(s) BEFORE broadcasting the ping. Otherwise the
   // SPA refetches and mounts its CollabField on an empty fragment before the
@@ -1740,6 +1992,7 @@ const STORYBOARD_SCALAR_FIELDS = new Set([
   'shot_type',
   'transition_in',
   'characters_in_scene',
+  'sets_in_scene',
 ]);
 
 export async function updateStoryboardScalarsViaGateway({ projectId, storyboardId, patch }) {
@@ -2235,6 +2488,82 @@ export async function deleteBeatViaGateway(projectId, identifier) {
     announceBeatLifecycle({ projectId: pid, beat: res, editor, verb: 'deleted' });
   }
   return res;
+}
+
+// Ping the project-wide singleton room so any open TOC refetches its set /
+// character list (same convention as broadcastBeatsChanged).
+export async function broadcastSetsChanged(projectId) {
+  projectId = await resolveProjectId(projectId);
+  return broadcastFieldsUpdated(buildRoomName('plot', String(projectId)), {
+    changed: ['sets'],
+  });
+}
+
+export async function broadcastCharactersChanged(projectId) {
+  projectId = await resolveProjectId(projectId);
+  return broadcastFieldsUpdated(buildRoomName('plot', String(projectId)), {
+    changed: ['characters'],
+  });
+}
+
+function duplicateNameError(kind, name) {
+  const e = new Error(`A ${kind} named "${stripMarkdown(String(name))}" already exists in this project.`);
+  e.status = 409;
+  return e;
+}
+
+export async function createSetViaGateway({ projectId, name, description }) {
+  const existing = await getSet(projectId, String(name));
+  if (existing) throw duplicateNameError('set', name);
+  const set = await mongoCreateSet({ projectId, name, description });
+  await broadcastSetsChanged(projectId);
+  const editor = currentEditor();
+  if (editor) {
+    const pid = await resolveProjectId(projectId);
+    announceSetLifecycle({ projectId: pid, set, editor, verb: 'created' });
+  }
+  return set;
+}
+
+// Full delete: unlink from every beat, drop the doc, purge GridFS bytes
+// (gallery images, artwork results, attachments), and drop RAG chunks.
+export async function deleteSetViaGateway(projectId, identifier) {
+  const { unlinkSetFromAllBeats } = await import('../mongo/plots.js');
+  const s = await getSet(projectId, identifier);
+  if (!s) throw new Error(`Set not found: ${identifier}`);
+  const { unlinked_from } = await unlinkSetFromAllBeats(projectId, s.name);
+  const res = await mongoDeleteSet(projectId, s._id.toString());
+  if (res.image_ids.length) {
+    await deleteImages(res.image_ids).catch((e) =>
+      logger.warn(`gateway: delete set images failed: ${e.message}`),
+    );
+  }
+  if (res.attachment_ids.length) {
+    await deleteAttachments(res.attachment_ids).catch((e) =>
+      logger.warn(`gateway: delete set attachments failed: ${e.message}`),
+    );
+  }
+  deleteEntity('set', s._id.toString()).catch(() => {});
+  await broadcastSetsChanged(projectId);
+  const editor = currentEditor();
+  if (editor) {
+    const pid = await resolveProjectId(projectId);
+    announceSetLifecycle({ projectId: pid, set: s, editor, verb: 'deleted' });
+  }
+  return { ...res, unlinked_from };
+}
+
+export async function createCharacterViaGateway({ projectId, name, hollywood_actor, fields }) {
+  const existing = await getCharacter(projectId, String(name));
+  if (existing) throw duplicateNameError('character', name);
+  const character = await mongoCreateCharacter({ projectId, name, hollywood_actor, fields });
+  await broadcastCharactersChanged(projectId);
+  const editor = currentEditor();
+  if (editor) {
+    const pid = await resolveProjectId(projectId);
+    announceCharacterLifecycle({ projectId: pid, character, editor, verb: 'created' });
+  }
+  return character;
 }
 
 // Attach or detach a dialog item's recorded audio file. Pass `audioFileId:

@@ -46,6 +46,7 @@ function entityLabelOf(entityType, entity) {
   if (!entity) return '';
   if (entityType === 'beat') return stripMarkdown(entity.name || '').slice(0, 80);
   if (entityType === 'character') return stripMarkdown(entity.name || '').slice(0, 80);
+  if (entityType === 'set') return stripMarkdown(entity.name || '').slice(0, 80);
   if (entityType === 'director_note') return 'note';
   if (entityType === 'message') return entity.author?.tag || entity.role || 'message';
   return '';
@@ -97,6 +98,10 @@ function idForChunk({ entityType, entityId, field, chunkIndex }) {
       return `character:${id}:field:${key}:${chunkIndex}`;
     }
     return `character:${id}:${field}:${chunkIndex}`;
+  }
+  if (entityType === 'set') {
+    if (field === 'name') return `set:${id}:name`;
+    return `set:${id}:description:${chunkIndex}`;
   }
   if (entityType === 'director_note') return `director_note:${id}:text:${chunkIndex}`;
   if (entityType === 'message') return `message:${id}`;
@@ -239,6 +244,32 @@ export async function indexCharacter(characterId) {
   });
 }
 
+export async function indexSet(setId) {
+  return safeRun(`set:${setId}`, async (col) => {
+    // Id-only lookup, mirroring indexCharacter — the doc's own project_id is
+    // the source of truth for chunk metadata.
+    const oid = asObjectId(setId);
+    const s = oid ? await getDb().collection('sets').findOne({ _id: oid }) : null;
+    if (!s) {
+      try { await col.delete({ where: { $and: [{ entity_type: 'set' }, { entity_id: idStr(setId) }] } }); } catch {}
+      return;
+    }
+    const projectId = await resolveProjectId(s.project_id);
+    const label = entityLabelOf('set', s);
+    const chunks = [
+      ...buildChunksForField({ entityType: 'set', entityId: s._id, entityLabel: label, field: 'name', markdown: s.name, projectId }),
+      ...buildChunksForField({ entityType: 'set', entityId: s._id, entityLabel: label, field: 'description', markdown: s.description, projectId }),
+    ];
+    await syncEntityChunks(col, 'set', s._id, chunks);
+    try {
+      await getDb().collection('sets').updateOne(
+        { _id: s._id },
+        { $set: { rag_indexed_at: new Date() } },
+      );
+    } catch {}
+  });
+}
+
 export async function indexDirectorNote(noteId) {
   return safeRun(`director_note:${noteId}`, async (col) => {
     const oid = asObjectId(noteId);
@@ -369,6 +400,7 @@ export async function pruneMessagesOlderThan(channelId, keep) {
 export async function reindexByKey(entityType, entityId) {
   if (entityType === 'beat') return indexBeat(entityId);
   if (entityType === 'character') return indexCharacter(entityId);
+  if (entityType === 'set') return indexSet(entityId);
   if (entityType === 'director_note') return indexDirectorNote(entityId);
   if (entityType === 'message') {
     // Message reindex requires the doc — caller should pass the doc directly

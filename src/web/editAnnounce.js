@@ -4,14 +4,14 @@
 
 import { ObjectId } from 'mongodb';
 import { stripMarkdown } from '../util/markdown.js';
-import { beatUrl, characterUrl, homeUrl } from './links.js';
+import { beatUrl, characterUrl, setUrl, homeUrl } from './links.js';
 import { getDb } from '../mongo/client.js';
 import { getProjectById } from '../mongo/projects.js';
 import { fragmentToMarkdown } from './headlessEditor.js';
 import { announceMediaEvent } from '../discord/announcer.js';
 import { claimAnnouncement } from '../mongo/editAnnouncements.js';
 import { logger } from '../log.js';
-import { beatLabel, characterLabel } from './announceHelpers.js';
+import { beatLabel, characterLabel, setLabel } from './announceHelpers.js';
 
 const BEAT_WRITING_FIELDS = ['name', 'body', 'desc'];
 
@@ -272,6 +272,36 @@ export async function announceBeatLifecycle({ projectId, beat, editor, verb }) {
 // Best-effort: called from the gateway after a bulk beat reorder (the TOC
 // drag-and-drop or the agent's reorder_beats tool) on behalf of a web user.
 // One announcement per reorder call, linking to the Table of Contents.
+export async function announceSetLifecycle({ projectId, set, editor, verb }) {
+  try {
+    if (!editor || !set) return;
+    const projectTitle = await projectTitleFor(projectId ? String(projectId) : null);
+    fire({
+      username: editor,
+      verb,
+      entityLabel: setLabel(set),
+      entityUrl: setUrl(projectTitle, set),
+    });
+  } catch (e) {
+    logger.warn(`editAnnounce announceSetLifecycle failed: ${e?.message || e}`);
+  }
+}
+
+export async function announceCharacterLifecycle({ projectId, character, editor, verb }) {
+  try {
+    if (!editor || !character) return;
+    const projectTitle = await projectTitleFor(projectId ? String(projectId) : null);
+    fire({
+      username: editor,
+      verb,
+      entityLabel: characterLabel(character),
+      entityUrl: characterUrl(projectTitle, character),
+    });
+  } catch (e) {
+    logger.warn(`editAnnounce announceCharacterLifecycle failed: ${e?.message || e}`);
+  }
+}
+
 export async function announceBeatsReordered({ projectId, editor }) {
   try {
     if (!editor) return;

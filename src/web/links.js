@@ -35,6 +35,13 @@ export function characterUrl(projectTitle, character) {
   return `${publicBase()}${projectSegment(projectTitle)}/character/${encodeURIComponent(slug)}`;
 }
 
+export function setUrl(projectTitle, set) {
+  if (!set?.name) return null;
+  const slug = stripMarkdown(set.name).trim();
+  if (!slug) return null;
+  return `${publicBase()}${projectSegment(projectTitle)}/set/${encodeURIComponent(slug)}`;
+}
+
 export function beatUrl(projectTitle, beat) {
   if (!beat || !Number.isFinite(beat.order)) return null;
   return `${publicBase()}${projectSegment(projectTitle)}/beat/${beat.order}`;

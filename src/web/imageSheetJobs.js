@@ -43,7 +43,7 @@ import { tuneStoryboardImageSheet } from './storyboardSheetTuner.js';
 export const SHEET_CONCURRENCY = 3;
 
 const MAX_JOB_EVENTS = 100;
-const VALID_HOST_TYPES = new Set(['character', 'beat']);
+const VALID_HOST_TYPES = new Set(['character', 'beat', 'set']);
 // Which logical models are FAL-backed (need FAL_KEY) vs. openai (needs OPENAI key).
 const FAL_MODELS = new Set(['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'gemini-25-flash', 'nano-banana-2', 'flux-2-klein']);
 
@@ -100,9 +100,29 @@ async function loadHostId(projectId, hostType, hostId) {
     if (!c) throw httpError(`character not found: ${hostId}`, 404);
     return c._id.toString();
   }
+  if (hostType === 'set') {
+    const { getSet } = await import('../mongo/sets.js');
+    const s = await getSet(projectId, String(hostId));
+    if (!s) throw httpError(`set not found: ${hostId}`, 404);
+    return s._id.toString();
+  }
   const beat = await getBeat(projectId, String(hostId));
   if (!beat) throw httpError(`beat not found: ${hostId}`, 404);
   return beat._id.toString();
+}
+
+// The plate planner's prompts are built from a beat-shaped context block. A
+// set derives its plates from its own name + description instead of beat
+// text, so synthesize the minimal beat-shaped object the planner needs.
+function setAsPlannerBeat(set) {
+  return {
+    order: 0,
+    name: set.name || 'Set',
+    desc: 'Reusable set/location — plan plates that cover its angles and corners.',
+    body: set.description || '',
+    characters: [],
+    sets: [],
+  };
 }
 
 // Resolve the user-picked reference image ids to loadImageInput entries (bytes +
@@ -226,7 +246,7 @@ async function announceSheet({ job, hostType, hostId, projectId, announceUsernam
   try {
     const { announceText } = await import('../discord/announcer.js');
     const noun = job.completed === 1 ? 'reference image' : 'reference images';
-    const where = hostType === 'character' ? 'a character' : 'a beat';
+    const where = hostType === 'character' ? 'a character' : hostType === 'set' ? 'a set' : 'a beat';
     const suffix = job.failed > 0 ? ` (${job.failed} failed)` : '';
     await announceText(
       `🎨 ${announceUsername} generated an image sheet — ${job.completed} ${noun} on ${where}${suffix}`,
@@ -279,12 +299,22 @@ async function runSheetJob({ projectId, job, hostType, hostId, model, referenceI
 // job.shots once status === 'derived', lets the user edit, then POSTs the
 // reviewed list back to /beat/:id/image-sheet. No busyHosts lock: deriving has no side
 // effects.
-async function runShotPlanJob({ projectId, job, hostId, referenceImageIds, direction, previousPlates }) {
+async function runShotPlanJob({ projectId, job, hostType = 'beat', hostId, referenceImageIds, direction, previousPlates }) {
   try {
     job.status = 'planning';
-    const beat = await getBeat(projectId, hostId);
-    if (!beat) throw new Error(`beat not found: ${hostId}`);
-    const characters = await findCharactersInBeat(projectId, beat);
+    let beat;
+    let characters;
+    if (hostType === 'set') {
+      const { getSet } = await import('../mongo/sets.js');
+      const set = await getSet(projectId, hostId);
+      if (!set) throw new Error(`set not found: ${hostId}`);
+      beat = setAsPlannerBeat(set);
+      characters = [];
+    } else {
+      beat = await getBeat(projectId, hostId);
+      if (!beat) throw new Error(`beat not found: ${hostId}`);
+      characters = await findCharactersInBeat(projectId, beat);
+    }
     const directorNotes = await loadDirectorNotesForPlanner(projectId);
     const referenceInputs = await loadReferenceInputs(referenceImageIds);
     const { images } = await planBeatSceneImages({
@@ -320,17 +350,19 @@ async function runShotPlanJob({ projectId, job, hostId, referenceImageIds, direc
 // config conditions (surfaced before the job is created).
 export async function startShotPlanJob({
   projectId,
+  hostType = 'beat',
   hostId,
   referenceImageIds = [],
   direction = '',
   previousPlates = [],
 }) {
   if (!config.anthropic?.apiKey) {
-    throw httpError('ANTHROPIC_API_KEY is not configured (required to derive beat plates).', 400);
+    throw httpError('ANTHROPIC_API_KEY is not configured (required to derive plates).', 400);
   }
-  const beat = await getBeat(projectId, String(hostId));
-  if (!beat) throw httpError(`beat not found: ${hostId}`, 404);
-  const resolvedHostId = beat._id.toString();
+  if (hostType !== 'beat' && hostType !== 'set') {
+    throw httpError(`invalid hostType for plate derivation: ${hostType}`, 400);
+  }
+  const resolvedHostId = await loadHostId(projectId, hostType, hostId);
   // On re-derive the client sends the plates it's reacting to; normalize/cap
   // them so the planner can revise rather than re-roll from scratch.
   const priorPlates = normalizeExplicitShots(previousPlates) || [];
@@ -338,10 +370,10 @@ export async function startShotPlanJob({
   const jobId = makeJobId();
   const job = {
     job_id: jobId,
-    host_type: 'beat',
+    host_type: hostType,
     host_id: resolvedHostId,
     project_id: projectId,
-    kind: 'beat_plan',
+    kind: hostType === 'set' ? 'set_plan' : 'beat_plan',
     status: 'queued',
     started_at: new Date(),
     finished_at: null,
@@ -359,7 +391,7 @@ export async function startShotPlanJob({
   recordProgress(job, { phase: 'queued', step: 'job_queued', message: 'Queued plate derivation…' });
 
   setImmediate(() => {
-    runShotPlanJob({ projectId, job, hostId: resolvedHostId, referenceImageIds, direction, previousPlates: priorPlates })
+    runShotPlanJob({ projectId, job, hostType, hostId: resolvedHostId, referenceImageIds, direction, previousPlates: priorPlates })
       .catch((e) => {
         job.status = 'error';
         job.error = e.message;
@@ -483,13 +515,13 @@ export async function startImageSheetJob({
   assertConfigured(model);
   const resolvedHostId = await loadHostId(projectId, hostType, hostId);
 
-  // Beats render an explicit, pre-derived shot list (the derive→review→generate
-  // flow); characters plan their fixed preset.
+  // Beats and sets render an explicit, pre-derived shot list (the
+  // derive→review→generate flow); characters plan their fixed preset.
   let explicitShots = null;
-  if (hostType === 'beat') {
+  if (hostType === 'beat' || hostType === 'set') {
     explicitShots = normalizeExplicitShots(shots);
     if (!explicitShots || !explicitShots.length) {
-      throw httpError('A beat image sheet needs a derived shot list (shots[]).', 400);
+      throw httpError(`A ${hostType} image sheet needs a derived shot list (shots[]).`, 400);
     }
   }
 
@@ -505,7 +537,7 @@ export async function startImageSheetJob({
     host_type: hostType,
     host_id: resolvedHostId,
     project_id: projectId,
-    kind: hostType === 'character' ? 'character_sheet' : 'beat_sheet',
+    kind: hostType === 'character' ? 'character_sheet' : hostType === 'set' ? 'set_sheet' : 'beat_sheet',
     status: 'queued',
     started_at: new Date(),
     finished_at: null,

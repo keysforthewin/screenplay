@@ -3,11 +3,8 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { apiGet, apiPostJson } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
-import { ImageGallery } from '../widgets/ImageGallery.jsx';
-import { AttachmentList } from '../widgets/AttachmentList.jsx';
 import { BeatCharacters } from '../widgets/BeatCharacters.jsx';
-import { ArtworkTab } from '../widgets/ArtworkTab.jsx';
-import { ReferenceExtrasSection } from '../widgets/ReferenceExtrasSection.jsx';
+import { BeatSets } from '../widgets/BeatSets.jsx';
 import { BeatPager } from '../widgets/BeatPager.jsx';
 import { BeatTabs } from '../widgets/BeatTabs.jsx';
 import { CritiqueTab } from '../widgets/CritiqueTab.jsx';
@@ -15,14 +12,12 @@ import { PlayBeatButton } from '../widgets/PlayBeatButton.jsx';
 import { VoiceSelect } from '../widgets/VoiceSelect.jsx';
 import { readFragmentText } from '../editor/fragmentRead.js';
 
-// The beat editor is split into two page-level sections, reached via <BeatTabs>:
-//   writing  (/beat/:order)    → Story, Characters, Critique
-//   artwork  (/artwork/:order) → Artwork, Attachments, References
-// Both render this component (chosen by the `section` prop) over the same
-// beat:<id> y-doc room. The `background` tab is labelled "Story".
+// The beat editor's writing section (/beat/:order), reached via <BeatTabs>,
+// renders this component over the beat:<id> y-doc room. The `background` tab
+// is labelled "Story". Beat artwork is retired — sets own artwork now (see
+// routes/Set.jsx); the old /artwork/:order route redirects to /beat/:order.
 const SECTION_TABS = {
-  writing: ['background', 'characters', 'critique'],
-  artwork: ['artwork', 'attachments', 'references'],
+  writing: ['background', 'sets', 'characters', 'critique'],
 };
 
 function tabsFor(section) {
@@ -42,16 +37,13 @@ export function Beat({ session, section = 'writing' }) {
   const tabs = tabsFor(section);
   const [beat, setBeat] = useState(null);
   const [toc, setToc] = useState(null);
-  const [allBeatImages, setAllBeatImages] = useState([]);
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [activeTab, setActiveTab] = useState(() => readInitialTab(section));
-  const [imagePickerOpen, setImagePickerOpen] = useState(false);
-  const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [liveDoc, setLiveDoc] = useState(null);
 
-  // <BeatTabs> reuses this component across the writing/artwork routes (same
-  // type, same router slot), so switching sections updates `section` without a
+  // <BeatTabs> reuses this component across router slots (writing section
+  // only, currently), so switching sections updates `section` without a
   // remount — resync the tab to the new section's URL hash (or its first tab).
   useEffect(() => {
     setActiveTab(readInitialTab(section));
@@ -68,8 +60,6 @@ export function Beat({ session, section = 'writing' }) {
         if (cancelled) return;
         setBeat(r.beat);
         setToc(t);
-        const imgs = await apiGet(`/beat/${r.beat._id}/images`);
-        if (!cancelled) setAllBeatImages(imgs.images || []);
       } catch (e) {
         if (!cancelled) setError(e.message);
       }
@@ -100,13 +90,6 @@ export function Beat({ session, section = 'writing' }) {
   // switch on a reused instance) never hides every panel.
   const currentTab = tabs.includes(activeTab) ? activeTab : tabs[0];
 
-  const beatImageIds = new Set(
-    (beat?.images || []).map((i) => i._id?.toString?.() || String(i._id)),
-  );
-  const extraReferenceImages = allBeatImages.filter(
-    (img) => !beatImageIds.has(img._id?.toString?.() || String(img._id)),
-  );
-
   function onRefresh() { setRefreshKey((k) => k + 1); }
 
   const [bgBusy, setBgBusy] = useState(null); // 'undo' | null
@@ -123,7 +106,7 @@ export function Beat({ session, section = 'writing' }) {
     return <div className="app"><p style={{ color: 'var(--fg-muted)' }}>Loading beat #{order}…</p></div>;
   }
 
-  const basePath = section === 'artwork' ? '/artwork' : '/beat';
+  const basePath = '/beat';
 
   return (
     <main className="app">
@@ -175,6 +158,12 @@ export function Beat({ session, section = 'writing' }) {
           </div>
         )}
 
+        {tabs.includes('sets') && (
+          <div className="tab-panel" hidden={currentTab !== 'sets'}>
+            <BeatSets beat={beat} toc={toc} onRefresh={onRefresh} />
+          </div>
+        )}
+
         {tabs.includes('characters') && (
           <div className="tab-panel" hidden={currentTab !== 'characters'}>
             <BeatCharacters beat={beat} toc={toc} onRefresh={onRefresh} />
@@ -190,96 +179,6 @@ export function Beat({ session, section = 'writing' }) {
             />
           </div>
         )}
-
-        {tabs.includes('artwork') && (
-          <div className="tab-panel" hidden={currentTab !== 'artwork'}>
-            <ArtworkTab
-              hostType="beat"
-              hostId={beat._id}
-              hostLabel={beat.name || `Beat ${beat.order}`}
-              artworks={beat.artworks || []}
-              hostImages={beat.images || []}
-              hostArtworks={beat.artworks || []}
-              mainImageId={beat.main_image_id}
-              mainPath={`/beat/${beat._id}/main-image`}
-              onChange={onRefresh}
-            />
-          </div>
-        )}
-
-        {tabs.includes('attachments') && (
-          <div className="tab-panel" hidden={currentTab !== 'attachments'}>
-            <p className="tab-intro">
-              <strong>Images</strong> are reference images used to create artwork for this beat.{' '}
-              <strong>Files</strong> are reference material such as PDFs, Word documents, and audio samples.
-            </p>
-            <div className="tab-actions">
-              <button
-                type="button"
-                className="primary"
-                onClick={() => setImagePickerOpen(true)}
-              >
-                + Add image
-              </button>
-              <button
-                type="button"
-                className="primary"
-                onClick={() => setFilePickerOpen(true)}
-              >
-                + Add file
-              </button>
-            </div>
-            <ImageGallery
-              images={beat.images || []}
-              mainImageId={beat.main_image_id}
-              onChange={onRefresh}
-              uploadPath={`/beat/${beat._id}/image`}
-              deletePath={(imageId) => `/beat/${beat._id}/image/${imageId}`}
-              mainPath={`/beat/${beat._id}/main-image`}
-              editPath={(imageId) => `/beat/${beat._id}/image/${imageId}/regenerate`}
-              moveToLibraryPath={(imageId) =>
-                `/beat/${beat._id}/image/${imageId}/move-to-library`
-              }
-              attachPath={`/beat/${beat._id}/image/attach`}
-              generatePath={`/beat/${beat._id}/image/generate`}
-              characterSourcesPath={`/images/by-owner/characters`}
-              beatSourcesPath={`/images/by-owner/beats?exclude_id=${beat._id}`}
-              copyPath={`/beat/${beat._id}/image/copy`}
-              pickerTitle="Add image to beat"
-              hideAddButton
-              pickerOpen={imagePickerOpen}
-              onPickerOpenChange={setImagePickerOpen}
-            />
-            <AttachmentList
-              attachments={beat.attachments || []}
-              onChange={onRefresh}
-              uploadPath={`/beat/${beat._id}/attachment`}
-              deletePath={(id) => `/beat/${beat._id}/attachment/${id}`}
-              attachPath={`/beat/${beat._id}/attachment/attach`}
-              pickerTitle="Add file to beat"
-              fieldPrefix="attachment"
-              hideAddButton
-              pickerOpen={filePickerOpen}
-              onPickerOpenChange={setFilePickerOpen}
-            />
-          </div>
-        )}
-
-        {tabs.includes('references') && (
-          <div className="tab-panel" hidden={currentTab !== 'references'}>
-            <p className="tab-intro">
-              Reference images attached to this beat by its storyboards — frame
-              snapshots and per-frame uploads. Manage gallery images on the
-              Attachments tab.
-            </p>
-            <ReferenceExtrasSection
-              items={extraReferenceImages}
-              deletePath={(id) => `/beat/${beat._id}/orphan-image/${id}`}
-              onChange={onRefresh}
-              emptyText="No storyboard reference images on this beat yet."
-            />
-          </div>
-        )}
       </CollabSurface>
 
       <BeatPager beats={toc?.beats} currentId={beat._id} basePath={basePath} />
@@ -289,12 +188,10 @@ export function Beat({ session, section = 'writing' }) {
 
 function tabLabel(tab) {
   switch (tab) {
-    case 'characters': return 'Characters';
     case 'background': return 'Story';
+    case 'sets': return 'Sets';
+    case 'characters': return 'Characters';
     case 'critique': return 'Critique';
-    case 'attachments': return 'Attachments';
-    case 'references': return 'References';
-    case 'artwork': return 'Artwork';
     default: return tab;
   }
 }

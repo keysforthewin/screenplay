@@ -63,15 +63,19 @@ describe('startReassignReferencesJob', () => {
     expect(fresh.frames[0].reference_scores).toEqual({});
   });
 
-  it('reassigns references from the beat artwork catalog using the scorer', async () => {
-    // Seed one done beat artwork, then stub the scorer to score it 1.0.
+  it('reassigns references from the linked sets\' artwork catalog using the scorer', async () => {
+    // Seed one done artwork on a set linked to the beat, then stub the scorer
+    // to score it 1.0. (Beat artwork is retired — location plates live on sets.)
+    const Sets = await import('../src/mongo/sets.js');
+    const set = await Sets.createSet({ projectId, name: 'Room' });
+    await Plots.linkSetToBeat(projectId, beat._id.toString(), 'Room');
     const art = await Gateway.createPendingArtworkViaGateway({
-      projectId, hostType: 'beat', hostId: beat._id.toString(),
+      projectId, hostType: 'set', hostId: set._id.toString(),
       prompt: 'an empty room plate', name: 'Room plate', model: 'nano-banana-pro', referenceImageIds: [],
     });
     const resultId = new ObjectId();
     await Gateway.setArtworkResultViaGateway({
-      projectId, hostType: 'beat', hostId: beat._id.toString(),
+      projectId, hostType: 'set', hostId: set._id.toString(),
       artworkId: art.artwork._id, resultImageId: resultId,
     });
     Selector._setFrameReferenceScorerForTests(async ({ candidates }) => {

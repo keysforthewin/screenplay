@@ -14,7 +14,7 @@ const SELECTOR_MODEL = config.anthropic.enhancerModel;
 function buildCatalogText(candidates) {
   return candidates
     .map((c, i) => {
-      const kind = c.kind === 'char' ? 'CHARACTER' : 'ARTWORK';
+      const kind = c.kind === 'char' ? 'CHARACTER' : c.kind === 'set' ? 'SET' : 'ARTWORK';
       const desc = c.description ? ` — ${c.description}` : '';
       return `${i + 1}. [${kind}] ${c.name}${desc}`;
     })

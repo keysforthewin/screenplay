@@ -22,8 +22,9 @@ import { getDb } from './client.js';
 import { logger } from '../log.js';
 import { getPlot } from './plots.js';
 import { getCharacter } from './characters.js';
+import { getSet } from './sets.js';
 
-const VALID_HOST_TYPES = new Set(['character', 'beat']);
+const VALID_HOST_TYPES = new Set(['character', 'beat', 'set']);
 const VALID_STATUSES = new Set(['pending', 'done', 'error']);
 const HEX24 = /^[a-f0-9]{24}$/i;
 
@@ -66,12 +67,20 @@ function findBeatInPlot(plot, hostId) {
   return beats.find((b) => (b.name || '').toLowerCase() === t) || null;
 }
 
+// Character and set hosts are both "top-level collection" hosts: the
+// artworks[] array lives directly on the doc. `host.col` names that
+// collection; beat hosts leave it unset and go through the plots doc.
 async function loadHost(projectId, hostType, hostId) {
   assertHostType(hostType);
   if (hostType === 'character') {
     const c = await getCharacter(projectId, String(hostId));
     if (!c) throw new Error(`Character not found: ${hostId}`);
-    return { kind: 'character', doc: c, _id: c._id };
+    return { kind: 'character', col: 'characters', doc: c, _id: c._id };
+  }
+  if (hostType === 'set') {
+    const s = await getSet(projectId, String(hostId));
+    if (!s) throw new Error(`Set not found: ${hostId}`);
+    return { kind: 'set', col: 'sets', doc: s, _id: s._id };
   }
   const plot = await getPlot(projectId);
   if (!plot) throw new Error('Plot doc not found');
@@ -84,8 +93,8 @@ async function loadHost(projectId, hostType, hostId) {
 // authoritative shape (with server-applied timestamps etc.).
 async function fetchArtwork(host, artworkId) {
   const aid = toOid(artworkId);
-  if (host.kind === 'character') {
-    const fresh = await getDb().collection('characters').findOne({ _id: host._id });
+  if (host.col) {
+    const fresh = await getDb().collection(host.col).findOne({ _id: host._id });
     return (fresh?.artworks || []).find((a) => a?._id && aid.equals(a._id)) || null;
   }
   const plot = await getDb().collection('plots').findOne({ _id: host.plot._id });
@@ -94,8 +103,8 @@ async function fetchArtwork(host, artworkId) {
 }
 
 async function fetchHostMainImageId(host) {
-  if (host.kind === 'character') {
-    const fresh = await getDb().collection('characters').findOne({ _id: host._id });
+  if (host.col) {
+    const fresh = await getDb().collection(host.col).findOne({ _id: host._id });
     return fresh?.main_image_id || null;
   }
   const plot = await getDb().collection('plots').findOne({ _id: host.plot._id });
@@ -107,8 +116,8 @@ async function fetchHostMainImageId(host) {
 
 async function pushArtwork(host, artwork) {
   const now = new Date();
-  if (host.kind === 'character') {
-    await getDb().collection('characters').updateOne(
+  if (host.col) {
+    await getDb().collection(host.col).updateOne(
       { _id: host._id },
       { $push: { artworks: artwork }, $set: { updated_at: now } },
     );
@@ -127,7 +136,7 @@ async function pushArtwork(host, artwork) {
 async function setArtworkFields(host, artworkId, fields, options = {}) {
   const aid = toOid(artworkId);
   const now = new Date();
-  if (host.kind === 'character') {
+  if (host.col) {
     const $set = { updated_at: now };
     for (const [k, v] of Object.entries(fields)) {
       $set[`artworks.$[a].${k}`] = v;
@@ -135,13 +144,13 @@ async function setArtworkFields(host, artworkId, fields, options = {}) {
     if (options.hostMainImageId !== undefined) {
       $set.main_image_id = options.hostMainImageId;
     }
-    const result = await getDb().collection('characters').updateOne(
+    const result = await getDb().collection(host.col).updateOne(
       { _id: host._id, 'artworks._id': aid },
       { $set },
       { arrayFilters: [{ 'a._id': aid }] },
     );
     if (!result.matchedCount) {
-      throw new Error(`Artwork ${artworkId} not found on character ${host._id}`);
+      throw new Error(`Artwork ${artworkId} not found on ${host.kind} ${host._id}`);
     }
     return;
   }
@@ -165,7 +174,7 @@ async function setArtworkFields(host, artworkId, fields, options = {}) {
 async function pullArtwork(host, artworkId, options = {}) {
   const aid = toOid(artworkId);
   const now = new Date();
-  if (host.kind === 'character') {
+  if (host.col) {
     const update = {
       $pull: { artworks: { _id: aid } },
       $set: { updated_at: now },
@@ -173,7 +182,7 @@ async function pullArtwork(host, artworkId, options = {}) {
     if (options.hostMainImageId !== undefined) {
       update.$set.main_image_id = options.hostMainImageId;
     }
-    await getDb().collection('characters').updateOne({ _id: host._id }, update);
+    await getDb().collection(host.col).updateOne({ _id: host._id }, update);
     return;
   }
   const update = {
@@ -191,12 +200,12 @@ async function pullArtwork(host, artworkId, options = {}) {
 }
 
 function readArtworks(host) {
-  if (host.kind === 'character') return host.doc.artworks || [];
+  if (host.col) return host.doc.artworks || [];
   return host.beat.artworks || [];
 }
 
 function readHostMainImageId(host) {
-  if (host.kind === 'character') return host.doc.main_image_id || null;
+  if (host.col) return host.doc.main_image_id || null;
   return host.beat.main_image_id || null;
 }
 

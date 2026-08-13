@@ -1,5 +1,6 @@
 import { getDb } from './client.js';
 import { getCharacter, pushCharacterImage, pullCharacterImage } from './characters.js';
+import { getSet, pushSetImage, pullSetImage } from './sets.js';
 import { pullBeatImage } from './plots.js';
 import { pullDirectorNoteImage } from './directorNotes.js';
 import {
@@ -39,6 +40,9 @@ export async function detachImageFromCurrentOwner(file) {
     } else if (ownerType === 'character') {
       const res = await pullCharacterImage(projectId, ownerId, file._id);
       priorName = res?.character || null;
+    } else if (ownerType === 'set') {
+      const res = await pullSetImage(projectId, ownerId, file._id);
+      priorName = res?.set || null;
     } else if (ownerType === 'director_note') {
       await pullDirectorNoteImage(projectId, ownerId, file._id);
     }
@@ -140,6 +144,127 @@ export async function setMainCharacterImage({ projectId, character, imageId }) {
 
 export async function readCharacterImageBuffer(imageId) {
   return readImageBuffer(imageId);
+}
+
+// ── Set image helpers ──────────────────────────────────────────────────────
+// Mirrors of the character helpers above, keeping GridFS and the embedded
+// sets.images[] array in sync.
+
+export async function attachImageToSet({ projectId, set, sourceUrl, filename, caption, setAsMain }) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+
+  const file = await uploadImageFromUrl(projectId ?? s.project_id, {
+    sourceUrl,
+    filename,
+    ownerType: 'set',
+    ownerId: s._id,
+  });
+
+  const meta = {
+    _id: file._id,
+    filename: file.filename,
+    content_type: file.content_type,
+    size: file.size,
+    uploaded_at: file.uploaded_at,
+    caption: caption?.trim() || null,
+  };
+
+  const { is_main } = await pushSetImage(projectId, s._id.toString(), meta, setAsMain);
+  return { set: s.name, ...meta, is_main };
+}
+
+export async function attachExistingImageToSet({ projectId, set, imageId, caption, setAsMain }) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+
+  const file = await findImageFile(imageId);
+  if (!file) throw new Error(`Image not found: ${imageId}`);
+
+  if (
+    file.metadata?.owner_type === 'set' &&
+    file.metadata?.owner_id &&
+    file.metadata.owner_id.equals(s._id)
+  ) {
+    return {
+      already_attached: true,
+      set: s.name,
+      _id: file._id,
+      filename: file.filename,
+      content_type: file.contentType,
+      size: file.length,
+    };
+  }
+
+  const movedFrom = await detachImageFromCurrentOwner(file);
+
+  await setImageOwner(imageId, { ownerType: 'set', ownerId: s._id });
+
+  const meta = {
+    _id: file._id,
+    filename: file.filename,
+    content_type: file.contentType,
+    size: file.length,
+    uploaded_at: file.uploadDate,
+    caption: caption?.trim() || null,
+  };
+
+  const { is_main } = await pushSetImage(projectId, s._id.toString(), meta, setAsMain);
+  return { set: s.name, ...meta, is_main, moved_from: movedFrom };
+}
+
+export async function listSetImages(projectId, set) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  return {
+    set: s.name,
+    images: s.images || [],
+    main_image_id: s.main_image_id || null,
+  };
+}
+
+export async function setMainSetImage({ projectId, set, imageId }) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  const oid = toObjectId(imageId);
+  const inImages = (s.images || []).some((img) => img._id.equals(oid));
+  const inArtworks = (s.artworks || []).some(
+    (a) => a?.status === 'done' && a?.result_image_id && oid.equals(a.result_image_id),
+  );
+  if (!inImages && !inArtworks) {
+    throw new Error(`Image ${imageId} is not attached to ${s.name}`);
+  }
+  await getDb()
+    .collection('sets')
+    .updateOne({ _id: s._id }, { $set: { main_image_id: oid, updated_at: new Date() } });
+  return { set: s.name, main_image_id: oid };
+}
+
+export async function removeSetImage({ projectId, set, imageId }) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  const oid = toObjectId(imageId);
+  const images = s.images || [];
+  if (!images.some((img) => img._id.equals(oid))) {
+    throw new Error(`Image ${imageId} is not attached to ${s.name}`);
+  }
+
+  await deleteImage(oid);
+
+  const remaining = images.filter((img) => !img._id.equals(oid));
+  const wasMain = s.main_image_id && s.main_image_id.equals(oid);
+  const newMain = wasMain ? remaining[0]?._id || null : s.main_image_id || null;
+
+  await getDb()
+    .collection('sets')
+    .updateOne(
+      { _id: s._id },
+      {
+        $pull: { images: { _id: oid } },
+        $set: { main_image_id: newMain, updated_at: new Date() },
+      },
+    );
+  return { set: s.name, removed: oid, main_image_id: newMain };
 }
 
 export async function removeCharacterImage({ projectId, character, imageId }) {

@@ -12,6 +12,7 @@ vi.mock('../src/mongo/client.js', () => ({
 const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
+const Sets = await import('../src/mongo/sets.js');
 const Projects = await import('../src/mongo/projects.js');
 const { buildOverview } = await import('../src/agent/overview.js');
 
@@ -50,9 +51,11 @@ describe('buildOverview', () => {
       beats: 0,
       beats_with_body: 0,
       beats_with_main_image: 0,
+      sets: 0,
     });
     expect(o.characters).toEqual([]);
     expect(o.beats).toEqual([]);
+    expect(o.sets).toEqual([]);
     expect(o.character_template_fields).toEqual(['background_story', 'arc', 'memes']);
   });
 
@@ -136,5 +139,40 @@ describe('buildOverview', () => {
     expect(o.counts.beats_with_main_image).toBe(1);
     expect(o.characters[0].has_main_image).toBe(true);
     expect(o.beats[0].has_main_image).toBe(true);
+  });
+
+  it('summarizes sets with description preview, image counts, and linked-beat counts', async () => {
+    await seedTemplate();
+    const diner = await Sets.createSet({
+      projectId,
+      name: 'The Diner',
+      description: 'A retro roadside diner where Alice and Bob meet.',
+    });
+    await Sets.createSet({ projectId, name: 'Empty Lot' });
+
+    const imgId = new ObjectId();
+    await fakeDb.collection('sets').updateOne(
+      { _id: diner._id },
+      { $set: { main_image_id: imgId, images: [{ _id: imgId }] } },
+    );
+
+    await Plots.createBeat({ projectId, name: 'Open', desc: 'd', sets: ['The Diner'] });
+    await Plots.createBeat({ projectId, name: 'Mid', desc: 'd2', sets: ['The Diner'] });
+
+    const o = await buildOverview(projectId);
+    expect(o.counts.sets).toBe(2);
+    expect(o.sets).toHaveLength(2);
+
+    const dinerSummary = o.sets.find((s) => s.name === 'The Diner');
+    expect(dinerSummary.description_preview).toContain('retro roadside diner');
+    expect(dinerSummary.image_count).toBe(1);
+    expect(dinerSummary.has_main_image).toBe(true);
+    expect(dinerSummary.linked_beat_count).toBe(2);
+
+    const lotSummary = o.sets.find((s) => s.name === 'Empty Lot');
+    expect(lotSummary.description_preview).toBe('');
+    expect(lotSummary.image_count).toBe(0);
+    expect(lotSummary.has_main_image).toBe(false);
+    expect(lotSummary.linked_beat_count).toBe(0);
   });
 });

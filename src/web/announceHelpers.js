@@ -3,7 +3,7 @@
 // the entity label + SPA URL and pulls the SPA username from req.session.
 
 import { announceMediaEvent, announceText } from '../discord/announcer.js';
-import { beatUrl, characterUrl, notesUrl, libraryUrl, storyboardUrl } from './links.js';
+import { beatUrl, characterUrl, setUrl, notesUrl, libraryUrl, storyboardUrl } from './links.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { logger } from '../log.js';
 
@@ -22,6 +22,12 @@ export function characterLabel(character) {
   if (!character) return 'a character';
   const name = stripMarkdown(character.name || '').trim() || 'character';
   return `Character: ${name}`;
+}
+
+export function setLabel(set) {
+  if (!set) return 'a set';
+  const name = stripMarkdown(set.name || '').trim() || 'set';
+  return `Set: ${name}`;
 }
 
 function noteLabel(note) {
@@ -80,6 +86,27 @@ export function announceCharacterMedia({
     verb,
     entityLabel: characterLabel(character),
     entityUrl: characterUrl(req?.projectTitle ?? null, character),
+    imageFileId,
+    mediaFileId,
+    mediaLabel,
+    prompt,
+  });
+}
+
+export function announceSetMedia({
+  req,
+  set,
+  verb,
+  imageFileId,
+  mediaFileId,
+  mediaLabel,
+  prompt,
+}) {
+  fire({
+    username: usernameFromReq(req),
+    verb,
+    entityLabel: setLabel(set),
+    entityUrl: setUrl(req?.projectTitle ?? null, set),
     imageFileId,
     mediaFileId,
     mediaLabel,

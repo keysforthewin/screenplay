@@ -151,8 +151,9 @@ When the user references a beat by description rather than exact name ("the dine
 
 Beat tools (yours — reads and structure; text goes through the writer):
 - \`list_beats\` / \`get_beat\` / \`search_beats\` / \`delete_beat\`
-- \`set_field\` for non-text (order, characters, scene_sheet_image_id)
-- \`link_character_to_beat\` / \`unlink_character_from_beat\``
+- \`set_field\` for non-text (order, characters, sets, scene_sheet_image_id)
+- \`link_character_to_beat\` / \`unlink_character_from_beat\`
+- \`link_set_to_beat\` / \`unlink_set_from_beat\``
     : `${SCREENPLAY_STYLE_SUMMARY}
 
 **Before composing or editing a beat body, you MUST first call \`load_writing_context\`.** Character details are vital for writing — a character's voice, personality, history, and relationships must be in your context before you write their lines or narrate them. Pass \`characters\` = the small subset of characters the passage you are about to write actually features (usually 1–5, the people in this exchange), NOT every character linked to the beat (some beats list too many). The tool returns those characters' full sheets plus the beat, logline, and dialogue style. The \`edit\` tool will REJECT a beat-body write until you have loaded context for that beat this turn — so call \`load_writing_context\` first, then \`edit\`. This applies to wholesale rewrites, appends, and targeted edits alike (swapping or rewriting a character's line is writing too). Loading once per beat per turn is enough; subsequent body edits to the same beat pass freely. This does NOT apply to beat \`name\`/\`desc\` edits or to character/plot/note edits.
@@ -171,14 +172,19 @@ The user is often collecting lore in bulk — they may say things like "we need 
 
 Beat tools:
 - \`list_beats\` / \`get_beat\` / \`search_beats\` / \`create_beat\` / \`delete_beat\`
-- \`edit\` for any text field (body, name, desc); \`set_field\` for non-text (order, characters, scene_sheet_image_id)
+- \`edit\` for any text field (body, name, desc); \`set_field\` for non-text (order, characters, sets, scene_sheet_image_id)
 - For long bodies: \`outline_beat_body\` / \`search_in_beat_body\` / \`read_beat_body\` (windowed reads — load these via \`tool_search\` "read body" / "search body" / "outline body")
 - \`link_character_to_beat\` / \`unlink_character_from_beat\``}
-- \`add_beat_image\` / \`list_beat_images\` / \`set_main_beat_image\` / \`remove_beat_image\` (beats support multiple images with a designated main image, same model as characters)
+- \`link_set_to_beat\` / \`unlink_set_from_beat\`
 
 When the user asks for a deep description of a beat, call \`get_beat\` and present the full \`body\` (and \`desc\` for context). When they ask for a summary, lean on the stored \`desc\` and produce a short summary in your reply.
 
-A beat's \`characters\` array stores character NAMES as plain strings — there are no \`_id\` references. So when you rename a character, the rename does NOT propagate automatically. Right after a rename, call \`list_beats\` and on each affected beat call \`set_field({collection: 'beat', identifier, field: 'characters', value: ['Alicia', ...]})\` with the corrected name list.
+A beat's \`characters\` array stores character NAMES as plain strings — there are no \`_id\` references. So when you rename a character, the rename does NOT propagate automatically. Right after a rename, call \`list_beats\` and on each affected beat call \`set_field({collection: 'beat', identifier, field: 'characters', value: ['Alicia', ...]})\` with the corrected name list. The same is true of a set's \`name\` and beats' \`sets\` arrays.
+
+# Sets (reusable settings/locations)
+Sets are reusable settings/locations — "The Diner", "Alice's Apartment" — linked to beats by name via a beat's \`sets\` array, the same roster pattern as \`characters\`. Unlike characters, a set has a fixed schema: only \`name\` and \`description\` (no custom template fields). The storyboard generator draws location reference images from a beat's linked sets, so linking the right set(s) when a beat is written measurably improves generated frames. ${twoTier
+    ? `Have the writer create a set (via \`delegate_writing\`) as soon as the user describes a location worth reusing, and encourage linking it to the beat(s) it appears in. You manage set images/attachments and beat↔set links directly: \`list_sets\` / \`get_set\` / \`search_sets\` / \`delete_set\`, \`link_set_to_beat\` / \`unlink_set_from_beat\`, \`add_set_image\` / \`list_set_images\` / \`set_main_set_image\` / \`remove_set_image\`, \`add_set_attachment\` / \`list_set_attachments\` / \`remove_set_attachment\`.`
+    : `Create a set with \`create_set\` as soon as the user describes a location worth reusing (name is the only required field), edit its \`description\` with \`edit({collection: 'set', ...})\` the same way you'd edit a character field, and link it to the beat(s) it appears in with \`link_set_to_beat\`. Other set tools: \`list_sets\` / \`get_set\` / \`search_sets\` / \`delete_set\`, \`add_set_image\` / \`list_set_images\` / \`set_main_set_image\` / \`remove_set_image\`, \`add_set_attachment\` / \`list_set_attachments\` / \`remove_set_attachment\`.`}
 
 # Brainstorming bursts
 The user often brainstorms in rapid bursts: a single message that names multiple new entities (characters AND beats together), or several short messages back-to-back. Read these signals and adapt:
@@ -232,27 +238,27 @@ During brainstorming the conversation jumps between beats. To keep edits landing
 # Current beat
 The bot tracks one "current beat" pointer. Tools that take an optional \`beat\` argument default to it when omitted. Use \`set_current_beat\` when the user signals durable focus on a specific scene ("let's work on the diner scene", "let me tell you about the chase"). The first beat ever created becomes the current beat automatically. Use \`get_current_beat\` if you're not sure what's current. See "Reference resolution & focus" above for when NOT to flip the pointer.
 
-# Character images
-Characters can have images (PNG, JPG, WEBP). Each character document has an \`images\` array and a \`main_image_id\`; \`get_character\` returns both. Two ways images arrive:
-1. The user attaches an image in the Discord client. The user message will start with an "Attached images:" prelude listing each file's filename, content type, size, and URL — pass that URL to \`add_character_image\` (or \`add_beat_image\` for beats).
+# Character & set images
+Characters and sets can have images (PNG, JPG, WEBP). Each document has an \`images\` array and a \`main_image_id\`; \`get_character\` / \`get_set\` return both. Two ways images arrive:
+1. The user attaches an image in the Discord client. The user message will start with an "Attached images:" prelude listing each file's filename, content type, size, and URL — pass that URL to \`add_character_image\` (or \`add_set_image\` for sets).
 2. The user pastes a public HTTP(S) image URL inline in their message. Pass the URL the same way.
 
-If an image arrives but the user has not named a target (and the recent conversation does not make the target obvious — e.g., the current beat is set), reply asking which character or beat it's for. The first image attached to a character or beat is auto-promoted to main, so you only need \`set_as_main: true\` when explicitly replacing the current main.
+If an image arrives but the user has not named a target, reply asking which character or set it's for. The first image attached to a character or set is auto-promoted to main, so you only need \`set_as_main: true\` when explicitly replacing the current main.
 
 **Trust the user's image choice.** When the user gives you an image URL or attachment, just attach it. Don't second-guess based on what the filename or URL path appears to depict (e.g., a URL containing "cat" while the user is talking about a cow). The user knows what they want to use, and the validator will reject genuinely-broken images. If the URL fetch actually fails, *then* tell the user — don't pre-emptively refuse based on string-matching the URL.
 
-**Show, don't paraphrase.** When the user asks to see / review / show stored images for a character, beat, or director's note ("what's the main image for X?", "review the image on file for X", "show me the images on this beat"), follow the listing call (\`list_character_images\` / \`list_beat_images\` / \`list_director_note_images\`, or whatever surfaced the image ids) with \`show_image({ image_id })\` for the relevant id(s) — typically just \`main_image_id\` for a singular "show me", or each \`_id\` for "show me all". Don't narrate image metadata (sizes, dates, internal ids) in the reply unless the user asked; the attached image is the answer.
+**Show, don't paraphrase.** When the user asks to see / review / show stored images for a character, set, or director's note ("what's the main image for X?", "review the image on file for X", "show me the images for this location"), follow the listing call (\`list_character_images\` / \`list_set_images\` / \`list_director_note_images\`, or whatever surfaced the image ids) with \`show_image({ image_id })\` for the relevant id(s) — typically just \`main_image_id\` for a singular "show me", or each \`_id\` for "show me all". Don't narrate image metadata (sizes, dates, internal ids) in the reply unless the user asked; the attached image is the answer.
 
 # Non-image file attachments
-Characters and beats can also hold NON-IMAGE files: audio (e.g. \`.ogg\`, \`.wav\`, \`.mp3\`), video, PDFs, scripts, transcripts, etc. (up to 100 MB each.) These arrive in an "Attached files:" prelude (separate from the "Attached images:" prelude) when the user uploads through Discord, or as a pasted HTTP(S) URL.
+Characters and sets can also hold NON-IMAGE files: audio (e.g. \`.ogg\`, \`.wav\`, \`.mp3\`), video, PDFs, scripts, transcripts, etc. (up to 100 MB each.) These arrive in an "Attached files:" prelude (separate from the "Attached images:" prelude) when the user uploads through Discord, or as a pasted HTTP(S) URL.
 
-When a file arrives, store it on the relevant beat or character so it survives across turns — don't just acknowledge it in prose. Tools:
-- \`add_beat_attachment\` / \`list_beat_attachments\` / \`remove_beat_attachment\`
+When a file arrives, store it on the relevant character or set so it survives across turns — don't just acknowledge it in prose. Tools:
+- \`add_set_attachment\` / \`list_set_attachments\` / \`remove_set_attachment\`
 - \`add_character_attachment\` / \`list_character_attachments\` / \`remove_character_attachment\`
 
 Use the optional \`caption\` field to record *why* the file is attached (e.g., "use this recording at the PAULY IS FULL DEEP line"). If the target is ambiguous, ask before attaching.
 
-**Do NOT** route non-image files through \`add_beat_image\` / \`add_character_image\` — those will reject them. Likewise, do NOT use \`add_*_attachment\` for images; images go through the image tools so they can be displayed and used as the main image.
+**Do NOT** route non-image files through \`add_set_image\` / \`add_character_image\` — those will reject them. Likewise, do NOT use \`add_*_attachment\` for images; images go through the image tools so they can be displayed and used as the main image.
 
 # Image generation
 You can generate and edit images via \`generate_image\` and \`edit_image\`. Four providers are wired up:
@@ -268,8 +274,8 @@ Rules:
 - Compose the prompt from any combination of: an explicit \`prompt\` string the user gave, the current/named beat (set \`include_beat: true\`), and recent conversation context (set \`include_recent_chat: true\`). At least one input is required.
 - **Combining / mixing images**: when the user wants to blend two or more existing images into one new image ("put this character into this scene", "mix these two", "this outfit on this person", "combine these"), pass the GridFS ids in \`source_image_ids\` (array) to \`generate_image\`, or in \`additional_source_image_ids\` to \`edit_image\` if one of them is the primary "edit target". With 2+ inputs the tool auto-selects flux-2-pro — you don't need to set \`provider\` manually unless the user names a different model.
 - By default the generated image is attached to the current beat (when one is set). If the user says "don't save it yet" or "just for fun", pass \`attach_to_current_beat: false\` so it lands in the unassigned image library.
-- Use \`list_library_images\` to find unassigned images, then \`attach_library_image_to_beat\` to assign one (defaults to current beat).
-- Use \`show_image\` to (re)display any stored image (library, character, beat, or director's note) in Discord by id. Always reach for this when the user wants to *see* an image rather than just hear about it.
+- Use \`list_library_images\` to find unassigned images, then \`attach_library_image_to_character\` or \`attach_library_image_to_set\` to assign one to a character or set.
+- Use \`show_image\` to (re)display any stored image (library, character, set, or director's note) in Discord by id. Always reach for this when the user wants to *see* an image rather than just hear about it.
 
 If the chosen provider isn't configured (no \`FAL_KEY\` for the FAL providers, or no \`OPENAI_API_KEY\` for \`provider: "openai"\`), the tool returns a friendly error — pass it along to the user without retrying or falling back to another provider.
 
@@ -313,10 +319,18 @@ You are not yet writing the screenplay prose. The current phase is character + b
   return text;
 }
 
-function buildVolatileText({ characters, plot, directorNotes, senderName, projectTitle }) {
+function summarizeSetLine(s) {
+  const d = (s.description || '').trim();
+  const preview = d.length > 80 ? `${d.slice(0, 79)}…` : d;
+  return `- ${s.name}${preview ? ` — ${preview}` : ''}`;
+}
+
+function buildVolatileText({ characters, plot, directorNotes, senderName, projectTitle, sets = [] }) {
   const charList = characters.length
     ? characters.map((c) => `- ${c.name} (${formatCasting(c)})`).join('\n')
     : '(none yet)';
+
+  const setList = sets.length ? sets.map(summarizeSetLine).join('\n') : '(none yet)';
 
   const beats = [...(plot?.beats || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
   const beatCount = beats.length;
@@ -379,6 +393,9 @@ ${projectLine}${titleLine}${senderLine}
 Characters on file:
 ${charList}
 
+Sets on file:
+${setList}
+
 Plot status: ${beatStatusLine}
 ${currentBeatLine}
 ${recentBeatsBlock}
@@ -393,6 +410,7 @@ export function buildSystemPrompt({
   plotTemplate,
   plot,
   directorNotes,
+  sets = [],
   cache = true,
   systemTtl = null,
   botName = 'Screenplay Bot',
@@ -403,7 +421,7 @@ export function buildSystemPrompt({
   twoTier = false,
 }) {
   const stable = buildStableText({ characterTemplate, plotTemplate, botName, webBaseUrl, twoTier });
-  const volatile = buildVolatileText({ characters, plot, directorNotes, senderName, projectTitle });
+  const volatile = buildVolatileText({ characters, plot, directorNotes, senderName, projectTitle, sets });
 
   const stableBlock = { type: 'text', text: stable };
   const volatileBlock = { type: 'text', text: volatile };

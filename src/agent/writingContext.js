@@ -14,6 +14,7 @@
 
 import { getPlot } from '../mongo/plots.js';
 import { getCharacter } from '../mongo/characters.js';
+import { getSet } from '../mongo/sets.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { formatCharacterBio } from '../util/characterBio.js';
 import { truncateForPreview } from '../util/textWindow.js';
@@ -46,6 +47,19 @@ export async function buildWritingContext(projectId, beat, characterNames = []) 
   beatLines.push('');
   beatLines.push(formatBody(beat));
   sections.push(beatLines.join('\n'));
+
+  // Sets (settings/locations) linked to this beat, by name.
+  const setNames = Array.isArray(beat?.sets) ? beat.sets : [];
+  if (setNames.length) {
+    const setBlocks = [];
+    for (const raw of setNames) {
+      const s = await getSet(projectId, String(raw)).catch(() => null);
+      const setName = stripMarkdown(s?.name || raw || '').trim() || String(raw);
+      const setDesc = stripMarkdown(s?.description || '').trim();
+      setBlocks.push(`## Set: ${setName}\n${setDesc || '(no description on file)'}`);
+    }
+    sections.push(['# Sets featured in this beat', ...setBlocks].join('\n\n'));
+  }
 
   // Logline.
   const plot = await getPlot(projectId).catch(() => null);

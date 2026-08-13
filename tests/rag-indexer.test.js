@@ -38,6 +38,7 @@ vi.mock('../src/rag/embeddings.js', () => ({
 const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
+const Sets = await import('../src/mongo/sets.js');
 const DirectorNotes = await import('../src/mongo/directorNotes.js');
 const Indexer = await import('../src/rag/indexer.js');
 const Projects = await import('../src/mongo/projects.js');
@@ -135,6 +136,65 @@ describe('rag indexer — characters', () => {
       k.includes('field:background_story'),
     ).length;
     expect(after).toBe(1);
+  });
+});
+
+describe('rag indexer — sets', () => {
+  it('indexSet creates expected chunk ids for name/description', async () => {
+    const s = await Sets.createSet({
+      projectId,
+      name: 'The Diner',
+      description: 'A retro roadside diner where Alice and Bob meet.',
+    });
+    await Indexer.indexSet(s._id);
+    const ids = [...fakeChroma._store.keys()];
+    expect(ids).toContain(`set:${s._id.toString()}:name`);
+    expect(ids.some((i) => i.startsWith(`set:${s._id.toString()}:description:`))).toBe(true);
+  });
+
+  it('skips an empty description', async () => {
+    const s = await Sets.createSet({ projectId, name: 'Empty Lot' });
+    await Indexer.indexSet(s._id);
+    const ids = [...fakeChroma._store.keys()];
+    expect(ids).toContain(`set:${s._id.toString()}:name`);
+    expect(ids.some((i) => i.includes(':description:'))).toBe(false);
+  });
+
+  it('updating the description replaces only that field\'s chunks', async () => {
+    const s = await Sets.createSet({
+      projectId,
+      name: 'The Diner',
+      description: 'A long description. '.repeat(300),
+    });
+    await Indexer.indexSet(s._id);
+    const before = [...fakeChroma._store.keys()].filter((k) =>
+      k.includes(':description:'),
+    ).length;
+    expect(before).toBeGreaterThan(0);
+    await Sets.updateSet(projectId, s._id.toString(), { description: 'short' });
+    await Indexer.indexSet(s._id);
+    const after = [...fakeChroma._store.keys()].filter((k) =>
+      k.includes(':description:'),
+    ).length;
+    expect(after).toBe(1);
+  });
+
+  it('set name strip-markdown is used for entity_label', async () => {
+    const s = await Sets.createSet({ projectId, name: '**Bold Set**' });
+    await Indexer.indexSet(s._id);
+    const meta = fakeChroma._store.get(`set:${s._id.toString()}:name`).metadata;
+    expect(meta.entity_label).toBe('Bold Set');
+    expect(meta.text_md).toBe('**Bold Set**');
+  });
+
+  it('deletes chunks when the set no longer exists', async () => {
+    const s = await Sets.createSet({ projectId, name: 'Vanishing Set', description: 'gone soon' });
+    await Indexer.indexSet(s._id);
+    expect([...fakeChroma._store.keys()].length).toBeGreaterThan(0);
+    await fakeDb.collection('sets').deleteOne({ _id: s._id });
+    await Indexer.indexSet(s._id);
+    const ids = [...fakeChroma._store.keys()].filter((k) => k.startsWith(`set:${s._id.toString()}:`));
+    expect(ids).toEqual([]);
   });
 });
 

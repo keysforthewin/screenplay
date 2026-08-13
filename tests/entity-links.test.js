@@ -12,6 +12,7 @@ vi.mock('../src/mongo/client.js', () => ({
 const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
+const Sets = await import('../src/mongo/sets.js');
 const {
   recordEntityTouch,
   resolveEntityLinks,
@@ -71,6 +72,25 @@ describe('recordEntityTouch', () => {
   it('pushes :current: for link_character_to_beat when beat is omitted', () => {
     const t = createTouchedEntities();
     recordEntityTouch('link_character_to_beat', { character: 'Steve' }, t);
+    expect([...t.beats]).toEqual([':current:']);
+  });
+
+  it('records a set for create_set from input.name', () => {
+    const t = createTouchedEntities();
+    recordEntityTouch('create_set', { name: 'The Diner' }, t);
+    expect([...t.sets]).toEqual(['The Diner']);
+  });
+
+  it('records the beat (not the set) for link_set_to_beat, mirroring link_character_to_beat', () => {
+    const t = createTouchedEntities();
+    recordEntityTouch('link_set_to_beat', { beat: '2', set: 'The Diner' }, t);
+    expect([...t.beats]).toEqual(['2']);
+    expect([...t.sets]).toEqual([]);
+  });
+
+  it('pushes :current: for link_set_to_beat when beat is omitted', () => {
+    const t = createTouchedEntities();
+    recordEntityTouch('link_set_to_beat', { set: 'The Diner' }, t);
     expect([...t.beats]).toEqual([':current:']);
   });
 
@@ -142,11 +162,20 @@ describe('resolveEntityLinks', () => {
     expect(urls).toEqual(['http://localhost:3000/character/Steve']);
   });
 
+  it('resolves a set by name', async () => {
+    await Sets.createSet({ projectId, name: 'The Diner' });
+    const t = createTouchedEntities();
+    t.sets.add('the diner');
+    const urls = await resolveEntityLinks(t, { projectId });
+    expect(urls).toEqual(['http://localhost:3000/set/The%20Diner']);
+  });
+
   it('skips refs that no longer resolve without throwing', async () => {
     await Plots.createBeat({ projectId, name: 'Open', desc: 'A' });
     const t = createTouchedEntities();
     t.beats.add('99'); // no such beat
     t.characters.add('Ghost'); // no such character
+    t.sets.add('Ghost Town'); // no such set
     const urls = await resolveEntityLinks(t, { projectId });
     expect(urls).toEqual([]);
   });
@@ -158,7 +187,7 @@ describe('resolveEntityLinks', () => {
     expect(urls).toEqual(['http://localhost:3000/notes']);
   });
 
-  it('orders output: notes first, then beats, then characters', async () => {
+  it('orders output: notes first, then beats, then characters, then sets', async () => {
     await Plots.createBeat({ projectId, name: 'Open', desc: 'A' });
     await Characters.createCharacter({ projectId,
       name: 'Steve',
@@ -166,15 +195,18 @@ describe('resolveEntityLinks', () => {
       hollywood_actor: null,
       own_voice: true,
     });
+    await Sets.createSet({ projectId, name: 'The Diner' });
     const t = createTouchedEntities();
     t.characters.add('Steve');
     t.beats.add('1');
+    t.sets.add('The Diner');
     t.notes = true;
     const urls = await resolveEntityLinks(t, { projectId });
     expect(urls).toEqual([
       'http://localhost:3000/notes',
       'http://localhost:3000/beat/1',
       'http://localhost:3000/character/Steve',
+      'http://localhost:3000/set/The%20Diner',
     ]);
   });
 

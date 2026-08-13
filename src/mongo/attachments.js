@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { getDb } from './client.js';
 import { getCharacter, pullCharacterAttachment } from './characters.js';
+import { getSet, pullSetAttachment } from './sets.js';
 import { pushBeatAttachment, pullBeatAttachment, getBeat } from './plots.js';
 import {
   pushDirectorNoteAttachment,
@@ -315,6 +316,62 @@ export async function attachToCharacter({ projectId, character, sourceUrl, filen
   return { character: c.name, ...meta };
 }
 
+async function pushSetAttachmentMeta(setId, attachmentMeta) {
+  await getDb()
+    .collection('sets')
+    .updateOne(
+      { _id: setId },
+      { $push: { attachments: attachmentMeta }, $set: { updated_at: new Date() } },
+    );
+}
+
+export async function attachToSet({ projectId, set, sourceUrl, filename, caption }) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  const file = await uploadAttachmentFromUrl(projectId ?? s.project_id, {
+    sourceUrl,
+    filename,
+    ownerType: 'set',
+    ownerId: s._id,
+  });
+  const meta = {
+    _id: file._id,
+    filename: file.filename,
+    content_type: file.content_type,
+    size: file.size,
+    caption: caption?.trim() || null,
+    uploaded_at: file.uploaded_at,
+  };
+  await pushSetAttachmentMeta(s._id, meta);
+  return { set: s.name, ...meta };
+}
+
+export async function attachExistingAttachmentToSet({ projectId, set, attachmentId, caption }) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  const file = await findAttachmentFile(attachmentId);
+  if (!file) throw new Error(`Attachment not found: ${attachmentId}`);
+
+  if (
+    file.metadata?.owner_type === 'set' &&
+    file.metadata?.owner_id &&
+    file.metadata.owner_id.equals(s._id)
+  ) {
+    return {
+      already_attached: true,
+      set: s.name,
+      _id: file._id,
+      filename: file.filename,
+    };
+  }
+
+  const movedFrom = await detachAttachmentFromCurrentOwner(file);
+  await setAttachmentOwner(attachmentId, { ownerType: 'set', ownerId: s._id });
+  const meta = buildAttachmentMeta(file, caption);
+  await pushSetAttachmentMeta(s._id, meta);
+  return { set: s.name, ...meta, moved_from: movedFrom };
+}
+
 // Detach an attachment from its current owner WITHOUT deleting the GridFS
 // file. Used by the move-on-attach paths so attach_library_attachment_to_X
 // tools can silently relocate an attachment that's already attached elsewhere.
@@ -338,6 +395,9 @@ export async function detachAttachmentFromCurrentOwner(file) {
     } else if (ownerType === 'character') {
       const res = await pullCharacterAttachment(projectId, ownerId, file._id);
       priorName = res?.character || null;
+    } else if (ownerType === 'set') {
+      const res = await pullSetAttachment(projectId, ownerId, file._id);
+      priorName = res?.set || null;
     } else if (ownerType === 'director_note') {
       await pullDirectorNoteAttachment(projectId, ownerId, file._id);
     }
@@ -461,4 +521,28 @@ export async function removeCharacterAttachment({ projectId, character, attachme
       { $pull: { attachments: { _id: oid } }, $set: { updated_at: new Date() } },
     );
   return { character: c.name, removed: oid };
+}
+
+export async function listSetAttachments(projectId, set) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  return { set: s.name, _id: s._id, attachments: s.attachments || [] };
+}
+
+export async function removeSetAttachment({ projectId, set, attachmentId }) {
+  const s = await getSet(projectId, set);
+  if (!s) throw new Error(`Set not found: ${set}`);
+  const oid = toObjectId(attachmentId);
+  const has = (s.attachments || []).some((a) => a._id && a._id.equals(oid));
+  if (!has) {
+    throw new Error(`Attachment ${attachmentId} is not attached to ${s.name}`);
+  }
+  await deleteAttachment(oid);
+  await getDb()
+    .collection('sets')
+    .updateOne(
+      { _id: s._id },
+      { $pull: { attachments: { _id: oid } }, $set: { updated_at: new Date() } },
+    );
+  return { set: s.name, removed: oid };
 }

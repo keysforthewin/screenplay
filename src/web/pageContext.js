@@ -7,6 +7,7 @@
 
 import { getBeat } from '../mongo/plots.js';
 import { getCharacter } from '../mongo/characters.js';
+import { getSet } from '../mongo/sets.js';
 import { stripMarkdown } from '../util/markdown.js';
 
 const PREAMBLE =
@@ -53,6 +54,14 @@ export async function resolvePageContextNote({ projectId, projectTitle, context 
       const name = stripMarkdown(c.name || '').trim() || ref;
       const id = c._id ? ` (character id ${c._id.toString()})` : '';
       return note(`the character "${name}"${id}`);
+    }
+    case 'set': {
+      if (!ref) return null;
+      const s = await getSet(projectId, ref);
+      if (!s) return null;
+      const name = stripMarkdown(s.name || '').trim() || ref;
+      const id = s._id ? ` (set id ${s._id.toString()})` : '';
+      return note(`the set "${name}"${id}`);
     }
     case 'overview':
       return note(`the table of contents / overview for the screenplay "${title}"`);

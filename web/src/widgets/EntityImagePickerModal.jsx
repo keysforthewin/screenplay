@@ -24,12 +24,13 @@ function stripMd(s) {
     .trim();
 }
 
-// Picker for entity image galleries (beat, character, notes). Tabs:
+// Picker for entity image galleries (beat, character, set, notes). Tabs:
 //   library    — pick from the global library (re-parents the image)
 //   upload     — POST a file to `uploadPath`
 //   generate   — text-to-image to `generatePath`, with Gemini/OpenAI choice
 //   characters — pick any character's image (copies, doesn't move)
 //   beats      — pick any beat's image (copies, doesn't move)
+//   sets       — pick any set's image (copies, doesn't move)
 //
 // Required props:
 //   uploadPath           — POST multipart endpoint (e.g. /beat/:id/image)
@@ -37,6 +38,7 @@ function stripMd(s) {
 //   generatePath         — POST {prompt, model} endpoint
 //   characterSourcesPath — GET endpoint for character-owned images
 //   beatSourcesPath      — GET endpoint for beat-owned images
+//   setSourcesPath       — GET endpoint for set-owned images
 //   copyPath             — POST {image_id} endpoint that copies a source image
 //   onAttached           — async callback after a successful action
 export function EntityImagePickerModal({
@@ -48,6 +50,7 @@ export function EntityImagePickerModal({
   generatePath,
   characterSourcesPath,
   beatSourcesPath,
+  setSourcesPath,
   copyPath,
   onAttached,
 }) {
@@ -58,8 +61,9 @@ export function EntityImagePickerModal({
     if (generatePath) t.push({ key: 'generate', label: 'Generate' });
     if (characterSourcesPath && copyPath) t.push({ key: 'characters', label: 'Character' });
     if (beatSourcesPath && copyPath) t.push({ key: 'beats', label: 'Beats' });
+    if (setSourcesPath && copyPath) t.push({ key: 'sets', label: 'Sets' });
     return t;
-  }, [attachPath, uploadPath, generatePath, characterSourcesPath, beatSourcesPath, copyPath]);
+  }, [attachPath, uploadPath, generatePath, characterSourcesPath, beatSourcesPath, setSourcesPath, copyPath]);
 
   const [tab, setTab] = useState(tabs[0]?.key || 'upload');
   const [busy, setBusy] = useState(false);
@@ -70,6 +74,8 @@ export function EntityImagePickerModal({
   const [characterQuery, setCharacterQuery] = useState('');
   const [beatImages, setBeatImages] = useState(null);
   const [beatQuery, setBeatQuery] = useState('');
+  const [setImages, setSetImages] = useState(null);
+  const [setQuery, setSetQuery] = useState('');
   const fileInput = useRef(null);
 
   useEffect(() => {
@@ -82,6 +88,8 @@ export function EntityImagePickerModal({
     setCharacterQuery('');
     setBeatImages(null);
     setBeatQuery('');
+    setSetImages(null);
+    setSetQuery('');
   }, [open, tabs]);
 
   useEffect(() => {
@@ -133,6 +141,23 @@ export function EntityImagePickerModal({
       cancelled = true;
     };
   }, [open, tab, beatImages, beatSourcesPath]);
+
+  useEffect(() => {
+    if (!open || tab !== 'sets' || setImages !== null) return;
+    if (!setSourcesPath) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await apiGet(setSourcesPath);
+        if (!cancelled) setSetImages(data.images || []);
+      } catch (e) {
+        if (!cancelled) setError(e.message);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, tab, setImages, setSourcesPath]);
 
   async function attach(imageId) {
     if (busy || !attachPath) return;
@@ -238,6 +263,18 @@ export function EntityImagePickerModal({
     });
   }, [beatImages, beatQuery]);
 
+  const filteredSets = useMemo(() => {
+    if (!setImages) return [];
+    const f = setQuery.trim().toLowerCase();
+    if (!f) return setImages;
+    return setImages.filter((img) => {
+      const name = stripMd(img.name).toLowerCase();
+      const desc = String(img.description || '').toLowerCase();
+      const owner = stripMd(img.owner_name).toLowerCase();
+      return name.includes(f) || desc.includes(f) || owner.includes(f);
+    });
+  }, [setImages, setQuery]);
+
   if (!open) return null;
 
   return (
@@ -318,6 +355,19 @@ export function EntityImagePickerModal({
                 }
                 return owner || '(unknown beat)';
               }}
+            />
+          )}
+          {tab === 'sets' && (
+            <SourceTab
+              images={filteredSets}
+              loaded={setImages !== null}
+              query={setQuery}
+              onQuery={setSetQuery}
+              onPick={copy}
+              busy={busy}
+              placeholder="Search set name or image…"
+              emptyText="No set images."
+              labelFor={(it) => stripMd(it.owner_name) || '(unknown set)'}
             />
           )}
         </div>

@@ -17,6 +17,7 @@ export function ImageGallery({
   generatePath,
   characterSourcesPath,
   beatSourcesPath,
+  setSourcesPath,
   copyPath,
   pickerTitle = 'Add image',
   // Optional controlled-mode props. When `pickerOpen` is supplied the parent
@@ -202,6 +203,7 @@ export function ImageGallery({
           generatePath={generatePath || null}
           characterSourcesPath={characterSourcesPath || null}
           beatSourcesPath={beatSourcesPath || null}
+          setSourcesPath={setSourcesPath || null}
           copyPath={copyPath || null}
           onAttached={onChange}
         />

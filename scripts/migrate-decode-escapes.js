@@ -116,6 +116,7 @@ async function main() {
   const totals = { scanned: 0, docs: 0, strings: 0 };
   for (const [coll, label] of [
     ['characters', 'characters'],
+    ['sets', 'sets'],
     ['plots', 'plots'],
     ['prompts', 'prompts'],
     ['messages', 'messages'],

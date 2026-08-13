@@ -5,6 +5,7 @@
 //
 //   beat:<beat _id hex>
 //   character:<character _id hex>
+//   set:<set _id hex>
 //   notes
 //   storyboards:<beat _id hex>   — one room per beat, multiple item fragments
 //
@@ -21,6 +22,7 @@ import { ObjectId } from 'mongodb';
 import { getPlot, updatePlot, getBeat, updateBeat, setBeatSceneBible } from '../mongo/plots.js';
 import { SCENE_BIBLE_FIELDS } from '../mongo/sceneBible.js';
 import { getCharacter, updateCharacter } from '../mongo/characters.js';
+import { getSet, updateSet } from '../mongo/sets.js';
 import { getDirectorNotes, writeDirectorNotesArray } from '../mongo/directorNotes.js';
 import {
   listStoryboards,
@@ -75,6 +77,7 @@ export function parseRoomName(roomName) {
   if (
     type === 'beat' ||
     type === 'character' ||
+    type === 'set' ||
     type === 'storyboards' ||
     type === 'dialogs'
   ) {
@@ -117,6 +120,7 @@ export async function projectIdForRoom(roomName) {
   if (!parsed) return null;
   if (parsed.projectId) return parsed.projectId;
   if (parsed.type === 'character') return projectIdForCharacter(parsed.id);
+  if (parsed.type === 'set') return projectIdForSet(parsed.id);
   return projectIdForBeat(parsed.id);
 }
 
@@ -146,6 +150,19 @@ async function verifiedProjectIdForBeat(beatIdHex) {
 
 async function verifiedProjectIdForCharacter(charIdHex) {
   const pid = await projectIdForCharacter(charIdHex);
+  if (!pid || !(await getProjectById(pid))) return null;
+  return pid;
+}
+
+async function projectIdForSet(setIdHex) {
+  const doc = await getDb()
+    .collection('sets')
+    .findOne({ _id: new ObjectId(setIdHex) });
+  return doc?.project_id ? String(doc.project_id) : null;
+}
+
+async function verifiedProjectIdForSet(setIdHex) {
+  const pid = await projectIdForSet(setIdHex);
   if (!pid || !(await getProjectById(pid))) return null;
   return pid;
 }
@@ -430,6 +447,64 @@ async function describeCharacterRoom(id) {
         }
         await updateCharacter(projectId, id, patch);
         enqueueReindex('character', id);
+      }
+      const allChanged = [
+        ...entityChangedKeys,
+        ...imgPersist.changedFields,
+        ...attachPersist.changedFields,
+      ];
+      if (!allChanged.length) return { changed: false };
+      return { changed: true, fields: allChanged };
+    },
+  };
+}
+
+// Set ------------------------------------------------------------------------
+
+async function describeSetRoom(id) {
+  const projectId = await verifiedProjectIdForSet(id);
+  if (!projectId) return null;
+  const s = await getSet(projectId, id);
+  if (!s) return null;
+  const fieldNames = ['name', 'description'];
+
+  function readMongoValue(fieldName) {
+    if (fieldName === 'name') return s.name || '';
+    if (fieldName === 'description') return s.description || '';
+    return '';
+  }
+
+  const imageFragments = await describeOwnedImageFragments(s.images);
+  const attachmentFragments = await describeOwnedAttachmentFragments(s.attachments);
+  const allFields = [...fieldNames, ...imageFragments.fields, ...attachmentFragments.fields];
+  const seed = fieldNames.reduce((acc, f) => {
+    acc[f] = readMongoValue(f);
+    return acc;
+  }, {});
+  Object.assign(seed, imageFragments.seed, attachmentFragments.seed);
+
+  return {
+    type: 'set',
+    id,
+    fields: allFields,
+    seed,
+    persistFields: async (snapshot) => {
+      const patch = {};
+      for (const f of fieldNames) {
+        if (snapshot[f] === undefined) continue;
+        if (snapshot[f] === readMongoValue(f)) continue;
+        patch[f] = snapshot[f];
+      }
+      const imgPersist = await persistOwnedImageFragments(snapshot, imageFragments.seed);
+      const attachPersist = await persistOwnedAttachmentFragments(
+        snapshot,
+        attachmentFragments.seed,
+      );
+      const entityChangedKeys = Object.keys(patch);
+      if (entityChangedKeys.length) {
+        // updateSet recomputes name_lower from stripped markdown itself.
+        await updateSet(projectId, id, patch);
+        enqueueReindex('set', id);
       }
       const allChanged = [
         ...entityChangedKeys,
@@ -818,6 +893,8 @@ export async function resolveRoom(roomName) {
       return describeBeatRoom(parsed.id);
     case 'character':
       return describeCharacterRoom(parsed.id);
+    case 'set':
+      return describeSetRoom(parsed.id);
     case 'notes':
       return describeNotesRoom(parsed.projectId);
     case 'plot':

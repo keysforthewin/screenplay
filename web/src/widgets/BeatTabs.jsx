@@ -1,13 +1,11 @@
 import { useNavigate } from 'react-router-dom';
 
 // Per-beat section switcher shown under the title on the Writing (/beat),
-// Artwork (/artwork), Dialog (/dialog), and Storyboard (/storyboard) pages.
-// `active` is one of 'writing' | 'artwork' | 'dialog' | 'storyboard'. Styled as
-// a segmented control so it reads as a page-level switch, distinct from the
-// inner content `.tab-nav`.
+// Dialog (/dialog), and Storyboard (/storyboard) pages. `active` is one of
+// 'writing' | 'dialog' | 'storyboard'. Styled as a segmented control so it
+// reads as a page-level switch, distinct from the inner content `.tab-nav`.
 const SECTIONS = [
   { key: 'writing', label: 'Writing', base: '/beat' },
-  { key: 'artwork', label: 'Artwork', base: '/artwork' },
   { key: 'dialog', label: 'Dialog', base: '/dialog' },
   { key: 'storyboard', label: 'Storyboard', base: '/storyboard' },
 ];

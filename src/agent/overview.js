@@ -1,6 +1,7 @@
 import { findAllCharacters } from '../mongo/characters.js';
 import { getPlot } from '../mongo/plots.js';
 import { getCharacterTemplate } from '../mongo/prompts.js';
+import { findAllSets } from '../mongo/sets.js';
 
 function preview(text, n = 140) {
   if (!text) return '';
@@ -50,6 +51,20 @@ function summarizeCharacter(c, templateFieldNames) {
   };
 }
 
+function summarizeSet(s, linkedBeatCount) {
+  const images = s.images || [];
+  const doneArtworkCount = (s.artworks || []).filter((a) => a?.status === 'done').length;
+  return {
+    _id: s._id?.toString?.() || null,
+    name: s.name,
+    description_preview: preview(s.description),
+    image_count: images.length,
+    has_main_image: !!s.main_image_id,
+    done_artwork_count: doneArtworkCount,
+    linked_beat_count: linkedBeatCount,
+  };
+}
+
 function summarizeBeat(b, currentBeatId) {
   const isCurrent = !!(currentBeatId && b._id && currentBeatId.equals
     ? currentBeatId.equals(b._id)
@@ -69,10 +84,11 @@ function summarizeBeat(b, currentBeatId) {
 }
 
 export async function buildOverview(projectId = null) {
-  const [characters, plot, template] = await Promise.all([
+  const [characters, plot, template, sets] = await Promise.all([
     findAllCharacters(projectId),
     getPlot(projectId),
     getCharacterTemplate(projectId),
+    findAllSets(projectId),
   ]);
 
   const templateFieldNames = (template?.fields || [])
@@ -87,6 +103,18 @@ export async function buildOverview(projectId = null) {
 
   const beatSummaries = beats.map((b) => summarizeBeat(b, currentBeatId));
   const characterSummaries = characters.map((c) => summarizeCharacter(c, templateFieldNames));
+
+  // Linked-beat counts per set — cheap since beats are already in memory.
+  const setBeatCounts = new Map();
+  for (const b of beats) {
+    for (const name of b.sets || []) {
+      const key = String(name).toLowerCase();
+      setBeatCounts.set(key, (setBeatCounts.get(key) || 0) + 1);
+    }
+  }
+  const setSummaries = sets.map((s) =>
+    summarizeSet(s, setBeatCounts.get(String(s.name).toLowerCase()) || 0),
+  );
 
   return {
     plot: {
@@ -105,9 +133,11 @@ export async function buildOverview(projectId = null) {
       beats: beatSummaries.length,
       beats_with_body: beatSummaries.filter((b) => b.has_body).length,
       beats_with_main_image: beatSummaries.filter((b) => b.has_main_image).length,
+      sets: setSummaries.length,
     },
     character_template_fields: templateFieldNames,
     characters: characterSummaries,
     beats: beatSummaries,
+    sets: setSummaries,
   };
 }

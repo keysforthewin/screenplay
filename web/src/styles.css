@@ -331,6 +331,71 @@ select option {
   color: var(--fg);
   text-decoration: underline;
 }
+
+/* Sets tab: thumbnail + name + linked-beat chips (reuses .toc-beat-refs for
+ * the chip text, same as the character rows above). */
+.toc-set-list { display: flex; flex-direction: column; }
+.toc-set-row {
+  display: flex; gap: 16px; align-items: center;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+.toc-set-row:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border);
+}
+.toc-set-thumb {
+  flex: 0 0 48px; width: 48px; height: 48px;
+}
+.toc-set-thumb img {
+  width: 100%; height: 100%; object-fit: cover;
+  border-radius: 6px; border: 1px solid var(--border);
+  display: block;
+}
+.toc-set-thumb-placeholder {
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px;
+  border-radius: 6px; border: 1px dashed var(--border);
+  color: var(--fg-muted);
+  background: var(--bg-elevated);
+}
+.toc-set-name {
+  flex: 1 1 auto; min-width: 0;
+  word-break: break-word;
+}
+.toc-set-name .toc-beat-refs {
+  margin-left: 4px;
+  font-size: 0.9em;
+  color: var(--fg-muted);
+}
+.toc-set-name .toc-beat-refs a {
+  display: inline;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+}
+.toc-set-name .toc-beat-refs a:hover {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+/* "+ New character" / "+ New set" inline forms in the TOC tab action rows. */
+.toc-create-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.toc-create-form input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 160px;
+}
 .toc-missing-marker {
   color: var(--fg-muted);
   font-weight: 600;
@@ -701,6 +766,55 @@ select option {
 .beat-character-add {
   margin-top: 12px; max-width: 360px;
 }
+
+/* Beat → linked sets list. Mirrors .beat-character-* above. */
+.beat-set-list { display: flex; flex-direction: column; }
+.beat-set-row {
+  display: flex; gap: 16px; align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.beat-set-row:first-child { border-top: none; }
+.beat-set-thumb {
+  flex: 0 0 64px; width: 64px; height: 64px;
+}
+.beat-set-thumb img {
+  width: 100%; height: 100%; object-fit: cover;
+  border-radius: 6px; border: 1px solid var(--border);
+  display: block;
+}
+.beat-set-thumb-placeholder {
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 28px;
+  border-radius: 6px; border: 1px dashed var(--border);
+  color: var(--fg-muted);
+  background: var(--bg-elevated);
+}
+.beat-set-name {
+  flex: 1 1 auto; min-width: 0;
+  word-break: break-word;
+}
+.beat-set-actions {
+  flex: 0 0 auto;
+  display: flex; gap: 8px; align-items: center;
+}
+.beat-set-actions .icon-link {
+  display: inline-block; padding: 4px 8px; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 6px;
+  text-decoration: none; color: var(--fg);
+  background: var(--bg-elevated);
+}
+.beat-set-actions .icon-link:hover { border-color: var(--accent); }
+.beat-set-add {
+  margin-top: 12px; max-width: 360px;
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+}
+.beat-set-new-btn { align-self: flex-start; }
+.beat-set-create {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+}
+.beat-set-create input[type="text"] { flex: 1 1 auto; min-width: 160px; }
 
 /* Mobile: collapse the gallery/library/attachment row into a stack so the
    image/file column sits on top of the name/description fields rather than
@@ -2699,6 +2813,68 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 12px;
 }
 
+/* Set picker (combobox) — mirrors the character picker above. */
+.set-select {
+  position: relative;
+}
+.set-select-input {
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  width: 100%;
+}
+.set-select-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.set-select-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.32);
+  max-height: 220px;
+  overflow-y: auto;
+}
+.set-select-option {
+  padding: 6px 10px;
+  cursor: pointer;
+  color: var(--fg);
+}
+.set-select-option.is-highlight,
+.set-select-option:hover {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.set-select-empty {
+  padding: 6px 10px;
+  color: var(--fg-muted);
+  font-style: italic;
+  font-size: 13px;
+}
+.set-select-freetext {
+  cursor: pointer;
+}
+.set-select-freetext:hover {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.set-select-error {
+  margin-top: 4px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
 .beat-pager {
   display: flex;
   align-items: stretch;
@@ -3625,4 +3801,65 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .eleven-design-save {
   display: flex;
   gap: 8px;
+}
+
+/* ── Visual readiness panel (storyboard page) ─────────────────────────── */
+.readiness-panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+}
+.readiness-panel--empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.readiness-panel__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.readiness-panel__toggle {
+  background: none;
+  border: none;
+  color: var(--fg);
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 0;
+}
+.readiness-panel__body {
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+  padding-top: 8px;
+  font-size: 13px;
+}
+.readiness-panel__body h4 {
+  margin: 10px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+.readiness-panel__list {
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+}
+.readiness-panel__list li {
+  padding: 3px 0;
+}
+.readiness-panel__list li[data-severity='warn'] {
+  color: var(--warning);
+}
+.readiness-panel__list li[data-severity='info'] {
+  color: var(--fg-muted);
+}
+.readiness-panel__list li a {
+  color: var(--accent);
+}
+.readiness-panel__badge {
+  font-size: 11px;
 }

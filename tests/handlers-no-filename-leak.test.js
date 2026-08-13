@@ -16,6 +16,7 @@ vi.mock('../src/log.js', () => ({
 const { createProject } = await import('../src/mongo/projects.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
+const Sets = await import('../src/mongo/sets.js');
 const DirectorNotes = await import('../src/mongo/directorNotes.js');
 const { HANDLERS } = await import('../src/agent/handlers.js');
 const Projects = await import('../src/mongo/projects.js');
@@ -102,12 +103,14 @@ describe('image-listing handlers do not leak GridFS filename', () => {
     expect(parsed.images[0]).toHaveProperty('content_type', 'image/jpeg');
   });
 
-  it('list_beat_images omits filename', async () => {
-    const { beat } = await seedBeatWithImage();
+  it('list_set_images omits filename', async () => {
+    const set = await Sets.createSet({ projectId, name: 'Diner' });
+    const meta = fakeImageMeta({ filename: 'set-leak-name.jpg' });
+    await Sets.pushSetImage(projectId, set._id.toString(), meta, true);
 
-    const out = await HANDLERS.list_beat_images({ beat: beat._id.toString() }, { projectId });
+    const out = await HANDLERS.list_set_images({ set: set._id.toString() }, { projectId });
 
-    expect(out).not.toContain('beat-leak-name.jpg');
+    expect(out).not.toContain('set-leak-name.jpg');
     const parsed = parseTrailingJson(out);
     expect(parsed.images).toHaveLength(1);
     expect(parsed.images[0]).not.toHaveProperty('filename');

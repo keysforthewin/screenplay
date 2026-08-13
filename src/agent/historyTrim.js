@@ -19,10 +19,11 @@ const TOOL_POLICY = {
   tmdb_search_movie: { stubAtAge: 4 },
   tmdb_search_person: { stubAtAge: 4 },
   list_library_images: { stubAtAge: 4 },
-  list_beat_images: { stubAtAge: 4 },
   list_character_images: { stubAtAge: 4 },
-  list_beat_attachments: { stubAtAge: 4 },
+  list_set_images: { stubAtAge: 4 },
   list_character_attachments: { stubAtAge: 4 },
+  list_set_attachments: { stubAtAge: 4 },
+  list_sets: { stubAtAge: 4 },
   search_message_history: { stubAtAge: 4 },
   screenplay_search: { stubAtAge: 2 },
   // Always-large, content-only — research/analysis output, stales fast.
