@@ -168,6 +168,27 @@ describe('PATCH /api/beat/:id (cast)', () => {
     sessionState.current = undefined;
   });
 
+  it('returns 200 and links the set when patching sets (BeatSets widget)', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'Scene 1', body: 'body' });
+    const { status, json } = await patch(`/api/beat/${beat._id}`, {
+      sets: ['The Docks'],
+    });
+    expect(status).toBe(200);
+    expect(json.beat.sets).toContain('The Docks');
+  });
+
+  it('accepts an empty sets array (unlinking the last set)', async () => {
+    const beat = await Plots.createBeat({
+      projectId,
+      name: 'Scene 1',
+      body: 'body',
+      sets: ['The Docks'],
+    });
+    const { status, json } = await patch(`/api/beat/${beat._id}`, { sets: [] });
+    expect(status).toBe(200);
+    expect(json.beat.sets).toEqual([]);
+  });
+
   it('returns 400 when no recognized fields provided', async () => {
     const beat = await Plots.createBeat({ projectId, name: 'Scene 1', body: 'body' });
     const { status, json } = await patch(`/api/beat/${beat._id}`, { foo: 'bar' });

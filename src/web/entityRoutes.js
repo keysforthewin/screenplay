@@ -1957,9 +1957,10 @@ export function buildApiRouter() {
     try {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
-      const { characters, order } = req.body || {};
+      const { characters, sets, order } = req.body || {};
       const patch = {};
       if (Array.isArray(characters)) patch.characters = characters;
+      if (Array.isArray(sets)) patch.sets = sets;
       if (typeof order === 'number') patch.order = order;
       if (!Object.keys(patch).length) return res.status(400).json({ error: 'no patch fields' });
 
