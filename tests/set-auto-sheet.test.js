@@ -77,6 +77,7 @@ const Sets = await import('../src/mongo/sets.js');
 const Plots = await import('../src/mongo/plots.js');
 const Planner = await import('../src/web/beatSheetPlanner.js');
 const Sheet = await import('../src/web/imageSheetJobs.js');
+const Images = await import('../src/mongo/images.js');
 
 let projectId;
 
@@ -88,6 +89,7 @@ beforeEach(async () => {
   h.fal.configured = true;
   Planner._setScenePlatePlannerForTests(null);
   Planner._setScenePlateCritiqueForTests(null);
+  Images.findImageFile.mockImplementation(async () => null);
 });
 
 async function waitForStatus(jobId, statuses, timeoutMs = 4000) {
@@ -159,6 +161,118 @@ describe('startShotPlanJob — set with beatIds', () => {
     expect(plannerBeat.body).toContain('FIRST BEAT BODY TEXT');
     expect(plannerBeat.body).toContain('SECOND BEAT BODY TEXT');
     expect(plannerBeat.body).not.toContain('UNLINKED BEAT TEXT');
+  });
+});
+
+describe('startShotPlanJob — set with a main beat', () => {
+  it('plans plates for the main beat only; selected beats become labeled context', async () => {
+    let plannerBeat = null;
+    stubPlanner(
+      [{ name: 'Alley — wide', prompt: 'wide alley', justification: '', quote: '' }],
+      (args) => { plannerBeat = args.beat; },
+    );
+    const { set, b1, b2 } = await makeLinkedSet();
+    const { job_id } = await Sheet.startShotPlanJob({
+      projectId,
+      hostType: 'set',
+      hostId: set._id.toString(),
+      referenceImageIds: [],
+      mainBeatId: b1._id.toString(),
+      beatIds: [b2._id.toString()],
+    });
+    const job = await waitForStatus(job_id, ['derived', 'error']);
+    expect(job.status).toBe('derived');
+    expect(job.main_beat_id).toBe(b1._id.toString());
+    expect(job.beat_ids).toEqual([b2._id.toString()]);
+
+    const body = plannerBeat.body;
+    const mainIdx = body.indexOf('## MAIN BEAT');
+    const ctxIdx = body.indexOf('## Context beats');
+    expect(mainIdx).toBeGreaterThan(-1);
+    expect(ctxIdx).toBeGreaterThan(mainIdx);
+    expect(body.indexOf('FIRST BEAT BODY TEXT')).toBeGreaterThan(mainIdx);
+    expect(body.indexOf('FIRST BEAT BODY TEXT')).toBeLessThan(ctxIdx);
+    expect(body.indexOf('SECOND BEAT BODY TEXT')).toBeGreaterThan(ctxIdx);
+    expect(plannerBeat.desc).toContain('MAIN BEAT');
+  });
+
+  it('with a main beat, empty beatIds means NO context beats', async () => {
+    let plannerBeat = null;
+    stubPlanner([], (args) => { plannerBeat = args.beat; });
+    const { set, b1 } = await makeLinkedSet();
+    const { job_id } = await Sheet.startShotPlanJob({
+      projectId,
+      hostType: 'set',
+      hostId: set._id.toString(),
+      referenceImageIds: [],
+      mainBeatId: b1._id.toString(),
+      beatIds: [],
+    });
+    await waitForStatus(job_id, ['derived', 'error']);
+    expect(plannerBeat.body).toContain('FIRST BEAT BODY TEXT');
+    expect(plannerBeat.body).not.toContain('Context beats');
+    expect(plannerBeat.body).not.toContain('SECOND BEAT BODY TEXT');
+  });
+
+  it('never duplicates the main beat into the context section', async () => {
+    let plannerBeat = null;
+    stubPlanner([], (args) => { plannerBeat = args.beat; });
+    const { set, b1, b2 } = await makeLinkedSet();
+    const { job_id } = await Sheet.startShotPlanJob({
+      projectId,
+      hostType: 'set',
+      hostId: set._id.toString(),
+      referenceImageIds: [],
+      mainBeatId: b1._id.toString(),
+      beatIds: [b1._id.toString(), b2._id.toString()],
+    });
+    await waitForStatus(job_id, ['derived', 'error']);
+    const occurrences = plannerBeat.body.split('FIRST BEAT BODY TEXT').length - 1;
+    expect(occurrences).toBe(1);
+    expect(plannerBeat.body).toContain('SECOND BEAT BODY TEXT');
+  });
+
+  it('falls back to legacy flattening when the main beat no longer references the set', async () => {
+    let plannerBeat = null;
+    stubPlanner([], (args) => { plannerBeat = args.beat; });
+    const { set } = await makeLinkedSet();
+    const { job_id } = await Sheet.startShotPlanJob({
+      projectId,
+      hostType: 'set',
+      hostId: set._id.toString(),
+      referenceImageIds: [],
+      mainBeatId: new ObjectId().toString(),
+      beatIds: [],
+    });
+    await waitForStatus(job_id, ['derived', 'error']);
+    expect(plannerBeat.body).not.toContain('MAIN BEAT');
+    expect(plannerBeat.body).toContain('FIRST BEAT BODY TEXT');
+    expect(plannerBeat.body).toContain('SECOND BEAT BODY TEXT');
+  });
+});
+
+describe('setAsPlannerBeat', () => {
+  it('caps context beats without counting the main beat', () => {
+    const mk = (i) => ({ order: i, name: `B${i}`, body: `BODY-${i} TEXT` });
+    const main = mk(0);
+    const ctx = Array.from({ length: 13 }, (_, i) => mk(i + 1));
+    const { body } = Sheet.setAsPlannerBeat(
+      { name: 'S', description: 'DESC' },
+      { mainBeat: main, contextBeats: ctx },
+    );
+    expect(body).toContain('BODY-0 TEXT');
+    expect(body).toContain('BODY-12 TEXT');
+    expect(body).not.toContain('BODY-13 TEXT');
+  });
+
+  it('keeps the legacy shape (no MAIN BEAT section, legacy desc) without a main beat', () => {
+    const { body, desc } = Sheet.setAsPlannerBeat(
+      { name: 'S', description: 'DESC' },
+      { contextBeats: [{ order: 1, name: 'B1', body: 'BODY-1 TEXT' }] },
+    );
+    expect(body).not.toContain('MAIN BEAT');
+    expect(body).toContain('## Beat #1 — B1');
+    expect(desc).toContain('the beats below stage in it');
   });
 });
 
@@ -280,6 +394,98 @@ describe('startAutoSheetJob', () => {
       shots: [{ name: 'Y', prompt: 'y' }],
     });
     await waitForStatus(again.job_id, TERMINAL);
+  });
+
+  it('unions the checked sets\' galleries into the reference pool, deduped, in selection order', async () => {
+    Images.findImageFile.mockImplementation(async () => ({ _id: 'exists' }));
+    stubPlanner([{ name: 'A', prompt: 'a', justification: '', quote: '' }]);
+    const { set } = await makeLinkedSet();
+    const own = new ObjectId();
+    const shared = new ObjectId();
+    const o2 = new ObjectId();
+    await Sets.pushSetImage(projectId, set._id.toString(), { _id: own });
+    await Sets.pushSetImage(projectId, set._id.toString(), { _id: shared });
+    const other = await Sets.createSet({ projectId, name: 'Rooftop' });
+    await Sets.pushSetImage(projectId, other._id.toString(), { _id: shared });
+    await Sets.pushSetImage(projectId, other._id.toString(), { _id: o2 });
+
+    const { job_id } = await Sheet.startAutoSheetJob({
+      projectId,
+      hostId: set._id.toString(),
+      model: 'nano-banana-pro',
+      referenceSetIds: [set._id.toString(), other._id.toString()],
+    });
+    const job = await waitForStatus(job_id, TERMINAL);
+    expect(job.reference_image_ids).toEqual([own.toString(), shared.toString(), o2.toString()]);
+    expect(job.reference_set_ids).toEqual([set._id.toString(), other._id.toString()]);
+  });
+
+  it('drops stale gallery ids that no longer resolve to a stored image', async () => {
+    stubPlanner([{ name: 'A', prompt: 'a', justification: '', quote: '' }]);
+    const { set } = await makeLinkedSet();
+    const live = new ObjectId();
+    const stale = new ObjectId();
+    await Sets.pushSetImage(projectId, set._id.toString(), { _id: live });
+    await Sets.pushSetImage(projectId, set._id.toString(), { _id: stale });
+    Images.findImageFile.mockImplementation(async (id) =>
+      String(id) === stale.toString() ? null : { _id: 'exists' });
+
+    const { job_id } = await Sheet.startAutoSheetJob({
+      projectId,
+      hostId: set._id.toString(),
+      model: 'nano-banana-pro',
+      referenceSetIds: [set._id.toString()],
+    });
+    const job = await waitForStatus(job_id, TERMINAL);
+    expect(job.reference_image_ids).toEqual([live.toString()]);
+  });
+
+  it('an explicitly empty referenceSetIds means zero references (unlike the omitted default)', async () => {
+    stubPlanner([{ name: 'A', prompt: 'a', justification: '', quote: '' }]);
+    const { set } = await makeLinkedSet();
+    await Sets.pushSetImage(projectId, set._id.toString(), { _id: new ObjectId() });
+    const { job_id } = await Sheet.startAutoSheetJob({
+      projectId,
+      hostId: set._id.toString(),
+      model: 'nano-banana-pro',
+      referenceSetIds: [],
+    });
+    const job = await waitForStatus(job_id, TERMINAL);
+    expect(job.reference_image_ids).toEqual([]);
+  });
+
+  it('caps the unioned pool at MAX_SHEET_REFERENCE_IMAGES', async () => {
+    Images.findImageFile.mockImplementation(async () => ({ _id: 'exists' }));
+    stubPlanner([{ name: 'A', prompt: 'a', justification: '', quote: '' }]);
+    const { set } = await makeLinkedSet();
+    for (let i = 0; i < Sheet.MAX_SHEET_REFERENCE_IMAGES + 5; i++) {
+      await Sets.pushSetImage(projectId, set._id.toString(), { _id: new ObjectId() });
+    }
+    const { job_id } = await Sheet.startAutoSheetJob({
+      projectId,
+      hostId: set._id.toString(),
+      model: 'nano-banana-pro',
+      referenceSetIds: [set._id.toString()],
+    });
+    const job = await waitForStatus(job_id, TERMINAL);
+    expect(job.reference_image_ids).toHaveLength(Sheet.MAX_SHEET_REFERENCE_IMAGES);
+  });
+
+  it('records the main beat on the job and threads it into planning', async () => {
+    let plannerBeat = null;
+    stubPlanner([{ name: 'A', prompt: 'a', justification: '', quote: '' }], (args) => { plannerBeat = args.beat; });
+    const { set, b1, b2 } = await makeLinkedSet();
+    const { job_id } = await Sheet.startAutoSheetJob({
+      projectId,
+      hostId: set._id.toString(),
+      model: 'nano-banana-pro',
+      mainBeatId: b1._id.toString(),
+      beatIds: [b2._id.toString()],
+    });
+    const job = await waitForStatus(job_id, TERMINAL);
+    expect(job.main_beat_id).toBe(b1._id.toString());
+    expect(plannerBeat.body).toContain('## MAIN BEAT');
+    expect(plannerBeat.body).toContain('FIRST BEAT BODY TEXT');
   });
 
   it('rejects 400 without ANTHROPIC_API_KEY, 400 without FAL, 404 unknown set', async () => {

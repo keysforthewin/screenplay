@@ -114,28 +114,61 @@ async function loadHostId(projectId, hostType, hostId) {
   return beat._id.toString();
 }
 
+// The main beat is the plate source; give it a much roomier clip than the
+// context beats' default so nothing plate-worthy is cut.
+const MAIN_BEAT_BODY_CLIP = 12000;
+
 // The plate planner's prompts are built from a beat-shaped context block. A
 // set derives its plates from its own description plus the text of the beats
 // that stage in it, so synthesize a beat-shaped object whose body carries
 // both — description first (it is the set's visual bible), then one section
-// per beat.
-function setAsPlannerBeat(set, beats = []) {
+// per beat. When a `mainBeat` is chosen, plates are planned for THAT beat
+// only; the other beats become explicitly-labeled background reading.
+export function setAsPlannerBeat(set, { mainBeat = null, contextBeats = [] } = {}) {
   const sections = [];
   const description = String(set.description || '').trim();
   if (description) sections.push(['## Set description', '', description].join('\n'));
-  for (const b of beats.slice(0, MAX_CONTEXT_BEATS)) {
+  const beatSection = (b, { heading }) => {
     const name = clipBlock(b?.name, 200) || 'Untitled';
-    const lines = [`## Beat #${b?.order ?? '?'} — ${name}`];
+    const lines = [`${heading} Beat #${b?.order ?? '?'} — ${name}`];
     const desc = clipField(b?.desc);
     if (desc) lines.push(desc);
-    const body = clipBlock(b?.body);
+    const body = clipBlock(b?.body, b === mainBeat ? MAIN_BEAT_BODY_CLIP : undefined);
     if (body) lines.push('', body);
-    sections.push(lines.join('\n'));
+    return lines.join('\n');
+  };
+  if (mainBeat) {
+    sections.push([
+      `## MAIN BEAT — plan plates ONLY for this beat`,
+      '',
+      'Every plate must serve what THIS beat stages in this set. Do NOT plan',
+      'plates for the context beats below. Copy each plate’s verbatim quote',
+      'from THIS main-beat text.',
+      '',
+      beatSection(mainBeat, { heading: '###' }),
+    ].join('\n'));
+    if (contextBeats.length) {
+      const ctx = contextBeats
+        .slice(0, MAX_CONTEXT_BEATS)
+        .map((b) => beatSection(b, { heading: '###' }));
+      sections.push([
+        '## Context beats (background reading ONLY — continuity for what happens',
+        'before/after in this set; do NOT plan plates for these)',
+        '',
+        ctx.join('\n\n'),
+      ].join('\n'));
+    }
+  } else {
+    for (const b of contextBeats.slice(0, MAX_CONTEXT_BEATS)) {
+      sections.push(beatSection(b, { heading: '##' }));
+    }
   }
   return {
     order: 0,
     name: set.name || 'Set',
-    desc: 'Reusable set/location — plan plates that cover the angles, corners, and sub-locations the beats below stage in it.',
+    desc: mainBeat
+      ? 'Reusable set/location — plan plates ONLY for the angles, corners, and sub-locations the MAIN BEAT below stages in it. The context beats are continuity background, not plate sources.'
+      : 'Reusable set/location — plan plates that cover the angles, corners, and sub-locations the beats below stage in it.',
     body: sections.join('\n\n'),
     characters: [],
     sets: [],
@@ -182,6 +215,50 @@ function normalizeBeatIds(beatIds) {
     .map(String)
     .filter((s) => /^[a-f0-9]{24}$/i.test(s))
     .slice(0, 50);
+}
+
+// Ceiling on the unioned reference pool sent to the image provider. Storyboard
+// reference picking caps at 12; linked set galleries can be much bigger, so
+// clamp the union to keep provider payloads sane.
+export const MAX_SHEET_REFERENCE_IMAGES = 20;
+
+// Sanitize a client-supplied reference-set selection (sets whose galleries
+// join the render reference pool).
+function normalizeReferenceSetIds(ids) {
+  return (Array.isArray(ids) ? ids : [])
+    .map(String)
+    .filter((s) => /^[a-f0-9]{24}$/i.test(s))
+    .slice(0, 10);
+}
+
+// Union the explicit reference ids with the gallery images of each listed set:
+// explicit ids first, then galleries in selection order, deduped, capped.
+// Unknown/foreign-project set ids and stale gallery ids drop silently — a
+// stale id would otherwise fail every shot (loadImageBuffers throws on a
+// missing file).
+async function resolveSheetReferenceIds({ projectId, explicitIds = [], referenceSetIds = [] }) {
+  const { getSet } = await import('../mongo/sets.js');
+  const { findImageFile } = await import('../mongo/images.js');
+  const seen = new Set();
+  const candidates = [];
+  const add = (id) => {
+    const k = String(id || '');
+    if (k && !seen.has(k)) {
+      seen.add(k);
+      candidates.push(k);
+    }
+  };
+  for (const id of explicitIds) add(id);
+  for (const sid of referenceSetIds) {
+    const s = await getSet(projectId, sid);
+    for (const img of s?.images || []) add(img?._id);
+  }
+  const out = [];
+  for (const id of candidates) {
+    if (out.length >= MAX_SHEET_REFERENCE_IMAGES) break;
+    if (await findImageFile(id)) out.push(id);
+  }
+  return out;
 }
 
 // Trim/validate a client-supplied explicit shot list (beats). Returns an array
@@ -329,17 +406,32 @@ async function runSheetJob({ projectId, job, hostType, hostId, model, referenceI
 // referencing beats, optionally narrowed to `beatIds` — unmatched ids are
 // silently dropped so a concurrent unlink can't crash a plan) and run the
 // two-phase plate planner. Returns { images }.
-async function derivePlates({ projectId, hostType = 'beat', hostId, beatIds = [], referenceImageIds, direction, previousPlates, onProgress }) {
+//
+// Set semantics: with a matched `mainBeatId`, plates are planned for that beat
+// only and `beatIds` is taken literally as the context selection (empty = no
+// context). Without one (or when the id no longer references the set), the
+// legacy rule holds: `beatIds` narrows the flattened selection, empty = all.
+async function derivePlates({ projectId, hostType = 'beat', hostId, mainBeatId = null, beatIds = [], referenceImageIds, direction, previousPlates, onProgress }) {
   let beat;
   let characters;
   if (hostType === 'set') {
     const { getSet } = await import('../mongo/sets.js');
     const set = await getSet(projectId, hostId);
     if (!set) throw new Error(`set not found: ${hostId}`);
-    let beats = await findBeatsReferencingSet(projectId, set);
+    const beats = await findBeatsReferencingSet(projectId, set);
+    const mainBeat = mainBeatId
+      ? beats.find((b) => b._id.toString() === String(mainBeatId)) || null
+      : null;
     const wanted = new Set((beatIds || []).map(String).filter(Boolean));
-    if (wanted.size) beats = beats.filter((b) => wanted.has(b._id.toString()));
-    beat = setAsPlannerBeat(set, beats);
+    let contextBeats;
+    if (mainBeat) {
+      contextBeats = beats.filter(
+        (b) => wanted.has(b._id.toString()) && b._id.toString() !== mainBeat._id.toString(),
+      );
+    } else {
+      contextBeats = wanted.size ? beats.filter((b) => wanted.has(b._id.toString())) : beats;
+    }
+    beat = setAsPlannerBeat(set, { mainBeat, contextBeats });
     characters = [];
   } else {
     beat = await getBeat(projectId, hostId);
@@ -359,13 +451,14 @@ async function derivePlates({ projectId, hostType = 'beat', hostId, beatIds = []
   });
 }
 
-async function runShotPlanJob({ projectId, job, hostType = 'beat', hostId, beatIds, referenceImageIds, direction, previousPlates }) {
+async function runShotPlanJob({ projectId, job, hostType = 'beat', hostId, mainBeatId, beatIds, referenceImageIds, direction, previousPlates }) {
   try {
     job.status = 'planning';
     const { images } = await derivePlates({
       projectId,
       hostType,
       hostId,
+      mainBeatId,
       beatIds,
       referenceImageIds,
       direction,
@@ -399,7 +492,9 @@ export async function startShotPlanJob({
   hostType = 'beat',
   hostId,
   referenceImageIds = [],
+  mainBeatId = null,
   beatIds = [],
+  referenceSetIds = [],
   direction = '',
   previousPlates = [],
 }) {
@@ -414,6 +509,21 @@ export async function startShotPlanJob({
   // them so the planner can revise rather than re-roll from scratch.
   const priorPlates = normalizeExplicitShots(previousPlates) || [];
   const cleanBeatIds = hostType === 'set' ? normalizeBeatIds(beatIds) : [];
+  const cleanMainBeatId =
+    hostType === 'set' && typeof mainBeatId === 'string' && /^[a-f0-9]{24}$/i.test(mainBeatId)
+      ? mainBeatId
+      : null;
+  const cleanRefSetIds = hostType === 'set' ? normalizeReferenceSetIds(referenceSetIds) : [];
+  let refIds = (referenceImageIds || []).map(String);
+  if (cleanRefSetIds.length) {
+    // Linked set galleries join the planner's reference pool (their stored
+    // descriptions anchor the plate prompts, same ids the render step uses).
+    refIds = await resolveSheetReferenceIds({
+      projectId,
+      explicitIds: refIds,
+      referenceSetIds: cleanRefSetIds,
+    });
+  }
 
   const jobId = makeJobId();
   const job = {
@@ -427,8 +537,10 @@ export async function startShotPlanJob({
     finished_at: null,
     error: null,
     planner_model: STORYBOARD_MODEL,
-    reference_image_ids: (referenceImageIds || []).map(String),
+    reference_image_ids: refIds,
+    main_beat_id: cleanMainBeatId,
     beat_ids: cleanBeatIds,
+    reference_set_ids: cleanRefSetIds,
     planned: 0,
     completed: 0,
     failed: 0,
@@ -440,7 +552,7 @@ export async function startShotPlanJob({
   recordProgress(job, { phase: 'queued', step: 'job_queued', message: 'Queued plate derivation…' });
 
   setImmediate(() => {
-    runShotPlanJob({ projectId, job, hostType, hostId: resolvedHostId, beatIds: cleanBeatIds, referenceImageIds, direction, previousPlates: priorPlates })
+    runShotPlanJob({ projectId, job, hostType, hostId: resolvedHostId, mainBeatId: cleanMainBeatId, beatIds: cleanBeatIds, referenceImageIds: refIds, direction, previousPlates: priorPlates })
       .catch((e) => {
         job.status = 'error';
         job.error = e.message;
@@ -553,6 +665,7 @@ export async function startImageSheetJob({
   hostId,
   model,
   referenceImageIds = [],
+  referenceSetIds = [],
   shotNames,
   shotCount,
   shots,
@@ -563,6 +676,15 @@ export async function startImageSheetJob({
   validateModel(model);
   assertConfigured(model);
   const resolvedHostId = await loadHostId(projectId, hostType, hostId);
+  const cleanRefSetIds = hostType === 'set' ? normalizeReferenceSetIds(referenceSetIds) : [];
+  let refIds = (referenceImageIds || []).map(String);
+  if (cleanRefSetIds.length) {
+    refIds = await resolveSheetReferenceIds({
+      projectId,
+      explicitIds: refIds,
+      referenceSetIds: cleanRefSetIds,
+    });
+  }
 
   // Beats and sets render an explicit, pre-derived shot list (the
   // derive→review→generate flow); characters plan their fixed preset.
@@ -593,7 +715,8 @@ export async function startImageSheetJob({
     error: null,
     model,
     planner_model: null,
-    reference_image_ids: (referenceImageIds || []).map(String),
+    reference_image_ids: refIds,
+    reference_set_ids: cleanRefSetIds,
     planned: hostType === 'character' ? selectSheetShots({ shotNames, shotCount }).length : explicitShots.length,
     shots: explicitShots,
     completed: 0,
@@ -607,7 +730,7 @@ export async function startImageSheetJob({
   // Fire-and-forget; the runner records its own errors. Release the host on
   // completion regardless of outcome.
   setImmediate(() => {
-    runSheetJob({ projectId, job, hostType, hostId: resolvedHostId, model, referenceImageIds, shotNames, shotCount, explicitShots, discordUser, announceUsername })
+    runSheetJob({ projectId, job, hostType, hostId: resolvedHostId, model, referenceImageIds: refIds, shotNames, shotCount, explicitShots, discordUser, announceUsername })
       .catch((e) => {
         job.status = 'error';
         job.error = e.message;
@@ -635,8 +758,10 @@ export async function startAutoSheetJob({
   projectId,
   hostId,
   model,
+  mainBeatId = null,
   beatIds = [],
   referenceImageIds = null,
+  referenceSetIds = null,
   direction = '',
   discordUser = null,
   announceUsername = null,
@@ -649,14 +774,28 @@ export async function startAutoSheetJob({
   const resolvedHostId = await loadHostId(projectId, 'set', hostId);
   const { getSet } = await import('../mongo/sets.js');
   const set = await getSet(projectId, resolvedHostId);
-  // No review step catches an empty reference set here, so an omitted/empty
-  // selection falls back to the set's own gallery images (zero refs is fine —
-  // the planned prompts alone carry the look).
-  const refIds =
-    Array.isArray(referenceImageIds) && referenceImageIds.length
-      ? referenceImageIds.map(String)
-      : (set.images || []).map((i) => String(i._id)).filter(Boolean);
+  const cleanRefSetIds = referenceSetIds == null ? null : normalizeReferenceSetIds(referenceSetIds);
+  let refIds;
+  if (cleanRefSetIds != null) {
+    // The client chose which sets' galleries anchor the look (sending just
+    // this set's id reproduces the legacy own-gallery default exactly).
+    refIds = await resolveSheetReferenceIds({
+      projectId,
+      explicitIds: Array.isArray(referenceImageIds) ? referenceImageIds.map(String) : [],
+      referenceSetIds: cleanRefSetIds,
+    });
+  } else {
+    // No review step catches an empty reference set here, so an omitted/empty
+    // selection falls back to the set's own gallery images (zero refs is fine —
+    // the planned prompts alone carry the look).
+    refIds =
+      Array.isArray(referenceImageIds) && referenceImageIds.length
+        ? referenceImageIds.map(String)
+        : (set.images || []).map((i) => String(i._id)).filter(Boolean);
+  }
   const cleanBeatIds = normalizeBeatIds(beatIds);
+  const cleanMainBeatId =
+    typeof mainBeatId === 'string' && /^[a-f0-9]{24}$/i.test(mainBeatId) ? mainBeatId : null;
 
   const busyKey = `set:${resolvedHostId}`;
   if (busyHosts.has(busyKey)) {
@@ -678,7 +817,9 @@ export async function startAutoSheetJob({
     model,
     planner_model: STORYBOARD_MODEL,
     reference_image_ids: refIds,
+    main_beat_id: cleanMainBeatId,
     beat_ids: cleanBeatIds,
+    reference_set_ids: cleanRefSetIds || [],
     planned: 0,
     completed: 0,
     failed: 0,
@@ -701,6 +842,7 @@ export async function startAutoSheetJob({
         projectId,
         hostType: 'set',
         hostId: resolvedHostId,
+        mainBeatId: cleanMainBeatId,
         beatIds: cleanBeatIds,
         referenceImageIds: refIds,
         direction,

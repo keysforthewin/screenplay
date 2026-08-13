@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
 import { ArtworkReferencePicker } from './ArtworkReferencePicker.jsx';
 import { BeatMultiSelect } from './BeatMultiSelect.jsx';
+import { MainBeatSelect } from './MainBeatSelect.jsx';
+import { SetMultiSelect } from './SetMultiSelect.jsx';
 import { GenerationProgress } from './GenerationProgress.jsx';
 import { apiGet, apiPostJson, imageUrl, thumbUrl } from '../api.js';
 import {
@@ -34,10 +36,14 @@ export function ImageSheetDialog({
   const isCharacter = hostType === 'character';
   const isSet = hostType === 'set';
   const [imageModel, setImageModel] = useState(() => readStoredImageModel(MODEL_STORAGE_KEY));
-  // Sets only: which of the beats referencing this set feed the derive
-  // context (default: all of them).
+  // Sets only: plates are planned for the main beat; the other checked beats
+  // feed the derive context (default: main = first referencing beat, context =
+  // the rest). The checked reference sets' galleries join the render refs.
   const [setBeats, setSetBeats] = useState(null);
+  const [mainBeatId, setMainBeatId] = useState('');
   const [selectedBeatIds, setSelectedBeatIds] = useState([]);
+  const [allSets, setAllSets] = useState([]);
+  const [referenceSetIds, setReferenceSetIds] = useState([]);
   const [referenceIds, setReferenceIds] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -85,32 +91,47 @@ export function ImageSheetDialog({
     setShowDeriveLog(false);
     setReDeriveOpen(false);
     setFeedback('');
-    // Reference images are required, so open the picker immediately and let the
-    // user choose before doing anything else.
-    setPickerOpen(true);
-  }, [open]);
+    // Reference images are required for characters and beats, so open the
+    // picker immediately. Sets default to their own gallery via the checked
+    // reference sets, so the picker stays optional there.
+    setPickerOpen(!isSet);
+  }, [open, isSet]);
 
   useEffect(() => () => stopDerivePoll(), []);
 
-  // Sets: load the referencing beats for the derive-context multi-select.
+  // Sets: load the referencing beats (main-beat select + context multi-select)
+  // and the project's sets (reference-sets multi-select).
   useEffect(() => {
     if (!open || !isSet) return;
     let cancelled = false;
     setSetBeats(null);
+    setMainBeatId('');
     setSelectedBeatIds([]);
+    setAllSets([]);
+    setReferenceSetIds([String(hostId)]);
     (async () => {
       try {
-        const r = await apiGet(`/set/${hostId}/beats`);
+        const [beatsRes, tocRes] = await Promise.all([
+          apiGet(`/set/${hostId}/beats`),
+          apiGet('/toc').catch(() => null),
+        ]);
         if (cancelled) return;
-        const list = Array.isArray(r?.beats) ? r.beats : [];
+        const list = Array.isArray(beatsRes?.beats) ? beatsRes.beats : [];
         setSetBeats(list);
-        setSelectedBeatIds(list.map((b) => b._id));
+        setMainBeatId(list.length ? String(list[0]._id) : '');
+        setSelectedBeatIds(list.slice(1).map((b) => String(b._id)));
+        setAllSets(Array.isArray(tocRes?.sets) ? tocRes.sets : []);
       } catch {
         if (!cancelled) setSetBeats([]); // derive still works, description-only
       }
     })();
     return () => { cancelled = true; };
   }, [open, isSet, hostId]);
+
+  function changeMainBeat(id) {
+    setMainBeatId(id);
+    if (id) setSelectedBeatIds((prev) => prev.filter((x) => x !== id));
+  }
 
   // Character shot list loads when the dialog opens for a character.
   useEffect(() => {
@@ -207,8 +228,10 @@ export function ImageSheetDialog({
   }
 
   async function derive({ direction = '', previousPlates = null } = {}) {
-    if (referenceIds.length === 0) {
-      setError('Select at least one reference image before deriving plates.');
+    if (!hasReferences) {
+      setError(isSet
+        ? 'Select at least one reference image or check a reference set before deriving plates.'
+        : 'Select at least one reference image before deriving plates.');
       return;
     }
     setBusy(true);
@@ -219,7 +242,11 @@ export function ImageSheetDialog({
     const seq = openSeqRef.current;
     try {
       const body = { reference_image_ids: referenceIds };
-      if (isSet) body.beat_ids = selectedBeatIds;
+      if (isSet) {
+        body.beat_ids = selectedBeatIds.filter((id) => id !== mainBeatId);
+        body.reference_set_ids = referenceSetIds;
+        if (mainBeatId) body.main_beat_id = mainBeatId;
+      }
       if (direction.trim()) body.direction = direction.trim();
       if (previousPlates && previousPlates.length) body.previous_plates = previousPlates;
       const res = await apiPostJson(`${basePath}/shot-plan`, body);
@@ -271,19 +298,23 @@ export function ImageSheetDialog({
       setError('Add at least one plate with a name and a prompt.');
       return;
     }
-    if (referenceIds.length === 0) {
-      setError('Select at least one reference image before generating.');
+    if (!hasReferences) {
+      setError(isSet
+        ? 'Select at least one reference image or check a reference set before generating.'
+        : 'Select at least one reference image before generating.');
       return;
     }
     setBusy(true);
     setError(null);
     const seq = openSeqRef.current;
     try {
-      const res = await apiPostJson(`${basePath}/image-sheet`, {
+      const body = {
         reference_image_ids: referenceIds,
         model: imageModel,
         shots: ready,
-      });
+      };
+      if (isSet) body.reference_set_ids = referenceSetIds;
+      const res = await apiPostJson(`${basePath}/image-sheet`, body);
       if (seq !== openSeqRef.current) return;
       onStarted?.({ jobId: res.job_id, planned: res.planned ?? ready.length });
       onClose?.();
@@ -296,7 +327,7 @@ export function ImageSheetDialog({
   }
 
   // ---- Footer (varies by host type + beat stage). -------------------------
-  const hasReferences = referenceIds.length > 0;
+  const hasReferences = referenceIds.length > 0 || (isSet && referenceSetIds.length > 0);
   const charCanSubmit = selectedShots.length >= 1 && hasReferences && IMAGE_MODEL_IDS.has(imageModel) && !busy;
   const reviewReady = derivedShots.some((s) => s.name.trim() && s.prompt.trim());
 
@@ -339,7 +370,7 @@ export function ImageSheetDialog({
   const intro = isCharacter
     ? 'Generate a set of clean, single-pose reference photos for this character — one image per checked shot. No text, no panels; just the pose.'
     : isSet
-      ? 'Derive location plates from this set’s description and the text of the selected beats, review and edit them, then generate. Plates are universal backdrops reused as storyboard references.'
+      ? 'Derive location plates for what the main beat stages in this set (context beats are read for continuity), review and edit them, then generate. Plates are universal backdrops reused as storyboard references.'
       : 'Derive a set of scene and background plates from this beat’s script, review and edit them, then generate. Plates are universal backdrops you can reuse later.';
 
   const modalSize = !isCharacter && stage === 'review' ? 'xl' : 'wide';
@@ -368,9 +399,19 @@ export function ImageSheetDialog({
               <div className="frame-generate-ref-grid">
                 {referenceIds.length === 0 ? (
                   <div className="frame-generate-ref-empty">
-                    At least one reference image is required — they anchor the look so
-                    generation matches your subject instead of inventing random people.
-                    Use <strong>+ Add references</strong> to choose some.
+                    {isSet ? (
+                      <>
+                        No individual references picked — the checked reference sets
+                        below supply the gallery images that anchor the look. Use{' '}
+                        <strong>+ Add references</strong> to pin specific images too.
+                      </>
+                    ) : (
+                      <>
+                        At least one reference image is required — they anchor the look so
+                        generation matches your subject instead of inventing random people.
+                        Use <strong>+ Add references</strong> to choose some.
+                      </>
+                    )}
                   </div>
                 ) : (
                   referenceIds.map((id) => (
@@ -429,20 +470,37 @@ export function ImageSheetDialog({
           )}
 
           {isSet && stage === 'setup' && setBeats != null && (
-            <BeatMultiSelect
-              beats={setBeats}
-              selectedIds={selectedBeatIds}
-              onChange={setSelectedBeatIds}
-              disabled={busy}
-              label="Beats to read when deriving"
-            />
+            <>
+              <MainBeatSelect
+                beats={setBeats}
+                value={mainBeatId}
+                onChange={changeMainBeat}
+                disabled={busy}
+              />
+              {(setBeats.length === 0 || setBeats.some((b) => String(b._id) !== mainBeatId)) && (
+                <BeatMultiSelect
+                  beats={setBeats.filter((b) => String(b._id) !== mainBeatId)}
+                  selectedIds={selectedBeatIds}
+                  onChange={setSelectedBeatIds}
+                  disabled={busy}
+                  label="Context beats (read for continuity — no plates planned for them)"
+                />
+              )}
+              <SetMultiSelect
+                sets={allSets}
+                selectedIds={referenceSetIds}
+                onChange={setReferenceSetIds}
+                disabled={busy}
+                currentSetId={hostId}
+              />
+            </>
           )}
 
           {!isCharacter && stage === 'setup' && (
             <div className="image-sheet-derive-setup">
               <span className="frame-generate-help">
                 {isSet
-                  ? 'Click Derive shots to read the set’s description and the selected beats, then propose plates. You’ll review and edit the list before any images are generated.'
+                  ? 'Click Derive shots to read the set’s description and the main beat (plus context beats), then propose plates. You’ll review and edit the list before any images are generated.'
                   : 'Click Derive shots to read the beat and propose plates. You’ll review and edit the list before any images are generated.'}
               </span>
             </div>

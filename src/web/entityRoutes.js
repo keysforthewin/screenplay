@@ -3415,6 +3415,14 @@ export function buildApiRouter() {
           ? req.body.shot_names.map((s) => String(s)).filter(Boolean)
           : undefined;
         const shots = Array.isArray(req.body?.shots) ? req.body.shots : undefined;
+        // Sets only: linked sets whose gallery images join the render
+        // reference pool (entries are hex-filtered downstream).
+        if (hostType === 'set' && req.body?.reference_set_ids != null && !Array.isArray(req.body.reference_set_ids)) {
+          return res.status(400).json({ error: 'reference_set_ids must be an array' });
+        }
+        const referenceSetIds = hostType === 'set' && Array.isArray(req.body?.reference_set_ids)
+          ? req.body.reference_set_ids
+          : [];
         const { startImageSheetJob } = await import('./imageSheetJobs.js');
         const result = await startImageSheetJob({
           projectId: req.projectId,
@@ -3422,6 +3430,7 @@ export function buildApiRouter() {
           hostId,
           model,
           referenceImageIds: refs.ids,
+          referenceSetIds,
           shotNames,
           shotCount,
           shots,
@@ -3452,16 +3461,30 @@ export function buildApiRouter() {
           if (!refs) return;
           const direction = String(req.body?.direction || '').slice(0, 4000);
           const previousPlates = Array.isArray(req.body?.previous_plates) ? req.body.previous_plates : undefined;
-          // Sets only: narrow the planner's beat context to a selection of the
-          // beats that reference the set (empty/omitted = all of them).
+          // Sets only: plates are planned for the main beat when one is
+          // chosen; `beat_ids` is then the context-only selection. Without a
+          // main beat the legacy rule holds (beat_ids narrows the flattened
+          // selection, empty/omitted = all referencing beats).
+          const mainBeatRaw = hostType === 'set' ? req.body?.main_beat_id : null;
+          if (mainBeatRaw != null && !(typeof mainBeatRaw === 'string' && /^[a-f0-9]{24}$/i.test(mainBeatRaw))) {
+            return res.status(400).json({ error: 'main_beat_id must be a 24-hex string' });
+          }
+          if (hostType === 'set' && req.body?.reference_set_ids != null && !Array.isArray(req.body.reference_set_ids)) {
+            return res.status(400).json({ error: 'reference_set_ids must be an array' });
+          }
           const beatIds = hostType === 'set' && Array.isArray(req.body?.beat_ids) ? req.body.beat_ids : [];
+          const referenceSetIds = hostType === 'set' && Array.isArray(req.body?.reference_set_ids)
+            ? req.body.reference_set_ids
+            : [];
           const { startShotPlanJob } = await import('./imageSheetJobs.js');
           const result = await startShotPlanJob({
             projectId: req.projectId,
             hostType,
             hostId,
             referenceImageIds: refs.ids,
+            mainBeatId: mainBeatRaw || null,
             beatIds,
+            referenceSetIds,
             direction,
             previousPlates,
           });
@@ -3485,8 +3508,18 @@ export function buildApiRouter() {
               return res.status(400).json({ error: IMAGE_MODEL_ERROR });
             }
             const beatIds = Array.isArray(req.body?.beat_ids) ? req.body.beat_ids : [];
+            // Plates are planned for the main beat when one is chosen;
+            // `beat_ids` is then context-only (see shot-plan above).
+            const mainBeatRaw = req.body?.main_beat_id;
+            if (mainBeatRaw != null && !(typeof mainBeatRaw === 'string' && /^[a-f0-9]{24}$/i.test(mainBeatRaw))) {
+              return res.status(400).json({ error: 'main_beat_id must be a 24-hex string' });
+            }
+            if (req.body?.reference_set_ids != null && !Array.isArray(req.body.reference_set_ids)) {
+              return res.status(400).json({ error: 'reference_set_ids must be an array' });
+            }
             // Explicit references are honored when sent; otherwise the engine
-            // falls back to the set's own gallery images.
+            // falls back to the checked reference sets' galleries (or, when
+            // reference_set_ids is omitted, this set's own gallery).
             let referenceImageIds = null;
             if (Array.isArray(req.body?.reference_image_ids) && req.body.reference_image_ids.length) {
               const refs = await validateArtworkRefs(req, res);
@@ -3498,8 +3531,10 @@ export function buildApiRouter() {
               projectId: req.projectId,
               hostId,
               model,
+              mainBeatId: mainBeatRaw || null,
               beatIds,
               referenceImageIds,
+              referenceSetIds: req.body?.reference_set_ids ?? null,
               discordUser: webDiscordUser(req),
               announceUsername: req?.session?.username || null,
             });

@@ -64,6 +64,7 @@ const Plots = await import('../src/mongo/plots.js');
 const Sets = await import('../src/mongo/sets.js');
 const Planner = await import('../src/web/beatSheetPlanner.js');
 const Sheet = await import('../src/web/imageSheetJobs.js');
+const Images = await import('../src/mongo/images.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
 
 let server;
@@ -89,6 +90,7 @@ beforeEach(async () => {
   h.configured = true;
   Planner._setScenePlatePlannerForTests(async () => ([{ name: 'Plate', prompt: 'wide empty set', justification: 'establishes', quote: 'INT. SET' }]));
   Planner._setScenePlateCritiqueForTests(async () => ({ verdict: 'keep' }));
+  Images.findImageFile.mockImplementation(async () => null);
 });
 
 async function postJson(path, body) {
@@ -297,6 +299,74 @@ describe('POST /api/set/:id/auto-image-sheet', () => {
     expect((await postJson(`/api/set/${set._id.toString()}/auto-image-sheet`, { model: 'bogus' })).status).toBe(400);
     expect((await postJson(`/api/set/${new ObjectId().toString()}/auto-image-sheet`, { model: 'nano-banana-pro' })).status).toBe(404);
   });
+
+  it('400s a malformed main_beat_id and a non-array reference_set_ids', async () => {
+    const set = await Sets.createSet({ projectId, name: 'Alley3' });
+    expect((await postJson(`/api/set/${set._id.toString()}/auto-image-sheet`, {
+      model: 'nano-banana-pro',
+      main_beat_id: 'not-hex',
+    })).status).toBe(400);
+    expect((await postJson(`/api/set/${set._id.toString()}/auto-image-sheet`, {
+      model: 'nano-banana-pro',
+      reference_set_ids: 'not-an-array',
+    })).status).toBe(400);
+  });
+
+  it('unions the checked sets\' galleries into the job\'s reference pool', async () => {
+    Images.findImageFile.mockImplementation(async () => ({ _id: 'exists' }));
+    const set = await Sets.createSet({ projectId, name: 'Sky', description: 'Open sky.' });
+    const own = new ObjectId();
+    await Sets.pushSetImage(projectId, set._id.toString(), { _id: own });
+    const other = await Sets.createSet({ projectId, name: 'Rooftop' });
+    const o1 = new ObjectId();
+    await Sets.pushSetImage(projectId, other._id.toString(), { _id: o1 });
+    await Plots.createBeat({ projectId, name: 'Fall', body: 'EXT. SKY - DAY', sets: ['Sky'] });
+
+    const { status, json } = await postJson(`/api/set/${set._id.toString()}/auto-image-sheet`, {
+      model: 'nano-banana-pro',
+      reference_set_ids: [set._id.toString(), other._id.toString()],
+    });
+    expect(status).toBe(202);
+    const job = await drain(json.job_id);
+    expect(job.reference_image_ids).toEqual([own.toString(), o1.toString()]);
+    expect(job.reference_set_ids).toEqual([set._id.toString(), other._id.toString()]);
+  });
+});
+
+describe('POST /api/set/:id/image-sheet with reference_set_ids', () => {
+  it('renders the shots with the linked galleries as references', async () => {
+    Images.findImageFile.mockImplementation(async () => ({ _id: 'exists' }));
+    Images.readImageBuffer.mockImplementation(async () => ({
+      buffer: Buffer.from('ref'),
+      file: { contentType: 'image/png', metadata: {} },
+    }));
+    const set = await Sets.createSet({ projectId, name: 'Sky2' });
+    const other = await Sets.createSet({ projectId, name: 'Rooftop2' });
+    const o1 = new ObjectId();
+    await Sets.pushSetImage(projectId, other._id.toString(), { _id: o1 });
+
+    const { status, json } = await postJson(`/api/set/${set._id.toString()}/image-sheet`, {
+      model: 'nano-banana-pro',
+      shots: [{ name: 'Sky — wide', prompt: 'endless sky' }],
+      reference_set_ids: [other._id.toString()],
+    });
+    expect(status).toBe(202);
+    const job = await drain(json.job_id);
+    expect(job.status).toBe('done');
+    expect(job.reference_set_ids).toEqual([other._id.toString()]);
+    const fresh = await Sets.getSet(projectId, set._id.toString());
+    expect(fresh.artworks[0].reference_image_ids.map(String)).toEqual([o1.toString()]);
+  });
+
+  it('400s a non-array reference_set_ids', async () => {
+    const set = await Sets.createSet({ projectId, name: 'Sky3' });
+    const { status } = await postJson(`/api/set/${set._id.toString()}/image-sheet`, {
+      model: 'nano-banana-pro',
+      shots: [{ name: 'A', prompt: 'a' }],
+      reference_set_ids: 42,
+    });
+    expect(status).toBe(400);
+  });
 });
 
 describe('POST /api/set/:id/shot-plan with beat_ids', () => {
@@ -327,5 +397,47 @@ describe('POST /api/set/:id/shot-plan with beat_ids', () => {
     expect(plannerBeat.body).toContain('SET DESC HERE');
     expect(plannerBeat.body).toContain('CHOSEN BEAT TEXT');
     expect(plannerBeat.body).not.toContain('OTHER BEAT TEXT');
+  });
+
+  it('splits main beat from context beats in the planner body', async () => {
+    let plannerBeat = null;
+    Planner._setScenePlatePlannerForTests(async (args) => {
+      plannerBeat = args.beat;
+      return [{ name: 'Plate', prompt: 'p', justification: '', quote: '' }];
+    });
+    const set = await Sets.createSet({ projectId, name: 'Sky', description: 'SET DESC HERE' });
+    const b1 = await Plots.createBeat({ projectId, name: 'One', body: 'MAIN BEAT TEXT HERE', sets: ['Sky'] });
+    const b2 = await Plots.createBeat({ projectId, name: 'Two', body: 'CONTEXT BEAT TEXT HERE', sets: ['Sky'] });
+
+    const { status, json } = await postJson(`/api/set/${set._id.toString()}/shot-plan`, {
+      main_beat_id: b1._id.toString(),
+      beat_ids: [b2._id.toString()],
+    });
+    expect(status).toBe(202);
+    let job = null;
+    const start = Date.now();
+    while (Date.now() - start < 4000) {
+      const r = await getJson(`/api/image-sheet/${json.job_id}`);
+      job = r.json.job;
+      if (job && ['derived', 'error'].includes(job.status)) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(job.status).toBe('derived');
+    expect(job.main_beat_id).toBe(b1._id.toString());
+    const body = plannerBeat.body;
+    const mainIdx = body.indexOf('## MAIN BEAT');
+    const ctxIdx = body.indexOf('## Context beats');
+    expect(mainIdx).toBeGreaterThan(-1);
+    expect(ctxIdx).toBeGreaterThan(mainIdx);
+    expect(body.indexOf('MAIN BEAT TEXT HERE')).toBeLessThan(ctxIdx);
+    expect(body.indexOf('CONTEXT BEAT TEXT HERE')).toBeGreaterThan(ctxIdx);
+  });
+
+  it('400s a malformed main_beat_id', async () => {
+    const set = await Sets.createSet({ projectId, name: 'BadMain' });
+    const { status } = await postJson(`/api/set/${set._id.toString()}/shot-plan`, {
+      main_beat_id: 'nope',
+    });
+    expect(status).toBe(400);
   });
 });
