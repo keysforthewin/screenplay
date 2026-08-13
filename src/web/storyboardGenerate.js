@@ -32,7 +32,7 @@ import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
-import { getBeat, setBeatSceneBible } from '../mongo/plots.js';
+import { getBeat, listBeats, setBeatSceneBible } from '../mongo/plots.js';
 import { getCharacter } from '../mongo/characters.js';
 import { getSet } from '../mongo/sets.js';
 import { readImageBuffer, uploadGeneratedImage } from '../mongo/images.js';
@@ -869,6 +869,18 @@ export async function findSetsInBeat(projectId, beat) {
     }
   }
   return out;
+}
+
+// The reverse of findSetsInBeat: every beat whose `sets` roster names this
+// set (markdown-stripped, case-insensitive — the same rule getSet resolves
+// by). Returns full embedded beat docs in beat order.
+export async function findBeatsReferencingSet(projectId, set) {
+  const nameLower = set?.name_lower || stripMarkdown(set?.name || '').trim().toLowerCase();
+  if (!nameLower) return [];
+  const beats = await listBeats(projectId);
+  return beats.filter((beat) =>
+    (beat?.sets || []).some((raw) => stripMarkdown(String(raw || '')).trim().toLowerCase() === nameLower),
+  );
 }
 
 // Load image bytes + content type + stored description from GridFS metadata.

@@ -1,17 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { apiDelete, apiGet } from '../api.js';
+import { apiGet } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
 import { ImageGallery } from '../widgets/ImageGallery.jsx';
 import { AttachmentList } from '../widgets/AttachmentList.jsx';
 import { ArtworkTab } from '../widgets/ArtworkTab.jsx';
 import { ReferenceExtrasSection } from '../widgets/ReferenceExtrasSection.jsx';
-
-// Key the TOC persists its active tab under (web/src/routes/Toc.jsx). Set
-// here before navigating back to the TOC after a delete so the visitor lands
-// on the Sets tab rather than wherever they last were.
-const TOC_ACTIVE_TAB_KEY = 'toc.activeTab';
+import { GenerateSetDescriptionDialog } from '../widgets/GenerateSetDescriptionDialog.jsx';
 
 const TABS = ['background', 'attachments', 'references', 'artwork'];
 
@@ -25,26 +21,21 @@ export function Set({ session }) {
   const { name } = useParams();
   const navigate = useNavigate();
   const [set, setSet] = useState(null);
-  const [toc, setToc] = useState(null);
   const [allSetImages, setAllSetImages] = useState([]);
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [activeTab, setActiveTab] = useState(readInitialTab);
   const [imagePickerOpen, setImagePickerOpen] = useState(false);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
-  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [descGenOpen, setDescGenOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [s, t] = await Promise.all([
-          apiGet(`/set?name=${encodeURIComponent(name)}`),
-          apiGet('/toc'),
-        ]);
+        const s = await apiGet(`/set?name=${encodeURIComponent(name)}`);
         if (cancelled) return;
         setSet(s.set);
-        setToc(t);
         const imgs = await apiGet(`/set/${s.set._id}/images`);
         if (!cancelled) setAllSetImages(imgs.images || []);
       } catch (e) {
@@ -74,32 +65,6 @@ export function Set({ session }) {
   }
 
   function onRefresh() { setRefreshKey((k) => k + 1); }
-
-  async function deleteSet() {
-    if (!set || deleteBusy) return;
-    const tocEntry = toc?.sets?.find((s) => String(s._id) === String(set._id));
-    const beatCount = tocEntry ? (tocEntry.beats || []).length : null;
-    const beatNote = beatCount != null
-      ? ` It is linked to ${beatCount} beat${beatCount === 1 ? '' : 's'}.`
-      : '';
-    if (!confirm(`Delete "${set.name || 'this set'}"?${beatNote} This cannot be undone.`)) {
-      return;
-    }
-    setDeleteBusy(true);
-    setError(null);
-    try {
-      await apiDelete(`/set/${set._id}`);
-      try {
-        window.localStorage?.setItem(TOC_ACTIVE_TAB_KEY, 'sets');
-      } catch {
-        // ignore storage errors
-      }
-      navigate('/');
-    } catch (e) {
-      setError(e.message);
-      setDeleteBusy(false);
-    }
-  }
 
   if (error) return <div className="app"><div className="error-banner">{error}</div></div>;
   if (!set) {
@@ -144,22 +109,22 @@ export function Set({ session }) {
         <div className="tab-panel" hidden={activeTab !== 'background'}>
           <CollabField label="Name" field="name" />
           <CollabField label="Description" field="description" multiline />
-
-          <div className="danger-zone">
-            <h2>Danger zone</h2>
-            <p>
-              Deleting this set removes it and unlinks it from every beat.
-              This cannot be undone.
-            </p>
+          <div className="tab-actions">
             <button
               type="button"
-              className="danger"
-              onClick={deleteSet}
-              disabled={deleteBusy}
+              onClick={() => setDescGenOpen(true)}
+              title="Read the beats this set appears in and write a visual description"
             >
-              {deleteBusy ? 'Deleting…' : 'Delete set'}
+              Auto-generate from beats
             </button>
           </div>
+          <GenerateSetDescriptionDialog
+            open={descGenOpen}
+            onClose={() => setDescGenOpen(false)}
+            onDone={onRefresh}
+            setId={set._id}
+            setName={set.name}
+          />
         </div>
 
         <div className="tab-panel" hidden={activeTab !== 'attachments'}>

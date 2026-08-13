@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
 import { ArtworkReferencePicker } from './ArtworkReferencePicker.jsx';
+import { BeatMultiSelect } from './BeatMultiSelect.jsx';
 import { GenerationProgress } from './GenerationProgress.jsx';
 import { apiGet, apiPostJson, imageUrl, thumbUrl } from '../api.js';
 import {
@@ -31,7 +32,12 @@ export function ImageSheetDialog({
   hostArtworks = [],
 }) {
   const isCharacter = hostType === 'character';
+  const isSet = hostType === 'set';
   const [imageModel, setImageModel] = useState(() => readStoredImageModel(MODEL_STORAGE_KEY));
+  // Sets only: which of the beats referencing this set feed the derive
+  // context (default: all of them).
+  const [setBeats, setSetBeats] = useState(null);
+  const [selectedBeatIds, setSelectedBeatIds] = useState([]);
   const [referenceIds, setReferenceIds] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -85,6 +91,26 @@ export function ImageSheetDialog({
   }, [open]);
 
   useEffect(() => () => stopDerivePoll(), []);
+
+  // Sets: load the referencing beats for the derive-context multi-select.
+  useEffect(() => {
+    if (!open || !isSet) return;
+    let cancelled = false;
+    setSetBeats(null);
+    setSelectedBeatIds([]);
+    (async () => {
+      try {
+        const r = await apiGet(`/set/${hostId}/beats`);
+        if (cancelled) return;
+        const list = Array.isArray(r?.beats) ? r.beats : [];
+        setSetBeats(list);
+        setSelectedBeatIds(list.map((b) => b._id));
+      } catch {
+        if (!cancelled) setSetBeats([]); // derive still works, description-only
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, isSet, hostId]);
 
   // Character shot list loads when the dialog opens for a character.
   useEffect(() => {
@@ -193,6 +219,7 @@ export function ImageSheetDialog({
     const seq = openSeqRef.current;
     try {
       const body = { reference_image_ids: referenceIds };
+      if (isSet) body.beat_ids = selectedBeatIds;
       if (direction.trim()) body.direction = direction.trim();
       if (previousPlates && previousPlates.length) body.previous_plates = previousPlates;
       const res = await apiPostJson(`${basePath}/shot-plan`, body);
@@ -311,7 +338,9 @@ export function ImageSheetDialog({
 
   const intro = isCharacter
     ? 'Generate a set of clean, single-pose reference photos for this character — one image per checked shot. No text, no panels; just the pose.'
-    : 'Derive a set of scene and background plates from this beat’s script, review and edit them, then generate. Plates are universal backdrops you can reuse later.';
+    : isSet
+      ? 'Derive location plates from this set’s description and the text of the selected beats, review and edit them, then generate. Plates are universal backdrops reused as storyboard references.'
+      : 'Derive a set of scene and background plates from this beat’s script, review and edit them, then generate. Plates are universal backdrops you can reuse later.';
 
   const modalSize = !isCharacter && stage === 'review' ? 'xl' : 'wide';
 
@@ -399,11 +428,22 @@ export function ImageSheetDialog({
             </div>
           )}
 
+          {isSet && stage === 'setup' && setBeats != null && (
+            <BeatMultiSelect
+              beats={setBeats}
+              selectedIds={selectedBeatIds}
+              onChange={setSelectedBeatIds}
+              disabled={busy}
+              label="Beats to read when deriving"
+            />
+          )}
+
           {!isCharacter && stage === 'setup' && (
             <div className="image-sheet-derive-setup">
               <span className="frame-generate-help">
-                Click <strong>Derive shots</strong> to read the beat and propose plates. You'll
-                review and edit the list before any images are generated.
+                {isSet
+                  ? 'Click Derive shots to read the set’s description and the selected beats, then propose plates. You’ll review and edit the list before any images are generated.'
+                  : 'Click Derive shots to read the beat and propose plates. You’ll review and edit the list before any images are generated.'}
               </span>
             </div>
           )}

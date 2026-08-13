@@ -151,15 +151,11 @@ describe('set create/delete + character create', () => {
     expect((await post('/set', { name: '**KITCHEN**' })).status).toBe(409);
   });
 
-  it('DELETE /set/:id cascades and 404s on unknown', async () => {
+  it('DELETE /set/:id is gone — set deletion is agent-only (gateway)', async () => {
     const s = await Sets.createSet({ projectId: p1, name: 'Kitchen' });
-    await Plots.createBeat({ projectId: p1, desc: 'One', sets: ['Kitchen'] });
     const r = await del(`/set/${s._id.toString()}`);
-    expect(r.status).toBe(200);
-    expect((await r.json()).ok).toBe(true);
-    expect(await Sets.getSet(p1, 'kitchen')).toBe(null);
-    expect((await Plots.getPlot(p1)).beats[0].sets).toEqual([]);
-    expect((await del(`/set/${new ObjectId().toString()}`)).status).toBe(404);
+    expect(r.status).toBe(404);
+    expect(await Sets.getSet(p1, 'kitchen')).not.toBe(null);
   });
 
   it('POST /character creates (201) and rejects duplicates (409)', async () => {

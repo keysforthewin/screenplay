@@ -30,9 +30,12 @@ import { getBeat } from '../mongo/plots.js';
 import {
   loadDirectorNotesForPlanner,
   findCharactersInBeat,
+  findBeatsReferencingSet,
   loadImageInput,
+  clipField,
   STORYBOARD_MODEL,
 } from './storyboardGenerate.js';
+import { clipBlock, MAX_CONTEXT_BEATS } from './setDescriptionGenerate.js';
 import { buildCharacterSheetShots, selectSheetShots } from './characterSheetShots.js';
 import { planBeatSceneImages, MAX_SCENE_IMAGE_COUNT } from './beatSheetPlanner.js';
 import { listStoryboards } from '../mongo/storyboards.js';
@@ -112,14 +115,28 @@ async function loadHostId(projectId, hostType, hostId) {
 }
 
 // The plate planner's prompts are built from a beat-shaped context block. A
-// set derives its plates from its own name + description instead of beat
-// text, so synthesize the minimal beat-shaped object the planner needs.
-function setAsPlannerBeat(set) {
+// set derives its plates from its own description plus the text of the beats
+// that stage in it, so synthesize a beat-shaped object whose body carries
+// both — description first (it is the set's visual bible), then one section
+// per beat.
+function setAsPlannerBeat(set, beats = []) {
+  const sections = [];
+  const description = String(set.description || '').trim();
+  if (description) sections.push(['## Set description', '', description].join('\n'));
+  for (const b of beats.slice(0, MAX_CONTEXT_BEATS)) {
+    const name = clipBlock(b?.name, 200) || 'Untitled';
+    const lines = [`## Beat #${b?.order ?? '?'} — ${name}`];
+    const desc = clipField(b?.desc);
+    if (desc) lines.push(desc);
+    const body = clipBlock(b?.body);
+    if (body) lines.push('', body);
+    sections.push(lines.join('\n'));
+  }
   return {
     order: 0,
     name: set.name || 'Set',
-    desc: 'Reusable set/location — plan plates that cover its angles and corners.',
-    body: set.description || '',
+    desc: 'Reusable set/location — plan plates that cover the angles, corners, and sub-locations the beats below stage in it.',
+    body: sections.join('\n\n'),
     characters: [],
     sets: [],
   };
@@ -157,6 +174,14 @@ async function runPool(items, limit, worker) {
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runNext));
+}
+
+// Sanitize a client-supplied beat-id selection for a set's planner context.
+function normalizeBeatIds(beatIds) {
+  return (Array.isArray(beatIds) ? beatIds : [])
+    .map(String)
+    .filter((s) => /^[a-f0-9]{24}$/i.test(s))
+    .slice(0, 50);
 }
 
 // Trim/validate a client-supplied explicit shot list (beats). Returns an array
@@ -299,30 +324,51 @@ async function runSheetJob({ projectId, job, hostType, hostId, model, referenceI
 // job.shots once status === 'derived', lets the user edit, then POSTs the
 // reviewed list back to /beat/:id/image-sheet. No busyHosts lock: deriving has no side
 // effects.
-async function runShotPlanJob({ projectId, job, hostType = 'beat', hostId, referenceImageIds, direction, previousPlates }) {
+// The planning core shared by the derive→review flow and the auto sheet: load
+// the host's planner context (for sets: the description + the text of the
+// referencing beats, optionally narrowed to `beatIds` — unmatched ids are
+// silently dropped so a concurrent unlink can't crash a plan) and run the
+// two-phase plate planner. Returns { images }.
+async function derivePlates({ projectId, hostType = 'beat', hostId, beatIds = [], referenceImageIds, direction, previousPlates, onProgress }) {
+  let beat;
+  let characters;
+  if (hostType === 'set') {
+    const { getSet } = await import('../mongo/sets.js');
+    const set = await getSet(projectId, hostId);
+    if (!set) throw new Error(`set not found: ${hostId}`);
+    let beats = await findBeatsReferencingSet(projectId, set);
+    const wanted = new Set((beatIds || []).map(String).filter(Boolean));
+    if (wanted.size) beats = beats.filter((b) => wanted.has(b._id.toString()));
+    beat = setAsPlannerBeat(set, beats);
+    characters = [];
+  } else {
+    beat = await getBeat(projectId, hostId);
+    if (!beat) throw new Error(`beat not found: ${hostId}`);
+    characters = await findCharactersInBeat(projectId, beat);
+  }
+  const directorNotes = await loadDirectorNotesForPlanner(projectId);
+  const referenceInputs = await loadReferenceInputs(referenceImageIds);
+  return planBeatSceneImages({
+    beat,
+    characters,
+    referenceInputs,
+    direction,
+    directorNotes,
+    previousPlates,
+    onProgress,
+  });
+}
+
+async function runShotPlanJob({ projectId, job, hostType = 'beat', hostId, beatIds, referenceImageIds, direction, previousPlates }) {
   try {
     job.status = 'planning';
-    let beat;
-    let characters;
-    if (hostType === 'set') {
-      const { getSet } = await import('../mongo/sets.js');
-      const set = await getSet(projectId, hostId);
-      if (!set) throw new Error(`set not found: ${hostId}`);
-      beat = setAsPlannerBeat(set);
-      characters = [];
-    } else {
-      beat = await getBeat(projectId, hostId);
-      if (!beat) throw new Error(`beat not found: ${hostId}`);
-      characters = await findCharactersInBeat(projectId, beat);
-    }
-    const directorNotes = await loadDirectorNotesForPlanner(projectId);
-    const referenceInputs = await loadReferenceInputs(referenceImageIds);
-    const { images } = await planBeatSceneImages({
-      beat,
-      characters,
-      referenceInputs,
+    const { images } = await derivePlates({
+      projectId,
+      hostType,
+      hostId,
+      beatIds,
+      referenceImageIds,
       direction,
-      directorNotes,
       previousPlates,
       onProgress: (e) => recordProgress(job, e),
     });
@@ -353,6 +399,7 @@ export async function startShotPlanJob({
   hostType = 'beat',
   hostId,
   referenceImageIds = [],
+  beatIds = [],
   direction = '',
   previousPlates = [],
 }) {
@@ -366,6 +413,7 @@ export async function startShotPlanJob({
   // On re-derive the client sends the plates it's reacting to; normalize/cap
   // them so the planner can revise rather than re-roll from scratch.
   const priorPlates = normalizeExplicitShots(previousPlates) || [];
+  const cleanBeatIds = hostType === 'set' ? normalizeBeatIds(beatIds) : [];
 
   const jobId = makeJobId();
   const job = {
@@ -380,6 +428,7 @@ export async function startShotPlanJob({
     error: null,
     planner_model: STORYBOARD_MODEL,
     reference_image_ids: (referenceImageIds || []).map(String),
+    beat_ids: cleanBeatIds,
     planned: 0,
     completed: 0,
     failed: 0,
@@ -391,7 +440,7 @@ export async function startShotPlanJob({
   recordProgress(job, { phase: 'queued', step: 'job_queued', message: 'Queued plate derivation…' });
 
   setImmediate(() => {
-    runShotPlanJob({ projectId, job, hostType, hostId: resolvedHostId, referenceImageIds, direction, previousPlates: priorPlates })
+    runShotPlanJob({ projectId, job, hostType, hostId: resolvedHostId, beatIds: cleanBeatIds, referenceImageIds, direction, previousPlates: priorPlates })
       .catch((e) => {
         job.status = 'error';
         job.error = e.message;
@@ -574,4 +623,127 @@ export async function startImageSheetJob({
     host_type: hostType,
     host_id: resolvedHostId,
   };
+}
+
+// Start the one-shot "auto image sheet" for a SET: plan the shot list from the
+// set's description + the selected beats' text, then render every planned shot
+// — no human review step. One busyHosts registration spans plan+render, so a
+// manual sheet can't collide with an auto sheet (or vice versa) on the same
+// set. Returns { job_id, planned: null, ... } (count known only after
+// planning); pollable via the same GET /image-sheet/:jobId as every sheet job.
+export async function startAutoSheetJob({
+  projectId,
+  hostId,
+  model,
+  beatIds = [],
+  referenceImageIds = null,
+  direction = '',
+  discordUser = null,
+  announceUsername = null,
+}) {
+  if (!config.anthropic?.apiKey) {
+    throw httpError('ANTHROPIC_API_KEY is not configured (required to plan the shots).', 400);
+  }
+  validateModel(model);
+  assertConfigured(model);
+  const resolvedHostId = await loadHostId(projectId, 'set', hostId);
+  const { getSet } = await import('../mongo/sets.js');
+  const set = await getSet(projectId, resolvedHostId);
+  // No review step catches an empty reference set here, so an omitted/empty
+  // selection falls back to the set's own gallery images (zero refs is fine —
+  // the planned prompts alone carry the look).
+  const refIds =
+    Array.isArray(referenceImageIds) && referenceImageIds.length
+      ? referenceImageIds.map(String)
+      : (set.images || []).map((i) => String(i._id)).filter(Boolean);
+  const cleanBeatIds = normalizeBeatIds(beatIds);
+
+  const busyKey = `set:${resolvedHostId}`;
+  if (busyHosts.has(busyKey)) {
+    throw httpError('An image sheet is already generating for this item.', 409);
+  }
+  busyHosts.add(busyKey);
+
+  const jobId = makeJobId();
+  const job = {
+    job_id: jobId,
+    host_type: 'set',
+    host_id: resolvedHostId,
+    project_id: projectId,
+    kind: 'set_auto_sheet',
+    status: 'queued',
+    started_at: new Date(),
+    finished_at: null,
+    error: null,
+    model,
+    planner_model: STORYBOARD_MODEL,
+    reference_image_ids: refIds,
+    beat_ids: cleanBeatIds,
+    planned: 0,
+    completed: 0,
+    failed: 0,
+    progress: null,
+    events: [],
+    shots: null,
+  };
+  jobs.set(jobId, job);
+  recordProgress(job, { phase: 'queued', step: 'job_queued', message: 'Queued auto image sheet…' });
+
+  setImmediate(() => {
+    (async () => {
+      job.status = 'planning';
+      recordProgress(job, {
+        phase: 'planning',
+        step: 'plan_start',
+        message: 'Planning the shot list from the beats and set description…',
+      });
+      const { images } = await derivePlates({
+        projectId,
+        hostType: 'set',
+        hostId: resolvedHostId,
+        beatIds: cleanBeatIds,
+        referenceImageIds: refIds,
+        direction,
+        previousPlates: [],
+        onProgress: (e) => recordProgress(job, e),
+      });
+      job.shots = images;
+      if (!images.length) {
+        job.status = 'done';
+        job.finished_at = new Date();
+        recordProgress(job, { phase: 'done', step: 'job_done_empty', message: 'Planner produced no shots.' });
+        return;
+      }
+      recordProgress(job, {
+        phase: 'planning',
+        step: 'plan_done',
+        total: images.length,
+        message: `Planned ${images.length} shot${images.length === 1 ? '' : 's'} — rendering…`,
+      });
+      // runSheetJob owns the rest of the lifecycle (planned/rendering →
+      // done|partial, per-shot error capture, announce) and never touches
+      // busyHosts — our registration above stays the only one.
+      await runSheetJob({
+        projectId,
+        job,
+        hostType: 'set',
+        hostId: resolvedHostId,
+        model,
+        referenceImageIds: refIds,
+        explicitShots: images,
+        discordUser,
+        announceUsername,
+      });
+    })()
+      .catch((e) => {
+        job.status = 'error';
+        job.error = e.message;
+        job.finished_at = new Date();
+        recordProgress(job, { phase: 'error', step: 'job_crashed', message: `Auto image sheet failed: ${e.message}` });
+        logger.error(`auto image sheet job ${jobId} crashed: ${e.message}`);
+      })
+      .finally(() => busyHosts.delete(busyKey));
+  });
+
+  return { job_id: jobId, planned: null, host_type: 'set', host_id: resolvedHostId };
 }

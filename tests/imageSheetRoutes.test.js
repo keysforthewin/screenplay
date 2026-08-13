@@ -61,6 +61,7 @@ vi.mock('../src/fal/imageClient.js', () => ({
 const { createProject } = await import('../src/mongo/projects.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
+const Sets = await import('../src/mongo/sets.js');
 const Planner = await import('../src/web/beatSheetPlanner.js');
 const Sheet = await import('../src/web/imageSheetJobs.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
@@ -269,5 +270,62 @@ describe('GET /api/image-sheet/:jobId', () => {
     const { status: missing } = await getJson(`/api/image-sheet/${new ObjectId().toString()}`);
     expect(missing).toBe(404);
     await drain(started.job_id);
+  });
+});
+
+describe('POST /api/set/:id/auto-image-sheet', () => {
+  it('202s, chains plan → render, and lands artworks on the set', async () => {
+    const set = await Sets.createSet({ projectId, name: 'Alley', description: 'Brick alley.' });
+    await Plots.createBeat({ projectId, name: 'Chase', body: 'INT. ALLEY - NIGHT', sets: ['Alley'] });
+    const { status, json } = await postJson(`/api/set/${set._id.toString()}/auto-image-sheet`, {
+      model: 'nano-banana-pro',
+      beat_ids: [],
+    });
+    expect(status).toBe(202);
+    expect(json.job_id).toBeTruthy();
+    expect(json.host_type).toBe('set');
+    const job = await drain(json.job_id);
+    expect(job.status).toBe('done');
+    expect(job.kind).toBe('set_auto_sheet');
+    const fresh = await Sets.getSet(projectId, set._id.toString());
+    expect(fresh.artworks).toHaveLength(1);
+    expect(fresh.artworks[0].status).toBe('done');
+  });
+
+  it('400s a bad model and 404s an unknown set', async () => {
+    const set = await Sets.createSet({ projectId, name: 'Alley2' });
+    expect((await postJson(`/api/set/${set._id.toString()}/auto-image-sheet`, { model: 'bogus' })).status).toBe(400);
+    expect((await postJson(`/api/set/${new ObjectId().toString()}/auto-image-sheet`, { model: 'nano-banana-pro' })).status).toBe(404);
+  });
+});
+
+describe('POST /api/set/:id/shot-plan with beat_ids', () => {
+  it('threads the selected beats into the planner context', async () => {
+    let plannerBeat = null;
+    Planner._setScenePlatePlannerForTests(async (args) => {
+      plannerBeat = args.beat;
+      return [{ name: 'Plate', prompt: 'p', justification: '', quote: '' }];
+    });
+    const set = await Sets.createSet({ projectId, name: 'Alley', description: 'SET DESC HERE' });
+    const b1 = await Plots.createBeat({ projectId, name: 'One', body: 'CHOSEN BEAT TEXT', sets: ['Alley'] });
+    await Plots.createBeat({ projectId, name: 'Two', body: 'OTHER BEAT TEXT', sets: ['Alley'] });
+
+    const { status, json } = await postJson(`/api/set/${set._id.toString()}/shot-plan`, {
+      beat_ids: [b1._id.toString()],
+    });
+    expect(status).toBe(202);
+    let job = null;
+    const start = Date.now();
+    while (Date.now() - start < 4000) {
+      const r = await getJson(`/api/image-sheet/${json.job_id}`);
+      job = r.json.job;
+      if (job && ['derived', 'error'].includes(job.status)) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(job.status).toBe('derived');
+    expect(job.beat_ids).toEqual([b1._id.toString()]);
+    expect(plannerBeat.body).toContain('SET DESC HERE');
+    expect(plannerBeat.body).toContain('CHOSEN BEAT TEXT');
+    expect(plannerBeat.body).not.toContain('OTHER BEAT TEXT');
   });
 });

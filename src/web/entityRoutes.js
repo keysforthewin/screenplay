@@ -149,7 +149,6 @@ import {
   attachExistingAttachmentToSetViaGateway,
   moveSetImageToLibraryViaGateway,
   createSetViaGateway,
-  deleteSetViaGateway,
   createCharacterViaGateway,
 } from './gateway.js';
 import {
@@ -2522,8 +2521,10 @@ export function buildApiRouter() {
     return s?._id?.toString() || null;
   }
 
-  // Create/delete are SPA-first (characters are agent-only for historical
-  // reasons; sets get both surfaces — the agent has its own create_set tool).
+  // Create is SPA-first (characters are agent-only for historical reasons;
+  // sets get both surfaces — the agent has its own create_set tool). Deleting
+  // a set is agent-only (deleteSetViaGateway via the Discord/chat agent); the
+  // SPA deliberately has no delete path.
   router.post('/set', async (req, res, next) => {
     try {
       const name = String(req.body?.name || '').trim();
@@ -2538,16 +2539,28 @@ export function buildApiRouter() {
     }
   });
 
-  router.delete('/set/:id', async (req, res, next) => {
+  // GET /set/:id/beats — every beat whose `sets` roster names this set, for
+  // the set page's beat multi-selects (description generation, shot planning,
+  // auto image sheets). `body_empty` flags beats that contribute no text.
+  router.get('/set/:id/beats', async (req, res, next) => {
     try {
       const sid = await resolveSetId(req);
       if (!sid) return res.status(404).json({ error: 'set not found' });
-      const result = await deleteSetViaGateway(req.projectId, sid);
-      res.json({ ok: true, name: result.name, unlinked_from: result.unlinked_from });
+      const set = await getSet(req.projectId, sid);
+      if (!set) return res.status(404).json({ error: 'set not found' });
+      const { findBeatsReferencingSet } = await import('./storyboardGenerate.js');
+      const beats = await findBeatsReferencingSet(req.projectId, set);
+      res.json({
+        beats: beats.map((b) => ({
+          _id: b._id.toString(),
+          order: b.order,
+          name: b.name || '',
+          plain_name: stripMarkdown(b.name || '').trim(),
+          desc: b.desc || '',
+          body_empty: !stripMarkdown(b.body || '').trim(),
+        })),
+      });
     } catch (e) {
-      if (/not found/i.test(e?.message || '')) {
-        return res.status(404).json({ error: e.message });
-      }
       next(e);
     }
   });
@@ -3439,12 +3452,16 @@ export function buildApiRouter() {
           if (!refs) return;
           const direction = String(req.body?.direction || '').slice(0, 4000);
           const previousPlates = Array.isArray(req.body?.previous_plates) ? req.body.previous_plates : undefined;
+          // Sets only: narrow the planner's beat context to a selection of the
+          // beats that reference the set (empty/omitted = all of them).
+          const beatIds = hostType === 'set' && Array.isArray(req.body?.beat_ids) ? req.body.beat_ids : [];
           const { startShotPlanJob } = await import('./imageSheetJobs.js');
           const result = await startShotPlanJob({
             projectId: req.projectId,
             hostType,
             hostId,
             referenceImageIds: refs.ids,
+            beatIds,
             direction,
             previousPlates,
           });
@@ -3453,6 +3470,45 @@ export function buildApiRouter() {
           handleArtworkError(e, res, next);
         }
       });
+
+      // POST /set/:id/auto-image-sheet — the one-shot flow: plan the shot list
+      // from the selected beats' text + the set's description, then render
+      // every planned shot with no review step. 202 + { job_id, planned: null }
+      // (count known only after planning); poll GET /image-sheet/:jobId.
+      if (hostType === 'set') {
+        router.post(`${basePath}/:id/auto-image-sheet`, async (req, res, next) => {
+          try {
+            const hostId = await resolveHostId(req);
+            if (!hostId) return res.status(404).json({ error: 'set not found' });
+            const model = normalizeImageModel(req.body?.model);
+            if (!isValidImageModel(model)) {
+              return res.status(400).json({ error: IMAGE_MODEL_ERROR });
+            }
+            const beatIds = Array.isArray(req.body?.beat_ids) ? req.body.beat_ids : [];
+            // Explicit references are honored when sent; otherwise the engine
+            // falls back to the set's own gallery images.
+            let referenceImageIds = null;
+            if (Array.isArray(req.body?.reference_image_ids) && req.body.reference_image_ids.length) {
+              const refs = await validateArtworkRefs(req, res);
+              if (!refs) return;
+              referenceImageIds = refs.ids;
+            }
+            const { startAutoSheetJob } = await import('./imageSheetJobs.js');
+            const result = await startAutoSheetJob({
+              projectId: req.projectId,
+              hostId,
+              model,
+              beatIds,
+              referenceImageIds,
+              discordUser: webDiscordUser(req),
+              announceUsername: req?.session?.username || null,
+            });
+            res.status(202).json(result);
+          } catch (e) {
+            handleArtworkError(e, res, next);
+          }
+        });
+      }
 
       // GET /<host>/:id/image-sheet-references — the reference set to pre-fill
       // the derive dialog with. Beats: saved set, else the beat's artwork refs.
@@ -4593,6 +4649,35 @@ export function buildApiRouter() {
       res.json(result);
     } catch (e) {
       if (e?.code === 'BEAT_BUSY') return res.status(409).json({ error: e.message });
+      next(e);
+    }
+  });
+
+  // Auto-generate a set's description from the beats that stage in it.
+  // Synchronous like the scene-bible autofill above: the gateway write makes an
+  // open description editor fill in live before the response even lands.
+  router.post('/set/:id/generate-description', async (req, res, next) => {
+    try {
+      if (!config.anthropic?.apiKey) {
+        return res.status(400).json({ error: 'ANTHROPIC_API_KEY is not configured.' });
+      }
+      const sid = await resolveSetId(req);
+      if (!sid) return res.status(404).json({ error: 'set not found' });
+      const beatIds = (Array.isArray(req.body?.beat_ids) ? req.body.beat_ids : [])
+        .map(String)
+        .filter(isOidHex)
+        .slice(0, 50);
+      const direction = String(req.body?.direction || '').slice(0, 2000);
+      const { generateSetDescription } = await import('./setDescriptionGenerate.js');
+      const result = await generateSetDescription({
+        projectId: req.projectId,
+        setId: sid,
+        beatIds,
+        direction,
+      });
+      res.json(result);
+    } catch (e) {
+      if (e?.status >= 400 && e?.status < 500) return res.status(e.status).json({ error: e.message });
       next(e);
     }
   });

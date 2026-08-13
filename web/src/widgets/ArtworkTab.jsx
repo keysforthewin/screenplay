@@ -3,6 +3,7 @@ import { ArtworkDialog } from './ArtworkDialog.jsx';
 import { ArtworkEditDialog } from './ArtworkEditDialog.jsx';
 import { ArtworkPickerModal } from './ArtworkPickerModal.jsx';
 import { ImageSheetDialog } from './ImageSheetDialog.jsx';
+import { AutoImageSheetDialog } from './AutoImageSheetDialog.jsx';
 import { TuneImageSheetDialog } from './TuneImageSheetDialog.jsx';
 import { GenerationProgress } from './GenerationProgress.jsx';
 import { apiDelete, apiGet, apiPatchJson, apiPostJson, imageUrl, thumbUrl } from '../api.js';
@@ -52,6 +53,7 @@ export function ArtworkTab({
   // the dialog closing on start. The job runs server-side regardless; this only
   // tracks the aggregate progress panel.
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [autoOpen, setAutoOpen] = useState(false);
   const [sheetJob, setSheetJob] = useState(null);
   const [sheetJobErr, setSheetJobErr] = useState(null);
   const [showSheetLog, setShowSheetLog] = useState(false);
@@ -262,6 +264,20 @@ export function ArtworkTab({
         >
           Create image sheet
         </button>
+        {hostType === 'set' && (
+          <button
+            type="button"
+            onClick={() => setAutoOpen(true)}
+            disabled={sheetActive}
+            title={
+              sheetActive
+                ? 'An image sheet is already generating'
+                : 'Plan shots from the beats + description, then render them all — no review step'
+            }
+          >
+            Auto-Generate Images
+          </button>
+        )}
         {hostType === 'beat' && (
           <button
             type="button"
@@ -487,6 +503,16 @@ export function ArtworkTab({
         hostImages={hostImages}
         hostArtworks={hostArtworks}
       />
+
+      {hostType === 'set' && (
+        <AutoImageSheetDialog
+          open={autoOpen}
+          onClose={() => setAutoOpen(false)}
+          onStarted={startSheetJob}
+          hostId={hostId}
+          hostLabel={hostLabel}
+        />
+      )}
 
       {hostType === 'beat' && (
         <TuneImageSheetDialog
