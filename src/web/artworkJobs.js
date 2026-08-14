@@ -29,7 +29,7 @@ import {
   undoArtworkEditViaGateway,
   removeArtworkViaGateway,
 } from './gateway.js';
-import { ALLOWED_IMAGE_MODELS } from './imageReplaceDispatch.js';
+import { isValidImageModel, IMAGE_MODEL_ERROR } from './imageModelValidate.js';
 import { kickoffArtworkVisionSeed } from './artworkVisionWorker.js';
 import { announceMediaEvent } from '../discord/announcer.js';
 import { beatUrl, characterUrl, setUrl } from './links.js';
@@ -82,7 +82,6 @@ async function announceArtwork({ projectId, hostType, hostId, username, verb, fi
   }
 }
 
-const ALLOWED_ARTWORK_MODELS = new Set(ALLOWED_IMAGE_MODELS);
 const DEFAULT_ARTWORK_MODEL = 'nano-banana-pro';
 
 function logCrash(prefix, err) {
@@ -90,9 +89,9 @@ function logCrash(prefix, err) {
   if (err?.stack) logger.debug(err.stack);
 }
 
-function validateArtworkModel(model) {
-  if (!ALLOWED_ARTWORK_MODELS.has(model)) {
-    const err = new Error(`model must be one of: ${[...ALLOWED_ARTWORK_MODELS].join('|')}`);
+async function validateArtworkModel(model) {
+  if (!(await isValidImageModel(model))) {
+    const err = new Error(IMAGE_MODEL_ERROR);
     err.status = 400;
     throw err;
   }
@@ -151,7 +150,7 @@ export async function startGenerateArtworkJob({
   channelId = null,
   announceUsername = null,
 }) {
-  validateArtworkModel(model);
+  await validateArtworkModel(model);
   const { artwork } = await createPendingArtworkViaGateway({
     projectId,
     hostType,
@@ -313,7 +312,7 @@ export async function startRegenerateArtworkJob({
   channelId = null,
   announceUsername = null,
 }) {
-  validateArtworkModel(model);
+  await validateArtworkModel(model);
   const patch = { prompt, model, reference_image_ids: referenceImageIds };
   if (typeof name === 'string') patch.name = name;
   await patchArtworkViaGateway({ projectId, hostType, hostId, artworkId, patch });
@@ -360,7 +359,7 @@ export async function startEditArtworkJob({
   channelId = null,
   announceUsername = null,
 }) {
-  validateArtworkModel(model);
+  await validateArtworkModel(model);
   await patchArtworkViaGateway({
     projectId,
     hostType,

@@ -43,12 +43,20 @@ export async function dispatchStoryboardImage({
   inputImages = [],
   mode = 'generate',
 }) {
+  // Anything outside the wired seven may still be a fal catalog endpoint the
+  // picker offered (src/fal/imageModelCatalog.js). Those run generically; only
+  // ids in neither set are rejected.
+  let catalogModel = null;
   if (!ALLOWED_STORYBOARD_MODELS.includes(model)) {
-    const err = new Error(
-      `Unknown storyboard image model "${model}". Allowed: ${ALLOWED_STORYBOARD_MODELS.join('|')}`,
-    );
-    err.status = 400;
-    throw err;
+    const { getImageModel } = await import('../fal/imageModelCatalog.js');
+    catalogModel = await getImageModel(model);
+    if (!catalogModel) {
+      const err = new Error(
+        `Unknown storyboard image model "${model}". Allowed: ${ALLOWED_STORYBOARD_MODELS.join('|')} or a fal catalog endpoint id.`,
+      );
+      err.status = 400;
+      throw err;
+    }
   }
   if (!['generate', 'edit'].includes(mode)) {
     const err = new Error(`Unknown storyboard image mode "${mode}".`);
@@ -60,7 +68,7 @@ export async function dispatchStoryboardImage({
     err.status = 400;
     throw err;
   }
-  if (FAL_MODELS.has(model) && !falConfigured()) {
+  if ((catalogModel || FAL_MODELS.has(model)) && !falConfigured()) {
     const err = new Error('FAL_KEY is not configured.');
     err.status = 400;
     throw err;
@@ -71,6 +79,29 @@ export async function dispatchStoryboardImage({
     const err = new Error('Edit mode requires exactly one input image.');
     err.status = 400;
     throw err;
+  }
+
+  // Catalog endpoint: the generic runner reads the endpoint's own schema from
+  // the catalog row. Edit mode's single input image is simply the first (only)
+  // reference the runner anchors on.
+  if (catalogModel) {
+    const { generateCatalogImage } = await import('../fal/catalogImageGenerate.js');
+    const result = await generateCatalogImage({
+      endpointId: catalogModel.endpoint_id,
+      prompt,
+      referenceImages: refs,
+    });
+    try {
+      await recordFalImageUsage({
+        discordUser: null,
+        channelId: null,
+        model: result.model,
+        meta: { input_image_count: refs.length, mode, logical_model: model, catalog: true },
+      });
+    } catch (e) {
+      logger.warn(`fal token usage persist failed: ${e.message}`);
+    }
+    return result;
   }
 
   if (FAL_MODELS.has(model)) {

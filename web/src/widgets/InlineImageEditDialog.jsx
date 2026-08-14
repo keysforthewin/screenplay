@@ -1,11 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
 import { imageUrl, thumbUrl } from '../api.js';
-import {
-  IMAGE_MODELS,
-  readStoredImageModel,
-  writeStoredImageModel,
-} from './imageModels.js';
+import { readStoredCatalogModel, writeStoredImageModel } from './imageModels.js';
+import { ImageModelSelect } from './ImageModelSelect.jsx';
 
 // Generic in-line image editor dialog. Drives:
 //   - Artwork edits (ArtworkEditDialog wraps this)
@@ -58,7 +55,7 @@ export function InlineImageEditDialog({
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [imageModel, setImageModel] = useState(() =>
-    readStoredImageModel(modelStorageKey),
+    readStoredCatalogModel(modelStorageKey),
   );
   const openSeqRef = useRef(0);
 
@@ -302,21 +299,13 @@ export function InlineImageEditDialog({
           )}
           <div className="frame-generate-model-row">
             <span className="field-label">Image model</span>
-            <div className="frame-generate-model-options">
-              {IMAGE_MODELS.map((m) => (
-                <label key={m.id}>
-                  <input
-                    type="radio"
-                    name="inline-image-edit-model"
-                    value={m.id}
-                    checked={imageModel === m.id}
-                    onChange={() => setImageModel(m.id)}
-                    disabled={status === 'pending' || busy}
-                  />
-                  {m.label}
-                </label>
-              ))}
-            </div>
+            <ImageModelSelect
+              value={imageModel}
+              onChange={setImageModel}
+              disabled={status === 'pending' || busy}
+              compact
+              requireReferences
+            />
           </div>
           <p className="frame-generate-help">
             The current image becomes "previous" so you can Undo one step.

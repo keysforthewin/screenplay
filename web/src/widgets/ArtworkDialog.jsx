@@ -2,12 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
 import { ArtworkReferencePicker } from './ArtworkReferencePicker.jsx';
 import { apiPostJson, imageUrl, thumbUrl } from '../api.js';
-import {
-  IMAGE_MODELS,
-  IMAGE_MODEL_IDS,
-  readStoredImageModel,
-  writeStoredImageModel,
-} from './imageModels.js';
+import { readStoredCatalogModel, writeStoredImageModel } from './imageModels.js';
+import { ImageModelSelect } from './ImageModelSelect.jsx';
 
 const MODEL_STORAGE_KEY = 'screenplay.artwork.model';
 
@@ -35,7 +31,7 @@ export function ArtworkDialog({
   artwork,
 }) {
   const isExisting = !!artwork;
-  const [imageModel, setImageModel] = useState(() => readStoredImageModel(MODEL_STORAGE_KEY));
+  const [imageModel, setImageModel] = useState(() => readStoredCatalogModel(MODEL_STORAGE_KEY));
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
   const [referenceIds, setReferenceIds] = useState([]);
@@ -60,7 +56,7 @@ export function ArtworkDialog({
         ? artwork.reference_image_ids.map((x) => x?.toString?.() || String(x))
         : [];
       setReferenceIds(ids);
-      if (typeof artwork.model === 'string' && IMAGE_MODEL_IDS.has(artwork.model)) {
+      if (typeof artwork.model === 'string' && artwork.model.trim()) {
         setImageModel(artwork.model);
       }
     } else {
@@ -225,21 +221,12 @@ export function ArtworkDialog({
 
           <div className="frame-generate-model-row">
             <span className="field-label">Image model</span>
-            <div className="frame-generate-model-options">
-              {IMAGE_MODELS.map((m) => (
-                <label key={m.id}>
-                  <input
-                    type="radio"
-                    name="artwork-image-model"
-                    value={m.id}
-                    checked={imageModel === m.id}
-                    onChange={() => setImageModel(m.id)}
-                    disabled={busy}
-                  />
-                  {m.label}
-                </label>
-              ))}
-            </div>
+            <ImageModelSelect
+              value={imageModel}
+              onChange={setImageModel}
+              disabled={busy}
+              compact
+            />
           </div>
 
           {error && <div className="error-banner">{error}</div>}

@@ -25,6 +25,11 @@ vi.mock('../src/mongo/images.js', () => ({
   })),
 }));
 
+vi.mock('../src/fal/imageModelCatalog.js', () => ({
+  getImageModel: async (id) =>
+    id === 'fal-ai/some-catalog-model' ? { id, endpoint_id: 'fal-ai/some-catalog-model' } : null,
+}));
+
 const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Storyboards = await import('../src/mongo/storyboards.js');
@@ -82,6 +87,14 @@ describe('POST /storyboards/generate-images', () => {
     const beat = await beatWithMissingStart();
     const r = await post('/storyboards/generate-images', { beat_id: beat._id.toString(), image_model: 'not-a-model' });
     expect(r.status).toBe(400);
+  });
+  it('202 with a fal catalog endpoint id as image_model', async () => {
+    const beat = await beatWithMissingStart();
+    const r = await post('/storyboards/generate-images', {
+      beat_id: beat._id.toString(),
+      image_model: 'fal-ai/some-catalog-model',
+    });
+    expect(r.status).toBe(202);
   });
   it('202 with job_id + planned on success', async () => {
     const beat = await beatWithMissingStart();

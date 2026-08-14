@@ -7,11 +7,8 @@ import {
 } from '../api.js';
 import { Modal } from './Modal.jsx';
 import { ArtworkReferencePicker } from './ArtworkReferencePicker.jsx';
-import {
-  IMAGE_MODELS,
-  readStoredImageModel,
-  writeStoredImageModel,
-} from './imageModels.js';
+import { readStoredCatalogModel, writeStoredImageModel } from './imageModels.js';
+import { ImageModelSelect } from './ImageModelSelect.jsx';
 
 const MODEL_STORAGE_KEY = 'screenplay.artwork.model';
 
@@ -474,7 +471,7 @@ function GenerateArtworkTab({
   onClose,
 }) {
   const [imageModel, setImageModel] = useState(() =>
-    readStoredImageModel(MODEL_STORAGE_KEY),
+    readStoredCatalogModel(MODEL_STORAGE_KEY),
   );
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -587,21 +584,12 @@ function GenerateArtworkTab({
 
       <div className="frame-generate-model-row">
         <span className="field-label">Image model</span>
-        <div className="frame-generate-model-options">
-          {IMAGE_MODELS.map((m) => (
-            <label key={m.id}>
-              <input
-                type="radio"
-                name="artwork-picker-image-model"
-                value={m.id}
-                checked={imageModel === m.id}
-                onChange={() => setImageModel(m.id)}
-                disabled={busy}
-              />
-              {m.label}
-            </label>
-          ))}
-        </div>
+        <ImageModelSelect
+          value={imageModel}
+          onChange={setImageModel}
+          disabled={busy}
+          compact
+        />
       </div>
 
       {error && <div className="error-banner">{error}</div>}

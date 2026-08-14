@@ -3,12 +3,8 @@ import { Modal } from './Modal.jsx';
 import { ArtworkReferencePicker } from './ArtworkReferencePicker.jsx';
 import { GenerationProgress } from './GenerationProgress.jsx';
 import { apiGet, apiPostJson, imageUrl, thumbUrl } from '../api.js';
-import {
-  IMAGE_MODELS,
-  IMAGE_MODEL_IDS,
-  readStoredImageModel,
-  writeStoredImageModel,
-} from './imageModels.js';
+import { readStoredCatalogModel, writeStoredImageModel } from './imageModels.js';
+import { ImageModelSelect } from './ImageModelSelect.jsx';
 
 const MODEL_STORAGE_KEY = 'screenplay.imagesheet.model';
 
@@ -26,7 +22,7 @@ export function TuneImageSheetDialog({
   hostImages = [],
   hostArtworks = [],
 }) {
-  const [imageModel, setImageModel] = useState(() => readStoredImageModel(MODEL_STORAGE_KEY));
+  const [imageModel, setImageModel] = useState(() => readStoredCatalogModel(MODEL_STORAGE_KEY));
   const [referenceIds, setReferenceIds] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -191,7 +187,7 @@ export function TuneImageSheetDialog({
           type="button"
           className="primary"
           onClick={generateSheet}
-          disabled={busy || !reviewReady || !hasReferences || !IMAGE_MODEL_IDS.has(imageModel)}
+          disabled={busy || !reviewReady || !hasReferences || !imageModel}
         >
           {busy ? 'Starting…' : `Generate ${proposedShots.length} new plate${proposedShots.length === 1 ? '' : 's'}`}
         </button>
@@ -341,21 +337,12 @@ export function TuneImageSheetDialog({
           {(stage === 'setup' || stage === 'review') && (
             <div className="frame-generate-model-row">
               <span className="field-label">Image model</span>
-              <div className="frame-generate-model-options">
-                {IMAGE_MODELS.map((m) => (
-                  <label key={m.id}>
-                    <input
-                      type="radio"
-                      name="tune-image-model"
-                      value={m.id}
-                      checked={imageModel === m.id}
-                      onChange={() => setImageModel(m.id)}
-                      disabled={busy}
-                    />
-                    {m.label}
-                  </label>
-                ))}
-              </div>
+              <ImageModelSelect
+                value={imageModel}
+                onChange={setImageModel}
+                disabled={busy}
+                compact
+              />
             </div>
           )}
 

@@ -21,8 +21,7 @@
 import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
 import { logger } from '../log.js';
-import { isConfigured as falConfigured } from '../fal/client.js';
-import { ALLOWED_IMAGE_MODELS } from './imageReplaceDispatch.js';
+import { isValidImageModel, IMAGE_MODEL_ERROR, assertImageModelConfigured } from './imageModelValidate.js';
 import { createPendingArtworkViaGateway, setArtworkStatusViaGateway } from './gateway.js';
 import { generateArtworkImageInline } from './artworkJobs.js';
 import { getCharacter } from '../mongo/characters.js';
@@ -47,8 +46,6 @@ export const SHEET_CONCURRENCY = 3;
 
 const MAX_JOB_EVENTS = 100;
 const VALID_HOST_TYPES = new Set(['character', 'beat', 'set']);
-// Which logical models are FAL-backed (need FAL_KEY) vs. openai (needs OPENAI key).
-const FAL_MODELS = new Set(['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'gemini-25-flash', 'nano-banana-2', 'flux-2-klein']);
 
 const jobs = new Map();
 // Hosts with an in-flight sheet, keyed `${hostType}:${hostId}`. Prevents two
@@ -80,20 +77,9 @@ function recordProgress(job, { phase, step, frame = null, total = null, message 
   }
 }
 
-function validateModel(model) {
-  if (!ALLOWED_IMAGE_MODELS.includes(model)) {
-    throw httpError(`model must be one of: ${ALLOWED_IMAGE_MODELS.join('|')}`, 400);
-  }
-}
-
-// Fail the start cleanly (before creating any pending tiles) if the chosen
-// provider has no API key configured.
-function assertConfigured(model) {
-  if (model === 'openai' && !config.openai?.apiKey) {
-    throw httpError('OPENAI_API_KEY is not configured.', 400);
-  }
-  if (FAL_MODELS.has(model) && !falConfigured()) {
-    throw httpError('FAL_KEY is not configured.', 400);
+async function validateModel(model) {
+  if (!(await isValidImageModel(model))) {
+    throw httpError(IMAGE_MODEL_ERROR, 400);
   }
 }
 
@@ -673,8 +659,8 @@ export async function startImageSheetJob({
   announceUsername = null,
 }) {
   if (!VALID_HOST_TYPES.has(hostType)) throw httpError(`invalid hostType: ${hostType}`, 400);
-  validateModel(model);
-  assertConfigured(model);
+  await validateModel(model);
+  assertImageModelConfigured(model);
   const resolvedHostId = await loadHostId(projectId, hostType, hostId);
   const cleanRefSetIds = hostType === 'set' ? normalizeReferenceSetIds(referenceSetIds) : [];
   let refIds = (referenceImageIds || []).map(String);
@@ -748,144 +734,3 @@ export async function startImageSheetJob({
   };
 }
 
-// Start the one-shot "auto image sheet" for a SET: plan the shot list from the
-// set's description + the selected beats' text, then render every planned shot
-// — no human review step. One busyHosts registration spans plan+render, so a
-// manual sheet can't collide with an auto sheet (or vice versa) on the same
-// set. Returns { job_id, planned: null, ... } (count known only after
-// planning); pollable via the same GET /image-sheet/:jobId as every sheet job.
-export async function startAutoSheetJob({
-  projectId,
-  hostId,
-  model,
-  mainBeatId = null,
-  beatIds = [],
-  referenceImageIds = null,
-  referenceSetIds = null,
-  direction = '',
-  discordUser = null,
-  announceUsername = null,
-}) {
-  if (!config.anthropic?.apiKey) {
-    throw httpError('ANTHROPIC_API_KEY is not configured (required to plan the shots).', 400);
-  }
-  validateModel(model);
-  assertConfigured(model);
-  const resolvedHostId = await loadHostId(projectId, 'set', hostId);
-  const { getSet } = await import('../mongo/sets.js');
-  const set = await getSet(projectId, resolvedHostId);
-  const cleanRefSetIds = referenceSetIds == null ? null : normalizeReferenceSetIds(referenceSetIds);
-  let refIds;
-  if (cleanRefSetIds != null) {
-    // The client chose which sets' galleries anchor the look (sending just
-    // this set's id reproduces the legacy own-gallery default exactly).
-    refIds = await resolveSheetReferenceIds({
-      projectId,
-      explicitIds: Array.isArray(referenceImageIds) ? referenceImageIds.map(String) : [],
-      referenceSetIds: cleanRefSetIds,
-    });
-  } else {
-    // No review step catches an empty reference set here, so an omitted/empty
-    // selection falls back to the set's own gallery images (zero refs is fine —
-    // the planned prompts alone carry the look).
-    refIds =
-      Array.isArray(referenceImageIds) && referenceImageIds.length
-        ? referenceImageIds.map(String)
-        : (set.images || []).map((i) => String(i._id)).filter(Boolean);
-  }
-  const cleanBeatIds = normalizeBeatIds(beatIds);
-  const cleanMainBeatId =
-    typeof mainBeatId === 'string' && /^[a-f0-9]{24}$/i.test(mainBeatId) ? mainBeatId : null;
-
-  const busyKey = `set:${resolvedHostId}`;
-  if (busyHosts.has(busyKey)) {
-    throw httpError('An image sheet is already generating for this item.', 409);
-  }
-  busyHosts.add(busyKey);
-
-  const jobId = makeJobId();
-  const job = {
-    job_id: jobId,
-    host_type: 'set',
-    host_id: resolvedHostId,
-    project_id: projectId,
-    kind: 'set_auto_sheet',
-    status: 'queued',
-    started_at: new Date(),
-    finished_at: null,
-    error: null,
-    model,
-    planner_model: STORYBOARD_MODEL,
-    reference_image_ids: refIds,
-    main_beat_id: cleanMainBeatId,
-    beat_ids: cleanBeatIds,
-    reference_set_ids: cleanRefSetIds || [],
-    planned: 0,
-    completed: 0,
-    failed: 0,
-    progress: null,
-    events: [],
-    shots: null,
-  };
-  jobs.set(jobId, job);
-  recordProgress(job, { phase: 'queued', step: 'job_queued', message: 'Queued auto image sheet…' });
-
-  setImmediate(() => {
-    (async () => {
-      job.status = 'planning';
-      recordProgress(job, {
-        phase: 'planning',
-        step: 'plan_start',
-        message: 'Planning the shot list from the beats and set description…',
-      });
-      const { images } = await derivePlates({
-        projectId,
-        hostType: 'set',
-        hostId: resolvedHostId,
-        mainBeatId: cleanMainBeatId,
-        beatIds: cleanBeatIds,
-        referenceImageIds: refIds,
-        direction,
-        previousPlates: [],
-        onProgress: (e) => recordProgress(job, e),
-      });
-      job.shots = images;
-      if (!images.length) {
-        job.status = 'done';
-        job.finished_at = new Date();
-        recordProgress(job, { phase: 'done', step: 'job_done_empty', message: 'Planner produced no shots.' });
-        return;
-      }
-      recordProgress(job, {
-        phase: 'planning',
-        step: 'plan_done',
-        total: images.length,
-        message: `Planned ${images.length} shot${images.length === 1 ? '' : 's'} — rendering…`,
-      });
-      // runSheetJob owns the rest of the lifecycle (planned/rendering →
-      // done|partial, per-shot error capture, announce) and never touches
-      // busyHosts — our registration above stays the only one.
-      await runSheetJob({
-        projectId,
-        job,
-        hostType: 'set',
-        hostId: resolvedHostId,
-        model,
-        referenceImageIds: refIds,
-        explicitShots: images,
-        discordUser,
-        announceUsername,
-      });
-    })()
-      .catch((e) => {
-        job.status = 'error';
-        job.error = e.message;
-        job.finished_at = new Date();
-        recordProgress(job, { phase: 'error', step: 'job_crashed', message: `Auto image sheet failed: ${e.message}` });
-        logger.error(`auto image sheet job ${jobId} crashed: ${e.message}`);
-      })
-      .finally(() => busyHosts.delete(busyKey));
-  });
-
-  return { job_id: jobId, planned: null, host_type: 'set', host_id: resolvedHostId };
-}

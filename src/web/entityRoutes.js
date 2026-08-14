@@ -27,31 +27,13 @@ import {
 } from '../mongo/projects.js';
 import { deleteProjectCascade } from './projectDelete.js';
 import { seedProjectDefaults } from '../seed/defaults.js';
-import { ALLOWED_IMAGE_MODELS } from './imageReplaceDispatch.js';
+import {
+  DEFAULT_IMAGE_MODEL,
+  normalizeImageModel,
+  isValidImageModel,
+  IMAGE_MODEL_ERROR,
+} from './imageModelValidate.js';
 import { listImageModelInfo } from './imageModelInfo.js';
-
-// Default model the SPA falls back to when the request omits `image_model`/`model`.
-// Old enum values (`gemini`, `fal`) from cached SPA bundles are normalized to the
-// closest current equivalent so we don't 400 on stale clients.
-const DEFAULT_IMAGE_MODEL = 'nano-banana-pro';
-function normalizeImageModel(raw) {
-  const v = String(raw ?? DEFAULT_IMAGE_MODEL);
-  if (v === 'gemini' || v === 'google') return 'nano-banana-pro';
-  if (v === 'fal') return 'flux-pro-kontext';
-  return v;
-}
-// A model is valid if it is one of the tuned shortcuts OR a fal catalog image
-// endpoint the picker offers. Async because the catalog lives on disk; every
-// call site is inside an async handler. The dispatcher re-checks authoritatively
-// — this exists so a bad id comes back as a 400 JSON error instead of falling
-// through to Express's default 500 page.
-async function isValidImageModel(v) {
-  if (ALLOWED_IMAGE_MODELS.includes(v)) return true;
-  const { getImageModel } = await import('../fal/imageModelCatalog.js');
-  return !!(await getImageModel(v));
-}
-const IMAGE_MODEL_ERROR =
-  `image_model must be one of: ${ALLOWED_IMAGE_MODELS.join('|')} — or a fal catalog endpoint id from GET /api/image-models`;
 import { getSession, touchSession } from '../mongo/auth.js';
 import {
   announceBeatMedia,
@@ -3604,57 +3586,6 @@ export function buildApiRouter() {
           handleArtworkError(e, res, next);
         }
       });
-
-      // POST /set/:id/auto-image-sheet — the one-shot flow: plan the shot list
-      // from the selected beats' text + the set's description, then render
-      // every planned shot with no review step. 202 + { job_id, planned: null }
-      // (count known only after planning); poll GET /image-sheet/:jobId.
-      if (hostType === 'set') {
-        router.post(`${basePath}/:id/auto-image-sheet`, async (req, res, next) => {
-          try {
-            const hostId = await resolveHostId(req);
-            if (!hostId) return res.status(404).json({ error: 'set not found' });
-            const model = normalizeImageModel(req.body?.model);
-            if (!await isValidImageModel(model)) {
-              return res.status(400).json({ error: IMAGE_MODEL_ERROR });
-            }
-            const beatIds = Array.isArray(req.body?.beat_ids) ? req.body.beat_ids : [];
-            // Plates are planned for the main beat when one is chosen;
-            // `beat_ids` is then context-only (see shot-plan above).
-            const mainBeatRaw = req.body?.main_beat_id;
-            if (mainBeatRaw != null && !(typeof mainBeatRaw === 'string' && /^[a-f0-9]{24}$/i.test(mainBeatRaw))) {
-              return res.status(400).json({ error: 'main_beat_id must be a 24-hex string' });
-            }
-            if (req.body?.reference_set_ids != null && !Array.isArray(req.body.reference_set_ids)) {
-              return res.status(400).json({ error: 'reference_set_ids must be an array' });
-            }
-            // Explicit references are honored when sent; otherwise the engine
-            // falls back to the checked reference sets' galleries (or, when
-            // reference_set_ids is omitted, this set's own gallery).
-            let referenceImageIds = null;
-            if (Array.isArray(req.body?.reference_image_ids) && req.body.reference_image_ids.length) {
-              const refs = await validateArtworkRefs(req, res);
-              if (!refs) return;
-              referenceImageIds = refs.ids;
-            }
-            const { startAutoSheetJob } = await import('./imageSheetJobs.js');
-            const result = await startAutoSheetJob({
-              projectId: req.projectId,
-              hostId,
-              model,
-              mainBeatId: mainBeatRaw || null,
-              beatIds,
-              referenceImageIds,
-              referenceSetIds: req.body?.reference_set_ids ?? null,
-              discordUser: webDiscordUser(req),
-              announceUsername: req?.session?.username || null,
-            });
-            res.status(202).json(result);
-          } catch (e) {
-            handleArtworkError(e, res, next);
-          }
-        });
-      }
 
       // GET /<host>/:id/image-sheet-references — the reference set to pre-fill
       // the derive dialog with. Beats: saved set, else the beat's artwork refs.

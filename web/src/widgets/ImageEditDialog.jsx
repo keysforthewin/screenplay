@@ -1,10 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Modal } from './Modal.jsx';
-import {
-  IMAGE_MODELS,
-  readStoredImageModel,
-  writeStoredImageModel,
-} from './imageModels.js';
+import { readStoredCatalogModel, writeStoredImageModel } from './imageModels.js';
+import { ImageModelSelect } from './ImageModelSelect.jsx';
 
 const MODEL_STORAGE_KEY = 'screenplay.imageEdit.model';
 
@@ -18,7 +15,7 @@ const MODEL_STORAGE_KEY = 'screenplay.imageEdit.model';
 // (Pure text-to-image with no reference lives in the "+ Add image" picker.)
 export function ImageEditDialog({ open, onClose, onSubmit }) {
   const [mode, setMode] = useState('edit');
-  const [imageModel, setImageModel] = useState(() => readStoredImageModel(MODEL_STORAGE_KEY));
+  const [imageModel, setImageModel] = useState(() => readStoredCatalogModel(MODEL_STORAGE_KEY));
   const [prompt, setPrompt] = useState('');
 
   useEffect(() => {
@@ -125,25 +122,12 @@ export function ImageEditDialog({ open, onClose, onSubmit }) {
 
         <div>
           <span className="field-label">Image model</span>
-          <div
-            style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}
-          >
-            {IMAGE_MODELS.map((m) => (
-              <label
-                key={m.id}
-                style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
-              >
-                <input
-                  type="radio"
-                  name="image-edit-model"
-                  value={m.id}
-                  checked={imageModel === m.id}
-                  onChange={() => setImageModel(m.id)}
-                />
-                {m.label}
-              </label>
-            ))}
-          </div>
+          <ImageModelSelect
+            value={imageModel}
+            onChange={setImageModel}
+            compact
+            requireReferences
+          />
         </div>
       </div>
     </Modal>

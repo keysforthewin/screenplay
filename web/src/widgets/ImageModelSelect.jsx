@@ -1,5 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiGet, apiPostJson } from '../api.js';
+import {
+  IMAGE_MODEL_SORTS,
+  DEFAULT_IMAGE_MODEL_SORT,
+  isImageModelSort,
+  sortImageModels,
+} from './imageModelSort.js';
+
+const SORT_STORAGE_KEY = 'screenplay.picker.modelSort';
+
+function readStoredSort() {
+  try {
+    const v = localStorage.getItem(SORT_STORAGE_KEY);
+    return isImageModelSort(v) ? v : DEFAULT_IMAGE_MODEL_SORT;
+  } catch {
+    return DEFAULT_IMAGE_MODEL_SORT;
+  }
+}
 
 // Searchable image-model picker backed by the live fal.ai catalog
 // (GET /api/image-models → `catalog`), rather than a hand-maintained list that
@@ -12,11 +29,15 @@ import { apiGet, apiPostJson } from '../api.js';
 //   onChange(id) — called with the new id
 //   disabled     — freeze interaction while a generation is running
 //   compact      — render a shorter list box (used inside crowded dialogs)
-export function ImageModelSelect({ value, onChange, disabled = false, compact = false }) {
+//   requireReferences — restrict the list to models that accept reference
+//     images (edit flows anchor on an existing image; a prompt-only model
+//     would silently ignore it). Hides the "Takes references" toggle.
+export function ImageModelSelect({ value, onChange, disabled = false, compact = false, requireReferences = false }) {
   const [catalog, setCatalog] = useState(null);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState('');
   const [refsOnly, setRefsOnly] = useState(false);
+  const [sort, setSort] = useState(readStoredSort);
   const [generatedAt, setGeneratedAt] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshProgress, setRefreshProgress] = useState(null);
@@ -104,10 +125,23 @@ export function ImageModelSelect({ value, onChange, disabled = false, compact = 
     }
   }
 
-  const filtered = useMemo(() => {
+  useEffect(() => {
+    try {
+      localStorage.setItem(SORT_STORAGE_KEY, sort);
+    } catch {}
+  }, [sort]);
+
+  // The pool the picker draws from: edit flows only ever see models that can
+  // take the image being edited as a reference.
+  const eligible = useMemo(() => {
     const rows = catalog || [];
+    return requireReferences ? rows.filter((m) => m.accepts_references) : rows;
+  }, [catalog, requireReferences]);
+
+  const filtered = useMemo(() => {
+    const rows = eligible;
     const q = query.trim().toLowerCase();
-    return rows.filter((m) => {
+    const matched = rows.filter((m) => {
       if (refsOnly && !m.accepts_references) return false;
       if (!q) return true;
       return (
@@ -117,21 +151,23 @@ export function ImageModelSelect({ value, onChange, disabled = false, compact = 
         (m.description || '').toLowerCase().includes(q)
       );
     });
-  }, [catalog, query, refsOnly]);
+    return sortImageModels(matched, sort);
+  }, [eligible, query, refsOnly, sort]);
 
-  // A remembered id can disappear (renamed endpoint, or a refresh that dropped
-  // it). Fall back to the first model rather than leaving nothing selected and
-  // letting the user submit an id the server will reject.
+  // A remembered id can disappear (renamed endpoint, a refresh that dropped
+  // it, or a prompt-only model remembered by a generate dialog while this is
+  // an edit flow). Fall back to the first eligible model rather than leaving
+  // nothing selected and letting the user submit an id the server will reject.
   useEffect(() => {
-    if (!catalog?.length) return;
-    if (catalog.some((m) => m.id === value)) return;
-    onChange?.(catalog[0].id);
+    if (!eligible.length) return;
+    if (eligible.some((m) => m.id === value)) return;
+    onChange?.(eligible[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [catalog, value]);
+  }, [eligible, value]);
 
   // Keep the current choice visible even when it doesn't match the filter —
   // otherwise the list looks like nothing is selected.
-  const selected = (catalog || []).find((m) => m.id === value) || null;
+  const selected = eligible.find((m) => m.id === value) || null;
   const rows = selected && !filtered.some((m) => m.id === value)
     ? [selected, ...filtered]
     : filtered;
@@ -151,15 +187,28 @@ export function ImageModelSelect({ value, onChange, disabled = false, compact = 
           onChange={(e) => setQuery(e.target.value)}
           disabled={disabled}
         />
-        <label className="image-model-select-toggle" title="Only models that accept reference images">
-          <input
-            type="checkbox"
-            checked={refsOnly}
-            onChange={(e) => setRefsOnly(e.target.checked)}
-            disabled={disabled}
-          />
-          Takes references
-        </label>
+        {!requireReferences && (
+          <label className="image-model-select-toggle" title="Only models that accept reference images">
+            <input
+              type="checkbox"
+              checked={refsOnly}
+              onChange={(e) => setRefsOnly(e.target.checked)}
+              disabled={disabled}
+            />
+            Takes references
+          </label>
+        )}
+        <select
+          className="image-model-select-sort"
+          value={sort}
+          onChange={(e) => setSort(e.target.value)}
+          disabled={disabled}
+          title="Models without a published price stay at the bottom either way"
+        >
+          {IMAGE_MODEL_SORTS.map((s) => (
+            <option key={s.key} value={s.key}>{s.label}</option>
+          ))}
+        </select>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
@@ -210,7 +259,7 @@ export function ImageModelSelect({ value, onChange, disabled = false, compact = 
 
       <div className="image-model-select-footer">
         <span>
-          {filtered.length} of {(catalog || []).length} models
+          {filtered.length} of {eligible.length} models
           {generatedAt ? ` · catalog ${new Date(generatedAt).toLocaleDateString()}` : ''}
         </span>
         <button

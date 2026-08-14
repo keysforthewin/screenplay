@@ -49,7 +49,9 @@ import {
 import { isConfigured as falConfigured } from '../fal/client.js';
 import { recordOpenAIImageUsage, recordFalImageUsage } from '../mongo/tokenUsage.js';
 
-export const ALLOWED_IMAGE_MODELS = ['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'openai', 'gemini-25-flash', 'nano-banana-2', 'flux-2-klein'];
+import { ALLOWED_IMAGE_MODELS } from './imageModelValidate.js';
+
+export { ALLOWED_IMAGE_MODELS };
 const FAL_MODELS = new Set(['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'gemini-25-flash', 'nano-banana-2', 'flux-2-klein']);
 
 export async function dispatchImageReplace({

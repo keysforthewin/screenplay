@@ -127,6 +127,42 @@ describe('formatImagePrice', () => {
   });
 });
 
+describe('price sort values', () => {
+  it('sorts on the number the row displays, whatever the unit', () => {
+    // $0.011/MP and $0.04/image are not strictly comparable; sorting on the
+    // displayed figure keeps the visible order matching the visible numbers.
+    const [perImage] = buildImageModelList([row({
+      pricing: { kind: 'per_image', perImageUsd: 0.04, exact: true },
+    })]);
+    const [perMp] = buildImageModelList([row({
+      pricing: { kind: 'per_megapixel', perMpUsd: 0.011, exact: true },
+    })]);
+    expect(perImage.price.sort_usd).toBe(0.04);
+    expect(perMp.price.sort_usd).toBe(0.011);
+  });
+
+  it('leaves sort_usd null when there is no price', () => {
+    const [m] = buildImageModelList([row({ pricing: null })]);
+    expect(m.price.display).toBeNull();
+    expect(m.price.sort_usd).toBeNull();
+  });
+
+  it('gives every priced model a sort key, and unpriced models none', async () => {
+    // The display string and the sort key are derived together, so a row that
+    // shows a figure must always be sortable by it, and vice versa — otherwise
+    // priced models would silently fall into the unpriced bucket at the bottom.
+    const { models } = await loadImageModelCatalog();
+    for (const m of models) {
+      expect(m.price.display === null).toBe(m.price.sort_usd === null);
+      if (m.price.sort_usd !== null) {
+        expect(Number.isFinite(m.price.sort_usd)).toBe(true);
+        expect(m.price.sort_usd).toBeGreaterThan(0);
+      }
+    }
+    expect(models.filter((m) => m.price.sort_usd !== null).length).toBeGreaterThan(100);
+  });
+});
+
 describe('buildImageModelList', () => {
   it('drops rows that are not prompt-satisfiable', () => {
     const models = buildImageModelList([

@@ -46,6 +46,11 @@ vi.mock('../src/discord/announcer.js', () => ({
   announceMediaEvent: vi.fn(async () => {}),
 }));
 
+vi.mock('../src/fal/imageModelCatalog.js', () => ({
+  getImageModel: async (id) =>
+    id === 'fal-ai/some-catalog-model' ? { id, endpoint_id: 'fal-ai/some-catalog-model' } : null,
+}));
+
 const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
@@ -147,5 +152,48 @@ describe('startEditArtworkJob with reference_image_ids', () => {
     const arg = dispatchSpy.mock.calls[0][0];
     expect(arg.referenceImages).toEqual([]);
     expect(arg.existingImage?.buffer?.toString()).toBe('EXISTING');
+  });
+
+  it('accepts a fal catalog endpoint id as the model', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'Catalog edit' });
+    const existingResultId = registerImage(new ObjectId(), 'EXISTING');
+
+    const { artwork: seeded } = await Artworks.appendDoneArtwork({ projectId,
+      hostType: 'beat',
+      hostId: beat._id,
+      resultImageId: existingResultId,
+      name: 'seed',
+    });
+
+    await ArtworkJobs.startEditArtworkJob({ projectId,
+      hostType: 'beat',
+      hostId: beat._id,
+      artworkId: seeded._id,
+      prompt: 'catalog tweak',
+      model: 'fal-ai/some-catalog-model',
+    });
+
+    await waitForDispatch();
+    expect(dispatchSpy.mock.calls[0][0].model).toBe('fal-ai/some-catalog-model');
+  });
+
+  it('rejects a model that is neither wired nor in the catalog', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'Bad model' });
+    const existingResultId = registerImage(new ObjectId(), 'EXISTING');
+
+    const { artwork: seeded } = await Artworks.appendDoneArtwork({ projectId,
+      hostType: 'beat',
+      hostId: beat._id,
+      resultImageId: existingResultId,
+      name: 'seed',
+    });
+
+    await expect(ArtworkJobs.startEditArtworkJob({ projectId,
+      hostType: 'beat',
+      hostId: beat._id,
+      artworkId: seeded._id,
+      prompt: 'nope',
+      model: 'totally-bogus',
+    })).rejects.toThrow(/image_model must be one of/);
   });
 });

@@ -83,25 +83,37 @@ function usd(n) {
   return `$${s}`;
 }
 
-// A one-line price for the picker. The catalog prices models several ways
-// (per image, per megapixel, per compute unit); we surface the unit rather than
-// pretending everything is per-image, because a per-MP model's real cost
-// depends on the output size the endpoint chooses.
-export function formatImagePrice(pricing) {
-  if (!pricing || typeof pricing !== 'object') return null;
+// A one-line price for the picker, plus the number to sort on. The catalog
+// prices models several ways (per image, per megapixel, per compute unit); we
+// surface the unit rather than pretending everything is per-image, because a
+// per-MP model's real cost depends on the output size the endpoint chooses.
+//
+// The sort key is deliberately the SAME figure the label shows, not a
+// normalized per-image estimate: $0.011/MP and $0.04/image aren't strictly
+// comparable, and inventing a conversion would order the list by numbers the
+// reader can't see. Deriving both here keeps them from drifting apart.
+export function describeImagePrice(pricing) {
+  const none = { display: null, sortUsd: null };
+  if (!pricing || typeof pricing !== 'object') return none;
   const { kind } = pricing;
   if (kind === 'per_image' && Number.isFinite(pricing.perImageUsd)) {
-    return `${usd(pricing.perImageUsd)} / image`;
+    return { display: `${usd(pricing.perImageUsd)} / image`, sortUsd: pricing.perImageUsd };
   }
   if (kind === 'per_megapixel' && Number.isFinite(pricing.perMpUsd)) {
-    return `${usd(pricing.perMpUsd)} / MP`;
+    return { display: `${usd(pricing.perMpUsd)} / MP`, sortUsd: pricing.perMpUsd };
   }
   if (kind === 'per_unit' && Number.isFinite(pricing.perUnitUsd)) {
     const unit = pricing.unit ? ` ${pricing.unit}` : ' unit';
-    return `${usd(pricing.perUnitUsd)} /${unit}`;
+    return { display: `${usd(pricing.perUnitUsd)} /${unit}`, sortUsd: pricing.perUnitUsd };
   }
-  if (Number.isFinite(pricing.perClipUsd)) return `${usd(pricing.perClipUsd)} / run`;
-  return null;
+  if (Number.isFinite(pricing.perClipUsd)) {
+    return { display: `${usd(pricing.perClipUsd)} / run`, sortUsd: pricing.perClipUsd };
+  }
+  return none;
+}
+
+export function formatImagePrice(pricing) {
+  return describeImagePrice(pricing).display;
 }
 
 function toModel(row, wiredId) {
@@ -111,6 +123,7 @@ function toModel(row, wiredId) {
   // what the pipeline actually drives. Catalog rows report the documented max,
   // or null when the endpoint documents none.
   const catalogMax = Number.isFinite(inputs.image?.max) ? inputs.image.max : null;
+  const price = describeImagePrice(row.pricing);
   return {
     id: wiredId || row.endpoint_id,
     endpoint_id: row.endpoint_id,
@@ -124,7 +137,9 @@ function toModel(row, wiredId) {
     max_references: wiredId ? maxReferenceImagesFor(wiredId) : catalogMax,
     output_path: row.output?.path || null,
     price: {
-      display: formatImagePrice(row.pricing),
+      display: price.display,
+      // What the picker's price sort orders on; null models sink to the bottom.
+      sort_usd: price.sortUsd,
       kind: row.pricing?.kind || null,
       per_image_usd: Number.isFinite(row.pricing?.perImageUsd) ? row.pricing.perImageUsd : null,
       exact: !!row.pricing?.exact,
@@ -193,7 +208,7 @@ export function withWiredFallbacks(models) {
       requires_references: false,
       max_references: info.maxReferenceImages ?? null,
       output_path: null,
-      price: { display: null, kind: null, per_image_usd: null, exact: false },
+      price: { display: null, sort_usd: null, kind: null, per_image_usd: null, exact: false },
     });
   }
   return sortModels(out);

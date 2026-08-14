@@ -39,6 +39,15 @@ vi.mock('../src/log.js', () => ({
 }));
 vi.mock('../src/config.js', () => ({ config: { openai: { apiKey: 'sk' } } }));
 
+const catalogGenerateMock = vi.fn();
+vi.mock('../src/fal/catalogImageGenerate.js', () => ({
+  generateCatalogImage: (...a) => catalogGenerateMock(...a),
+}));
+vi.mock('../src/fal/imageModelCatalog.js', () => ({
+  getImageModel: async (id) =>
+    id === 'fal-ai/some-catalog-model' ? { id, endpoint_id: 'fal-ai/some-catalog-model' } : null,
+}));
+
 const { dispatchStoryboardImage, ALLOWED_STORYBOARD_MODELS } = await import(
   '../src/web/storyboardImageDispatch.js'
 );
@@ -83,5 +92,38 @@ describe('dispatchStoryboardImage — fast models', () => {
     await expect(
       dispatchStoryboardImage({ prompt: 'p', model: 'nope' }),
     ).rejects.toThrow(/Unknown storyboard image model/);
+  });
+});
+
+describe('dispatchStoryboardImage — catalog models', () => {
+  beforeEach(() => {
+    catalogGenerateMock.mockReset();
+  });
+
+  it('routes a catalog endpoint id through the generic catalog runner', async () => {
+    catalogGenerateMock.mockResolvedValue({ ...okOut, model: 'fal-ai/some-catalog-model' });
+    const r = await dispatchStoryboardImage({ prompt: 'p', model: 'fal-ai/some-catalog-model' });
+    expect(catalogGenerateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        endpointId: 'fal-ai/some-catalog-model',
+        prompt: 'p',
+        referenceImages: [],
+      }),
+    );
+    expect(r.model).toBe('fal-ai/some-catalog-model');
+  });
+
+  it('passes edit mode’s single input image as the reference', async () => {
+    catalogGenerateMock.mockResolvedValue({ ...okOut, model: 'fal-ai/some-catalog-model' });
+    const existing = { buffer: Buffer.from('x'), contentType: 'image/png' };
+    await dispatchStoryboardImage({
+      prompt: 'p',
+      model: 'fal-ai/some-catalog-model',
+      mode: 'edit',
+      inputImages: [existing],
+    });
+    expect(catalogGenerateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ referenceImages: [existing] }),
+    );
   });
 });

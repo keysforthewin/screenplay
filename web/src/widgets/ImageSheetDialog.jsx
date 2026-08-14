@@ -6,12 +6,8 @@ import { MainBeatSelect } from './MainBeatSelect.jsx';
 import { SetMultiSelect } from './SetMultiSelect.jsx';
 import { GenerationProgress } from './GenerationProgress.jsx';
 import { apiGet, apiPostJson, imageUrl, thumbUrl } from '../api.js';
-import {
-  IMAGE_MODELS,
-  IMAGE_MODEL_IDS,
-  readStoredImageModel,
-  writeStoredImageModel,
-} from './imageModels.js';
+import { readStoredCatalogModel, writeStoredImageModel } from './imageModels.js';
+import { ImageModelSelect } from './ImageModelSelect.jsx';
 
 const MODEL_STORAGE_KEY = 'screenplay.imagesheet.model';
 
@@ -35,7 +31,7 @@ export function ImageSheetDialog({
 }) {
   const isCharacter = hostType === 'character';
   const isSet = hostType === 'set';
-  const [imageModel, setImageModel] = useState(() => readStoredImageModel(MODEL_STORAGE_KEY));
+  const [imageModel, setImageModel] = useState(() => readStoredCatalogModel(MODEL_STORAGE_KEY));
   // Sets only: plates are planned for the main beat; the other checked beats
   // feed the derive context (default: main = first referencing beat, context =
   // the rest). The checked reference sets' galleries join the render refs.
@@ -328,7 +324,7 @@ export function ImageSheetDialog({
 
   // ---- Footer (varies by host type + beat stage). -------------------------
   const hasReferences = referenceIds.length > 0 || (isSet && referenceSetIds.length > 0);
-  const charCanSubmit = selectedShots.length >= 1 && hasReferences && IMAGE_MODEL_IDS.has(imageModel) && !busy;
+  const charCanSubmit = selectedShots.length >= 1 && hasReferences && Boolean(imageModel) && !busy;
   const reviewReady = derivedShots.some((s) => s.name.trim() && s.prompt.trim());
 
   let footer;
@@ -350,7 +346,7 @@ export function ImageSheetDialog({
           type="button"
           className="primary"
           onClick={generateSheet}
-          disabled={busy || !reviewReady || !hasReferences || !IMAGE_MODEL_IDS.has(imageModel)}
+          disabled={busy || !reviewReady || !hasReferences || !imageModel}
         >
           {busy ? 'Starting…' : `Generate sheet (${derivedShots.length})`}
         </button>
@@ -572,21 +568,12 @@ export function ImageSheetDialog({
           {(isCharacter || stage === 'setup' || stage === 'review') && (
             <div className="frame-generate-model-row">
               <span className="field-label">Image model</span>
-              <div className="frame-generate-model-options">
-                {IMAGE_MODELS.map((m) => (
-                  <label key={m.id}>
-                    <input
-                      type="radio"
-                      name="image-sheet-model"
-                      value={m.id}
-                      checked={imageModel === m.id}
-                      onChange={() => setImageModel(m.id)}
-                      disabled={busy}
-                    />
-                    {m.label}
-                  </label>
-                ))}
-              </div>
+              <ImageModelSelect
+                value={imageModel}
+                onChange={setImageModel}
+                disabled={busy}
+                compact
+              />
             </div>
           )}
 

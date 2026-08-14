@@ -2,11 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
 import { ReferencePickerModal } from './ReferencePickerModal.jsx';
 import { apiPostJson, imageUrl, thumbUrl } from '../api.js';
-import {
-  IMAGE_MODELS,
-  readStoredImageModel,
-  writeStoredImageModel,
-} from './imageModels.js';
+import { readStoredCatalogModel, writeStoredImageModel } from './imageModels.js';
+import { ImageModelSelect } from './ImageModelSelect.jsx';
 
 const MODEL_STORAGE_KEY = 'screenplay.storyboard.model';
 
@@ -33,7 +30,7 @@ export function FrameRegenerateDialog({
   referenceIds,
   onReferencesChanged,
 }) {
-  const [imageModel, setImageModel] = useState(() => readStoredImageModel(MODEL_STORAGE_KEY));
+  const [imageModel, setImageModel] = useState(() => readStoredCatalogModel(MODEL_STORAGE_KEY));
   const [prompt, setPrompt] = useState('');
   const [suggestedPrompt, setSuggestedPrompt] = useState('');
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -256,20 +253,12 @@ export function FrameRegenerateDialog({
 
           <div className="frame-generate-model-row">
             <span className="field-label">Image model</span>
-            <div className="frame-generate-model-options">
-              {IMAGE_MODELS.map((m) => (
-                <label key={m.id}>
-                  <input
-                    type="radio"
-                    name="frame-image-model"
-                    value={m.id}
-                    checked={imageModel === m.id}
-                    onChange={() => setImageModel(m.id)}
-                  />
-                  {m.label}
-                </label>
-              ))}
-            </div>
+            <ImageModelSelect
+              value={imageModel}
+              onChange={setImageModel}
+              compact
+              requireReferences
+            />
           </div>
         </div>
       </Modal>

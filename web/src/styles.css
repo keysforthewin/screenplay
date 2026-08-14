@@ -1578,7 +1578,16 @@ select option {
 .image-model-select-controls {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+}
+.image-model-select-sort {
+  padding: 5px 8px;
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  color: var(--fg);
 }
 .image-model-select-controls .ref-picker-search {
   margin-bottom: 0;

@@ -58,6 +58,15 @@ vi.mock('../src/fal/imageClient.js', () => ({
   FLUX_2_KLEIN_GENERATE_MODEL: 'fal-ai/flux-2/klein/9b',
 }));
 
+const catalogGenerateMock = vi.hoisted(() => vi.fn());
+vi.mock('../src/fal/catalogImageGenerate.js', () => ({
+  generateCatalogImage: (...a) => catalogGenerateMock(...a),
+}));
+vi.mock('../src/fal/imageModelCatalog.js', () => ({
+  getImageModel: async (id) =>
+    id === 'fal-ai/some-catalog-model' ? { id, endpoint_id: 'fal-ai/some-catalog-model' } : null,
+}));
+
 const { createProject } = await import('../src/mongo/projects.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
@@ -159,6 +168,37 @@ describe('POST /api/:host/:id/image-sheet', () => {
     const c = await Characters.createCharacter({ projectId, name: 'V', hollywood_actor: 'Z' });
     const { status } = await postJson(`/api/character/${c._id.toString()}/image-sheet`, { model: 'bogus' });
     expect(status).toBe(400);
+  });
+
+  it('accepts a fal catalog endpoint id and renders through the catalog runner', async () => {
+    catalogGenerateMock.mockReset();
+    catalogGenerateMock.mockResolvedValue({
+      buffer: Buffer.from('img'),
+      contentType: 'image/png',
+      model: 'fal-ai/some-catalog-model',
+    });
+    const beat = await Plots.createBeat({ projectId, name: 'Cat', body: 'INT. CAT - DAY' });
+    const { status, json } = await postJson(`/api/beat/${beat._id.toString()}/image-sheet`, {
+      model: 'fal-ai/some-catalog-model',
+      shots: [{ name: 'Cat — wide', prompt: 'wide catwalk' }],
+    });
+    expect(status).toBe(202);
+    const job = await drain(json.job_id);
+    expect(job.status).toBe('done');
+    expect(catalogGenerateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ endpointId: 'fal-ai/some-catalog-model' }),
+    );
+  });
+
+  it('400s a catalog model when FAL is not configured', async () => {
+    h.configured = false;
+    const beat = await Plots.createBeat({ projectId, name: 'NoFal', body: 'INT. X' });
+    const { status, json } = await postJson(`/api/beat/${beat._id.toString()}/image-sheet`, {
+      model: 'fal-ai/some-catalog-model',
+      shots: [{ name: 'S', prompt: 'p' }],
+    });
+    expect(status).toBe(400);
+    expect(json.error).toMatch(/FAL_KEY/);
   });
 
   it('404s on a missing host', async () => {
@@ -272,64 +312,6 @@ describe('GET /api/image-sheet/:jobId', () => {
     const { status: missing } = await getJson(`/api/image-sheet/${new ObjectId().toString()}`);
     expect(missing).toBe(404);
     await drain(started.job_id);
-  });
-});
-
-describe('POST /api/set/:id/auto-image-sheet', () => {
-  it('202s, chains plan → render, and lands artworks on the set', async () => {
-    const set = await Sets.createSet({ projectId, name: 'Alley', description: 'Brick alley.' });
-    await Plots.createBeat({ projectId, name: 'Chase', body: 'INT. ALLEY - NIGHT', sets: ['Alley'] });
-    const { status, json } = await postJson(`/api/set/${set._id.toString()}/auto-image-sheet`, {
-      model: 'nano-banana-pro',
-      beat_ids: [],
-    });
-    expect(status).toBe(202);
-    expect(json.job_id).toBeTruthy();
-    expect(json.host_type).toBe('set');
-    const job = await drain(json.job_id);
-    expect(job.status).toBe('done');
-    expect(job.kind).toBe('set_auto_sheet');
-    const fresh = await Sets.getSet(projectId, set._id.toString());
-    expect(fresh.artworks).toHaveLength(1);
-    expect(fresh.artworks[0].status).toBe('done');
-  });
-
-  it('400s a bad model and 404s an unknown set', async () => {
-    const set = await Sets.createSet({ projectId, name: 'Alley2' });
-    expect((await postJson(`/api/set/${set._id.toString()}/auto-image-sheet`, { model: 'bogus' })).status).toBe(400);
-    expect((await postJson(`/api/set/${new ObjectId().toString()}/auto-image-sheet`, { model: 'nano-banana-pro' })).status).toBe(404);
-  });
-
-  it('400s a malformed main_beat_id and a non-array reference_set_ids', async () => {
-    const set = await Sets.createSet({ projectId, name: 'Alley3' });
-    expect((await postJson(`/api/set/${set._id.toString()}/auto-image-sheet`, {
-      model: 'nano-banana-pro',
-      main_beat_id: 'not-hex',
-    })).status).toBe(400);
-    expect((await postJson(`/api/set/${set._id.toString()}/auto-image-sheet`, {
-      model: 'nano-banana-pro',
-      reference_set_ids: 'not-an-array',
-    })).status).toBe(400);
-  });
-
-  it('unions the checked sets\' galleries into the job\'s reference pool', async () => {
-    Images.findImageFile.mockImplementation(async () => ({ _id: 'exists' }));
-    const set = await Sets.createSet({ projectId, name: 'Sky', description: 'Open sky.' });
-    const own = new ObjectId();
-    await Sets.pushSetImage(projectId, set._id.toString(), { _id: own });
-    const other = await Sets.createSet({ projectId, name: 'Rooftop' });
-    const o1 = new ObjectId();
-    await Sets.pushSetImage(projectId, other._id.toString(), { _id: o1 });
-    await Plots.createBeat({ projectId, name: 'Fall', body: 'EXT. SKY - DAY', sets: ['Sky'] });
-
-    const { status, json } = await postJson(`/api/set/${set._id.toString()}/auto-image-sheet`, {
-      model: 'nano-banana-pro',
-      reference_set_ids: [set._id.toString(), other._id.toString()],
-    });
-    expect(status).toBe(202);
-    const job = await drain(json.job_id);
-    expect(job.reference_image_ids).toEqual([own.toString(), o1.toString()]);
-    expect(job.reference_set_ids).toEqual([set._id.toString(), other._id.toString()]);
   });
 });
 
