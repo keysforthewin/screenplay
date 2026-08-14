@@ -204,7 +204,11 @@ function extractDurationsEnum(params) {
 // parseable shows up. The full markdown is kept verbatim in price_text.
 function extractPriceMinUsd(text) {
   if (typeof text !== 'string' || !text) return null;
-  const matches = [...text.matchAll(/\$(\d+(?:\.\d+)?)/g)].map(m => parseFloat(m[1]));
+  // Newer fal price texts write "**0.17** $ per second" (bold markdown,
+  // currency sign after the number) — normalize to "$0.17" before matching.
+  // Keep in sync with normalizePriceText in src/fal/videoPricing.js.
+  const norm = text.replace(/\*+/g, '').replace(/(\d+(?:\.\d+)?)\s*\$/g, '$$$1');
+  const matches = [...norm.matchAll(/\$(\d+(?:\.\d+)?)/g)].map(m => parseFloat(m[1]));
   const valid = matches.filter(n => Number.isFinite(n) && n > 0);
   if (!valid.length) return null;
   return Math.min(...valid);

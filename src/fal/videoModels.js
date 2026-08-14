@@ -579,6 +579,9 @@ const VIDEO_INPUT_NAMES = new Set([
 const CATALOG_READY_PREFIXES = [
   'ltx', 'grok-imagine', 'bytedance', 'wan', 'vidu',
   'veo3.1', 'kling', 'happy-horse', 'pixverse', 'pika', 'longcat', 'minimax',
+  // Black Forest Labs video endpoints (blackforestlabs/flux-3/*, added to fal
+  // mid-2026) — matches the 'flux-3' path segment.
+  'flux',
   // Video-to-video families
   'decart', 'luma-dream-machine', 'sync', 'topaz', 'rife', 'sora-2',
 ];

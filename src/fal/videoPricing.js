@@ -307,15 +307,25 @@ function megapixelCost({ perMpUsd, resolution, fps, durationSeconds }) {
 // example-cost lines ("a 5 second video at 1080p with audio on will cost
 // **$2.00**.").
 
+// fal's newer price texts write the amount markdown-bold with the currency
+// sign AFTER the number ("**0.17** $ per second of generated video at 720p").
+// Normalize to the "$0.17" shape every regex below expects: strip asterisks,
+// then move a trailing "$" in front of its number.
+export function normalizePriceText(text) {
+  return String(text ?? '')
+    .replace(/\*+/g, '')
+    .replace(/(\d+(?:\.\d+)?)\s*\$/g, '$$$1');
+}
+
 // Match every "$X" amount in the text and return the smallest.
 function pickMinPriceUsd(text) {
-  const matches = [...String(text).matchAll(/\$(\d+(?:\.\d+)?)/g)].map((m) => parseFloat(m[1]));
+  const matches = [...normalizePriceText(text).matchAll(/\$(\d+(?:\.\d+)?)/g)].map((m) => parseFloat(m[1]));
   if (!matches.length) return null;
   return matches.reduce((a, b) => Math.min(a, b), matches[0]);
 }
 
 function pickMaxPriceUsd(text) {
-  const matches = [...String(text).matchAll(/\$(\d+(?:\.\d+)?)/g)].map((m) => parseFloat(m[1]));
+  const matches = [...normalizePriceText(text).matchAll(/\$(\d+(?:\.\d+)?)/g)].map((m) => parseFloat(m[1]));
   if (!matches.length) return null;
   return matches.reduce((a, b) => Math.max(a, b), matches[0]);
 }
@@ -332,7 +342,7 @@ const RES_ALTERNATION = '360p|480p|540p|580p|720p|768p|1024p|1080p|1440p|2160p|4
 
 export function parseCatalogPriceText(priceText) {
   if (typeof priceText !== 'string' || !priceText) return null;
-  const t = priceText;
+  const t = normalizePriceText(priceText);
 
   // 0. Tiered per-second: detect "<resolution>: $X/s" or "$X/s at <res>"
   //    patterns. Two or more matches → emit per_second_tiered so the
@@ -427,9 +437,12 @@ function collectTieredRates(text) {
   //   BEFORE the resolution. Only fills gaps pattern A missed
   //   (otherwise it can mis-attribute a price to a *following*
   //   resolution mentioned later in the same sentence).
+  // Both gaps exclude clause boundaries (, ; .) as well as $ — otherwise
+  // "…video at 720p, and $0.29 per second at 1080p" binds 720p to the NEXT
+  // clause's $0.29 via pattern A.
   const rates = new Map();
   const rxA = new RegExp(
-    `\\b(${RES_ALTERNATION})\\b[^$\\n]{0,30}?\\$(\\d+(?:\\.\\d+)?)\\s*(?:\\/|per)\\s*(?:generated\\s+)?s(?:econd)?\\b`,
+    `\\b(${RES_ALTERNATION})\\b[^$\\n,;.]{0,30}?\\$(\\d+(?:\\.\\d+)?)\\s*(?:\\/|per)\\s*(?:generated\\s+)?s(?:econd)?\\b`,
     'gi',
   );
   for (const m of text.matchAll(rxA)) {
@@ -437,7 +450,7 @@ function collectTieredRates(text) {
     if (!rates.has(key)) rates.set(key, parseFloat(m[2]));
   }
   const rxB = new RegExp(
-    `\\$(\\d+(?:\\.\\d+)?)\\s*(?:\\/|per)\\s*(?:generated\\s+)?s(?:econd)?\\b[^$\\n]{0,30}?\\b(${RES_ALTERNATION})\\b`,
+    `\\$(\\d+(?:\\.\\d+)?)\\s*(?:\\/|per)\\s*(?:generated\\s+)?s(?:econd)?\\b[^$\\n,;.]{0,30}?\\b(${RES_ALTERNATION})\\b`,
     'gi',
   );
   for (const m of text.matchAll(rxB)) {

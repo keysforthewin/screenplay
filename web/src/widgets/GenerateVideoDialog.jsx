@@ -382,6 +382,22 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     setActiveFacets((s) => ({ ...s, [key]: !s[key] }));
   }
 
+  // Numeric duration choices for the dropdown. Catalog enums can contain
+  // non-numeric entries ('auto') — those parse to NaN and would render as
+  // a broken "NaNs" option, so keep only finite values (deduped).
+  const durationOptions = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const d of chosenModel?.durations || []) {
+      const n = parseDurationNumber(d);
+      if (Number.isFinite(n) && !seen.has(n)) {
+        seen.add(n);
+        out.push(n);
+      }
+    }
+    return out;
+  }, [chosenModel]);
+
   // Build the request body the same way for /preview and /generate so both
   // endpoints see identical inputs — otherwise the user's "approve" doesn't
   // actually approve what we ship.
@@ -492,9 +508,9 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
   const submitTooltip = !chosenModel
     ? 'Pick a model from the list.'
     : !chosenModel.is_registered
-    ? 'Preview model — not yet wired up. Add to src/fal/videoModels.js to enable.'
+    ? 'This model is preview-only (browse, not generate) — its inputs aren\'t wired up yet. Pick a model with the green Ready badge.'
     : missing.length
-    ? `Need: ${missing.join(', ')}`
+    ? `This model still needs: ${missing.join(', ')}`
     : '';
   const showPreviewPanel = Boolean(preview) && !generating && !job?.video_file_id;
 
@@ -574,7 +590,7 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
         </label>
 
         <div className="video-action-row">
-          {chosenModel?.durations?.length ? (
+          {durationOptions.length ? (
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <span className="field-label">Duration</span>
               <select
@@ -582,14 +598,11 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
                 disabled={generating}
                 onChange={(e) => setDuration(Number(e.target.value))}
               >
-                {chosenModel.durations.map((d) => {
-                  const n = parseDurationNumber(d);
-                  return (
-                    <option key={d} value={n}>
-                      {n}s
-                    </option>
-                  );
-                })}
+                {durationOptions.map((n) => (
+                  <option key={n} value={n}>
+                    {n}s
+                  </option>
+                ))}
               </select>
             </label>
           ) : chosenModel && modelNeedsDuration(chosenModel) ? (
@@ -715,6 +728,12 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
               : 'Preview payload…'}
           </button>
         </div>
+
+        {!ready && !generating && !previewLoading && submitTooltip ? (
+          <div style={{ fontSize: 12, color: '#ffb86b', textAlign: 'right' }}>
+            ⚠ {submitTooltip}
+          </div>
+        ) : null}
 
         {showPreviewPanel ? (
           <PayloadPreviewPanel
