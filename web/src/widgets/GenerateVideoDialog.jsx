@@ -28,6 +28,15 @@ function modelAccepts(model, key) {
   return need[key] && need[key] !== 'unused';
 }
 
+// Haystack for the free-text model filter: name, endpoint id, lab/family,
+// and the catalog description.
+function modelSearchText(m) {
+  return [m.display_name, m.label, m.endpoint_id, m.model_lab, m.model_family, m.description]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
 // Default frame→slot assignment derived from pool order — mirrors the backend's
 // resolveFrameAssignment so an untouched dialog ships the same mapping.
 function defaultAssignment(model, sb) {
@@ -90,6 +99,12 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
   const [registryError, setRegistryError] = useState(null);
   const [selectedEndpoint, setSelectedEndpoint] = useState(null); // endpoint_id of the chosen catalog row
   const [activeFacets, setActiveFacets] = useState({ ...EMPTY_FACETS });
+  const [search, setSearch] = useState('');
+  // Server-side catalog refresh (POST /video-models/refresh). The scrape takes
+  // minutes; we poll the status endpoint and re-fetch the registry when done.
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshProgress, setRefreshProgress] = useState(null);
+  const refreshPollRef = useRef(null);
   const [prompt, setPrompt] = useState('');
   const [duration, setDuration] = useState(null);
   const [resolution, setResolution] = useState(null);
@@ -146,6 +161,76 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     return loadRegistry();
   }, [open, registry]);
 
+  function stopRefreshPoll() {
+    if (refreshPollRef.current) {
+      clearInterval(refreshPollRef.current);
+      refreshPollRef.current = null;
+    }
+  }
+
+  // Poll the refresh status until the scrape finishes, then re-fetch the
+  // registry so the new catalog shows up without reopening the dialog.
+  function startRefreshPoll() {
+    stopRefreshPoll();
+    setRefreshing(true);
+    refreshPollRef.current = setInterval(async () => {
+      let s;
+      try {
+        s = await apiGet('/video-models/refresh');
+      } catch {
+        return; // transient — keep polling
+      }
+      if (s?.running) {
+        setRefreshProgress(s.progress || 'Refreshing…');
+        return;
+      }
+      stopRefreshPoll();
+      setRefreshing(false);
+      setRefreshProgress(null);
+      if (s?.error) setError(`Catalog refresh failed: ${s.error}`);
+      loadRegistry();
+    }, 2000);
+  }
+
+  async function refreshCatalog() {
+    setError(null);
+    try {
+      const r = await apiPostJson('/video-models/refresh', {});
+      setRefreshProgress(r?.state?.progress || 'Refreshing…');
+      startRefreshPoll();
+    } catch (e) {
+      let msg = e.message || 'Catalog refresh failed.';
+      try {
+        const parsed = JSON.parse(msg);
+        if (parsed?.error) msg = parsed.error;
+      } catch {}
+      setError(msg);
+    }
+  }
+
+  // A refresh started in an earlier open (or by another user) may still be
+  // running — resume polling so the spinner and eventual reload still happen.
+  useEffect(() => {
+    if (!open) {
+      stopRefreshPoll();
+      setRefreshing(false);
+      setRefreshProgress(null);
+      return;
+    }
+    let cancelled = false;
+    apiGet('/video-models/refresh')
+      .then((s) => {
+        if (cancelled || !s?.running) return;
+        setRefreshProgress(s.progress || 'Refreshing…');
+        startRefreshPoll();
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   const chosenModel = useMemo(() => {
     if (!registry) return null;
     if (!selectedEndpoint) return null;
@@ -166,6 +251,7 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     setGenerateAudio(false);
     setIncludeDirectorNotes(true);
     setActiveFacets({ ...EMPTY_FACETS });
+    setSearch('');
     // Prefer the live y-doc fragment text over the (possibly stale) sb prop:
     // sb.text_prompt comes from the last REST fetch, which lags any in-flight
     // edits in the CollabField by ~2s of Hocuspocus debounce. The y-doc has
@@ -225,7 +311,11 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     setFps(pickDefaultFps(chosenModel));
   }, [chosenModel, sb?.duration_seconds]);
 
-  useEffect(() => () => closeStream(), []);
+  useEffect(() => () => {
+    closeStream();
+    stopRefreshPoll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Pre-flight: which inputs does the chosen model need that aren't on this
   // storyboard yet? Server validates the same thing on submit; this lets us
@@ -255,30 +345,38 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     return out;
   }, [chosenModel, sb, assignment]);
 
-  // Models that pass the current facet filter (AND across checked facets).
-  const visibleModels = useMemo(() => {
+  // Models that pass the text search (name / endpoint / lab / description).
+  const searchedModels = useMemo(() => {
     if (!registry?.models) return [];
+    const q = search.trim().toLowerCase();
+    if (!q) return registry.models;
+    return registry.models.filter((m) => modelSearchText(m).includes(q));
+  }, [registry, search]);
+
+  // Models that pass the current facet filter (AND across checked facets),
+  // applied on top of the text search.
+  const visibleModels = useMemo(() => {
     const checked = FACETS.filter((f) => activeFacets[f.key]);
-    return registry.models.filter((m) =>
+    return searchedModels.filter((m) =>
       checked.every((f) => m.capabilities?.[f.key] === true),
     );
-  }, [registry, activeFacets]);
+  }, [searchedModels, activeFacets]);
 
   // Live narrowed count per facet ("how many models would be visible if I
   // toggle THIS facet, holding the others as-is?"). Renders next to each
   // checkbox so the user can see where adding a constraint leads.
   const facetCounts = useMemo(() => {
-    if (!registry?.models?.length) return {};
+    if (!searchedModels.length) return {};
     const out = {};
     for (const f of FACETS) {
       const candidate = { ...activeFacets, [f.key]: true };
       const checked = FACETS.filter((g) => candidate[g.key]);
-      out[f.key] = registry.models.filter((m) =>
+      out[f.key] = searchedModels.filter((m) =>
         checked.every((g) => m.capabilities?.[g.key] === true),
       ).length;
     }
     return out;
-  }, [registry, activeFacets]);
+  }, [searchedModels, activeFacets]);
 
   function toggleFacet(key) {
     setActiveFacets((s) => ({ ...s, [key]: !s[key] }));
@@ -432,13 +530,14 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
           visibleModels={visibleModels}
           chosenModel={chosenModel}
           lastUsedEndpoint={lastUsedEndpoint}
+          search={search}
+          onSearchChange={setSearch}
+          refreshing={refreshing}
+          refreshProgress={refreshProgress}
           onToggleFacet={toggleFacet}
           onClearFacets={() => setActiveFacets({ ...EMPTY_FACETS })}
           onModelClick={(m) => setSelectedEndpoint(m.endpoint_id)}
-          onRefreshCatalog={() => {
-            setRegistry(null);
-            loadRegistry();
-          }}
+          onRefreshCatalog={refreshCatalog}
         />
 
         {missing.length ? (
@@ -1112,6 +1211,10 @@ function ModelPicker({
   visibleModels,
   chosenModel,
   lastUsedEndpoint,
+  search,
+  onSearchChange,
+  refreshing,
+  refreshProgress,
   onToggleFacet,
   onClearFacets,
   onModelClick,
@@ -1172,23 +1275,29 @@ function ModelPicker({
           {registry.catalog_generated_at
             ? `Catalog: ${new Date(registry.catalog_generated_at).toLocaleDateString()} · `
             : ''}
-          <button
-            type="button"
-            onClick={onRefreshCatalog}
-            disabled={generating}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--accent)',
-              cursor: 'pointer',
-              padding: 0,
-              font: 'inherit',
-              textDecoration: 'underline',
-            }}
-            title="Re-fetch /api/video-models. Run `npm run refresh:fal-models` from the terminal first."
-          >
-            refresh
-          </button>
+          {refreshing ? (
+            <span title={refreshProgress || ''}>
+              refreshing… {refreshProgress ? `(${refreshProgress})` : ''}
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={onRefreshCatalog}
+              disabled={generating}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--accent)',
+                cursor: 'pointer',
+                padding: 0,
+                font: 'inherit',
+                textDecoration: 'underline',
+              }}
+              title="Re-scrape the fal.ai model list on the server (takes a few minutes). The list reloads automatically when it finishes."
+            >
+              refresh catalog
+            </button>
+          )}
         </span>
       </div>
 
@@ -1197,6 +1306,15 @@ function ModelPicker({
           {registry.catalog_error}
         </div>
       ) : null}
+
+      <input
+        type="search"
+        value={search}
+        disabled={generating}
+        onChange={(e) => onSearchChange(e.target.value)}
+        placeholder="Filter by name or description (e.g. kling, veo, lipsync)…"
+        style={{ fontSize: 13 }}
+      />
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         {FACETS.map((f) => (
@@ -1259,7 +1377,8 @@ function ModelPicker({
         </div>
         {sortedModels.length === 0 ? (
           <div style={{ padding: 12, color: 'var(--fg-muted)', fontSize: 13 }}>
-            No models match these facets. Clear some to widen the search.
+            No models match {search.trim() ? 'this filter' : 'these facets'}. Clear
+            {search.trim() ? ' the text box or some facets' : ' some'} to widen the search.
           </div>
         ) : null}
         {sortedModels.map((m) => (

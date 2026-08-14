@@ -5817,6 +5817,32 @@ export function buildApiRouter() {
     }
   });
 
+  // Kick off a server-side catalog regeneration (the same scrape as
+  // `npm run refresh:fal-models`). Single-flight — a second POST while one is
+  // running just returns the in-flight state. The SPA polls the GET below and
+  // re-fetches /video-models when `running` flips back to false.
+  router.post('/video-models/refresh', async (_req, res, next) => {
+    try {
+      const { config } = await import('../config.js');
+      if (!config.fal.apiKey) {
+        return res.status(503).json({ error: 'fal.ai is not configured (FAL_KEY missing).' });
+      }
+      const { startCatalogRefresh } = await import('../fal/catalogRefresh.js');
+      res.json(startCatalogRefresh());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/video-models/refresh', async (_req, res, next) => {
+    try {
+      const { getCatalogRefreshState } = await import('../fal/catalogRefresh.js');
+      res.json(getCatalogRefreshState());
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // ── Playground ────────────────────────────────────────────────────────
   // A scratchpad for trying any fal.ai model with drag-and-dropped reference
   // media. Models come from data/fal-playground-models.json (see
