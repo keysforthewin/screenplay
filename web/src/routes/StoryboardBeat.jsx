@@ -27,7 +27,6 @@ import { BeatPager } from '../widgets/BeatPager.jsx';
 import { SceneBiblePanel } from '../widgets/SceneBiblePanel.jsx';
 import { GenerationProgress } from '../widgets/GenerationProgress.jsx';
 import { ReadinessPanel } from '../widgets/ReadinessPanel.jsx';
-import { ReferenceExtrasSection } from '../widgets/ReferenceExtrasSection.jsx';
 
 export function StoryboardBeat({ session }) {
   const { order } = useParams();
@@ -72,10 +71,6 @@ export function StoryboardBeat({ session }) {
   // tag input. /api/toc returns plain_name for case-insensitive matching.
   const [tocCharacters, setTocCharacters] = useState([]);
   const [tocBeats, setTocBeats] = useState([]);
-  // All GridFS images owned by this beat, used to find the ones outside
-  // beat.images[] — typically storyboard frame snapshots and per-frame
-  // uploads — for the "Frame snapshots & uploads" section at the page bottom.
-  const [allBeatImages, setAllBeatImages] = useState([]);
   const [showProgressLog, setShowProgressLog] = useState(true);
   const progressLogRef = useRef(null);
   // 1s tick while a generation is running so "Xs ago" labels update smoothly
@@ -143,22 +138,6 @@ export function StoryboardBeat({ session }) {
       cancelled = true;
     };
   }, [refreshKey]);
-
-  useEffect(() => {
-    if (!data?.beat?._id) return undefined;
-    let cancelled = false;
-    (async () => {
-      try {
-        const imgs = await apiGet(`/beat/${data.beat._id}/images`);
-        if (!cancelled) setAllBeatImages(imgs.images || []);
-      } catch {
-        if (!cancelled) setAllBeatImages([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [data?.beat?._id, refreshKey]);
 
   const onRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
@@ -431,13 +410,6 @@ export function StoryboardBeat({ session }) {
 
   const beatTitle = (data.beat?.name || '').trim() || 'Untitled';
 
-  const beatImageIds = new Set(
-    (data.beat?.images || []).map((i) => i._id?.toString?.() || String(i._id)),
-  );
-  const extraReferenceImages = allBeatImages.filter(
-    (img) => !beatImageIds.has(img._id?.toString?.() || String(img._id)),
-  );
-
   return (
     <main className="app">
       <p>
@@ -677,20 +649,6 @@ export function StoryboardBeat({ session }) {
         onClose={() => setEditOpen(false)}
         onApplied={() => { setEditOpen(false); onRefresh(); }}
       />
-
-      <section style={{ marginTop: 32 }}>
-        <h2>Frame snapshots &amp; uploads</h2>
-        <p style={{ color: 'var(--fg-muted)', marginTop: 0 }}>
-          Reference images attached to this beat by its storyboards — frame
-          snapshots and per-frame uploads.
-        </p>
-        <ReferenceExtrasSection
-          items={extraReferenceImages}
-          deletePath={(id) => `/beat/${data.beat._id}/orphan-image/${id}`}
-          onChange={onRefresh}
-          emptyText="No storyboard reference images on this beat yet."
-        />
-      </section>
 
       <BeatPager beats={tocBeats} currentId={data?.beat?._id} basePath="/storyboard" />
     </main>

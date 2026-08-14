@@ -77,8 +77,30 @@ function plain(s) {
   return stripMarkdown(String(s || '')).trim();
 }
 
+function doneArtworks(doc) {
+  return (doc?.artworks || []).filter((a) => a?.status === 'done' && a.result_image_id);
+}
+
 function hasDoneArtwork(doc) {
-  return (doc?.artworks || []).some((a) => a?.status === 'done' && a.result_image_id);
+  return doneArtworks(doc).length > 0;
+}
+
+// Artwork descriptions are what the frame-reference scorer reads when picking
+// which plates to feed a frame (src/web/frameReferences.js). A gallery where
+// none are described is one the scorer has to guess at. One described plate is
+// enough to stay quiet — this is advice, not a completeness audit.
+function describedArtworkCount(doc) {
+  return doneArtworks(doc).filter((a) => String(a.description || '').trim()).length;
+}
+
+// `code` is host-prefixed ('character_…' / 'set_…') so the SPA's ReadinessPanel
+// can build the right entity link from the code alone.
+function artworkDescriptionCheck(doc, name, hostLabel, code) {
+  const total = doneArtworks(doc).length;
+  if (!total || describedArtworkCount(doc) > 0) return null;
+  return check('info', code, name,
+    `${hostLabel} has ${total} artwork ${total === 1 ? 'plate' : 'plates'} but no descriptions — `
+    + 'frames pick references by description, so add one (or hit Describe on the Artwork tab).');
 }
 
 function check(severity, code, subject, message) {
@@ -122,6 +144,8 @@ export function runDeterministicChecks({ beat, characters = [], sets = [] }) {
       checks.push(check('info', 'character_thin_description', name,
         `${name} has no description/background text to steer their look.`));
     }
+    const artDesc = artworkDescriptionCheck(c, name, name, 'character_artwork_no_description');
+    if (artDesc) checks.push(artDesc);
   }
 
   for (const s of sets) {
@@ -139,6 +163,8 @@ export function runDeterministicChecks({ beat, characters = [], sets = [] }) {
       checks.push(check('info', 'set_thin_description', name,
         `Set "${name}" has no description to steer its look.`));
     }
+    const artDesc = artworkDescriptionCheck(s, name, `Set "${name}"`, 'set_artwork_no_description');
+    if (artDesc) checks.push(artDesc);
   }
 
   if (!(beat?.sets || []).length) {
@@ -160,13 +186,18 @@ export function _setGapReporterForTests(fn) {
   gapReporterOverride = fn;
 }
 
-function rosterManifest(characters, sets) {
+function plateTally(doc) {
+  return `described plates: ${describedArtworkCount(doc)}/${doneArtworks(doc).length}`;
+}
+
+// Exported for tests only — the gap reporter is the sole production caller.
+export function rosterManifest(characters, sets) {
   const lines = [];
   lines.push('# Linked characters:');
   if (!characters.length) lines.push('(none)');
   for (const c of characters) {
     lines.push(
-      `- ${plain(c.name)} — artwork: ${hasDoneArtwork(c) ? 'yes' : 'NO'}, images: ${
+      `- ${plain(c.name)} — artwork: ${hasDoneArtwork(c) ? 'yes' : 'NO'}, ${plateTally(c)}, images: ${
         (c.images || []).length ? 'yes' : 'NO'
       }, description: ${clipField(c.fields?.description || c.fields?.background_story, 120) || '(none)'}`,
     );
@@ -175,7 +206,7 @@ function rosterManifest(characters, sets) {
   if (!sets.length) lines.push('(none)');
   for (const s of sets) {
     lines.push(
-      `- ${plain(s.name)} — artwork: ${hasDoneArtwork(s) ? 'yes' : 'NO'}, images: ${
+      `- ${plain(s.name)} — artwork: ${hasDoneArtwork(s) ? 'yes' : 'NO'}, ${plateTally(s)}, images: ${
         (s.images || []).length ? 'yes' : 'NO'
       }, description: ${clipField(s.description, 120) || '(none)'}`,
     );

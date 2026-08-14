@@ -30,6 +30,7 @@ import {
   removeArtworkViaGateway,
 } from './gateway.js';
 import { ALLOWED_IMAGE_MODELS } from './imageReplaceDispatch.js';
+import { kickoffArtworkVisionSeed } from './artworkVisionWorker.js';
 import { announceMediaEvent } from '../discord/announcer.js';
 import { beatUrl, characterUrl, setUrl } from './links.js';
 import { getBeat } from '../mongo/plots.js';
@@ -230,6 +231,17 @@ export async function generateArtworkImageInline({
     resultImageId: file._id,
     rotateToPrevious: false,
   });
+  // Describe what actually came back, using the bytes already in hand. Runs in
+  // the background: the caller's job is done once the result is persisted, and
+  // a vision hiccup must never fail a render that succeeded.
+  kickoffArtworkVisionSeed({
+    projectId,
+    hostType,
+    hostId,
+    artworkId,
+    buffer: result.buffer,
+    contentType: result.contentType,
+  });
   return { fileId: file._id, model: result.model || model };
 }
 
@@ -429,6 +441,15 @@ async function runEdit(opts) {
       artworkId,
       resultImageId: file._id,
       rotateToPrevious: true,
+    });
+    // The picture changed, so the old description no longer matches it.
+    kickoffArtworkVisionSeed({
+      projectId,
+      hostType,
+      hostId,
+      artworkId,
+      buffer: result.buffer,
+      contentType: result.contentType,
     });
     if (announceUsername) {
       announceArtwork({

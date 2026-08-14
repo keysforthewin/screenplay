@@ -6,9 +6,9 @@ import {
   thumbUrl,
 } from '../api.js';
 import { Modal } from './Modal.jsx';
+import { ImageModelSelect } from './ImageModelSelect.jsx';
 import {
-  IMAGE_MODELS,
-  readStoredImageModel,
+  readStoredCatalogModel,
   writeStoredImageModel,
 } from './imageModels.js';
 
@@ -25,7 +25,6 @@ function stripMd(s) {
 }
 
 // Picker for entity image galleries (beat, character, set, notes). Tabs:
-//   library    — pick from the global library (re-parents the image)
 //   upload     — POST a file to `uploadPath`
 //   generate   — text-to-image to `generatePath`, with Gemini/OpenAI choice
 //   characters — pick any character's image (copies, doesn't move)
@@ -34,7 +33,6 @@ function stripMd(s) {
 //
 // Required props:
 //   uploadPath           — POST multipart endpoint (e.g. /beat/:id/image)
-//   attachPath           — POST {image_id} endpoint (e.g. /beat/:id/image/attach)
 //   generatePath         — POST {prompt, model} endpoint
 //   characterSourcesPath — GET endpoint for character-owned images
 //   beatSourcesPath      — GET endpoint for beat-owned images
@@ -46,7 +44,6 @@ export function EntityImagePickerModal({
   onClose,
   title = 'Add image',
   uploadPath,
-  attachPath,
   generatePath,
   characterSourcesPath,
   beatSourcesPath,
@@ -56,20 +53,17 @@ export function EntityImagePickerModal({
 }) {
   const tabs = useMemo(() => {
     const t = [];
-    if (attachPath) t.push({ key: 'library', label: 'Library' });
     if (uploadPath) t.push({ key: 'upload', label: 'Upload' });
     if (generatePath) t.push({ key: 'generate', label: 'Generate' });
     if (characterSourcesPath && copyPath) t.push({ key: 'characters', label: 'Character' });
     if (beatSourcesPath && copyPath) t.push({ key: 'beats', label: 'Beats' });
     if (setSourcesPath && copyPath) t.push({ key: 'sets', label: 'Sets' });
     return t;
-  }, [attachPath, uploadPath, generatePath, characterSourcesPath, beatSourcesPath, setSourcesPath, copyPath]);
+  }, [uploadPath, generatePath, characterSourcesPath, beatSourcesPath, setSourcesPath, copyPath]);
 
   const [tab, setTab] = useState(tabs[0]?.key || 'upload');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
-  const [libraryImages, setLibraryImages] = useState(null);
-  const [libraryQuery, setLibraryQuery] = useState('');
   const [characterImages, setCharacterImages] = useState(null);
   const [characterQuery, setCharacterQuery] = useState('');
   const [beatImages, setBeatImages] = useState(null);
@@ -82,8 +76,6 @@ export function EntityImagePickerModal({
     if (!open) return;
     setTab(tabs[0]?.key || 'upload');
     setError(null);
-    setLibraryImages(null);
-    setLibraryQuery('');
     setCharacterImages(null);
     setCharacterQuery('');
     setBeatImages(null);
@@ -91,22 +83,6 @@ export function EntityImagePickerModal({
     setSetImages(null);
     setSetQuery('');
   }, [open, tabs]);
-
-  useEffect(() => {
-    if (!open || tab !== 'library' || libraryImages !== null) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const data = await apiGet('/library');
-        if (!cancelled) setLibraryImages(data.images || []);
-      } catch (e) {
-        if (!cancelled) setError(e.message);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, tab, libraryImages]);
 
   useEffect(() => {
     if (!open || tab !== 'characters' || characterImages !== null) return;
@@ -159,21 +135,6 @@ export function EntityImagePickerModal({
     };
   }, [open, tab, setImages, setSourcesPath]);
 
-  async function attach(imageId) {
-    if (busy || !attachPath) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await apiPostJson(attachPath, { image_id: String(imageId) });
-      await onAttached?.();
-      onClose?.();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function copy(imageId) {
     if (busy || !copyPath) return;
     setBusy(true);
@@ -221,17 +182,6 @@ export function EntityImagePickerModal({
       setBusy(false);
     }
   }
-
-  const filteredLibrary = useMemo(() => {
-    if (!libraryImages) return [];
-    const f = libraryQuery.trim().toLowerCase();
-    if (!f) return libraryImages;
-    return libraryImages.filter((img) => {
-      const name = stripMd(img.name).toLowerCase();
-      const desc = String(img.description || '').toLowerCase();
-      return name.includes(f) || desc.includes(f);
-    });
-  }, [libraryImages, libraryQuery]);
 
   const filteredCharacters = useMemo(() => {
     if (!characterImages) return [];
@@ -305,16 +255,6 @@ export function EntityImagePickerModal({
         {error && <div className="error-banner">{error}</div>}
 
         <div className="ref-picker-body">
-          {tab === 'library' && (
-            <LibraryTab
-              images={filteredLibrary}
-              loaded={libraryImages !== null}
-              query={libraryQuery}
-              onQuery={setLibraryQuery}
-              onPick={attach}
-              busy={busy}
-            />
-          )}
           {tab === 'upload' && (
             <UploadTab
               fileInputRef={fileInput}
@@ -373,47 +313,6 @@ export function EntityImagePickerModal({
         </div>
       </div>
     </Modal>
-  );
-}
-
-function LibraryTab({ images, loaded, query, onQuery, onPick, busy }) {
-  if (!loaded) {
-    return <p className="ref-picker-empty">Loading…</p>;
-  }
-  return (
-    <>
-      <input
-        type="search"
-        className="ref-picker-search"
-        placeholder="Search library…"
-        value={query}
-        onChange={(e) => onQuery(e.target.value)}
-      />
-      {images.length === 0 ? (
-        <p className="ref-picker-empty">
-          {query ? 'No matches.' : 'Library is empty.'}
-        </p>
-      ) : (
-        <div className="ref-picker-grid">
-          {images.map((it) => {
-            const id = String(it._id);
-            const label = stripMd(it.name) || it.filename || '';
-            return (
-              <button
-                key={id}
-                type="button"
-                className="ref-picker-thumb"
-                disabled={busy}
-                title={label}
-                onClick={() => onPick(id)}
-              >
-                <img src={thumbUrl(id)} alt={label} loading="lazy" />
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </>
   );
 }
 
@@ -518,7 +417,7 @@ function UploadTab({ fileInputRef, onUpload, busy }) {
 
 function GenerateTab({ onGenerate, busy }) {
   const [prompt, setPrompt] = useState('');
-  const [model, setModel] = useState(() => readStoredImageModel(GEN_MODEL_STORAGE_KEY));
+  const [model, setModel] = useState(() => readStoredCatalogModel(GEN_MODEL_STORAGE_KEY));
 
   useEffect(() => {
     writeStoredImageModel(GEN_MODEL_STORAGE_KEY, model);
@@ -552,36 +451,12 @@ function GenerateTab({ onGenerate, busy }) {
 
       <div style={{ marginTop: 12 }}>
         <span className="field-label">Image model</span>
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 4,
-            marginTop: 6,
-          }}
-        >
-          {IMAGE_MODELS.map((m) => (
-            <label
-              key={m.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                fontSize: 13,
-              }}
-            >
-              <input
-                type="radio"
-                name="entity-img-picker-model"
-                value={m.id}
-                checked={model === m.id}
-                onChange={() => setModel(m.id)}
-                disabled={busy}
-              />
-              {m.label}
-            </label>
-          ))}
-        </div>
+        <ImageModelSelect
+          value={model}
+          onChange={setModel}
+          disabled={busy}
+          compact
+        />
       </div>
 
       <div style={{ marginTop: 16 }}>

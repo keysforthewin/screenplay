@@ -1,0 +1,112 @@
+// Generic image generation for any endpoint in the fal.ai catalog.
+//
+// The seven hand-wired models (src/fal/imageClient.js) have tuned generate/edit
+// routing and per-model quirks. Everything else in the catalog runs through
+// here: the catalog row (data/fal-playground-models.json) already records each
+// endpoint's resolved param names and its output path, so this runner reads the
+// schema rather than guessing at it — the same contract the playground uses.
+//
+// Returns the { buffer, contentType, model } shape dispatchImageReplace hands
+// back for the wired models, so every caller downstream is unchanged.
+
+import { logger } from '../log.js';
+import { fal, isConfigured as falConfigured } from './client.js';
+import { uploadFalAsset } from './upload.js';
+import { prepareImageForFal } from './prepareImage.js';
+import {
+  buildPlaygroundInput,
+  extractOutputMedia,
+  getPlaygroundModel,
+} from './playgroundModels.js';
+import { validateImageBuffer } from '../mongo/imageBytes.js';
+
+function badRequest(message) {
+  const err = new Error(message);
+  err.status = 400;
+  return err;
+}
+
+// How many reference images this endpoint can actually take. `max: null` in the
+// catalog means the endpoint documents no cap, so we pass everything through.
+function referenceCapacity(row) {
+  const image = row?.inputs?.image;
+  if (!image || image.need === 'unused' || !(image.params || []).length) return 0;
+  return Number.isFinite(image.max) ? image.max : Infinity;
+}
+
+async function fetchImageBytes(url) {
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    throw new Error(`fal output download network error: ${e.message}`);
+  }
+  if (!res.ok) throw new Error(`fal output download failed (${res.status})`);
+  const contentType = (res.headers.get('content-type') || 'image/png').split(';')[0].trim();
+  const buffer = Buffer.from(await res.arrayBuffer());
+  // Same gate every other image entry point goes through — a provider handing
+  // back HTML or a truncated file must not reach GridFS.
+  validateImageBuffer(buffer);
+  return { buffer, contentType };
+}
+
+export async function generateCatalogImage({
+  endpointId,
+  prompt,
+  referenceImages = [],
+}) {
+  if (!falConfigured()) throw badRequest('FAL_KEY is not configured.');
+  if (typeof prompt !== 'string' || !prompt.trim()) throw badRequest('prompt is required.');
+
+  const row = await getPlaygroundModel(String(endpointId));
+  if (!row) throw badRequest(`"${endpointId}" is not in the fal catalog.`);
+  if (row.output?.kind !== 'image') {
+    throw badRequest(`"${endpointId}" does not produce images.`);
+  }
+
+  // Endpoints that take no image input simply ignore references — dropping them
+  // is friendlier than refusing a generation the user asked for, and the picker
+  // already labels which models consume references.
+  const capacity = referenceCapacity(row);
+  const usable = capacity === 0 ? [] : (referenceImages || []).slice(0, capacity);
+  if (usable.length < (referenceImages || []).length) {
+    logger.info(
+      `catalog image: ${endpointId} takes ${capacity === Infinity ? 'any' : capacity} references, ` +
+        `dropping ${(referenceImages || []).length - usable.length}`,
+    );
+  }
+
+  const imageUrls = [];
+  for (const ref of usable) {
+    if (!ref?.buffer || !ref?.contentType) {
+      throw badRequest('referenceImages entries must have buffer + contentType.');
+    }
+    const prepared = await prepareImageForFal({
+      buffer: ref.buffer,
+      contentType: ref.contentType,
+    });
+    imageUrls.push(await uploadFalAsset({
+      buffer: prepared.buffer,
+      contentType: prepared.contentType,
+      name: `catalog-ref-${imageUrls.length}`,
+    }));
+  }
+
+  const input = buildPlaygroundInput(row, { prompt, imageUrls });
+  const t0 = Date.now();
+  const result = await fal.subscribe(row.endpoint_id, { input });
+  const data = result?.data || result;
+  const media = extractOutputMedia(row, data).filter((m) => (m.kind || 'image') === 'image');
+  if (!media.length) {
+    throw new Error(
+      `${row.endpoint_id} returned no image URL: ${JSON.stringify(data).slice(0, 300)}`,
+    );
+  }
+
+  const { buffer, contentType } = await fetchImageBytes(media[0].url);
+  logger.info(
+    `catalog image: ${row.endpoint_id} refs=${imageUrls.length} ` +
+      `${buffer.length}b ${Date.now() - t0}ms`,
+  );
+  return { buffer, contentType, model: row.endpoint_id };
+}

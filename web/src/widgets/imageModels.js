@@ -28,6 +28,19 @@ export function readStoredImageModel(storageKey) {
   }
 }
 
+// Catalog-aware variant for pickers backed by GET /api/image-models `catalog`:
+// any non-empty id is kept, because the valid set is the live fal catalog
+// rather than the fixed IMAGE_MODELS array above. The server re-validates on
+// submit, and the picker highlights nothing if a stored id has since vanished.
+export function readStoredCatalogModel(storageKey) {
+  try {
+    const v = localStorage.getItem(storageKey);
+    return typeof v === 'string' && v.trim() ? v : DEFAULT_IMAGE_MODEL;
+  } catch {
+    return DEFAULT_IMAGE_MODEL;
+  }
+}
+
 export function writeStoredImageModel(storageKey, value) {
   try {
     localStorage.setItem(storageKey, value);

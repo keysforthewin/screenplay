@@ -46,6 +46,12 @@ export function ArtworkTab({
   const [busyId, setBusyId] = useState(null);
   const [renameId, setRenameId] = useState(null);
   const [renameValue, setRenameValue] = useState('');
+  // Click-to-edit description, same interaction as the rename above. Kept as
+  // plain PATCH state rather than a CollabField because artwork lives in the
+  // host doc's artworks[] array, not in a y-doc fragment.
+  const [describeId, setDescribeId] = useState(null);
+  const [describeValue, setDescribeValue] = useState('');
+  const [autoDescribeId, setAutoDescribeId] = useState(null);
   // Multi-select for bulk delete on the gallery.
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -228,6 +234,48 @@ export function ArtworkTab({
     }
   }
 
+  function startDescribe(art) {
+    setDescribeId(art._id?.toString?.() || String(art._id));
+    setDescribeValue(art.description || '');
+  }
+
+  async function commitDescribe() {
+    if (!describeId) return;
+    const id = describeId;
+    const value = describeValue;
+    setDescribeId(null);
+    setDescribeValue('');
+    try {
+      await apiPatchJson(`${basePath}/artwork/${id}`, { description: value });
+      await onChange?.();
+    } catch (e) {
+      setError(e?.message || 'Saving the description failed');
+    }
+  }
+
+  // Run the vision describer over the rendered plate. Fills the name too when
+  // the artwork has none; never overwrites a name that is already set. The
+  // description IS overwritten, so confirm first when there's one to lose.
+  async function autoDescribe(art) {
+    const id = art._id?.toString?.() || String(art._id);
+    if (
+      (art.description || '').trim()
+      && !confirm('Replace this artwork\'s description with a freshly generated one?')
+    ) {
+      return;
+    }
+    setAutoDescribeId(id);
+    setError(null);
+    try {
+      await apiPostJson(`${basePath}/artwork/${id}/describe`, {});
+      await onChange?.();
+    } catch (e) {
+      setError(e?.message || 'Auto-describe failed');
+    } finally {
+      setAutoDescribeId(null);
+    }
+  }
+
   // Re-read the latest artwork from props each render so the edit dialog
   // reflects status transitions (pending → done) without polling.
   function latestArtwork(target) {
@@ -246,7 +294,9 @@ export function ArtworkTab({
         Artwork is generated from a prompt plus reference images. Pick refs
         from this {hostType} or any beat. Each tile can be edited in-line
         (Nano Banana Pro single-step tweaks with one undo), fully regenerated,
-        renamed, or deleted.
+        renamed, or deleted. Click a tile's description to write your own, or
+        hit Describe to have the image analysed for you — storyboard frames
+        pick their references by description, so it is worth filling in.
       </p>
       <div className="tab-actions">
         <button
@@ -409,11 +459,40 @@ export function ArtworkTab({
                       </button>
                     )}
                   </div>
-                  <div className="artwork-card-prompt">
-                    {(art.prompt || '').slice(0, 140)
-                      || <em>(no prompt)</em>}
-                    {(art.prompt || '').length > 140 ? '…' : ''}
+                  <div className="artwork-card-description">
+                    {describeId === id ? (
+                      <textarea
+                        autoFocus
+                        rows={4}
+                        value={describeValue}
+                        onChange={(e) => setDescribeValue(e.target.value)}
+                        onBlur={commitDescribe}
+                        onKeyDown={(e) => {
+                          // Enter inserts a newline here (descriptions are a
+                          // paragraph); Escape abandons the edit.
+                          if (e.key === 'Escape') {
+                            setDescribeId(null);
+                            setDescribeValue('');
+                          }
+                        }}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        className="artwork-card-description-btn"
+                        title="Click to edit the description"
+                        onClick={() => startDescribe(art)}
+                      >
+                        {art.description || <em>(no description — click to add)</em>}
+                      </button>
+                    )}
                   </div>
+                  {!!(art.prompt || '').trim() && (
+                    <div className="artwork-card-prompt" title={art.prompt}>
+                      Prompt: {(art.prompt || '').slice(0, 140)}
+                      {(art.prompt || '').length > 140 ? '…' : ''}
+                    </div>
+                  )}
                   {status === 'error' && (
                     <div className="artwork-card-error">
                       {art.error_message || 'Generation failed.'}
@@ -438,6 +517,16 @@ export function ArtworkTab({
                           Set as main
                         </button>
                       )
+                    )}
+                    {resultId && status === 'done' && (
+                      <button
+                        type="button"
+                        onClick={() => autoDescribe(art)}
+                        disabled={isBusy || autoDescribeId === id}
+                        title="Look at this image and write its description automatically"
+                      >
+                        {autoDescribeId === id ? 'Describing…' : 'Describe'}
+                      </button>
                     )}
                     {resultId && status === 'done' && (
                       <button

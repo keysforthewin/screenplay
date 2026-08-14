@@ -116,6 +116,40 @@ describe('buildFrameReferenceCandidates', () => {
     expect(charCands.map((c) => c.id)).toContain(String(charArt2));
   });
 
+  it('scores an artwork on its description rather than its generation prompt', async () => {
+    const setArt = new ObjectId();
+    getSet.mockResolvedValueOnce({
+      _id: 's1',
+      name: 'Diner',
+      artworks: [
+        artwork(setArt, 'Diner interior', 'wide shot, 35mm, golden hour', {
+          description: 'A chrome-trimmed diner counter with red vinyl stools.',
+        }),
+      ],
+    });
+
+    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: [], sets_in_scene: ['Diner'] };
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: '' });
+
+    expect(cands).toHaveLength(1);
+    expect(cands[0].description).toBe('A chrome-trimmed diner counter with red vinyl stools.');
+  });
+
+  it('falls back to the prompt when an artwork has no description', async () => {
+    const setArt = new ObjectId();
+    getSet.mockResolvedValueOnce({
+      _id: 's1',
+      name: 'Diner',
+      artworks: [artwork(setArt, 'Diner interior', 'wide shot, 35mm, golden hour')],
+    });
+
+    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: [], sets_in_scene: ['Diner'] };
+    const cands = await buildFrameReferenceCandidates({ projectId: 'p', sb, frameText: '' });
+
+    expect(cands).toHaveLength(1);
+    expect(cands[0].description).toBe('wide shot, 35mm, golden hour');
+  });
+
   it('ignores beat artwork entirely — the beat source is retired', async () => {
     getBeat.mockResolvedValue({
       _id: 'beat1',

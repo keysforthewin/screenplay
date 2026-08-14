@@ -40,10 +40,18 @@ function normalizeImageModel(raw) {
   if (v === 'fal') return 'flux-pro-kontext';
   return v;
 }
-function isValidImageModel(v) {
-  return ALLOWED_IMAGE_MODELS.includes(v);
+// A model is valid if it is one of the tuned shortcuts OR a fal catalog image
+// endpoint the picker offers. Async because the catalog lives on disk; every
+// call site is inside an async handler. The dispatcher re-checks authoritatively
+// — this exists so a bad id comes back as a 400 JSON error instead of falling
+// through to Express's default 500 page.
+async function isValidImageModel(v) {
+  if (ALLOWED_IMAGE_MODELS.includes(v)) return true;
+  const { getImageModel } = await import('../fal/imageModelCatalog.js');
+  return !!(await getImageModel(v));
 }
-const IMAGE_MODEL_ERROR = `image_model must be one of: ${ALLOWED_IMAGE_MODELS.join('|')}`;
+const IMAGE_MODEL_ERROR =
+  `image_model must be one of: ${ALLOWED_IMAGE_MODELS.join('|')} — or a fal catalog endpoint id from GET /api/image-models`;
 import { getSession, touchSession } from '../mongo/auth.js';
 import {
   announceBeatMedia,
@@ -155,6 +163,10 @@ import {
   kickoffLibraryVisionSeed,
   kickoffImageVisionSeed,
 } from './libraryVisionWorker.js';
+import {
+  describeArtwork,
+  kickoffArtworkVisionSeed,
+} from './artworkVisionWorker.js';
 import { getPlot, listBeats, getBeat } from '../mongo/plots.js';
 import {
   startGenerateArtworkJob,
@@ -870,8 +882,51 @@ export function buildApiRouter() {
     );
   });
 
-  router.get('/image-models', (req, res) => {
-    res.json({ models: listImageModelInfo() });
+  // Two lists in one response:
+  //   models  — curated metadata for the hand-wired models (resolution, speed,
+  //             reference caps). The bulk-generate dialog reads this.
+  //   catalog — the whole fal.ai image catalog, filtered to endpoints we can
+  //             drive from a prompt + references and priced for the picker.
+  router.get('/image-models', async (_req, res, next) => {
+    try {
+      const { loadImageModelCatalog } = await import('../fal/imageModelCatalog.js');
+      const { config } = await import('../config.js');
+      const catalog = await loadImageModelCatalog();
+      res.json({
+        models: listImageModelInfo(),
+        default_model_id: DEFAULT_IMAGE_MODEL,
+        configured: Boolean(config.fal.apiKey),
+        catalog_generated_at: catalog.generated_at,
+        catalog_error: catalog.catalog_error,
+        catalog: catalog.models,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Regenerate the image half of the fal catalog (same scrape as
+  // `npm run refresh:playground-models`). Single-flight; the SPA polls the GET.
+  router.post('/image-models/refresh', async (_req, res, next) => {
+    try {
+      const { config } = await import('../config.js');
+      if (!config.fal.apiKey) {
+        return res.status(503).json({ error: 'fal.ai is not configured (FAL_KEY missing).' });
+      }
+      const { startCatalogRefresh } = await import('../fal/catalogRefresh.js');
+      res.json(startCatalogRefresh('image'));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/image-models/refresh', async (_req, res, next) => {
+    try {
+      const { getCatalogRefreshState } = await import('../fal/catalogRefresh.js');
+      res.json(getCatalogRefreshState('image'));
+    } catch (err) {
+      next(err);
+    }
   });
 
   router.get('/template', async (req, res) => {
@@ -902,6 +957,25 @@ export function buildApiRouter() {
     }
   }
 
+  // Same idea for the host's artwork: any rendered plate with no description
+  // gets one. This is what fills in galleries generated before descriptions
+  // existed — new artwork is described by the render pipeline itself. Pending
+  // and errored artwork is skipped (nothing to look at). Fire-and-forget; the
+  // worker dedups in-flight artwork ids across concurrent page loads.
+  function backfillArtworkDescriptions(projectId, hostType, hostId, artworks) {
+    if (!hostId) return;
+    for (const art of artworks || []) {
+      if (art?.status !== 'done' || !art.result_image_id) continue;
+      if (String(art.description || '').trim()) continue;
+      kickoffArtworkVisionSeed({
+        projectId,
+        hostType,
+        hostId,
+        artworkId: art._id?.toString?.() || String(art._id),
+      });
+    }
+  }
+
   router.get('/beat', async (req, res) => {
     const { order, id } = req.query;
     let beat = null;
@@ -913,6 +987,7 @@ export function buildApiRouter() {
     if (!beat) return res.status(404).json({ error: 'beat not found' });
     res.json({ beat });
     backfillOwnedImageCaptions('beat', beat._id?.toString?.(), beat.images).catch(() => {});
+    backfillArtworkDescriptions(req.projectId, 'beat', beat._id?.toString?.(), beat.artworks);
   });
 
   // Resolve every character named in a beat to its current Mongo doc, with
@@ -1105,6 +1180,7 @@ export function buildApiRouter() {
     if (!c) return res.status(404).json({ error: 'character not found' });
     res.json({ character: c });
     backfillOwnedImageCaptions('character', c._id?.toString?.(), c.images).catch(() => {});
+    backfillArtworkDescriptions(req.projectId, 'character', c._id?.toString?.(), c.artworks);
   });
 
   // Every GridFS image owned by this set — mirrors /character/:id/images
@@ -1139,6 +1215,7 @@ export function buildApiRouter() {
     if (!s) return res.status(404).json({ error: 'set not found' });
     res.json({ set: s });
     backfillOwnedImageCaptions('set', s._id?.toString?.(), s.images).catch(() => {});
+    backfillArtworkDescriptions(req.projectId, 'set', s._id?.toString?.(), s.artworks);
   });
 
   router.get('/notes', async (req, res) => {
@@ -1570,7 +1647,7 @@ export function buildApiRouter() {
         return res.status(400).json({ error: 'mode must be edit|generate' });
       }
       const imageModel = normalizeImageModel(req.body?.image_model);
-      if (!isValidImageModel(imageModel)) {
+      if (!await isValidImageModel(imageModel)) {
         return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
@@ -1754,7 +1831,7 @@ export function buildApiRouter() {
         return res.status(400).json({ error: 'prompt must be ≤ 4096 chars' });
       }
       const model = normalizeImageModel(req.body?.model);
-      if (!isValidImageModel(model)) {
+      if (!await isValidImageModel(model)) {
         return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const refs = await loadReferenceImages(req.body?.reference_image_ids);
@@ -2125,7 +2202,7 @@ export function buildApiRouter() {
         return res.status(400).json({ error: 'mode must be edit|generate' });
       }
       const imageModel = normalizeImageModel(req.body?.image_model);
-      if (!isValidImageModel(imageModel)) {
+      if (!await isValidImageModel(imageModel)) {
         return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
@@ -2308,7 +2385,7 @@ export function buildApiRouter() {
         return res.status(400).json({ error: 'prompt must be ≤ 4096 chars' });
       }
       const model = normalizeImageModel(req.body?.model);
-      if (!isValidImageModel(model)) {
+      if (!await isValidImageModel(model)) {
         return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const refs = await loadReferenceImages(req.body?.reference_image_ids);
@@ -2698,7 +2775,7 @@ export function buildApiRouter() {
         return res.status(400).json({ error: 'mode must be edit|generate' });
       }
       const imageModel = normalizeImageModel(req.body?.image_model);
-      if (!isValidImageModel(imageModel)) {
+      if (!await isValidImageModel(imageModel)) {
         return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
@@ -2878,7 +2955,7 @@ export function buildApiRouter() {
         return res.status(400).json({ error: 'prompt must be ≤ 4096 chars' });
       }
       const model = normalizeImageModel(req.body?.model);
-      if (!isValidImageModel(model)) {
+      if (!await isValidImageModel(model)) {
         return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const refs = await loadReferenceImages(req.body?.reference_image_ids);
@@ -3094,7 +3171,11 @@ export function buildApiRouter() {
   // the background job runs. Completion is pushed to connected SPAs via
   // the existing `fields_updated` Hocuspocus broadcast on the host's room.
 
-  function validateArtworkSubmitBody(req, res, { requirePrompt = true } = {}) {
+  // Descriptions come from the vision describer, which writes a detailed
+  // single paragraph — roomier than the 200-char name cap, still bounded.
+  const ARTWORK_DESCRIPTION_MAX = 4000;
+
+  async function validateArtworkSubmitBody(req, res, { requirePrompt = true } = {}) {
     const prompt = String(req.body?.prompt || '').trim();
     if (requirePrompt) {
       if (!prompt) {
@@ -3107,7 +3188,7 @@ export function buildApiRouter() {
       }
     }
     const model = normalizeImageModel(req.body?.model);
-    if (!isValidImageModel(model)) {
+    if (!await isValidImageModel(model)) {
       res.status(400).json({ error: IMAGE_MODEL_ERROR });
       return null;
     }
@@ -3143,7 +3224,7 @@ export function buildApiRouter() {
       try {
         const hostId = await resolveHostId(req);
         if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
-        const body = validateArtworkSubmitBody(req, res);
+        const body = await validateArtworkSubmitBody(req, res);
         if (!body) return;
         const refs = await validateArtworkRefs(req, res);
         if (!refs) return;
@@ -3262,7 +3343,7 @@ export function buildApiRouter() {
         if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
         const artworkId = req.params.artworkId;
         if (!isOidHex(artworkId)) return res.status(400).json({ error: 'invalid artwork id' });
-        const body = validateArtworkSubmitBody(req, res);
+        const body = await validateArtworkSubmitBody(req, res);
         if (!body) return;
         const refs = await validateArtworkRefs(req, res);
         if (!refs) return;
@@ -3302,7 +3383,7 @@ export function buildApiRouter() {
           return res.status(400).json({ error: 'prompt must be ≤ 4096 chars' });
         }
         const model = normalizeImageModel(req.body?.model);
-        if (!isValidImageModel(model)) {
+        if (!await isValidImageModel(model)) {
           return res.status(400).json({ error: IMAGE_MODEL_ERROR });
         }
         const refs = await loadReferenceImages(req.body?.reference_image_ids);
@@ -3341,7 +3422,10 @@ export function buildApiRouter() {
       }
     });
 
-    // PATCH /<host>/:id/artwork/:artworkId — metadata-only update (name).
+    // PATCH /<host>/:id/artwork/:artworkId — metadata-only update
+    // (name / description). `description` is what the plate DEPICTS; the
+    // generation `prompt` is deliberately not patchable here, since editing it
+    // would silently change what Regenerate sends to the image model.
     router.patch(`${basePath}/:id/artwork/:artworkId`, async (req, res, next) => {
       try {
         const hostId = await resolveHostId(req);
@@ -3350,8 +3434,13 @@ export function buildApiRouter() {
         if (!isOidHex(artworkId)) return res.status(400).json({ error: 'invalid artwork id' });
         const patch = {};
         if (typeof req.body?.name === 'string') patch.name = req.body.name.slice(0, 200);
+        if (typeof req.body?.description === 'string') {
+          patch.description = req.body.description.slice(0, ARTWORK_DESCRIPTION_MAX);
+        }
         if (Object.keys(patch).length === 0) {
-          return res.status(400).json({ error: 'no recognized fields to patch (expected: name)' });
+          return res
+            .status(400)
+            .json({ error: 'no recognized fields to patch (expected: name, description)' });
         }
         const { artwork } = await patchArtworkViaGateway({
           projectId: req.projectId,
@@ -3361,6 +3450,28 @@ export function buildApiRouter() {
           patch,
         });
         res.json({ artwork });
+      } catch (e) {
+        handleArtworkError(e, res, next);
+      }
+    });
+
+    // POST /<host>/:id/artwork/:artworkId/describe — run the vision describer
+    // over the rendered plate and write the result back. Awaited rather than
+    // queued: the user clicked a button and is watching for the text. Fills a
+    // blank name too, but never overwrites one that's already set.
+    router.post(`${basePath}/:id/artwork/:artworkId/describe`, async (req, res, next) => {
+      try {
+        const hostId = await resolveHostId(req);
+        if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
+        const artworkId = req.params.artworkId;
+        if (!isOidHex(artworkId)) return res.status(400).json({ error: 'invalid artwork id' });
+        const { artwork, changed } = await describeArtwork({
+          projectId: req.projectId,
+          hostType,
+          hostId,
+          artworkId,
+        });
+        res.json({ artwork, changed });
       } catch (e) {
         handleArtworkError(e, res, next);
       }
@@ -3405,7 +3516,7 @@ export function buildApiRouter() {
         const hostId = await resolveHostId(req);
         if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
         const model = normalizeImageModel(req.body?.model);
-        if (!isValidImageModel(model)) {
+        if (!await isValidImageModel(model)) {
           return res.status(400).json({ error: IMAGE_MODEL_ERROR });
         }
         const refs = await validateArtworkRefs(req, res);
@@ -3504,7 +3615,7 @@ export function buildApiRouter() {
             const hostId = await resolveHostId(req);
             if (!hostId) return res.status(404).json({ error: 'set not found' });
             const model = normalizeImageModel(req.body?.model);
-            if (!isValidImageModel(model)) {
+            if (!await isValidImageModel(model)) {
               return res.status(400).json({ error: IMAGE_MODEL_ERROR });
             }
             const beatIds = Array.isArray(req.body?.beat_ids) ? req.body.beat_ids : [];
@@ -4224,7 +4335,7 @@ export function buildApiRouter() {
         return res.status(400).json({ error: 'invalid frame id' });
       }
       const imageModel = normalizeImageModel(req.body?.image_model);
-      if (!isValidImageModel(imageModel)) {
+      if (!await isValidImageModel(imageModel)) {
         return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const mode = req.body?.mode ?? 'generate';
@@ -4307,7 +4418,7 @@ export function buildApiRouter() {
         return res.status(400).json({ error: 'invalid frame id' });
       }
       const model = normalizeImageModel(req.body?.model);
-      if (!isValidImageModel(model)) {
+      if (!await isValidImageModel(model)) {
         return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const raw = req.body?.prompt;
@@ -5017,7 +5128,7 @@ export function buildApiRouter() {
           return res.status(400).json({ error: 'prompt must be ≤ 2048 chars' });
         }
         const model = normalizeImageModel(req.body?.model);
-        if (!isValidImageModel(model)) {
+        if (!await isValidImageModel(model)) {
           return res.status(400).json({ error: IMAGE_MODEL_ERROR });
         }
         const sb = await getStoryboard(req.projectId, sbId);
@@ -5128,7 +5239,7 @@ export function buildApiRouter() {
         return res.status(400).json({ error: 'prompt must be ≤ 2048 chars' });
       }
       const model = normalizeImageModel(req.body?.model);
-      if (!isValidImageModel(model)) {
+      if (!await isValidImageModel(model)) {
         return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const sb = await getStoryboard(req.projectId, sbId);
@@ -6083,7 +6194,7 @@ export function buildApiRouter() {
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const target = Number(req.body?.count) > 0 ? Number(req.body.count) : null;
       const imageModel = normalizeImageModel(req.body?.image_model);
-      if (!isValidImageModel(imageModel)) {
+      if (!await isValidImageModel(imageModel)) {
         return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const direction =
@@ -6286,7 +6397,7 @@ export function buildApiRouter() {
       const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const imageModel = normalizeImageModel(req.body?.image_model);
-      if (!isValidImageModel(imageModel)) {
+      if (!await isValidImageModel(imageModel)) {
         return res.status(400).json({ error: IMAGE_MODEL_ERROR });
       }
       const autoReferences = req.body?.auto_references !== false; // default on

@@ -97,7 +97,10 @@ function artworkCandidates(host, { kind, source }) {
       name:
         (a.name || '').trim() ||
         (kind === 'set' ? source.replace(/^set:/, '') : kind === 'char' ? source : 'artwork'),
-      description: (a.prompt || '').trim(),
+      // The description says what the plate DEPICTS (vision-generated or
+      // hand-written); the prompt only says what was asked for, and imported
+      // artwork has none at all. Prefer the former, keep the latter as backup.
+      description: (a.description || '').trim() || (a.prompt || '').trim(),
     });
   }
   return out;

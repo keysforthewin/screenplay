@@ -253,6 +253,64 @@ describe('artworks.js — character host', () => {
     ).rejects.toThrow(/unknown field/);
   });
 
+  it('createPendingArtwork seeds an empty description', async () => {
+    const c = await makeCharacter();
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
+      hostType: 'character',
+      hostId: c._id.toString(),
+      prompt: 'p',
+      model: 'fal',
+    });
+    expect(artwork.description).toBe('');
+  });
+
+  it('appendDoneArtwork seeds an empty description', async () => {
+    const c = await makeCharacter();
+    const { artwork } = await Artworks.appendDoneArtwork({ projectId,
+      hostType: 'character',
+      hostId: c._id.toString(),
+      resultImageId: new ObjectId(),
+      name: 'Imported plate',
+    });
+    expect(artwork.description).toBe('');
+  });
+
+  it('patchArtwork updates description independently of prompt', async () => {
+    const c = await makeCharacter();
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
+      hostType: 'character',
+      hostId: c._id.toString(),
+      prompt: 'cyberpunk warrior, neon rim light',
+      model: 'fal',
+    });
+    const out = await Artworks.patchArtwork({ projectId,
+      hostType: 'character',
+      hostId: c._id.toString(),
+      artworkId: artwork._id,
+      patch: { description: 'A woman in a rain-slick alley lit from behind.' },
+    });
+    expect(out.artwork.description).toBe('A woman in a rain-slick alley lit from behind.');
+    // The generation prompt is untouched — it still drives regenerate.
+    expect(out.artwork.prompt).toBe('cyberpunk warrior, neon rim light');
+  });
+
+  it('patchArtwork coerces a null description to an empty string', async () => {
+    const c = await makeCharacter();
+    const { artwork } = await Artworks.createPendingArtwork({ projectId,
+      hostType: 'character',
+      hostId: c._id.toString(),
+      prompt: 'p',
+      model: 'fal',
+    });
+    const out = await Artworks.patchArtwork({ projectId,
+      hostType: 'character',
+      hostId: c._id.toString(),
+      artworkId: artwork._id,
+      patch: { description: null },
+    });
+    expect(out.artwork.description).toBe('');
+  });
+
   it('removeArtwork drops the artwork and reports both image ids for GridFS cleanup', async () => {
     const c = await makeCharacter();
     const r1 = new ObjectId();

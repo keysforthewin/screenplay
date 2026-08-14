@@ -1080,12 +1080,45 @@ select option {
   gap: 8px;
   padding: 8px 10px;
 }
-.artwork-card-prompt {
+/* What the plate depicts — the primary text on the tile, click to edit. */
+.artwork-card-description {
   color: var(--fg, #eee);
   font-size: 13px;
   line-height: 1.35;
+}
+.artwork-card-description-btn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: text;
+  width: 100%;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.artwork-card-description-btn:hover { color: var(--accent); }
+.artwork-card-description-btn em { color: var(--fg-muted); }
+.artwork-card-description textarea {
+  width: 100%;
+  background: var(--bg-elevated, #1a1a1a);
+  border: 1px solid var(--accent);
+  color: var(--fg, #eee);
+  padding: 4px 6px;
+  border-radius: 3px;
+  font: inherit;
+  resize: vertical;
+}
+/* The generation prompt — secondary now that descriptions exist. */
+.artwork-card-prompt {
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -1537,6 +1570,100 @@ select option {
   resize: vertical;
   min-height: 96px;
   font: inherit;
+}
+/* Catalog-backed image model picker (ImageModelSelect.jsx). */
+.image-model-select {
+  margin-top: 6px;
+}
+.image-model-select-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.image-model-select-controls .ref-picker-search {
+  margin-bottom: 0;
+  flex: 1;
+}
+.image-model-select-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.image-model-select-list {
+  margin-top: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+}
+.image-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border, #333);
+}
+.image-model-row:last-child { border-bottom: none; }
+.image-model-row:hover { background: rgba(255, 255, 255, 0.04); }
+.image-model-row.is-selected { background: rgba(255, 255, 255, 0.07); }
+.image-model-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.image-model-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg, #eee);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.image-model-row-meta {
+  font-size: 11px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.image-model-row-price {
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.image-model-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+.image-model-badge.is-muted {
+  border-color: var(--border, #333);
+  color: var(--fg-muted);
+}
+.image-model-select-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.image-model-select-footer button {
+  padding: 3px 8px;
+  font-size: 12px;
 }
 .ref-picker-dialog-list {
   display: flex;

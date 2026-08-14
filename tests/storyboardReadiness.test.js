@@ -84,6 +84,60 @@ describe('runDeterministicChecks', () => {
     expect(codesOf(checks, 'info')).toContain('set_thin_description');
   });
 
+  it('flags sets and characters whose artwork carries no descriptions', () => {
+    const beat = { name: 'B', body: 'x', characters: ['Steve'], sets: ['Kitchen'] };
+    const checks = Readiness.runDeterministicChecks({
+      beat,
+      characters: [{
+        name: 'Steve',
+        images: [{ _id: 1 }],
+        artworks: [{ status: 'done', result_image_id: 1, description: '' }],
+        fields: { description: 'a guy' },
+      }],
+      sets: [{
+        name: 'Kitchen',
+        images: [{ _id: 2 }],
+        artworks: [{ status: 'done', result_image_id: 2, description: '' }],
+        description: 'greasy',
+      }],
+    });
+    // Codes are host-prefixed so ReadinessPanel's entityLink() can route the
+    // reader to the right page from the code alone.
+    expect(codesOf(checks, 'info')).toContain('character_artwork_no_description');
+    expect(codesOf(checks, 'info')).toContain('set_artwork_no_description');
+    expect(checks.find((c) => c.code === 'character_artwork_no_description').subject).toBe('Steve');
+    expect(checks.find((c) => c.code === 'set_artwork_no_description').subject).toBe('Kitchen');
+  });
+
+  it('stays quiet when at least one plate is described', () => {
+    const beat = { name: 'B', body: 'x', characters: [], sets: ['Kitchen'] };
+    const checks = Readiness.runDeterministicChecks({
+      beat,
+      characters: [],
+      sets: [{
+        name: 'Kitchen',
+        images: [{ _id: 2 }],
+        artworks: [
+          { status: 'done', result_image_id: 2, description: 'Greasy tiled galley kitchen.' },
+          { status: 'done', result_image_id: 3, description: '' },
+        ],
+        description: 'greasy',
+      }],
+    });
+    expect(codesOf(checks)).not.toContain('set_artwork_no_description');
+  });
+
+  it('does not flag artwork descriptions on a host with no artwork at all', () => {
+    const beat = { name: 'B', body: 'x', characters: [], sets: ['Empty'] };
+    const checks = Readiness.runDeterministicChecks({
+      beat,
+      characters: [],
+      sets: [{ name: 'Empty', images: [], artworks: [], description: 'x' }],
+    });
+    // set_no_artwork already covers this case — a second check would be noise.
+    expect(codesOf(checks)).not.toContain('set_artwork_no_description');
+  });
+
   it('notes missing sets and empty bodies as info', () => {
     const beat = { name: 'B', body: '   ', characters: [], sets: [] };
     const checks = Readiness.runDeterministicChecks({ beat, characters: [], sets: [] });
@@ -109,6 +163,32 @@ describe('runDeterministicChecks', () => {
       }],
     });
     expect(checks.filter((c) => c.severity === 'warn')).toEqual([]);
+  });
+});
+
+describe('rosterManifest', () => {
+  it('tells the gap reporter how many plates carry descriptions', () => {
+    const manifest = Readiness.rosterManifest(
+      [],
+      [{
+        name: 'Kitchen',
+        images: [],
+        description: 'greasy',
+        artworks: [
+          { status: 'done', result_image_id: 1, description: 'Tiled galley kitchen.' },
+          { status: 'done', result_image_id: 2, description: '' },
+        ],
+      }],
+    );
+    expect(manifest).toContain('described plates: 1/2');
+  });
+
+  it('reports no plates when the host has none', () => {
+    const manifest = Readiness.rosterManifest(
+      [{ name: 'Steve', images: [], artworks: [], fields: { description: 'a guy' } }],
+      [],
+    );
+    expect(manifest).toContain('described plates: 0/0');
   });
 });
 

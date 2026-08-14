@@ -6,10 +6,9 @@ import { CollabField } from '../editor/CollabField.jsx';
 import { ImageGallery } from '../widgets/ImageGallery.jsx';
 import { AttachmentList } from '../widgets/AttachmentList.jsx';
 import { ArtworkTab } from '../widgets/ArtworkTab.jsx';
-import { ReferenceExtrasSection } from '../widgets/ReferenceExtrasSection.jsx';
 import { GenerateSetDescriptionDialog } from '../widgets/GenerateSetDescriptionDialog.jsx';
 
-const TABS = ['background', 'attachments', 'references', 'artwork'];
+const TABS = ['background', 'attachments', 'artwork'];
 
 function readInitialTab() {
   if (typeof window === 'undefined') return 'background';
@@ -21,7 +20,6 @@ export function Set({ session }) {
   const { name } = useParams();
   const navigate = useNavigate();
   const [set, setSet] = useState(null);
-  const [allSetImages, setAllSetImages] = useState([]);
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [activeTab, setActiveTab] = useState(readInitialTab);
@@ -36,8 +34,6 @@ export function Set({ session }) {
         const s = await apiGet(`/set?name=${encodeURIComponent(name)}`);
         if (cancelled) return;
         setSet(s.set);
-        const imgs = await apiGet(`/set/${s.set._id}/images`);
-        if (!cancelled) setAllSetImages(imgs.images || []);
       } catch (e) {
         if (!cancelled) setError(e.message);
       }
@@ -72,16 +68,6 @@ export function Set({ session }) {
   }
 
   const room = `set:${set._id}`;
-
-  // NOTE: this component is itself named `Set`, which shadows the global
-  // `Set` constructor within this module — use an array + includes() here
-  // rather than `new Set(...)` to avoid accidentally self-referencing.
-  const setImageIdList = (set.images || []).map(
-    (i) => i._id?.toString?.() || String(i._id),
-  );
-  const extraReferenceImages = allSetImages.filter(
-    (img) => !setImageIdList.includes(img._id?.toString?.() || String(img._id)),
-  );
 
   return (
     <main className="app">
@@ -158,10 +144,6 @@ export function Set({ session }) {
             editPath={(imageId) =>
               `/set/${set._id}/image/${imageId}/regenerate`
             }
-            moveToLibraryPath={(imageId) =>
-              `/set/${set._id}/image/${imageId}/move-to-library`
-            }
-            attachPath={`/set/${set._id}/image/attach`}
             generatePath={`/set/${set._id}/image/generate`}
             characterSourcesPath={`/images/by-owner/characters`}
             beatSourcesPath={`/images/by-owner/beats`}
@@ -183,20 +165,6 @@ export function Set({ session }) {
             hideAddButton
             pickerOpen={filePickerOpen}
             onPickerOpenChange={setFilePickerOpen}
-          />
-        </div>
-
-        <div className="tab-panel" hidden={activeTab !== 'references'}>
-          <p className="tab-intro">
-            Reference images attached to this set outside the gallery —
-            typically generated or imported orphans. Manage gallery images on
-            the Attachments tab.
-          </p>
-          <ReferenceExtrasSection
-            items={extraReferenceImages}
-            deletePath={(id) => `/set/${set._id}/orphan-image/${id}`}
-            onChange={onRefresh}
-            emptyText="No orphan reference images for this set."
           />
         </div>
 
@@ -222,7 +190,6 @@ function tabLabel(tab) {
   switch (tab) {
     case 'background': return 'Description';
     case 'attachments': return 'Attachments';
-    case 'references': return 'References';
     case 'artwork': return 'Artwork';
     default: return tab;
   }

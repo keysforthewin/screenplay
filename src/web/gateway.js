@@ -2635,7 +2635,7 @@ export async function setOwnedImageMetaViaGateway({
   description,
 }) {
   if (name === undefined && description === undefined) return;
-  if (ownerType !== 'beat' && ownerType !== 'character') {
+  if (ownerType !== 'beat' && ownerType !== 'character' && ownerType !== 'set') {
     throw new Error(`setOwnedImageMetaViaGateway: unsupported ownerType "${ownerType}"`);
   }
   const idStr = String(ownerId || '');

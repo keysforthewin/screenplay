@@ -174,6 +174,74 @@ describe('library vision seed worker', () => {
     expect(after.metadata.owner_type).toBe('character');
   });
 
+  it('routes set-owned images through setOwnedImageMeta (not the library setter)', async () => {
+    // Regression: set-owned images used to fall through to the library writer,
+    // which rejects anything with an owner_type — so set gallery captions were
+    // generated and then silently dropped.
+    const setOwnerId = new ObjectId();
+    const doc = {
+      _id: new ObjectId(),
+      filename: 's.png',
+      contentType: 'image/png',
+      length: 100,
+      uploadDate: new Date(),
+      metadata: {
+        project_id: projectId,
+        owner_type: 'set',
+        owner_id: setOwnerId,
+        source: 'upload',
+        prompt: null,
+        generated_by: null,
+        name: '',
+        description: '',
+        name_lower: '',
+      },
+    };
+    fakeDb.collection('images.files')._docs.push(doc);
+
+    kickoffImageVisionSeed(doc._id, Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png', {
+      ownerType: 'set',
+      ownerId: setOwnerId,
+    });
+    await flushQueue();
+
+    const after = await fakeDb.collection('images.files').findOne({ _id: doc._id });
+    expect(after.metadata.name).toBe('Diner at dusk');
+    expect(after.metadata.description).toBe('A neon-lit diner glowing under a darkening sky.');
+    expect(after.metadata.owner_type).toBe('set');
+  });
+
+  it('describes set-owned images as locations', async () => {
+    const setOwnerId = new ObjectId();
+    const doc = {
+      _id: new ObjectId(),
+      filename: 's2.png',
+      contentType: 'image/png',
+      length: 100,
+      uploadDate: new Date(),
+      metadata: {
+        project_id: projectId,
+        owner_type: 'set',
+        owner_id: setOwnerId,
+        source: 'upload',
+        name: '',
+        description: '',
+        name_lower: '',
+      },
+    };
+    fakeDb.collection('images.files')._docs.push(doc);
+
+    kickoffImageVisionSeed(doc._id, Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png', {
+      ownerType: 'set',
+      ownerId: setOwnerId,
+    });
+    await flushQueue();
+
+    expect(describeMock).toHaveBeenCalledTimes(1);
+    expect(describeMock.mock.calls[0][0].kind).toBe('location');
+    expect(analyzeMock).not.toHaveBeenCalled();
+  });
+
   it('dedups concurrent kickoffs for the same image id', async () => {
     const doc = seedLibrary();
     const buf = Buffer.from([0x89, 0x50, 0x4e, 0x47]);

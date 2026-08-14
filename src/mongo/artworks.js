@@ -240,6 +240,7 @@ export async function appendDoneArtwork({
   const artwork = {
     _id: new ObjectId(),
     name: String(name || ''),
+    description: '',
     prompt: '',
     model: '',
     reference_image_ids: [],
@@ -278,6 +279,7 @@ export async function createPendingArtwork({
   const artwork = {
     _id: new ObjectId(),
     name: String(name || ''),
+    description: '',
     prompt: String(prompt || ''),
     model: String(model || ''),
     reference_image_ids: (referenceImageIds || []).map(toOid),
@@ -302,12 +304,18 @@ export async function createPendingArtwork({
 // don't drift into untyped territory.
 const PATCHABLE = new Set([
   'name',
+  'description',
   'prompt',
   'model',
   'last_edit_prompt',
   'reference_image_ids',
   'job_id',
 ]);
+
+// Free-text fields that read as "" rather than null when cleared. `prompt`
+// and `model` stay nullable because a null there means "never set", which the
+// regenerate path distinguishes from an empty string.
+const EMPTY_STRING_FIELDS = new Set(['name', 'description', 'last_edit_prompt']);
 
 export async function patchArtwork({ projectId, hostType, hostId, artworkId, patch }) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
@@ -327,7 +335,7 @@ export async function patchArtwork({ projectId, hostType, hostId, artworkId, pat
     } else if (k === 'job_id') {
       fields[k] = v == null ? null : String(v);
     } else {
-      fields[k] = v == null ? (k === 'name' || k === 'last_edit_prompt' ? '' : null) : String(v);
+      fields[k] = v == null ? (EMPTY_STRING_FIELDS.has(k) ? '' : null) : String(v);
     }
   }
   await setArtworkFields(host, current._id, fields);

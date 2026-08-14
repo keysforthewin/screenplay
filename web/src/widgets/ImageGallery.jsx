@@ -12,8 +12,6 @@ export function ImageGallery({
   deletePath,
   mainPath,
   editPath,
-  moveToLibraryPath,
-  attachPath,
   generatePath,
   characterSourcesPath,
   beatSourcesPath,
@@ -29,7 +27,6 @@ export function ImageGallery({
   const [error, setError] = useState(null);
   const [editingImageId, setEditingImageId] = useState(null);
   const [regenBusyId, setRegenBusyId] = useState(null);
-  const [moveBusyId, setMoveBusyId] = useState(null);
   const [internalPickerOpen, setInternalPickerOpen] = useState(false);
   const pickerOpen = pickerOpenProp ?? internalPickerOpen;
   const setPickerOpen = onPickerOpenChange ?? setInternalPickerOpen;
@@ -52,21 +49,6 @@ export function ImageGallery({
       await onChange?.();
     } catch (e) {
       setError(e.message);
-    }
-  }
-
-  async function moveToLibrary(id) {
-    if (!moveToLibraryPath) return;
-    if (!confirm('Move this image to the library?')) return;
-    setMoveBusyId(id);
-    setError(null);
-    try {
-      await apiPostJson(moveToLibraryPath(id), {});
-      await onChange?.();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setMoveBusyId(null);
     }
   }
 
@@ -113,7 +95,6 @@ export function ImageGallery({
           const id = img._id.toString ? img._id.toString() : String(img._id);
           const isMain = mainId && id === mainId;
           const regenBusy = regenBusyId === id;
-          const moveBusy = moveBusyId === id;
           return (
             <div key={id} className={`gallery-row${isMain ? ' is-main' : ''}`}>
               <div className="gallery-thumb">
@@ -160,15 +141,6 @@ export function ImageGallery({
                     {regenBusy ? 'Editing…' : 'Edit…'}
                   </button>
                 )}
-                {moveToLibraryPath && (
-                  <button
-                    onClick={() => moveToLibrary(id)}
-                    disabled={moveBusy}
-                    title="Detach from this entity and put back in the library"
-                  >
-                    {moveBusy ? 'Moving…' : 'To library'}
-                  </button>
-                )}
                 {deletePath && <button onClick={() => remove(id)}>Delete</button>}
               </div>
             </div>
@@ -199,7 +171,6 @@ export function ImageGallery({
           onClose={() => setPickerOpen(false)}
           title={pickerTitle}
           uploadPath={uploadPath}
-          attachPath={attachPath || null}
           generatePath={generatePath || null}
           characterSourcesPath={characterSourcesPath || null}
           beatSourcesPath={beatSourcesPath || null}

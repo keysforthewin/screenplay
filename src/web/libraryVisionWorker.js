@@ -29,8 +29,10 @@ function markDone(imageId) {
   inFlight.delete(imageId);
 }
 
+const ENTITY_OWNER_TYPES = new Set(['beat', 'character', 'set']);
+
 async function writeMeta({ projectId, imageId, ownerType, ownerId, name, description }) {
-  if (ownerType === 'beat' || ownerType === 'character') {
+  if (ENTITY_OWNER_TYPES.has(ownerType)) {
     await setOwnedImageMetaViaGateway({
       projectId,
       imageId: String(imageId),
@@ -51,7 +53,7 @@ async function writeMeta({ projectId, imageId, ownerType, ownerId, name, descrip
 
 // Pick the describer based on owner. Library images keep the terse
 // `analyzeLibraryImage` caption (used for search/browse UX). Beat,
-// character, and storyboard reference images get the detailed
+// character, set, and storyboard reference images get the detailed
 // `describeReferenceImage` output so the storyboard pipeline has a verbal
 // anchor when re-feeding them to the image generator.
 function pickDescriber(ownerType, kindHint) {
@@ -60,6 +62,11 @@ function pickDescriber(ownerType, kindHint) {
   }
   if (ownerType === 'character') {
     return (buf, ct) => describeReferenceImage({ buffer: buf, contentType: ct, kind: 'character' });
+  }
+  // Sets ARE locations — the location describer pulls the architectural and
+  // lighting detail the storyboard generator needs to keep a place consistent.
+  if (ownerType === 'set') {
+    return (buf, ct) => describeReferenceImage({ buffer: buf, contentType: ct, kind: 'location' });
   }
   if (ownerType === 'beat' || ownerType === 'director_note') {
     return (buf, ct) => describeReferenceImage({ buffer: buf, contentType: ct, kind: 'auto' });
