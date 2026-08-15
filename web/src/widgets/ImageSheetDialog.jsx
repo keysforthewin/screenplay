@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
-import { ArtworkReferencePicker } from './ArtworkReferencePicker.jsx';
+import { SheetReferencePicker } from './SheetReferencePicker.jsx';
 import { BeatMultiSelect } from './BeatMultiSelect.jsx';
 import { MainBeatSelect } from './MainBeatSelect.jsx';
 import { SetMultiSelect } from './SetMultiSelect.jsx';
@@ -26,8 +26,6 @@ export function ImageSheetDialog({
   hostType,
   hostId,
   hostLabel,
-  hostImages = [],
-  hostArtworks = [],
 }) {
   const isCharacter = hostType === 'character';
   const isSet = hostType === 'set';
@@ -585,15 +583,14 @@ export function ImageSheetDialog({
           {error && <div className="error-banner">{error}</div>}
         </div>
       </Modal>
-      <ArtworkReferencePicker
+      <SheetReferencePicker
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         onApply={(ids) => setReferenceIds(ids)}
         hostType={hostType}
         hostId={hostId}
         hostLabel={hostLabel}
-        hostImages={hostImages}
-        hostArtworks={hostArtworks}
+        beatIds={isSet ? [mainBeatId, ...selectedBeatIds].filter(Boolean) : []}
         selectedIds={referenceIds}
       />
       <Modal

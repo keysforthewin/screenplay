@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
-import { ArtworkReferencePicker } from './ArtworkReferencePicker.jsx';
+import { SheetReferencePicker } from './SheetReferencePicker.jsx';
 import { GenerationProgress } from './GenerationProgress.jsx';
 import { apiGet, apiPostJson, imageUrl, thumbUrl } from '../api.js';
 import { readStoredCatalogModel, writeStoredImageModel } from './imageModels.js';
@@ -19,8 +19,6 @@ export function TuneImageSheetDialog({
   onStarted,
   hostId,
   hostLabel,
-  hostImages = [],
-  hostArtworks = [],
 }) {
   const [imageModel, setImageModel] = useState(() => readStoredCatalogModel(MODEL_STORAGE_KEY));
   const [referenceIds, setReferenceIds] = useState([]);
@@ -349,15 +347,13 @@ export function TuneImageSheetDialog({
           {error && <div className="error-banner">{error}</div>}
         </div>
       </Modal>
-      <ArtworkReferencePicker
+      <SheetReferencePicker
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         onApply={(ids) => setReferenceIds(ids)}
         hostType="beat"
         hostId={hostId}
         hostLabel={hostLabel}
-        hostImages={hostImages}
-        hostArtworks={hostArtworks}
         selectedIds={referenceIds}
       />
     </>

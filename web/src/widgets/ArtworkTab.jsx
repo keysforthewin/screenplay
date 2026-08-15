@@ -576,8 +576,6 @@ export function ArtworkTab({
         hostType={hostType}
         hostId={hostId}
         hostLabel={hostLabel}
-        hostImages={hostImages}
-        hostArtworks={hostArtworks}
       />
 
       {hostType === 'beat' && (
@@ -587,8 +585,6 @@ export function ArtworkTab({
           onStarted={startSheetJob}
           hostId={hostId}
           hostLabel={hostLabel}
-          hostImages={hostImages}
-          hostArtworks={hostArtworks}
         />
       )}
 
