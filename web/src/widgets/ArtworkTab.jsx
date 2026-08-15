@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArtworkDialog } from './ArtworkDialog.jsx';
 import { ArtworkEditDialog } from './ArtworkEditDialog.jsx';
-import { ArtworkPickerModal } from './ArtworkPickerModal.jsx';
+import { EntityImagePickerModal } from './EntityImagePickerModal.jsx';
 import { ImageSheetDialog } from './ImageSheetDialog.jsx';
 import { TuneImageSheetDialog } from './TuneImageSheetDialog.jsx';
 import { GenerationProgress } from './GenerationProgress.jsx';
@@ -555,15 +555,18 @@ export function ArtworkTab({
         </div>
       )}
 
-      <ArtworkPickerModal
+      <EntityImagePickerModal
         open={creating}
         onClose={() => setCreating(false)}
-        onDone={onChange}
-        hostType={hostType}
-        hostId={hostId}
-        hostLabel={hostLabel}
-        hostImages={hostImages}
-        hostArtworks={hostArtworks}
+        title="New artwork"
+        uploadPath={`/${hostType}/${hostId}/artwork/from-upload`}
+        generatePath={`/${hostType}/${hostId}/artwork`}
+        characterSourcesPath="/images/by-owner/characters"
+        beatSourcesPath="/images/by-owner/beats"
+        setSourcesPath="/images/by-owner/sets"
+        copyPath={`/${hostType}/${hostId}/artwork/from-image`}
+        referenceHost={{ hostType, hostId, hostLabel, hostImages, hostArtworks }}
+        onAttached={onChange}
       />
 
       <ImageSheetDialog

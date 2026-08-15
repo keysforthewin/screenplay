@@ -149,6 +149,13 @@ export function Set({ session }) {
             beatSourcesPath={`/images/by-owner/beats`}
             setSourcesPath={`/images/by-owner/sets?exclude_id=${set._id}`}
             copyPath={`/set/${set._id}/image/copy`}
+            referenceHost={{
+              hostType: 'set',
+              hostId: set._id,
+              hostLabel: set.name,
+              hostImages: set.images || [],
+              hostArtworks: set.artworks || [],
+            }}
             pickerTitle="Add image to set"
             hideAddButton
             pickerOpen={imagePickerOpen}

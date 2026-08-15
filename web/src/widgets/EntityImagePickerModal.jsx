@@ -6,6 +6,7 @@ import {
   thumbUrl,
 } from '../api.js';
 import { Modal } from './Modal.jsx';
+import { ArtworkReferencePicker } from './ArtworkReferencePicker.jsx';
 import { ImageModelSelect } from './ImageModelSelect.jsx';
 import {
   readStoredCatalogModel,
@@ -39,6 +40,10 @@ function stripMd(s) {
 //   setSourcesPath       — GET endpoint for set-owned images
 //   copyPath             — POST {image_id} endpoint that copies a source image
 //   onAttached           — async callback after a successful action
+//   referenceHost        — optional {hostType, hostId, hostLabel, hostImages,
+//                          hostArtworks}; when set, the Generate tab offers a
+//                          reference-image picker and reference_image_ids are
+//                          sent alongside the prompt
 export function EntityImagePickerModal({
   open,
   onClose,
@@ -50,6 +55,7 @@ export function EntityImagePickerModal({
   setSourcesPath,
   copyPath,
   onAttached,
+  referenceHost = null,
 }) {
   const tabs = useMemo(() => {
     const t = [];
@@ -168,12 +174,16 @@ export function EntityImagePickerModal({
     }
   }
 
-  async function generateFromPrompt({ prompt, model }) {
+  async function generateFromPrompt({ prompt, model, referenceIds }) {
     if (busy || !generatePath) return;
     setBusy(true);
     setError(null);
     try {
-      await apiPostJson(generatePath, { prompt, model });
+      await apiPostJson(generatePath, {
+        prompt,
+        model,
+        ...(referenceIds?.length ? { reference_image_ids: referenceIds } : {}),
+      });
       await onAttached?.();
       onClose?.();
     } catch (e) {
@@ -263,7 +273,11 @@ export function EntityImagePickerModal({
             />
           )}
           {tab === 'generate' && (
-            <GenerateTab onGenerate={generateFromPrompt} busy={busy} />
+            <GenerateTab
+              onGenerate={generateFromPrompt}
+              busy={busy}
+              referenceHost={referenceHost}
+            />
           )}
           {tab === 'characters' && (
             <SourceTab
@@ -415,9 +429,11 @@ function UploadTab({ fileInputRef, onUpload, busy }) {
   );
 }
 
-function GenerateTab({ onGenerate, busy }) {
+function GenerateTab({ onGenerate, busy, referenceHost }) {
   const [prompt, setPrompt] = useState('');
   const [model, setModel] = useState(() => readStoredCatalogModel(GEN_MODEL_STORAGE_KEY));
+  const [referenceIds, setReferenceIds] = useState([]);
+  const [refPickerOpen, setRefPickerOpen] = useState(false);
 
   useEffect(() => {
     writeStoredImageModel(GEN_MODEL_STORAGE_KEY, model);
@@ -428,11 +444,63 @@ function GenerateTab({ onGenerate, busy }) {
 
   function submit() {
     if (!canSubmit) return;
-    onGenerate({ prompt: trimmed, model });
+    onGenerate({ prompt: trimmed, model, referenceIds });
+  }
+
+  function removeReference(id) {
+    setReferenceIds((prev) => prev.filter((x) => x !== id));
   }
 
   return (
     <div className="ref-picker-generate">
+      {referenceHost && (
+        <div className="frame-generate-refs" style={{ marginBottom: 12 }}>
+          <div className="frame-generate-section-header">
+            <span className="field-label">Reference images</span>
+            <button
+              type="button"
+              onClick={() => setRefPickerOpen(true)}
+              disabled={busy}
+            >
+              + Add references
+            </button>
+          </div>
+          <div className="frame-generate-ref-grid">
+            {referenceIds.length === 0 ? (
+              <div className="frame-generate-ref-empty">
+                No reference images selected. Optional — they anchor the
+                generation.
+              </div>
+            ) : (
+              referenceIds.map((id) => (
+                <div className="frame-generate-ref-thumb" key={id}>
+                  <img src={thumbUrl(id)} alt="reference" loading="lazy" />
+                  <button
+                    type="button"
+                    className="storyboard-frame-remove"
+                    title="Remove reference"
+                    onClick={() => removeReference(id)}
+                    disabled={busy}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+          <ArtworkReferencePicker
+            open={refPickerOpen}
+            onClose={() => setRefPickerOpen(false)}
+            onApply={(ids) => setReferenceIds(ids)}
+            hostType={referenceHost.hostType}
+            hostId={referenceHost.hostId}
+            hostLabel={referenceHost.hostLabel}
+            hostImages={referenceHost.hostImages || []}
+            hostArtworks={referenceHost.hostArtworks || []}
+            selectedIds={referenceIds}
+          />
+        </div>
+      )}
       <label
         style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
       >
@@ -445,7 +513,9 @@ function GenerateTab({ onGenerate, busy }) {
           disabled={busy}
         />
         <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-          Sent verbatim to the image model. No scene context or references.
+          {referenceIds.length
+            ? 'Sent verbatim to the image model along with the selected references.'
+            : 'Sent verbatim to the image model. No scene context.'}
         </span>
       </label>
 

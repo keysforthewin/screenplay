@@ -147,6 +147,13 @@ export function Character({ session }) {
             beatSourcesPath={`/images/by-owner/beats`}
             setSourcesPath={`/images/by-owner/sets`}
             copyPath={`/character/${character._id}/image/copy`}
+            referenceHost={{
+              hostType: 'character',
+              hostId: character._id,
+              hostLabel: character.name,
+              hostImages: character.images || [],
+              hostArtworks: character.artworks || [],
+            }}
             pickerTitle="Add image to character"
             hideAddButton
             pickerOpen={imagePickerOpen}

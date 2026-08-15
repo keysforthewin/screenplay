@@ -17,6 +17,7 @@ export function ImageGallery({
   beatSourcesPath,
   setSourcesPath,
   copyPath,
+  referenceHost,
   pickerTitle = 'Add image',
   // Optional controlled-mode props. When `pickerOpen` is supplied the parent
   // owns the open/close state; otherwise the gallery manages it locally.
@@ -176,6 +177,7 @@ export function ImageGallery({
           beatSourcesPath={beatSourcesPath || null}
           setSourcesPath={setSourcesPath || null}
           copyPath={copyPath || null}
+          referenceHost={referenceHost || null}
           onAttached={onChange}
         />
       )}
