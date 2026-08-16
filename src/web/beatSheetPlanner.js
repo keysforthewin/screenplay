@@ -49,14 +49,18 @@ export const SCENE_PLATE_PLAN_TOOL = {
             prompt: {
               type: 'string',
               description:
-                'Full standalone image-generation prompt for this background/scene plate: concrete location, time of day, ' +
-                'lighting, palette, mood, lens/framing. Encode the spatial layout and the exact sub-location the beat calls for ' +
-                '(e.g. "the rear bench of a minivan, the front seats soft in the foreground") and pick a vantage that reveals it. ' +
-                'State occupancy explicitly — unoccupied, empty seats by default so the model adds no stray figure; only if the ' +
-                'beat truly cannot read without a person, place that figure exactly where the beat puts them. Generally NO ' +
-                'characters — an empty environment. Capture only the static environment — no moving or transient subjects ' +
-                '(a shooting star, passing car, bursting firework); show the empty scene the motion would happen in front of. ~2–3 sentences. ' +
-                'Purely visual: do NOT include any justification or quote text here; this string is sent verbatim to the image model.',
+                'Image-generation prompt for this background/scene plate. TWO FORMS depending on reference_indexes: ' +
+                'a plate WITH references renders through an image-EDIT model, so write an EDIT INSTRUCTION — anchor on the ' +
+                'reference ("Edit this photo of the movie theater…"), state what must stay intact, then list ONLY the changes; ' +
+                'never re-describe what the reference already shows. A plate with NO references gets a full standalone scene ' +
+                'description: concrete location, time of day, lighting, palette, mood, lens/framing. Encode the spatial layout ' +
+                'and the exact sub-location the beat calls for (e.g. "the rear bench of a minivan, the front seats soft in the ' +
+                'foreground") and pick a vantage that reveals it. State occupancy explicitly — unoccupied, empty seats by ' +
+                'default so the model adds no stray figure; only if the beat truly cannot read without a person, place that ' +
+                'figure exactly where the beat puts them. Generally NO characters — an empty environment. Capture only the ' +
+                'static environment — no moving or transient subjects (a shooting star, passing car, bursting firework); show ' +
+                'the empty scene the motion would happen in front of. ~2–3 sentences. Purely visual: do NOT include any ' +
+                'justification or quote text here; this string is sent verbatim to the image model.',
             },
             justification: {
               type: 'string',
@@ -113,7 +117,7 @@ export const SCENE_PLATE_PLAN_SYSTEM_PROMPT = [
   '- These are UNIVERSAL BACKDROPS, reused later as storyboard references — so prefer EMPTY or lightly-dressed environments with NO characters in frame.',
   '',
   '# For every plate',
-  '- prompt: a concrete, purely-visual image prompt (location, time of day, lighting, palette, mood, lens/framing). Sent verbatim to the image model together with ONLY the reference images this plate assigns.',
+  '- prompt: a concrete, purely-visual image prompt. Sent verbatim to the image model together with ONLY the reference images this plate assigns. Its FORM depends on that assignment — an EDIT instruction when references are assigned, a standalone scene description (location, time of day, lighting, palette, mood, lens/framing) when none are. See the reference-images section.',
   '- justification: one sentence on why this plate serves the beat. Reviewer-facing only — never rendered.',
   '- quote: a short VERBATIM snippet copied exactly from the beat body that this plate depicts. Reviewer-facing only — never rendered.',
   '- requires_reference: whether this plate NEEDS a reference image (see below).',
@@ -126,7 +130,8 @@ export const SCENE_PLATE_PLAN_SYSTEM_PROMPT = [
   '# Reference images (assign per plate via reference_indexes)',
   '- The reference images are attached to this message, numbered "Reference image 1..N". LOOK at them — do not rely on their descriptions alone.',
   '- For each plate, assign ONLY the references that depict that plate\'s own subject (the same building, room, or object). A plate whose subject appears in no reference gets an EMPTY assignment and a fully standalone prompt — an unrelated reference would contaminate the render.',
-  '- When a plate assigns references, its prompt MUST state each reference\'s role explicitly (e.g. "the art-deco movie theater shown in the reference image, seen at night") so the image model knows what to take from it. The image model sees only the prompt and the assigned reference images.',
+  '- A plate WITH references renders through an image-EDIT model: it receives the reference image(s) and treats the prompt as an editing instruction. Write that prompt as an EDIT of the reference, never as a fresh scene description: (1) anchor on the reference up front ("Edit this photo of the movie theater…"), (2) state what must remain intact ("keep the building exactly as it is — same architecture, materials, and signage"), (3) then list ONLY the changes — time of day, sky, weather, signage text, occupancy, era of vehicles, lighting, mood. Do NOT re-describe what the reference already shows: a competing description makes the model rebuild the subject from your words and discard the reference. If the beat needs a detail changed from the reference, state it as an explicit change; never silently describe a different-looking subject.',
+  '- A plate with NO references is the opposite: the image model sees only the prompt, so write a complete standalone scene description.',
   '- Use references for continuity (an established location, prop, or look), never as a mood board.',
   '',
   '# How to read the beat',
@@ -298,7 +303,7 @@ export const SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT = [
   '',
   'SPATIAL FIDELITY: compare the prompt against the beat (and the plate\'s quote). If the beat pins a spatial placement or sub-location (e.g. "in the back seat", "by the window") and the prompt drops it or contradicts it, choose "edit" and restore the exact geography. If the prompt would let the image model add or misplace an occupant — a driver in an empty minivan, a figure in the front when the beat says the back — choose "edit" to fix the placement or to state the seats are empty.',
   '',
-  'REFERENCE CHECK: the plate carries requires_reference — true means it depicts an ESTABLISHED visual (the set itself, a recurring building/prop) that must be rendered against a user-assigned reference image; false means standalone imagery the prompt fully specifies. If the marking is wrong (a plate of the story\'s specific location marked false, or a generic sky marked true), choose "edit" and return the corrected requires_reference. When available reference images are listed: a reference that does not depict the plate\'s own subject contaminates the render — if any assigned reference is unrelated (a building reference on a pure sky plate), "edit" the reference_indexes; if a reference clearly depicts the plate\'s subject but is not assigned, "edit" to assign it AND make the prompt state its role (e.g. "the theater shown in the reference image"). A plate with assigned references whose prompt never mentions what to take from them also needs "edit".',
+  'REFERENCE CHECK: the plate carries requires_reference — true means it depicts an ESTABLISHED visual (the set itself, a recurring building/prop) that must be rendered against a user-assigned reference image; false means standalone imagery the prompt fully specifies. If the marking is wrong (a plate of the story\'s specific location marked false, or a generic sky marked true), choose "edit" and return the corrected requires_reference. When available reference images are listed: a reference that does not depict the plate\'s own subject contaminates the render — if any assigned reference is unrelated (a building reference on a pure sky plate), "edit" the reference_indexes; if a reference clearly depicts the plate\'s subject but is not assigned, "edit" to assign it AND rewrite the prompt as an edit instruction. A plate with assigned references whose prompt reads as a fresh SCENE DESCRIPTION instead of an EDIT instruction also needs "edit": a reference-assigned prompt must anchor on the reference ("Edit this photo of…"), state what stays intact, and list only the changes — re-describing what the reference already shows makes the image model rebuild the subject from the words and discard the reference.',
   '',
   'Rules: prompts stay purely visual (no characters unless unavoidable, no proper names, no caption/quote text). Prefer keep/edit over divide; only divide when genuinely two shots. Only cull when the plate adds no value.',
 ].join('\n');

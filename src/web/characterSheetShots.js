@@ -122,21 +122,30 @@ export function scanCharacterFields(character, { maxPerField = 200, maxTotal = 1
 }
 
 // Compose the full image prompt for one shot of one character. Structure:
-// single-photo framing → the pose → the subject handle → appearance/wardrobe to
+// single-photo framing → the pose → the subject line → appearance/wardrobe to
 // match (explicitly flagged as NON-text) → optional style notes → the strict
 // no-text / no-grid output rules, repeated last for recency.
-export function buildCharacterShotPrompt({ character, shot, directorNotes = [] }) {
+//
+// hasReferences: when reference images accompany the render (the normal sheet
+// flow — they anchor the face), the subject line anchors on THEM: image-edit
+// models treat the prompt as the authority, so a purely textual description
+// ("the exact likeness of X") lets the model invent a face that matches the
+// words and ignore the attached photos. The handle stays as corroboration.
+export function buildCharacterShotPrompt({ character, shot, directorNotes = [], hasReferences = false }) {
   const handle = buildSubjectHandle(character);
   // Keep the appearance context tight so it informs the look without reading as
   // a caption block the model might render verbatim.
   const details = scanCharacterFields(character, { maxPerField: 160, maxTotal: 700 });
   const notes = formatDirectorNotes(directorNotes);
+  const subject = hasReferences
+    ? `Subject: the exact person shown in the attached reference image(s) — reproduce their face, hairstyle, build, and complexion faithfully; their identity must remain intact and recognizable (${handle}).`
+    : `Subject: ${handle}.`;
   const lines = [
     CHARACTER_SHEET_STYLE_PREAMBLE,
     '',
     `Pose: ${shot.fragment}.`,
     '',
-    `Subject: ${handle}.`,
+    subject,
   ];
   if (details) {
     lines.push(
@@ -163,9 +172,9 @@ export function selectSheetShots({ shotNames, shotCount } = {}) {
 }
 
 // Build the selected sheet: one { name, prompt } per chosen shot.
-export function buildCharacterSheetShots({ character, directorNotes = [], shotNames, shotCount } = {}) {
+export function buildCharacterSheetShots({ character, directorNotes = [], shotNames, shotCount, hasReferences = false } = {}) {
   return selectSheetShots({ shotNames, shotCount }).map((shot) => ({
     name: shot.name,
-    prompt: buildCharacterShotPrompt({ character, shot, directorNotes }),
+    prompt: buildCharacterShotPrompt({ character, shot, directorNotes, hasReferences }),
   }));
 }

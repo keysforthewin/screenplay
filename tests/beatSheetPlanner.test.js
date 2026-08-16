@@ -443,13 +443,15 @@ describe('plate tools + system prompts', () => {
     expect(item.required).not.toContain('reference_indexes');
   });
 
-  it('plan prompt demands minimal planning and per-plate reference assignment with stated roles', () => {
+  it('plan prompt demands minimal planning and per-plate reference assignment', () => {
     const t = Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT.toLowerCase();
     expect(t).toContain('fewest plates');
     expect(t).not.toContain('vary the scale');
     expect(t).toContain('reference_indexes');
-    // A plate's prompt must say what its assigned references contribute.
-    expect(t).toMatch(/reference[^.]*\brole\b/);
+    // A reffed plate's prompt is an edit of the reference, not a description
+    // that states its "role" (the old doctrine — it produced prompts that
+    // mentioned the reference while describing a competing scene).
+    expect(t).toContain('edit of the reference');
   });
 
   it('critique tool can reassign references on edit, and the prompt has a reference check', () => {
@@ -506,5 +508,26 @@ describe('planBeatSceneImages — revision threading', () => {
     });
     expect(p1args.previousPlates).toEqual([{ name: 'Old', prompt: 'old plate' }]);
     expect(p2ctx.previousPlates).toBeUndefined();
+  });
+});
+
+describe('edit-instruction doctrine for reference-assigned plates', () => {
+  // These prompts steer the LLM, so the observable behavior IS the text: the
+  // planner must demand edit-instruction prompts for reffed plates (a scene
+  // description makes the image model rebuild the subject and drop the ref).
+  it('phase-1 system prompt mandates edit-instruction prompts for plates with references', () => {
+    expect(Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT).toMatch(/image-EDIT model/);
+    expect(Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT).toMatch(/Do NOT re-describe what the reference already shows/);
+    expect(Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT).toMatch(/list ONLY the changes/);
+  });
+
+  it('phase-2 critique flags scene-description prompts on reffed plates', () => {
+    expect(Planner.SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT).toMatch(/SCENE DESCRIPTION instead of an EDIT instruction/);
+  });
+
+  it('the tool schema tells the model about both prompt forms', () => {
+    const desc = Planner.SCENE_PLATE_PLAN_TOOL.input_schema.properties.plates.items.properties.prompt.description;
+    expect(desc).toMatch(/EDIT INSTRUCTION/i);
+    expect(desc).toMatch(/standalone scene/i);
   });
 });

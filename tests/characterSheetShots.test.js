@@ -181,3 +181,35 @@ describe('buildCharacterSheetShots', () => {
     expect(shots).toHaveLength(CHARACTER_SHEET_SHOTS.length);
   });
 });
+
+describe('reference-anchored subject line', () => {
+  const character = {
+    name: '**Steve**',
+    hollywood_actor: 'Ryan Gosling',
+    fields: { role: 'the drifter' },
+  };
+
+  it('anchors the subject on the attached reference images when hasReferences', () => {
+    const p = buildCharacterShotPrompt({
+      character,
+      shot: CHARACTER_SHEET_SHOTS[0],
+      hasReferences: true,
+    });
+    expect(p).toMatch(/exact person shown in the attached reference image/i);
+    expect(p).toMatch(/identity must remain intact/i);
+    // The textual handle stays as corroboration, not as the authority.
+    expect(p).toContain('Ryan Gosling');
+  });
+
+  it('keeps the handle-only subject line without references', () => {
+    const p = buildCharacterShotPrompt({ character, shot: CHARACTER_SHEET_SHOTS[0] });
+    expect(p).not.toMatch(/attached reference image/i);
+    expect(p).toContain('Ryan Gosling');
+  });
+
+  it('buildCharacterSheetShots threads hasReferences into every prompt', () => {
+    const shots = buildCharacterSheetShots({ character, shotCount: 2, hasReferences: true });
+    expect(shots).toHaveLength(2);
+    for (const s of shots) expect(s.prompt).toMatch(/attached reference image/i);
+  });
+});

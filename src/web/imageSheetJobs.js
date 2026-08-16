@@ -183,12 +183,13 @@ async function loadReferenceInputs(referenceImageIds) {
 
 // Plan the shot list for a CHARACTER (fixed preset). Beats are rendered from an
 // explicit, pre-derived list passed straight to runSheetJob, so they never
-// reach here.
-async function planShots({ projectId, hostId, shotNames, shotCount }) {
+// reach here. hasReferences switches the shot prompts into their
+// reference-anchored form (the pool is what locks the likeness).
+async function planShots({ projectId, hostId, shotNames, shotCount, hasReferences }) {
   const character = await getCharacter(projectId, hostId);
   if (!character) throw new Error(`character not found: ${hostId}`);
   const directorNotes = await loadDirectorNotesForPlanner(projectId);
-  return buildCharacterSheetShots({ character, directorNotes, shotNames, shotCount });
+  return buildCharacterSheetShots({ character, directorNotes, shotNames, shotCount, hasReferences });
 }
 
 // Run `items` through `worker` with at most `limit` in flight at once.
@@ -464,7 +465,13 @@ async function announceSheet({ job, hostType, hostId, projectId, announceUsernam
 
 async function runSheetJob({ projectId, job, hostType, hostId, model, referenceImageIds, shotNames, shotCount, explicitShots, discordUser, announceUsername }) {
   try {
-    const shots = explicitShots ?? await planShots({ projectId, hostId, shotNames, shotCount });
+    const shots = explicitShots ?? await planShots({
+      projectId,
+      hostId,
+      shotNames,
+      shotCount,
+      hasReferences: (referenceImageIds || []).length > 0,
+    });
     job.planned = shots.length;
     if (!shots.length) {
       job.status = 'done';

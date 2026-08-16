@@ -612,12 +612,15 @@ export function ImageSheetDialog({
                 <div className="image-sheet-plate-list">
                   {derivedShots.map((s, i) => {
                     const refMissing = s.requiresReference && s.referenceIds.length === 0;
-                    // Edit-style models follow the prompt and only loosely
-                    // borrow from an unmentioned reference — nudge (never
-                    // block) when a reffed plate's prompt doesn't say what to
-                    // take from its references.
+                    // Edit-style models treat the prompt as the authority: a
+                    // reffed plate whose prompt reads as a scene description
+                    // (rather than an edit instruction that preserves the
+                    // reference) gets rebuilt from the text. Merely mentioning
+                    // "the reference" is not enough — nudge (never block)
+                    // unless the prompt carries edit/preserve phrasing.
                     const refUnmentioned =
-                      s.referenceIds.length > 0 && !/\breference/i.test(s.prompt);
+                      s.referenceIds.length > 0 &&
+                      !/\b(edit|keep|intact|unchanged|preserve|change only)\b/i.test(s.prompt);
                     return (
                       <div className="image-sheet-plate-card" key={s.key}>
                         <div className="image-sheet-plate-head">
@@ -691,9 +694,10 @@ export function ImageSheetDialog({
                         </div>
                         {refUnmentioned && (
                           <div className="image-sheet-plate-refhint">
-                            Tip: the prompt never mentions the reference — say what to take from it
-                            (e.g. “the building shown in the reference image”) so the model anchors
-                            on it instead of the text alone.
+                            Tip: with a reference assigned, write the prompt as an EDIT of it —
+                            “Edit this photo of the theater. Keep the building exactly as it is;
+                            change only: night sky, empty lot…”. A full scene description makes
+                            the model rebuild the scene from the text and discard the reference.
                           </div>
                         )}
                         {s.quote && <blockquote className="image-sheet-plate-quote">{s.quote}</blockquote>}
