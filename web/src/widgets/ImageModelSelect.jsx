@@ -32,7 +32,9 @@ function readStoredSort() {
 //   requireReferences — restrict the list to models that accept reference
 //     images (edit flows anchor on an existing image; a prompt-only model
 //     would silently ignore it). Hides the "Takes references" toggle.
-export function ImageModelSelect({ value, onChange, disabled = false, compact = false, requireReferences = false }) {
+//   promptOnly — restrict the list to models that can generate WITHOUT an
+//     input image (a requires-references model given none is a provider 422).
+export function ImageModelSelect({ value, onChange, disabled = false, compact = false, requireReferences = false, promptOnly = false }) {
   const [catalog, setCatalog] = useState(null);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState('');
@@ -134,9 +136,11 @@ export function ImageModelSelect({ value, onChange, disabled = false, compact = 
   // The pool the picker draws from: edit flows only ever see models that can
   // take the image being edited as a reference.
   const eligible = useMemo(() => {
-    const rows = catalog || [];
-    return requireReferences ? rows.filter((m) => m.accepts_references) : rows;
-  }, [catalog, requireReferences]);
+    let rows = catalog || [];
+    if (requireReferences) rows = rows.filter((m) => m.accepts_references);
+    if (promptOnly) rows = rows.filter((m) => !m.requires_references);
+    return rows;
+  }, [catalog, requireReferences, promptOnly]);
 
   const filtered = useMemo(() => {
     const rows = eligible;

@@ -66,6 +66,14 @@ export const SCENE_PLATE_PLAN_TOOL = {
               type: 'string',
               description: 'A short VERBATIM snippet copied exactly from the beat body that this plate depicts. Reviewer-facing only — never rendered.',
             },
+            requires_reference: {
+              type: 'boolean',
+              description:
+                'true when this plate depicts an ESTABLISHED visual — the set/location itself, a specific recurring building, ' +
+                'prop, or vehicle whose look must stay consistent with existing imagery — so it must be rendered with a ' +
+                'reference image the user assigns. false for standalone imagery (generic skies, weather, anonymous streets, ' +
+                'textures) that a good prompt fully specifies on its own.',
+            },
             reference_indexes: {
               type: 'array',
               items: { type: 'integer' },
@@ -75,7 +83,7 @@ export const SCENE_PLATE_PLAN_TOOL = {
                 'standalone from its prompt alone. Every assigned reference must have its role stated in the prompt.',
             },
           },
-          required: ['name', 'prompt', 'justification', 'quote'],
+          required: ['name', 'prompt', 'justification', 'quote', 'requires_reference'],
           additionalProperties: false,
         },
       },
@@ -107,7 +115,12 @@ export const SCENE_PLATE_PLAN_SYSTEM_PROMPT = [
   '- prompt: a concrete, purely-visual image prompt (location, time of day, lighting, palette, mood, lens/framing). Sent verbatim to the image model together with ONLY the reference images this plate assigns.',
   '- justification: one sentence on why this plate serves the beat. Reviewer-facing only — never rendered.',
   '- quote: a short VERBATIM snippet copied exactly from the beat body that this plate depicts. Reviewer-facing only — never rendered.',
+  '- requires_reference: whether this plate NEEDS a reference image (see below).',
   '- reference_indexes: the numbered reference images to send with THIS plate (see below).',
+  '',
+  '# Marking requires_reference',
+  '- Mark requires_reference: true when the plate depicts an ESTABLISHED visual whose look must match existing imagery — the set/location itself, a recurring building, a specific prop or vehicle the story keeps returning to. The user will assign the matching reference image before rendering; without one, continuity breaks.',
+  '- Mark requires_reference: false for standalone imagery a good prompt fully specifies on its own: generic skies and starfields, weather, anonymous streets and rooms, textures, and atmosphere plates.',
   '',
   '# Reference images (assign per plate via reference_indexes)',
   '- The reference images are attached to this message, numbered "Reference image 1..N". LOOK at them — do not rely on their descriptions alone.',
@@ -233,6 +246,12 @@ export const SCENE_PLATE_CRITIQUE_TOOL = {
       prompt: { type: 'string', description: 'For verdict "edit": the improved, purely-visual prompt.' },
       name: { type: 'string', description: 'For verdict "edit": an optional improved gallery label.' },
       justification: { type: 'string', description: 'For verdict "edit": an optional updated justification.' },
+      requires_reference: {
+        type: 'boolean',
+        description:
+          'For verdict "edit": the corrected requires_reference marking (true = the plate depicts an established visual ' +
+          'and must render with a user-assigned reference image). Omit to keep the plate\'s current marking.',
+      },
       reference_indexes: {
         type: 'array',
         items: { type: 'integer' },
@@ -250,6 +269,7 @@ export const SCENE_PLATE_CRITIQUE_TOOL = {
             prompt: { type: 'string' },
             justification: { type: 'string' },
             quote: { type: 'string' },
+            requires_reference: { type: 'boolean' },
             reference_indexes: { type: 'array', items: { type: 'integer' } },
           },
           required: ['name', 'prompt', 'justification', 'quote'],
@@ -275,7 +295,7 @@ export const SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT = [
   '',
   'SPATIAL FIDELITY: compare the prompt against the beat (and the plate\'s quote). If the beat pins a spatial placement or sub-location (e.g. "in the back seat", "by the window") and the prompt drops it or contradicts it, choose "edit" and restore the exact geography. If the prompt would let the image model add or misplace an occupant — a driver in an empty minivan, a figure in the front when the beat says the back — choose "edit" to fix the placement or to state the seats are empty.',
   '',
-  'REFERENCE CHECK: the plate lists which of the available reference images will be sent to the image model with it. A reference that does not depict the plate\'s own subject contaminates the render — if any assigned reference is unrelated (a building reference on a pure sky plate), choose "edit" and return the corrected reference_indexes. If a reference clearly depicts the plate\'s subject but is not assigned, "edit" to assign it AND make the prompt state its role (e.g. "the theater shown in the reference image"). A plate with assigned references whose prompt never mentions what to take from them also needs "edit".',
+  'REFERENCE CHECK: the plate carries requires_reference — true means it depicts an ESTABLISHED visual (the set itself, a recurring building/prop) that must be rendered against a user-assigned reference image; false means standalone imagery the prompt fully specifies. If the marking is wrong (a plate of the story\'s specific location marked false, or a generic sky marked true), choose "edit" and return the corrected requires_reference. When available reference images are listed: a reference that does not depict the plate\'s own subject contaminates the render — if any assigned reference is unrelated (a building reference on a pure sky plate), "edit" the reference_indexes; if a reference clearly depicts the plate\'s subject but is not assigned, "edit" to assign it AND make the prompt state its role (e.g. "the theater shown in the reference image"). A plate with assigned references whose prompt never mentions what to take from them also needs "edit".',
   '',
   'Rules: prompts stay purely visual (no characters unless unavoidable, no proper names, no caption/quote text). Prefer keep/edit over divide; only divide when genuinely two shots. Only cull when the plate adds no value.',
 ].join('\n');
@@ -290,6 +310,7 @@ export function buildScenePlateCritiqueUserText({ beat, characters = [], directi
     `- prompt: ${plate?.prompt || ''}`,
     `- justification: ${plate?.justification || ''}`,
     `- quote: ${plate?.quote || ''}`,
+    `- requires_reference: ${plate?.requires_reference ? 'true' : 'false'}`,
   ];
   const refBlock = formatReferenceInputs(referenceInputs);
   if (refBlock) {
@@ -331,7 +352,14 @@ export function normalizeScenePlanImages(rawImages, { max = MAX_SCENE_IMAGE_COUN
     if (!name || !prompt) continue;
     const justification = typeof it?.justification === 'string' ? it.justification.trim() : '';
     const quote = typeof it?.quote === 'string' ? it.quote.trim() : '';
-    out.push({ name, prompt, justification, quote, reference_indexes: normalizeReferenceIndexes(it?.reference_indexes) });
+    out.push({
+      name,
+      prompt,
+      justification,
+      quote,
+      reference_indexes: normalizeReferenceIndexes(it?.reference_indexes),
+      requires_reference: Boolean(it?.requires_reference),
+    });
     if (out.length >= max) break;
   }
   return out;
@@ -380,6 +408,7 @@ function applyVerdict(plate, verdict) {
         prompt: typeof v.prompt === 'string' && v.prompt.trim() ? v.prompt.trim() : plate.prompt,
         justification: typeof v.justification === 'string' && v.justification.trim() ? v.justification.trim() : plate.justification,
         quote: plate.quote,
+        requires_reference: typeof v.requires_reference === 'boolean' ? v.requires_reference : plate.requires_reference,
         reference_indexes: Array.isArray(v.reference_indexes)
           ? normalizeReferenceIndexes(v.reference_indexes)
           : plate.reference_indexes,
@@ -392,6 +421,7 @@ function applyVerdict(plate, verdict) {
             prompt: typeof s?.prompt === 'string' ? s.prompt.trim() : '',
             justification: typeof s?.justification === 'string' ? s.justification.trim() : '',
             quote: typeof s?.quote === 'string' && s.quote.trim() ? s.quote.trim() : plate.quote,
+            requires_reference: typeof s?.requires_reference === 'boolean' ? s.requires_reference : plate.requires_reference,
             reference_indexes: Array.isArray(s?.reference_indexes)
               ? normalizeReferenceIndexes(s.reference_indexes)
               : plate.reference_indexes,

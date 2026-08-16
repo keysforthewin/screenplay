@@ -137,8 +137,8 @@ describe('normalizeScenePlanImages', () => {
       { max: 10 },
     );
     expect(out).toEqual([
-      { name: 'Wide', prompt: 'a wide shot', justification: 'why', quote: 'Rain falls.', reference_indexes: [] },
-      { name: 'Insert', prompt: 'a detail', justification: '', quote: '', reference_indexes: [] },
+      { name: 'Wide', prompt: 'a wide shot', justification: 'why', quote: 'Rain falls.', reference_indexes: [], requires_reference: false },
+      { name: 'Insert', prompt: 'a detail', justification: '', quote: '', reference_indexes: [], requires_reference: false },
     ]);
   });
 
@@ -148,6 +148,18 @@ describe('normalizeScenePlanImages', () => {
       { max: 10 },
     );
     expect(out[0].reference_indexes).toEqual([1, 3, 4]);
+  });
+
+  it('carries requires_reference as a strict boolean (default false)', () => {
+    const out = Planner.normalizeScenePlanImages(
+      [
+        { name: 'A', prompt: 'p', requires_reference: true },
+        { name: 'B', prompt: 'p', requires_reference: 'yes' },
+        { name: 'C', prompt: 'p' },
+      ],
+      { max: 10 },
+    );
+    expect(out.map((s) => s.requires_reference)).toEqual([true, true, false]);
   });
 
   it('clamps to max', () => {
@@ -170,7 +182,7 @@ describe('planBeatSceneImages — phase 1', () => {
     Planner._setScenePlateCritiqueForTests(async () => ({ verdict: 'keep' }));
     const { images } = await Planner.planBeatSceneImages({ beat });
     expect(images).toEqual([
-      { name: 'Establishing', prompt: 'wide empty alley, dusk', justification: 'sets place', quote: 'INT. ALLEY - NIGHT', reference_image_ids: [] },
+      { name: 'Establishing', prompt: 'wide empty alley, dusk', justification: 'sets place', quote: 'INT. ALLEY - NIGHT', reference_image_ids: [], requires_reference: false },
     ]);
   });
 
@@ -230,6 +242,28 @@ describe('planBeatSceneImages — per-plate reference resolution', () => {
     const { images } = await Planner.planBeatSceneImages({ beat, referenceInputs });
     expect(images.find((i) => i.name === 'Starfield').reference_image_ids).toEqual([]);
     expect(images.find((i) => i.name === 'Theater').reference_image_ids).toEqual(['a'.repeat(24)]);
+  });
+
+  it('an edit verdict can flip requires_reference; divide shots carry their own flag', async () => {
+    Planner._setScenePlatePlannerForTests(async () => ([
+      { name: 'A', prompt: 'a', justification: '', quote: '', requires_reference: false },
+      { name: 'B', prompt: 'b', justification: '', quote: '', requires_reference: true },
+    ]));
+    Planner._setScenePlateCritiqueForTests(async (plate) => {
+      if (plate.name === 'A') return { verdict: 'edit', requires_reference: true };
+      return {
+        verdict: 'divide',
+        shots: [
+          { name: 'B1', prompt: 'b1', justification: '', quote: '', requires_reference: false },
+          { name: 'B2', prompt: 'b2', justification: '', quote: '' },
+        ],
+      };
+    });
+    const { images } = await Planner.planBeatSceneImages({ beat });
+    expect(images.find((i) => i.name === 'A').requires_reference).toBe(true);
+    expect(images.find((i) => i.name === 'B1').requires_reference).toBe(false);
+    // Divide shot without its own flag inherits the parent's.
+    expect(images.find((i) => i.name === 'B2').requires_reference).toBe(true);
   });
 
   it('passes referenceInputs to the phase-2 critique context', async () => {
@@ -340,11 +374,24 @@ describe('planBeatSceneImages — onProgress', () => {
 });
 
 describe('plate tools + system prompts', () => {
-  it('exposes plan_scene_plates requiring name/prompt/justification/quote', () => {
+  it('exposes plan_scene_plates requiring name/prompt/justification/quote/requires_reference', () => {
     expect(Planner.SCENE_PLATE_PLAN_TOOL.name).toBe('plan_scene_plates');
     const item = Planner.SCENE_PLATE_PLAN_TOOL.input_schema.properties.plates.items;
-    expect(item.required.sort()).toEqual(['justification', 'name', 'prompt', 'quote']);
+    expect(item.required.sort()).toEqual(['justification', 'name', 'prompt', 'quote', 'requires_reference']);
+    expect(item.properties.requires_reference.type).toBe('boolean');
     expect(Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT.toLowerCase()).toMatch(/background|environment|plate|location/);
+  });
+
+  it('plan prompt explains when a plate requires a reference (established look vs standalone)', () => {
+    const t = Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT.toLowerCase();
+    expect(t).toContain('requires_reference');
+    expect(t).toMatch(/established|continuity/);
+  });
+
+  it('critique tool can flip requires_reference and its prompt covers the flag', () => {
+    const props = Planner.SCENE_PLATE_CRITIQUE_TOOL.input_schema.properties;
+    expect(props.requires_reference.type).toBe('boolean');
+    expect(Planner.SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT.toLowerCase()).toContain('requires_reference');
   });
 
   it('plan prompt demands spatial geography, sub-location, and explicit occupancy', () => {

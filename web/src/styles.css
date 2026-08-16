@@ -690,6 +690,27 @@ select option {
   font-size: 12px;
   color: var(--fg-muted);
 }
+.image-sheet-plate-refs.required-missing {
+  border: 1px dashed var(--danger, #c0392b);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.image-sheet-plate-refs.required-missing .image-sheet-plate-refs-label {
+  color: var(--danger, #c0392b);
+}
+.image-sheet-plate-reqref {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.image-sheet-model-split {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 .image-sheet-feedback { width: 100%; resize: vertical; font: inherit; }
 
 /* Attachment one-row inline editing — same shape as gallery/library, no

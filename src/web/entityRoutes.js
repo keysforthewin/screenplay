@@ -3531,9 +3531,17 @@ export function buildApiRouter() {
           announceUsername: req?.session?.username || null,
         });
         if (hostType === 'beat') {
-          const { setBeatImageSheetReferences } = await import('../mongo/plots.js');
-          await setBeatImageSheetReferences(req.projectId, hostId, refs.ids).catch((e) =>
-            logger.warn(`image-sheet: persist reference set failed: ${e.message}`));
+          // Remember the references this sheet used (tune-dialog prefill).
+          // Per-plate assignments replaced the sheet-level pool, so persist
+          // the union of both — and never wipe the stored set with nothing.
+          const shotRefIds = (Array.isArray(shots) ? shots : []).flatMap((s) =>
+            Array.isArray(s?.reference_image_ids) ? s.reference_image_ids.map(String) : []);
+          const usedRefIds = [...new Set([...refs.ids.map(String), ...shotRefIds])];
+          if (usedRefIds.length) {
+            const { setBeatImageSheetReferences } = await import('../mongo/plots.js');
+            await setBeatImageSheetReferences(req.projectId, hostId, usedRefIds).catch((e) =>
+              logger.warn(`image-sheet: persist reference set failed: ${e.message}`));
+          }
         }
         res.status(202).json(result);
       } catch (e) {

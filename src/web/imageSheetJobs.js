@@ -270,6 +270,11 @@ function normalizeExplicitShots(shots, { max = MAX_SCENE_IMAGE_COUNT } = {}) {
         s.reference_image_ids.map(String).filter((x) => /^[a-f0-9]{24}$/i.test(x)),
       )].slice(0, MAX_SHOT_REFERENCE_IMAGES);
     }
+    // Per-shot model override (split sheets render refs-plates and prompt-only
+    // plates on different models). Absent = the sheet-level model.
+    if (typeof s?.model === 'string' && s.model.trim()) {
+      shot.model = s.model.trim().slice(0, 200);
+    }
     out.push(shot);
     if (out.length >= max) break;
   }
@@ -298,21 +303,32 @@ async function pruneStaleShotReferences(shots) {
 // models all accept prompt-only generation, so only catalog rows constrain.
 async function assertShotsSatisfyModelReferences({ model, explicitShots, poolIds }) {
   const { getImageModel } = await import('../fal/imageModelCatalog.js');
-  const row = await getImageModel(model);
-  if (!row?.requires_references) return;
+  // Cache catalog lookups per distinct model — split sheets carry a per-shot
+  // model, so the guard checks each shot against ITS effective model.
+  const rows = new Map();
+  const requiresRefs = async (m) => {
+    if (!rows.has(m)) rows.set(m, await getImageModel(m));
+    return Boolean(rows.get(m)?.requires_references);
+  };
   if (explicitShots) {
-    const refless = explicitShots
-      .filter((s) => (Array.isArray(s.reference_image_ids) ? s.reference_image_ids : poolIds).length === 0)
-      .map((s) => `"${s.name}"`);
+    const refless = [];
+    for (const s of explicitShots) {
+      const effectiveModel = s.model || model;
+      const refs = Array.isArray(s.reference_image_ids) ? s.reference_image_ids : poolIds;
+      if (refs.length === 0 && (await requiresRefs(effectiveModel))) {
+        refless.push({ name: s.name, model: effectiveModel });
+      }
+    }
     if (refless.length) {
+      const names = refless.map((r) => `"${r.name}"`).join(', ');
       throw httpError(
-        `"${model}" requires reference images, but ${refless.length} plate${refless.length === 1 ? ' has' : 's have'} ` +
-          `none: ${refless.join(', ')}. Assign references to ${refless.length === 1 ? 'it' : 'each'} (+ Refs on the plate), ` +
+        `"${refless[0].model}" requires reference images, but ${refless.length} plate${refless.length === 1 ? ' has' : 's have'} ` +
+          `none: ${names}. Assign references to ${refless.length === 1 ? 'it' : 'each'} (+ Refs on the plate), ` +
           'or pick a model that can generate from a prompt alone.',
         400,
       );
     }
-  } else if (!poolIds.length) {
+  } else if (!poolIds.length && (await requiresRefs(model))) {
     throw httpError(
       `"${model}" requires reference images — add at least one before generating.`,
       400,
@@ -332,6 +348,8 @@ async function renderShot({ projectId, job, hostType, hostId, model, referenceIm
   const shotReferenceIds = Array.isArray(shot.reference_image_ids)
     ? shot.reference_image_ids
     : referenceImageIds;
+  // Split sheets render refs-plates and prompt-only plates on different models.
+  const shotModel = shot.model || model;
   recordProgress(job, {
     phase: 'rendering',
     step: 'shot_start',
@@ -347,7 +365,7 @@ async function renderShot({ projectId, job, hostType, hostId, model, referenceIm
       hostId,
       prompt: shot.prompt,
       name: shot.name,
-      model,
+      model: shotModel,
       referenceImageIds: shotReferenceIds,
       jobId: job.job_id,
     });
@@ -358,7 +376,7 @@ async function renderShot({ projectId, job, hostType, hostId, model, referenceIm
       hostId,
       artworkId,
       prompt: shot.prompt,
-      model,
+      model: shotModel,
       referenceImageIds: shotReferenceIds,
       discordUser,
     });
@@ -743,6 +761,12 @@ export async function startImageSheetJob({
     explicitShots = normalizeExplicitShots(shots);
     if (!explicitShots || !explicitShots.length) {
       throw httpError(`A ${hostType} image sheet needs a derived shot list (shots[]).`, 400);
+    }
+    // Split sheets carry per-shot model overrides — each one must be as valid
+    // and configured as the sheet-level model.
+    for (const m of new Set(explicitShots.map((s) => s.model).filter(Boolean))) {
+      await validateModel(m);
+      assertImageModelConfigured(m);
     }
     await pruneStaleShotReferences(explicitShots);
   }

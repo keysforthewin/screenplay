@@ -11,7 +11,7 @@ const fakeDb = createFakeDb();
 
 // Shared, hoisted instrumentation for the provider mock + fal-config toggle.
 const h = vi.hoisted(() => ({
-  dispatch: { calls: 0, inFlight: 0, maxInFlight: 0, failOnCall: 0, perCall: [] },
+  dispatch: { calls: 0, inFlight: 0, maxInFlight: 0, failOnCall: 0, perCall: [], kleinCalls: [] },
   images: { requested: [] },
   fal: { configured: true },
 }));
@@ -84,7 +84,10 @@ vi.mock('../src/fal/imageClient.js', () => ({
   generateFlux2ProImage: vi.fn(),
   generateGemini25FlashImage: vi.fn(),
   generateNanoBanana2Image: vi.fn(),
-  generateFlux2KleinImage: vi.fn(),
+  generateFlux2KleinImage: vi.fn(async ({ prompt } = {}) => {
+    h.dispatch.kleinCalls.push(prompt);
+    return { buffer: Buffer.from('img'), contentType: 'image/png' };
+  }),
   FLUX_KONTEXT_MODEL: 'fal-ai/flux-pro/kontext',
   FLUX_2_PRO_MODEL: 'fal-ai/flux-2-pro',
   NANO_BANANA_PRO_GENERATE_MODEL: 'nano-banana-pro',
@@ -111,6 +114,7 @@ beforeEach(async () => {
   h.dispatch.maxInFlight = 0;
   h.dispatch.failOnCall = 0;
   h.dispatch.perCall = [];
+  h.dispatch.kleinCalls = [];
   h.images.requested = [];
   h.fal.configured = true;
   Images.findImageFile.mockImplementation(async () => null);
@@ -389,8 +393,20 @@ describe('startShotPlanJob — derive', () => {
     expect(job.kind).toBe('beat_plan');
     expect(job.planned).toBe(1);
     expect(job.shots).toEqual([
-      { name: 'Alley — wide', prompt: 'wide empty alley', justification: 'establishes', quote: 'INT. ALLEY - NIGHT', reference_image_ids: [] },
+      { name: 'Alley — wide', prompt: 'wide empty alley', justification: 'establishes', quote: 'INT. ALLEY - NIGHT', reference_image_ids: [], requires_reference: false },
     ]);
+  });
+
+  it('threads the planner\'s requires_reference marking through job.shots', async () => {
+    Planner._setScenePlatePlannerForTests(async () => ([
+      { name: 'Theater', prompt: 'the established theater', justification: '', quote: '', requires_reference: true },
+      { name: 'Starfield', prompt: 'milky way', justification: '', quote: '', requires_reference: false },
+    ]));
+    Planner._setScenePlateCritiqueForTests(async () => ({ verdict: 'keep' }));
+    const beat = await Plots.createBeat({ projectId, name: 'Marked', body: 'EXT. THEATER - NIGHT' });
+    const { job_id } = await Sheet.startShotPlanJob({ projectId, hostId: beat._id.toString(), referenceImageIds: [] });
+    const job = await waitForStatus(job_id, ['derived', 'error']);
+    expect(job.shots.map((s) => s.requires_reference)).toEqual([true, false]);
   });
 
   it('resolves planner reference assignments to the requested reference ids', async () => {
@@ -463,6 +479,85 @@ describe('startShotPlanJob — derive', () => {
     await waitForStatus(job_id, ['derived', 'error']);
     expect(p1args.direction).toBe('make it grittier');
     expect(p1args.previousPlates).toEqual([{ name: 'Old', prompt: 'old plate' }]);
+  });
+});
+
+describe('startImageSheetJob — per-shot models', () => {
+  const refA = 'a'.repeat(24);
+
+  it('renders each shot with its own model (split sheet: refs model + prompt model)', async () => {
+    Images.findImageFile.mockImplementation(async (id) => ({ _id: id }));
+    const beat = await Plots.createBeat({ projectId, name: 'Split', body: 'EXT. SKY - NIGHT' });
+    const { job_id } = await Sheet.startImageSheetJob({
+      projectId,
+      hostType: 'beat',
+      hostId: beat._id.toString(),
+      model: 'nano-banana-pro',
+      referenceImageIds: [],
+      shots: [
+        { name: 'Theater', prompt: 'theater from the reference', reference_image_ids: [refA], model: 'nano-banana-pro' },
+        { name: 'Starfield', prompt: 'milky way alone', reference_image_ids: [], model: 'flux-2-klein' },
+      ],
+    });
+    const job = await waitForJob(job_id);
+    expect(job.status).toBe('done');
+    expect(h.dispatch.perCall.map((c) => c.prompt)).toEqual(['theater from the reference']);
+    expect(h.dispatch.kleinCalls).toEqual(['milky way alone']);
+
+    const fresh = await Plots.getBeat(projectId, beat._id.toString());
+    expect(fresh.artworks.find((a) => a.name === 'Theater').model).toBe('nano-banana-pro');
+    // The provider resolves the shortcut to its endpoint id and the artwork
+    // records the resolved model (existing fallback-patch behavior).
+    expect(fresh.artworks.find((a) => a.name === 'Starfield').model).toBe('fal-ai/flux-2/klein/9b');
+  });
+
+  it('shots without their own model fall back to the sheet model', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'FallbackModel', body: 'INT. X' });
+    const { job_id } = await Sheet.startImageSheetJob({
+      projectId,
+      hostType: 'beat',
+      hostId: beat._id.toString(),
+      model: 'nano-banana-pro',
+      referenceImageIds: [],
+      shots: [{ name: 'Plain', prompt: 'a plate' }],
+    });
+    const job = await waitForJob(job_id);
+    expect(job.status).toBe('done');
+    expect(h.dispatch.perCall).toHaveLength(1);
+  });
+
+  it('rejects an invalid per-shot model with status 400 before creating tiles', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'BadModel', body: 'INT. X' });
+    await expect(
+      Sheet.startImageSheetJob({
+        projectId,
+        hostType: 'beat',
+        hostId: beat._id.toString(),
+        model: 'nano-banana-pro',
+        shots: [{ name: 'X', prompt: 'p', model: 'bogus-model' }],
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    const fresh = await Plots.getBeat(projectId, beat._id.toString());
+    expect(fresh.artworks || []).toHaveLength(0);
+  });
+
+  it('applies the refs-required guard against each shot\'s own model', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'PerShotGuard', body: 'INT. X' });
+    await expect(
+      Sheet.startImageSheetJob({
+        projectId,
+        hostType: 'beat',
+        hostId: beat._id.toString(),
+        model: 'nano-banana-pro',
+        shots: [
+          { name: 'Fine', prompt: 'p', reference_image_ids: [], model: 'nano-banana-pro' },
+          { name: 'Broken', prompt: 'p', reference_image_ids: [], model: 'fal-ai/edit-only/model' },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/requires reference images.*Broken/s),
+    });
   });
 });
 
