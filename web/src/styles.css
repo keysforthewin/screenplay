@@ -675,6 +675,11 @@ select option {
   font-size: 13px;
 }
 .image-sheet-plate-just { margin-top: 6px; color: var(--muted, #aaa); font-size: 12px; }
+.image-sheet-plate-refhint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #e8c76f;
+}
 .image-sheet-plate-refs {
   display: flex;
   align-items: center;
@@ -1253,6 +1258,47 @@ select option {
   font-size: 11px;
   color: #ff9c9c;
   padding: 0 4px;
+}
+/* Generation-info panel (ArtworkInfoDialog): the exact model / references /
+   prompt that produced one artwork. */
+.artwork-info {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.artwork-info-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.artwork-info-value { font-size: 13px; }
+.artwork-info-value code {
+  background: var(--bg-elevated, #1a1a1a);
+  border: 1px solid var(--border, #333);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+.artwork-info-endpoint { color: var(--fg-muted); }
+.artwork-info-norefs { color: var(--fg-muted); }
+.artwork-info-prompt {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-elevated, #1a1a1a);
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+  font-family: inherit;
+}
+.artwork-info-legacy {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 .spinner {
   width: 22px;

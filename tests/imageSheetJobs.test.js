@@ -48,13 +48,19 @@ vi.mock('../src/mongo/tokenUsage.js', () => ({
   recordOpenAIImageUsage: vi.fn(),
   recordFalImageUsage: vi.fn(),
 }));
-// One catalog endpoint that REQUIRES reference images (edit-only), for the
-// pre-flight guard tests. Everything else resolves as not-in-catalog.
+// Two catalog endpoints for the pre-flight guard tests: one that REQUIRES
+// reference images (edit-only) and one that cannot take any (text-only).
+// Everything else resolves as not-in-catalog.
 vi.mock('../src/fal/imageModelCatalog.js', () => ({
-  getImageModel: vi.fn(async (id) =>
-    id === 'fal-ai/edit-only/model'
-      ? { id: 'fal-ai/edit-only/model', endpoint_id: 'fal-ai/edit-only/model', requires_references: true, accepts_references: true }
-      : null),
+  getImageModel: vi.fn(async (id) => {
+    if (id === 'fal-ai/edit-only/model') {
+      return { id, endpoint_id: id, requires_references: true, accepts_references: true };
+    }
+    if (id === 'fal-ai/text-only/model') {
+      return { id, endpoint_id: id, requires_references: false, accepts_references: false };
+    }
+    return null;
+  }),
   loadImageModelCatalog: vi.fn(async () => ({ models: [], generated_at: null, catalog_error: null })),
 }));
 vi.mock('../src/openai/imageClient.js', () => ({
@@ -506,9 +512,12 @@ describe('startImageSheetJob — per-shot models', () => {
 
     const fresh = await Plots.getBeat(projectId, beat._id.toString());
     expect(fresh.artworks.find((a) => a.name === 'Theater').model).toBe('nano-banana-pro');
-    // The provider resolves the shortcut to its endpoint id and the artwork
-    // records the resolved model (existing fallback-patch behavior).
-    expect(fresh.artworks.find((a) => a.name === 'Starfield').model).toBe('fal-ai/flux-2/klein/9b');
+    // The artwork keeps the picker id the shot asked for; the endpoint the
+    // provider actually routed to is recorded on the generation info instead.
+    const starfield = fresh.artworks.find((a) => a.name === 'Starfield');
+    expect(starfield.model).toBe('flux-2-klein');
+    expect(starfield.generation.requested_model).toBe('flux-2-klein');
+    expect(starfield.generation.endpoint).toBe('fal-ai/flux-2/klein/9b');
   });
 
   it('shots without their own model fall back to the sheet model', async () => {
@@ -617,6 +626,51 @@ describe('startImageSheetJob — reference-requiring models', () => {
     });
     const job = await waitForJob(job_id);
     expect(job.status).toBe('done');
+  });
+});
+
+describe('startImageSheetJob — models that cannot take references', () => {
+  const refA = 'a'.repeat(24);
+
+  it('rejects plates carrying references on a no-refs catalog model, naming them (400)', async () => {
+    Images.findImageFile.mockImplementation(async (id) => ({ _id: id }));
+    const beat = await Plots.createBeat({ projectId, name: 'Guard2', body: 'EXT. SKY - NIGHT' });
+    await expect(
+      Sheet.startImageSheetJob({
+        projectId,
+        hostType: 'beat',
+        hostId: beat._id.toString(),
+        model: 'nano-banana-pro',
+        referenceImageIds: [],
+        shots: [
+          { name: 'Theater', prompt: 'theater plate', reference_image_ids: [refA], model: 'fal-ai/text-only/model' },
+          { name: 'Open starfield', prompt: 'milky way', reference_image_ids: [] },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/cannot take reference images.*Theater/s),
+    });
+    const fresh = await Plots.getBeat(projectId, beat._id.toString());
+    expect(fresh.artworks || []).toHaveLength(0);
+  });
+
+  it('rejects a character sheet whose pool would be dropped by a no-refs catalog model (400)', async () => {
+    Images.findImageFile.mockImplementation(async (id) => ({ _id: id }));
+    const c = await Characters.createCharacter({ projectId, name: 'Dropped', hollywood_actor: 'Z' });
+    await expect(
+      Sheet.startImageSheetJob({
+        projectId,
+        hostType: 'character',
+        hostId: c._id.toString(),
+        model: 'fal-ai/text-only/model',
+        referenceImageIds: [refA],
+        shotCount: 2,
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/cannot take reference images/i),
+    });
   });
 });
 

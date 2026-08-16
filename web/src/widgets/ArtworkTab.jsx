@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArtworkDialog } from './ArtworkDialog.jsx';
 import { ArtworkEditDialog } from './ArtworkEditDialog.jsx';
+import { ArtworkInfoDialog } from './ArtworkInfoDialog.jsx';
 import { EntityImagePickerModal } from './EntityImagePickerModal.jsx';
 import { ImageSheetDialog } from './ImageSheetDialog.jsx';
 import { TuneImageSheetDialog } from './TuneImageSheetDialog.jsx';
@@ -41,6 +42,7 @@ export function ArtworkTab({
   const [creating, setCreating] = useState(false);
   const [regenerating, setRegenerating] = useState(null); // artwork doc
   const [editing, setEditing] = useState(null); // artwork doc for in-line edit
+  const [infoArt, setInfoArt] = useState(null); // artwork doc for the info panel
   const [error, setError] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [renameId, setRenameId] = useState(null);
@@ -483,6 +485,13 @@ export function ArtworkTab({
                     </div>
                   )}
                   <div className="artwork-card-actions">
+                    <button
+                      type="button"
+                      onClick={() => setInfoArt(art)}
+                      title="Show the model, reference images, and prompt that generated this image"
+                    >
+                      ⓘ Info
+                    </button>
                     {resultId && status === 'done' && mainPath && (
                       resultId === mainIdStr ? (
                         <span
@@ -610,6 +619,12 @@ export function ArtworkTab({
         hostImages={hostImages}
         hostArtworks={hostArtworks}
         artwork={latestArtwork(editing)}
+      />
+
+      <ArtworkInfoDialog
+        open={infoArt != null}
+        onClose={() => setInfoArt(null)}
+        artwork={latestArtwork(infoArt)}
       />
     </div>
   );

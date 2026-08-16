@@ -310,6 +310,7 @@ const PATCHABLE = new Set([
   'last_edit_prompt',
   'reference_image_ids',
   'job_id',
+  'generation',
 ]);
 
 // Free-text fields that read as "" rather than null when cleared. `prompt`
@@ -332,6 +333,14 @@ export async function patchArtwork({ projectId, hostType, hostId, artworkId, pat
     if (k === 'reference_image_ids') {
       if (!Array.isArray(v)) throw new Error('reference_image_ids must be an array');
       fields[k] = v.map(toOid);
+    } else if (k === 'generation') {
+      // What was actually sent to the image provider (requested model, routed
+      // endpoint, prompt, references sent). Written by the render pipeline;
+      // stored verbatim as an object.
+      if (v != null && (typeof v !== 'object' || Array.isArray(v))) {
+        throw new Error('generation must be an object');
+      }
+      fields[k] = v ?? null;
     } else if (k === 'job_id') {
       fields[k] = v == null ? null : String(v);
     } else {

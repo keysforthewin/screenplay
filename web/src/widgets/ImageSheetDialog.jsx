@@ -170,6 +170,9 @@ export function ImageSheetDialog({
         const d = r?.model_defaults || {};
         if (d.image_with_refs) setRefsModel(d.image_with_refs);
         if (d.image_prompt_only && !isCharacter) setImageModel(d.image_prompt_only);
+        // Character sheets ALWAYS render with references (they anchor the
+        // face), so their single selector follows the with-refs default.
+        if (d.image_with_refs && isCharacter) setImageModel(d.image_with_refs);
       } catch {
         // No defaults endpoint / network hiccup — localStorage prefill stands.
       }
@@ -189,6 +192,15 @@ export function ImageSheetDialog({
     setImageModel(id);
     if (defaultsReadyRef.current && id) {
       apiPutJson('/model-defaults', { image_prompt_only: id }).catch(() => {});
+    }
+  }
+
+  // Character sheets render every shot against the reference pool, so their
+  // model choice belongs to the with-refs default slot.
+  function changeCharacterModel(id) {
+    setImageModel(id);
+    if (defaultsReadyRef.current && id) {
+      apiPutJson('/model-defaults', { image_with_refs: id }).catch(() => {});
     }
   }
 
@@ -281,6 +293,19 @@ export function ImageSheetDialog({
       }
       if (direction.trim()) body.direction = direction.trim();
       if (previousPlates && previousPlates.length) body.previous_plates = previousPlates;
+      // Send the host's natural reference pool (set gallery / beat's saved
+      // refs) to the planner. It LOOKS at these images, assigns each plate its
+      // own subset (pre-filled in the review step), and writes prompts that
+      // state each reference's role — without them the prompts fully specify a
+      // scene that never mentions the reference, and edit-style models then
+      // follow the prompt instead of the reference the user assigns later.
+      try {
+        const r = await apiGet(`${basePath}/image-sheet-references`);
+        const ids = Array.isArray(r?.reference_ids) ? r.reference_ids.map(String) : [];
+        if (ids.length) body.reference_image_ids = ids;
+      } catch {
+        // Prefill is best-effort — the planner still derives without references.
+      }
       const res = await apiPostJson(`${basePath}/shot-plan`, body);
       if (seq !== openSeqRef.current) return;
       stopDerivePoll();
@@ -587,6 +612,12 @@ export function ImageSheetDialog({
                 <div className="image-sheet-plate-list">
                   {derivedShots.map((s, i) => {
                     const refMissing = s.requiresReference && s.referenceIds.length === 0;
+                    // Edit-style models follow the prompt and only loosely
+                    // borrow from an unmentioned reference — nudge (never
+                    // block) when a reffed plate's prompt doesn't say what to
+                    // take from its references.
+                    const refUnmentioned =
+                      s.referenceIds.length > 0 && !/\breference/i.test(s.prompt);
                     return (
                       <div className="image-sheet-plate-card" key={s.key}>
                         <div className="image-sheet-plate-head">
@@ -658,6 +689,13 @@ export function ImageSheetDialog({
                             + Refs
                           </button>
                         </div>
+                        {refUnmentioned && (
+                          <div className="image-sheet-plate-refhint">
+                            Tip: the prompt never mentions the reference — say what to take from it
+                            (e.g. “the building shown in the reference image”) so the model anchors
+                            on it instead of the text alone.
+                          </div>
+                        )}
                         {s.quote && <blockquote className="image-sheet-plate-quote">{s.quote}</blockquote>}
                         {s.justification && <div className="image-sheet-plate-just">{s.justification}</div>}
                       </div>
@@ -671,11 +709,15 @@ export function ImageSheetDialog({
           {isCharacter && (
             <div className="frame-generate-model-row">
               <span className="field-label">Image model</span>
+              {/* Every character shot renders WITH the reference pool, so only
+                  refs-capable models are offered — a prompt-only catalog model
+                  would silently ignore the references that anchor the face. */}
               <ImageModelSelect
                 value={imageModel}
-                onChange={setImageModel}
+                onChange={changeCharacterModel}
                 disabled={busy}
                 compact
+                requireReferences
               />
             </div>
           )}

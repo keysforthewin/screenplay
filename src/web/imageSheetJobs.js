@@ -305,40 +305,68 @@ async function pruneStaleShotReferences(shots) {
   }
 }
 
-// Fail fast (400, before any pending tiles) when the chosen model is a catalog
-// endpoint that REQUIRES input images but some renders would run with none —
-// the provider would reject every such shot with an opaque 422. Wired shortcut
-// models all accept prompt-only generation, so only catalog rows constrain.
+// Fail fast (400, before any pending tiles) on model/reference mismatches the
+// provider would only reveal per-shot: a catalog endpoint that REQUIRES input
+// images rendering with none (opaque 422), or the inverse — a shot carrying
+// references on a catalog endpoint that takes no image input at all (the refs
+// would be silently ignored and the user shown a prompt-only render they
+// believed was reference-anchored). Wired shortcut models all generate
+// prompt-only AND accept references, so only catalog rows constrain.
 async function assertShotsSatisfyModelReferences({ model, explicitShots, poolIds }) {
   const { getImageModel } = await import('../fal/imageModelCatalog.js');
   // Cache catalog lookups per distinct model — split sheets carry a per-shot
   // model, so the guard checks each shot against ITS effective model.
   const rows = new Map();
-  const requiresRefs = async (m) => {
+  const rowFor = async (m) => {
     if (!rows.has(m)) rows.set(m, await getImageModel(m));
-    return Boolean(rows.get(m)?.requires_references);
+    return rows.get(m);
+  };
+  const requiresRefs = async (m) => Boolean((await rowFor(m))?.requires_references);
+  const rejectsRefs = async (m) => {
+    const row = await rowFor(m);
+    return row ? !row.accepts_references : false;
+  };
+  const throwRefless = (refless) => {
+    const names = refless.map((r) => `"${r.name}"`).join(', ');
+    throw httpError(
+      `"${refless[0].model}" requires reference images, but ${refless.length} plate${refless.length === 1 ? ' has' : 's have'} ` +
+        `none: ${names}. Assign references to ${refless.length === 1 ? 'it' : 'each'} (+ Refs on the plate), ` +
+        'or pick a model that can generate from a prompt alone.',
+      400,
+    );
+  };
+  const throwCantTake = (reffed) => {
+    const names = reffed.map((r) => `"${r.name}"`).join(', ');
+    throw httpError(
+      `"${reffed[0].model}" cannot take reference images, but ${reffed.length} plate${reffed.length === 1 ? ' carries' : 's carry'} ` +
+        `them: ${names}. Pick a model that accepts references for ${reffed.length === 1 ? 'it' : 'them'}, ` +
+        'or remove the references to render from the prompt alone.',
+      400,
+    );
   };
   if (explicitShots) {
     const refless = [];
+    const cantTake = [];
     for (const s of explicitShots) {
       const effectiveModel = s.model || model;
       const refs = Array.isArray(s.reference_image_ids) ? s.reference_image_ids : poolIds;
       if (refs.length === 0 && (await requiresRefs(effectiveModel))) {
         refless.push({ name: s.name, model: effectiveModel });
+      } else if (refs.length > 0 && (await rejectsRefs(effectiveModel))) {
+        cantTake.push({ name: s.name, model: effectiveModel });
       }
     }
-    if (refless.length) {
-      const names = refless.map((r) => `"${r.name}"`).join(', ');
-      throw httpError(
-        `"${refless[0].model}" requires reference images, but ${refless.length} plate${refless.length === 1 ? ' has' : 's have'} ` +
-          `none: ${names}. Assign references to ${refless.length === 1 ? 'it' : 'each'} (+ Refs on the plate), ` +
-          'or pick a model that can generate from a prompt alone.',
-        400,
-      );
-    }
+    if (refless.length) throwRefless(refless);
+    if (cantTake.length) throwCantTake(cantTake);
   } else if (!poolIds.length && (await requiresRefs(model))) {
     throw httpError(
       `"${model}" requires reference images — add at least one before generating.`,
+      400,
+    );
+  } else if (poolIds.length && (await rejectsRefs(model))) {
+    throw httpError(
+      `"${model}" cannot take reference images, so the attached references would be ignored — ` +
+        'pick a model that accepts references, or remove them to render from the prompt alone.',
       400,
     );
   }
@@ -600,6 +628,9 @@ export async function startShotPlanJob({
       referenceSetIds: cleanRefSetIds,
     });
   }
+  // The pool is sent to the planner as inline image blocks — cap it so a large
+  // gallery prefill can't balloon the multimodal request.
+  refIds = refIds.slice(0, MAX_SHEET_REFERENCE_IMAGES);
 
   const jobId = makeJobId();
   const job = {

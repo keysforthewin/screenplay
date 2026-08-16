@@ -64,14 +64,23 @@ export async function generateCatalogImage({
     throw badRequest(`"${endpointId}" does not produce images.`);
   }
 
-  // Endpoints that take no image input simply ignore references — dropping them
-  // is friendlier than refusing a generation the user asked for, and the picker
-  // already labels which models consume references.
+  // An endpoint that takes no image input at all cannot honor the caller's
+  // references. Refuse rather than silently render prompt-only — a dropped
+  // reference is indistinguishable from a bad render to the user, and they
+  // explicitly attached it. (Over-capacity clamping below still just trims:
+  // the render is still reference-anchored, only less redundantly.)
   const capacity = referenceCapacity(row);
-  const usable = capacity === 0 ? [] : (referenceImages || []).slice(0, capacity);
+  if ((referenceImages || []).length > 0 && capacity === 0) {
+    throw badRequest(
+      `"${row.endpoint_id}" cannot take reference images, but this render supplies ` +
+        `${(referenceImages || []).length}. Pick a model that accepts references, or ` +
+        'remove the references to render from the prompt alone.',
+    );
+  }
+  const usable = (referenceImages || []).slice(0, capacity === Infinity ? undefined : capacity);
   if (usable.length < (referenceImages || []).length) {
     logger.info(
-      `catalog image: ${endpointId} takes ${capacity === Infinity ? 'any' : capacity} references, ` +
+      `catalog image: ${endpointId} takes ${capacity} references, ` +
         `dropping ${(referenceImages || []).length - usable.length}`,
     );
   }
@@ -132,5 +141,5 @@ export async function generateCatalogImage({
     `catalog image: ${row.endpoint_id} refs=${imageUrls.length} ` +
       `${buffer.length}b ${Date.now() - t0}ms`,
   );
-  return { buffer, contentType, model: row.endpoint_id };
+  return { buffer, contentType, model: row.endpoint_id, inputImageCount: imageUrls.length };
 }

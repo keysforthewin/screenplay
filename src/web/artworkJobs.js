@@ -179,12 +179,19 @@ export async function startGenerateArtworkJob({
 }
 
 // Generate one image for an ALREADY-CREATED pending artwork and flip it to
-// `done`: load reference bytes → call the provider → upload to GridFS → (patch
-// the artwork's model if the provider fell back) → setArtworkResult. Returns
+// `done`: load reference bytes → call the provider → upload to GridFS →
+// record the generation parameters → setArtworkResult. Returns
 // `{ fileId, model }` on success and THROWS on failure — the caller owns the
 // error→status write. Shared by the single-artwork generate job (runGenerate
 // below) and the image-sheet batch worker (src/web/imageSheetJobs.js) so the
 // provider/upload/result policy lives in exactly one place.
+//
+// The artwork's `model` field deliberately stays the picker id the user chose
+// ('flux-2-pro', a catalog endpoint id, …) — regenerate/retry validate it
+// against the picker list, so overwriting it with the routed endpoint
+// ('fal-ai/flux-2-pro/edit') would break both. What actually ran is recorded
+// on `generation` instead, alongside the exact prompt and references sent, so
+// any thumbnail can show precisely how its image was produced.
 export async function generateArtworkImageInline({
   projectId = null,
   hostType,
@@ -213,15 +220,25 @@ export async function generateArtworkImageInline({
     ownerId: hostId,
     filename: `${hostType}-${hostId}-artwork-${Date.now()}.png`,
   });
-  if (result.model && result.model !== model) {
-    await patchArtworkViaGateway({
-      projectId,
-      hostType,
-      hostId,
-      artworkId,
-      patch: { model: result.model },
-    });
-  }
+  await patchArtworkViaGateway({
+    projectId,
+    hostType,
+    hostId,
+    artworkId,
+    patch: {
+      generation: {
+        requested_model: model,
+        endpoint: result.model || model,
+        mode: 'generate',
+        prompt: String(prompt || ''),
+        reference_image_ids: (referenceImageIds || []).map(String),
+        reference_sent_count: Number.isFinite(result.inputImageCount)
+          ? result.inputImageCount
+          : referenceImages.length,
+        completed_at: new Date(),
+      },
+    },
+  });
   await setArtworkResultViaGateway({
     projectId,
     hostType,
@@ -432,6 +449,28 @@ async function runEdit(opts) {
       ownerType: hostType,
       ownerId: hostId,
       filename: `${hostType}-${hostId}-artwork-edit-${Date.now()}.png`,
+    });
+    await patchArtworkViaGateway({
+      projectId,
+      hostType,
+      hostId,
+      artworkId,
+      patch: {
+        generation: {
+          requested_model: model,
+          endpoint: result.model || model,
+          mode: 'edit',
+          prompt: String(prompt || ''),
+          existing_image_id: String(currentResultImageId),
+          reference_image_ids: (referenceImageIds || []).map(String),
+          // In edit mode the provider's input count includes the existing
+          // image at position 0; references are everything after it.
+          reference_sent_count: Number.isFinite(result.inputImageCount)
+            ? Math.max(0, result.inputImageCount - 1)
+            : referenceImages.length,
+          completed_at: new Date(),
+        },
+      },
     });
     await setArtworkResultViaGateway({
       projectId,

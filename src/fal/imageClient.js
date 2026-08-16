@@ -139,6 +139,7 @@ async function falGenerateEdit({
     output_format: 'png',
   };
   let modelId;
+  let sent = 0;
   if (refs.length === 0) {
     modelId = generateModel;
   } else {
@@ -151,11 +152,13 @@ async function falGenerateEdit({
       capped = refs.slice(0, maxEditInputs);
     }
     payload.image_urls = capped.map(inputToDataUrl);
+    sent = capped.length;
   }
   logger.info(
     `fal ${label} → model=${modelId} prompt=${prompt.length}c refs=${refs.length}`,
   );
-  return callFal({ modelId, payload });
+  const result = await callFal({ modelId, payload });
+  return { ...result, inputImageCount: sent };
 }
 
 // Generate (or refine) an image via Flux Pro Kontext. When `inputImages` is
@@ -188,7 +191,8 @@ export async function generateFluxKontextImage({
   logger.info(
     `fal flux-kontext → model=${modelId} prompt=${prompt.length}c refs=${refs.length}`,
   );
-  return callFal({ modelId, payload });
+  const result = await callFal({ modelId, payload });
+  return { ...result, inputImageCount: imageUrls.length };
 }
 
 // Nano Banana Pro (Gemini 3 Pro Image). Auto-routes between the bare
@@ -298,6 +302,7 @@ export async function generateFlux2KleinImage({
   const refs = Array.isArray(inputImages) ? inputImages : [];
   const payload = { prompt, num_images: 1, output_format: 'png' };
   let modelId;
+  let sent = 0;
   if (refs.length === 0) {
     modelId = FLUX_2_KLEIN_GENERATE_MODEL;
     const size = KLEIN_SIZE_BY_ASPECT[aspectRatio];
@@ -312,12 +317,14 @@ export async function generateFlux2KleinImage({
       capped = refs.slice(0, FLUX_2_KLEIN_EDIT_MAX_INPUTS);
     }
     payload.image_urls = capped.map(inputToDataUrl);
+    sent = capped.length;
     // image_size omitted in edit mode — Klein inherits the reference frame size.
   }
   logger.info(
     `fal flux-2-klein → model=${modelId} prompt=${prompt.length}c refs=${refs.length}`,
   );
-  return callFal({ modelId, payload });
+  const result = await callFal({ modelId, payload });
+  return { ...result, inputImageCount: sent };
 }
 
 export function extractFalDetail(body) {

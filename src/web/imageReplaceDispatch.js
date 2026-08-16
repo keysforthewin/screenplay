@@ -184,6 +184,7 @@ export async function dispatchImageReplace({
       buffer: result.buffer,
       contentType: result.contentType,
       model: result.model || fallbackModel,
+      inputImageCount: result.inputImageCount ?? inputImages.length,
     };
   }
 
@@ -217,5 +218,6 @@ export async function dispatchImageReplace({
     buffer: r.buffer,
     contentType: r.contentType,
     model: r.model || GPT_IMAGE_MODEL,
+    inputImageCount: inputImages.length,
   };
 }

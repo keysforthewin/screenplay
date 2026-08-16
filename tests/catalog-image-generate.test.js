@@ -108,7 +108,9 @@ describe('generateCatalogImage', () => {
     expect(opts.input.image_urls).toEqual(['https://fal.media/in.png']);
   });
 
-  it('drops references the endpoint cannot take rather than failing', async () => {
+  it('rejects references on an endpoint that cannot take any, without calling fal', async () => {
+    // Silently dropping the refs here is exactly how a user ends up with a
+    // prompt-only render they believed was reference-anchored — fail loudly.
     getPlaygroundModelMock.mockResolvedValueOnce({
       ...ROW,
       category: 'text-to-image',
@@ -118,15 +120,27 @@ describe('generateCatalogImage', () => {
       },
     });
 
-    await generateCatalogImage({
+    await expect(
+      generateCatalogImage({
+        endpointId: 'fal-ai/some-new-model',
+        prompt: 'p',
+        referenceImages: [{ buffer: TINY_PNG, contentType: 'image/png' }],
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/cannot take reference images/i),
+    });
+    expect(subscribeMock).not.toHaveBeenCalled();
+    expect(uploadMock).not.toHaveBeenCalled();
+  });
+
+  it('reports how many input images it sent', async () => {
+    const out = await generateCatalogImage({
       endpointId: 'fal-ai/some-new-model',
       prompt: 'p',
       referenceImages: [{ buffer: TINY_PNG, contentType: 'image/png' }],
     });
-
-    const [, opts] = subscribeMock.mock.calls[0];
-    expect(opts.input.image_urls).toBeUndefined();
-    expect(uploadMock).not.toHaveBeenCalled();
+    expect(out.inputImageCount).toBe(1);
   });
 
   it('clamps references to the endpoint documented maximum', async () => {
