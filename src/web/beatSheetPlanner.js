@@ -66,6 +66,14 @@ export const SCENE_PLATE_PLAN_TOOL = {
               type: 'string',
               description: 'A short VERBATIM snippet copied exactly from the beat body that this plate depicts. Reviewer-facing only — never rendered.',
             },
+            reference_indexes: {
+              type: 'array',
+              items: { type: 'integer' },
+              description:
+                'Which of the numbered reference images (1-based) the image model should receive when rendering THIS plate. ' +
+                'Assign only references that depict this plate\'s own subject; omit or leave empty for a plate that should render ' +
+                'standalone from its prompt alone. Every assigned reference must have its role stated in the prompt.',
+            },
           },
           required: ['name', 'prompt', 'justification', 'quote'],
           additionalProperties: false,
@@ -91,14 +99,21 @@ export const SCENE_PLATE_PLAN_SYSTEM_PROMPT = [
   '',
   '# Goal',
   '- Read the FULL beat, then produce a custom list of standalone scene / background / establishing plates that capture every distinct location, key set detail, and atmosphere the beat calls for.',
-  '- Decide the number of plates from the text itself — a short beat needs few, a long or location-rich beat needs more. There is NO target count.',
+  '- Plan the FEWEST plates that cover the beat: one plate per distinct visual the beat actually stages. Never pad the list for variety — a beat dominated by a single image (one sky, one room) gets exactly one plate for it, rendered as beautifully as the prompt can make it. Add a wide/detail split ONLY when the beat itself dwells on both.',
+  '- Decide the number of plates from the text itself — a short beat needs few. There is NO target count and no minimum.',
   '- These are UNIVERSAL BACKDROPS, reused later as storyboard references — so prefer EMPTY or lightly-dressed environments with NO characters in frame.',
-  '- Vary the scale: wide establishing shots, mid set views, and tight set-detail inserts (props, textures, signage).',
   '',
   '# For every plate',
-  '- prompt: a concrete, standalone, purely-visual image prompt (location, time of day, lighting, palette, mood, lens/framing). Sent verbatim to the image model.',
+  '- prompt: a concrete, purely-visual image prompt (location, time of day, lighting, palette, mood, lens/framing). Sent verbatim to the image model together with ONLY the reference images this plate assigns.',
   '- justification: one sentence on why this plate serves the beat. Reviewer-facing only — never rendered.',
   '- quote: a short VERBATIM snippet copied exactly from the beat body that this plate depicts. Reviewer-facing only — never rendered.',
+  '- reference_indexes: the numbered reference images to send with THIS plate (see below).',
+  '',
+  '# Reference images (assign per plate via reference_indexes)',
+  '- The reference images are attached to this message, numbered "Reference image 1..N". LOOK at them — do not rely on their descriptions alone.',
+  '- For each plate, assign ONLY the references that depict that plate\'s own subject (the same building, room, or object). A plate whose subject appears in no reference gets an EMPTY assignment and a fully standalone prompt — an unrelated reference would contaminate the render.',
+  '- When a plate assigns references, its prompt MUST state each reference\'s role explicitly (e.g. "the art-deco movie theater shown in the reference image, seen at night") so the image model knows what to take from it. The image model sees only the prompt and the assigned reference images.',
+  '- Use references for continuity (an established location, prop, or look), never as a mood board.',
   '',
   '# How to read the beat',
   '- Beat bodies are screenplay-format (Fountain-flavored): sluglines (INT./EXT. LOCATION — TIME) give location, time of day, and lighting; mini-slugs (BACK SEAT, AT THE WINDOW) name the sub-location a moment happens in; action lines give set dressing and atmosphere.',
@@ -113,17 +128,22 @@ export const SCENE_PLATE_PLAN_SYSTEM_PROMPT = [
   STATIC_PLATE_CONSTRAINTS,
 ].join('\n');
 
+// Numbered so the planner can assign them per plate via reference_indexes.
+// The numbering here MUST match the labeled image blocks appended by
+// buildScenePlatePlanContent — both are 1-based over the same array.
 function formatReferenceInputs(referenceInputs) {
-  const items = (referenceInputs || [])
-    .map((r) => {
-      const name = String(r?.name || '').trim();
-      const desc = String(r?.description || '').trim();
-      if (!name && !desc) return null;
-      return `- ${name || 'image'}: ${desc || '(no description on file)'}`;
-    })
-    .filter(Boolean);
+  const items = (referenceInputs || []).map((r, i) => {
+    const name = String(r?.name || '').trim();
+    const desc = String(r?.description || '').trim();
+    return `- Reference image ${i + 1} — ${name || 'image'}: ${desc || '(no description on file)'}`;
+  });
   if (!items.length) return null;
   return items.join('\n');
+}
+
+function referenceLabel(r, i) {
+  const name = String(r?.name || '').trim();
+  return `Reference image ${i + 1}${name ? ` — ${name}` : ''}:`;
 }
 
 export function buildScenePlatePlanUserText({
@@ -154,13 +174,43 @@ export function buildScenePlatePlanUserText({
   }
   const refBlock = formatReferenceInputs(referenceInputs);
   if (refBlock) {
-    lines.push('', '# Reference images provided (their stored descriptions — design around these):', refBlock);
+    lines.push(
+      '',
+      '# Reference images provided (numbered; the images themselves are attached below):',
+      refBlock,
+      '',
+      'Assign each plate the reference numbers that depict its own subject via reference_indexes — possibly none.',
+    );
   }
   lines.push(
     '',
     'Use the plan_scene_plates tool. For each plate give a purely-visual prompt, a one-sentence justification, and a verbatim quote copied from the beat body.',
   );
   return lines.join('\n');
+}
+
+// Multimodal form of the phase-1 user message: the plan text followed by one
+// labeled image block per reference input that has bytes. Labels keep the same
+// 1-based numbering as the text list (an entry without bytes keeps its number
+// but contributes no image, so reference_indexes stay aligned).
+export function buildScenePlatePlanContent(args = {}) {
+  const blocks = [{ type: 'text', text: buildScenePlatePlanUserText(args) }];
+  const refs = Array.isArray(args.referenceInputs) ? args.referenceInputs : [];
+  refs.forEach((r, i) => {
+    if (!r?.buffer) return;
+    blocks.push(
+      { type: 'text', text: referenceLabel(r, i) },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: r.contentType || 'image/png',
+          data: Buffer.from(r.buffer).toString('base64'),
+        },
+      },
+    );
+  });
+  return blocks;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +233,13 @@ export const SCENE_PLATE_CRITIQUE_TOOL = {
       prompt: { type: 'string', description: 'For verdict "edit": the improved, purely-visual prompt.' },
       name: { type: 'string', description: 'For verdict "edit": an optional improved gallery label.' },
       justification: { type: 'string', description: 'For verdict "edit": an optional updated justification.' },
+      reference_indexes: {
+        type: 'array',
+        items: { type: 'integer' },
+        description:
+          'For verdict "edit": the corrected reference assignment (1-based indexes into the available reference list; ' +
+          'empty = render standalone). Omit to keep the plate\'s current assignment.',
+      },
       shots: {
         type: 'array',
         description: 'For verdict "divide": exactly two fully-formed plates.',
@@ -193,6 +250,7 @@ export const SCENE_PLATE_CRITIQUE_TOOL = {
             prompt: { type: 'string' },
             justification: { type: 'string' },
             quote: { type: 'string' },
+            reference_indexes: { type: 'array', items: { type: 'integer' } },
           },
           required: ['name', 'prompt', 'justification', 'quote'],
           additionalProperties: false,
@@ -217,12 +275,14 @@ export const SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT = [
   '',
   'SPATIAL FIDELITY: compare the prompt against the beat (and the plate\'s quote). If the beat pins a spatial placement or sub-location (e.g. "in the back seat", "by the window") and the prompt drops it or contradicts it, choose "edit" and restore the exact geography. If the prompt would let the image model add or misplace an occupant — a driver in an empty minivan, a figure in the front when the beat says the back — choose "edit" to fix the placement or to state the seats are empty.',
   '',
+  'REFERENCE CHECK: the plate lists which of the available reference images will be sent to the image model with it. A reference that does not depict the plate\'s own subject contaminates the render — if any assigned reference is unrelated (a building reference on a pure sky plate), choose "edit" and return the corrected reference_indexes. If a reference clearly depicts the plate\'s subject but is not assigned, "edit" to assign it AND make the prompt state its role (e.g. "the theater shown in the reference image"). A plate with assigned references whose prompt never mentions what to take from them also needs "edit".',
+  '',
   'Rules: prompts stay purely visual (no characters unless unavoidable, no proper names, no caption/quote text). Prefer keep/edit over divide; only divide when genuinely two shots. Only cull when the plate adds no value.',
 ].join('\n');
 
-export function buildScenePlateCritiqueUserText({ beat, characters = [], direction = '', directorNotes = [], plate } = {}) {
+export function buildScenePlateCritiqueUserText({ beat, characters = [], direction = '', directorNotes = [], referenceInputs = [], plate } = {}) {
   const ctx = buildBeatContextBlock({ beat, characters, direction, directorNotes });
-  return [
+  const lines = [
     'Critique this single proposed plate for the beat below.',
     '',
     '# The plate',
@@ -230,18 +290,38 @@ export function buildScenePlateCritiqueUserText({ beat, characters = [], directi
     `- prompt: ${plate?.prompt || ''}`,
     `- justification: ${plate?.justification || ''}`,
     `- quote: ${plate?.quote || ''}`,
-    '',
-    ctx,
-    '',
-    'Use the critique_scene_plate tool with exactly one verdict.',
-  ].join('\n');
+  ];
+  const refBlock = formatReferenceInputs(referenceInputs);
+  if (refBlock) {
+    const assigned = Array.isArray(plate?.reference_indexes) ? plate.reference_indexes : [];
+    lines.push(
+      `- assigned references: ${assigned.length ? assigned.join(', ') : '(none — renders standalone)'}`,
+      '',
+      '# Available reference images (by number; only the assigned ones are sent to the image model with this plate):',
+      refBlock,
+    );
+  }
+  lines.push('', ctx, '', 'Use the critique_scene_plate tool with exactly one verdict.');
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
 // Normalize + helpers
 // ---------------------------------------------------------------------------
 
-// Drop entries missing name/prompt, trim, carry justification/quote, clamp to max.
+// Sanitize a plate's reference_indexes: unique positive integers, in order.
+function normalizeReferenceIndexes(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const v of raw) {
+    const n = Number(v);
+    if (Number.isInteger(n) && n >= 1 && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+// Drop entries missing name/prompt, trim, carry justification/quote and the
+// per-plate reference assignment, clamp to max.
 export function normalizeScenePlanImages(rawImages, { max = MAX_SCENE_IMAGE_COUNT } = {}) {
   if (!Array.isArray(rawImages)) return [];
   const out = [];
@@ -251,7 +331,7 @@ export function normalizeScenePlanImages(rawImages, { max = MAX_SCENE_IMAGE_COUN
     if (!name || !prompt) continue;
     const justification = typeof it?.justification === 'string' ? it.justification.trim() : '';
     const quote = typeof it?.quote === 'string' ? it.quote.trim() : '';
-    out.push({ name, prompt, justification, quote });
+    out.push({ name, prompt, justification, quote, reference_indexes: normalizeReferenceIndexes(it?.reference_indexes) });
     if (out.length >= max) break;
   }
   return out;
@@ -300,6 +380,9 @@ function applyVerdict(plate, verdict) {
         prompt: typeof v.prompt === 'string' && v.prompt.trim() ? v.prompt.trim() : plate.prompt,
         justification: typeof v.justification === 'string' && v.justification.trim() ? v.justification.trim() : plate.justification,
         quote: plate.quote,
+        reference_indexes: Array.isArray(v.reference_indexes)
+          ? normalizeReferenceIndexes(v.reference_indexes)
+          : plate.reference_indexes,
       }];
     case 'divide':
       if (Array.isArray(v.shots) && v.shots.length) {
@@ -309,6 +392,9 @@ function applyVerdict(plate, verdict) {
             prompt: typeof s?.prompt === 'string' ? s.prompt.trim() : '',
             justification: typeof s?.justification === 'string' ? s.justification.trim() : '',
             quote: typeof s?.quote === 'string' && s.quote.trim() ? s.quote.trim() : plate.quote,
+            reference_indexes: Array.isArray(s?.reference_indexes)
+              ? normalizeReferenceIndexes(s.reference_indexes)
+              : plate.reference_indexes,
           }))
           .filter((s) => s.name && s.prompt);
         return split.length ? split : [plate];
@@ -332,7 +418,7 @@ export function _setScenePlatePlannerForTests(fn) { phase1Override = fn; }
 export function _setScenePlateCritiqueForTests(fn) { phase2Override = fn; }
 
 async function callPhase1Anthropic(args) {
-  const userText = buildScenePlatePlanUserText(args);
+  const content = buildScenePlatePlanContent(args);
   const client = getAnthropic();
   const resp = await client.messages
     .stream({
@@ -341,7 +427,7 @@ async function callPhase1Anthropic(args) {
       system: SCENE_PLATE_PLAN_SYSTEM_PROMPT,
       tools: [SCENE_PLATE_PLAN_TOOL],
       tool_choice: { type: 'tool', name: 'plan_scene_plates' },
-      messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+      messages: [{ role: 'user', content }],
     })
     .finalMessage();
   if (resp.stop_reason === 'max_tokens') {
@@ -355,8 +441,8 @@ async function callPhase1Anthropic(args) {
   return Array.isArray(toolUse.input?.plates) ? toolUse.input.plates : [];
 }
 
-async function callPhase2Anthropic({ beat, characters, direction, directorNotes, plate }) {
-  const userText = buildScenePlateCritiqueUserText({ beat, characters, direction, directorNotes, plate });
+async function callPhase2Anthropic({ beat, characters, direction, directorNotes, referenceInputs, plate }) {
+  const userText = buildScenePlateCritiqueUserText({ beat, characters, direction, directorNotes, referenceInputs, plate });
   const client = getAnthropic();
   const resp = await client.messages
     .stream({
@@ -415,8 +501,8 @@ export async function planBeatSceneImages({
     let verdict;
     try {
       verdict = phase2Override
-        ? await phase2Override(plate, { beat, characters, direction, directorNotes })
-        : await callPhase2Anthropic({ beat, characters, direction, directorNotes, plate });
+        ? await phase2Override(plate, { beat, characters, direction, directorNotes, referenceInputs })
+        : await callPhase2Anthropic({ beat, characters, direction, directorNotes, referenceInputs, plate });
     } catch (e) {
       logger.warn(`beat plate critique failed; keeping plate: ${e.message}`);
       verdict = { verdict: 'keep' };
@@ -430,8 +516,24 @@ export async function planBeatSceneImages({
   for (let i = 0; i < planned.length; i += 1) {
     expanded.push(...applyVerdict(planned[i], verdicts[i]));
   }
-  const images = normalizeScenePlanImages(expanded, { max: MAX_SCENE_IMAGE_COUNT });
+  const images = normalizeScenePlanImages(expanded, { max: MAX_SCENE_IMAGE_COUNT })
+    .map(({ reference_indexes, ...rest }) => ({
+      ...rest,
+      reference_image_ids: resolveReferenceIndexes(reference_indexes, referenceInputs),
+    }));
   warnNonVerbatimQuotes(images, beat);
   emit({ phase: 'critiquing', step: 'critique_complete', total: images.length, message: `${images.length} plate${images.length === 1 ? '' : 's'} ready for review.` });
   return { images };
+}
+
+// Map a plate's 1-based reference_indexes to the ids of the supplied reference
+// inputs. Out-of-range indexes and inputs without a usable id drop silently.
+function resolveReferenceIndexes(indexes, referenceInputs = []) {
+  const out = [];
+  for (const n of indexes || []) {
+    const r = referenceInputs[n - 1];
+    const id = String(r?.id ?? r?._id ?? '');
+    if (id) out.push(id);
+  }
+  return out;
 }

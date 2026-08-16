@@ -39,7 +39,9 @@ export function ImageSheetDialog({
   const [allSets, setAllSets] = useState([]);
   const [referenceSetIds, setReferenceSetIds] = useState([]);
   const [referenceIds, setReferenceIds] = useState([]);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  // Which reference picker is open: null (closed), 'sheet' (the shared pool),
+  // or a plate key (that plate's own reference assignment).
+  const [pickerTarget, setPickerTarget] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   // Character: the fixed shot list + which are checked.
@@ -47,7 +49,7 @@ export function ImageSheetDialog({
   const [selectedShots, setSelectedShots] = useState([]);
   // Beat wizard: 'setup' → 'deriving' → 'review'.
   const [stage, setStage] = useState('setup');
-  const [derivedShots, setDerivedShots] = useState([]); // [{ key, name, prompt, justification, quote }]
+  const [derivedShots, setDerivedShots] = useState([]); // [{ key, name, prompt, justification, quote, referenceIds }]
   const [deriveJob, setDeriveJob] = useState(null);
   const [showDeriveLog, setShowDeriveLog] = useState(false);
   // Re-derive feedback popup: the user says what to change; it's sent as
@@ -73,7 +75,7 @@ export function ImageSheetDialog({
     if (!open) {
       openSeqRef.current++;
       stopDerivePoll();
-      setPickerOpen(false);
+      setPickerTarget(null);
       return;
     }
     setError(null);
@@ -85,11 +87,11 @@ export function ImageSheetDialog({
     setShowDeriveLog(false);
     setReDeriveOpen(false);
     setFeedback('');
-    // Reference images are required for characters and beats, so open the
-    // picker immediately. Sets default to their own gallery via the checked
-    // reference sets, so the picker stays optional there.
-    setPickerOpen(!isSet);
-  }, [open, isSet]);
+    // Reference images are required for characters (they anchor the face), so
+    // open the picker immediately. For beats/sets references are optional —
+    // the planner assigns them per plate — so the picker stays on demand.
+    setPickerTarget(isCharacter ? 'sheet' : null);
+  }, [open, isCharacter]);
 
   useEffect(() => () => stopDerivePoll(), []);
 
@@ -207,6 +209,7 @@ export function ImageSheetDialog({
           prompt: s.prompt || '',
           justification: s.justification || '',
           quote: s.quote || '',
+          referenceIds: Array.isArray(s.reference_image_ids) ? s.reference_image_ids.map(String) : [],
         })));
         setStage('review');
         setBusy(false);
@@ -222,12 +225,6 @@ export function ImageSheetDialog({
   }
 
   async function derive({ direction = '', previousPlates = null } = {}) {
-    if (!hasReferences) {
-      setError(isSet
-        ? 'Select at least one reference image or check a reference set before deriving plates.'
-        : 'Select at least one reference image before deriving plates.');
-      return;
-    }
     setBusy(true);
     setError(null);
     setStage('deriving');
@@ -280,22 +277,33 @@ export function ImageSheetDialog({
     setDerivedShots((prev) => prev.filter((s) => s.key !== key));
   }
 
+  function removePlateReference(key, id) {
+    setDerivedShots((prev) =>
+      prev.map((s) => (s.key === key ? { ...s, referenceIds: s.referenceIds.filter((x) => x !== id) } : s)),
+    );
+  }
+
+  // The one picker serves both the sheet-level pool and a single plate's own
+  // assignment, depending on which target opened it.
+  function applyPickedReferences(ids) {
+    if (pickerTarget === 'sheet') setReferenceIds(ids);
+    else if (pickerTarget) updateShot(pickerTarget, 'referenceIds', ids);
+  }
+
   function addShot() {
-    setDerivedShots((prev) => [...prev, { key: nextKey(), name: 'New plate', prompt: '', justification: '', quote: '' }]);
+    setDerivedShots((prev) => [...prev, { key: nextKey(), name: 'New plate', prompt: '', justification: '', quote: '', referenceIds: [] }]);
   }
 
   async function generateSheet() {
     const ready = derivedShots
-      .map((s) => ({ name: s.name.trim(), prompt: s.prompt.trim() }))
+      .map((s) => ({
+        name: s.name.trim(),
+        prompt: s.prompt.trim(),
+        reference_image_ids: Array.isArray(s.referenceIds) ? s.referenceIds : [],
+      }))
       .filter((s) => s.name && s.prompt);
     if (!ready.length) {
       setError('Add at least one plate with a name and a prompt.');
-      return;
-    }
-    if (!hasReferences) {
-      setError(isSet
-        ? 'Select at least one reference image or check a reference set before generating.'
-        : 'Select at least one reference image before generating.');
       return;
     }
     setBusy(true);
@@ -321,8 +329,9 @@ export function ImageSheetDialog({
   }
 
   // ---- Footer (varies by host type + beat stage). -------------------------
-  const hasReferences = referenceIds.length > 0 || (isSet && referenceSetIds.length > 0);
-  const charCanSubmit = selectedShots.length >= 1 && hasReferences && Boolean(imageModel) && !busy;
+  // Only character sheets require references (they anchor the subject's face);
+  // beat/set plates assign references per plate, possibly none.
+  const charCanSubmit = selectedShots.length >= 1 && referenceIds.length > 0 && Boolean(imageModel) && !busy;
   const reviewReady = derivedShots.some((s) => s.name.trim() && s.prompt.trim());
 
   let footer;
@@ -344,7 +353,7 @@ export function ImageSheetDialog({
           type="button"
           className="primary"
           onClick={generateSheet}
-          disabled={busy || !reviewReady || !hasReferences || !imageModel}
+          disabled={busy || !reviewReady || !imageModel}
         >
           {busy ? 'Starting…' : `Generate sheet (${derivedShots.length})`}
         </button>
@@ -354,7 +363,7 @@ export function ImageSheetDialog({
     footer = (
       <>
         <button type="button" onClick={onClose} disabled={busy && stage !== 'deriving'}>Cancel</button>
-        <button type="button" className="primary" onClick={() => derive()} disabled={busy || !hasReferences}>
+        <button type="button" className="primary" onClick={() => derive()} disabled={busy}>
           {stage === 'deriving' ? 'Deriving…' : 'Derive shots'}
         </button>
       </>
@@ -385,25 +394,33 @@ export function ImageSheetDialog({
           {(isCharacter || stage !== 'deriving') && (
             <div className="frame-generate-refs">
               <div className="frame-generate-section-header">
-                <span className="field-label">Reference images</span>
-                <button type="button" className="primary" onClick={() => setPickerOpen(true)} disabled={busy}>
+                <span className="field-label">
+                  {isCharacter ? 'Reference images' : 'Reference images (assigned per plate)'}
+                </span>
+                <button type="button" className="primary" onClick={() => setPickerTarget('sheet')} disabled={busy}>
                   + Add references
                 </button>
               </div>
               <div className="frame-generate-ref-grid">
                 {referenceIds.length === 0 ? (
                   <div className="frame-generate-ref-empty">
-                    {isSet ? (
-                      <>
-                        No individual references picked — the checked reference sets
-                        below supply the gallery images that anchor the look. Use{' '}
-                        <strong>+ Add references</strong> to pin specific images too.
-                      </>
-                    ) : (
+                    {isCharacter ? (
                       <>
                         At least one reference image is required — they anchor the look so
                         generation matches your subject instead of inventing random people.
                         Use <strong>+ Add references</strong> to choose some.
+                      </>
+                    ) : isSet ? (
+                      <>
+                        Optional — the planner assigns each plate only the references that
+                        depict its subject; the checked reference sets below also feed the
+                        pool. Use <strong>+ Add references</strong> to pin specific images.
+                      </>
+                    ) : (
+                      <>
+                        Optional — the planner looks at these and assigns each plate only
+                        the ones that depict its subject (a plate can also use none). Use{' '}
+                        <strong>+ Add references</strong> to offer some.
                       </>
                     )}
                   </div>
@@ -554,6 +571,36 @@ export function ImageSheetDialog({
                         onChange={(e) => updateShot(s.key, 'prompt', e.target.value)}
                         disabled={busy}
                       />
+                      <div className="image-sheet-plate-refs">
+                        {s.referenceIds.length === 0 ? (
+                          <span className="image-sheet-plate-refs-label">
+                            No references — this plate renders from its prompt alone.
+                          </span>
+                        ) : (
+                          s.referenceIds.map((id) => (
+                            <div className="frame-generate-ref-thumb" key={id}>
+                              <img
+                                src={thumbUrl(id)}
+                                alt="plate reference"
+                                loading="lazy"
+                                onClick={() => window.open(imageUrl(id), '_blank', 'noopener')}
+                              />
+                              <button
+                                type="button"
+                                className="storyboard-frame-remove"
+                                title="Remove reference from this plate"
+                                onClick={() => removePlateReference(s.key, id)}
+                                disabled={busy}
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))
+                        )}
+                        <button type="button" onClick={() => setPickerTarget(s.key)} disabled={busy}>
+                          + Refs
+                        </button>
+                      </div>
                       {s.quote && <blockquote className="image-sheet-plate-quote">{s.quote}</blockquote>}
                       {s.justification && <div className="image-sheet-plate-just">{s.justification}</div>}
                     </div>
@@ -584,14 +631,18 @@ export function ImageSheetDialog({
         </div>
       </Modal>
       <SheetReferencePicker
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        onApply={(ids) => setReferenceIds(ids)}
+        open={pickerTarget != null}
+        onClose={() => setPickerTarget(null)}
+        onApply={applyPickedReferences}
         hostType={hostType}
         hostId={hostId}
         hostLabel={hostLabel}
         beatIds={isSet ? [mainBeatId, ...selectedBeatIds].filter(Boolean) : []}
-        selectedIds={referenceIds}
+        selectedIds={
+          pickerTarget && pickerTarget !== 'sheet'
+            ? derivedShots.find((s) => s.key === pickerTarget)?.referenceIds || []
+            : referenceIds
+        }
       />
       <Modal
         open={reDeriveOpen}

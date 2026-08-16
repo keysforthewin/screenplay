@@ -161,13 +161,14 @@ export function setAsPlannerBeat(set, { mainBeat = null, contextBeats = [] } = {
   };
 }
 
-// Resolve the user-picked reference image ids to loadImageInput entries (bytes +
-// stored description). Used only to feed descriptions to the beat planner.
+// Resolve the user-picked reference image ids to loadImageInput entries (bytes
+// + stored description), tagged with the requested id so the planner can map
+// its per-plate reference_indexes back to these exact ids.
 async function loadReferenceInputs(referenceImageIds) {
   const out = [];
   for (const id of referenceImageIds || []) {
     const r = await loadImageInput(id);
-    if (r) out.push(r);
+    if (r) out.push({ ...r, id: String(id) });
   }
   return out;
 }
@@ -247,9 +248,15 @@ async function resolveSheetReferenceIds({ projectId, explicitIds = [], reference
   return out;
 }
 
-// Trim/validate a client-supplied explicit shot list (beats). Returns an array
-// of { name, prompt } (blanks dropped, lengths clamped, capped at the max), or
-// null if `shots` is not an array.
+// Ceiling on one shot's own reference list (mirrors the storyboard frame cap).
+export const MAX_SHOT_REFERENCE_IMAGES = 12;
+
+// Trim/validate a client-supplied explicit shot list (beats/sets). Returns an
+// array of { name, prompt, reference_image_ids? } (blanks dropped, lengths
+// clamped, capped at the max), or null if `shots` is not an array. A shot
+// carries `reference_image_ids` only when the input provided an array — its
+// ABSENCE means "use the sheet-level pool" (legacy clients), while an empty
+// array means "render this shot with no references at all".
 function normalizeExplicitShots(shots, { max = MAX_SCENE_IMAGE_COUNT } = {}) {
   if (!Array.isArray(shots)) return null;
   const out = [];
@@ -257,10 +264,32 @@ function normalizeExplicitShots(shots, { max = MAX_SCENE_IMAGE_COUNT } = {}) {
     const name = typeof s?.name === 'string' ? s.name.trim().slice(0, 200) : '';
     const prompt = typeof s?.prompt === 'string' ? s.prompt.trim().slice(0, 2000) : '';
     if (!name || !prompt) continue;
-    out.push({ name, prompt });
+    const shot = { name, prompt };
+    if (Array.isArray(s?.reference_image_ids)) {
+      shot.reference_image_ids = [...new Set(
+        s.reference_image_ids.map(String).filter((x) => /^[a-f0-9]{24}$/i.test(x)),
+      )].slice(0, MAX_SHOT_REFERENCE_IMAGES);
+    }
+    out.push(shot);
     if (out.length >= max) break;
   }
   return out;
+}
+
+// Drop per-shot reference ids whose GridFS file no longer exists — a stale id
+// would otherwise fail that shot's render (loadImageBuffers throws).
+async function pruneStaleShotReferences(shots) {
+  const { findImageFile } = await import('../mongo/images.js');
+  const known = new Map();
+  for (const shot of shots) {
+    if (!Array.isArray(shot.reference_image_ids)) continue;
+    const kept = [];
+    for (const id of shot.reference_image_ids) {
+      if (!known.has(id)) known.set(id, Boolean(await findImageFile(id)));
+      if (known.get(id)) kept.push(id);
+    }
+    shot.reference_image_ids = kept;
+  }
 }
 
 // Render one shot: create a pending artwork, then generate its image. Per-shot
@@ -268,6 +297,13 @@ function normalizeExplicitShots(shots, { max = MAX_SCENE_IMAGE_COUNT } = {}) {
 // still land.
 async function renderShot({ projectId, job, hostType, hostId, model, referenceImageIds, discordUser, shot, index }) {
   const order = index + 1;
+  // A shot that carries its own reference list (per-plate assignment from the
+  // planner/review UI) renders with EXACTLY those references — an empty list
+  // means none. Shots without one (character presets, legacy clients) use the
+  // sheet-level pool.
+  const shotReferenceIds = Array.isArray(shot.reference_image_ids)
+    ? shot.reference_image_ids
+    : referenceImageIds;
   recordProgress(job, {
     phase: 'rendering',
     step: 'shot_start',
@@ -284,7 +320,7 @@ async function renderShot({ projectId, job, hostType, hostId, model, referenceIm
       prompt: shot.prompt,
       name: shot.name,
       model,
-      referenceImageIds,
+      referenceImageIds: shotReferenceIds,
       jobId: job.job_id,
     });
     artworkId = artwork._id;
@@ -295,7 +331,7 @@ async function renderShot({ projectId, job, hostType, hostId, model, referenceIm
       artworkId,
       prompt: shot.prompt,
       model,
-      referenceImageIds,
+      referenceImageIds: shotReferenceIds,
       discordUser,
     });
     job.completed += 1;
@@ -680,6 +716,7 @@ export async function startImageSheetJob({
     if (!explicitShots || !explicitShots.length) {
       throw httpError(`A ${hostType} image sheet needs a derived shot list (shots[]).`, 400);
     }
+    await pruneStaleShotReferences(explicitShots);
   }
 
   const busyKey = `${hostType}:${resolvedHostId}`;

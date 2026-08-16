@@ -675,6 +675,21 @@ select option {
   font-size: 13px;
 }
 .image-sheet-plate-just { margin-top: 6px; color: var(--muted, #aaa); font-size: 12px; }
+.image-sheet-plate-refs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.image-sheet-plate-refs .frame-generate-ref-thumb {
+  width: 72px;
+  flex: 0 0 auto;
+}
+.image-sheet-plate-refs-label {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
 .image-sheet-feedback { width: 100%; resize: vertical; font: inherit; }
 
 /* Attachment one-row inline editing — same shape as gallery/library, no

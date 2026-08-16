@@ -11,7 +11,8 @@ const fakeDb = createFakeDb();
 
 // Shared, hoisted instrumentation for the provider mock + fal-config toggle.
 const h = vi.hoisted(() => ({
-  dispatch: { calls: 0, inFlight: 0, maxInFlight: 0, failOnCall: 0 },
+  dispatch: { calls: 0, inFlight: 0, maxInFlight: 0, failOnCall: 0, perCall: [] },
+  images: { requested: [] },
   fal: { configured: true },
 }));
 
@@ -23,10 +24,13 @@ vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 }));
 vi.mock('../src/mongo/images.js', () => ({
-  readImageBuffer: vi.fn(async () => ({
-    buffer: Buffer.from('ref'),
-    file: { contentType: 'image/png', metadata: {} },
-  })),
+  readImageBuffer: vi.fn(async (id) => {
+    h.images.requested.push(String(id));
+    return {
+      buffer: Buffer.from('ref'),
+      file: { contentType: 'image/png', metadata: {} },
+    };
+  }),
   uploadGeneratedImage: vi.fn(async (_projectId, { filename, contentType }) => ({
     _id: new ObjectId(),
     filename,
@@ -54,8 +58,9 @@ vi.mock('../src/openai/imageClient.js', () => ({
 // import from artworkJobs proved unreliable). Instrumented to measure
 // concurrency and to fail a specific call.
 vi.mock('../src/fal/imageClient.js', () => ({
-  generateNanoBananaProImage: async () => {
+  generateNanoBananaProImage: async ({ prompt, inputImages } = {}) => {
     h.dispatch.calls += 1;
+    h.dispatch.perCall.push({ prompt, inputCount: Array.isArray(inputImages) ? inputImages.length : 0 });
     const callNo = h.dispatch.calls;
     h.dispatch.inFlight += 1;
     h.dispatch.maxInFlight = Math.max(h.dispatch.maxInFlight, h.dispatch.inFlight);
@@ -80,6 +85,7 @@ vi.mock('../src/fal/imageClient.js', () => ({
 }));
 
 const { createProject } = await import('../src/mongo/projects.js');
+const Images = await import('../src/mongo/images.js');
 const Characters = await import('../src/mongo/characters.js');
 const Plots = await import('../src/mongo/plots.js');
 const Planner = await import('../src/web/beatSheetPlanner.js');
@@ -95,7 +101,10 @@ beforeEach(async () => {
   h.dispatch.inFlight = 0;
   h.dispatch.maxInFlight = 0;
   h.dispatch.failOnCall = 0;
+  h.dispatch.perCall = [];
+  h.images.requested = [];
   h.fal.configured = true;
+  Images.findImageFile.mockImplementation(async () => null);
   Planner._setScenePlatePlannerForTests(null);
   Planner._setScenePlateCritiqueForTests(null);
 });
@@ -270,6 +279,89 @@ describe('startImageSheetJob — beat (explicit shots)', () => {
   });
 });
 
+describe('startImageSheetJob — per-shot references', () => {
+  const refA = 'a'.repeat(24);
+  const refB = 'b'.repeat(24);
+  const refC = 'c'.repeat(24);
+
+  it('sends each shot ONLY its own reference images, never the sheet pool', async () => {
+    Images.findImageFile.mockImplementation(async (id) => ({ _id: id }));
+    const beat = await Plots.createBeat({ projectId, name: 'Stars', body: 'EXT. SKY - NIGHT' });
+    const { job_id } = await Sheet.startImageSheetJob({
+      projectId,
+      hostType: 'beat',
+      hostId: beat._id.toString(),
+      model: 'nano-banana-pro',
+      referenceImageIds: [refA, refB, refC],
+      shots: [
+        { name: 'Starfield', prompt: 'the milky way over black hills', reference_image_ids: [] },
+        { name: 'Theater', prompt: 'the theater from the reference beneath stars', reference_image_ids: [refA, refB] },
+      ],
+    });
+    const job = await waitForJob(job_id);
+    expect(job.status).toBe('done');
+    const star = h.dispatch.perCall.find((c) => c.prompt.includes('milky way'));
+    const theater = h.dispatch.perCall.find((c) => c.prompt.includes('theater'));
+    expect(star.inputCount).toBe(0);
+    expect(theater.inputCount).toBe(2);
+
+    const fresh = await Plots.getBeat(projectId, beat._id.toString());
+    const starArt = fresh.artworks.find((a) => a.name === 'Starfield');
+    const theaterArt = fresh.artworks.find((a) => a.name === 'Theater');
+    expect(starArt.reference_image_ids).toEqual([]);
+    expect(theaterArt.reference_image_ids.map(String)).toEqual([refA, refB]);
+  });
+
+  it('falls back to the sheet-level pool for shots without their own list', async () => {
+    Images.findImageFile.mockImplementation(async (id) => ({ _id: id }));
+    const beat = await Plots.createBeat({ projectId, name: 'Legacy', body: 'INT. X' });
+    const { job_id } = await Sheet.startImageSheetJob({
+      projectId,
+      hostType: 'beat',
+      hostId: beat._id.toString(),
+      model: 'nano-banana-pro',
+      referenceImageIds: [refA, refB],
+      shots: [{ name: 'Old-style', prompt: 'a legacy plate' }],
+    });
+    const job = await waitForJob(job_id);
+    expect(job.status).toBe('done');
+    expect(h.dispatch.perCall[0].inputCount).toBe(2);
+  });
+
+  it('drops per-shot reference ids whose files are gone instead of failing the shot', async () => {
+    Images.findImageFile.mockImplementation(async (id) => (String(id) === refA ? { _id: id } : null));
+    const beat = await Plots.createBeat({ projectId, name: 'Stale', body: 'INT. X' });
+    const { job_id } = await Sheet.startImageSheetJob({
+      projectId,
+      hostType: 'beat',
+      hostId: beat._id.toString(),
+      model: 'nano-banana-pro',
+      referenceImageIds: [],
+      shots: [{ name: 'T', prompt: 'plate with one stale ref', reference_image_ids: [refA, refB] }],
+    });
+    const job = await waitForJob(job_id);
+    expect(job.status).toBe('done');
+    expect(job.failed).toBe(0);
+    expect(h.dispatch.perCall[0].inputCount).toBe(1);
+  });
+
+  it('sanitizes per-shot reference ids (non-hex dropped, deduped)', async () => {
+    Images.findImageFile.mockImplementation(async (id) => ({ _id: id }));
+    const beat = await Plots.createBeat({ projectId, name: 'Dirty', body: 'INT. X' });
+    const { job_id } = await Sheet.startImageSheetJob({
+      projectId,
+      hostType: 'beat',
+      hostId: beat._id.toString(),
+      model: 'nano-banana-pro',
+      referenceImageIds: [],
+      shots: [{ name: 'T', prompt: 'p', reference_image_ids: [refA, refA, 'nope', refB] }],
+    });
+    const job = await waitForJob(job_id);
+    expect(job.status).toBe('done');
+    expect(h.dispatch.perCall[0].inputCount).toBe(2);
+  });
+});
+
 describe('startShotPlanJob — derive', () => {
   it('runs the two-phase planner and parks at "derived" with job.shots', async () => {
     Planner._setScenePlatePlannerForTests(async () => ([
@@ -288,8 +380,26 @@ describe('startShotPlanJob — derive', () => {
     expect(job.kind).toBe('beat_plan');
     expect(job.planned).toBe(1);
     expect(job.shots).toEqual([
-      { name: 'Alley — wide', prompt: 'wide empty alley', justification: 'establishes', quote: 'INT. ALLEY - NIGHT' },
+      { name: 'Alley — wide', prompt: 'wide empty alley', justification: 'establishes', quote: 'INT. ALLEY - NIGHT', reference_image_ids: [] },
     ]);
+  });
+
+  it('resolves planner reference assignments to the requested reference ids', async () => {
+    const refA = 'a'.repeat(24);
+    const refB = 'b'.repeat(24);
+    Planner._setScenePlatePlannerForTests(async () => ([
+      { name: 'Theater', prompt: 'the theater from the reference', justification: '', quote: '', reference_indexes: [2] },
+    ]));
+    Planner._setScenePlateCritiqueForTests(async () => ({ verdict: 'keep' }));
+    const beat = await Plots.createBeat({ projectId, name: 'Refs', body: 'EXT. THEATER - NIGHT' });
+    const { job_id } = await Sheet.startShotPlanJob({
+      projectId,
+      hostId: beat._id.toString(),
+      referenceImageIds: [refA, refB],
+    });
+    const job = await waitForStatus(job_id, ['derived', 'error']);
+    expect(job.status).toBe('derived');
+    expect(job.shots[0].reference_image_ids).toEqual([refB]);
   });
 
   it('rejects with status 400 when ANTHROPIC_API_KEY is not configured', async () => {

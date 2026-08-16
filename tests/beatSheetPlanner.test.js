@@ -62,6 +62,67 @@ describe('buildScenePlateCritiqueUserText', () => {
     expect(text).toContain('wide empty alley');
     expect(text).toContain('Rain falls.');
   });
+
+  it('lists the available references and the plate\'s assigned indexes', () => {
+    const text = Planner.buildScenePlateCritiqueUserText({
+      beat,
+      referenceInputs: [
+        { id: 'a'.repeat(24), name: 'theater ref', description: 'art-deco movie theater at night' },
+        { id: 'b'.repeat(24), name: 'sky ref', description: 'clear night sky' },
+      ],
+      plate: { name: 'Theater', prompt: 'the theater from the reference', justification: '', quote: '', reference_indexes: [1] },
+    });
+    expect(text).toContain('Reference image 1');
+    expect(text).toContain('theater ref');
+    expect(text).toContain('Reference image 2');
+    expect(text.toLowerCase()).toContain('assigned reference');
+    expect(text).toMatch(/assigned reference[^\n]*1/i);
+  });
+});
+
+describe('buildScenePlatePlanContent — multimodal', () => {
+  const refs = [
+    { id: 'a'.repeat(24), name: 'theater ref', description: 'art-deco movie theater', buffer: Buffer.from('img-a'), contentType: 'image/png' },
+    { id: 'b'.repeat(24), name: 'sky ref', description: 'night sky', buffer: Buffer.from('img-b'), contentType: 'image/jpeg' },
+  ];
+
+  it('returns the plan text followed by a labeled image block per reference', () => {
+    const blocks = Planner.buildScenePlatePlanContent({ beat, referenceInputs: refs });
+    expect(blocks[0].type).toBe('text');
+    expect(blocks[0].text).toContain('Rain falls.');
+    const images = blocks.filter((b) => b.type === 'image');
+    expect(images).toHaveLength(2);
+    expect(images[0].source).toEqual({
+      type: 'base64',
+      media_type: 'image/png',
+      data: Buffer.from('img-a').toString('base64'),
+    });
+    expect(images[1].source.media_type).toBe('image/jpeg');
+    const labels = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+    expect(labels).toContain('Reference image 1');
+    expect(labels).toContain('Reference image 2');
+    expect(labels).toContain('theater ref');
+  });
+
+  it('returns a single text block when there are no reference inputs', () => {
+    const blocks = Planner.buildScenePlatePlanContent({ beat, referenceInputs: [] });
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe('text');
+  });
+
+  it('skips image blocks for references without bytes but keeps their numbering', () => {
+    const blocks = Planner.buildScenePlatePlanContent({
+      beat,
+      referenceInputs: [
+        { id: 'a'.repeat(24), name: 'no bytes', description: 'desc only' },
+        refs[1],
+      ],
+    });
+    const images = blocks.filter((b) => b.type === 'image');
+    expect(images).toHaveLength(1);
+    const labels = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+    expect(labels).toContain('Reference image 2');
+  });
 });
 
 describe('normalizeScenePlanImages', () => {
@@ -76,9 +137,17 @@ describe('normalizeScenePlanImages', () => {
       { max: 10 },
     );
     expect(out).toEqual([
-      { name: 'Wide', prompt: 'a wide shot', justification: 'why', quote: 'Rain falls.' },
-      { name: 'Insert', prompt: 'a detail', justification: '', quote: '' },
+      { name: 'Wide', prompt: 'a wide shot', justification: 'why', quote: 'Rain falls.', reference_indexes: [] },
+      { name: 'Insert', prompt: 'a detail', justification: '', quote: '', reference_indexes: [] },
     ]);
+  });
+
+  it('sanitizes reference_indexes to unique positive integers', () => {
+    const out = Planner.normalizeScenePlanImages(
+      [{ name: 'A', prompt: 'p', reference_indexes: [1, 1, 2.5, -1, 0, '3', 4] }],
+      { max: 10 },
+    );
+    expect(out[0].reference_indexes).toEqual([1, 3, 4]);
   });
 
   it('clamps to max', () => {
@@ -101,7 +170,7 @@ describe('planBeatSceneImages — phase 1', () => {
     Planner._setScenePlateCritiqueForTests(async () => ({ verdict: 'keep' }));
     const { images } = await Planner.planBeatSceneImages({ beat });
     expect(images).toEqual([
-      { name: 'Establishing', prompt: 'wide empty alley, dusk', justification: 'sets place', quote: 'INT. ALLEY - NIGHT' },
+      { name: 'Establishing', prompt: 'wide empty alley, dusk', justification: 'sets place', quote: 'INT. ALLEY - NIGHT', reference_image_ids: [] },
     ]);
   });
 
@@ -112,6 +181,68 @@ describe('planBeatSceneImages — phase 1', () => {
     const { images } = await Planner.planBeatSceneImages({ beat });
     expect(images).toEqual([]);
     expect(phase2Calls).toBe(0);
+  });
+});
+
+describe('planBeatSceneImages — per-plate reference resolution', () => {
+  const referenceInputs = [
+    { id: 'a'.repeat(24), name: 'theater ref', description: 'movie theater' },
+    { id: 'b'.repeat(24), name: 'sky ref', description: 'night sky' },
+    { id: 'c'.repeat(24), name: 'street ref', description: 'street' },
+  ];
+
+  it('resolves reference_indexes to reference_image_ids, dropping out-of-range indexes', async () => {
+    Planner._setScenePlatePlannerForTests(async () => ([
+      { name: 'Starfield', prompt: 'the Milky Way', justification: '', quote: '', reference_indexes: [] },
+      { name: 'Theater', prompt: 'the theater from the reference', justification: '', quote: '', reference_indexes: [1, 3, 99] },
+    ]));
+    Planner._setScenePlateCritiqueForTests(async () => ({ verdict: 'keep' }));
+    const { images } = await Planner.planBeatSceneImages({ beat, referenceInputs });
+    expect(images.find((i) => i.name === 'Starfield').reference_image_ids).toEqual([]);
+    expect(images.find((i) => i.name === 'Theater').reference_image_ids).toEqual([
+      'a'.repeat(24),
+      'c'.repeat(24),
+    ]);
+    for (const im of images) expect(im.reference_indexes).toBeUndefined();
+  });
+
+  it('a critique edit verdict can reassign a plate\'s references', async () => {
+    Planner._setScenePlatePlannerForTests(async () => ([
+      { name: 'Theater', prompt: 'theater plate', justification: '', quote: '', reference_indexes: [1, 2] },
+    ]));
+    Planner._setScenePlateCritiqueForTests(async () => ({ verdict: 'edit', prompt: 'theater plate, refined', reference_indexes: [2] }));
+    const { images } = await Planner.planBeatSceneImages({ beat, referenceInputs });
+    expect(images[0].prompt).toBe('theater plate, refined');
+    expect(images[0].reference_image_ids).toEqual(['b'.repeat(24)]);
+  });
+
+  it('divide shots carry their own reference assignments', async () => {
+    Planner._setScenePlatePlannerForTests(async () => ([
+      { name: 'Both', prompt: 'both things', justification: '', quote: '', reference_indexes: [1] },
+    ]));
+    Planner._setScenePlateCritiqueForTests(async () => ({
+      verdict: 'divide',
+      shots: [
+        { name: 'Starfield', prompt: 'milky way', justification: '', quote: '', reference_indexes: [] },
+        { name: 'Theater', prompt: 'theater below the stars', justification: '', quote: '', reference_indexes: [1] },
+      ],
+    }));
+    const { images } = await Planner.planBeatSceneImages({ beat, referenceInputs });
+    expect(images.find((i) => i.name === 'Starfield').reference_image_ids).toEqual([]);
+    expect(images.find((i) => i.name === 'Theater').reference_image_ids).toEqual(['a'.repeat(24)]);
+  });
+
+  it('passes referenceInputs to the phase-2 critique context', async () => {
+    let p2ctx = null;
+    Planner._setScenePlatePlannerForTests(async () => ([
+      { name: 'A', prompt: 'a', justification: '', quote: '', reference_indexes: [1] },
+    ]));
+    Planner._setScenePlateCritiqueForTests(async (_plate, ctx) => {
+      p2ctx = ctx;
+      return { verdict: 'keep' };
+    });
+    await Planner.planBeatSceneImages({ beat, referenceInputs });
+    expect(p2ctx.referenceInputs).toBe(referenceInputs);
   });
 });
 
@@ -256,6 +387,28 @@ describe('plate tools + system prompts', () => {
     const t = Planner.SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT.toLowerCase();
     expect(t).toContain('static-plate');
     expect(t).toContain('shooting star');
+  });
+
+  it('plan tool lets each plate assign reference images by index', () => {
+    const item = Planner.SCENE_PLATE_PLAN_TOOL.input_schema.properties.plates.items;
+    expect(item.properties.reference_indexes.type).toBe('array');
+    expect(item.properties.reference_indexes.items.type).toBe('integer');
+    expect(item.required).not.toContain('reference_indexes');
+  });
+
+  it('plan prompt demands minimal planning and per-plate reference assignment with stated roles', () => {
+    const t = Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT.toLowerCase();
+    expect(t).toContain('fewest plates');
+    expect(t).not.toContain('vary the scale');
+    expect(t).toContain('reference_indexes');
+    // A plate's prompt must say what its assigned references contribute.
+    expect(t).toMatch(/reference[^.]*\brole\b/);
+  });
+
+  it('critique tool can reassign references on edit, and the prompt has a reference check', () => {
+    const props = Planner.SCENE_PLATE_CRITIQUE_TOOL.input_schema.properties;
+    expect(props.reference_indexes.type).toBe('array');
+    expect(Planner.SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT.toLowerCase()).toContain('reference check');
   });
 });
 
