@@ -348,7 +348,10 @@ export function extractFalDetail(body) {
   }
 }
 
-function enrichFalError(err, model) {
+// Exported for the generic catalog runner (catalogImageGenerate.js) so every
+// fal failure — wired or catalog — reports status + validation detail +
+// request_id instead of the client library's bare statusText.
+export function enrichFalError(err, model) {
   const status = err?.status;
   const body = err?.body;
   const requestId = err?.requestId;

@@ -76,6 +76,20 @@ export async function generateCatalogImage({
     );
   }
 
+  // An edit-only endpoint called without its required input image(s) is a
+  // guaranteed provider 422 — fail here with an actionable message instead.
+  const image = row.inputs?.image;
+  if (image?.need === 'required') {
+    const minimum = Math.max(1, Number(image.required_count) || 1);
+    if (usable.length < minimum) {
+      throw badRequest(
+        `"${row.endpoint_id}" requires at least ${minimum} input image${minimum === 1 ? '' : 's'} ` +
+          `but this render has ${usable.length}. Assign reference images to it, or pick a model ` +
+          'that can generate from a prompt alone.',
+      );
+    }
+  }
+
   const imageUrls = [];
   for (const ref of usable) {
     if (!ref?.buffer || !ref?.contentType) {
@@ -94,7 +108,17 @@ export async function generateCatalogImage({
 
   const input = buildPlaygroundInput(row, { prompt, imageUrls });
   const t0 = Date.now();
-  const result = await fal.subscribe(row.endpoint_id, { input });
+  logger.info(`catalog image → ${row.endpoint_id} prompt=${prompt.length}c refs=${imageUrls.length}`);
+  let result;
+  try {
+    result = await fal.subscribe(row.endpoint_id, { input });
+  } catch (e) {
+    // The fal client's errors carry only statusText as message ("Unprocessable
+    // Entity"); the actual validation detail lives in e.body. Re-throw with the
+    // same rich formatting the wired models use.
+    const { enrichFalError } = await import('./imageClient.js');
+    throw enrichFalError(e, row.endpoint_id);
+  }
   const data = result?.data || result;
   const media = extractOutputMedia(row, data).filter((m) => (m.kind || 'image') === 'image');
   if (!media.length) {

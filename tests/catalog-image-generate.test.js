@@ -156,6 +156,72 @@ describe('generateCatalogImage', () => {
     expect(uploadMock).toHaveBeenCalledTimes(2);
   });
 
+  it('rejects a required-image endpoint given no references, without calling fal', async () => {
+    getPlaygroundModelMock.mockResolvedValueOnce({
+      ...ROW,
+      inputs: {
+        ...ROW.inputs,
+        image: {
+          need: 'required',
+          params: [{ name: 'image_urls', list: true, required: true }],
+          required_count: 1,
+          max: null,
+        },
+      },
+    });
+
+    await expect(
+      generateCatalogImage({ endpointId: 'fal-ai/some-new-model', prompt: 'p', referenceImages: [] }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/requires at least 1 input image/i),
+    });
+    expect(subscribeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects when fewer references than the endpoint requires', async () => {
+    getPlaygroundModelMock.mockResolvedValueOnce({
+      ...ROW,
+      inputs: {
+        ...ROW.inputs,
+        image: {
+          need: 'required',
+          params: [{ name: 'image_urls', list: true, required: true }],
+          required_count: 2,
+          max: null,
+        },
+      },
+    });
+
+    await expect(
+      generateCatalogImage({
+        endpointId: 'fal-ai/some-new-model',
+        prompt: 'p',
+        referenceImages: [{ buffer: TINY_PNG, contentType: 'image/png' }],
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/requires at least 2 input image/i),
+    });
+  });
+
+  it('surfaces fal error status, validation detail, and request id when subscribe fails', async () => {
+    const falErr = new Error('Unprocessable Entity');
+    falErr.status = 422;
+    falErr.body = {
+      detail: [{ loc: ['body', 'image_urls'], msg: 'field required', type: 'value_error.missing' }],
+    };
+    falErr.requestId = 'req-123';
+    subscribeMock.mockRejectedValueOnce(falErr);
+
+    await expect(
+      generateCatalogImage({ endpointId: 'fal-ai/some-new-model', prompt: 'p' }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringMatching(/HTTP 422.*image_urls: field required.*request_id=req-123/),
+    });
+  });
+
   it('rejects an endpoint that is not in the catalog', async () => {
     await expect(
       generateCatalogImage({ endpointId: 'fal-ai/not-real', prompt: 'p' }),

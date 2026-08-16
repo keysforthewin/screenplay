@@ -48,6 +48,15 @@ vi.mock('../src/mongo/tokenUsage.js', () => ({
   recordOpenAIImageUsage: vi.fn(),
   recordFalImageUsage: vi.fn(),
 }));
+// One catalog endpoint that REQUIRES reference images (edit-only), for the
+// pre-flight guard tests. Everything else resolves as not-in-catalog.
+vi.mock('../src/fal/imageModelCatalog.js', () => ({
+  getImageModel: vi.fn(async (id) =>
+    id === 'fal-ai/edit-only/model'
+      ? { id: 'fal-ai/edit-only/model', endpoint_id: 'fal-ai/edit-only/model', requires_references: true, accepts_references: true }
+      : null),
+  loadImageModelCatalog: vi.fn(async () => ({ models: [], generated_at: null, catalog_error: null })),
+}));
 vi.mock('../src/openai/imageClient.js', () => ({
   generateCharacterSheetImage: vi.fn(),
   generateCharacterSheetImageEdit: vi.fn(),
@@ -454,6 +463,65 @@ describe('startShotPlanJob — derive', () => {
     await waitForStatus(job_id, ['derived', 'error']);
     expect(p1args.direction).toBe('make it grittier');
     expect(p1args.previousPlates).toEqual([{ name: 'Old', prompt: 'old plate' }]);
+  });
+});
+
+describe('startImageSheetJob — reference-requiring models', () => {
+  const refA = 'a'.repeat(24);
+
+  it('rejects plates with no references on a refs-required catalog model, naming them (400)', async () => {
+    Images.findImageFile.mockImplementation(async (id) => ({ _id: id }));
+    const beat = await Plots.createBeat({ projectId, name: 'Guard', body: 'EXT. SKY - NIGHT' });
+    await expect(
+      Sheet.startImageSheetJob({
+        projectId,
+        hostType: 'beat',
+        hostId: beat._id.toString(),
+        model: 'fal-ai/edit-only/model',
+        referenceImageIds: [refA],
+        shots: [
+          { name: 'Theater', prompt: 'theater plate', reference_image_ids: [refA] },
+          { name: 'Open starfield', prompt: 'milky way', reference_image_ids: [] },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/requires reference images.*Open starfield/s),
+    });
+    // Fails fast — no pending tiles created.
+    const fresh = await Plots.getBeat(projectId, beat._id.toString());
+    expect(fresh.artworks || []).toHaveLength(0);
+  });
+
+  it('rejects a character sheet with an empty pool on a refs-required catalog model (400)', async () => {
+    const c = await Characters.createCharacter({ projectId, name: 'NoRefs', hollywood_actor: 'Z' });
+    await expect(
+      Sheet.startImageSheetJob({
+        projectId,
+        hostType: 'character',
+        hostId: c._id.toString(),
+        model: 'fal-ai/edit-only/model',
+        referenceImageIds: [],
+        shotCount: 2,
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/requires reference images/i),
+    });
+  });
+
+  it('accepts refless plates on models that can generate from a prompt alone', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'FreeGen', body: 'EXT. SKY' });
+    const { job_id } = await Sheet.startImageSheetJob({
+      projectId,
+      hostType: 'beat',
+      hostId: beat._id.toString(),
+      model: 'nano-banana-pro',
+      referenceImageIds: [],
+      shots: [{ name: 'Starfield', prompt: 'milky way', reference_image_ids: [] }],
+    });
+    const job = await waitForJob(job_id);
+    expect(job.status).toBe('done');
   });
 });
 

@@ -292,6 +292,34 @@ async function pruneStaleShotReferences(shots) {
   }
 }
 
+// Fail fast (400, before any pending tiles) when the chosen model is a catalog
+// endpoint that REQUIRES input images but some renders would run with none —
+// the provider would reject every such shot with an opaque 422. Wired shortcut
+// models all accept prompt-only generation, so only catalog rows constrain.
+async function assertShotsSatisfyModelReferences({ model, explicitShots, poolIds }) {
+  const { getImageModel } = await import('../fal/imageModelCatalog.js');
+  const row = await getImageModel(model);
+  if (!row?.requires_references) return;
+  if (explicitShots) {
+    const refless = explicitShots
+      .filter((s) => (Array.isArray(s.reference_image_ids) ? s.reference_image_ids : poolIds).length === 0)
+      .map((s) => `"${s.name}"`);
+    if (refless.length) {
+      throw httpError(
+        `"${model}" requires reference images, but ${refless.length} plate${refless.length === 1 ? ' has' : 's have'} ` +
+          `none: ${refless.join(', ')}. Assign references to ${refless.length === 1 ? 'it' : 'each'} (+ Refs on the plate), ` +
+          'or pick a model that can generate from a prompt alone.',
+        400,
+      );
+    }
+  } else if (!poolIds.length) {
+    throw httpError(
+      `"${model}" requires reference images — add at least one before generating.`,
+      400,
+    );
+  }
+}
+
 // Render one shot: create a pending artwork, then generate its image. Per-shot
 // failures are swallowed (recorded on the job + the artwork) so other shots
 // still land.
@@ -718,6 +746,7 @@ export async function startImageSheetJob({
     }
     await pruneStaleShotReferences(explicitShots);
   }
+  await assertShotsSatisfyModelReferences({ model, explicitShots, poolIds: refIds });
 
   const busyKey = `${hostType}:${resolvedHostId}`;
   if (busyHosts.has(busyKey)) {
