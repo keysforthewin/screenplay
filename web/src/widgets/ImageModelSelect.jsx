@@ -41,6 +41,7 @@ export function ImageModelSelect({ value, onChange, disabled = false, compact = 
   // refs/prompt-only split, the About Models tab) must be independent groups,
   // or the browser unchecks one list when the other is clicked.
   const groupName = useId();
+  const listRef = useRef(null);
   const [catalog, setCatalog] = useState(null);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState('');
@@ -175,6 +176,16 @@ export function ImageModelSelect({ value, onChange, disabled = false, compact = 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eligible, value]);
 
+  // Bring the selected row into view when the list appears or the selection
+  // is set programmatically (stored default, remembered model) — hundreds of
+  // rows make an off-screen selection effectively invisible. block:'nearest'
+  // is a no-op when the row is already visible, so user clicks never jump
+  // the scroll position.
+  useEffect(() => {
+    const el = listRef.current?.querySelector('.image-model-row.is-selected');
+    if (el) el.scrollIntoView({ block: 'nearest' });
+  }, [catalog, value, sort]);
+
   // Keep the current choice visible even when it doesn't match the filter —
   // otherwise the list looks like nothing is selected.
   const selected = eligible.find((m) => m.id === value) || null;
@@ -224,6 +235,7 @@ export function ImageModelSelect({ value, onChange, disabled = false, compact = 
       {error && <div className="error-banner">{error}</div>}
 
       <div
+        ref={listRef}
         className="image-model-select-list"
         style={compact ? { maxHeight: 200 } : undefined}
       >
