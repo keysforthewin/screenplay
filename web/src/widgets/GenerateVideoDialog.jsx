@@ -124,6 +124,11 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
   // Captured at open-time so the badge doesn't migrate mid-dialog after a
   // successful submit — it migrates on the next open.
   const [lastUsedEndpoint, setLastUsedEndpoint] = useState(null);
+  // Per-project default models (About page → Models tab). When set, they win
+  // the pre-select: start+end default when the scene's frame pool offers two
+  // frames, start-only default when it offers one, lipsync default when the
+  // lip-sync facet is switched on.
+  const [modelDefaults, setModelDefaults] = useState(null);
   // Per-generation mapping of the storyboard's frame-pool images onto the
   // chosen model's slots: { start_frame, end_frame, ref: [] } (image-id
   // strings). Defaulted by frame order; the user can override. Not persisted.
@@ -273,16 +278,37 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     const storedEndpoint = readLastEndpoint();
     setLastUsedEndpoint(storedEndpoint);
     if (registry) {
-      const storedRow = storedEndpoint
-        ? registry.models.find((m) => m.endpoint_id === storedEndpoint && m.is_registered) || null
+      const findRegistered = (endpoint) => (endpoint
+        ? registry.models.find((m) => m.endpoint_id === endpoint && m.is_registered) || null
+        : null);
+      // Project default first (an explicit setting beats this browser's
+      // last-used): start+end slot when the scene offers two frames, else the
+      // start-only slot. Falls through the legacy chain when unset/unmatched.
+      const frameCount = frameImageIds(sb).length;
+      const projectRow = frameCount >= 1
+        ? (frameCount >= 2 ? findRegistered(modelDefaults?.video_start_end) : null)
+          || findRegistered(modelDefaults?.video_start_only)
         : null;
-      const defaultRow = storedRow
+      const defaultRow = projectRow
+        || findRegistered(storedEndpoint)
         || registry.models.find((m) => m.is_registered && m.id === registry.default_model_id)
         || registry.models.find((m) => m.is_registered)
         || null;
       setSelectedEndpoint(defaultRow?.endpoint_id || null);
     }
-  }, [open, sb?._id, registry, ydoc, storyboardId]);
+  }, [open, sb?._id, registry, ydoc, storyboardId, modelDefaults]);
+
+  // Fetch the project's model defaults on open. Landing after the reset
+  // effect above is fine — it re-runs (like it does when the registry loads)
+  // and applies the project pre-select.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    apiGet('/model-defaults')
+      .then((r) => { if (!cancelled) setModelDefaults(r?.model_defaults || {}); })
+      .catch(() => { if (!cancelled) setModelDefaults({}); });
+    return () => { cancelled = true; };
+  }, [open]);
 
   // When the chosen model changes, snap duration / resolution / fps to
   // that model's defaults (or to the storyboard's duration_seconds,
@@ -379,6 +405,15 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
   }, [searchedModels, activeFacets]);
 
   function toggleFacet(key) {
+    // Switching lip-sync ON jumps to the project's lipsync default (About page
+    // → Models tab) unless the chosen model already does lip-sync.
+    if (key === 'lip_sync' && !activeFacets.lip_sync && registry
+      && !(chosenModel?.capabilities?.lip_sync === true)) {
+      const row = modelDefaults?.lipsync
+        ? registry.models.find((m) => m.endpoint_id === modelDefaults.lipsync && m.is_registered)
+        : null;
+      if (row) setSelectedEndpoint(row.endpoint_id);
+    }
     setActiveFacets((s) => ({ ...s, [key]: !s[key] }));
   }
 

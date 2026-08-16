@@ -7,12 +7,14 @@ import { DownloadAllButton } from '../widgets/DownloadAllButton.jsx';
 import { NotesPanel } from '../widgets/NotesPanel.jsx';
 import { useProject } from '../project/ProjectContext.jsx';
 import { ProjectRenameField, ProjectDangerZone } from '../widgets/ProjectSettings.jsx';
+import { ModelDefaultsPanel } from '../widgets/ModelDefaultsPanel.jsx';
 import { canManageProjects } from '../auth/session.js';
 
 const TABS = [
   { id: 'about', label: 'About' },
   { id: 'dialogue', label: 'Dialogue' },
   { id: 'notes', label: "Director's Notes" },
+  { id: 'models', label: 'Models' },
 ];
 
 // Project-level "About" page, organised into three tabs:
@@ -26,6 +28,11 @@ export function About({ session }) {
   const project = useProject();
   const { id: projectId } = project;
   const [activeTab, setActiveTab] = useState('about');
+  // Lazy-mount flag for the Models tab (loads two model catalogs on mount).
+  const [visitedModels, setVisitedModels] = useState(false);
+  useEffect(() => {
+    if (activeTab === 'models') setVisitedModels(true);
+  }, [activeTab]);
   const [notesData, setNotesData] = useState(null);
   const [error, setError] = useState(null);
 
@@ -120,6 +127,12 @@ export function About({ session }) {
           />
         </div>
       </CollabSurface>
+
+      <div className="tab-panel" hidden={activeTab !== 'models'}>
+        {/* Mounted lazily so the model catalogs only load when the tab is
+            first opened; kept mounted afterwards so tab-switching is instant. */}
+        {visitedModels && <ModelDefaultsPanel />}
+      </div>
 
       <div className="tab-panel" hidden={activeTab !== 'notes'}>
         {notesData ? (

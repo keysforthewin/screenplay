@@ -4,7 +4,7 @@ import { SheetReferencePicker } from './SheetReferencePicker.jsx';
 import { BeatMultiSelect } from './BeatMultiSelect.jsx';
 import { MainBeatSelect } from './MainBeatSelect.jsx';
 import { GenerationProgress } from './GenerationProgress.jsx';
-import { apiGet, apiPostJson, imageUrl, thumbUrl } from '../api.js';
+import { apiGet, apiPostJson, apiPutJson, imageUrl, thumbUrl } from '../api.js';
 import { readStoredCatalogModel, writeStoredImageModel } from './imageModels.js';
 import { ImageModelSelect } from './ImageModelSelect.jsx';
 
@@ -152,6 +152,45 @@ export function ImageSheetDialog({
   useEffect(() => {
     writeStoredImageModel(REFS_MODEL_STORAGE_KEY, refsModel);
   }, [refsModel]);
+
+  // Project-level model defaults (About page → Models tab). Applied over the
+  // localStorage prefill on open; the split selectors write changes back so
+  // the choice is restored on every visit, for every collaborator. The ready
+  // flag keeps the selectors' own fallback-to-first-eligible from clobbering
+  // the stored defaults before they load.
+  const defaultsReadyRef = useRef(false);
+  useEffect(() => {
+    if (!open) return;
+    defaultsReadyRef.current = false;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await apiGet('/model-defaults');
+        if (cancelled) return;
+        const d = r?.model_defaults || {};
+        if (d.image_with_refs) setRefsModel(d.image_with_refs);
+        if (d.image_prompt_only && !isCharacter) setImageModel(d.image_prompt_only);
+      } catch {
+        // No defaults endpoint / network hiccup — localStorage prefill stands.
+      }
+      if (!cancelled) defaultsReadyRef.current = true;
+    })();
+    return () => { cancelled = true; };
+  }, [open, isCharacter]);
+
+  function changeRefsModel(id) {
+    setRefsModel(id);
+    if (defaultsReadyRef.current && id) {
+      apiPutJson('/model-defaults', { image_with_refs: id }).catch(() => {});
+    }
+  }
+
+  function changePromptModel(id) {
+    setImageModel(id);
+    if (defaultsReadyRef.current && id) {
+      apiPutJson('/model-defaults', { image_prompt_only: id }).catch(() => {});
+    }
+  }
 
   function removeReference(id) {
     setReferenceIds((prev) => prev.filter((x) => x !== id));
@@ -651,7 +690,7 @@ export function ImageSheetDialog({
                   </span>
                   <ImageModelSelect
                     value={refsModel}
-                    onChange={setRefsModel}
+                    onChange={changeRefsModel}
                     disabled={busy}
                     compact
                     requireReferences
@@ -666,7 +705,7 @@ export function ImageSheetDialog({
                   </span>
                   <ImageModelSelect
                     value={imageModel}
-                    onChange={setImageModel}
+                    onChange={changePromptModel}
                     disabled={busy}
                     compact
                     promptOnly

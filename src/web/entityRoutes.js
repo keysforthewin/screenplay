@@ -1214,6 +1214,35 @@ export function buildApiRouter() {
     });
   });
 
+  // Per-project default generation models (About page → Models tab; also
+  // auto-remembered from the image-sheet dialog's model selectors). GET returns
+  // every known slot (null = unset); PUT merges a partial {slot: id|null} patch
+  // and returns the full merged object. Unknown slots / bad values → 400.
+  router.get('/model-defaults', async (req, res, next) => {
+    try {
+      const { getModelDefaults } = await import('../mongo/projectSettings.js');
+      res.json({ model_defaults: await getModelDefaults(req.projectId) });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.put('/model-defaults', async (req, res, next) => {
+    try {
+      const patch = req.body;
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        return res.status(400).json({ error: 'body must be an object of {slot: model_id|null}' });
+      }
+      const { setModelDefaults } = await import('../mongo/projectSettings.js');
+      res.json({ model_defaults: await setModelDefaults(req.projectId, patch) });
+    } catch (e) {
+      if (/^(unknown model default|invalid model id|patch must be)/.test(e.message)) {
+        return res.status(400).json({ error: e.message });
+      }
+      next(e);
+    }
+  });
+
   router.get('/library', async (req, res) => {
     const [images, attachments] = await Promise.all([
       listLibraryImages(req.projectId),

@@ -96,6 +96,10 @@ export async function deleteProjectCascade(projectId) {
   deleted.prompts =
     (await db.collection('prompts').deleteMany({ _id: { $in: promptIds } }))?.deletedCount || 0;
 
+  // 3b. Per-project settings (model defaults), keyed by the project_id string.
+  deleted.project_settings =
+    (await db.collection('project_settings').deleteMany({ _id: pid }))?.deletedCount || 0;
+
   // 4. GridFS.
   for (const bucket of GRIDFS_BUCKETS) {
     deleted[bucket] = await deleteBucketFiles(db, bucket, pid);

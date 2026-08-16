@@ -84,6 +84,10 @@ async function seedProjectContent(pid, { beatId, characterId, setId, imageId, at
   for (const key of ['character_template', 'plot_template', 'director_notes']) {
     await fakeDb.collection('prompts').insertOne({ _id: `${pid}:${key}`, project_id: pid });
   }
+  await fakeDb.collection('project_settings').insertOne({
+    _id: pid,
+    model_defaults: { image_with_refs: 'fal-ai/some-model' },
+  });
   await fakeDb
     .collection('images.files')
     .insertOne({ _id: imageId, metadata: { project_id: pid } });
@@ -193,6 +197,7 @@ describe('DELETE /api/projects/:id', () => {
     expect(docs('attachments.files')).toHaveLength(0);
     expect(docs('attachments.chunks')).toHaveLength(0);
     expect(docs('yjs_docs')).toHaveLength(0);
+    expect(docs('project_settings').filter((d) => d._id === pid)).toHaveLength(0);
     expect(await Projects.getProjectById(pid)).toBeNull();
     expect(deleteProjectChunks).toHaveBeenCalledWith(pid);
     // The other project survives.
@@ -240,6 +245,7 @@ describe('DELETE /api/projects/:id', () => {
       expect(docs(name).filter((d) => d.project_id === keepId)).toHaveLength(1);
     }
     expect(docs('prompts').filter((d) => d.project_id === keepId)).toHaveLength(3);
+    expect(docs('project_settings').map((d) => d._id)).toEqual([keepId]);
     expect(docs('images.files')).toHaveLength(1);
     expect(docs('images.chunks')).toHaveLength(1);
     expect(docs('attachments.files')).toHaveLength(1);
