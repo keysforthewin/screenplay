@@ -11,15 +11,44 @@ import { isConfigured as falConfigured } from '../fal/client.js';
 // endpoint the picker offers; those run through the generic catalog runner.
 export const ALLOWED_IMAGE_MODELS = ['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'openai', 'gemini-25-flash', 'nano-banana-2', 'flux-2-klein'];
 
+// fal endpoint id → the wired shortcut id dispatchImageReplace knows. Both
+// the generate and edit endpoint of each shortcut map to the same id;
+// imageClient.js picks between them based on whether references were passed.
+// Lives here (not imageModelCatalog.js, which re-exports it) so
+// normalizeImageModel can use it without pulling the catalog module in —
+// several tests mock imageModelCatalog with only a subset of its exports.
+export function wiredEndpointMap() {
+  const f = config.fal || {};
+  const pairs = [
+    [f.nanoBananaProGenerateModel, 'nano-banana-pro'],
+    [f.nanoBananaProEditModel, 'nano-banana-pro'],
+    [f.flux2ProGenerateModel, 'flux-2-pro'],
+    [f.flux2ProEditModel, 'flux-2-pro'],
+    [f.fluxKontextModel, 'flux-pro-kontext'],
+    [f.fluxKontextMultiModel, 'flux-pro-kontext'],
+    [f.gemini25FlashGenerateModel, 'gemini-25-flash'],
+    [f.gemini25FlashEditModel, 'gemini-25-flash'],
+    [f.nanoBanana2GenerateModel, 'nano-banana-2'],
+    [f.nanoBanana2EditModel, 'nano-banana-2'],
+    [f.flux2KleinGenerateModel, 'flux-2-klein'],
+    [f.flux2KleinEditModel, 'flux-2-klein'],
+  ];
+  return new Map(pairs.filter(([endpoint]) => !!endpoint));
+}
+
 // Default model callers fall back to when a request omits `image_model`/`model`.
 // Old enum values (`gemini`, `fal`) from cached SPA bundles are normalized to
-// the closest current equivalent so we don't 400 on stale clients.
+// the closest current equivalent so we don't 400 on stale clients. Routed
+// endpoint ids map back to their shortcut: artworks rendered before generation
+// recording had `model` overwritten with the endpoint that ran (e.g.
+// 'fal-ai/flux-2-pro/edit'), and Retry replays that stored value verbatim.
 export const DEFAULT_IMAGE_MODEL = 'nano-banana-pro';
 export function normalizeImageModel(raw) {
   const v = String(raw ?? DEFAULT_IMAGE_MODEL);
   if (v === 'gemini' || v === 'google') return 'nano-banana-pro';
   if (v === 'fal') return 'flux-pro-kontext';
-  return v;
+  if (v === 'gpt-image-2') return 'openai';
+  return wiredEndpointMap().get(v) || v;
 }
 
 // A model is valid if it is one of the tuned shortcuts OR a fal catalog image

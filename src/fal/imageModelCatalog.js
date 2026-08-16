@@ -18,9 +18,11 @@
 // Keeping both in one list is what lets the picker be "the whole catalog" while
 // the models we've tuned stay first and keep their fast paths.
 
-import { config } from '../config.js';
 import { loadPlaygroundCatalog } from './playgroundModels.js';
 import { maxReferenceImagesFor, listImageModelInfo } from '../web/imageModelInfo.js';
+import { wiredEndpointMap } from '../web/imageModelValidate.js';
+
+export { wiredEndpointMap };
 
 const GENERATION_CATEGORIES = new Set(['text-to-image', 'image-to-image']);
 
@@ -28,28 +30,6 @@ const GENERATION_CATEGORIES = new Set(['text-to-image', 'image-to-image']);
 // catalog; older rows carry bare strings. Read either.
 function paramNames(params) {
   return (params || []).map((p) => (typeof p === 'string' ? p : p?.name)).filter(Boolean);
-}
-
-// fal endpoint id → the internal shortcut id that dispatchImageReplace knows.
-// Both the generate and edit endpoint of each shortcut map to the same id;
-// imageClient.js picks between them based on whether references were passed.
-export function wiredEndpointMap() {
-  const f = config.fal || {};
-  const pairs = [
-    [f.nanoBananaProGenerateModel, 'nano-banana-pro'],
-    [f.nanoBananaProEditModel, 'nano-banana-pro'],
-    [f.flux2ProGenerateModel, 'flux-2-pro'],
-    [f.flux2ProEditModel, 'flux-2-pro'],
-    [f.fluxKontextModel, 'flux-pro-kontext'],
-    [f.fluxKontextMultiModel, 'flux-pro-kontext'],
-    [f.gemini25FlashGenerateModel, 'gemini-25-flash'],
-    [f.gemini25FlashEditModel, 'gemini-25-flash'],
-    [f.nanoBanana2GenerateModel, 'nano-banana-2'],
-    [f.nanoBanana2EditModel, 'nano-banana-2'],
-    [f.flux2KleinGenerateModel, 'flux-2-klein'],
-    [f.flux2KleinEditModel, 'flux-2-klein'],
-  ];
-  return new Map(pairs.filter(([endpoint]) => !!endpoint));
 }
 
 // Can we drive this endpoint with {prompt, reference images} alone? The catalog
