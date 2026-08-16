@@ -518,16 +518,47 @@ describe('edit-instruction doctrine for reference-assigned plates', () => {
   it('phase-1 system prompt mandates edit-instruction prompts for plates with references', () => {
     expect(Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT).toMatch(/image-EDIT model/);
     expect(Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT).toMatch(/Do NOT re-describe what the reference already shows/);
-    expect(Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT).toMatch(/list ONLY the changes/);
+    expect(Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT).toMatch(/FEWEST changes/);
+  });
+
+  it('phase-1 doctrine demands a minimal delta: reference is final, blanket keep clause, no reframing', () => {
+    const t = Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT;
+    expect(t).toMatch(/MINIMAL EDIT/);
+    expect(t).toMatch(/FINAL and authoritative/);
+    expect(t).toMatch(/blanket keep clause/i);
+    expect(t).toMatch(/usually exactly ONE/);
+    expect(t).toMatch(/Never reframe/);
+    // Style is already baked into the reference — never re-imposed as changes.
+    expect(t).toMatch(/never restate them as changes/i);
+  });
+
+  it('phase-1 scopes spatial geography/occupancy guidance to refless plates', () => {
+    expect(Planner.SCENE_PLATE_PLAN_SYSTEM_PROMPT)
+      .toMatch(/Spatial geography & occupancy \(plates WITHOUT references\)/);
   });
 
   it('phase-2 critique flags scene-description prompts on reffed plates', () => {
     expect(Planner.SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT).toMatch(/SCENE DESCRIPTION instead of an EDIT instruction/);
   });
 
-  it('the tool schema tells the model about both prompt forms', () => {
+  it('phase-2 has a minimal-edit check that strips over-specified reffed prompts', () => {
+    const t = Planner.SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT;
+    expect(t).toMatch(/MINIMAL-EDIT CHECK/);
+    expect(t).toMatch(/STRIP the prompt down/);
+    expect(t).toMatch(/Short is correct/);
+  });
+
+  it('phase-2 scopes the vague-prompt trigger and spatial fidelity to refless plates', () => {
+    const t = Planner.SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT;
+    expect(t).toMatch(/REFLESS plate/);
+    expect(t).toMatch(/SPATIAL FIDELITY \(refless plates only/);
+  });
+
+  it('the tool schema tells the model about both prompt forms, reffed = minimal edit', () => {
     const desc = Planner.SCENE_PLATE_PLAN_TOOL.input_schema.properties.plates.items.properties.prompt.description;
-    expect(desc).toMatch(/EDIT INSTRUCTION/i);
+    expect(desc).toMatch(/MINIMAL EDIT INSTRUCTION/);
+    expect(desc).toMatch(/blanket keep clause/i);
+    expect(desc).toMatch(/FEWEST changes/);
     expect(desc).toMatch(/standalone scene/i);
   });
 });

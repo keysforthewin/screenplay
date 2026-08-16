@@ -212,4 +212,21 @@ describe('reference-anchored subject line', () => {
     expect(shots).toHaveLength(2);
     for (const s of shots) expect(s.prompt).toMatch(/attached reference image/i);
   });
+
+  it('with references, demotes the field scan to gap-filler (references are the authority)', () => {
+    const p = buildCharacterShotPrompt({
+      character,
+      shot: CHARACTER_SHEET_SHOTS[0],
+      hasReferences: true,
+    });
+    expect(p).toMatch(/authority on appearance/i);
+    expect(p).toMatch(/only for details the references do not show/i);
+    expect(p).not.toMatch(/Appearance and wardrobe to match/);
+  });
+
+  it('without references, keeps the appearance-to-match framing for the field scan', () => {
+    const p = buildCharacterShotPrompt({ character, shot: CHARACTER_SHEET_SHOTS[0] });
+    expect(p).toMatch(/Appearance and wardrobe to match/);
+    expect(p).not.toMatch(/authority on appearance/i);
+  });
 });

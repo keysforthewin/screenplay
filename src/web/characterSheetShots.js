@@ -148,9 +148,14 @@ export function buildCharacterShotPrompt({ character, shot, directorNotes = [], 
     subject,
   ];
   if (details) {
+    // With references attached they are the authority on the look — competing
+    // appearance text can pull an edit model away from the attached face, so
+    // the field scan is demoted to gap-filler for what the references omit.
     lines.push(
       '',
-      `Appearance and wardrobe to match — use these to get the look right, but NEVER render any of this as text in the image: ${details}.`,
+      hasReferences
+        ? `The attached reference image(s) are the authority on appearance — use these notes ONLY for details the references do not show, and NEVER render any of this as text in the image: ${details}.`
+        : `Appearance and wardrobe to match — use these to get the look right, but NEVER render any of this as text in the image: ${details}.`,
     );
   }
   if (notes) {

@@ -621,6 +621,12 @@ export function ImageSheetDialog({
                     const refUnmentioned =
                       s.referenceIds.length > 0 &&
                       !/\b(edit|keep|intact|unchanged|preserve|change only)\b/i.test(s.prompt);
+                    // Even in edit form, a long reffed prompt means many listed
+                    // changes — each one a chance for the model to repaint
+                    // something the reference already got right. Nudge toward
+                    // a minimal delta (never block).
+                    const refOverSpecified =
+                      s.referenceIds.length > 0 && !refUnmentioned && s.prompt.length > 400;
                     return (
                       <div className="image-sheet-plate-card" key={s.key}>
                         <div className="image-sheet-plate-head">
@@ -694,10 +700,18 @@ export function ImageSheetDialog({
                         </div>
                         {refUnmentioned && (
                           <div className="image-sheet-plate-refhint">
-                            Tip: with a reference assigned, write the prompt as an EDIT of it —
-                            “Edit this photo of the theater. Keep the building exactly as it is;
-                            change only: night sky, empty lot…”. A full scene description makes
+                            Tip: with a reference assigned, write the prompt as a MINIMAL EDIT of it —
+                            “Edit this photo of the theater. Keep everything exactly as it is;
+                            change only: a night sky full of stars.” A full scene description makes
                             the model rebuild the scene from the text and discard the reference.
+                          </div>
+                        )}
+                        {refOverSpecified && (
+                          <div className="image-sheet-plate-refhint">
+                            Tip: this reads like a full spec. Keep reference edits minimal — one
+                            “keep everything exactly as it is” clause plus the fewest changes the
+                            shot needs (often just one). Every extra listed change is something
+                            the model may repaint.
                           </div>
                         )}
                         {s.quote && <blockquote className="image-sheet-plate-quote">{s.quote}</blockquote>}
