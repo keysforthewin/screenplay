@@ -183,6 +183,38 @@ describe('rosterManifest', () => {
     expect(manifest).toContain('described plates: 1/2');
   });
 
+  it('lists what each done plate depicts so the gap reporter can match beat elements', () => {
+    const manifest = Readiness.rosterManifest(
+      [{
+        name: 'Steve',
+        images: [],
+        fields: { description: 'a guy' },
+        artworks: [
+          { status: 'done', result_image_id: 5, name: 'Steve portrait', description: 'Steve in a tux.' },
+        ],
+      }],
+      [{
+        name: 'Cineplex',
+        images: [],
+        description: 'buff-brick cinema',
+        artworks: [
+          { status: 'done', result_image_id: 1, name: 'Starfield night', description: 'Night sky full of stars over the theater.' },
+          { status: 'done', result_image_id: 2, name: '', description: '', prompt: 'daytime marquee with 80s cars' },
+          { status: 'pending', result_image_id: null, description: 'never shown' },
+        ],
+      }],
+    );
+    expect(manifest).toContain('Starfield night');
+    expect(manifest).toContain('Night sky full of stars');
+    // Undescribed plates fall back to their generation prompt (the
+    // frameReferences.js precedent) rather than vanishing.
+    expect(manifest).toContain('daytime marquee with 80s cars');
+    // Characters get plate listings too, not just sets.
+    expect(manifest).toContain('Steve in a tux.');
+    // Pending/failed artworks never feed frames, so they don't count as backing.
+    expect(manifest).not.toContain('never shown');
+  });
+
   it('reports no plates when the host has none', () => {
     const manifest = Readiness.rosterManifest(
       [{ name: 'Steve', images: [], artworks: [], fields: { description: 'a guy' } }],

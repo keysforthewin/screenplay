@@ -64,11 +64,13 @@ const GAP_TOOL = {
 const GAP_SYSTEM = [
   'You are a production designer doing a pre-visualization inventory for ONE screenplay beat.',
   'You get the beat text plus a manifest of the characters and sets (settings/locations) linked to it,',
-  'with flags for whether each has artwork, reference images, and a filled-in description.',
+  'with flags for whether each has artwork, reference images, and a filled-in description,',
+  'and a per-entity list of its artwork plates with what each plate depicts.',
   'Find the VISUAL elements the beat text calls for — locations, notable props, characters, effects,',
   'wardrobe, vehicles — that the storyboard image generator will have nothing to anchor on:',
   'either no matching character/set exists, the match has no artwork to use as a reference,',
-  'or the match has only a thin description. Ignore elements a generic image model handles fine',
+  'or the match has only a thin description. An element already depicted in a listed plate IS backed —',
+  'never report it as a gap. Ignore elements a generic image model handles fine',
   '(ordinary furniture, weather, unnamed extras). Be selective — only report gaps an author should act on.',
   'Return your findings via the report_visual_gaps tool.',
 ].join(' ');
@@ -190,6 +192,26 @@ function plateTally(doc) {
   return `described plates: ${describedArtworkCount(doc)}/${doneArtworks(doc).length}`;
 }
 
+// One indented line per done plate saying what it DEPICTS — without these the
+// gap reporter flags elements (a starfield, a night version of a set) that an
+// existing plate already covers. Same description||prompt fallback as the
+// frame-reference candidates (src/web/frameReferences.js).
+const MAX_MANIFEST_PLATES = 12;
+function plateLines(doc) {
+  const plates = doneArtworks(doc);
+  const lines = plates.slice(0, MAX_MANIFEST_PLATES).map((a) => {
+    const label = String(a.name || '').trim() || 'untitled';
+    const depicts =
+      clipField(String(a.description || '').trim() || String(a.prompt || '').trim(), 160)
+      || '(no description)';
+    return `    • plate "${label}": ${depicts}`;
+  });
+  if (plates.length > MAX_MANIFEST_PLATES) {
+    lines.push(`    • …and ${plates.length - MAX_MANIFEST_PLATES} more plates`);
+  }
+  return lines;
+}
+
 // Exported for tests only — the gap reporter is the sole production caller.
 export function rosterManifest(characters, sets) {
   const lines = [];
@@ -201,6 +223,7 @@ export function rosterManifest(characters, sets) {
         (c.images || []).length ? 'yes' : 'NO'
       }, description: ${clipField(c.fields?.description || c.fields?.background_story, 120) || '(none)'}`,
     );
+    lines.push(...plateLines(c));
   }
   lines.push('', '# Linked sets (settings/locations):');
   if (!sets.length) lines.push('(none)');
@@ -210,6 +233,7 @@ export function rosterManifest(characters, sets) {
         (s.images || []).length ? 'yes' : 'NO'
       }, description: ${clipField(s.description, 120) || '(none)'}`,
     );
+    lines.push(...plateLines(s));
   }
   return lines.join('\n');
 }
