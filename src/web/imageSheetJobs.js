@@ -113,7 +113,15 @@ const MAIN_BEAT_BODY_CLIP = 12000;
 export function setAsPlannerBeat(set, { mainBeat = null, contextBeats = [] } = {}) {
   const sections = [];
   const description = String(set.description || '').trim();
-  if (description) sections.push(['## Set description', '', description].join('\n'));
+  if (description) {
+    sections.push([
+      '## Set description (the look — palette, materials, light. Use it to GROUND',
+      'the plates you plan; do NOT plan a plate per paragraph of it. Which plates',
+      'exist, and how many, comes only from what the beat text below stages.)',
+      '',
+      description,
+    ].join('\n'));
+  }
   const beatSection = (b, { heading }) => {
     const name = clipBlock(b?.name, 200) || 'Untitled';
     const lines = [`${heading} Beat #${b?.order ?? '?'} — ${name}`];

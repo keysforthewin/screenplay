@@ -33,17 +33,20 @@ const WRITE_TOOL = {
     properties: {
       paragraphs: {
         type: 'array',
-        minItems: 2,
+        minItems: 1,
         maxItems: 6,
         items: {
           type: 'string',
-          description: 'One visual paragraph, 3-6 sentences, purely observable production language.',
+          description: 'One visual paragraph, 1-6 sentences, purely observable production language.',
         },
         description:
-          'Several paragraphs covering, in order: (1) overall geography, layout and architecture; ' +
-          '(2) materials, textures, set dressing and key props; (3) light sources and how light ' +
-          'behaves at the times of day the beats use; (4) palette and the physical causes of the ' +
-          "atmosphere; optionally distinct sub-areas/corners the beats stage in.",
+          'Paragraphs ordered by visual importance. Lead with the PRIMARY visual subject — whatever ' +
+          'the beats actually dwell on — and give it the bulk of the description: its geography and ' +
+          'layout, materials and textures, light sources and how light behaves at the times of day ' +
+          'the beats use, palette and the physical causes of the atmosphere, plus any distinct ' +
+          'sub-areas/corners the beats stage in. Secondary elements the beats only pass through, ' +
+          'land on, or mention in passing get a single short paragraph or sentence at the end — ' +
+          'never equal coverage.',
       },
     },
     required: ['paragraphs'],
@@ -61,6 +64,15 @@ const SYSTEM_PROMPT = [
   'story events, no proper names of people. Ground the description in what the beats',
   'actually use: the sub-locations, entrances, props, and times of day they stage. Where',
   'the beats are silent, invent details consistent with the story and the directorial voice.',
+  '',
+  'INTENT AND PROPORTION: first identify the PRIMARY visual subject — the image the beats',
+  'actually dwell on. A beat that opens on a starfield and only pans down to a building at',
+  'the end is ABOUT the starfield: the starfield gets the paragraphs, the building gets one',
+  'or two grounding sentences at the end. Never give a minor or transitional element — a',
+  'place the camera merely passes, lands on, or mentions in passing — a full architectural',
+  'treatment. The description\'s proportions must mirror the beats\' emphasis, because image',
+  'plates are planned directly from this text: over-describing a minor element produces',
+  'unwanted images of it.',
   '',
   'Write in observable production language. Words like cinematic, epic, moody, dramatic,',
   'beautiful, or atmospheric are banned: name the physical cause that would produce the',
