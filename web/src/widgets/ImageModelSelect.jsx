@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { apiGet, apiPostJson } from '../api.js';
 import {
   IMAGE_MODEL_SORTS,
@@ -37,6 +37,10 @@ function readStoredSort() {
 //     Also hides the "Takes references" toggle — whether the shot takes
 //     references is decided by the flow, not a browsing preference.
 export function ImageModelSelect({ value, onChange, disabled = false, compact = false, requireReferences = false, promptOnly = false }) {
+  // Radio-group name unique to THIS instance: two pickers on one page (the
+  // refs/prompt-only split, the About Models tab) must be independent groups,
+  // or the browser unchecks one list when the other is clicked.
+  const groupName = useId();
   const [catalog, setCatalog] = useState(null);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState('');
@@ -235,7 +239,7 @@ export function ImageModelSelect({ value, onChange, disabled = false, compact = 
             >
               <input
                 type="radio"
-                name="image-model-select"
+                name={groupName}
                 value={m.id}
                 checked={value === m.id}
                 onChange={() => onChange?.(m.id)}
