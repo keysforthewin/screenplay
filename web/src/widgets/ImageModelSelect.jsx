@@ -34,6 +34,8 @@ function readStoredSort() {
 //     would silently ignore it). Hides the "Takes references" toggle.
 //   promptOnly — restrict the list to models that can generate WITHOUT an
 //     input image (a requires-references model given none is a provider 422).
+//     Also hides the "Takes references" toggle — whether the shot takes
+//     references is decided by the flow, not a browsing preference.
 export function ImageModelSelect({ value, onChange, disabled = false, compact = false, requireReferences = false, promptOnly = false }) {
   const [catalog, setCatalog] = useState(null);
   const [error, setError] = useState(null);
@@ -191,7 +193,7 @@ export function ImageModelSelect({ value, onChange, disabled = false, compact = 
           onChange={(e) => setQuery(e.target.value)}
           disabled={disabled}
         />
-        {!requireReferences && (
+        {!requireReferences && !promptOnly && (
           <label className="image-model-select-toggle" title="Only models that accept reference images">
             <input
               type="checkbox"
