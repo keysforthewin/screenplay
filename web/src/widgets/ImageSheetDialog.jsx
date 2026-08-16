@@ -694,6 +694,7 @@ export function ImageSheetDialog({
                     disabled={busy}
                     compact
                     requireReferences
+                    collapsible
                   />
                 </div>
               )}
@@ -709,6 +710,7 @@ export function ImageSheetDialog({
                     disabled={busy}
                     compact
                     promptOnly
+                    collapsible
                   />
                 </div>
               )}

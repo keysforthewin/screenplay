@@ -1697,6 +1697,26 @@ select option {
   border-color: var(--border, #333);
   color: var(--fg-muted);
 }
+.image-model-collapsed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--fg, #eee);
+}
+.image-model-collapsed:hover { background: rgba(255, 255, 255, 0.07); }
+.image-model-collapsed-change {
+  font-size: 11px;
+  color: var(--accent);
+  white-space: nowrap;
+}
 .image-model-select-footer {
   display: flex;
   align-items: center;

@@ -36,12 +36,16 @@ function readStoredSort() {
 //     input image (a requires-references model given none is a provider 422).
 //     Also hides the "Takes references" toggle — whether the shot takes
 //     references is decided by the flow, not a browsing preference.
-export function ImageModelSelect({ value, onChange, disabled = false, compact = false, requireReferences = false, promptOnly = false }) {
+//   collapsible — start as a one-line summary of the current selection (the
+//     usual case is keeping the pre-selected default); a click expands the
+//     full searchable list, and a footer button collapses it again.
+export function ImageModelSelect({ value, onChange, disabled = false, compact = false, requireReferences = false, promptOnly = false, collapsible = false }) {
   // Radio-group name unique to THIS instance: two pickers on one page (the
   // refs/prompt-only split, the About Models tab) must be independent groups,
   // or the browser unchecks one list when the other is clicked.
   const groupName = useId();
   const listRef = useRef(null);
+  const [expanded, setExpanded] = useState(!collapsible);
   const [catalog, setCatalog] = useState(null);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState('');
@@ -184,7 +188,7 @@ export function ImageModelSelect({ value, onChange, disabled = false, compact = 
   useEffect(() => {
     const el = listRef.current?.querySelector('.image-model-row.is-selected');
     if (el) el.scrollIntoView({ block: 'nearest' });
-  }, [catalog, value, sort]);
+  }, [catalog, value, sort, expanded]);
 
   // Keep the current choice visible even when it doesn't match the filter —
   // otherwise the list looks like nothing is selected.
@@ -195,6 +199,44 @@ export function ImageModelSelect({ value, onChange, disabled = false, compact = 
 
   if (catalog === null) {
     return <p style={{ color: 'var(--fg-muted)', fontSize: 13 }}>Loading models…</p>;
+  }
+
+  // Collapsed accordion: a one-line summary of the current selection. The
+  // catalog/default effects above keep running, so the summary tracks the
+  // pre-selected model without ever opening the list.
+  if (collapsible && !expanded) {
+    return (
+      <div className="image-model-select">
+        {error && <div className="error-banner">{error}</div>}
+        <button
+          type="button"
+          className="image-model-collapsed"
+          onClick={() => setExpanded(true)}
+          disabled={disabled}
+          title="Show the full model list"
+        >
+          {selected ? (
+            <>
+              <span className="image-model-row-main">
+                <span className="image-model-row-title">
+                  {selected.display_name}
+                  {selected.is_wired && <span className="image-model-badge">tuned</span>}
+                </span>
+                <span className="image-model-row-meta">
+                  {[selected.lab, selected.category].filter(Boolean).join(' · ')}
+                </span>
+              </span>
+              <span className="image-model-row-price">{selected.price?.display || '—'}</span>
+            </>
+          ) : (
+            <span className="image-model-row-main">
+              <span className="image-model-row-title">Choose a model…</span>
+            </span>
+          )}
+          <span className="image-model-collapsed-change">Change ▾</span>
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -284,14 +326,26 @@ export function ImageModelSelect({ value, onChange, disabled = false, compact = 
           {filtered.length} of {eligible.length} models
           {generatedAt ? ` · catalog ${new Date(generatedAt).toLocaleDateString()}` : ''}
         </span>
-        <button
-          type="button"
-          onClick={refreshCatalog}
-          disabled={disabled || refreshing}
-          title="Re-scrape fal.ai for new models and current prices"
-        >
-          {refreshing ? (refreshProgress || 'Refreshing…') : 'Refresh catalog'}
-        </button>
+        <span style={{ display: 'flex', gap: 6 }}>
+          {collapsible && (
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              disabled={disabled}
+              title="Collapse back to the one-line summary"
+            >
+              Collapse ▴
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={refreshCatalog}
+            disabled={disabled || refreshing}
+            title="Re-scrape fal.ai for new models and current prices"
+          >
+            {refreshing ? (refreshProgress || 'Refreshing…') : 'Refresh catalog'}
+          </button>
+        </span>
       </div>
     </div>
   );
