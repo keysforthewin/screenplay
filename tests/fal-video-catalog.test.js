@@ -75,6 +75,40 @@ describe('fal video catalog: generic auto-wiring', () => {
     expect(populated.length).toBe(1);
   });
 
+  it('flux-3: buildInput sends the most permissive safety_tolerance', async () => {
+    // BFL's content checker at the default tolerance (2) false-positives on
+    // benign storyboard frames (a starfield start frame was flagged with
+    // content_policy_violation). flux-3 endpoints document safety_tolerance
+    // 0..4 with 4 the most permissive — synthesized flux-3 models must send it.
+    const { getVideoModelOrCatalog } = await import('../src/fal/videoModels.js');
+    const model = await getVideoModelOrCatalog('blackforestlabs/flux-3/first-last-frame-to-video');
+    if (!model) return; // manifest drift — covered by broader auto-wire test
+    const input = model.buildInput({
+      prompt: 'Slow tilt down from a starfield to a rooftop.',
+      startFrameUrl: 'https://fal.example/start.png',
+      endFrameUrl: 'https://fal.example/end.png',
+      durationSeconds: 12,
+      resolution: '720p',
+      generateAudio: false,
+    });
+    expect(input.safety_tolerance).toBe(4);
+  });
+
+  it('safety_tolerance is only sent to families with a verified range', async () => {
+    // Veo 3.1 also declares safety_tolerance but its legal range is not the
+    // same as flux-3's — don't guess; omit it there.
+    const { getVideoModelOrCatalog } = await import('../src/fal/videoModels.js');
+    const model = await getVideoModelOrCatalog('fal-ai/veo3.1/fast/first-last-frame-to-video');
+    if (!model) return; // manifest drift
+    const input = model.buildInput({
+      prompt: 'x',
+      startFrameUrl: 'https://fal.example/start.png',
+      endFrameUrl: 'https://fal.example/end.png',
+      durationSeconds: 8,
+    });
+    expect(input.safety_tolerance).toBeUndefined();
+  });
+
   it('LTX video_size: emits an object, never a "WxH" string', async () => {
     // fal-ai rejects `video_size: "1280x720"` with a 422 — the schema is a
     // union of { width, height } object OR a small enum of preset names.

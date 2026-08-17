@@ -434,6 +434,36 @@ describe('startVideoGenerationJob', () => {
     expect(job.error).toMatch(/queue boom/);
   });
 
+  it('surfaces fal validation detail in job.error instead of bare "Unprocessable Entity"', async () => {
+    // The fal SDK's ApiError.message is just the HTTP status text; the real
+    // reason (e.g. content_policy_violation on start_image_url) lives in
+    // body.detail. The SPA shows job.error, so it must carry the detail.
+    falStubs.subscribeImpl = async () => {
+      throw Object.assign(new Error('Unprocessable Entity'), {
+        status: 422,
+        body: {
+          detail: [
+            {
+              loc: ['body', 'start_image_url'],
+              msg: 'The content could not be processed because it contained material flagged by a content checker.',
+              type: 'content_policy_violation',
+            },
+          ],
+        },
+      });
+    };
+    const { beat, sb } = await seedScene({ start: true, end: true });
+    const { job_id } = await Falgen.startVideoGenerationJob({ projectId,
+      storyboardId: sb._id.toString(),
+      modelId: 'kling-3-pro',
+    });
+    await waitForBeatLock(beat._id);
+    const job = Falgen.getVideoGenerationJob(job_id);
+    expect(job.status).toBe('error');
+    expect(job.error).toMatch(/start_image_url/);
+    expect(job.error).toMatch(/content checker/);
+  });
+
   it('Sora 2: does not mint character refs from characters_in_scene; just renders the start frame', async () => {
     // Even with named characters on the storyboard, the orchestrator must
     // not call fal-ai/sora-2/characters or upload any character sheets.

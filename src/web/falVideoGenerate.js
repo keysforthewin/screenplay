@@ -52,6 +52,7 @@ import {
 } from '../fal/videoModels.js';
 import { trimToSeconds } from './audioTranscode.js';
 import { estimateRegisteredCost, estimateCatalogCost } from '../fal/videoPricing.js';
+import { extractFalDetail } from '../fal/imageClient.js';
 
 // In-memory job registry. Single-process runtime, like the old Wan
 // orchestrator. Jobs are lost on restart; the SPA's EventSource simply
@@ -68,6 +69,15 @@ const TERMINAL_RETENTION_MS = 5 * 60 * 1000;
 
 function makeJobId() {
   return new ObjectId().toString();
+}
+
+// The fal SDK's ApiError carries the useful message in body.detail; its
+// .message is just the HTTP status text ("Unprocessable Entity"). job.error
+// is what the SPA shows the user, so prefer the detail when present.
+function describeJobError(err) {
+  const detail = extractFalDetail(err?.body);
+  if (detail) return detail;
+  return err?.message || String(err);
 }
 
 export function getVideoGenerationJob(jobId) {
@@ -233,7 +243,7 @@ export async function startVideoGenerationJob({
     .catch((e) => {
       if (job.status !== 'done' && job.status !== 'error') {
         job.status = 'error';
-        job.error = e?.message || String(e);
+        job.error = describeJobError(e);
         job.finished_at = new Date();
         publish(job);
       }
@@ -800,7 +810,7 @@ async function runVideoGenerationJob({
     }
   } catch (e) {
     job.status = 'error';
-    job.error = e?.message || String(e);
+    job.error = describeJobError(e);
     job.finished_at = new Date();
     publish(job);
     logger.warn(

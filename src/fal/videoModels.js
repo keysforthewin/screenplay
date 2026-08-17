@@ -618,6 +618,25 @@ function pickFirstParam(nameSet, allParams) {
   return null;
 }
 
+// Per-family safety_tolerance overrides, keyed by endpoint-id prefix. BFL's
+// content checker at the default tolerance (2) false-positives on benign
+// storyboard frames (a plain starfield start frame came back 422
+// content_policy_violation), so flux-3 endpoints get the documented most
+// permissive value (0 strictest .. 4 most permissive). The legal range is
+// per-family — other families (e.g. Veo) also declare the param but with a
+// different scale, so only endpoints with a verified range are listed here.
+const SAFETY_TOLERANCE_BY_PREFIX = [
+  { prefix: 'blackforestlabs/flux-3/', value: 4 },
+];
+
+function safetyToleranceFor(endpointId) {
+  const id = String(endpointId || '');
+  for (const { prefix, value } of SAFETY_TOLERANCE_BY_PREFIX) {
+    if (id.startsWith(prefix)) return value;
+  }
+  return null;
+}
+
 // fal types plural-named params ('audio_urls', 'image_urls', 'video_urls',
 // 'videos') as lists and singular ones ('audio_url', 'video_url') as scalars.
 // A trailing 's' reliably separates the two across our START/END/REFERENCE/
@@ -721,6 +740,10 @@ function synthesizeCatalogModel(row) {
       if (dims) input.video_size = { width: dims[0], height: dims[1] };
     }
     if (supportsGenerateAudio) input.generate_audio = Boolean(bundle.generateAudio);
+    if (allSet.has('safety_tolerance')) {
+      const tol = safetyToleranceFor(row.endpoint_id);
+      if (tol != null) input.safety_tolerance = tol;
+    }
     return input;
   }
 
