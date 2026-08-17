@@ -30,8 +30,8 @@ export const CHARACTER_SHEET_OUTPUT_RULES = [
   'STRICT OUTPUT RULES:',
   '- Produce exactly ONE image of ONE person in the single pose described above — nothing else.',
   '- This is a plain photograph, NOT a character sheet, model sheet, reference sheet, turnaround, contact sheet, grid, collage, storyboard, or multi-panel layout. Never show the person more than once, and never place multiple views, angles, or poses side by side.',
-  '- Do NOT add overlay graphics or descriptive text to the image: no captions, labels, headers, titles, name tags, callouts, measurements, annotations, borders, or watermarks. It is a candid photograph, not a labeled diagram.',
-  '- BUT keep any text, lettering, logos, brand names, or graphics that naturally belong on the subject — printing on their clothing, patches, or accessories they wear. Render those faithfully and legibly; never blank them out or replace them with empty patches.',
+  '- TEXT IS ADDED IN POST-PRODUCTION, so this photograph carries none: no captions, labels, headers, titles, name tags, callouts, measurements, annotations, borders, or watermarks. It is a candid photograph, not a labeled diagram. Any surface behind or beside the subject is blank and unlettered.',
+  '- The ONE exception is printing the subject already wears — a graphic on their clothing, a patch, a marking on an accessory. That stays as the reference images show it: never blank it out or replace it with an empty patch. Do not invent new wording on a garment, and never make that printing the legible focus of the frame.',
 ].join('\n');
 
 // The fixed shot list (name + framing fragment). Names double as the artwork

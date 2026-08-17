@@ -1,10 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { buildImagePrompt, summarizeRecentMessages } from '../src/gemini/promptBuilder.js';
+import { buildImagePrompt, summarizeRecentMessages, NO_TEXT_RULE } from '../src/gemini/promptBuilder.js';
 
 describe('buildImagePrompt', () => {
-  it('returns just the user prompt when only userPrompt is given', () => {
+  it('returns the user prompt plus the standing no-text rule', () => {
     const out = buildImagePrompt({ userPrompt: 'a cat in a top hat' });
-    expect(out).toBe('a cat in a top hat');
+    expect(out).toBe(`a cat in a top hat\n\n${NO_TEXT_RULE}`);
+  });
+
+  it('appends the no-text rule last, whatever the inputs', () => {
+    const beatOnly = buildImagePrompt({ beat: { name: 'T', desc: 'D', body: 'B', characters: [] } });
+    expect(beatOnly.endsWith(NO_TEXT_RULE)).toBe(true);
+    // Stated positively — a bare prohibition plants the lettering it forbids.
+    expect(NO_TEXT_RULE).toContain('blank, unlettered');
+    expect(NO_TEXT_RULE).toContain('post-production');
   });
 
   it('includes scene context when beat is given', () => {
@@ -54,7 +62,8 @@ describe('buildImagePrompt', () => {
   it('truncates long bodies', () => {
     const long = 'x'.repeat(2000);
     const out = buildImagePrompt({ beat: { name: 'T', desc: 'D', body: long, characters: [] } });
-    expect(out.length).toBeLessThan(900);
+    // Bound covers the composed sections only; the standing rule is fixed-size.
+    expect(out.length - NO_TEXT_RULE.length).toBeLessThan(900);
     expect(out).toContain('…');
   });
 });

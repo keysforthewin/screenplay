@@ -81,6 +81,7 @@ import {
   SHOT_SIZE_FIDELITY_RULES,
   ENDING_PROFILE_RULES,
   FRAGILITY_RULES,
+  NO_TEXT_RULES,
 } from './storyboardConstraints.js';
 import { renderSceneBibleBlock, normalizeSceneBible, isEmptySceneBible } from '../mongo/sceneBible.js';
 
@@ -257,6 +258,9 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   '# What breaks in generation — plan around it',
   FRAGILITY_RULES,
   '',
+  '# Text is a post-production layer',
+  NO_TEXT_RULES,
+  '',
   '# Language',
   ANTI_SLOP_RULES,
   '',
@@ -267,6 +271,7 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   "- Don't invent characters not in the beat's character list.",
   '- When the beat lists sets, tag every shot with the set it plays in via sets_in_scene (copy names exactly), and ground scene_bible.location and blocking in those sets. A shot that moves between sets lists both.',
   '- primary_spend must match the framing: a close_up/reaction shot spends on identity, a wide on world, an action beat on motion. A shot that wants all three is two shots — split it.',
+  '- Never plan a shot whose subject is text — a title card, chyron, headline, or screen of copy. The words are composited in post; plan the blank surface or the scene they land over, and say so in the shot description.',
   '- Emit EXACTLY the requested number of frames.',
 ].join('\n');
 
@@ -1189,12 +1194,12 @@ const SHOT_EXPAND_TOOL = {
             start_frame_prompt: {
               type: 'string',
               description:
-                'Still-image prompt for the opening composition. Capture the subject as a FROZEN MOMENT of the action — pose, orientation, heading, and placement in the required geography — so the still reads as the intended moment (a car squarely in its lane, nose down the street, not slewed across it). ~2–3 sentences. Do NOT restate the scene bible (location/lighting/palette/blocking) or character faces/wardrobe — reference them. TWO EXCEPTIONS, both REQUIRED when they apply: (1) always state the framed subject\'s precise sub-location, e.g. back seat vs front — the image model never sees the bible and will otherwise default to the wrong position; (2) always state any CONTINUITY STATE the story has changed since the reference photos — jacket off, shirt bloodied, hair soaked, a prop now in hand — or the model silently reverts to the reference look.',
+                'Still-image prompt for the opening composition. Capture the subject as a FROZEN MOMENT of the action — pose, orientation, heading, and placement in the required geography — so the still reads as the intended moment (a car squarely in its lane, nose down the street, not slewed across it). ~2–3 sentences. Do NOT restate the scene bible (location/lighting/palette/blocking) or character faces/wardrobe — reference them. TWO EXCEPTIONS, both REQUIRED when they apply: (1) always state the framed subject\'s precise sub-location, e.g. back seat vs front — the image model never sees the bible and will otherwise default to the wrong position; (2) always state any CONTINUITY STATE the story has changed since the reference photos — jacket off, shirt bloodied, hair soaked, a prop now in hand — or the model silently reverts to the reference look. NO WORDING: text is composited in post, so never write words for the model to letter — render signs, marquees, screens and covers as blank, unlettered surfaces.',
             },
             video_prompt: {
               type: 'string',
               description:
-                'Clip-gen motion prompt, 4–8 sentences. Camera FIRST (write "Static, locked-off camera." verbatim for held shots, otherwise name the move and its motivation), then the BLOCKING, then the PERFORMANCE: who speaks in what order (mouth and jaw working — NEVER the words themselves), the facial beat as a change from one state to another, the listener behavior for every non-speaking character on screen, and any state change during the clip. Close on the ENDPOINT — the completed state the clip arrives at, written so the cut to the next shot lands cleanly. Prefer one physical cause with visible consequences over a list of separate instructions. NO subject identity, setting, composition, or framing — the start frame already holds those. No stillness closer, and no negation anywhere ("no…", "does not…") — state the positive instead.',
+                'Clip-gen motion prompt, 4–8 sentences. Camera FIRST (write "Static, locked-off camera." verbatim for held shots, otherwise name the move and its motivation), then the BLOCKING, then the PERFORMANCE: who speaks in what order (mouth and jaw working — NEVER the words themselves), the facial beat as a change from one state to another, the listener behavior for every non-speaking character on screen, and any state change during the clip. Close on the ENDPOINT — the completed state the clip arrives at, written so the cut to the next shot lands cleanly. Prefer one physical cause with visible consequences over a list of separate instructions. NO subject identity, setting, composition, or framing — the start frame already holds those. No stillness closer, and no negation anywhere ("no…", "does not…") — state the positive instead. Nothing letters itself: no text appears, animates on, scrolls, or is revealed during the clip.',
             },
             references: {
               type: 'array',
@@ -1262,6 +1267,9 @@ export const SHOT_EXPAND_SYSTEM_PROMPT = [
   '',
   '# What breaks in generation (for both)',
   FRAGILITY_RULES,
+  '',
+  '# Text is a post-production layer (for both)',
+  NO_TEXT_RULES,
   '',
   '# Language (for both)',
   ANTI_SLOP_RULES,
@@ -1878,6 +1886,12 @@ function buildSuggestedFramePrompt({ sb }) {
   }
   lines.push('');
   lines.push('Render this moment of the shot as a cinematic still.');
+  // This draft goes straight to the image model when the user keeps it, so the
+  // post-production text rule has to travel with it — the planner's system
+  // prompt never reaches this path.
+  lines.push(
+    'Text is added in post-production: render every sign, marquee, screen, banner and cover as a blank, unlettered surface, and show no captions, titles, or watermarks.',
+  );
   return lines.join('\n');
 }
 

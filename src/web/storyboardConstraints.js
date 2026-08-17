@@ -9,6 +9,30 @@
 // https://github.com/Emily2040/seedance-2.0. See ATTRIBUTION.md at the repo
 // root for the per-idea mapping and for what we deliberately did not adopt.
 
+// Text is a POST-PRODUCTION layer. Every title, card, caption, credit, chyron
+// and every piece of billed signage is composited over the finished picture in
+// the edit, so nothing in this pipeline may bake wording into a plate. This
+// supersedes the old framing of the same subject: "readable text warps to
+// gibberish" treated lettering as a RISK to be dodged, which still allowed a
+// prompt to letter a sign as long as it kept it small or soft. The rule is not
+// risk-avoidance, it is the production order — the generated image is the clean
+// plate the text lands on.
+//
+// Written POSITIVELY (blank, unlettered, smooth) rather than as a prohibition,
+// per ANTI_SLOP_RULES: text conditioning moves probability TOWARD every concept
+// it names, so "no text on the sign" summons a lettered sign.
+//
+// Shared by the scene planner, the shot expander, the plate planner, the plate
+// tuner and the character-sheet composer — all of them embed this block.
+export const NO_TEXT_RULES = [
+  'Text is added in POST-PRODUCTION — never render it. Every title, title card, caption, subtitle, credit, chyron, lower-third, label, and every piece of billed or lettered signage is composited over the finished picture later. What you generate is the clean plate that text lands on.',
+  '- Never write WORDING into a prompt: no quoted words, no "the sign reads…", no "the marquee bills…", no spelled-out brand names, no captions, annotations, or watermarks. A prompt that hands the image model words to letter has already failed.',
+  '- Write the surface as EMPTY, and write it positively: "a blank unlettered marquee letterboard", "a smooth empty sign panel", "a dark screen", "a plain unmarked banner". State the blankness as the thing that IS there — a bare prohibition plants the lettering it forbids.',
+  '- A shot whose SUBJECT is text is not a shot. If the beat calls for a title card, a chyron, a newspaper headline, a phone screen of messages, or a page of copy, build the SET instead — the empty card background, the blank screen, the unlettered paper stock — and let post composite the words over it.',
+  '- Nothing letters itself over the clip: no text appears, animates on, scrolls, or is revealed. A surface that carries text in the finished film stays blank for the whole shot.',
+  '- TWO EXCEPTIONS, both narrow. (1) A reference image assigned to an EDIT is final: whatever text, signage, and logos it already carries stay exactly as they are — never repaint them blank, and never add to or alter their wording. (2) Printing a subject already wears — a garment graphic, a patch — stays as the reference shows it; never invent new wording on it, and never make it the legible focus of the frame.',
+].join('\n');
+
 export const CAMERA_MOTION_RULES = [
   'Camera motion — pick the move the shot needs and name it explicitly. This is a preference ordering, not a ban list: every move below is available, and the earlier ones are the most reliable.',
   '- Locked-off / tripod static. The camera does not move, only the subject does. Still the best choice when the performance is the event.',
@@ -68,7 +92,7 @@ export const ENDING_PROFILE_RULES = [
 // thing simple, large, or out of frame).
 export const FRAGILITY_RULES = [
   'Fragility — these degrade first. Design around them rather than hoping:',
-  '- Readable text and logos (signs, screens, plates, books) warp to gibberish. Keep them out of frame, out of focus, or static and unmoving — never redrawn during a move.',
+  '- Lettering and logos warp to gibberish — and text is a post-production layer regardless (see the text rules): render every sign, marquee, screen, plate, and book cover as a blank, unlettered surface.',
   '- Small, distant, or fast-moving detail starves: background faces, busy fingers, tiny props. If a detail matters, it earns its own shot at a size that can hold it.',
   '- Hands deform under complex action. Keep hand motion simple and slow, or keep the hands out of the main action.',
   '- Character-to-prop contact (lifting, passing, handing over) is fragile with several people on screen. Keep the contact simple, give it its own shot, or let it happen just off-frame.',
@@ -86,7 +110,7 @@ export const STILL_FRAMING_RULES = [
   `- Compose the subject (or both, in a two-shot) within the frame so it reads clearly and is not clipped at the edge — but "centered in frame" never means "centered in the world": a vehicle still sits in its travel lane, not on the centerline. Keep it unoccluded and the foreground clear of its silhouette.`,
   '- Specify a simple, separable background when the set allows ("dark interior", "soft blurred street lights") — but never simplify away the one or two anchoring cues that fix the subject\'s sub-location (see above).',
   '- The opening still is the WHOLE composition — do NOT describe the camera arriving on the subject from off-frame.',
-  '- Readable text or logos the audience is meant to read (signs, screens, books, plates) warp to gibberish — keep them out of frame or out of focus.',
+  '- Lettering warps to gibberish, and text is composited in post regardless (see the text rules): render signs, marquees, screens, books, and plates as blank, unlettered surfaces. Never write words for the image model to letter.',
 ].join('\n');
 
 // The output contract for the video_prompt: what CHANGES over the clip, in a

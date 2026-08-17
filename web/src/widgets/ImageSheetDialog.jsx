@@ -627,6 +627,15 @@ export function ImageSheetDialog({
                     // a minimal delta (never block).
                     const refOverSpecified =
                       s.referenceIds.length > 0 && !refUnmentioned && s.prompt.length > 400;
+                    // Text is composited in post, so a refless plate must never
+                    // hand the image model wording to letter. Anchored on a
+                    // lettered-surface noun (or a naming-a-text-element noun) to
+                    // keep false positives down — nudge, never block. Reffed
+                    // plates are exempt: the reference's signage is final.
+                    const wordingInPrompt =
+                      s.referenceIds.length === 0 &&
+                      (/\b(sign|signage|marquee|screen|banner|poster|letterboard|placard|label|plate|cover)\b[^.]{0,48}\b(reads?|says?|bills?|billed|spelling|spells|lettered|reading)\b/i.test(s.prompt) ||
+                        /\b(title card|caption|subtitle|chyron|lower.third|headline|watermark)\b/i.test(s.prompt));
                     return (
                       <div className="image-sheet-plate-card" key={s.key}>
                         <div className="image-sheet-plate-head">
@@ -662,7 +671,7 @@ export function ImageSheetDialog({
                           className="image-sheet-plate-prompt"
                           rows={3}
                           value={s.prompt}
-                          placeholder="Image prompt (purely visual — no characters or caption text)"
+                          placeholder="Image prompt (purely visual — no characters, no wording; text is added in post)"
                           onChange={(e) => updateShot(s.key, 'prompt', e.target.value)}
                           disabled={busy}
                         />
@@ -712,6 +721,14 @@ export function ImageSheetDialog({
                             “keep everything exactly as it is” clause plus the fewest changes the
                             shot needs (often just one). Every extra listed change is something
                             the model may repaint.
+                          </div>
+                        )}
+                        {wordingInPrompt && (
+                          <div className="image-sheet-plate-refhint">
+                            Tip: text is added in post-production — this plate should carry no
+                            wording. Describe the surface as empty instead (“a blank unlettered
+                            marquee letterboard”, “a dark screen”) so the words can be composited
+                            over it later.
                           </div>
                         )}
                         {s.quote && <blockquote className="image-sheet-plate-quote">{s.quote}</blockquote>}

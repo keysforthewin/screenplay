@@ -12,6 +12,7 @@ import {
   SHOT_SIZE_FIDELITY_RULES,
   ENDING_PROFILE_RULES,
   FRAGILITY_RULES,
+  NO_TEXT_RULES,
 } from '../src/web/storyboardConstraints.js';
 
 describe('storyboard constraints', () => {
@@ -28,6 +29,7 @@ describe('storyboard constraints', () => {
       SHOT_SIZE_FIDELITY_RULES,
       ENDING_PROFILE_RULES,
       FRAGILITY_RULES,
+      NO_TEXT_RULES,
     ]) {
       expect(typeof block).toBe('string');
       expect(block.trim().length).toBeGreaterThan(0);
@@ -237,6 +239,42 @@ describe('storyboard constraints', () => {
     const t = FRAGILITY_RULES.toLowerCase();
     for (const risk of ['logos', 'hands', 'contact', 'camera move']) {
       expect(t).toContain(risk);
+    }
+  });
+
+  it('no-text rules name post-production as the reason, not gibberish risk', () => {
+    const t = NO_TEXT_RULES.toLowerCase();
+    expect(t).toContain('post-production');
+    for (const kind of ['title card', 'caption', 'subtitle', 'chyron', 'watermark', 'signage']) {
+      expect(t).toContain(kind);
+    }
+  });
+
+  it('no-text rules state the empty surface positively (a prohibition plants the lettering)', () => {
+    const t = NO_TEXT_RULES.toLowerCase();
+    expect(t).toContain('blank unlettered marquee letterboard');
+    expect(t).toContain('smooth empty sign panel');
+    expect(t).toContain('positively');
+  });
+
+  it('no-text rules refuse a shot whose subject is text, and freeze it for the clip', () => {
+    const t = NO_TEXT_RULES.toLowerCase();
+    expect(t).toContain('subject is text is not a shot');
+    expect(t).toContain('animates on');
+  });
+
+  it('no-text rules keep the two narrow exceptions (reference edits, worn printing)', () => {
+    const t = NO_TEXT_RULES.toLowerCase();
+    expect(t).toContain('never repaint them blank');
+    expect(t).toContain('garment graphic');
+  });
+
+  it('the fragility and still-framing text bullets no longer allow soft-focus lettering', () => {
+    // The old escape hatch: letter the sign, just keep it small or out of focus.
+    for (const block of [FRAGILITY_RULES, STILL_FRAMING_RULES]) {
+      const t = block.toLowerCase();
+      expect(t).toContain('unlettered');
+      expect(t).not.toContain('out of focus');
     }
   });
 

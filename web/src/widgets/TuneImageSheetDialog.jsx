@@ -321,7 +321,7 @@ export function TuneImageSheetDialog({
                       className="image-sheet-plate-prompt"
                       rows={3}
                       value={s.prompt}
-                      placeholder="Image prompt (purely visual — no characters or caption text)"
+                      placeholder="Image prompt (purely visual — no characters, no wording; text is added in post)"
                       onChange={(e) => updateShot(s.key, 'prompt', e.target.value)}
                       disabled={busy}
                     />

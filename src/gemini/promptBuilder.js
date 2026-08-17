@@ -24,6 +24,17 @@ export function summarizeRecentMessages(messages) {
   return messages.map(lineFromMessage).filter(Boolean).join('\n');
 }
 
+// Standing production rule appended to every composed prompt: text is a
+// post-production layer, so generated images are the clean plates it lands on.
+// Stated positively ("blank", "unlettered") because naming a thing plants it.
+//
+// Unlike the storyboard / plate / character-sheet pipelines, this tool serves
+// ad-hoc operator requests, so an explicit ask for specific wording still wins
+// — otherwise "generate a poster that says OPEN" would fight its own prompt.
+export const NO_TEXT_RULE =
+  'Text is added in post-production, so this image carries none unless the request above explicitly asks for specific wording: ' +
+  'render signs, marquees, screens, banners, and covers as blank, unlettered surfaces, and add no captions, titles, labels, or watermarks.';
+
 export function buildImagePrompt({ userPrompt, beat, recentMessages } = {}) {
   const sections = [];
 
@@ -51,6 +62,8 @@ export function buildImagePrompt({ userPrompt, beat, recentMessages } = {}) {
       'No prompt content. Provide at least one of: userPrompt, beat, recentMessages.',
     );
   }
+
+  sections.push(NO_TEXT_RULE);
 
   return sections.join('\n\n');
 }
