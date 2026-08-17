@@ -77,7 +77,7 @@ describe('analyzeStoryboardCount', () => {
     expect(calls[0].tool_choice).toEqual({ type: 'tool', name: 'suggest_count' });
   });
 
-  it('clamps out-of-range values to [3, 30]', async () => {
+  it('clamps out-of-range values to [1, 30]', async () => {
     const { client } = fakeClient({ count: 100, reason: 'big' });
     _setAnthropicClientForTests(client);
 
@@ -86,6 +86,17 @@ describe('analyzeStoryboardCount', () => {
       characters: FAKE_CHARACTERS,
     });
     expect(result.count).toBe(30);
+  });
+
+  it('keeps a low suggestion — a two-shot beat is not padded up to 3', async () => {
+    const { client } = fakeClient({ count: 2, reason: 'two shots' });
+    _setAnthropicClientForTests(client);
+
+    const result = await analyzeStoryboardCount({
+      beat: FAKE_BEAT,
+      characters: FAKE_CHARACTERS,
+    });
+    expect(result.count).toBe(2);
   });
 
   it('returns null count with reason="no_tool_call" when the model omits the tool call', async () => {

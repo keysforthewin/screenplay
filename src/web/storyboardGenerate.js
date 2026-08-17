@@ -91,7 +91,9 @@ const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
 // Exported so the image-sheet beat planner runs on the same model.
 export const STORYBOARD_MODEL = config.anthropic.model;
 export const DEFAULT_TARGET_COUNT = 11;
-export const MIN_TARGET_COUNT = 3;
+// A beat that is genuinely one or two shots must be allowed to stay one or two
+// shots — a floor of 3 forced padding frames onto scenes that didn't want them.
+export const MIN_TARGET_COUNT = 1;
 export const MAX_TARGET_COUNT = 30;
 const MAX_DIRECTION_CHARS = 4000;
 
@@ -230,10 +232,11 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   '',
   '# FRAME COUNT IS NON-NEGOTIABLE',
   '- The user message specifies an EXACT target shot count. Emit exactly that many frames — not fewer, not more.',
-  '- If the beat is short, pad with embellishment shots (establishing wides, inserts of props/hands/eyes, reaction close-ups, atmospheric cutaways, alternate-angle coverage).',
+  '- If the target is larger than the beat\'s narrative moments, pad with embellishment shots (establishing wides, inserts of props/hands/eyes, reaction close-ups, atmospheric cutaways, alternate-angle coverage).',
+  '- A LOW target (1-3) is a deliberate directorial choice, not an oversight — a beat that is two shots gets two shots. Spend every frame on what the beat actually shows and drop embellishment entirely; never burn one of them on an establishing wide, insert, or reaction added "for coverage". At a target of 1, that single frame IS the scene.',
   '',
   '# Coverage and rhythm',
-  '- Open with an establishing wide. Vary framing (wides, mediums, close-ups in rotation, not three close-ups in a row). Use over_the_shoulder for two-person dialogue.',
+  '- Open with an establishing wide when the count affords one (roughly 4+ frames); at 1-3 frames open on whatever carries the beat instead. Vary framing (wides, mediums, close-ups in rotation, not three close-ups in a row). Use over_the_shoulder for two-person dialogue.',
   '- Adjacent shots must hand off cleanly: a shared subject, a matching motion vector, or a deliberate match cut. State the link in transition_in.',
   '- Plan for performance: give dialogue exchanges enough coverage that both the speaker and the listener get their own shots. A reaction shot is not filler — it is where the scene lands.',
   '- Give every shot a felt_intent — what the viewer feels or notices HERE. Shots that cannot answer it are decoration; replace them with coverage that can.',
@@ -1098,12 +1101,22 @@ export function buildScenePlanUserText({ beat, characters, sets = [], targetCoun
   const ctx = buildBeatContextBlock({ beat, characters, sets, direction, directorNotes, dialogs, directorialVoice });
   const count = clampTargetCount(targetCount);
   const lead =
-    `Target shot count: EXACTLY ${count} frames. Your frames array MUST contain ${count} entries.`;
+    `Target shot count: EXACTLY ${count} frame${count === 1 ? '' : 's'}. Your frames array MUST contain ${count} entr${count === 1 ? 'y' : 'ies'}.`;
+  // At a low target every frame is load-bearing, so the "interleave
+  // embellishment" nudge is dropped — it reads as an instruction to spend
+  // frames the beat can't spare.
+  const coverage =
+    count <= 3
+      ? `Then produce ${count} cinematic shot${count === 1 ? '' : 's'} in narrative order, spending ${count === 1 ? 'it' : 'each'} on what the beat actually shows — no embellishment or coverage padding. `
+      : `Then produce ${count} cinematic shots in narrative order, with embellishment shots interleaved among the narrative beats. `;
   const instruction =
-    `First write the scene_bible — its intention and turn, then the look that carries them. Then produce ${count} cinematic shots in narrative order, ` +
-    'with embellishment shots interleaved among the narrative beats. Each shot must be visually distinct from ' +
-    'the previous AND continuous with it. Pick a shot_type and duration_seconds for every shot. ' +
-    `Use the plan_scene tool. Reminder: exactly ${count} frames.`;
+    'First write the scene_bible — its intention and turn, then the look that carries them. ' +
+    coverage +
+    (count > 1
+      ? 'Each shot must be visually distinct from the previous AND continuous with it. '
+      : '') +
+    'Pick a shot_type and duration_seconds for every shot. ' +
+    `Use the plan_scene tool. Reminder: exactly ${count} frame${count === 1 ? '' : 's'}.`;
   return `${lead}\n\n${ctx}\n\n${instruction}`;
 }
 

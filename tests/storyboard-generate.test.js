@@ -614,6 +614,29 @@ describe('storyboard auto-generation (two-pass)', () => {
     expect(receivedTarget).toBe(30);
     expect(job.target_count_requested).toBe(30);
   });
+
+  it('passes a targetCount of 1 through untouched (no 3-frame floor)', async () => {
+    let receivedTarget = null;
+    Generate._setScenePlannerForTests(async ({ targetCount }) => {
+      receivedTarget = targetCount;
+      return { sceneBible: null, outline: [] };
+    });
+
+    const beat = await Plots.createBeat({ projectId,
+      name: 'One-shot',
+      desc: '',
+      body: '',
+      characters: [],
+    });
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId,
+      beatId: beat._id.toString(),
+      targetCount: 1,
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+    expect(receivedTarget).toBe(1);
+    expect(job.target_count_requested).toBe(1);
+  });
 });
 
 // Helpers shared across reference-image tests.

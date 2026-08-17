@@ -3,7 +3,7 @@ import { Modal } from './Modal.jsx';
 import { apiPostJson, thumbUrl } from '../api.js';
 
 const DEFAULT_COUNT = 11;
-const MIN_COUNT = 3;
+const MIN_COUNT = 1;
 const MAX_COUNT = 30;
 
 const TABS = [
