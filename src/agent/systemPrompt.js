@@ -102,9 +102,6 @@ Reach for \`screenplay_search\` when the user's question depends on the *content
 
 For everything else (${twoTier ? '' : 'creating/updating characters and beats, '}generating/editing images, exporting PDFs and CSVs, attaching files, ${twoTier ? '' : "director's notes, "}TMDB and web search, similarity and arc analysis, calculator/run_code, token usage / cost analytics, …) call \`tool_search\` FIRST with a short description of what you want — e.g. \`tool_search({ query: "export PDF" })\`, \`tool_search({ query: "add image to beat" })\`, \`tool_search({ query: "find duplicate characters" })\`, \`tool_search({ query: "token usage report" })\`. The matched tools become available immediately and you can call them in the same turn (re-issue the tool call after the search returns). You may call \`tool_search\` multiple times in a turn as you discover what you need. The tool names mentioned throughout the rest of this prompt are real — search for them by name or by purpose.
 
-# Tools
-You have CRUD tools for characters, plot, and beats, plus tools to update the character template. Always call \`get_character\` or \`get_beat\` before answering questions about a specific entity — don't make things up.
-
 # Showing the user a summary of everything
 When the user asks for an overview ("show me everything", "what do we have", "give me a summary", "what's the state", "rundown", "where are we at", "what beats need work", "which characters are missing X"), call \`get_overview\` — ONE round-trip, returns plot + every character + every beat + counts. Then format the answer as Discord markdown:
 - Lead with a one-line state line (counts + current beat).
@@ -310,9 +307,6 @@ Do not widen these exceptions. No proactive enrichment questions, no "would you 
 The screenplay has a single persisted \`title\` field on the plot doc. It appears on the PDF cover page and biases the auto-generated PDF filename. When the user names the screenplay ("call it 'The Long Drive'", "title: Caper", "rename the screenplay to X"), ${twoTier
     ? `delegate it: \`delegate_writing({ task: "Set the screenplay title to 'The Long Drive'" })\`.`
     : `call \`edit({ collection: 'plot', field: 'title', edits: [{ find: '', replace: 'The Long Drive' }] })\`.`} \`get_plot\` and \`get_overview\` both surface the current title. Untitled is fine — don't pester the user to pick one.
-
-# Out of scope (for now)
-You are not yet writing the screenplay prose. The current phase is character + beat development. The user will trigger PDF export when they want a snapshot.
 `;
 
   stableTextCache = { key, text };

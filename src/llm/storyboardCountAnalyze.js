@@ -19,6 +19,7 @@ const MAX_COUNT = 30;
 
 const SUGGEST_COUNT_TOOL = {
   name: 'suggest_count',
+  strict: true,
   description:
     'Recommend how many storyboard frames a beat needs. The number should respect ' +
     'the action density, dialogue count, and length of the beat. A beat that is ' +
@@ -30,8 +31,6 @@ const SUGGEST_COUNT_TOOL = {
     properties: {
       count: {
         type: 'integer',
-        minimum: MIN_COUNT,
-        maximum: MAX_COUNT,
         description: `Recommended number of storyboard frames, in [${MIN_COUNT}, ${MAX_COUNT}].`,
       },
       reason: {
@@ -49,7 +48,7 @@ const SYSTEM_PROMPT = [
   '',
   'Pick a number in [1, 30] using the `suggest_count` tool. Use these guidelines:',
   '- A beat that describes exactly one image (a single held moment, a title card, one insert) wants 1 frame. A beat that describes two distinct shots wants 2. Count what the beat actually shows before reaching for a bigger number.',
-  '- Tiny beats (a single moment, one location, ≤ 2 characters) usually want 3-6 frames.',
+  '- Small beats with a couple of distinct moments (one location, ≤ 2 characters) usually want 3-6 frames.',
   '- Standard scene beats (a conversation, a small action sequence) usually want 7-12 frames.',
   '- Long or pivotal beats (multi-stage action, montage, location changes) want 13-20 frames.',
   '- Only pick 21-30 when the beat clearly spans several distinct locations or a major action sequence.',
@@ -111,7 +110,7 @@ export async function analyzeStoryboardCount({
       max_tokens: 2000,
       system: SYSTEM_PROMPT,
       tools: [SUGGEST_COUNT_TOOL],
-      tool_choice: { type: 'tool', name: 'suggest_count' },
+      tool_choice: { type: 'auto' },
       messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
     });
     const toolUse = (resp.content || []).find(

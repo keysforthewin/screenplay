@@ -7,7 +7,7 @@ import { createFakeDb } from './_fakeMongo.js';
 
 // Pin the two-tier model split before config.js is (transitively) imported —
 // the developer's real .env may set these to anything.
-process.env.ANTHROPIC_MODEL = 'claude-fable-5';
+process.env.ANTHROPIC_MODEL = 'claude-fable-5-1';
 process.env.ANTHROPIC_AGENT_MODEL = 'claude-sonnet-5';
 
 const fakeDb = createFakeDb();
@@ -74,7 +74,7 @@ describe('runWriterAgent request shape', () => {
     expect(streamMock).toHaveBeenCalledTimes(1);
     const args = streamMock.mock.calls[0][0];
 
-    expect(args.model).toBe('claude-fable-5');
+    expect(args.model).toBe('claude-fable-5-1');
     expect(args.max_tokens).toBe(config.anthropic.writerMaxTokens);
     expect(args.thinking).toBeUndefined();
 
@@ -182,6 +182,32 @@ describe('runWriterAgent tool dispatch', () => {
     expect(tr.content).toMatch(/load_writing_context/);
   });
 
+  it('keeps the system prompt frozen across iterations and appends refreshed state after a mutation', async () => {
+    streamMock.mockResolvedValueOnce({
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 100, output_tokens: 20 },
+      content: [
+        { type: 'tool_use', id: 'w1', name: 'create_beat', input: { name: 'New Scene', desc: 'd' } },
+      ],
+    });
+    streamMock.mockResolvedValueOnce(endTurn('- Created New Scene'));
+
+    await runWriterAgent({ task: 'create a beat', context: turnContext() });
+
+    expect(streamMock).toHaveBeenCalledTimes(2);
+    // Fable 5.1 binds thinking blocks to the system prompt that produced them:
+    // the second request must reuse the first request's system verbatim.
+    expect(streamMock.mock.calls[1][0].system).toBe(streamMock.mock.calls[0][0].system);
+    // The refreshed project state rides after the tool results instead.
+    const resultMsg = streamMock.mock.calls[1][0].messages.at(-1);
+    expect(resultMsg.role).toBe('user');
+    expect(resultMsg.content[0].type).toBe('tool_result');
+    const tail = resultMsg.content.at(-1);
+    expect(tail.type).toBe('text');
+    expect(tail.text).toContain('# Current project state');
+    expect(tail.text).toContain('New Scene');
+  });
+
   it('records entity touches into context.touchedEntities', async () => {
     streamMock.mockResolvedValueOnce({
       stop_reason: 'tool_use',
@@ -227,7 +253,7 @@ describe('runWriterAgent usage recording', () => {
     const docs = await fakeDb.collection('token_usage').find({}).toArray();
     const writerDoc = docs.find((d) => d.kind === 'anthropic_text');
     expect(writerDoc).toBeTruthy();
-    expect(writerDoc.model).toBe('claude-fable-5');
+    expect(writerDoc.model).toBe('claude-fable-5-1');
     expect(writerDoc.meta.iteration_count).toBe(1);
   });
 });

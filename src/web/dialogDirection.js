@@ -33,6 +33,7 @@ const SYSTEM_PROMPT = [
 
 const WRITE_DIRECTION_TOOL = {
   name: 'write_direction',
+  strict: true,
   description: 'Return the single performance note for the highlighted line.',
   input_schema: {
     type: 'object',
@@ -51,6 +52,7 @@ const WRITE_DIRECTION_TOOL = {
 
 const WRITE_DIRECTIONS_TOOL = {
   name: 'write_directions',
+  strict: true,
   description: 'Return one performance note per numbered line.',
   input_schema: {
     type: 'object',
@@ -61,7 +63,7 @@ const WRITE_DIRECTIONS_TOOL = {
         items: {
           type: 'object',
           properties: {
-            line_number: { type: 'integer', minimum: 1 },
+            line_number: { type: 'integer', description: 'The 1-based line number.' },
             direction: {
               type: 'string',
               description:
@@ -121,7 +123,7 @@ export async function generateDirectionForLine({ projectId, dialogId } = {}) {
     max_tokens: 5000,
     system: SYSTEM_PROMPT,
     tools: [WRITE_DIRECTION_TOOL],
-    tool_choice: { type: 'tool', name: 'write_direction' },
+    tool_choice: { type: 'auto' },
     messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
   });
 
@@ -172,7 +174,7 @@ export async function generateDirectionForBeat({ projectId, beatId } = {}) {
     max_tokens: 8000,
     system: SYSTEM_PROMPT,
     tools: [WRITE_DIRECTIONS_TOOL],
-    tool_choice: { type: 'tool', name: 'write_directions' },
+    tool_choice: { type: 'auto' },
     messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
   });
 

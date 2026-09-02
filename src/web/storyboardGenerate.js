@@ -129,6 +129,7 @@ export async function loadDirectorNotesForPlanner(projectId) {
 // Pass-1 scene-planner tool: scene bible + ordered shot skeleton in one call.
 const SCENE_PLAN_TOOL = {
   name: 'plan_scene',
+  strict: true,
   description:
     'Design the whole scene: first a compact scene bible (the unified visual look every shot inherits), ' +
     'then an ordered shot skeleton covering the entire beat. Do NOT write detailed video / still prompts here.',
@@ -186,7 +187,7 @@ const SCENE_PLAN_TOOL = {
               description:
                 'Framing/coverage class. establishing/cinematic_wide/insert ≤ 15s, medium ≤ 10s, close_up/reaction/two_shot/over_the_shoulder ≤ 5s.',
             },
-            duration_seconds: { type: 'integer', minimum: 1, maximum: 15, description: 'On-screen hold time; respect the shot_type cap.' },
+            duration_seconds: { type: 'integer', description: 'Integer 1-15 seconds of on-screen hold time; respect the shot_type cap.' },
             transition_in: {
               type: 'string',
               description:
@@ -231,8 +232,8 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   '   For blocking, capture who is where INCLUDING the exact sub-location the beat names (the back seat vs the front, the doorway, the head of the table) — do not flatten "the back seat of the minivan" into "the minivan". Every shot inherits this bible, so an imprecise blocking line misplaces characters in every downstream still.',
   '2. Plan the ordered SHOT SKELETON — one entry per shot, covering the whole beat with cinematic rhythm.',
   '',
-  '# FRAME COUNT IS NON-NEGOTIABLE',
-  '- The user message specifies an EXACT target shot count. Emit exactly that many frames — not fewer, not more.',
+  '# Frame count',
+  '- The user message gives the target shot count; return exactly that many frames — each becomes one storyboard row, so a short list leaves empty rows and a long one is truncated.',
   '- If the target is larger than the beat\'s narrative moments, pad with embellishment shots (establishing wides, inserts of props/hands/eyes, reaction close-ups, atmospheric cutaways, alternate-angle coverage).',
   '- A LOW target (1-3) is a deliberate directorial choice, not an oversight — a beat that is two shots gets two shots. Spend every frame on what the beat actually shows and drop embellishment entirely; never burn one of them on an establishing wide, insert, or reaction added "for coverage". At a target of 1, that single frame IS the scene.',
   '',
@@ -272,7 +273,6 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   '- When the beat lists sets, tag every shot with the set it plays in via sets_in_scene (copy names exactly), and ground scene_bible.location and blocking in those sets. A shot that moves between sets lists both.',
   '- primary_spend must match the framing: a close_up/reaction shot spends on identity, a wide on world, an action beat on motion. A shot that wants all three is two shots — split it.',
   '- Never plan a shot whose subject is text — a title card, chyron, headline, or screen of copy. The words are composited in post; plan the blank surface or the scene they land over, and say so in the shot description.',
-  '- Emit EXACTLY the requested number of frames.',
 ].join('\n');
 
 let dispatcherOverride = null;
@@ -1105,8 +1105,7 @@ export function buildBeatContextBlock({ beat, characters, sets = [], direction, 
 export function buildScenePlanUserText({ beat, characters, sets = [], targetCount, direction, directorNotes = [], dialogs = [], directorialVoice = '' }) {
   const ctx = buildBeatContextBlock({ beat, characters, sets, direction, directorNotes, dialogs, directorialVoice });
   const count = clampTargetCount(targetCount);
-  const lead =
-    `Target shot count: EXACTLY ${count} frame${count === 1 ? '' : 's'}. Your frames array MUST contain ${count} entr${count === 1 ? 'y' : 'ies'}.`;
+  const lead = `Target shot count: ${count}.`;
   // At a low target every frame is load-bearing, so the "interleave
   // embellishment" nudge is dropped — it reads as an instruction to spend
   // frames the beat can't spare.
@@ -1121,7 +1120,7 @@ export function buildScenePlanUserText({ beat, characters, sets = [], targetCoun
       ? 'Each shot must be visually distinct from the previous AND continuous with it. '
       : '') +
     'Pick a shot_type and duration_seconds for every shot. ' +
-    `Use the plan_scene tool. Reminder: exactly ${count} frame${count === 1 ? '' : 's'}.`;
+    'Use the plan_scene tool.';
   return `${lead}\n\n${ctx}\n\n${instruction}`;
 }
 
@@ -1143,7 +1142,7 @@ async function planScene({ beat, characters, sets = [], targetCount, direction, 
       max_tokens: 16000,
       system: SCENE_PLAN_SYSTEM_PROMPT,
       tools: [SCENE_PLAN_TOOL],
-      tool_choice: { type: 'tool', name: 'plan_scene' },
+      tool_choice: { type: 'auto' },
       messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
     })
     .finalMessage();
@@ -1177,6 +1176,7 @@ export function _planSceneForTest(args) {
 // two outputs per shot — start_frame_prompt + video_prompt (NO end frame).
 const SHOT_EXPAND_TOOL = {
   name: 'expand_shots',
+  strict: true,
   description:
     'Given the scene bible and the full ordered shot skeleton, write the two generation prompts for EVERY shot: ' +
     'a start_frame_prompt (the opening still that anchors the clip) and a video_prompt (what happens + camera move). ' +
@@ -1190,7 +1190,7 @@ const SHOT_EXPAND_TOOL = {
         items: {
           type: 'object',
           properties: {
-            shot_index: { type: 'integer', minimum: 1, description: '1-based index into the skeleton this entry expands.' },
+            shot_index: { type: 'integer', description: '1-based index into the skeleton this entry expands.' },
             start_frame_prompt: {
               type: 'string',
               description:
@@ -1208,7 +1208,7 @@ const SHOT_EXPAND_TOOL = {
                 type: 'object',
                 properties: {
                   character: { type: 'string', description: 'Character name, exactly as in characters_in_scene.' },
-                  image_index: { type: 'integer', minimum: 1, description: "1-based index into that character's candidate list." },
+                  image_index: { type: 'integer', description: "1-based index into that character's candidate list." },
                 },
                 required: ['character', 'image_index'],
                 additionalProperties: false,
@@ -1237,7 +1237,7 @@ export const SHOT_EXPAND_SYSTEM_PROMPT = [
   '2. video_prompt — what HAPPENS over the clip: the camera first, then the blocking, then the performance, assuming the start frame already exists. 4–8 sentences. Strip every static/scene detail; never re-describe the start composition.',
   '',
   '# Inherit the bible — do not re-describe it',
-  '- The scene bible already fixes location, time of day, lighting key, palette, mood, blocking, and camera language. Reference them; never restate them — with ONE exception: the framed subject\'s OWN precise sub-location / placement (which seat, which side of the table, which doorway) MUST be written into the still. The image model receives only this prompt plus reference photos, never the bible, so an unstated placement is rendered as the model\'s generic default — a child at a car window becomes the front passenger, not the back seat.',
+  '- The scene bible already fixes location, time of day, lighting key, palette, mood, blocking, and camera language. Reference them; never restate them. The framed subject\'s OWN precise sub-location / placement (which seat, which side of the table, which doorway) MUST be written into the still. The image model receives only this prompt plus reference photos, never the bible, so an unstated placement is rendered as the model\'s generic default — a child at a car window becomes the front passenger, not the back seat.',
   '- NEVER use a character\'s proper name in a prompt. Image models can\'t resolve a made-up name ("Young Keys") — they drop the figure, merge it into another, or misplace it. Refer to each character by a concise VISUAL HANDLE drawn from the character context:',
   '  • Played on-screen by a real actor? Use that likeness — e.g. "the pilot, played by Jake Gyllenhaal".',
   '  • Voice-only or non-human? Use their described physical look — e.g. "the fish in the black-and-yellow armored suit with a teal visor".',
@@ -1369,7 +1369,7 @@ async function expandShots({ beat, characters, sets = [], sceneBible, outline, d
       max_tokens: 16000,
       system: SHOT_EXPAND_SYSTEM_PROMPT,
       tools: [SHOT_EXPAND_TOOL],
-      tool_choice: { type: 'tool', name: 'expand_shots' },
+      tool_choice: { type: 'auto' },
       messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
     })
     .finalMessage();

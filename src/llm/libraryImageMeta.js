@@ -14,25 +14,32 @@ const MAX_RAW = 4 * 1024 * 1024; // ~5 MB cap on raw vision input bytes.
 
 const SYSTEM = [
   'You generate short, useful captions for library images in a screenplay-writing app.',
-  'Respond with EXACTLY one line of compact JSON: {"name": "<3-6 word title>", "description": "<1-3 sentence description>"}.',
-  'No markdown, no code fences, no commentary outside the JSON.',
+  'Return a "name" (a 3-6 word title) and a "description" (1-3 sentences).',
   'The name should be a noun-phrase title someone could search for (e.g. "Diner at dusk", "Sheriff with hat").',
   'The description should describe what is depicted in the image — subjects, setting, mood, lighting — in plain prose.',
 ].join(' ');
 
-const USER_PROMPT =
-  'Caption this image. Return only the JSON object: {"name": ..., "description": ...}.';
+const USER_PROMPT = 'Caption this image.';
+
+// Structured output: the API guarantees the text block parses against this
+// schema, so no fence-stripping is needed.
+const CAPTION_FORMAT = {
+  type: 'json_schema',
+  schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string' },
+      description: { type: 'string' },
+    },
+    required: ['name', 'description'],
+    additionalProperties: false,
+  },
+};
 
 function safeParse(text) {
   if (typeof text !== 'string') return null;
-  const trimmed = text.trim();
-  // Tolerate a code fence the model might emit despite instructions.
-  const stripped = trimmed
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
   try {
-    const obj = JSON.parse(stripped);
+    const obj = JSON.parse(text);
     if (!obj || typeof obj !== 'object') return null;
     const name = typeof obj.name === 'string' ? obj.name.trim() : '';
     const description = typeof obj.description === 'string' ? obj.description.trim() : '';
@@ -62,6 +69,7 @@ export async function analyzeLibraryImage(buffer, contentType) {
       model: VISION_MODEL,
       max_tokens: 3000,
       system: SYSTEM,
+      output_config: { format: CAPTION_FORMAT },
       messages: [
         {
           role: 'user',

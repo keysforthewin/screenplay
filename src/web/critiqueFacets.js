@@ -1,5 +1,5 @@
 // Beat-critique facet registry — the single source of truth for what facets
-// exist and how each is prompted. Each facet runs one forced-tool Anthropic
+// exist and how each is prompted. Each facet runs one single-tool Anthropic
 // call (see critiqueGenerate.js) that returns { score: 1-10, comments }.
 //
 // scope: 'focused' = judge THIS beat (with prev/next as immediate context);

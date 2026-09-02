@@ -59,7 +59,12 @@ const paramNames = collectParamNames();
 // Model-facing text for one tool: its description plus every description
 // nested in its schema.
 function modelFacingText(tool) {
-  return `${tool.description || ''} ${JSON.stringify(tool.input_schema || {})}`;
+  const raw = `${tool.description || ''} ${JSON.stringify(tool.input_schema || {})}`;
+  // Expand `stem_{a,b,c}` shorthand into `stem_a stem_b stem_c` so each
+  // expansion is checked as a reference of its own.
+  return raw.replace(/([a-z0-9_]+)_\{([a-z0-9_,]+)\}/g, (_, stem, alts) =>
+    alts.split(',').map((a) => `${stem}_${a}`).join(' '),
+  );
 }
 
 const IDENTIFIER = /[a-z][a-z0-9]*(?:_[a-z0-9]+)+/g;
@@ -73,9 +78,6 @@ function danglingReferences(tool) {
     if (paramNames.has(name)) continue;
     if (API_VOCAB.has(name)) continue;
     if (!toolVerbs.has(name.split('_')[0])) continue;
-    // Brace-expansion shorthand, e.g. `attach_library_image_to_{beat,character}`
-    // — the match stops at the brace, so the truncated stem is not a reference.
-    if (text.slice(match.index + name.length).startsWith('_{')) continue;
     found.add(name);
   }
   return [...found];

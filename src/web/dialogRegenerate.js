@@ -18,6 +18,7 @@ const ALTERNATIVE_COUNT = 3;
 
 const PROPOSE_TOOL = {
   name: 'propose_alternatives',
+  strict: true,
   description:
     'Return alternative rewrites for the single highlighted line, spoken by the same character. ' +
     'Each is a complete replacement for that one line.',
@@ -89,7 +90,7 @@ export async function generateAlternatives({ projectId, dialogId, count = ALTERN
     max_tokens: 5000,
     system: SYSTEM_PROMPT,
     tools: [PROPOSE_TOOL],
-    tool_choice: { type: 'tool', name: 'propose_alternatives' },
+    tool_choice: { type: 'auto' },
     messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
   });
 

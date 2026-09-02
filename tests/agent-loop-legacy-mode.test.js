@@ -5,8 +5,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createFakeDb } from './_fakeMongo.js';
 
-process.env.ANTHROPIC_MODEL = 'claude-fable-5';
-process.env.ANTHROPIC_AGENT_MODEL = 'claude-fable-5';
+process.env.ANTHROPIC_MODEL = 'claude-fable-5-1';
+process.env.ANTHROPIC_AGENT_MODEL = 'claude-fable-5-1';
 
 const fakeDb = createFakeDb();
 
@@ -80,7 +80,7 @@ describe('legacy single-model mode', () => {
     });
 
     const args = messagesCreate.mock.calls[0][0];
-    expect(args.model).toBe('claude-fable-5');
+    expect(args.model).toBe('claude-fable-5-1');
     const names = args.tools.map((t) => t.name);
     expect(names).toContain('edit');
     expect(names).toContain('load_writing_context');

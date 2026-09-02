@@ -205,7 +205,7 @@ describe('dialog auto-generation', () => {
     expect(callArg.system).not.toMatch(/extract every line/i);
   });
 
-  it('declares a required plan field in the populate_dialog tool schema', async () => {
+  it('does not ask for a plan scratchpad in the populate_dialog tool schema', async () => {
     const client = fakeAnthropicClient(TWO_LINE_RESULT);
     _setAnthropicClientForTests(client);
     const beat = await Plots.createBeat({ projectId, name: 'P', desc: 'p', body: 'p', characters: [] });
@@ -215,8 +215,8 @@ describe('dialog auto-generation', () => {
     const callArg = client.messages.create.mock.calls[0][0];
     const tool = (callArg.tools || []).find((t) => t.name === 'populate_dialog');
     expect(tool).toBeTruthy();
-    expect(tool.input_schema.properties.plan).toBeTruthy();
-    expect(tool.input_schema.required).toContain('plan');
+    expect(tool.input_schema.properties.plan).toBeUndefined();
+    expect(tool.input_schema.required).toEqual(['entries']);
   });
 
   it('includes story context (logline + previous beat dialogue) in the prompt', async () => {

@@ -15,9 +15,9 @@ export const config = {
   anthropic: {
     apiKey: required('ANTHROPIC_API_KEY'),
     // Every Claude call in the app resolves its model from one of these two.
-    // Thinking is always on for Fable 5 and its tokens count against
+    // Thinking is always on for Fable 5.1 and its tokens count against
     // max_tokens, so callers leave generous headroom even on short replies.
-    model: process.env.ANTHROPIC_MODEL || 'claude-fable-5',
+    model: process.env.ANTHROPIC_MODEL || 'claude-fable-5-1',
     maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS) || 16000,
     // Orchestrator (agent loop) model. When this differs from `model`, the loop
     // runs two-tier: creative text tools move to a writer subagent on `model`
@@ -29,7 +29,7 @@ export const config = {
     writerMaxTokens: Number(process.env.ANTHROPIC_WRITER_MAX_TOKENS) || 16000,
     // Short auxiliary passes: prompt enhancement, vision captioning,
     // reference selection, PDF filename inference.
-    enhancerModel: process.env.ANTHROPIC_ENHANCER_MODEL || 'claude-fable-5',
+    enhancerModel: process.env.ANTHROPIC_ENHANCER_MODEL || 'claude-fable-5-1',
   },
   enhance: {
     enabled: !process.env.ENHANCE_PROMPTS_DISABLED,

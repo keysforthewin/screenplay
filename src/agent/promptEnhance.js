@@ -13,10 +13,7 @@ You will also receive a <world_context>...</world_context> block containing the 
 
 Abstain when uncertain. If you are not confident a term is a real-world reference, leave it out. Better to under-enhance than to mis-enhance an in-fiction name.
 
-Output STRICTLY the following JSON shape (no prose, no code fences):
-  {"notes": "<paragraph for the agent>", "summary": "<one-line for Discord footer>"}
-If there is nothing to enhance, output:
-  {"notes": null, "summary": null}
+Return a "notes" paragraph for the agent and a one-line "summary" for the Discord footer. When there is nothing to enhance, return null for both.
 
 Style:
 - "notes" should be 1-3 sentences. Quote the user's term, then state the most likely real-world referent and one piece of disambiguating detail (year, role, etc.).
@@ -47,15 +44,26 @@ function buildWorldContext({ characters, beats, synopsis }) {
   return lines.join('\n');
 }
 
-function extractJsonObject(text) {
+// Structured output: the API guarantees the text block parses against this
+// schema, so no fence-stripping or brace-hunting is needed.
+const ENHANCE_FORMAT = {
+  type: 'json_schema',
+  schema: {
+    type: 'object',
+    properties: {
+      notes: { type: ['string', 'null'] },
+      summary: { type: ['string', 'null'] },
+    },
+    required: ['notes', 'summary'],
+    additionalProperties: false,
+  },
+};
+
+function parseJsonObject(text) {
   if (typeof text !== 'string') return null;
-  const trimmed = text.trim();
-  const start = trimmed.indexOf('{');
-  const end = trimmed.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-  const candidate = trimmed.slice(start, end + 1);
   try {
-    return JSON.parse(candidate);
+    const obj = JSON.parse(text);
+    return obj && typeof obj === 'object' ? obj : null;
   } catch {
     return null;
   }
@@ -91,6 +99,7 @@ export async function enhancePrompt({
       model: config.anthropic.enhancerModel,
       max_tokens: 3000,
       system: SYSTEM_PROMPT,
+      output_config: { format: ENHANCE_FORMAT },
       messages: [{ role: 'user', content: userContent }],
     });
   } catch (e) {
@@ -103,8 +112,8 @@ export async function enhancePrompt({
     .map((b) => b.text || '')
     .join('\n');
 
-  const parsed = extractJsonObject(text);
-  if (!parsed || typeof parsed !== 'object') {
+  const parsed = parseJsonObject(text);
+  if (!parsed) {
     logger.warn(
       `prompt enhancer: malformed JSON output (model=${config.anthropic.enhancerModel})`,
     );

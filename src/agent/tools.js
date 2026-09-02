@@ -67,7 +67,7 @@ export const TOOLS = [
       'set', 'location', 'setting',
     ],
     description:
-      'Apply find/replace edits to any text field on any entity. Universal text-mutation primitive — replaces all the legacy edit_*/set_*/append_*/update_* tools.\n\n' +
+      'Apply find/replace edits to any text field on any entity — the single text-mutation tool.\n\n' +
       '**Each edit\'s `find` must match the current value VERBATIM and UNIQUELY** (add surrounding context if a snippet appears more than once). Edits are applied sequentially, each operating on the result of the previous. Pass an empty `replace` to delete the matched snippet.\n\n' +
       '**Empty `find` = whole-field replace.** Only allowed when `edits.length === 1`. Use this when the user asks to rewrite/replace the entire field. Multi-edit calls reject empty `find` to prevent accidental wipes during diff-style edits.\n\n' +
       '**To append:** read the tail with `read_beat_body` / `read_character_field` / `read_director_note`, then submit a normal find/replace where the `find` is the last few characters of the current value and the `replace` is the same chars followed by the new content.\n\n' +
@@ -202,7 +202,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        name: { type: 'string' },
+        name: { type: 'string', description: 'Display name (markdown allowed). Case-insensitive unique within the project; a duplicate name is rejected rather than creating a second character.' },
         hollywood_actor: { type: 'string', description: 'Name of the actor playing this character. Leave empty when the character is a real person playing themselves.' },
         fields: {
           type: 'object',
@@ -314,10 +314,10 @@ export const TOOLS = [
   {
     name: 'search_characters',
     keywords: ['search', 'find', 'lookup', 'character', 'person', 'role', 'substring', 'fuzzy'],
-    description: 'Find characters whose fields contain a substring (case-insensitive).',
+    description: 'Case-insensitive substring search over each character\'s `name`, `hollywood_actor`, and every custom `fields.*` value. Returns [{_id, name, matched_fields, preview}] where matched_fields lists exactly which fields hit (e.g. "hollywood_actor", "fields.background_story") and preview is the first 200 chars of the first hit. Empty array when nothing matches. Use this for attribute questions ("is anyone a doctor?"); use get_character for one known character.',
     input_schema: {
       type: 'object',
-      properties: { query: { type: 'string' } },
+      properties: { query: { type: 'string', description: 'Substring to look for (not a regex).' } },
       required: ['query'],
       additionalProperties: false,
     },
@@ -325,7 +325,7 @@ export const TOOLS = [
   {
     name: 'get_character_template',
     keywords: ['template', 'schema', 'fields', 'character', 'structure', 'definition'],
-    description: 'Return the current required and optional field schema for characters.',
+    description: 'Returns {fields: [{name, description, required, core}]} — the same list shown in the system prompt\'s "# Character template" section. Call it only when you need the field descriptions verbatim, e.g. before proposing a template change.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
@@ -629,7 +629,7 @@ export const TOOLS = [
     name: 'load_writing_context',
     writerOnly: true,
     keywords: ['write', 'writing', 'compose', 'dialogue', 'dialog', 'prose', 'story', 'scene', 'context', 'character', 'bio', 'voice', 'body', 'before'],
-    description: 'MANDATORY before composing or editing a beat body. Loads scoped steering context for writing into a beat: the named characters\' FULL sheets (bios, custom fields, casting), plus the beat (name, desc, dialogue notes, current body), the logline, and the project dialogue style. Pass `characters` = the small subset of characters the passage you are about to write actually features (typically 1–5) — NOT every character linked to the beat. `beat` defaults to the current beat. Call this FIRST, then edit the body: the `edit` tool blocks beat-body writes until this has run for that beat in the current turn.',
+    description: 'Loads the steering context the `edit` tool requires before it will accept a beat-body write (it rejects body edits until this has run for that beat in the current turn): the named characters\' FULL sheets (bios, custom fields, casting), plus the beat (name, desc, dialogue notes, current body), the logline, and the project dialogue style. Pass `characters` = the small subset of characters the passage you are about to write actually features (typically 1–5) — NOT every character linked to the beat. `beat` defaults to the current beat.',
     input_schema: {
       type: 'object',
       properties: {
@@ -735,7 +735,7 @@ export const TOOLS = [
   {
     name: 'delete_beat',
     keywords: ['delete', 'remove', 'drop', 'destroy', 'beat', 'scene', 'moment'],
-    description: 'Delete a beat and any images attached to it. If the deleted beat was the current beat, the current pointer is cleared.',
+    description: 'Permanently deletes a beat and any images attached to it; cannot be undone, so confirm with the user when the identifier is ambiguous (a name that matches several beats, or "that one"). If the deleted beat was the current beat, the current pointer is cleared.',
     input_schema: {
       type: 'object',
       properties: { identifier: { type: 'string', description: 'Beat _id, order, or name.' } },
@@ -781,8 +781,8 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        beat: { type: 'string' },
-        character: { type: 'string' },
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
+        character: { type: 'string', description: 'Character name as stored in the beat roster (case-insensitive).' },
       },
       required: ['character'],
       additionalProperties: false,
@@ -796,7 +796,7 @@ export const TOOLS = [
       type: 'object',
       properties: {
         beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
-        set: { type: 'string' },
+        set: { type: 'string', description: 'Set name as stored in the set collection (case-insensitive).' },
       },
       required: ['set'],
       additionalProperties: false,
@@ -809,8 +809,8 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        beat: { type: 'string' },
-        set: { type: 'string' },
+        beat: { type: 'string', description: 'Beat _id, order, or name. Omit to use current.' },
+        set: { type: 'string', description: 'Set name as stored in the beat roster (case-insensitive).' },
       },
       required: ['set'],
       additionalProperties: false,
@@ -1001,7 +1001,7 @@ export const TOOLS = [
     name: 'generate_image',
     keywords: ['generate', 'create', 'draw', 'render', 'make', 'ai', 'nano', 'banana', 'image', 'picture', 'illustration', 'art', 'visual', 'gemini', 'flux', 'flux-2', 'flux2', 'kontext', 'openai', 'gpt-image', 'gpt-image-2', 'dalle', 'combine', 'mix', 'blend', 'merge', 'composite'],
     description:
-      'Generate an image. Four providers are supported, all returning a single PNG: `nano-banana-pro` (Google\'s Gemini 3 Pro Image on fal.ai — the default for text-only and single-reference generation), `flux-2-pro` (Flux 2 Pro on fal.ai — the default whenever 2+ reference images are passed, because it\'s best at blending multiple references), `flux-pro-kontext` (Flux Pro Kontext on fal.ai), and `openai` (gpt-image-2). Leave `provider` unset to get the smart default. Pass `provider: "flux-2-pro"` or `"flux-pro-kontext"` when the user explicitly names Flux. Pass `provider: "openai"` only when the user explicitly asks for OpenAI / GPT-image / DALL-E. The bot displays the generated image in its reply. ONLY call this when the user has explicitly asked for an image (e.g., "draw this", "generate an image of...", "show me what this looks like", "mix these two together"). Compose the prompt from one or more of: an explicit `prompt` string, the current/named beat (set `include_beat: true`), or recent conversation context (set `include_recent_chat: true`). At least one of these inputs must be provided.\n\nPass `source_image_id` to base the new image on one existing image (img2img). Pass `source_image_ids` (array, up to 9) to **combine / mix / blend multiple existing images** into a single new one — e.g. "put this character into this scene", "blend these two characters", "this outfit on this person". When 2+ source images are passed and no provider is specified, this tool auto-selects `flux-2-pro`. The sources are never modified; the result is a brand-new image. For "edit this image to..." style requests prefer `edit_image` instead — its semantics are clearer about whether the original survives.\n\nDestination precedence (the image is owned by exactly one entity, or none): (1) `attach_to_character` wins; (2) else `attach_to_beat` (any beat, not just current); (3) else `attach_to_current_beat` (default true when a current beat is set); (4) else the library — where it can be attached later via `attach_library_image_to_{character,beat,director_note}`. `attach_to_character` and `attach_to_beat` are mutually exclusive. `set_as_main` applies to whichever target is chosen. Returns the image_id and displays the image. Requires the chosen provider\'s API key (`FAL_KEY` for the FAL providers, or `OPENAI_API_KEY` for `provider: "openai"`).',
+      'Generate an image. Four providers are supported, all returning a single PNG: `nano-banana-pro` (Google\'s Gemini 3 Pro Image on fal.ai — the default for text-only and single-reference generation), `flux-2-pro` (Flux 2 Pro on fal.ai — the default whenever 2+ reference images are passed, because it\'s best at blending multiple references), `flux-pro-kontext` (Flux Pro Kontext on fal.ai), and `openai` (gpt-image-2). Leave `provider` unset to get the smart default. Pass `provider: "flux-2-pro"` or `"flux-pro-kontext"` when the user explicitly names Flux. Pass `provider: "openai"` only when the user explicitly asks for OpenAI / GPT-image / DALL-E. The bot displays the generated image in its reply. ONLY call this when the user has explicitly asked for an image (e.g., "draw this", "generate an image of...", "show me what this looks like", "mix these two together"). Compose the prompt from one or more of: an explicit `prompt` string, the current/named beat (set `include_beat: true`), or recent conversation context (set `include_recent_chat: true`). At least one of these inputs must be provided.\n\nPass `source_image_id` to base the new image on one existing image (img2img). Pass `source_image_ids` (array, up to 9) to **combine / mix / blend multiple existing images** into a single new one — e.g. "put this character into this scene", "blend these two characters", "this outfit on this person". When 2+ source images are passed and no provider is specified, this tool auto-selects `flux-2-pro`. The sources are never modified; the result is a brand-new image. For "edit this image to..." style requests prefer `edit_image` instead — its semantics are clearer about whether the original survives.\n\nDestination precedence (the image is owned by exactly one entity, or none): (1) `attach_to_character` wins; (2) else `attach_to_beat` (any beat, not just current); (3) else `attach_to_current_beat` (default true when a current beat is set); (4) else the library — where it can be attached later via `attach_library_image_to_{character,set,director_note}`. `attach_to_character` and `attach_to_beat` are mutually exclusive. `set_as_main` applies to whichever target is chosen. Returns the image_id and displays the image. Requires the chosen provider\'s API key (`FAL_KEY` for the FAL providers, or `OPENAI_API_KEY` for `provider: "openai"`).',
     input_schema: {
       type: 'object',
       properties: {
@@ -1025,14 +1025,14 @@ export const TOOLS = [
     name: 'edit_image',
     keywords: ['edit', 'modify', 'change', 'tweak', 'update', 'alter', 'image', 'picture', 'variant', 'iterate', 'remix', 'nano', 'banana', 'gemini', 'flux', 'flux-2', 'flux2', 'kontext', 'openai', 'gpt-image', 'gpt-image-2', 'dalle', 'combine', 'mix', 'blend', 'merge', 'composite'],
     description:
-      'Edit an existing image. Four providers are supported: `nano-banana-pro` (Google\'s Gemini 3 Pro Image on fal.ai — the default for single-image edits), `flux-2-pro` (Flux 2 Pro on fal.ai — the default when `additional_source_image_ids` is non-empty, because it\'s best at blending multiple references), `flux-pro-kontext` (Flux Pro Kontext on fal.ai), and `openai` (gpt-image-2). Leave `provider` unset to get the smart default. Pass `provider: "flux-2-pro"` or `"flux-pro-kontext"` when the user explicitly names Flux. Pass `provider: "openai"` only when the user explicitly asks for OpenAI / GPT-image / DALL-E. Pass the source `image_id` and a `prompt` describing the change ("give him blonde hair", "make it nighttime", "remove the hat"). To blend the source with extra reference images ("put him in this outfit", "combine this with that"), pass `additional_source_image_ids` — the tool then auto-selects flux-2-pro. Result is saved as a new GridFS image owned by whatever the primary source belonged to (character / beat / director_note / library); when the source was that owner\'s main image, the result is automatically promoted to the new main image. Use this whenever the user asks to modify, change, tweak, or update an existing image rather than create a fresh one.\n\nYou MUST decide whether to delete the source image after editing: pass `replace_source: true` when the user wants the old version gone (e.g. "change his hair to blonde", "update the main image so..."), or `replace_source: false` when they\'re iterating, comparing, or want a variant ("try a version where...", "give me an alternate with..."). When in doubt, prefer `false` so nothing is destroyed. (`replace_source` only affects the primary `source_image_id` — additional references are never touched.) Optional `attach_to_character` / `attach_to_beat` / `set_as_main` overrides have the same meaning as in `generate_image` and let you redirect the result away from the source\'s owner.',
+      'Edit an existing image. Four providers are supported: `nano-banana-pro` (Google\'s Gemini 3 Pro Image on fal.ai — the default for single-image edits), `flux-2-pro` (Flux 2 Pro on fal.ai — the default when `additional_source_image_ids` is non-empty, because it\'s best at blending multiple references), `flux-pro-kontext` (Flux Pro Kontext on fal.ai), and `openai` (gpt-image-2). Leave `provider` unset to get the smart default. Pass `provider: "flux-2-pro"` or `"flux-pro-kontext"` when the user explicitly names Flux. Pass `provider: "openai"` only when the user explicitly asks for OpenAI / GPT-image / DALL-E. Pass the source `image_id` and a `prompt` describing the change ("give him blonde hair", "make it nighttime", "remove the hat"). To blend the source with extra reference images ("put him in this outfit", "combine this with that"), pass `additional_source_image_ids` — the tool then auto-selects flux-2-pro. Result is saved as a new GridFS image owned by whatever the primary source belonged to (character / beat / director_note / library); when the source was that owner\'s main image, the result is automatically promoted to the new main image. Use this whenever the user asks to modify, change, tweak, or update an existing image rather than create a fresh one.\n\nDecide whether the source survives: pass `replace_source: true` when the user wants the old version gone (e.g. "change his hair to blonde", "update the main image so..."), or `replace_source: false` when they\'re iterating, comparing, or want a variant ("try a version where...", "give me an alternate with..."). When in doubt, prefer `false` so nothing is destroyed. (`replace_source` only affects the primary `source_image_id` — additional references are never touched.) Optional `attach_to_character` / `attach_to_beat` / `set_as_main` overrides have the same meaning as in `generate_image` and let you redirect the result away from the source\'s owner.',
     input_schema: {
       type: 'object',
       properties: {
         source_image_id: { type: 'string', description: '24-char hex GridFS file id of the image to edit. Get this from list_character_images, the beat\'s images[], or director-note image listings.' },
         additional_source_image_ids: { type: 'array', items: { type: 'string' }, description: 'Optional array of extra 24-hex GridFS image ids to mix into the edit as reference material (up to 8 — the primary source plus 8 extras hits the flux-2-pro 9-input cap). Use this when the user wants to blend, combine, or composite the source with other existing images ("put him in this outfit", "give her this hairstyle"). Auto-selects flux-2-pro when set and no provider is specified. The extras are never modified or deleted.' },
         prompt: { type: 'string', description: 'Concise instruction describing the change to make (e.g., "give him blonde hair instead of black"). Will be sent to the chosen provider alongside the source image(s).' },
-        replace_source: { type: 'boolean', description: 'REQUIRED. true = delete the source image after a successful edit (truly "in place"); false = keep the source alongside the new image so the user can compare or revert. Must be a JSON boolean, not a string; anything other than an explicit true (including omission) is treated as false — the non-destructive choice. Only affects the primary source_image_id; additional_source_image_ids are never deleted.' },
+        replace_source: { type: 'boolean', description: 'true = delete the source image after a successful edit (in-place replacement); false = keep the source alongside the new image so the user can compare or revert. Omission is treated as false, the non-destructive choice. Only affects the primary source_image_id; additional_source_image_ids are never deleted.' },
         provider: { type: 'string', enum: ['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'openai'], description: 'Image model provider. Default "nano-banana-pro" for single-image edits, auto-bumped to "flux-2-pro" when additional_source_image_ids is non-empty. Pass "flux-2-pro" or "flux-pro-kontext" explicitly when the user names Flux. Pass "openai" (gpt-image-2) only when the user explicitly asks for OpenAI, GPT-image, or DALL-E.' },
         aspect_ratio: { type: 'string', enum: ['1:1', '16:9', '9:16', '4:3', '3:4'], description: 'Optional reframing. Omit to preserve the source image\'s framing. For OpenAI, this maps to the closest supported gpt-image-2 size.' },
         attach_to_character: { type: 'string', description: 'Override: attach the edited result to this character instead of the source\'s owner. Mutually exclusive with attach_to_beat.' },
@@ -1536,7 +1536,7 @@ export const TOOLS = [
     name: 'find_repeated_phrases',
     keywords: ['repetition', 'overuse', 'redundant', 'tic', 'cliche', 'phrase', 'ngram', 'analysis', 'writing', 'check'],
     description:
-      'Scan all beats for overused multi-word phrases (n-grams) — the kind of writing tics that are hard to see while drafting. Returns a ranked list of repeated phrases with their counts and the beats they appear in. Use when the user asks "what am I overusing?", "scan for repetition", "is my writing repetitive?", or proactively suggest it once there are 10+ beats. Skips phrases composed entirely of stopwords. Reports a low-signal warning when fewer than ~10 beats exist (the result is still computed, just less reliable).',
+      'Scan all beats for overused multi-word phrases (n-grams) — the kind of writing tics that are hard to see while drafting. Returns a ranked list of repeated phrases with their counts and the beats they appear in. Use when the user asks "what am I overusing?", "scan for repetition", "is my writing repetitive?". Skips phrases composed entirely of stopwords. Reports a low-signal warning when fewer than ~10 beats exist (the result is still computed, just less reliable).',
     input_schema: {
       type: 'object',
       properties: {
@@ -1569,7 +1569,7 @@ export const TOOLS = [
     name: 'check_similarity',
     keywords: ['similarity', 'duplicate', 'overlap', 'similar', 'match', 'compare', 'check', 'before', 'commit'],
     description:
-      'Before adding or editing a character or beat, check whether a near-duplicate already exists. Returns the top similar items above a threshold (default 0.6) with which field matched and the similarity score. Two modes: (a) compare an existing item against the rest of the corpus by passing `target_type` + `identifier`; (b) compare a candidate text you are about to commit by passing `target_type` + `text`. Use mode (b) just before calling create_character or create_beat when the user describes someone or something that may overlap with what is already on file. Cosine similarity over stopword-filtered word counts. Note: the create/update handlers also run this check automatically and append a heads-up to their success message — this tool is for explicit before-the-fact checks.',
+      'Before adding or editing a character or beat, check whether a near-duplicate already exists. Returns the top similar items above a threshold (default 0.6) with which field matched and the similarity score. Two modes: (a) compare an existing item against the rest of the corpus by passing `target_type` + `identifier`; (b) compare a candidate text you are about to commit by passing `target_type` + `text`. Use mode (b) when the user asks whether a described character or scene already exists on file. Cosine similarity over stopword-filtered word counts. Note: the create/update handlers also run this check automatically and append a heads-up to their success message — this tool is for explicit before-the-fact checks.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1640,7 +1640,7 @@ export const TOOLS = [
     name: 'similar_character',
     keywords: ['similar', 'like', 'reminds', 'parallel', 'derivative', 'archetype', 'character', 'fictional', 'famous', 'homage'],
     description:
-      'Detect resemblance between a character on file and well-known existing fictional characters from books, films, or TV. Builds a search query from the character\'s descriptive traits (background_story, origin_story, arc, events, memes, hollywood_actor) — the character\'s `name` is intentionally excluded so detection is "blind". Runs a Tavily web search, then has Claude analyze the results to identify candidate parallels. Use when the user asks "does this remind you of anyone famous?", "is my character derivative?", "did the homage land?", or proactively when traits seem to point at a known archetype. Returns Markdown with ranked parallels (work, character, confidence, evidence, source URL) or a "no strong parallels" message. Requires TAVILY_API_KEY.',
+      'Detect resemblance between a character on file and well-known existing fictional characters from books, films, or TV. Builds a search query from the character\'s descriptive traits (background_story, origin_story, arc, events, memes, hollywood_actor) — the character\'s `name` is intentionally excluded so detection is "blind". Runs a Tavily web search, then has Claude analyze the results to identify candidate parallels. Use when the user asks "does this remind you of anyone famous?", "is my character derivative?", "did the homage land?". Returns Markdown with ranked parallels (work, character, confidence, evidence, source URL) or a "no strong parallels" message. Requires TAVILY_API_KEY.',
     input_schema: {
       type: 'object',
       properties: {

@@ -74,7 +74,8 @@ describe('analyzeStoryboardCount', () => {
     expect(result.reason).toMatch(/two-person beat/);
     // One LLM call with the suggest_count tool forced.
     expect(calls).toHaveLength(1);
-    expect(calls[0].tool_choice).toEqual({ type: 'tool', name: 'suggest_count' });
+    expect(calls[0].tool_choice).toEqual({ type: 'auto' });
+    expect(calls[0].tools[0].strict).toBe(true);
   });
 
   it('clamps out-of-range values to [1, 30]', async () => {

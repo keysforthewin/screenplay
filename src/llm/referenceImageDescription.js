@@ -31,8 +31,7 @@ export const REFERENCE_KINDS = Object.freeze(['auto', 'character', 'location', '
 const SHARED_TAIL = [
   '',
   'Output rules:',
-  '- Respond with EXACTLY one line of compact JSON: {"name": "<3-6 word noun-phrase title>", "description": "<the description as a single paragraph>"}.',
-  '- No markdown, no code fences, no commentary outside the JSON.',
+  '- Return a "name" (a 3-6 word noun-phrase title) and a "description".',
   '- The description must be a single paragraph (no bullet lists in the JSON value).',
   '- Be specific and concrete — vague descriptors ("nice lighting", "modern building") defeat the purpose. Name colors, materials, counts, directions.',
   '- If a trait is not visible, say so explicitly rather than guessing.',
@@ -101,18 +100,27 @@ const SYSTEM_PROMPTS = {
   ].join('\n') + SHARED_TAIL,
 };
 
-const USER_PROMPT =
-  'Describe this image as a faithful reference. Return only the JSON object: {"name": ..., "description": ...}.';
+const USER_PROMPT = 'Describe this image as a faithful reference.';
+
+// Structured output: the API guarantees the text block parses against this
+// schema, so no fence-stripping is needed.
+const DESCRIBE_FORMAT = {
+  type: 'json_schema',
+  schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string' },
+      description: { type: 'string' },
+    },
+    required: ['name', 'description'],
+    additionalProperties: false,
+  },
+};
 
 function safeParse(text) {
   if (typeof text !== 'string') return null;
-  const trimmed = text.trim();
-  const stripped = trimmed
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
   try {
-    const obj = JSON.parse(stripped);
+    const obj = JSON.parse(text);
     if (!obj || typeof obj !== 'object') return null;
     const name = typeof obj.name === 'string' ? obj.name.trim() : '';
     const description = typeof obj.description === 'string' ? obj.description.trim() : '';
@@ -145,6 +153,7 @@ export async function describeReferenceImage({ buffer, contentType, kind = 'auto
       model: model || DEFAULT_VISION_MODEL,
       max_tokens: 5000,
       system: sys,
+      output_config: { format: DESCRIBE_FORMAT },
       messages: [
         {
           role: 'user',

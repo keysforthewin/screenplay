@@ -30,8 +30,7 @@ const NORMALIZE_SYSTEM = [
 const SYNTHESIZE_SYSTEM = [
   'You are a script-editing strategist. You are given one screenplay beat and a set of per-facet critiques, each with a 1-10 score and concrete notes.',
   'Produce ONE concrete, direct rewriting strategy a screenwriter will follow to rewrite the beat.',
-  '- Extract EVERY concrete, actionable fix from EVERY facet into a single numbered action plan. Do not drop any fix.',
-  '- Reconcile conflicts: where improving one facet could hurt another, state exactly how to satisfy BOTH. The rewrite must RAISE every facet toward a perfect 10 and must NEVER sacrifice one facet to improve another.',
+  '- Turn the facet notes into one numbered plan a screenwriter can follow. Keep the fixes that matter; where two facets pull against each other, say how to serve both, since a rewrite that improves one facet by weakening another is a net loss.',
   '- Be specific and directive — name the exact changes (lines to add/cut/reshape, sluglines, blocking, subtext), not vague advice.',
   "- Keep the story's intent and the characters intact.",
   'Output ONLY the numbered strategy. Do NOT write the rewritten beat.',
@@ -41,7 +40,7 @@ const SYNTHESIZE_SYSTEM = [
 // in every facet and letting none regress.
 const REGEN_SYSTEM = [
   'You are a screenwriter rewriting one beat of a screenplay by fully executing a rewriting strategy.',
-  'Execute EVERY item in the strategy. The goal is a PERFECT 10 in every critique facet — raise every weak facet and let no facet regress.',
+  'Carry out the strategy; the goal is a beat that reads better on every facet, not one that ticks each note off.',
   "Preserve the story's intent and the characters present. The rewrite MUST conform to standard screenplay format per the guide below.",
   'Return ONLY the rewritten beat body as plain text — no preamble, no commentary, no code fences.',
   '',

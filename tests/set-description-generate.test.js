@@ -1,4 +1,4 @@
-// Set description auto-generation: one forced-tool LLM pass over the beats
+// Set description auto-generation: one single-tool LLM pass over the beats
 // that reference a set, whose paragraphs replace the set's description via the
 // gateway (y-doc when Hocuspocus is up, Mongo fallback here). Mirrors
 // scene-bible-autofill.test.js: the Anthropic client is mocked to return a
@@ -78,7 +78,8 @@ describe('generateSetDescription (module)', () => {
     const fresh = await Sets.getSet(projectId, set._id.toString());
     expect(fresh.description).toBe(result.description);
     expect(h.createCalls).toHaveLength(1);
-    expect(h.createCalls[0].tool_choice).toEqual({ type: 'tool', name: 'write_set_description' });
+    expect(h.createCalls[0].tool_choice).toEqual({ type: 'auto' });
+    expect(h.createCalls[0].tools[0].strict).toBe(true);
   });
 
   it('builds context from story, voice, existing description and ALL linked beats by default', async () => {

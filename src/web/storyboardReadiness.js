@@ -1,7 +1,7 @@
 // Advisory pre-generation "readiness report" for a beat's storyboard: does the
 // beat's text have visual backing in its linked characters and sets? Two
 // halves — deterministic inventory checks (pure, no I/O) and ONE cheap
-// forced-tool LLM pass that reads the beat text and flags visual elements
+// single-tool LLM pass that reads the beat text and flags visual elements
 // (locations, props, characters, effects) with no matching entity, no artwork,
 // or a thin description.
 //
@@ -25,6 +25,7 @@ const GAP_MODEL = config.anthropic.enhancerModel;
 
 const GAP_TOOL = {
   name: 'report_visual_gaps',
+  strict: true,
   description:
     'Report visual elements in the beat text that lack backing in the linked characters/sets.',
   input_schema: {
@@ -259,7 +260,7 @@ async function reportVisualGaps({ beat, characters, sets }) {
     max_tokens: 2000,
     system: GAP_SYSTEM,
     tools: [GAP_TOOL],
-    tool_choice: { type: 'tool', name: 'report_visual_gaps' },
+    tool_choice: { type: 'auto' },
     messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
   });
   const toolUse = (resp.content || []).find(

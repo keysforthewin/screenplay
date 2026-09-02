@@ -2,8 +2,8 @@
 //
 // Reads one beat (its prose + project context) and runs a single LLM pass that
 // produces a compact, structured "look book" for the beat — every scene
-// bible fields every shot inherits. Mirrors the one-shot forced-tool pattern in
-// dialogCritique.js: build context → call Anthropic with a forced tool → coerce
+// bible fields every shot inherits. Mirrors the one-shot single-tool pattern in
+// dialogCritique.js: build context → call Anthropic with the fill_scene_bible tool → coerce
 // the result with normalizeSceneBible → write each field back through the
 // gateway so connected SPA clients watch the fields populate live (y-doc),
 // and the values persist to beats.$.scene_bible.
@@ -46,6 +46,7 @@ const FIELD_GUIDANCE = Object.freeze({
 
 const FILL_TOOL = {
   name: 'fill_scene_bible',
+  strict: true,
   description:
     'Return a complete scene bible for the beat: a compact value for every field. ' +
     'Each value is a short comma-separated phrase, not prose.',
@@ -161,7 +162,7 @@ export async function autofillSceneBible({ projectId, beatId } = {}) {
       max_tokens: 5000,
       system: SYSTEM_PROMPT,
       tools: [FILL_TOOL],
-      tool_choice: { type: 'tool', name: 'fill_scene_bible' },
+      tool_choice: { type: 'auto' },
       messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
     });
 

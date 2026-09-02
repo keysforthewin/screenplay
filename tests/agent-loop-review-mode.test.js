@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createFakeDb } from './_fakeMongo.js';
 
 // Pin two-tier mode so the delegate_writing review-block test is deterministic.
-process.env.ANTHROPIC_MODEL = 'claude-fable-5';
+process.env.ANTHROPIC_MODEL = 'claude-fable-5-1';
 process.env.ANTHROPIC_AGENT_MODEL = 'claude-sonnet-5';
 
 const fakeDb = createFakeDb();

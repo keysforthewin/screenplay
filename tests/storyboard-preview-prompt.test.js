@@ -102,7 +102,7 @@ describe('POST /api/storyboards/preview-prompt', () => {
     expect(json.user).toMatch(/Alice arrives at the diner/);
     expect(json.user).toMatch(/- Alice — protagonist/);
     expect(json.user).toMatch(/- Bob/);
-    expect(json.user).toMatch(/EXACTLY 9 frames/);
+    expect(json.user).toMatch(/Target shot count: 9\./);
     expect(json.user).toMatch(/produce 9 cinematic shots/);
     // Without `direction` the user message must not advertise an empty block.
     expect(json.user).not.toMatch(/Director's commentary:/);
@@ -139,7 +139,7 @@ describe('POST /api/storyboards/preview-prompt', () => {
       beat_id: beat._id.toString(),
     });
     expect(status).toBe(200);
-    expect(json.user).toMatch(/EXACTLY 11 frames/);
+    expect(json.user).toMatch(/Target shot count: 11\./);
   });
 
   it('returns 400 when beat_id is missing', async () => {

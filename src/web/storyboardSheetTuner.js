@@ -24,6 +24,7 @@ import { STATIC_PLATE_CONSTRAINTS } from './beatSheetPlanner.js';
 
 export const SHOT_PLATE_SCAN_TOOL = {
   name: 'scan_shot_plate',
+  strict: true,
   description:
     'Decide whether a beat image sheet needs a NEW static background plate to serve one storyboard shot, and if so propose exactly one.',
   input_schema: {
@@ -112,7 +113,7 @@ export async function scanShotForPlateGap({ sb, existingPlates = [] }) {
       max_tokens: 5000,
       system: SHOT_PLATE_SCAN_SYSTEM_PROMPT,
       tools: [SHOT_PLATE_SCAN_TOOL],
-      tool_choice: { type: 'tool', name: 'scan_shot_plate' },
+      tool_choice: { type: 'auto' },
       messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
     });
     const toolUse = (resp.content || []).find((b) => b.type === 'tool_use' && b.name === 'scan_shot_plate');
@@ -142,6 +143,7 @@ function proposalFromScan(scan) {
 
 export const CONSOLIDATE_PLATES_TOOL = {
   name: 'consolidate_plates',
+  strict: true,
   description:
     'Merge a list of proposed new background plates, dropping near-duplicates and any already covered by the existing plates.',
   input_schema: {
@@ -208,7 +210,7 @@ export async function consolidatePlateProposals({ proposals, existingPlates = []
       max_tokens: 8000,
       system: CONSOLIDATE_PLATES_SYSTEM_PROMPT,
       tools: [CONSOLIDATE_PLATES_TOOL],
-      tool_choice: { type: 'tool', name: 'consolidate_plates' },
+      tool_choice: { type: 'auto' },
       messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
     });
     const toolUse = (resp.content || []).find((b) => b.type === 'tool_use' && b.name === 'consolidate_plates');

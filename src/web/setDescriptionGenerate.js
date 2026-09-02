@@ -1,7 +1,7 @@
 // Set description auto-generation.
 //
 // Reads the beats that stage in one reusable set/location and runs a single
-// forced-tool LLM pass that writes the set's visual bible: several paragraphs
+// single-tool LLM pass that writes the set's visual bible: several paragraphs
 // of observable production language, written to ground image generation.
 // Mirrors sceneBibleAutofill.js: build context → call Anthropic with a forced
 // tool → write the result through the gateway so an open CollabField watches
@@ -26,6 +26,7 @@ export const MAX_CONTEXT_BEATS = 12;
 
 const WRITE_TOOL = {
   name: 'write_set_description',
+  strict: true,
   description:
     'Return the visual description of this reusable set/location as an ordered list of paragraphs.',
   input_schema: {
@@ -33,14 +34,12 @@ const WRITE_TOOL = {
     properties: {
       paragraphs: {
         type: 'array',
-        minItems: 1,
-        maxItems: 6,
         items: {
           type: 'string',
           description: 'One visual paragraph, 1-6 sentences, purely observable production language.',
         },
         description:
-          'Paragraphs ordered by visual importance. Lead with the PRIMARY visual subject — whatever ' +
+          'One to six paragraphs, ordered by visual importance. Lead with the PRIMARY visual subject — whatever ' +
           'the beats actually dwell on — and give it the bulk of the description: its geography and ' +
           'layout, materials and textures, light sources and how light behaves at the times of day ' +
           'the beats use, palette and the physical causes of the atmosphere, plus any distinct ' +
@@ -176,7 +175,7 @@ export async function generateSetDescription({ projectId, setId, beatIds = [], d
     max_tokens: 4000,
     system: SYSTEM_PROMPT,
     tools: [WRITE_TOOL],
-    tool_choice: { type: 'tool', name: 'write_set_description' },
+    tool_choice: { type: 'auto' },
     messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
   });
 
@@ -184,6 +183,7 @@ export async function generateSetDescription({ projectId, setId, beatIds = [], d
     (b) => b.type === 'tool_use' && b.name === 'write_set_description',
   );
   const paragraphs = (Array.isArray(toolUse?.input?.paragraphs) ? toolUse.input.paragraphs : [])
+    .slice(0, 6)
     .map((p) => (typeof p === 'string' ? p.trim() : ''))
     .filter(Boolean);
   if (!paragraphs.length) {

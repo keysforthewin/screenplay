@@ -35,22 +35,42 @@ const SCORE_SYSTEM = [
   '(the scene/beat artwork plus characters who may appear).',
   'For EACH catalog number, output a relevance score from 0.0 to 1.0:',
   'high for locations, sets, props, mood, and characters that clearly match THIS frame;',
-  'low for images that are unrelated. Be discriminating — do not give everything a high score.',
-  'Respond with EXACTLY one line of compact JSON: {"scores":[{"n":<number>,"score":<0..1>}]}.',
-  'Include every catalog number exactly once. No markdown, no commentary.',
+  'low for images that are unrelated. Only the top few per source are attached, so a flat high score for everything makes the pick random.',
+  'Include every catalog number exactly once.',
 ].join(' ');
+
+// Structured output: the API guarantees the text block parses against this
+// schema, so no fence-stripping is needed. The range check in safeParseScores
+// still guards `n` against the catalog size.
+const SCORE_FORMAT = {
+  type: 'json_schema',
+  schema: {
+    type: 'object',
+    properties: {
+      scores: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            n: { type: 'integer' },
+            score: { type: 'number', minimum: 0, maximum: 1 },
+          },
+          required: ['n', 'score'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['scores'],
+    additionalProperties: false,
+  },
+};
 
 // Parse {"scores":[{"n":N,"score":S}]} into a Map<number, number> with N in
 // [1,count] and S clamped to [0,1]. Returns null on any structural problem.
 function safeParseScores(text, count) {
   if (typeof text !== 'string') return null;
-  const stripped = text
-    .trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
   try {
-    const obj = JSON.parse(stripped);
+    const obj = JSON.parse(text);
     if (!obj || !Array.isArray(obj.scores)) return null;
     const out = new Map();
     for (const row of obj.scores) {
@@ -92,7 +112,7 @@ export async function scoreFrameReferences({ frameText, candidates }) {
     '',
     `CATALOG:\n${buildCatalogText(candidates)}`,
     '',
-    'Score every catalog number as {"scores":[{"n":N,"score":S}]}.',
+    'Score every catalog number.',
   ].join('\n');
 
   const t0 = Date.now();
@@ -102,6 +122,7 @@ export async function scoreFrameReferences({ frameText, candidates }) {
       model: SELECTOR_MODEL,
       max_tokens: 3000,
       system: SCORE_SYSTEM,
+      output_config: { format: SCORE_FORMAT },
       messages: [{ role: 'user', content: userText }],
     });
     const text = (resp.content || [])

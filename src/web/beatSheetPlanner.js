@@ -32,6 +32,7 @@ export const PHASE2_CONCURRENCY = 4;
 
 export const SCENE_PLATE_PLAN_TOOL = {
   name: 'plan_scene_plates',
+  strict: true,
   description:
     'Plan a custom set of standalone SCENE / BACKGROUND / ENVIRONMENT plate images for one screenplay beat. ' +
     'These are universal location & set plates (generally NO characters) usable later as storyboard backdrops. ' +
@@ -246,6 +247,7 @@ export function buildScenePlatePlanContent(args = {}) {
 
 export const SCENE_PLATE_CRITIQUE_TOOL = {
   name: 'critique_scene_plate',
+  strict: true,
   description:
     'Critique ONE planned scene/background plate for a screenplay beat in detail and decide what to do with it: ' +
     'keep it as-is, edit it (refine/add detail), divide it into two plates, or cull it (drop it).',
@@ -476,7 +478,7 @@ async function callPhase1Anthropic(args) {
       max_tokens: 8000,
       system: SCENE_PLATE_PLAN_SYSTEM_PROMPT,
       tools: [SCENE_PLATE_PLAN_TOOL],
-      tool_choice: { type: 'tool', name: 'plan_scene_plates' },
+      tool_choice: { type: 'auto' },
       messages: [{ role: 'user', content }],
     })
     .finalMessage();
@@ -500,7 +502,7 @@ async function callPhase2Anthropic({ beat, characters, direction, directorNotes,
       max_tokens: 6000,
       system: SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT,
       tools: [SCENE_PLATE_CRITIQUE_TOOL],
-      tool_choice: { type: 'tool', name: 'critique_scene_plate' },
+      tool_choice: { type: 'auto' },
       messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
     })
     .finalMessage();

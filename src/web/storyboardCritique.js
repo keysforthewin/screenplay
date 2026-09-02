@@ -1,5 +1,5 @@
 // Multi-lens critique panel for storyboard shots. Each lens is an independent
-// forced-tool Anthropic call scoring 1–10 with comments; aggregateCritique
+// single-tool Anthropic call scoring 1–10 with comments; aggregateCritique
 // combines them with a strict cap (any lens <= CRITICAL_SCORE pins the overall
 // so one hard failure can't be averaged away).
 
@@ -89,14 +89,15 @@ export function aggregateCritique(lensResults) {
 // Top-tier model, matching the rest of the storyboard surface.
 const CRITIQUE_MODEL = config.anthropic.model;
 
-// Forced-tool schema: every lens judge returns one score + comments.
+// Strict tool schema: every lens judge returns one score + comments.
 const JUDGE_TOOL = {
   name: 'judge_shot',
+  strict: true,
   description: 'Return a 1–10 score and detailed improvement comments for this shot, for your assigned lens only.',
   input_schema: {
     type: 'object',
     properties: {
-      score: { type: 'integer', minimum: 1, maximum: 10, description: '1 = unusable, 10 = excellent, for your assigned lens only.' },
+      score: { type: 'integer', description: 'Integer 1-10. 1 = unusable, 10 = excellent, for your assigned lens only.' },
       comments: { type: 'string', description: 'Specific, actionable notes on what to change/improve for this lens. 1–4 sentences.' },
     },
     required: ['score', 'comments'],
@@ -173,7 +174,7 @@ async function runLensJudge({ lens, target, context, imageInput }) {
     max_tokens: 5000,
     system,
     tools: [JUDGE_TOOL],
-    tool_choice: { type: 'tool', name: 'judge_shot' },
+    tool_choice: { type: 'auto' },
     messages: [{ role: 'user', content }],
   });
   if (resp.stop_reason === 'max_tokens') {

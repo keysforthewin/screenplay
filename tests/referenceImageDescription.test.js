@@ -50,14 +50,9 @@ describe('describeReferenceImage', () => {
     });
   });
 
-  it('strips a stray code fence the model sometimes wraps around the JSON', async () => {
+  it('requests structured JSON output instead of asking for it in prose', async () => {
     messagesCreate.mockResolvedValue({
-      content: [
-        {
-          type: 'text',
-          text: '```json\n{"name":"Diner","description":"Pink booths."}\n```',
-        },
-      ],
+      content: [{ type: 'text', text: '{"name":"Diner","description":"Pink booths."}' }],
     });
     const out = await describeReferenceImage({
       buffer: tinyPng,
@@ -65,6 +60,10 @@ describe('describeReferenceImage', () => {
       kind: 'location',
     });
     expect(out).toEqual({ name: 'Diner', description: 'Pink booths.' });
+    const arg = messagesCreate.mock.calls[0][0];
+    expect(arg.output_config.format.type).toBe('json_schema');
+    expect(arg.output_config.format.schema.required).toEqual(['name', 'description']);
+    expect(arg.system).not.toMatch(/code fences/i);
   });
 
   it('uses the location-specific system prompt when kind="location"', async () => {

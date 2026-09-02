@@ -30,29 +30,17 @@ import { isBeatLocked, withBeatLock } from './beatLocks.js';
 
 const POPULATE_TOOL = {
   name: 'populate_dialog',
+  strict: true,
   description:
     'Return the dialogue you wrote for this beat as an ordered list. ' +
     'Each entry is one continuous line spoken by one source. Preserve story order.',
   input_schema: {
     type: 'object',
     properties: {
-      plan: {
-        type: 'string',
-        description:
-          "A short sketch of the scene's dramatic shape BEFORE you write any lines. Cover, in a " +
-          'few sentences: who is present; for EACH speaker their OBJECTIVE (what they want out ' +
-          'of this exchange, stated as something the other person can give or refuse), the ' +
-          'OBSTACLE (what stands in the way — usually the other person wanting something ' +
-          'incompatible), and the TACTIC (how they try to get it — charm, deflect, stall, ' +
-          'threaten, confess, change the subject); the central tension; and the TURN, the moment ' +
-          'something shifts and the scene cannot go back. Write this first — it disciplines the ' +
-          'lines that follow so they play the scene rather than narrate the action top-to-bottom.',
-      },
       entries: {
         type: 'array',
         description:
-          'Ordered list of dialogue entries spoken in this beat, in story order. ' +
-          'These should execute the plan you just sketched.',
+          'Ordered list of dialogue entries spoken in this beat, in story order.',
         items: {
           type: 'object',
           properties: {
@@ -75,7 +63,7 @@ const POPULATE_TOOL = {
         },
       },
     },
-    required: ['plan', 'entries'],
+    required: ['entries'],
     additionalProperties: false,
   },
 };
@@ -84,9 +72,10 @@ const SYSTEM_PROMPT = [
   'You are a screenwriter writing the dialogue for a single beat of a feature film.',
   'Return your result via the populate_dialog tool, in story order.',
   '',
-  'Plan first, then write:',
-  '- Fill the `plan` field BEFORE the lines. Give every speaker an OBJECTIVE, an OBSTACLE, and a',
-  '  TACTIC, then name the central tension and the turn. Then write lines that PLAY that scene.',
+  'Playing the scene:',
+  '- Every speaker has an OBJECTIVE (what they want from the other person), an OBSTACLE (what',
+  '  stands in the way), and a TACTIC (how they go after it); the scene has a central tension and',
+  '  a TURN where something shifts. Write lines that PLAY that scene.',
   '- A character in a scene is always trying to get something from someone. Lines are moves toward',
   '  that thing, not reports about it. If a line is not a move, cut it.',
   '- The beat description and body are GUIDANCE, not a transcript. Capture the gist of the beat in',
@@ -115,13 +104,6 @@ const SYSTEM_PROMPT = [
   '- Each speaker gets a bio block. Use it. Match speech patterns, education level, attitude, and',
   '  worldview. If a character has memes / catchphrases, weave them in where they\'d plausibly come',
   '  up — never shoehorn.',
-  '',
-  'Avoid literalism:',
-  '- Do NOT restate the beat description or action lines as dialogue. "Alice walked into the diner"',
-  '  is action, not a line for Alice to say.',
-  '- Do NOT paraphrase the narrator. Find what the characters would actually say to surface what\'s',
-  '  happening, what they want, and how they feel about it.',
-  '- Subtext is fine; let characters talk around things rather than naming them.',
   '',
   'Non-character speakers:',
   '- Anyone or anything can speak. If the scene has a radio, TV, intercom, P.A. system, off-screen',
@@ -259,7 +241,7 @@ async function extractEntries({ beat, projectId }) {
     max_tokens: 8192,
     system: SYSTEM_PROMPT,
     tools: [POPULATE_TOOL],
-    tool_choice: { type: 'tool', name: 'populate_dialog' },
+    tool_choice: { type: 'auto' },
     messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
   });
   const toolUse = (resp.content || []).find(

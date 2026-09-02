@@ -117,11 +117,22 @@ Beats:
 ${beats.length ? beats.map(summarizeBeat).join('\n') : '(no beats yet)'}`;
 }
 
-async function buildWriterSystem(context) {
-  const [characters, characterTemplate, plot] = await Promise.all([
+async function buildWriterStateText(context) {
+  const [characters, plot] = await Promise.all([
     listCharacters(context?.projectId ?? null),
-    getCharacterTemplate(context?.projectId ?? null),
     getPlot(context?.projectId ?? null),
+  ]);
+  return buildWriterVolatileText({
+    characters,
+    plot,
+    projectTitle: context?.projectTitle ?? null,
+  });
+}
+
+async function buildWriterSystem(context) {
+  const [characterTemplate, stateText] = await Promise.all([
+    getCharacterTemplate(context?.projectId ?? null),
+    buildWriterStateText(context),
   ]);
   const stableBlock = { type: 'text', text: buildWriterStableText(characterTemplate) };
   if (config.cache.enabled) {
@@ -129,15 +140,7 @@ async function buildWriterSystem(context) {
       ? { type: 'ephemeral', ttl: config.cache.systemTtl }
       : { type: 'ephemeral' };
   }
-  const volatileBlock = {
-    type: 'text',
-    text: buildWriterVolatileText({
-      characters,
-      plot,
-      projectTitle: context?.projectTitle ?? null,
-    }),
-  };
-  return [stableBlock, volatileBlock];
+  return [stableBlock, { type: 'text', text: stateText }];
 }
 
 const fail = (msg) => ({ ok: false, text: `Tool error (delegate_writing): ${msg}` });
@@ -186,14 +189,15 @@ export async function runWriterAgent({
   const tools = withToolsCache(writerToolDefs());
 
   try {
-    let cachedSystem = await buildWriterSystem(context);
-    let systemDirty = false;
+    // The system prompt is frozen for the whole run. Fable 5.1 binds every
+    // thinking block to the conversation prefix that produced it — the
+    // top-level `system` included — so rebuilding it mid-run after a mutating
+    // tool (the old approach) would invalidate every later thinking block and
+    // 400 on enforced accounts. Refreshed project state is instead appended as
+    // a text block after the tool results (append-only, keeps the cache warm).
+    const system = await buildWriterSystem(context);
 
     for (let i = 0; i < WRITER_MAX_ITERATIONS; i++) {
-      if (systemDirty) {
-        cachedSystem = await buildWriterSystem(context);
-        systemDirty = false;
-      }
       const requestMessages = config.cache.enabled
         ? withMessageCacheBreakpoint(messages)
         : messages;
@@ -208,7 +212,7 @@ export async function runWriterAgent({
         .stream({
           model,
           max_tokens: config.anthropic.writerMaxTokens,
-          system: cachedSystem,
+          system,
           tools,
           messages: requestMessages,
         })
@@ -247,6 +251,7 @@ export async function runWriterAgent({
       emit({ type: 'tools', tools: toolUses.map((t) => t.name) });
 
       const results = [];
+      let stateDirty = false;
       for (const tu of toolUses) {
         logger.info(`writer tool_use: ${tu.name}`);
         let result;
@@ -268,7 +273,13 @@ export async function runWriterAgent({
         });
         bumpStat(tu.name, typeof result === 'string' ? result : '');
         recordEntityTouch(tu.name, tu.input, context?.touchedEntities);
-        if (!isErr && writerMutated(tu.name)) systemDirty = true;
+        if (!isErr && writerMutated(tu.name)) stateDirty = true;
+      }
+      if (stateDirty) {
+        results.push({
+          type: 'text',
+          text: `${await buildWriterStateText(context)}\n\n(Project state above is refreshed after your edits; the system prompt's copy is from the start of this run.)`,
+        });
       }
       messages.push({ role: 'user', content: results });
     }

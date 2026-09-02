@@ -16,6 +16,7 @@ import { buildDialogContext } from './dialogContext.js';
 
 const SCORE_TOOL = {
   name: 'score_dialog',
+  strict: true,
   description: 'Return a score and a short issue note for every numbered line.',
   input_schema: {
     type: 'object',
@@ -26,12 +27,10 @@ const SCORE_TOOL = {
         items: {
           type: 'object',
           properties: {
-            line_number: { type: 'integer', minimum: 1 },
+            line_number: { type: 'integer', description: 'The 1-based line number.' },
             score: {
               type: 'integer',
-              minimum: 1,
-              maximum: 5,
-              description: '5 = sharp, natural, in-voice. 1 = wooden, on-the-nose, or filler.',
+              description: 'Integer 1-5. 5 = sharp, natural, in-voice. 1 = wooden, on-the-nose, or filler.',
             },
             issue: {
               type: 'string',
@@ -104,7 +103,7 @@ export async function critiqueDialog({ projectId, beatId } = {}) {
     max_tokens: 6000,
     system: SYSTEM_PROMPT,
     tools: [SCORE_TOOL],
-    tool_choice: { type: 'tool', name: 'score_dialog' },
+    tool_choice: { type: 'auto' },
     messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
   });
 
@@ -123,7 +122,7 @@ export async function critiqueDialog({ projectId, beatId } = {}) {
     const dialog = dialogs[n - 1];
     scores.push({
       dialog_id: dialog._id.toString(),
-      score: Number(s.score),
+      score: Math.min(5, Math.max(1, Math.round(Number(s.score)) || 1)),
       issue: typeof s.issue === 'string' ? s.issue : '',
     });
   }

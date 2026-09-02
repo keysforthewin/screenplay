@@ -1,5 +1,5 @@
 // Scene Bible auto-fill: the module that turns a beat into the scene-bible
-// fields via one forced-tool LLM pass, the REST endpoint that drives it, and the
+// fields via one single-tool LLM pass, the REST endpoint that drives it, and the
 // gateway fallback that persists scene_bible.* writes when Hocuspocus is off.
 //
 // The Anthropic client is mocked to return a canned fill_scene_bible tool call,
@@ -115,9 +115,10 @@ describe('autofillSceneBible (module)', () => {
     for (const f of SCENE_BIBLE_FIELDS) {
       expect(fresh.scene_bible[f]).toBe(FULL[f]);
     }
-    // Forced tool was requested.
+    // Tool offered under auto with strict schema (forced tool_choice 400s on Fable 5.1).
     expect(h.createCalls).toHaveLength(1);
-    expect(h.createCalls[0].tool_choice).toEqual({ type: 'tool', name: 'fill_scene_bible' });
+    expect(h.createCalls[0].tool_choice).toEqual({ type: 'auto' });
+    expect(h.createCalls[0].tools[0].strict).toBe(true);
   });
 
   it('normalizes partial/garbage model output into every key', async () => {

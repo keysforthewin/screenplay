@@ -1,4 +1,4 @@
-// Beat-critique run engine. Runs all facets in parallel as forced-tool Anthropic
+// Beat-critique run engine. Runs all facets in parallel as single-tool Anthropic
 // calls returning {score, comments}, persists each as it lands, and streams full
 // job snapshots to SSE subscribers (registry + pub/sub replicated from
 // falVideoGenerate.js). Latest-only persistence via src/mongo/critiques.js.
@@ -98,11 +98,12 @@ function updateJobFacet(job, key, patch) {
 // The CRITIQUE_FACET tool — one score + a prose critique. Mirrors dialogCritique.
 const CRITIQUE_FACET_TOOL = {
   name: 'critique_facet',
+  strict: true,
   description: 'Return a 1-10 score and a short prose critique for this one facet.',
   input_schema: {
     type: 'object',
     properties: {
-      score: { type: 'integer', minimum: 1, maximum: 10, description: '10 = excellent on this facet; 1 = seriously deficient.' },
+      score: { type: 'integer', description: 'Integer 1-10. 10 = excellent on this facet; 1 = seriously deficient.' },
       comments: { type: 'string', description: 'A few sentences: what works, what is weak, and the single most important concrete fix.' },
     },
     required: ['score', 'comments'],
@@ -116,7 +117,7 @@ function clampScore(n) {
   return Math.min(10, Math.max(1, v));
 }
 
-// Default per-facet generator: one forced-tool Anthropic call. Override in tests.
+// Default per-facet generator: one single-tool Anthropic call. Override in tests.
 let facetGeneratorOverride = null;
 export function _setFacetGeneratorForTests(fn) {
   facetGeneratorOverride = fn;
@@ -130,8 +131,18 @@ async function generateFacet(facet, ctx) {
     max_tokens: 5000,
     system: facet.systemPrompt,
     tools: [CRITIQUE_FACET_TOOL],
-    tool_choice: { type: 'tool', name: 'critique_facet' },
-    messages: [{ role: 'user', content: [{ type: 'text', text: facet.buildContext(ctx) }] }],
+    tool_choice: { type: 'auto' },
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: `${facet.buildContext(ctx)}\n\nReturn your score and critique via the critique_facet tool.`,
+          },
+        ],
+      },
+    ],
   });
   const toolUse = (resp.content || []).find((b) => b.type === 'tool_use' && b.name === 'critique_facet');
   if (!toolUse) throw new Error('model did not return a critique');
