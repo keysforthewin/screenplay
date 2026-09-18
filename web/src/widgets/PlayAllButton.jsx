@@ -9,6 +9,7 @@ import { getSavedVoice } from '../tts/voices.js';
 import { markdownToText } from '../tts/markdownToText.js';
 import { startPlayAll } from '../tts/playAll.js';
 import { VoiceSelect } from './VoiceSelect.jsx';
+import { KeepModelButton, modelLoadLabel, PauseButton } from './TtsControls.jsx';
 
 export function PlayAllButton({ beats, onBeatChange }) {
   const controller = getSharedController();
@@ -48,11 +49,7 @@ export function PlayAllButton({ beats, onBeatChange }) {
   }
 
   let label = running ? '■ Stop' : '▶ Play all';
-  if (running && state.status === 'loading') {
-    label = state.progress != null
-      ? `Downloading model… ${Math.round(state.progress * 100)}%`
-      : 'Downloading model…';
-  }
+  if (running && state.status === 'loading') label = modelLoadLabel(state);
 
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
@@ -60,6 +57,8 @@ export function PlayAllButton({ beats, onBeatChange }) {
       <button type="button" onClick={onPlayAll} title="Read every beat aloud in order (client-side TTS)">
         {label}
       </button>
+      {running && <PauseButton controller={controller} state={state} />}
+      <KeepModelButton controller={controller} state={state} />
       {running && (
         <button type="button" onClick={() => runRef.current?.skip()} title="Skip to the next beat">
           ⏭ Skip

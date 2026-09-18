@@ -105,3 +105,72 @@ describe('ChunkPlayer', () => {
     expect(p.contextState()).toBe('suspended');
   });
 });
+
+describe('ChunkPlayer buffered start, underrun, pause', () => {
+  it('hold() banks chunks; release() schedules them gaplessly', () => {
+    const ctx = new FakeCtx();
+    const p = new ChunkPlayer(() => ctx);
+    p.unlock();
+    p.hold();
+    p.enqueue(new Float32Array(24000), 24000);
+    p.enqueue(new Float32Array(24000), 24000);
+    expect(ctx.started).toHaveLength(0);
+    expect(p.unplayedSec()).toBe(2);
+    ctx.currentTime = 7; // time passes while banking
+    p.release();
+    expect(ctx.started.map((s) => s.startedAt)).toEqual([7, 8]);
+    ctx.currentTime = 7.5;
+    expect(p.unplayedSec()).toBe(1.5);
+  });
+
+  it('finished() releases whatever is still banked', async () => {
+    const ctx = new FakeCtx();
+    const p = new ChunkPlayer(() => ctx);
+    p.hold();
+    p.enqueue(new Float32Array(24000), 24000);
+    const done = p.finished();
+    expect(ctx.started).toHaveLength(1);
+    ctx.started[0].end();
+    await done;
+  });
+
+  it('running dry before the input ends fires onUnderrun and re-holds', () => {
+    const ctx = new FakeCtx();
+    const p = new ChunkPlayer(() => ctx);
+    const underruns = vi.fn();
+    p.onUnderrun = underruns;
+    p.enqueue(new Float32Array(24000), 24000);
+    ctx.started[0].end();
+    expect(underruns).toHaveBeenCalledTimes(1);
+    expect(p.held).toBe(true);
+    p.enqueue(new Float32Array(24000), 24000);
+    expect(ctx.started).toHaveLength(1); // banked, not scheduled
+  });
+
+  it('the natural end of input is not an underrun', async () => {
+    const ctx = new FakeCtx();
+    const p = new ChunkPlayer(() => ctx);
+    const underruns = vi.fn();
+    p.onUnderrun = underruns;
+    p.enqueue(new Float32Array(24000), 24000);
+    const done = p.finished();
+    ctx.started[0].end();
+    await done;
+    expect(underruns).not.toHaveBeenCalled();
+  });
+
+  it('pause suspends the context, resume resumes it, stop un-pauses the shared context', () => {
+    const ctx = new FakeCtx();
+    ctx.state = 'running';
+    ctx.suspend = vi.fn(async () => { ctx.state = 'suspended'; });
+    ctx.resume = vi.fn(async () => { ctx.state = 'running'; });
+    const p = new ChunkPlayer(() => ctx);
+    p.unlock();
+    p.pause();
+    expect(ctx.suspend).toHaveBeenCalledTimes(1);
+    p.enqueue(new Float32Array(24000), 24000); // arrives mid-pause
+    expect(ctx.resume).not.toHaveBeenCalled();  // must not un-pause
+    p.stop();
+    expect(ctx.resume).toHaveBeenCalledTimes(1);
+  });
+});

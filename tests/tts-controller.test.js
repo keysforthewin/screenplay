@@ -32,7 +32,8 @@ describe('TtsController', () => {
   it('walks idle → generating → playing → idle and resolves true', async () => {
     const { client, players, controller } = make();
     const seen = [];
-    controller.subscribe((s) => seen.push(s.status));
+    // Status transitions only — other fields (canSave, detail) emit too.
+    controller.subscribe((s) => { if (seen.at(-1) !== s.status) seen.push(s.status); });
     const p = controller.play('hello', 'af_heart');
     expect(controller.getState().status).toBe('generating');
     // unlock must happen synchronously inside play() — that call is the only
@@ -127,5 +128,105 @@ describe('TtsController', () => {
     await Promise.resolve(); await Promise.resolve();
     players[1].finish();
     expect(await second).toBe(true);
+  });
+});
+
+// A player that really holds, like ChunkPlayer: banks chunks until release().
+class HoldingPlayer extends FakePlayer {
+  constructor() { super(); this.held = false; this.played = 0; }
+  hold() { this.held = true; }
+  release() { this.held = false; this.released = (this.released || 0) + 1; }
+  unplayedSec() { return this.chunks.reduce((n, [s, r]) => n + s.length / r, 0) - this.played; }
+  pause() { this.pausedPlayer = true; }
+  resume() { this.pausedPlayer = false; }
+  finished() { this.held = false; return super.finished(); }
+}
+
+function makeHolding() {
+  const client = new FakeClient();
+  const player = new HoldingPlayer();
+  const controller = new TtsController({ client, createPlayer: () => player });
+  return { client, player, controller };
+}
+
+const sec = (n) => new Float32Array(24000 * n);
+
+describe('TtsController buffered start', () => {
+  it('slower-than-realtime synthesis buffers until the bank covers the shortfall', () => {
+    const { client, player, controller } = makeHolding();
+    controller.play('long text', 'af_heart');
+    client.opts.onPlan({ segments: 10, totalChars: 1000 });
+    // 100 chars → 5s of audio in 10s of synthesis: 0.5× realtime, ~50s total.
+    client.opts.onChunk(sec(5), 24000, 't', { index: 0, total: 10, chars: 100, synthMs: 10_000 });
+    expect(controller.getState().status).toBe('buffering');
+    expect(player.held).toBe(true);
+    expect(controller.getState().detail).toMatch(/0\.5× realtime/);
+    for (let i = 1; i < 6; i++) {
+      client.opts.onChunk(sec(5), 24000, 't', { index: i, total: 10, chars: 100, synthMs: 10_000 });
+    }
+    // 30s banked of ~50s at an assumed 0.425×: needs 50·(1−0.425) ≈ 28.75s.
+    expect(player.held).toBe(false);
+    expect(controller.getState().status).toBe('playing');
+  });
+
+  it('faster-than-realtime synthesis starts as soon as the floor is banked', () => {
+    const { client, player, controller } = makeHolding();
+    controller.play('long text', 'af_heart');
+    client.opts.onPlan({ segments: 10, totalChars: 1000 });
+    client.opts.onChunk(sec(5), 24000, 't', { index: 0, total: 10, chars: 100, synthMs: 1000 });
+    expect(player.held).toBe(false);
+    expect(controller.getState().status).toBe('playing');
+  });
+
+  it('an underrun drops back to buffering', () => {
+    const { client, player, controller } = makeHolding();
+    controller.play('long text', 'af_heart');
+    client.opts.onPlan({ segments: 10, totalChars: 1000 });
+    client.opts.onChunk(sec(5), 24000, 't', { index: 0, total: 10, chars: 100, synthMs: 1000 });
+    client.opts.onChunk(sec(5), 24000, 't', { index: 1, total: 10, chars: 100, synthMs: 20_000 });
+    expect(controller.getState().status).toBe('playing');
+    player.played = 10; // listener caught up; ChunkPlayer re-holds itself
+    player.held = true;
+    player.onUnderrun();
+    expect(controller.getState().status).toBe('buffering');
+  });
+
+  it('pause/resume toggle the player without stopping synthesis', () => {
+    const { client, player, controller } = makeHolding();
+    controller.play('hello', 'af_heart');
+    controller.pause();
+    expect(player.pausedPlayer).toBe(true);
+    expect(controller.getState().paused).toBe(true);
+    expect(client.stopped).toBeUndefined();
+    client.opts.onChunk(sec(1), 24000, 't', {});
+    expect(player.chunks).toHaveLength(1); // still accepting audio
+    controller.resume();
+    expect(player.pausedPlayer).toBe(false);
+    expect(controller.getState().paused).toBe(false);
+  });
+
+  it('replays a finished read-through from the recording without synthesizing', async () => {
+    const client = new FakeClient();
+    const players = [];
+    const controller = new TtsController({
+      client,
+      createPlayer: () => { const p = new HoldingPlayer(); players.push(p); return p; },
+    });
+    const first = controller.play('hello', 'af_heart');
+    client.opts.onChunk(sec(1), 24000, 't', {});
+    client.resolve({ status: 'done' });
+    await Promise.resolve(); await Promise.resolve();
+    players[0].finish();
+    expect(await first).toBe(true);
+    expect(controller.getState().canSave).toBe(true);
+    expect(controller.getRecordingBlob().size).toBe(44 + 24000 * 2);
+
+    client.opts = null;
+    const again = controller.play('hello', 'af_heart');
+    expect(client.opts).toBeNull(); // no speak()
+    expect(players[1].chunks).toHaveLength(1);
+    expect(controller.getState().status).toBe('playing');
+    players[1].finish();
+    expect(await again).toBe(true);
   });
 });

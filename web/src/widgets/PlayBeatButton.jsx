@@ -5,6 +5,7 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { getSharedController } from '../tts/controller.js';
 import { getSavedVoice } from '../tts/voices.js';
+import { modelLoadLabel, KeepModelButton, PauseButton, SaveAudioButton } from './TtsControls.jsx';
 
 export function PlayBeatButton({ getText, disabled }) {
   const controller = getSharedController();
@@ -18,11 +19,11 @@ export function PlayBeatButton({ getText, disabled }) {
 
   let label = '▶ Play';
   if (state.status === 'loading') {
-    label = state.progress != null
-      ? `Downloading model… ${Math.round(state.progress * 100)}%`
-      : 'Downloading model…';
+    label = modelLoadLabel(state);
   } else if (state.status === 'generating') {
     label = '■ Generating…';
+  } else if (state.status === 'buffering') {
+    label = '■ Buffering…';
   } else if (state.status === 'playing') {
     label = '■ Stop';
   }
@@ -45,6 +46,9 @@ export function PlayBeatButton({ getText, disabled }) {
       >
         {label}
       </button>
+      <PauseButton controller={controller} state={state} />
+      <KeepModelButton controller={controller} state={state} />
+      {!busy && <SaveAudioButton controller={controller} state={state} filename="beat.wav" />}
       {busy && state.detail && (
         <span style={{ color: 'var(--fg-muted)', fontSize: 12 }}>{state.detail}</span>
       )}

@@ -19,7 +19,7 @@ export class TtsClient {
     this.createWorker = createWorker || (() => createTtsTransport());
     this.worker = null;
     this.nextId = 1;
-    this.active = null; // { id, onChunk, onProgress, onStatus, resolve }
+    this.active = null; // { id, onChunk, onPlan, onProgress, onStatus, resolve }
     this.lastStatus = null;
     this.watchdog = null;
     // Once a generation dies (crash or watchdog), later speaks force the
@@ -75,14 +75,21 @@ export class TtsClient {
       return;
     }
     if (msg.type === 'progress') {
-      this.lastStatus = 'downloading model';
-      active?.onProgress?.(msg.loaded, msg.total);
+      this.lastStatus = msg.cached ? 'loading cached model' : 'downloading model';
+      active?.onProgress?.(msg.loaded, msg.total, !!msg.cached);
       return;
     }
     if (!active || msg.id !== active.id) return; // stale generation
-    if (msg.type === 'chunk') {
-      this.lastStatus = 'streaming audio';
-      active.onChunk(msg.samples, msg.sampleRate, msg.text);
+    if (msg.type === 'plan') {
+      active.onPlan?.({ segments: msg.segments, totalChars: msg.totalChars });
+    } else if (msg.type === 'chunk') {
+      this.lastStatus = `streaming audio (segment ${(msg.index ?? 0) + 1}/${msg.total ?? '?'})`;
+      active.onChunk(msg.samples, msg.sampleRate, msg.text, {
+        index: msg.index,
+        total: msg.total,
+        chars: msg.chars,
+        synthMs: msg.synthMs,
+      });
     } else if (msg.type === 'done') {
       clearTimeout(this.watchdog);
       this.active = null;
@@ -100,12 +107,12 @@ export class TtsClient {
 
   // Resolves {status:'done'} after the worker has emitted every chunk,
   // {status:'stopped'} if superseded/stopped, {status:'error', message} on failure.
-  speak({ text, voice, onChunk, onProgress, onStatus, force }) {
+  speak({ text, voice, onChunk, onPlan, onProgress, onStatus, force }) {
     this.stop(); // one generation at a time
     const id = this.nextId++;
     const worker = this.#ensureWorker();
     return new Promise((resolve) => {
-      this.active = { id, onChunk, onProgress, onStatus, resolve };
+      this.active = { id, onChunk, onPlan, onProgress, onStatus, resolve };
       this.lastStatus = null;
       const msg = { type: 'speak', id, text, voice };
       if (force) msg.force = force; // ?tts=device/dtype debug override
