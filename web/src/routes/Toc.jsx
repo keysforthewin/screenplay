@@ -408,6 +408,14 @@ export function Toc({ session }) {
 
       <div className="tab-panel" hidden={displayedTab !== 'beats' || noResults}>
         <div className="tab-actions">
+          <NewBeatButton
+            onCreate={async () => {
+              const r = await apiPostJson('/beat', {});
+              await refetchToc();
+              navigate(`/beat/${r.beat.order}`);
+            }}
+            onError={setError}
+          />
           <PlayAllButton beats={toc.beats || []} onBeatChange={setPlayingOrder} />
         </div>
         {beats.length === 0 ? (
@@ -491,6 +499,28 @@ export function Toc({ session }) {
         )}
       </div>
     </main>
+  );
+}
+
+// One-click "+ New beat": no name form — the server appends an empty beat
+// titled "New beat" and we jump straight to its page to rename and write.
+function NewBeatButton({ onCreate, onError }) {
+  const [busy, setBusy] = useState(false);
+  async function create() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onCreate();
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <button type="button" className="primary" onClick={create} disabled={busy}>
+      {busy ? 'Creating…' : '+ New beat'}
+    </button>
   );
 }
 

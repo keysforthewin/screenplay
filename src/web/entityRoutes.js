@@ -110,6 +110,7 @@ import {
   moveCharacterImageToLibraryViaGateway,
   reorderDialogsViaGateway,
   reorderBeatsViaGateway,
+  createBeatViaGateway,
   reorderStoryboardsViaGateway,
   setBeatMainImageViaGateway,
   setCharacterMainImageViaGateway,
@@ -6695,6 +6696,20 @@ export function buildApiRouter() {
           verb: 'deleted dialog audio from',
         });
       }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Manual beat create from the TOC's "+ New beat" button: an empty beat
+  // appended at the end of the list. The name is a placeholder the user
+  // renames on the beat page (beat names aren't unique, so no 409 path).
+  router.post('/beat', async (req, res, next) => {
+    try {
+      const name = String(req.body?.name || '').trim() || 'New beat';
+      if (name.length > 200) return res.status(400).json({ error: 'name must be ≤ 200 chars' });
+      const beat = await createBeatViaGateway({ projectId: req.projectId, name });
+      res.status(201).json({ beat });
     } catch (e) {
       next(e);
     }
