@@ -1,6 +1,10 @@
 services:
   mongo:
     image: mongo:7
+    # WiredTiger defaults its cache to ~50% of host RAM regardless of how many
+    # mongods share the box; cap it so seven of them cannot swap the 8 GB host.
+    command: ["mongod", "--wiredTigerCacheSizeGB", "0.5"]
+    mem_limit: 1g
     restart: unless-stopped
     volumes:
       - mongo-data:/data/db
