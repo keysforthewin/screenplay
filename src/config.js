@@ -111,6 +111,8 @@ export const config = {
     // a pure function of config.
     apiKey: process.env.FAL_KEY || null,
     defaultModelId: process.env.FAL_DEFAULT_VIDEO_MODEL || 'kling-3-pro',
+    // How many shot clips the beat renderer keeps in flight at fal at once.
+    videoConcurrency: Math.max(1, Number(process.env.FAL_VIDEO_CONCURRENCY) || 2),
     // Flux Pro Kontext — image-conditioned generation. Single-image endpoint
     // requires `image_url` (singular). The image client picks this when 0 or 1
     // reference images are passed.

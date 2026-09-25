@@ -14,16 +14,20 @@
 //      on the beat as soon as the plan succeeds (survives per-shot regen + the
 //      SPA editor), even if individual row creation fails below.
 //   Pass 2 — expandShots (Anthropic): in one call, expand the whole skeleton —
-//      every shot is written together so the scene stays coherent. Two outputs
-//      per shot (NO end frame):
-//      - start_frame_prompt  — still-image prompt for the opening composition.
-//                              Seeded as the row's single start-frame prompt.
-//      - video_prompt        — the clip-gen prompt (motion / action / camera
-//                              move, assuming the start frame image exists).
-//                              Stored as text_prompt and sent to the video model.
-//   Persist one storyboard row per shot via the gateway. Only the start prompt
-//   is seeded. No images are generated here — the user triggers per-frame stills
-//   + video gen from the SPA.
+//      every shot is written together so the scene stays coherent. ONE output
+//      per shot:
+//      - video_prompt — a self-contained prompt (opening composition + what
+//                       happens over the clip). Stored as text_prompt. It is the
+//                       single artifact both renders read: the storyboard still
+//                       (image gen falls back to it when frames[0].prompt is
+//                       blank) and the video clip (sent to the video model).
+//   Each skeleton shot also carries dialog_lines — which of the beat's numbered
+//   dialogue lines the shot COVERS — mapped to dialog_ids on the row so the
+//   render step knows which recorded lines to lip-sync into which clip. The
+//   words themselves never enter a prompt (PERFORMANCE_RULES).
+//   Persist one storyboard row per shot via the gateway; frames[0] is seeded
+//   with an EMPTY prompt plus the scored reference list. No images are
+//   generated here — rendering is a separate, explicit step (review gate).
 //
 // Errors in a single row are swallowed (logged) so other rows still land —
 // the user can re-run "generate" and just fill in missing rows.
@@ -83,8 +87,11 @@ import {
   ENDING_PROFILE_RULES,
   FRAGILITY_RULES,
   NO_TEXT_RULES,
+  DIALOGUE_COVERAGE_RULES,
 } from './storyboardConstraints.js';
 import { renderSceneBibleBlock, normalizeSceneBible, isEmptySceneBible } from '../mongo/sceneBible.js';
+import { estimateShotDuration, estimateSpeechSeconds } from './shotTiming.js';
+import { auditShotCoverage } from './shotCoverageAudit.js';
 
 const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
 // Every LLM call in the storyboard pipeline runs on the top-tier model.
@@ -203,6 +210,12 @@ const SCENE_PLAN_TOOL = {
               items: { type: 'string' },
               description: "Which of the beat's listed sets this shot takes place in — usually one. Copy names exactly from the beat metadata. Omit when the beat lists no sets.",
             },
+            dialog_lines: {
+              type: 'array',
+              items: { type: 'integer', minimum: 1 },
+              description:
+                'The 1-based NUMBERS of the dialogue lines (from the numbered dialogue list in the context) this shot COVERS — the lines whose recorded audio is lip-synced into this clip. Every line goes to exactly one shot, in script order, contiguous within a shot; the covering shot must frame the speaker with the mouth visible. Empty (or omitted) for a shot with no spoken line.',
+            },
           },
           required: ['description', 'felt_intent', 'primary_spend', 'shot_type', 'duration_seconds'],
           additionalProperties: false,
@@ -265,6 +278,9 @@ export const SCENE_PLAN_SYSTEM_PROMPT = [
   '# Language',
   ANTI_SLOP_RULES,
   '',
+  '# Dialogue coverage (dialog_lines)',
+  DIALOGUE_COVERAGE_RULES,
+  '',
   '# Hard constraints',
   '- List EVERY named character visible in a shot in characters_in_scene — there is no cap. You may still vary which characters are prominent across shots, but anyone visible in frame must be listed.',
   '- BUT on tight single-subject shots (shot_type close_up, insert, reaction), list ONLY the character(s) physically in the frame — not everyone in the location. A close-up on one person names that one person, even if others are in the scene off-frame.',
@@ -304,7 +320,7 @@ function runCritiquePanel(args) {
 }
 
 function toCritiqueNeighbor(sb) {
-  return { order: sb.order, summary: sb.summary, startFramePrompt: sb.frames?.[0]?.prompt || '' };
+  return { order: sb.order, summary: sb.summary, startFramePrompt: sb.frames?.[0]?.prompt || sb.text_prompt || '' };
 }
 
 // Pass 4: auto prompt-tier critique. Runs the four-lens panel over every shot of
@@ -320,7 +336,7 @@ async function critiqueShotsForBeat({ projectId, beat, sceneBible, directorNotes
         order: sb.order,
         summary: sb.summary,
         text_prompt: sb.text_prompt,
-        startFramePrompt: sb.frames?.[0]?.prompt || '',
+        startFramePrompt: sb.frames?.[0]?.prompt || sb.text_prompt || '',
         shot_type: sb.shot_type,
       };
       const prevShot = i > 0 ? toCritiqueNeighbor(shots[i - 1]) : null;
@@ -393,6 +409,35 @@ export async function listMissingStartFrameTargets(beatId) {
     targets.push({ sb, frame });
   }
   return targets;
+}
+
+// Render one shot's start frame from its own prompt or, when that is blank,
+// the shot prompt — the same rule the bulk "Render storyboard images" job
+// applies. Used by the beat renderer's auto-keyframe step for models that
+// need a start image. CALLER HOLDS THE BEAT LOCK. Returns the refreshed row.
+export async function renderShotStillInternal({ projectId, sb, beat, imageModel = 'nano-banana-pro', autoReferences = true }) {
+  if (!sb.frames?.[0]) {
+    // Rows added by hand ("+ Add storyboard") start with an empty frame pool;
+    // planner rows always carry frames[0]. Seed the slot so the still has a home.
+    const { addFrame } = await import('../mongo/storyboards.js');
+    await addFrame(sb._id, {});
+    sb = await getStoryboard(projectId, sb._id);
+  }
+  const frame = sb.frames[0];
+  const ownPrompt = (frame.prompt || '').trim();
+  const prompt = ownPrompt || buildSuggestedFramePrompt({ sb });
+  await regenerateStoryboardFrameInternal({
+    projectId,
+    sb,
+    beat,
+    frame,
+    imageModel,
+    mode: 'generate',
+    prompt,
+    autoReferences,
+    persistPrompt: !!ownPrompt,
+  });
+  return getStoryboard(projectId, sb._id);
 }
 
 // SPA entry point for the page-level "Generate all images" button. Returns
@@ -471,7 +516,8 @@ async function runBulkFrameGenerationJob({ projectId, job, beat, targets, imageM
   for (let index = 0; index < targets.length; index++) {
     const { sb, frame } = targets[index];
     const order = index + 1;
-    const prompt = (frame.prompt || '').trim() || buildSuggestedFramePrompt({ sb });
+    const ownPrompt = (frame.prompt || '').trim();
+    const prompt = ownPrompt || buildSuggestedFramePrompt({ sb });
     recordProgress(job, {
       phase: 'rendering',
       step: 'frame_start',
@@ -489,6 +535,7 @@ async function runBulkFrameGenerationJob({ projectId, job, beat, targets, imageM
         mode: 'generate',
         prompt,
         autoReferences,
+        persistPrompt: !!ownPrompt,
       });
       job.completed += 1;
       recordProgress(job, {
@@ -741,8 +788,17 @@ async function runStoryboardGenerationJob({
     return;
   }
   // Now that we know we have a plan, clear the existing storyboards so the
-  // SPA shows an empty list while new items stream in.
+  // SPA shows an empty list while new items stream in. An assembled beat
+  // video was cut from the old shots, so it goes too.
   await deleteAllStoryboardsForBeatViaGateway({ projectId, beatId: beat._id });
+  if (beat.video_file_id) {
+    try {
+      const { setBeatVideoViaGateway } = await import('./gateway.js');
+      await setBeatVideoViaGateway({ projectId, beatId: beat._id, fileId: null });
+    } catch (e) {
+      logger.warn(`storyboard gen: clearing beat video failed: ${e?.message || e}`);
+    }
+  }
   job.status = 'rendering';
   recordProgress(job, {
     phase: 'rendering',
@@ -795,6 +851,24 @@ async function runStoryboardGenerationJob({
       logger.warn(
         `storyboard gen frame ${order}/${planned.length} failed: ${e.message}`,
       );
+    }
+  }
+  // Deterministic dialogue-coverage audit over the rows that landed. Surfaced
+  // on the job (GenerationProgress) and fed to the render preview; never fails
+  // the job.
+  if (job.completed > 0) {
+    try {
+      const shots = await listStoryboards({ beatId: beat._id });
+      job.coverage = auditShotCoverage({ shots, dialogs });
+      if (job.coverage.counts.warnings) {
+        recordProgress(job, {
+          phase: 'rendering',
+          step: 'coverage_warnings',
+          message: `Dialogue coverage: ${job.coverage.counts.warnings} warning(s) — ${job.coverage.checks.filter((c) => c.severity === 'warn').slice(0, 3).map((c) => c.message).join(' · ')}`,
+        });
+      }
+    } catch (e) {
+      logger.warn(`storyboard gen: coverage audit failed: ${e?.message || e}`);
     }
   }
   // Pass 4: auto prompt-critique. Best-effort — never flips the job to error.
@@ -985,20 +1059,37 @@ function formatCharacterLines(characters) {
 // and lip-synced in post — but the expander cannot choreograph who speaks when
 // without seeing the exchange, and `direction` is an authored performance note
 // that is otherwise wasted.
+// One line per dialog, numbered by POSITION IN THE FULL LIST (index + 1) so the
+// numbers the planner returns in dialog_lines map straight back onto the
+// dialogs array — including any lines this formatter skipped. Each line carries
+// an audio mark so the planner knows which lines are fixed in time.
 export function formatDialogLines(dialogs) {
   if (!Array.isArray(dialogs) || !dialogs.length) return null;
   const items = dialogs
-    .map((d) => {
+    .map((d, i) => {
       const speaker = stripMarkdown(typeof d?.character === 'string' ? d.character : '').trim();
       const body = clipField(d?.body, 400);
       if (!speaker && !body) return null;
       const dir = clipField(d?.direction, 300);
-      const head = `${speaker || 'UNKNOWN'}: ${body || '(no line)'}`;
+      const audio = formatDialogAudioMark(d);
+      const head = `${i + 1}. ${speaker || 'UNKNOWN'}: ${body || '(no line)'} ${audio}`;
       return dir ? `${head}\n       direction: ${dir}` : head;
     })
     .filter(Boolean);
   if (!items.length) return null;
-  return items.map((t, i) => `  ${i + 1}. ${t}`).join('\n');
+  return items.map((t) => `  ${t}`).join('\n');
+}
+
+// "[audio: 4.2s recorded]" when a real recording exists (its length is the
+// ground truth for the covering shot), "[audio: none — est. 3s]" otherwise.
+export function formatDialogAudioMark(d) {
+  const dur = Number(d?.audio_duration_seconds);
+  if (d?.audio_file_id && Number.isFinite(dur) && dur > 0) {
+    return `[audio: ${dur.toFixed(1)}s recorded]`;
+  }
+  if (d?.audio_file_id) return '[audio: recorded, length unknown]';
+  const est = estimateSpeechSeconds([d]);
+  return est > 0 ? `[audio: none — est. ${Math.ceil(est)}s]` : '[audio: none]';
 }
 
 // The project-wide directorial voice (plots.directorial_voice) — the single
@@ -1020,9 +1111,17 @@ export async function loadDirectorialVoice(projectId) {
 // load-bearing state.
 export async function loadDialogsForPlanner(projectId, beatId) {
   try {
-    const { listDialogs } = await import('../mongo/dialogs.js');
+    const { listDialogs, ensureDialogAudioDurations } = await import('../mongo/dialogs.js');
     const rows = await listDialogs({ projectId, beatId });
-    return Array.isArray(rows) ? rows : [];
+    if (!Array.isArray(rows)) return [];
+    // Legacy rows recorded before durations were probed on attach: fill them
+    // in once so the planner sees real lengths. Best-effort.
+    try {
+      return await ensureDialogAudioDurations(projectId, rows);
+    } catch (e) {
+      logger.warn(`storyboard gen: ensureDialogAudioDurations failed: ${e?.message || e}`);
+      return rows;
+    }
   } catch (e) {
     logger.warn(`storyboard gen: loadDialogsForPlanner failed: ${e?.message || e}`);
     return [];
@@ -1090,6 +1189,7 @@ export function buildBeatContextBlock({ beat, characters, sets = [], direction, 
     lines.push(
       'Dialogue in this beat — use it for TURN ORDER (who speaks, in what sequence), who is on which line, and how each line is delivered.',
       'NEVER write these words, or any words, into a prompt: the real performance is recorded by actors and lip-synced in post.',
+      'Each line is NUMBERED. Assign every number to exactly one shot via dialog_lines (the shot that frames that speaker while the line is delivered); the numbers are what the render step uses to lip-sync the recording into the right clip.',
     );
     lines.push(dialogBlock);
   }
@@ -1173,13 +1273,14 @@ export function _planSceneForTest(args) {
 }
 
 // Pass-2 shot-expansion tool: expand the WHOLE skeleton in one call, emitting
-// two outputs per shot — start_frame_prompt + video_prompt (NO end frame).
+// ONE self-contained video_prompt per shot. The same prompt renders the
+// storyboard still (image gen reads its opening composition) and the clip.
 const SHOT_EXPAND_TOOL = {
   name: 'expand_shots',
   strict: true,
   description:
-    'Given the scene bible and the full ordered shot skeleton, write the two generation prompts for EVERY shot: ' +
-    'a start_frame_prompt (the opening still that anchors the clip) and a video_prompt (what happens + camera move). ' +
+    'Given the scene bible and the full ordered shot skeleton, write ONE self-contained generation prompt (video_prompt) for EVERY shot: ' +
+    'the opening composition first, then what happens over the clip. The same prompt is used to render the storyboard still and the video. ' +
     'Return one entry per shot, in skeleton order.',
   input_schema: {
     type: 'object',
@@ -1191,15 +1292,10 @@ const SHOT_EXPAND_TOOL = {
           type: 'object',
           properties: {
             shot_index: { type: 'integer', description: '1-based index into the skeleton this entry expands.' },
-            start_frame_prompt: {
-              type: 'string',
-              description:
-                'Still-image prompt for the opening composition. Capture the subject as a FROZEN MOMENT of the action — pose, orientation, heading, and placement in the required geography — so the still reads as the intended moment (a car squarely in its lane, nose down the street, not slewed across it). ~2–3 sentences. Do NOT restate the scene bible (location/lighting/palette/blocking) or character faces/wardrobe — reference them. TWO EXCEPTIONS, both REQUIRED when they apply: (1) always state the framed subject\'s precise sub-location, e.g. back seat vs front — the image model never sees the bible and will otherwise default to the wrong position; (2) always state any CONTINUITY STATE the story has changed since the reference photos — jacket off, shirt bloodied, hair soaked, a prop now in hand — or the model silently reverts to the reference look. NO WORDING: text is composited in post, so never write words for the model to letter — render signs, marquees, screens and covers as blank, unlettered surfaces.',
-            },
             video_prompt: {
               type: 'string',
               description:
-                'Clip-gen motion prompt, 4–8 sentences. Camera FIRST (write "Static, locked-off camera." verbatim for held shots, otherwise name the move and its motivation), then the BLOCKING, then the PERFORMANCE: who speaks in what order (mouth and jaw working — NEVER the words themselves), the facial beat as a change from one state to another, the listener behavior for every non-speaking character on screen, and any state change during the clip. Close on the ENDPOINT — the completed state the clip arrives at, written so the cut to the next shot lands cleanly. Prefer one physical cause with visible consequences over a list of separate instructions. NO subject identity, setting, composition, or framing — the start frame already holds those. No stillness closer, and no negation anywhere ("no…", "does not…") — state the positive instead. Nothing letters itself: no text appears, animates on, scrolls, or is revealed during the clip.',
+                'ONE self-contained prompt, 5–9 sentences, in this order. (1) OPENING COMPOSITION, 2–3 sentences: the camera vantage named up front ("frontal medium", "three-quarter rear wide"), the subject as a FROZEN MOMENT of the action — pose, orientation, heading — and its precise sub-location in the required geography (back seat vs front, head of the table, its travel lane), plus any CONTINUITY STATE the story has changed since the reference photos (jacket off, hair soaked, a prop now in hand). Refer to characters by a short VISUAL HANDLE (actor likeness / described look), never a proper name; reference photos carry faces and wardrobe, so do not re-describe them. (2) THE CLIP: camera FIRST ("Static, locked-off camera." verbatim for held shots, otherwise the move and its motivation), then the BLOCKING, then the PERFORMANCE — who speaks in what order (mouth and jaw working, NEVER the words themselves), the facial beat as a change from one state to another, the listener behavior for every non-speaking character on screen, and any state change during the clip. (3) The ENDPOINT — the completed state the clip arrives at, so the cut lands cleanly. Prefer one physical cause with visible consequences over a list. Do NOT restate the scene bible (lighting/palette/mood) beyond the sub-location. No stillness closer, no negation anywhere ("no…", "does not…") — state the positive. NO WORDING: text is composited in post, so render signs, marquees, screens and covers as blank, unlettered surfaces, and nothing letters itself during the clip.',
             },
             references: {
               type: 'array',
@@ -1215,7 +1311,7 @@ const SHOT_EXPAND_TOOL = {
               },
             },
           },
-          required: ['shot_index', 'start_frame_prompt', 'video_prompt'],
+          required: ['shot_index', 'video_prompt'],
           additionalProperties: false,
         },
       },
@@ -1232,12 +1328,14 @@ export const SHOT_EXPAND_SYSTEM_PROMPT = [
   '',
   "The bible opens with the scene's INTENTION and its TURN, and each skeleton shot carries a felt_intent and a primary_spend. These are not decoration — they are the brief. Every camera, light, blocking, and performance choice you write must serve that shot's felt_intent inside the scene's intention, and must spend its detail where primary_spend says. A prompt that is technically correct and emotionally inert has failed.",
   '',
-  '# Two outputs per shot (NO end frame)',
-  '1. start_frame_prompt — the opening still the image-to-video model conditions on. Capture the subject as a frozen moment of the action: its pose, orientation, heading, and where it sits in the geography the beat requires, in the continuity state the story has left them in. ~2–3 sentences. This is the ONLY place the subject/scene appearance is described.',
-  '2. video_prompt — what HAPPENS over the clip: the camera first, then the blocking, then the performance, assuming the start frame already exists. 4–8 sentences. Strip every static/scene detail; never re-describe the start composition.',
+  '# One prompt per shot (video_prompt)',
+  'Each shot gets ONE self-contained prompt that serves two renders: the storyboard still (an image model reads the opening composition) and the clip (a video model plays the whole thing). Write it in two movements inside one prompt:',
+  '1. OPENING COMPOSITION (2–3 sentences) — the still the clip opens on: camera vantage named first, the subject as a frozen moment of the action (pose, orientation, heading, exact sub-location in the geography the beat requires), in the continuity state the story has left them in. This is the ONLY place the subject/scene appearance is described.',
+  '2. THE CLIP (3–6 sentences) — what HAPPENS: the camera first, then the blocking, then the performance, then the endpoint. Never re-describe the opening composition here; describe what changes.',
+  'Total 5–9 sentences. A video model given only this prompt plus reference photos must be able to render the shot; so must an image model asked for its first frame.',
   '',
   '# Inherit the bible — do not re-describe it',
-  '- The scene bible already fixes location, time of day, lighting key, palette, mood, blocking, and camera language. Reference them; never restate them. The framed subject\'s OWN precise sub-location / placement (which seat, which side of the table, which doorway) MUST be written into the still. The image model receives only this prompt plus reference photos, never the bible, so an unstated placement is rendered as the model\'s generic default — a child at a car window becomes the front passenger, not the back seat.',
+  '- The scene bible already fixes location, time of day, lighting key, palette, mood, blocking, and camera language. Reference them; never restate them. The framed subject\'s OWN precise sub-location / placement (which seat, which side of the table, which doorway) MUST be written into the opening composition. The image and video models receive only this prompt plus reference photos, never the bible, so an unstated placement is rendered as the model\'s generic default — a child at a car window becomes the front passenger, not the back seat.',
   '- NEVER use a character\'s proper name in a prompt. Image models can\'t resolve a made-up name ("Young Keys") — they drop the figure, merge it into another, or misplace it. Refer to each character by a concise VISUAL HANDLE drawn from the character context:',
   '  • Played on-screen by a real actor? Use that likeness — e.g. "the pilot, played by Jake Gyllenhaal".',
   '  • Voice-only or non-human? Use their described physical look — e.g. "the fish in the black-and-yellow armored suit with a teal visor".',
@@ -1247,43 +1345,43 @@ export const SHOT_EXPAND_SYSTEM_PROMPT = [
   '- This is WHY your prompts can be short: the shared context is carried by the bible + reference images.',
   '',
   '# Continuity',
-  "- Compose each start_frame_prompt to pick up the prior shot's motion vector / match cut, per the skeleton's transition_in.",
-  '- Honor each shot\'s description, shot_type, transition_in, and characters_in_scene.',
+  "- Compose each opening composition to pick up the prior shot's motion vector / match cut, per the skeleton's transition_in.",
+  '- Honor each shot\'s description, shot_type, transition_in, characters_in_scene, and its dialogue coverage: when the skeleton says a shot covers dialogue lines, the opening composition frames that speaker with the mouth visible and the clip plays those speech turns (mouths move, words never appear).',
   '',
-  '# Camera motion (for video_prompt)',
+  '# Camera motion (for the clip)',
   CAMERA_MOTION_RULES,
   '',
-  '# Performance (for video_prompt)',
+  '# Performance (for the clip)',
   PERFORMANCE_RULES,
   '',
-  '# Video-prompt structure (for video_prompt)',
+  '# Clip structure (for the clip movement of the prompt)',
   VIDEO_PROMPT_RULES,
   '',
-  '# Endpoint (for video_prompt)',
+  '# Endpoint (for the clip)',
   ENDING_PROFILE_RULES,
   '',
-  '# What the framing can hold (for both)',
+  '# What the framing can hold',
   SHOT_SIZE_FIDELITY_RULES,
   '',
-  '# What breaks in generation (for both)',
+  '# What breaks in generation',
   FRAGILITY_RULES,
   '',
-  '# Text is a post-production layer (for both)',
+  '# Text is a post-production layer',
   NO_TEXT_RULES,
   '',
-  '# Language (for both)',
+  '# Language',
   ANTI_SLOP_RULES,
   '',
-  '# Camera vantage (for start_frame_prompt)',
+  '# Camera vantage (for the opening composition)',
   CAMERA_COHERENCE_RULES,
   '',
-  '# Still composition (for start_frame_prompt)',
+  '# Opening composition',
   STILL_FRAMING_RULES,
   '',
-  '# Placeholder occupants (for start_frame_prompt)',
+  '# Placeholder occupants (for the opening composition)',
   OCCUPANT_PLACEHOLDER_RULES,
   '',
-  '# Continuity state (for start_frame_prompt)',
+  '# Continuity state (for the opening composition)',
   CONTINUITY_STATE_RULES,
   '',
   '# Output',
@@ -1295,7 +1393,27 @@ export function _setShotExpanderForTests(fn) {
   shotExpanderOverride = fn;
 }
 
-function formatSkeletonForExpand(outline) {
+// "dialogue: lines 3–4 (Alice; Bob) [speech ≈ 6s]" for a shot that covers
+// dialogue; uses the skeleton's dialog_lines (1-based numbers) resolved
+// against the beat's dialogs list. Empty string when the shot covers none.
+function formatSkeletonDialogue(f, dialogs) {
+  const nums = Array.isArray(f?.dialog_lines) ? f.dialog_lines.filter((n) => Number.isInteger(n) && n >= 1) : [];
+  if (!nums.length) return '';
+  const list = Array.isArray(dialogs) ? dialogs : [];
+  const covered = nums.map((n) => list[n - 1]).filter(Boolean);
+  const range = nums.length === 1 ? `line ${nums[0]}` : `lines ${nums[0]}–${nums[nums.length - 1]}`;
+  const speakers = [];
+  for (const d of covered) {
+    const s = stripMarkdown(typeof d?.character === 'string' ? d.character : '').trim();
+    if (s && !speakers.includes(s)) speakers.push(s);
+  }
+  const speech = Math.ceil(estimateSpeechSeconds(covered));
+  const who = speakers.length ? ` (${speakers.join('; ')})` : '';
+  const est = speech > 0 ? ` [speech ≈ ${speech}s]` : '';
+  return `${range}${who}${est}`;
+}
+
+function formatSkeletonForExpand(outline, dialogs = []) {
   return outline
     .map((f, i) => {
       const parts = [
@@ -1307,6 +1425,8 @@ function formatSkeletonForExpand(outline) {
       if (Array.isArray(f.characters_in_scene) && f.characters_in_scene.length) {
         parts.push(`   characters_in_scene: ${f.characters_in_scene.join(', ')}`);
       }
+      const dlg = formatSkeletonDialogue(f, dialogs);
+      if (dlg) parts.push(`   dialogue: ${dlg}`);
       return parts.join('\n');
     })
     .join('\n');
@@ -1322,7 +1442,7 @@ export function buildShotExpandUserText({ beat, characters, sets = [], sceneBibl
   lines.push(
     '',
     '# Full shot skeleton:',
-    formatSkeletonForExpand(outline),
+    formatSkeletonForExpand(outline, dialogs),
   );
   if (typeof revisionNotes === 'string' && revisionNotes.trim()) {
     lines.push('', '# Revision notes to address (from a critique of the previous version — fix these):', revisionNotes.trim());
@@ -1337,17 +1457,19 @@ export function buildShotExpandUserText({ beat, characters, sets = [], sceneBibl
   }
   lines.push(
     '',
-    `Write start_frame_prompt + video_prompt for ALL ${outline.length} shots via the expand_shots tool, one entry per shot with its 1-based shot_index.`,
+    `Write ONE self-contained video_prompt for ALL ${outline.length} shots via the expand_shots tool, one entry per shot with its 1-based shot_index.`,
   );
   return lines.join('\n');
 }
 
-// Two-output fallback when the model omits a shot's prompts.
+// Fallback when the model omits a shot's prompt: a usable (if plain) prompt
+// built from the skeleton description so the row still lands.
 function synthesizeFallbackShot(frame) {
   const base = stripMarkdown(frame.description || '').trim();
   return {
-    start_frame_prompt: base ? `Opening composition of the shot: ${base}` : 'Opening composition of the shot.',
-    video_prompt: base ? `The action plays out: ${base}. Camera holds.` : 'Subject performs the action; camera holds.',
+    video_prompt: base
+      ? `Opening composition of the shot: ${base}. Static, locked-off camera. The action plays out and settles into its completed state.`
+      : 'Opening composition of the shot. Static, locked-off camera. Subject performs the action and settles into its completed state.',
   };
 }
 
@@ -1395,13 +1517,12 @@ async function expandShots({ beat, characters, sets = [], sceneBible, outline, d
   });
   return outline.map((f, i) => {
     const s = byIndex.get(i + 1);
-    const sfp = typeof s?.start_frame_prompt === 'string' ? s.start_frame_prompt.trim() : '';
     const vp = typeof s?.video_prompt === 'string' ? s.video_prompt.trim() : '';
-    if (!sfp || !vp) {
+    if (!vp) {
       logger.warn(`storyboard expand_shots: missing output for shot ${i + 1}; using fallback`);
       return { ...synthesizeFallbackShot(f), references: [] };
     }
-    return { start_frame_prompt: sfp, video_prompt: vp, references: Array.isArray(s.references) ? s.references : [] };
+    return { video_prompt: vp, references: Array.isArray(s.references) ? s.references : [] };
   });
 }
 
@@ -1434,6 +1555,9 @@ export async function reExpandShotInner({ projectId, sb, beat, critiqueGuidance 
     transition_in: sb.transition_in || '',
     characters_in_scene: Array.isArray(sb.characters_in_scene) ? sb.characters_in_scene : [],
     sets_in_scene: Array.isArray(sb.sets_in_scene) ? sb.sets_in_scene : [],
+    // The stored dialog_ids, expressed as the 1-based line numbers the
+    // skeleton formatter expects.
+    dialog_lines: dialogIdsToLineNumbers(sb.dialog_ids, dialogs),
   };
   const directorialVoice = await loadDirectorialVoice(projectId);
   const expanded = await expandShots({
@@ -1441,18 +1565,16 @@ export async function reExpandShotInner({ projectId, sb, beat, critiqueGuidance 
     direction: '', directorNotes, dialogs, revisionNotes: critiqueGuidance || '',
     directorialVoice,
   });
-  if (!expanded.length || !expanded[0]?.start_frame_prompt || !expanded[0]?.video_prompt) {
-    logger.warn(`storyboard reExpandShot: empty/invalid expansion for ${sb._id}; keeping existing prompts`);
+  if (!expanded.length || !expanded[0]?.video_prompt) {
+    logger.warn(`storyboard reExpandShot: empty/invalid expansion for ${sb._id}; keeping existing prompt`);
     return { storyboardId: String(sb._id), unchanged: true };
   }
   const e = expanded[0] || {};
   const newFrame = {
     ...outlineFrame,
-    start_frame_prompt: e.start_frame_prompt,
     video_prompt: e.video_prompt,
   };
   const newTextPrompt = buildTextPrompt(newFrame);
-  const newStartPrompt = stripMarkdown(newFrame.start_frame_prompt || '').trim();
 
   // Re-link characters from the rewritten prompts. linkBeatCharactersForShot
   // unions the existing characters_in_scene with any beat cast named in the new
@@ -1496,30 +1618,48 @@ export async function reExpandShotInner({ projectId, sb, beat, critiqueGuidance 
   // equivalent write is setStoryboardTextPromptViaGateway (the text-field gateway
   // helper; falls back to Mongo when Hocuspocus isn't running).
   await setStoryboardTextPromptViaGateway({ projectId, storyboardId: sb._id, text: newTextPrompt });
-
-  // Persist the start-frame prompt onto frames[0] — mirror how
-  // createPlannedStoryboardEntry seeds the first frame via addStoryboardFrameViaGateway.
-  // For an existing row, update frames[0]'s prompt in place; if the row has no
-  // frames yet, add one.
-  if (newStartPrompt) {
-    const firstFrame = (sb.frames || [])[0];
-    if (firstFrame) {
-      await setStoryboardFramePromptViaGateway({
-        projectId,
-        storyboardId: sb._id,
-        frameId: firstFrame._id,
-        text: newStartPrompt,
-      });
-    } else {
-      await addStoryboardFrameViaGateway({
-        projectId,
-        storyboardId: sb._id,
-        prompt: newStartPrompt,
-        referenceIds: [],
-      });
-    }
-  }
+  // Frame prompts are left alone: the still renders from text_prompt whenever
+  // frames[0].prompt is blank, so the re-expanded prompt reaches the image path
+  // too. A user-customized frame prompt survives re-expansion on purpose.
   return { storyboardId: String(sb._id) };
+}
+
+// Stored dialog_ids -> 1-based positions in the beat's dialogs list (unknown
+// ids dropped). Inverse of the planner's dialog_lines -> dialog_ids mapping.
+export function dialogIdsToLineNumbers(dialogIds, dialogs) {
+  const ids = Array.isArray(dialogIds) ? dialogIds.map((v) => String(v)) : [];
+  const list = Array.isArray(dialogs) ? dialogs : [];
+  const out = [];
+  for (const id of ids) {
+    const idx = list.findIndex((d) => String(d?._id) === id);
+    if (idx >= 0) out.push(idx + 1);
+  }
+  return out;
+}
+
+// Planner dialog_lines (1-based numbers) -> dialog _ids, dropping anything out
+// of range or duplicated. Returns { ids, covered } so callers can also time
+// the shot off the covered rows.
+export function dialogLinesToIds(dialogLines, dialogs) {
+  const list = Array.isArray(dialogs) ? dialogs : [];
+  const nums = Array.isArray(dialogLines) ? dialogLines : [];
+  const ids = [];
+  const covered = [];
+  const seen = new Set();
+  for (const raw of nums) {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 1 || n > list.length) {
+      if (raw != null) logger.warn(`storyboard plan: dialog_lines entry ${raw} out of range (1..${list.length}); dropped`);
+      continue;
+    }
+    const d = list[n - 1];
+    const key = String(d?._id);
+    if (!d?._id || seen.has(key)) continue;
+    seen.add(key);
+    ids.push(d._id);
+    covered.push(d);
+  }
+  return { ids, covered };
 }
 
 // Regenerate ONE shot's prompts (Pass 2 for a single shot), inheriting the
@@ -1645,24 +1785,29 @@ export function linkBeatSetsForShot(frame, beatSets) {
   return unionPicksWithDetected(picks, frame, beatSets);
 }
 
-// Two-output validator. Drops a frame only if it lacks start_frame_prompt or
-// video_prompt; otherwise clamps shot_type / duration / characters / transition.
-function cleanPlannedFrameV2(f) {
-  if (!f || typeof f.start_frame_prompt !== 'string' || typeof f.video_prompt !== 'string') {
+// One-prompt validator. Drops a frame only if it lacks a video_prompt;
+// otherwise clamps shot_type / duration / characters / transition, maps
+// dialog_lines -> dialog_ids, and times the shot off its covered dialogue.
+function cleanPlannedFrameV2(f, { dialogs = [] } = {}) {
+  if (!f || typeof f.video_prompt !== 'string') {
     return [];
   }
   const shotType = SHOT_TYPES.includes(f.shot_type) ? f.shot_type : null;
   if (!shotType && f.shot_type != null) {
     logger.warn(`storyboard plan (v2): dropping invalid shot_type "${f.shot_type}"`);
   }
-  const clampedDur = clampDuration(f.duration_seconds, shotType);
+  const { ids: dialogIds, covered } = dialogLinesToIds(f.dialog_lines, dialogs);
+  // Covered dialogue decides the duration (recorded length wins, else a
+  // speech-rate estimate); the planner's own pick only applies to silent shots.
+  const timing = estimateShotDuration({ frame: { shot_type: shotType, duration_seconds: f.duration_seconds }, coveredDialogs: covered });
+  const clampedDur = timing.seconds;
   if (
     f.duration_seconds != null &&
     Number.isFinite(Number(f.duration_seconds)) &&
     Number(f.duration_seconds) !== clampedDur
   ) {
     logger.warn(
-      `storyboard plan (v2): duration ${f.duration_seconds}s clamped to ${clampedDur}s for shot_type=${shotType}`,
+      `storyboard plan (v2): duration ${f.duration_seconds}s -> ${clampedDur}s (${timing.source}) for shot_type=${shotType}`,
     );
   }
   const rawChars = Array.isArray(f.characters_in_scene)
@@ -1688,12 +1833,13 @@ function cleanPlannedFrameV2(f) {
     characters_in_scene: rawChars,
     sets_in_scene: rawSets,
     references: refs,
+    dialog_ids: dialogIds,
   }];
 }
 
-// New two-pass planner. Returns { frames, sceneBible }. frames carry
-// start_frame_prompt + video_prompt (no end_frame_prompt). On planner failure
-// returns { frames: [], sceneBible } (bible may still be present/null).
+// Two-pass planner. Returns { frames, sceneBible }. Each frame carries ONE
+// video_prompt plus dialog_ids. On planner failure returns
+// { frames: [], sceneBible } (bible may still be present/null).
 async function planFramesV2({ projectId, beat, characters, sets = [], targetCount, direction = '', directorNotes = [], dialogs = [], directorialVoice = '', imageModel = null, onProgress = null }) {
   onProgress?.({ phase: 'planning', step: 'plan_scene_start', message: 'Planning scene bible + shot list…' });
   const { sceneBible, outline: outlineRaw } = await planScene({ beat, characters, sets, targetCount, direction, directorNotes, dialogs, directorialVoice });
@@ -1705,11 +1851,14 @@ async function planFramesV2({ projectId, beat, characters, sets = [], targetCoun
 
   const outline = outlineRaw.map((f) => ({
     description: typeof f?.description === 'string' ? f.description : '',
+    felt_intent: typeof f?.felt_intent === 'string' ? f.felt_intent : '',
+    primary_spend: typeof f?.primary_spend === 'string' ? f.primary_spend : '',
     shot_type: f?.shot_type ?? null,
     duration_seconds: f?.duration_seconds ?? null,
     transition_in: typeof f?.transition_in === 'string' ? f.transition_in : '',
     characters_in_scene: Array.isArray(f?.characters_in_scene) ? f.characters_in_scene : [],
     sets_in_scene: Array.isArray(f?.sets_in_scene) ? f.sets_in_scene : [],
+    dialog_lines: Array.isArray(f?.dialog_lines) ? f.dialog_lines : [],
   }));
 
   const perCharacter = await gatherCandidatesFromDocs(characters);
@@ -1720,12 +1869,14 @@ async function planFramesV2({ projectId, beat, characters, sets = [], targetCoun
 
   const frames = outline.flatMap((f, i) => {
     const e = expanded[i] || {};
-    return cleanPlannedFrameV2({
-      ...f,
-      start_frame_prompt: e.start_frame_prompt,
-      video_prompt: e.video_prompt,
-      references: e.references,
-    });
+    return cleanPlannedFrameV2(
+      {
+        ...f,
+        video_prompt: e.video_prompt,
+        references: e.references,
+      },
+      { dialogs },
+    );
   });
 
   const beatCharacters = Array.isArray(beat?.characters) ? beat.characters : [];
@@ -1737,8 +1888,8 @@ async function planFramesV2({ projectId, beat, characters, sets = [], targetCoun
       // Seed references from the same scored artwork selection the SPA's
       // auto-suggest uses: floor of 2 beat + 2 per in-scene character, plus
       // any extras that clear the relevance cutoff. The shot text is the union
-      // of the still prompt, motion prompt and summary.
-      const frameText = [fr.start_frame_prompt, fr.video_prompt, fr.description]
+      // of the prompt and summary.
+      const frameText = [fr.video_prompt, fr.description]
         .map((s) => stripMarkdown(String(s || '')).trim())
         .filter(Boolean)
         .join('\n');
@@ -1770,11 +1921,11 @@ export function _planFramesV2ForTest(args) {
   return planFramesV2(args);
 }
 
-// Persist one planned frame as a storyboard row. No image generation —
-// start_frame_id and end_frame_id stay null on the new row, and users render
-// them on demand via the SPA's per-row regen flow. Each frame's reference
-// list is seeded from the beat + in-scene characters' images so the modal's
-// default ref grid is non-empty.
+// Persist one planned frame as a storyboard row. No image generation. The row
+// gets exactly one frame (frames[0]) with an EMPTY prompt — the still renders
+// from text_prompt — and the scored reference list seeded from the in-scene
+// sets' + characters' artwork so both the image and the video paths have
+// references to hand to a model that accepts them.
 async function createPlannedStoryboardEntry({
   projectId,
   beat,
@@ -1788,7 +1939,6 @@ async function createPlannedStoryboardEntry({
   // tool's schema), so we feed it straight into the summary field.
   const textPrompt = buildTextPrompt(frame);
   const summary = stripMarkdown(frame.description || '').replace(/\s+/g, ' ').trim();
-  const startFramePrompt = stripMarkdown(frame.start_frame_prompt || '').trim();
   const sb = await createStoryboardViaGateway({
     projectId,
     beatId: beat._id,
@@ -1804,6 +1954,7 @@ async function createPlannedStoryboardEntry({
     transitionIn: frame.transition_in ?? null,
     charactersInScene: frame.characters_in_scene ?? [],
     setsInScene: frame.sets_in_scene ?? [],
+    dialogIds: frame.dialog_ids ?? [],
   });
 
   // Reference ids + relevance scores are resolved during planning
@@ -1815,16 +1966,14 @@ async function createPlannedStoryboardEntry({
       ? frame.reference_scores
       : {};
 
-  // The planner produces an opening still prompt; seed it as the first frame
-  // of the pool. A frame with no prompt is skipped so a sparse planner output
-  // doesn't create an empty frame.
-  for (const prompt of [startFramePrompt]) {
-    if (!prompt) continue;
+  // Seed the single start frame with an empty prompt (the still renders from
+  // text_prompt) and the scored reference list.
+  {
     try {
       const { frameId } = await addStoryboardFrameViaGateway({
         projectId,
         storyboardId: sb._id,
-        prompt,
+        prompt: '',
         referenceIds,
       });
       // Persist the relevance scores so generation orders references best-first
@@ -1860,13 +2009,16 @@ function buildTextPrompt(frame) {
 // preview-prompt endpoint when the stored frame prompt is empty so the user
 // gets a sensible starting draft they can keep or edit.
 function buildSuggestedFramePrompt({ sb }) {
+  // The shot prompt IS the still prompt: its opening composition is what the
+  // image model should render. Only when a row has no prompt at all do we fall
+  // back to the heuristic draft below.
+  const shotPrompt = stripMarkdown(sb.text_prompt || '').trim();
+  if (shotPrompt) return shotPrompt;
   const lines = [];
   if (sb.shot_type) {
     lines.push(`Shot type: ${sb.shot_type.replace(/_/g, ' ').toUpperCase()}.`);
   }
-  // Prefer the narrative summary: text_prompt is now the motion-only video
-  // prompt, which is a poor seed for a still-frame image prompt.
-  const body = stripMarkdown(sb.summary || sb.text_prompt || '').trim();
+  const body = stripMarkdown(sb.summary || '').trim();
   if (body) lines.push(body);
   if (Array.isArray(sb.characters_in_scene) && sb.characters_in_scene.length) {
     lines.push(
@@ -2071,6 +2223,9 @@ async function regenerateStoryboardFrameInternal({
   prompt = null,
   rotateToPrevious = false,
   autoReferences = true,
+  // false when the caller fell back to the shot prompt: the frame's own prompt
+  // stays blank so it keeps tracking text_prompt on later renders.
+  persistPrompt = true,
 }) {
   const frameId = frame._id;
   let renderPrompt;
@@ -2112,15 +2267,17 @@ async function regenerateStoryboardFrameInternal({
     // Persist the user's customized prompt before dispatching so the textarea
     // state survives a refresh even mid-job. Failures collapse silently — the
     // prompt is still sent to the model, the persisted value just lags.
-    try {
-      await setStoryboardFramePromptViaGateway({
-        projectId,
-        storyboardId: sb._id,
-        frameId,
-        text: renderPrompt,
-      });
-    } catch (e) {
-      logger.warn(`storyboard regen: persist frame prompt failed: ${e.message}`);
+    if (persistPrompt) {
+      try {
+        await setStoryboardFramePromptViaGateway({
+          projectId,
+          storyboardId: sb._id,
+          frameId,
+          text: renderPrompt,
+        });
+      } catch (e) {
+        logger.warn(`storyboard regen: persist frame prompt failed: ${e.message}`);
+      }
     }
     await autoFillFrameReferencesIfEmpty({
       projectId,

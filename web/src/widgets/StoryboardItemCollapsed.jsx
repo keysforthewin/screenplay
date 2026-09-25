@@ -3,12 +3,22 @@ import { pickCritiqueScore, scoreBand, isFlagged } from './critiqueDisplay.js';
 
 export function StoryboardItemCollapsed({
   sb,
+  beatDialogs,
   onClick,
   dragAttributes,
   dragListeners,
 }) {
   const previewText = (sb.summary || '').trim()
     || stripMd(sb.text_prompt || '').slice(0, 160);
+
+  // Dialogue coverage glyph: how many lines this shot covers and whether
+  // every one has a recording (→ the beat renderer will lip-sync it).
+  const dialogIds = (Array.isArray(sb?.dialog_ids) ? sb.dialog_ids : [])
+    .map((x) => x?.toString?.() || String(x));
+  const covered = dialogIds
+    .map((id) => (beatDialogs || []).find((d) => (d._id?.toString?.() || String(d._id)) === id))
+    .filter(Boolean);
+  const allRecorded = covered.length > 0 && covered.every((d) => d.audio_file_id);
 
   // Precedence: generated video first (the "final" artifact), then the
   // user's uploaded source video (only material thing on the row), then a
@@ -85,6 +95,19 @@ export function StoryboardItemCollapsed({
       )}
 
       <div className="storyboard-item-collapsed-summary">
+        {dialogIds.length > 0 && (
+          <span
+            className={`storyboard-dialog-count-chip ${allRecorded ? 'is-recorded' : ''}`}
+            title={allRecorded
+              ? `${dialogIds.length} line${dialogIds.length === 1 ? '' : 's'}, all recorded (lip-sync)`
+              : `${dialogIds.length} line${dialogIds.length === 1 ? '' : 's'}`}
+          >
+            💬 {dialogIds.length}{allRecorded ? ' 🎙' : ''}
+          </span>
+        )}
+        {generatedVideoId && (
+          <span className="storyboard-clip-chip" title="Clip rendered">🎬</span>
+        )}
         {critScore != null && (
           <span className={`storyboard-score-chip ${critBand}`} title="Critique score">
             {critScore}{isFlagged(critScore) ? ' ⚑' : ''}

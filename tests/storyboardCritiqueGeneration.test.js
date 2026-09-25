@@ -154,8 +154,9 @@ describe('reExpandShot (regenerate prompt from critique)', () => {
     await gen.reExpandShot({ projectId, storyboardId: sb._id.toString(), critiqueGuidance: 'colder light' });
     expect(sawNotes).toContain('colder light');
     const reread = await getStoryboard(projectId, sb._id);
-    expect(reread.frames[0].prompt).toBe('NEW start');
     expect(reread.text_prompt).toContain('NEW video');
+    // Frame prompts are left alone: the still renders from text_prompt.
+    for (const f of reread.frames) expect(f.prompt).not.toBe('NEW start');
     gen._setShotExpanderForTests(null);
   });
 

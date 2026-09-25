@@ -155,7 +155,10 @@ describe('generation pipeline threads sets_in_scene', () => {
           i === 0
             ? 'Wide on the chaotic kitchen pass.'
             : 'Medium shot spilling into the rain-slick Alley behind the diner.',
-        video_prompt: i === 0 ? 'They sprint through. Camera pans.' : 'Door slams open. Camera holds.',
+        video_prompt:
+          i === 0
+            ? 'They sprint through. Camera pans.'
+            : 'Medium shot spilling into the rain-slick Alley behind the diner. Door slams open. Camera holds.',
       })),
     );
 

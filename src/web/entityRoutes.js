@@ -461,6 +461,72 @@ export function buildApiRouter() {
     }
   });
 
+  // Server-Sent Events stream of a beat render job (src/web/beatRender.js).
+  // Same pre-auth session_id handshake as the video-job stream above; the
+  // job id is unguessable, so the stream is capability-keyed.
+  router.get('/beat/:id/render-job/:jobId/events', async (req, res, next) => {
+    try {
+      const sid = String(req.query?.session_id || '');
+      if (!sid) {
+        res.status(401).json({ error: 'missing session' });
+        return;
+      }
+      const session = await getSession(sid);
+      if (!session) {
+        res.status(401).json({ error: 'invalid session' });
+        return;
+      }
+      touchSession(sid).catch(() => {});
+      req.session = session;
+
+      const { getBeatRenderJob, subscribeToBeatJob, unsubscribeFromBeatJob, serializeBeatJob } =
+        await import('./beatRender.js');
+      const job = getBeatRenderJob(req.params.jobId);
+      if (!job) {
+        res.status(404).json({ error: 'job not found' });
+        return;
+      }
+      const isTerminal = (s) => s === 'done' || s === 'partial' || s === 'error';
+      res.set({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      res.flushHeaders?.();
+      res.write(`event: snapshot\ndata: ${JSON.stringify(serializeBeatJob(job))}\n\n`);
+
+      const listener = (snap) => {
+        const terminal = isTerminal(snap.status);
+        const eventName = terminal ? snap.status : 'update';
+        res.write(`event: ${eventName}\ndata: ${JSON.stringify(snap)}\n\n`);
+        if (terminal) {
+          unsubscribeFromBeatJob(snap.job_id, listener);
+          res.end();
+        }
+      };
+      subscribeToBeatJob(req.params.jobId, listener);
+
+      if (isTerminal(job.status)) {
+        unsubscribeFromBeatJob(req.params.jobId, listener);
+        res.end();
+        return;
+      }
+
+      const keepalive = setInterval(() => {
+        res.write(`: keepalive ${Date.now()}\n\n`);
+      }, 20_000);
+      keepalive.unref?.();
+
+      req.on('close', () => {
+        clearInterval(keepalive);
+        unsubscribeFromBeatJob(req.params.jobId, listener);
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   // Server-Sent Events stream of a web chat agent run. Registered BEFORE
   // requireSession() for the same EventSource-can't-set-headers reason as
   // the video-job stream above.
@@ -2063,6 +2129,100 @@ export function buildApiRouter() {
   // Delete a beat outright (the SPA's "Delete beat" button at the bottom of
   // the beat page). The gateway cascades to the beat's storyboards, dialogs,
   // images and RAG chunks and pings the TOC room so open clients refetch.
+  // ── Beat render: prompts → clips → beat MP4 (src/web/beatRender.js) ──
+  // Body: { overrides?: {lipsync, video_direct, video_start_only}, skip_rendered?,
+  //         include_director_notes?, image_model? }
+  function parseBeatRenderBody(body, res) {
+    const out = { overrides: {}, skipRendered: true, includeDirectorNotes: true, imageModel: null };
+    const src = body && typeof body === 'object' ? body : {};
+    const ov = src.overrides && typeof src.overrides === 'object' && !Array.isArray(src.overrides) ? src.overrides : {};
+    for (const key of ['lipsync', 'video_direct', 'video_start_only']) {
+      const v = ov[key];
+      if (v == null || v === '') continue;
+      if (typeof v !== 'string' || v.length > 300) {
+        res.status(400).json({ error: `overrides.${key} must be a model id string` });
+        return null;
+      }
+      out.overrides[key] = v.trim();
+    }
+    if (src.skip_rendered !== undefined) out.skipRendered = Boolean(src.skip_rendered);
+    if (src.include_director_notes !== undefined) out.includeDirectorNotes = Boolean(src.include_director_notes);
+    if (typeof src.image_model === 'string' && src.image_model.trim()) out.imageModel = src.image_model.trim().slice(0, 300);
+    return out;
+  }
+
+  router.post('/beat/:id/render/preview', async (req, res, next) => {
+    try {
+      const beat = await getBeat(req.projectId, String(req.params.id));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const parsed = parseBeatRenderBody(req.body, res);
+      if (!parsed) return;
+      const { buildBeatRenderPreview } = await import('./beatRender.js');
+      const preview = await buildBeatRenderPreview({
+        projectId: req.projectId,
+        beatId: beat._id,
+        overrides: parsed.overrides,
+        skipRendered: parsed.skipRendered,
+      });
+      res.json(preview);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/beat/:id/render', async (req, res, next) => {
+    try {
+      const beat = await getBeat(req.projectId, String(req.params.id));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const parsed = parseBeatRenderBody(req.body, res);
+      if (!parsed) return;
+      const { startBeatRenderJob, BeatRenderBusyError, BeatRenderEmptyError } = await import('./beatRender.js');
+      try {
+        const out = await startBeatRenderJob({
+          projectId: req.projectId,
+          beatId: beat._id,
+          overrides: parsed.overrides,
+          skipRendered: parsed.skipRendered,
+          includeDirectorNotes: parsed.includeDirectorNotes,
+          imageModel: parsed.imageModel,
+          announceUsername: req?.session?.username || null,
+        });
+        res.status(202).json(out);
+      } catch (e) {
+        if (e instanceof BeatRenderBusyError) return res.status(409).json({ error: e.message });
+        if (e instanceof BeatRenderEmptyError) return res.status(400).json({ error: e.message });
+        if (e instanceof FalNotConfiguredError) return res.status(503).json({ error: e.message });
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/beat/:id/render-job/:jobId', async (req, res, next) => {
+    try {
+      const { getBeatRenderJob, serializeBeatJob } = await import('./beatRender.js');
+      const job = getBeatRenderJob(req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'job not found' });
+      res.json({ job: serializeBeatJob(job) });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Discard the assembled beat video (the shot clips stay).
+  router.delete('/beat/:id/video', async (req, res, next) => {
+    try {
+      const beat = await getBeat(req.projectId, String(req.params.id));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { setBeatVideoViaGateway } = await import('./gateway.js');
+      const updated = await setBeatVideoViaGateway({ projectId: req.projectId, beatId: beat._id, fileId: null });
+      res.json({ ok: true, beat: { _id: String(updated._id), video_file_id: updated.video_file_id } });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   router.delete('/beat/:id', async (req, res, next) => {
     try {
       // getBeat (not resolveBeatId) so an unknown or cross-project hex id is a
@@ -4077,6 +4237,8 @@ export function buildApiRouter() {
         shot_type,
         transition_in,
         characters_in_scene,
+        sets_in_scene,
+        dialog_ids,
       } = req.body || {};
       const patch = {};
       if (duration_seconds !== undefined) patch.duration_seconds = duration_seconds;
@@ -4084,6 +4246,8 @@ export function buildApiRouter() {
       if (transition_in !== undefined) patch.transition_in = transition_in;
       if (characters_in_scene !== undefined)
         patch.characters_in_scene = characters_in_scene;
+      if (sets_in_scene !== undefined) patch.sets_in_scene = sets_in_scene;
+      if (dialog_ids !== undefined) patch.dialog_ids = dialog_ids;
       if (!Object.keys(patch).length)
         return res.status(400).json({ error: 'no patch fields' });
       try {

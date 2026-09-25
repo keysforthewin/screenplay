@@ -9,7 +9,7 @@
 
 import { getDb } from './client.js';
 
-// The five default slots. Image slots store an image-model id (the picker's
+// The six default slots. Image slots store an image-model id (the picker's
 // `m.id`); video slots store a fal endpoint_id (the video picker selects rows
 // by endpoint).
 export const MODEL_DEFAULT_KEYS = Object.freeze([
@@ -17,6 +17,7 @@ export const MODEL_DEFAULT_KEYS = Object.freeze([
   'image_prompt_only', // image model for plates rendered from the prompt alone
   'video_start_end', // video model when the scene provides a start AND end frame
   'video_start_only', // video model when the scene provides only a start frame
+  'video_direct', // reference-to-video model: prompt + reference images, no start frame (beat render "direct" shots)
   'lipsync', // lip-sync (avatar) video model
 ]);
 

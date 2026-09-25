@@ -212,6 +212,56 @@ describe('storyboard auto-generation (two-pass)', () => {
     expect(stored[1].characters_in_scene).toEqual(['Alice', 'Bob']);
   });
 
+  it('persists planner dialog links as dialog_ids, times dialogue shots off the lines, and reports coverage on the job', async () => {
+    const Dialogs = await import('../src/mongo/dialogs.js');
+    const beat = await Plots.createBeat({ projectId,
+      name: 'Diner reunion',
+      desc: 'Alice meets Bob at the diner.',
+      body: 'Alice arrives. Bob waits.',
+      characters: ['Alice', 'Bob'],
+    });
+    const d1 = await Dialogs.createDialog({ projectId, beatId: beat._id, character: 'Alice', body: 'You came.' });
+    const d2 = await Dialogs.createDialog({ projectId, beatId: beat._id, character: 'Bob', body: 'I said I would.' });
+    const d3 = await Dialogs.createDialog({ projectId, beatId: beat._id, character: 'Alice', body: 'You say a lot of things.' });
+
+    let plannerSawDialogs = '';
+    Generate._setScenePlannerForTests(async (args) => {
+      plannerSawDialogs = Generate.buildScenePlanUserText(args);
+      return {
+        sceneBible: null,
+        outline: [
+          { description: 'wide', shot_type: 'cinematic_wide', duration_seconds: 8, characters_in_scene: ['Alice', 'Bob'] },
+          // covers lines 1-2; line 3 deliberately left unassigned
+          { description: 'two shot', shot_type: 'two_shot', duration_seconds: 2, characters_in_scene: ['Alice', 'Bob'], dialog_lines: [1, 2] },
+        ],
+      };
+    });
+    Generate._setShotExpanderForTests(async ({ outline }) =>
+      outline.map((f, i) => ({ video_prompt: `Prompt ${i}: ${f.description}. Camera holds.` })),
+    );
+
+    const jobId = await Generate.startStoryboardGenerationJob({ projectId, beatId: beat._id.toString() });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+
+    // The planner saw numbered lines with their audio state.
+    expect(plannerSawDialogs).toContain('1. Alice:');
+    expect(plannerSawDialogs).toContain('[audio: none');
+
+    const stored = await Storyboards.listStoryboards({ beatId: beat._id });
+    expect(stored[0].dialog_ids).toEqual([]);
+    expect(stored[0].duration_seconds).toBe(8);
+    expect(stored[1].dialog_ids.map(String)).toEqual([String(d1._id), String(d2._id)]);
+    // Two short lines → estimate above the planner's 2s, under the two_shot cap.
+    expect(stored[1].duration_seconds).toBeGreaterThan(2);
+    // Coverage audit lands on the job: line 3 is unassigned.
+    expect(job.coverage).toBeTruthy();
+    const codes = job.coverage.checks.map((c) => c.code);
+    expect(codes).toContain('dialog_unassigned');
+    expect(job.coverage.checks.find((c) => c.code === 'dialog_unassigned').subject).toBe(String(d3._id));
+    expect(job.events.some((e) => e.step === 'coverage_warnings')).toBe(true);
+  });
+
   it('returns status=done and persists nothing when the planner returns no shots', async () => {
     Generate._setScenePlannerForTests(async () => ({ sceneBible: null, outline: [] }));
 
@@ -462,13 +512,10 @@ describe('storyboard auto-generation (two-pass)', () => {
     expect(stored[0].text_prompt).not.toContain(TWO_SHOT_PLAN.shots[0].description);
     expect(stored[0].text_prompt).not.toContain('CINEMATIC WIDE');
     expect(stored[1].text_prompt).not.toContain(TWO_SHOT_PLAN.shots[1].transition_in);
-    // Only the opening still prompt is seeded — exactly one frame per row.
-    expect(stored[0].frames.map((f) => f.prompt)).toEqual([
-      TWO_SHOT_PLAN.shots[0].start_frame_prompt,
-    ]);
-    expect(stored[1].frames.map((f) => f.prompt)).toEqual([
-      TWO_SHOT_PLAN.shots[1].start_frame_prompt,
-    ]);
+    // Exactly one frame per row, seeded with an EMPTY prompt: the still renders
+    // from text_prompt, so there is one prompt per shot, not two.
+    expect(stored[0].frames.map((f) => f.prompt)).toEqual(['']);
+    expect(stored[1].frames.map((f) => f.prompt)).toEqual(['']);
   });
 
   it('propagates `direction` to both passes', async () => {
@@ -825,7 +872,7 @@ describe('shot-expand prompt wiring', () => {
     // The image model only ever sees the still prompt + reference images, never
     // the bible, so the framed subject's precise placement must be written in.
     const t = Generate.SHOT_EXPAND_SYSTEM_PROMPT.toLowerCase();
-    expect(t).toContain('receives only this prompt');
+    expect(t).toContain('receive only this prompt');
     expect(t).toContain('placement');
     expect(t).toContain('front passenger');
   });

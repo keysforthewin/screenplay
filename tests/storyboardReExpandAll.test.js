@@ -50,7 +50,7 @@ beforeEach(async () => {
     const sbs = await listStoryboards({ beatId: beat._id });
     for (const sb of sbs) {
       expect(sb.text_prompt).toContain('NV');
-      expect(sb.frames[0].prompt).toMatch(/^NS/);
+      for (const f of sb.frames) expect(f.prompt).not.toMatch(/^NS/);
     }
     gen._setShotExpanderForTests(null);
   });

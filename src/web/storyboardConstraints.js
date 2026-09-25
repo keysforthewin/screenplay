@@ -100,9 +100,9 @@ export const FRAGILITY_RULES = [
 ].join('\n');
 
 export const STILL_FRAMING_RULES = [
-  'Still-frame composition (for the start_frame_prompt that anchors the clip):',
+  'Opening composition (the first 2–3 sentences of the prompt — the still the clip opens on, and what the image model renders as the storyboard frame):',
   `- This still is a FROZEN MOMENT of a live action, not a posed product shot. Translate the shot's motion into a concrete pose: a moving car sits squarely in its lane, body aligned with the road, nose pointed the way it travels; a walking person is caught mid-stride, weight shifting, facing their heading. Never leave the subject in a limp, ambiguous, or default stance.`,
-  `- The still is the clip's FIRST frame — the INITIAL STATE at t=0. Render the moment the clip opens on, then let the video_prompt carry everything that happens afterward.`,
+  `- The still is the clip's FIRST frame — the INITIAL STATE at t=0. Describe the moment the clip opens on, then let the clip movement of the prompt carry everything that happens afterward.`,
   `- State the subject's ORIENTATION and HEADING explicitly — which way it faces and, for anything in motion, the direction it is traveling. Pair every framing term ("three-quarter rear", "profile") with that heading so the model cannot invent a nonsensical pose (a car slewed diagonally across the road, a figure facing the wrong way).`,
   `- State WHERE the subject sits in the geography the beat requires — the exact sub-location the beat or a mini-slug names (the back seat vs the front, at the head of the table, in the doorway, in its travel lane to one side of the centerline). REQUIRED in EVERY still that frames that subject, INCLUDING tight close-ups where the location seems invisible: the image model defaults an unplaced subject to the most generic position (a child at a car window → the front passenger seat), so saying nothing renders the WRONG place.`,
   `- Pin the sub-location with a POSITIVE ANCHORING CUE held in frame, not just the words: for a back-seat child, show the back of the front-row headrest ahead of him and the rear side-window line, and keep the steering wheel and dashboard OUT of frame; for the head of the table, show the table receding away from him; for the doorway, show the jamb framing him. One or two such cues are enough to fix the placement.`,
@@ -119,14 +119,14 @@ export const STILL_FRAMING_RULES = [
 // carries it). Owns ORDERING/FORMAT; CAMERA_MOTION_RULES owns which camera
 // moves are available, PERFORMANCE_RULES owns the acting content.
 export const VIDEO_PROMPT_RULES = [
-  'Video-prompt structure — describe what happens over the clip; the start frame already holds the scene. 4-8 sentences, in this order:',
+  'Clip structure — after the opening composition, describe what happens over the clip; the opening already holds the scene. 3-6 sentences, in this order:',
   '1. CAMERA FIRST, explicitly, as the opening words. For a held shot write "Static, locked-off camera." verbatim — never bury the camera mid-sentence. For a moving shot, name the move and its motivation as the first clause.',
   '2. BLOCKING — how the bodies move through the frame, with direction and endpoint.',
   '3. PERFORMANCE — the speech turns, the facial beats, the listener behavior, and any state change, per the performance rules. This is the SUBSTANCE of the shot. Do not skip it because the shot looks simple: a shot of two people talking is a shot about two performances, not about a camera.',
   '4. At most ONE environmental event — weather turning, a light source changing, a passing vehicle. Keep it in service of the performance, never competing with it.',
   '5. ENDPOINT — the completed state the clip arrives at, per the endpoint rules.',
   'WRITE CAUSE AND CONSEQUENCE, NOT A LIST. One physical cause with two or three visible consequences reads far stronger than four disconnected instructions: "the heavy door swings shut and the candle flames bend toward it" beats "the door closes; the flames move; the room darkens". A described cause gives the motion something to ride; a list of micro-instructions has no trajectory and gets smoothed away or glitches.',
-  'Strip ALL static description from the video_prompt: no subject identity (make / model / color / year / name), no setting or location, no composition or framing. Those live in the start_frame_prompt only — the video_prompt assumes the frame is already correct.',
+  'Keep ALL static description in the opening composition: subject identity, setting, composition and framing are stated there once. The clip movement assumes the frame is already correct and describes only what changes.',
   'Do NOT write a stillness closer. The line "Everything else holds still — no other movement." and any variant of it are FORBIDDEN: they freeze every listener, every reaction, and every background life cue, and a scene where exactly one thing moves reads as dead. Close on the shot\'s endpoint instead.',
 ].join('\n');
 
@@ -149,7 +149,7 @@ export const OCCUPANT_PLACEHOLDER_RULES = [
 // here, narrowed: mouths move, words never appear, because the real voices are
 // recorded and lip-synced in post.
 export const PERFORMANCE_RULES = [
-  'Performance — every shot with a character on screen carries an acting objective. Write these into the video_prompt, in this order, including only what the shot actually contains:',
+  'Performance — every shot with a character on screen carries an acting objective. Write these into the clip movement of the prompt, in this order, including only what the shot actually contains:',
   '- BLOCKING — where each character moves through the frame over the clip: who crosses to whom, who stands, who turns away, who closes distance. Give direction and endpoint. If no one relocates, say the blocking holds and describe the weight shift instead.',
   '- SPEECH TURNS — exactly who is speaking at each point and in what order: "the woman speaks through the first half, then falls silent as the man answers over her." Describe the mouth and jaw working, the breath, the head punctuating. NEVER write the words themselves, quoted lines, voice-over, or sound effects — real performances are dubbed and lip-synced in post, and a synthesized voice would have to be thrown away.',
   '- FACIAL BEATS — the expression CHANGE, never a static expression. Name the start state and the end state: "the flat courtesy drains out of her face into open alarm." Brows, eyes, mouth corners, jaw, a swallow, a blink held a beat too long. Only ask for this where the framing can hold it (see the shot-size rules) — at wide sizes, put the same beat in the body instead.',
@@ -169,11 +169,11 @@ export const PERFORMANCE_RULES = [
 // has since changed must be said out loud or the image model silently reverts.
 // The last bullet is the seam where this meets PERFORMANCE_RULES' STATE CHANGE.
 export const CONTINUITY_STATE_RULES = [
-  "Continuity state — the character's condition at THIS point in the story, written into the start_frame_prompt:",
+  "Continuity state — the character's condition at THIS point in the story, written into the opening composition:",
   '- Reference photos and the scene bible carry the DEFAULT look. Anything the story has changed since must be stated explicitly or the image model reverts to the reference: jacket now off, sleeves rolled, shirt bloodied, hair soaked, the bag she picked up two beats ago now in her hand.',
   '- Like the subject\'s sub-location, this is written into the still even though wardrobe is otherwise inherited from the references. State only what DIFFERS from the default — not a full costume description.',
   '- Carry it forward: once a beat has changed a state, every later shot shows the changed state until something changes it again. Check the earlier shots in the skeleton before writing each still.',
-  "- When a state change happens DURING a clip, the still opens in the state BEFORE it, the video_prompt performs the change, and the next shot's still opens in the state AFTER.",
+  "- When a state change happens DURING a clip, the opening composition shows the state BEFORE it, the clip performs the change, and the next shot's opening shows the state AFTER.",
 ].join('\n');
 
 // A shot is ONE camera position. The failure this prevents: a prompt that names
@@ -190,4 +190,18 @@ export const CAMERA_COHERENCE_RULES = [
   '- THE BUG TO AVOID: one frame that describes the FACES of people whose backs are to the camera (a from-behind master + frontal detail). That is two separate shots — give the character beat its own shot angled to see them.',
   '- This does NOT forbid a person seen from behind in frame. Standard grammar is fine — over_the_shoulder shows the near person from behind (no face described) while the camera FACES the far character whose beat it is; a two-shot may show one character facing the camera (face visible) and another facing away (back visible). Both are one coherent eyeline.',
   '- The single test: every face or expression you describe must belong to someone this one camera can actually see.',
+].join('\n');
+
+// Dialogue coverage. The beat's dialogue lines are numbered in the planner's
+// context block; the scene planner assigns each one to exactly one shot via
+// dialog_lines so the render step knows which recorded lines to lip-sync into
+// which clip. This block owns the ASSIGNMENT rules only — PERFORMANCE_RULES
+// still owns "mouths move, words never appear", and that rule is unchanged.
+export const DIALOGUE_COVERAGE_RULES = [
+  'Dialogue coverage — the numbered dialogue lines in the context are recorded by real actors and lip-synced into the clip that COVERS them. Assign them with dialog_lines:',
+  '- Every line is covered by EXACTLY ONE shot. No line may be skipped and no line may be split across two shots.',
+  '- Assign lines in script order: a shot covers a CONTIGUOUS run of lines, and later shots cover later lines. A shot with no spoken line (an establishing wide, an insert, a pure reaction) has an empty dialog_lines.',
+  '- The covering shot must frame the SPEAKER with the mouth visible — front or three-quarter front, never from behind, never an insert of hands. A reaction shot of the LISTENER carries no lines; put the line on the speaker\'s shot and cut to the reaction after.',
+  '- A shot may cover several short lines when they are one exchange in one framing (an over-the-shoulder that holds both speakers), but keep the spoken time under the shot_type duration cap: close_up/reaction/two_shot/over_the_shoulder ≤ 5s, medium ≤ 10s, wides ≤ 15s. When a run of lines would overrun the cap, split the coverage across more shots rather than compressing the delivery.',
+  '- Lines marked with a recorded audio length are fixed in time: a covered recorded line dictates the clip length, so plan the shot around it.',
 ].join('\n');

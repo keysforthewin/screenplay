@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   formatDialogLines,
+  formatDialogAudioMark,
   buildBeatContextBlock,
   buildScenePlanUserText,
 } from '../src/web/storyboardGenerate.js';
@@ -38,6 +39,27 @@ describe('formatDialogLines', () => {
   it('strips markdown out of the speaker name', () => {
     expect(formatDialogLines([{ order: 1, character: '**Sarah**', body: 'Hi.', direction: '' }])).toContain('1. Sarah:');
   });
+
+  it('marks each line with its audio state so the planner knows which lines are fixed in time', () => {
+    const out = formatDialogLines([
+      { order: 1, character: 'Sarah', body: 'Hi there.', direction: '', audio_file_id: 'f', audio_duration_seconds: 4.25 },
+      { order: 2, character: 'Tom', body: 'Hey.', direction: '' },
+    ]);
+    expect(out).toContain('[audio: 4.3s recorded]');
+    expect(out).toContain('[audio: none');
+    expect(formatDialogAudioMark({ audio_file_id: 'f' })).toBe('[audio: recorded, length unknown]');
+  });
+
+  it('numbers lines by position in the full list even when a blank line is skipped', () => {
+    const out = formatDialogLines([
+      { order: 1, character: 'Sarah', body: 'Hi.', direction: '' },
+      { order: 2, character: '', body: '', direction: '' },
+      { order: 3, character: 'Tom', body: 'Hey.', direction: '' },
+    ]);
+    expect(out).toContain('1. Sarah:');
+    expect(out).toContain('3. Tom:');
+    expect(out).not.toContain('2. Tom:');
+  });
 });
 
 describe('buildBeatContextBlock dialogue block', () => {
@@ -51,6 +73,7 @@ describe('buildBeatContextBlock dialogue block', () => {
     expect(out).toContain('Dialogue in this beat');
     expect(out).toContain('TURN ORDER');
     expect(out).toContain('NEVER write these words');
+    expect(out).toContain('dialog_lines');
     expect(out).toContain('1. Sarah:');
   });
 });

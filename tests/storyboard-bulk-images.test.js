@@ -51,7 +51,7 @@ async function makeBeat({ shots }) {
   const out = [];
   for (const s of shots) {
     const sb = await Storyboards.createStoryboard({ projectId,
-      beatId: beat._id, textPrompt: s.text || 'a shot', shotType: 'cinematic_wide',
+      beatId: beat._id, textPrompt: s.text ?? 'a shot', shotType: 'cinematic_wide',
     });
     let frameId = null;
     if (!s.skipFrame) {
@@ -109,8 +109,25 @@ describe('startBulkFrameGenerationJob', () => {
     expect(sb1.frames[0].image_id.toString()).toBe(midImage.toString());
   });
 
-  it('falls back to the suggested prompt when a start frame has no stored prompt', async () => {
-    const { beat } = await makeBeat({ shots: [{ /* no prompt */ }] });
+  it('renders from the shot prompt (text_prompt) when the frame has no prompt of its own, without persisting it into the frame', async () => {
+    const { beat, out } = await makeBeat({ shots: [{ text: 'Frontal medium on the cook at the pass. Static camera; he plates and looks up.' }] });
+    let captured = null;
+    Generate._setImageDispatcherForTests(async (args) => {
+      captured = args.prompt;
+      return { buffer: Buffer.from('img'), contentType: 'image/png' };
+    });
+    const { jobId } = await Generate.startBulkFrameGenerationJob({ projectId, beatId: beat._id });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe('done');
+    expect(captured).toBe('Frontal medium on the cook at the pass. Static camera; he plates and looks up.');
+    // The frame prompt stays blank so later renders keep tracking text_prompt.
+    const sb = await Storyboards.getStoryboard(projectId, out[0].sbId);
+    expect(sb.frames[0].prompt).toBe('');
+    expect(sb.frames[0].image_id).toBeTruthy();
+  });
+
+  it('falls back to the heuristic draft when neither the frame nor the shot has a prompt', async () => {
+    const { beat } = await makeBeat({ shots: [{ text: '' }] });
     let captured = null;
     Generate._setImageDispatcherForTests(async (args) => {
       captured = args.prompt;
@@ -120,7 +137,6 @@ describe('startBulkFrameGenerationJob', () => {
     const job = await waitForJob(jobId);
     expect(job.status).toBe('done');
     expect(typeof captured).toBe('string');
-    expect(captured.trim().length).toBeGreaterThan(0);
     expect(captured).toMatch(/cinematic_wide|wide/i);
   });
 

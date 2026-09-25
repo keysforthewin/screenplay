@@ -66,10 +66,10 @@ describe('storyboard constraints', () => {
     expect(t).not.toContain('at most one hero temporal change');
   });
 
-  it('video-prompt rules still strip static description into the still', () => {
+  it('clip rules keep static description in the opening composition', () => {
     const t = VIDEO_PROMPT_RULES.toLowerCase();
-    expect(t).toContain('strip all static description');
-    expect(t).toContain('start_frame_prompt');
+    expect(t).toContain('keep all static description in the opening composition');
+    expect(t).not.toContain('start_frame_prompt');
   });
 
   it('still-framing rules require explicit subject orientation/heading', () => {
@@ -177,7 +177,7 @@ describe('storyboard constraints', () => {
   it('continuity-state rules join the still to the in-clip state change', () => {
     const t = CONTINUITY_STATE_RULES.toLowerCase();
     expect(t).toContain('state before it');
-    expect(t).toContain('video_prompt performs the change');
+    expect(t).toContain('the clip performs the change');
     expect(t).toContain('state after');
   });
 

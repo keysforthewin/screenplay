@@ -57,6 +57,7 @@ const ALL_NULL = {
   image_prompt_only: null,
   video_start_end: null,
   video_start_only: null,
+  video_direct: null,
   lipsync: null,
 };
 

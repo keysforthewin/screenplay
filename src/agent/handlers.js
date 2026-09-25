@@ -3702,6 +3702,119 @@ export const HANDLERS = {
     const notPersisted = !context?.channelId ? ' (not persisted — no channel context)' : '';
     return `Switched to project "${project.title}".${notPersisted}`;
   },
+
+  // ── Beat → shots → video (src/web/storyboardGenerate.js, src/web/beatRender.js) ──
+  async plan_shots({ beat, count, direction } = {}, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
+    const { startStoryboardGenerationJob, BeatBusyError } = await import('../web/storyboardGenerate.js');
+    const { storyboardUrl } = await import('../web/links.js');
+    let jobId;
+    try {
+      jobId = await startStoryboardGenerationJob({
+        projectId: context?.projectId,
+        beatId: target._id.toString(),
+        targetCount: Number.isFinite(Number(count)) && Number(count) > 0 ? Number(count) : undefined,
+        direction: typeof direction === 'string' ? direction : '',
+        announceUsername: context?.discordUser?.username || null,
+      });
+    } catch (e) {
+      if (e instanceof BeatBusyError) {
+        return `Beat "${target.name}" already has storyboard work running — wait for it to finish, then try again.`;
+      }
+      throw e;
+    }
+    return withSpaLink(
+      `Planning shots for beat "${target.name}" (job ${jobId}). This replaces its existing shots: one video prompt per shot, references matched, dialogue lines assigned. Check progress with get_beat_render_status({job_id: "${jobId}"}).`,
+      storyboardUrl(context?.projectTitle, target),
+    );
+  },
+
+  async render_beat({ beat, skip_rendered, lipsync_model, direct_model, start_only_model } = {}, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
+    const { startBeatRenderJob, BeatRenderBusyError, BeatRenderEmptyError } = await import('../web/beatRender.js');
+    const { storyboardUrl } = await import('../web/links.js');
+    const overrides = {};
+    if (typeof lipsync_model === 'string' && lipsync_model.trim()) overrides.lipsync = lipsync_model.trim();
+    if (typeof direct_model === 'string' && direct_model.trim()) overrides.video_direct = direct_model.trim();
+    if (typeof start_only_model === 'string' && start_only_model.trim()) overrides.video_start_only = start_only_model.trim();
+    let out;
+    try {
+      out = await startBeatRenderJob({
+        projectId: context?.projectId,
+        beatId: target._id.toString(),
+        overrides,
+        skipRendered: skip_rendered === undefined ? true : Boolean(skip_rendered),
+        announceUsername: context?.discordUser?.username || null,
+      });
+    } catch (e) {
+      if (e instanceof BeatRenderBusyError) {
+        return `Beat "${target.name}" already has storyboard work running — wait for it to finish, then try again.`;
+      }
+      if (e instanceof BeatRenderEmptyError) return `Cannot render beat "${target.name}": ${e.message}`;
+      if (e?.code === 'FAL_NOT_CONFIGURED') return e.message;
+      throw e;
+    }
+    return withSpaLink(
+      `Rendering beat "${target.name}": ${out.planned} shot${out.planned === 1 ? '' : 's'} to render` +
+        (out.skipped ? `, ${out.skipped} skipped (already rendered or no prompt)` : '') +
+        ` (job ${out.job_id}). Clips are joined into the beat video when every shot has one. Check progress with get_beat_render_status({job_id: "${out.job_id}"}).`,
+      storyboardUrl(context?.projectTitle, target),
+    );
+  },
+
+  async get_beat_render_status({ job_id } = {}, context = null) {
+    if (!job_id) throw new Error('job_id is required.');
+    const { getBeatRenderJob, serializeBeatJob } = await import('../web/beatRender.js');
+    const render = getBeatRenderJob(String(job_id));
+    if (render) {
+      const job = serializeBeatJob(render);
+      const lines = [
+        `Render job ${job.job_id}: ${job.status} (${job.phase})` +
+          (job.progress?.message ? ` — ${job.progress.message}` : ''),
+        `Shots: ${job.completed}/${job.planned} rendered` +
+          (job.failed ? `, ${job.failed} failed` : '') +
+          (job.skipped ? `, ${job.skipped} skipped` : ''),
+      ];
+      for (const s of job.shots) {
+        const bits = [`#${s.order + 1}`, s.skipped ? `skipped (${s.skip_reason})` : `${s.mode || '?'} · ${s.status}`];
+        if (s.model_label && !s.skipped) bits.push(s.model_label);
+        if (s.auto_keyframe) bits.push('auto still');
+        if (s.error) bits.push(`error: ${s.error}`);
+        lines.push(`- ${bits.join(' · ')}`);
+      }
+      if (job.coverage?.counts?.warnings) {
+        lines.push(`Coverage warnings: ${job.coverage.checks.filter((c) => c.severity === 'warn').map((c) => c.message).join(' · ')}`);
+      }
+      if (job.assembly_skipped_reason) lines.push(`Beat video not assembled: ${job.assembly_skipped_reason}`);
+      if (job.video_file_id) {
+        const { attachmentLink } = await import('../server/index.js');
+        lines.push(`Beat video: ${attachmentLink(job.video_file_id)}`);
+      }
+      return lines.join('\n');
+    }
+    const { getStoryboardGenerationJob } = await import('../web/storyboardGenerate.js');
+    const plan = getStoryboardGenerationJob(String(job_id));
+    if (plan) {
+      const lines = [
+        `Plan job ${plan.job_id}: ${plan.status}` + (plan.progress?.message ? ` — ${plan.progress.message}` : ''),
+        `Shots: ${plan.completed}/${plan.planned} created` + (plan.failed ? `, ${plan.failed} failed` : ''),
+      ];
+      if (plan.error) lines.push(`Error: ${plan.error}`);
+      if (plan.coverage) {
+        const warns = plan.coverage.checks.filter((c) => c.severity === 'warn');
+        lines.push(
+          warns.length
+            ? `Coverage warnings: ${warns.map((c) => c.message).join(' · ')}`
+            : 'Coverage: every dialogue line is covered by exactly one shot.',
+        );
+      }
+      if (plan.status === 'done' || plan.status === 'partial') {
+        lines.push('Next: render_beat to turn the shots into clips and a beat video.');
+      }
+      return lines.join('\n');
+    }
+    return `No job found for id ${job_id} (jobs are kept in memory for a few minutes after they finish).`;
+  },
 };
 
 export async function dispatchTool(name, input, context = null) {

@@ -14,7 +14,7 @@ import {
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { apiDelete, apiGet, apiPostJson } from '../api.js';
+import { apiDelete, apiGet, apiPostJson, apiSseUrl } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { StoryboardItem } from '../widgets/StoryboardItem.jsx';
 import { ConfirmDialog } from '../widgets/Modal.jsx';
@@ -27,6 +27,11 @@ import { BeatPager } from '../widgets/BeatPager.jsx';
 import { SceneBiblePanel } from '../widgets/SceneBiblePanel.jsx';
 import { GenerationProgress } from '../widgets/GenerationProgress.jsx';
 import { ReadinessPanel } from '../widgets/ReadinessPanel.jsx';
+import { CoveragePanel } from '../widgets/CoveragePanel.jsx';
+import { PipelineStepper } from '../widgets/PipelineStepper.jsx';
+import { RenderBeatDialog } from '../widgets/RenderBeatDialog.jsx';
+import { BeatRenderShots } from '../widgets/BeatRenderShots.jsx';
+import { BeatVideoPanel } from '../widgets/BeatVideoPanel.jsx';
 
 export function StoryboardBeat({ session }) {
   const { order } = useParams();
@@ -71,13 +76,28 @@ export function StoryboardBeat({ session }) {
   // tag input. /api/toc returns plain_name for case-insensitive matching.
   const [tocCharacters, setTocCharacters] = useState([]);
   const [tocBeats, setTocBeats] = useState([]);
+  // The beat's dialogue lines: feed the per-shot dialog chips, the collapsed
+  // row's coverage glyph and the pipeline strip. Refetched on every refresh
+  // because recordings attached on the Dialog tab change the lip-sync state.
+  const [beatDialogs, setBeatDialogs] = useState([]);
+  // Coverage audit from the last plan run; stays visible after the progress
+  // panel goes away so the warnings can be acted on.
+  const [coverage, setCoverage] = useState(null);
+  // "Render beat": one job for every shot's clip + the assembled MP4, streamed
+  // over SSE (per-shot fal queue state is merged into job.shots by the server).
+  const [renderDialogOpen, setRenderDialogOpen] = useState(false);
+  const [rendering, setRendering] = useState(false);
+  const [renderJob, setRenderJob] = useState(null);
+  const [renderError, setRenderError] = useState(null);
+  const renderEsRef = useRef(null);
+  const renderCompletedRef = useRef(0);
   const [showProgressLog, setShowProgressLog] = useState(true);
   const progressLogRef = useRef(null);
   // 1s tick while a generation is running so "Xs ago" labels update smoothly
   // between the slower 2s polls.
   const [, setNowTick] = useState(0);
   useEffect(() => {
-    if (!generating && !imageGenerating) return undefined;
+    if (!generating && !imageGenerating && !rendering) return undefined;
     const t = setInterval(() => setNowTick((n) => n + 1), 1000);
     return () => clearInterval(t);
   }, [generating, imageGenerating]);
@@ -98,6 +118,22 @@ export function StoryboardBeat({ session }) {
       cancelled = true;
     };
   }, [order, refreshKey]);
+
+  useEffect(() => {
+    if (!data?.beat?._id) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await apiGet(`/dialogs?beat_id=${encodeURIComponent(String(data.beat._id))}`);
+        if (!cancelled) setBeatDialogs(Array.isArray(r?.dialogs) ? r.dialogs : []);
+      } catch {
+        if (!cancelled) setBeatDialogs([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [data?.beat?._id, refreshKey]);
 
   // Load characters resolved for this beat, plus their sheet lists, so the
   // sheet picker rendered above the Generate button reflects the same
@@ -232,6 +268,7 @@ export function StoryboardBeat({ session }) {
     try {
       const r = await apiGet(`/storyboards/generate/${jobId}`);
       setGenerationStatus(r.job);
+      if (r.job?.coverage) setCoverage(r.job.coverage);
       if (r.job?.status === 'done' || r.job?.status === 'partial' || r.job?.status === 'error') {
         clearInterval(pollRef.current);
         pollRef.current = null;
@@ -253,6 +290,7 @@ export function StoryboardBeat({ session }) {
     if (!data?.beat) return;
     setGenerating(true);
     setGenerationError(null);
+    setCoverage(null);
     setGenerationStatus({ status: 'queued', completed: 0, planned: 0, failed: 0 });
     try {
       const body = { beat_id: data.beat._id };
@@ -388,8 +426,78 @@ export function StoryboardBeat({ session }) {
       if (pollRef.current) clearInterval(pollRef.current);
       if (imagePollRef.current) clearInterval(imagePollRef.current);
       if (reassignPollRef.current) clearInterval(reassignPollRef.current);
+      if (renderEsRef.current) renderEsRef.current.close();
     };
   }, []);
+
+  function closeRenderStream() {
+    if (renderEsRef.current) {
+      renderEsRef.current.close();
+      renderEsRef.current = null;
+    }
+  }
+
+  function applyRenderSnapshot(snap) {
+    if (!snap) return;
+    setRenderJob(snap);
+    // Refetch the rows whenever another clip (or still) landed so the list
+    // and the pipeline strip track the job.
+    const landed = (snap.completed || 0) + (snap.failed || 0);
+    if (landed !== renderCompletedRef.current) {
+      renderCompletedRef.current = landed;
+      onRefresh();
+    }
+  }
+
+  async function startRender({ overrides, skipRendered }) {
+    if (!data?.beat) return;
+    setRenderDialogOpen(false);
+    setRendering(true);
+    setRenderError(null);
+    setRenderJob({ status: 'queued', phase: 'queued', planned: 0, completed: 0, failed: 0, shots: [], events: [] });
+    renderCompletedRef.current = 0;
+    try {
+      const r = await apiPostJson(`/beat/${data.beat._id}/render`, {
+        overrides,
+        skip_rendered: skipRendered,
+      });
+      const jobId = r?.job_id;
+      if (!jobId) throw new Error('Server did not return a job id.');
+      const es = new EventSource(apiSseUrl(`/beat/${data.beat._id}/render-job/${jobId}/events`));
+      renderEsRef.current = es;
+      const parse = (ev) => {
+        try {
+          return JSON.parse(ev.data);
+        } catch {
+          return null;
+        }
+      };
+      es.addEventListener('snapshot', (ev) => applyRenderSnapshot(parse(ev)));
+      es.addEventListener('update', (ev) => applyRenderSnapshot(parse(ev)));
+      const finish = (ev) => {
+        const snap = parse(ev);
+        applyRenderSnapshot(snap);
+        setRendering(false);
+        closeRenderStream();
+        if (snap?.status === 'error') setRenderError(snap.error || 'Render failed.');
+        onRefresh();
+      };
+      es.addEventListener('done', finish);
+      es.addEventListener('partial', finish);
+      es.addEventListener('error', (ev) => {
+        const snap = ev?.data ? parse(ev) : null;
+        if (snap) {
+          finish(ev);
+        } else if (es.readyState === EventSource.CLOSED) {
+          setRendering(false);
+          setRenderError('Connection lost — the render continues on the server; reload to see its result.');
+        }
+      });
+    } catch (e) {
+      setRendering(false);
+      setRenderError(e.message || 'Render failed.');
+    }
+  }
 
   const room = data?.beat?._id ? `storyboards:${data.beat._id}` : null;
 
@@ -431,11 +539,25 @@ export function StoryboardBeat({ session }) {
             disabled={generating || imageGenerating}
             title={
               sortedItems.length
-                ? 'Replace existing storyboards with a freshly generated set'
-                : 'Auto-generate storyboards from the beat body and characters'
+                ? 'Re-plan the scene: replaces every shot with a fresh set of prompts (and dialogue links)'
+                : 'Plan the scene into shots: one self-contained prompt per shot, dialogue lines assigned, references picked'
             }
           >
-            {generating ? 'Generating…' : 'Generate'}
+            {generating ? 'Planning…' : 'Plan shots'}
+          </button>
+          <button
+            className="primary"
+            onClick={() => setRenderDialogOpen(true)}
+            disabled={generating || imageGenerating || rendering || sortedItems.length === 0 || !sortedItems.every((s) => (s.text_prompt || '').trim())}
+            title={
+              sortedItems.length === 0
+                ? 'Plan shots first'
+                : !sortedItems.every((s) => (s.text_prompt || '').trim())
+                  ? 'Every shot needs a prompt before the beat can be rendered'
+                  : 'Render every shot to video and join the clips into one beat video'
+            }
+          >
+            {rendering ? 'Rendering beat…' : 'Render beat'}
           </button>
           <button
             onClick={() => setEditOpen(true)}
@@ -456,9 +578,9 @@ export function StoryboardBeat({ session }) {
           <button
             onClick={() => setImageGenDialogOpen(true)}
             disabled={generating || imageGenerating || sortedItems.length === 0}
-            title="Render the start-frame image for every shot that's missing one"
+            title="Optional review step: render a still from each shot's prompt (+ its references) before spending on video"
           >
-            {imageGenerating ? 'Generating images…' : 'Generate all images'}
+            {imageGenerating ? 'Rendering stills…' : 'Render storyboard images'}
           </button>
           <button
             className="danger"
@@ -480,6 +602,8 @@ export function StoryboardBeat({ session }) {
 
       <BeatTabs order={data.beat.order} active="storyboard" />
 
+      <PipelineStepper shots={sortedItems} beat={data.beat} dialogs={beatDialogs} />
+
       <ReadinessPanel
         beatId={String(data.beat._id)}
         report={generationStatus?.readiness || data.beat.readiness_report || null}
@@ -500,6 +624,30 @@ export function StoryboardBeat({ session }) {
           logRef={progressLogRef}
         />
       )}
+      {!generating && coverage && (
+        <CoveragePanel coverage={coverage} onDismiss={() => setCoverage(null)} />
+      )}
+      {renderError && (
+        <div className="error-banner">Render error: {renderError}</div>
+      )}
+      {renderJob && (rendering || renderJob.status === 'partial' || renderJob.status === 'error') && (
+        <>
+          <GenerationProgress
+            job={renderJob}
+            noun="shot"
+            showLog={showProgressLog}
+            onToggleLog={() => setShowProgressLog((s) => !s)}
+            logRef={progressLogRef}
+          />
+          <BeatRenderShots job={renderJob} />
+          {!rendering && (
+            <div style={{ margin: '-6px 0 12px' }}>
+              <button type="button" onClick={() => setRenderJob(null)}>Dismiss</button>
+            </div>
+          )}
+        </>
+      )}
+      {data?.beat && <BeatVideoPanel beat={data.beat} onRefresh={onRefresh} />}
       {imageGenError && (
         <div className="error-banner">Image generation error: {imageGenError}</div>
       )}
@@ -547,9 +695,9 @@ export function StoryboardBeat({ session }) {
         <CollabSurface room={room} session={session} onPing={onRefresh}>
           {sortedItems.length === 0 ? (
             <p style={{ color: 'var(--fg-muted)' }}>
-              No storyboards yet. Click <strong>Generate</strong> to auto-create
-              from the beat body, or <strong>+ Add storyboard</strong> for a
-              blank frame.
+              No shots yet. Click <strong>Plan shots</strong> to turn the beat
+              (and its dialogue) into one prompt per shot, or{' '}
+              <strong>+ Add storyboard</strong> for a blank one.
             </p>
           ) : (
             <DndContext
@@ -571,6 +719,7 @@ export function StoryboardBeat({ session }) {
                         index={index}
                         prevSb={sortedItems[index - 1] ?? null}
                         tocCharacters={tocCharacters}
+                        beatDialogs={beatDialogs}
                         onRefresh={onRefresh}
                         onDelete={() => deleteStoryboard(sb._id)}
                         isExpanded={expandedId === sbId}
@@ -594,6 +743,13 @@ export function StoryboardBeat({ session }) {
         beat={data?.beat || null}
         beatCharacters={beatCharacters}
         existingCount={sortedItems.length}
+      />
+
+      <RenderBeatDialog
+        open={renderDialogOpen}
+        onClose={() => setRenderDialogOpen(false)}
+        beatId={data?.beat?._id ? String(data.beat._id) : null}
+        onSubmit={startRender}
       />
 
       <BulkGenerateImagesDialog

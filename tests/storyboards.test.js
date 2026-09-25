@@ -114,6 +114,19 @@ describe('storyboards mongo helpers', () => {
     ).rejects.toThrow(/unknown field/);
   });
 
+  it('seeds dialog_ids empty, accepts a deduped ordered list on update, and rejects junk', async () => {
+    const sb = await Storyboards.createStoryboard({ projectId, beatId: beatA });
+    expect(sb.dialog_ids).toEqual([]);
+    const a = new ObjectId();
+    const b = new ObjectId();
+    const updated = await Storyboards.updateStoryboard(projectId, sb._id, { dialog_ids: [b.toString(), a, b] });
+    expect(updated.dialog_ids.map(String)).toEqual([b.toString(), a.toString()]);
+    await expect(Storyboards.updateStoryboard(projectId, sb._id, { dialog_ids: 'nope' })).rejects.toThrow(/dialog_ids must be an array/);
+    await expect(Storyboards.updateStoryboard(projectId, sb._id, { dialog_ids: ['zzz'] })).rejects.toThrow(/invalid dialog id/);
+    const cleared = await Storyboards.updateStoryboard(projectId, sb._id, { dialog_ids: [] });
+    expect(cleared.dialog_ids).toEqual([]);
+  });
+
   it('updateStoryboard rejects unknown fields', async () => {
     const sb = await Storyboards.createStoryboard({ projectId, beatId: beatA });
     await expect(

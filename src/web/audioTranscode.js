@@ -7,6 +7,7 @@
 //
 //   convertToMp3(buffer)            -> Buffer  (normalize any audio to MP3)
 //   trimToSeconds(buffer, seconds)  -> Buffer  (cap MP3 duration; re-encodes)
+//   concatAudioToMp3(buffers, opts) -> Buffer  (join recordings with gaps)
 //
 // Both throw FfmpegMissingError when the binary isn't on PATH and
 // AudioTranscodeError when ffmpeg exits non-zero. Callers decide how loud to
@@ -106,6 +107,77 @@ async function runAudioFfmpeg(buffer, buildArgs) {
     await safeUnlink(inputPath);
     await safeUnlink(outputPath);
   }
+}
+
+// Run ffmpeg over SEVERAL input buffers (one tmp file each), returning the
+// single output file's bytes. The test seam receives the same shape as the
+// single-input path plus `inputPaths`; `inputPath` stays the first input so
+// existing seams keep working.
+async function runAudioFfmpegMulti(buffers, buildArgs) {
+  if (!Array.isArray(buffers) || !buffers.length) {
+    throw new AudioTranscodeError('no input buffers');
+  }
+  for (const b of buffers) {
+    if (!Buffer.isBuffer(b) || !b.length) throw new AudioTranscodeError('empty input buffer');
+  }
+  const dir = path.join(os.tmpdir(), 'screenplay-audio-transcode');
+  await fsp.mkdir(dir, { recursive: true });
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const inputPaths = buffers.map((_, i) => path.join(dir, `in-${stamp}-${i}`));
+  const outputPath = path.join(dir, `out-${stamp}.mp3`);
+  try {
+    await Promise.all(inputPaths.map((p, i) => fsp.writeFile(p, buffers[i])));
+    const args = buildArgs({ inputPaths, outputPath });
+    await runImpl({ args, inputPath: inputPaths[0], inputPaths, outputPath });
+    let out;
+    try {
+      out = await fsp.readFile(outputPath);
+    } catch (e) {
+      throw new AudioTranscodeError(
+        `output file missing after ffmpeg exit 0: ${e?.message || e}`,
+      );
+    }
+    if (!out.length) throw new AudioTranscodeError('output file is empty');
+    return out;
+  } finally {
+    await Promise.all(inputPaths.map(safeUnlink));
+    await safeUnlink(outputPath);
+  }
+}
+
+// Join several recordings into one MP3, in order, with `gapSeconds` of
+// silence between lines and `tailSeconds` after the last one (a lip-sync
+// model needs a beat of stillness before the clip ends). Each input is
+// resampled to a common format by the concat filter; a single input just
+// goes through convertToMp3 (no padding — a lone line needs no gap).
+export async function concatAudioToMp3(buffers, { gapSeconds = 0.25, tailSeconds = 0.3 } = {}) {
+  if (!Array.isArray(buffers) || !buffers.length) {
+    throw new AudioTranscodeError('no input buffers');
+  }
+  if (buffers.length === 1) return convertToMp3(buffers[0]);
+  const gapMs = Math.max(0, Math.round(Number(gapSeconds) * 1000)) || 0;
+  const tailMs = Math.max(0, Math.round(Number(tailSeconds) * 1000)) || 0;
+  return runAudioFfmpegMulti(buffers, ({ inputPaths, outputPath }) => {
+    const n = inputPaths.length;
+    // [i:a] → resample to 44.1k stereo, pad the gap after every line but the
+    // last (apad with a whole-second pad_dur), then concat.
+    const chains = inputPaths.map((_, i) => {
+      const padMs = i === n - 1 ? tailMs : gapMs;
+      const pad = padMs > 0 ? `,apad=pad_dur=${(padMs / 1000).toFixed(3)}` : '';
+      return `[${i}:a]aformat=sample_rates=44100:channel_layouts=stereo${pad}[a${i}]`;
+    });
+    const concatInputs = inputPaths.map((_, i) => `[a${i}]`).join('');
+    const filter = `${chains.join(';')};${concatInputs}concat=n=${n}:v=0:a=1[out]`;
+    return [
+      ...inputPaths.flatMap((p) => ['-i', p]),
+      '-filter_complex', filter,
+      '-map', '[out]',
+      '-vn',
+      '-c:a', 'libmp3lame',
+      '-b:a', '192k',
+      '-y', outputPath,
+    ];
+  });
 }
 
 // Normalize arbitrary audio bytes to a 192 kbps MP3 (inside seedance's

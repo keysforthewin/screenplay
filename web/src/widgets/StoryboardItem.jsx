@@ -19,6 +19,7 @@ import { VideoUploadSlot } from './VideoUploadSlot.jsx';
 import { GenerateVideoButton } from './GenerateVideoButton.jsx';
 import { StoryboardVideoPanel } from './StoryboardVideoPanel.jsx';
 import { CharacterTagInput } from './CharacterTagInput.jsx';
+import { DialogLineChips } from './DialogLineChips.jsx';
 import { StoryboardItemCollapsed } from './StoryboardItemCollapsed.jsx';
 import { CritiquePanel } from './CritiquePanel.jsx';
 import { StoryboardSummaryField } from './StoryboardSummaryField.jsx';
@@ -32,7 +33,7 @@ import {
 // drives the duration input's max attribute (and triggers a server-side
 // re-clamp on the save). Duration is debounced via local state + onBlur so
 // each keystroke isn't a PATCH.
-function ShotMetaRow({ sb, sbId, tocCharacters, onRefresh }) {
+function ShotMetaRow({ sb, sbId, tocCharacters, beatDialogs, onRefresh }) {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [durationLocal, setDurationLocal] = useState(
@@ -115,6 +116,12 @@ function ShotMetaRow({ sb, sbId, tocCharacters, onRefresh }) {
         characters={tocCharacters}
         disabled={busy}
         onChange={(next) => patch({ characters_in_scene: next })}
+      />
+      <DialogLineChips
+        value={sb.dialog_ids || []}
+        dialogs={beatDialogs}
+        disabled={busy}
+        onChange={(next) => patch({ dialog_ids: next })}
       />
       {error && <span className="error-banner small">{error}</span>}
     </div>
@@ -332,7 +339,9 @@ function FrameTile({
         <CollabField
           field={`item:${sbId}:frame:${frameId}:prompt`}
           multiline
-          placeholder="Frame prompt…"
+          placeholder={index === 0
+            ? 'Uses the shot prompt — type here to override for the still only…'
+            : 'Frame prompt…'}
         />
       </div>
       {error && <div className="error-banner small">{error}</div>}
@@ -501,6 +510,7 @@ export function StoryboardItem({
   index,
   prevSb,
   tocCharacters,
+  beatDialogs,
   onRefresh,
   onDelete,
   isExpanded,
@@ -550,6 +560,7 @@ export function StoryboardItem({
       >
         <StoryboardItemCollapsed
           sb={sb}
+          beatDialogs={beatDialogs}
           onClick={() => onExpandToggle?.(id)}
           dragAttributes={attributes}
           dragListeners={listeners}
@@ -593,6 +604,7 @@ export function StoryboardItem({
         sb={sb}
         sbId={id}
         tocCharacters={tocCharacters}
+        beatDialogs={beatDialogs}
         onRefresh={onRefresh}
       />
 
@@ -637,11 +649,11 @@ export function StoryboardItem({
       <StoryboardSummaryField sbId={id} />
 
       <div className="storyboard-prompt">
-        <div className="field-label">Prompt</div>
+        <div className="field-label">Shot prompt</div>
         <CollabField
           field={`item:${id}:text_prompt`}
           multiline
-          placeholder="Describe what happens in this frame…"
+          placeholder="One self-contained prompt: opening composition, then what the camera and the cast do. Renders the still and the clip…"
         />
       </div>
 

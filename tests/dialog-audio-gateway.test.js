@@ -20,6 +20,10 @@ vi.mock('../src/log.js', () => ({
 // Avoid touching GridFS in tests — stub the copy helper to return a fresh
 // ObjectId. The real implementation is covered separately by the bucket
 // roundtrip helpers; this test focuses on the gateway wiring + independence.
+vi.mock('../src/web/dialogAudioProbe.js', () => ({
+  probeDialogAudioDuration: vi.fn(async () => 4.25),
+}));
+
 vi.mock('../src/mongo/attachments.js', async () => {
   const actual = await vi.importActual('../src/mongo/attachments.js');
   return {
@@ -64,6 +68,44 @@ beforeEach(async () => {
       audioFileId: fileId,
     });
     expect(updated.audio_file_id.toString()).toBe(fileId.toString());
+  });
+
+  it('setDialogAudioViaGateway probes and stores the recording length, and clears it on detach', async () => {
+    const Probe = await import('../src/web/dialogAudioProbe.js');
+    const beat = await makeBeat();
+    const d = await Gateway.createDialogViaGateway({ projectId, beatId: beat._id });
+    const fileId = new ObjectId();
+    const updated = await Gateway.setDialogAudioViaGateway({ projectId, dialogId: d._id, audioFileId: fileId });
+    expect(updated.audio_duration_seconds).toBe(4.25);
+    expect(Probe.probeDialogAudioDuration).toHaveBeenCalledWith(fileId);
+    const cleared = await Gateway.setDialogAudioViaGateway({ projectId, dialogId: d._id, audioFileId: null });
+    expect(cleared.audio_duration_seconds).toBe(null);
+  });
+
+  it('setDialogAudioViaGateway stores null when the probe throws', async () => {
+    const Probe = await import('../src/web/dialogAudioProbe.js');
+    Probe.probeDialogAudioDuration.mockImplementationOnce(async () => { throw new Error('ffprobe missing'); });
+    const beat = await makeBeat();
+    const d = await Gateway.createDialogViaGateway({ projectId, beatId: beat._id });
+    const updated = await Gateway.setDialogAudioViaGateway({ projectId, dialogId: d._id, audioFileId: new ObjectId() });
+    expect(updated.audio_file_id).toBeTruthy();
+    expect(updated.audio_duration_seconds).toBe(null);
+  });
+
+  it('ensureDialogAudioDurations lazily probes legacy rows that have audio but no length', async () => {
+    const beat = await makeBeat();
+    const d = await Dialogs.createDialog({ projectId, beatId: beat._id, body: 'legacy' });
+    await fakeDb.collection('dialogs').updateOne({ _id: d._id }, { $set: { audio_file_id: String(new ObjectId()), audio_duration_seconds: null } });
+    const rows = await Dialogs.listDialogs({ projectId, beatId: beat._id });
+    const probe = vi.fn(async () => 2.5);
+    const out = await Dialogs.ensureDialogAudioDurations(projectId, rows, { probe });
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(out[0].audio_duration_seconds).toBe(2.5);
+    const reread = await Dialogs.listDialogs({ projectId, beatId: beat._id });
+    expect(reread[0].audio_duration_seconds).toBe(2.5);
+    // Second pass is a no-op.
+    await Dialogs.ensureDialogAudioDurations(projectId, reread, { probe });
+    expect(probe).toHaveBeenCalledTimes(1);
   });
 
   it('setDialogAudioViaGateway clears audio when passed null', async () => {

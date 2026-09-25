@@ -11,6 +11,10 @@
 //   direction: string (markdown — AI/human performance note: what's happening in
 //                       the scene at this moment + how to deliver this line)
 //   audio_file_id: ObjectId | null  (GridFS attachments bucket — recorded line)
+//   audio_duration_seconds: number | null (probed when audio is attached via the
+//                                      gateway; legacy rows are probed lazily by
+//                                      ensureDialogAudioDurations. Drives shot
+//                                      duration + lip-sync planning)
 //   created_at, updated_at: Date
 
 import { ObjectId } from 'mongodb';
@@ -49,6 +53,12 @@ function backfill(doc) {
     character: typeof doc.character === 'string' ? doc.character : '',
     direction: typeof doc.direction === 'string' ? doc.direction : '',
     audio_file_id: doc.audio_file_id ?? null,
+    audio_duration_seconds:
+      typeof doc.audio_duration_seconds === 'number' &&
+      Number.isFinite(doc.audio_duration_seconds) &&
+      doc.audio_duration_seconds > 0
+        ? doc.audio_duration_seconds
+        : null,
   };
 }
 
@@ -121,6 +131,7 @@ export async function createDialog({ projectId, beatId, order, body = '', charac
     character: String(character || ''),
     direction: '',
     audio_file_id: null,
+    audio_duration_seconds: null,
     created_at: now,
     updated_at: now,
   };
@@ -146,6 +157,16 @@ export async function updateDialog(projectId, id, patch) {
       set[k] = String(v ?? '');
     } else if (ID_FIELDS.has(k)) {
       set[k] = normalizeFileId(v);
+    } else if (k === 'audio_duration_seconds') {
+      if (v == null) {
+        set[k] = null;
+      } else if (!Number.isFinite(Number(v)) || Number(v) <= 0) {
+        throw new Error(
+          `update_dialog: audio_duration_seconds must be a positive number or null, got ${v}`,
+        );
+      } else {
+        set[k] = Number(v);
+      }
     } else if (k === 'order') {
       if (!Number.isFinite(Number(v))) {
         throw new Error(`update_dialog: order must be a number, got ${v}`);
@@ -165,6 +186,39 @@ export async function updateDialog(projectId, id, patch) {
       .join(',')}]`,
   );
   return getDialog(projectId, existing._id);
+}
+
+// Lazy backfill for rows recorded before durations were probed on attach.
+// Probes each dialog that has audio but no duration, persists the result,
+// and returns the list with durations filled in. Failures leave the row
+// untouched (null) — a bad header should not break planning.
+export async function ensureDialogAudioDurations(projectId, dialogs, { probe = null } = {}) {
+  if (!Array.isArray(dialogs) || !dialogs.length) return dialogs || [];
+  const out = [];
+  for (const d of dialogs) {
+    if (!d?.audio_file_id || d.audio_duration_seconds) {
+      out.push(d);
+      continue;
+    }
+    let dur = null;
+    try {
+      const probeFn = probe || (await import('../web/dialogAudioProbe.js')).probeDialogAudioDuration;
+      dur = await probeFn(d.audio_file_id);
+    } catch (e) {
+      logger.warn(`mongo: dialog ${d._id} audio duration probe failed: ${e?.message || e}`);
+    }
+    if (dur && Number.isFinite(dur) && dur > 0) {
+      try {
+        await col().updateOne({ _id: d._id }, { $set: { audio_duration_seconds: dur } });
+      } catch (e) {
+        logger.warn(`mongo: dialog ${d._id} persist audio duration failed: ${e?.message || e}`);
+      }
+      out.push({ ...d, audio_duration_seconds: dur });
+    } else {
+      out.push(d);
+    }
+  }
+  return out;
 }
 
 export async function deleteDialog(id) {

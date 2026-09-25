@@ -44,7 +44,7 @@ import { fal, isConfigured as falIsConfigured } from '../fal/client.js';
 import { uploadFalAsset } from '../fal/upload.js';
 import { prepareImageForFal, renameForContentType } from '../fal/prepareImage.js';
 import {
-  getVideoModelOrCatalog,
+  resolveVideoModelByAnyId,
   getVideoModelCatalogMeta,
   getMaxAudioSeconds,
   resolveFrameAssignment,
@@ -170,6 +170,108 @@ export class UnknownVideoModelError extends Error {
   }
 }
 
+// Resolve everything a shot render needs WITHOUT side effects: the model (by
+// registry id, registered endpoint id, or catalog endpoint), the storyboard
+// row, the frame/reference assignment, and the required-input check. Throws
+// the same typed errors the routes map to 4xx/5xx. Shared by the single-shot
+// start path, the payload preview, and the beat renderer.
+export async function prepareShotVideoJob({
+  projectId = null,
+  storyboardId,
+  modelId = null,
+  frameAssignment = null,
+} = {}) {
+  if (!falIsConfigured()) {
+    throw new FalNotConfiguredError();
+  }
+  const chosenId = modelId || config.fal.defaultModelId;
+  const model = await resolveVideoModelByAnyId(chosenId);
+  if (!model) throw new UnknownVideoModelError(chosenId);
+
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+
+  const assignment = resolveFrameAssignment(model, sb, frameAssignment);
+  const missing = validateAssignment(model, assignment, sb);
+  if (missing.length) throw new MissingInputsError(missing, model.label);
+  return { model, storyboard: sb, assignment };
+}
+
+function createShotVideoJob({ model, storyboard }) {
+  const jobId = makeJobId();
+  const job = {
+    job_id: jobId,
+    storyboard_id: storyboard._id.toString(),
+    beat_id: storyboard.beat_id.toString(),
+    model_id: model.id,
+    fal_model: model.falModel,
+    status: 'queued',
+    step: 'Queued',
+    queue_position: null,
+    started_at: new Date(),
+    finished_at: null,
+    error: null,
+    request_id: null,
+    video_file_id: null,
+    logs: [],
+  };
+  jobs.set(jobId, job);
+  publish(job);
+  return job;
+}
+
+// Render one shot while the CALLER already holds the beat lock (the beat
+// renderer runs several of these under a single withBeatLock). Registers a
+// normal job (so the per-shot SSE stream and reconnect snapshot work), runs
+// it to completion, and returns the finished job — status 'done' or 'error'
+// (runVideoGenerationJob never throws; it records the error on the job).
+export async function runShotVideoInline({
+  projectId = null,
+  storyboardId,
+  modelId = null,
+  prompt = null,
+  durationSeconds = null,
+  generateAudio = true,
+  resolution = null,
+  fps = null,
+  includeDirectorNotes = true,
+  frameAssignment = null,
+  announceUsername = null,
+  onJobCreated = null,
+} = {}) {
+  const { model, storyboard, assignment } = await prepareShotVideoJob({
+    projectId,
+    storyboardId,
+    modelId,
+    frameAssignment,
+  });
+  const job = createShotVideoJob({ model, storyboard });
+  try {
+    onJobCreated?.(job);
+  } catch {
+    // observer errors never fail the render
+  }
+  try {
+    await runVideoGenerationJob({
+      projectId,
+      job,
+      storyboard,
+      model,
+      prompt,
+      durationSeconds,
+      generateAudio,
+      resolution,
+      fps,
+      includeDirectorNotes,
+      assignment,
+      announceUsername,
+    });
+  } finally {
+    scheduleJobEviction(job.job_id);
+  }
+  return job;
+}
+
 // Validate inputs + start the background job. Returns { job_id } so the SPA
 // can immediately open its SSE stream.
 export async function startVideoGenerationJob({
@@ -185,44 +287,19 @@ export async function startVideoGenerationJob({
   frameAssignment = null,
   announceUsername = null,
 } = {}) {
-  if (!falIsConfigured()) {
-    throw new FalNotConfiguredError();
-  }
-
-  const chosenId = modelId || config.fal.defaultModelId;
-  const model = await getVideoModelOrCatalog(chosenId);
-  if (!model) throw new UnknownVideoModelError(chosenId);
-
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-
-  const assignment = resolveFrameAssignment(model, sb, frameAssignment);
-  const missing = validateAssignment(model, assignment, sb);
-  if (missing.length) throw new MissingInputsError(missing, model.label);
+  const { model, storyboard: sb, assignment } = await prepareShotVideoJob({
+    projectId,
+    storyboardId,
+    modelId,
+    frameAssignment,
+  });
 
   if (isBeatLocked(sb.beat_id)) {
     throw new VideoBeatBusyError(sb.beat_id.toString());
   }
 
-  const jobId = makeJobId();
-  const job = {
-    job_id: jobId,
-    storyboard_id: sb._id.toString(),
-    beat_id: sb.beat_id.toString(),
-    model_id: model.id,
-    fal_model: model.falModel,
-    status: 'queued',
-    step: 'Queued',
-    queue_position: null,
-    started_at: new Date(),
-    finished_at: null,
-    error: null,
-    request_id: null,
-    video_file_id: null,
-    logs: [],
-  };
-  jobs.set(jobId, job);
-  publish(job);
+  const job = createShotVideoJob({ model, storyboard: sb });
+  const jobId = job.job_id;
 
   withBeatLock(sb.beat_id, () =>
     runVideoGenerationJob({
@@ -442,20 +519,12 @@ export async function buildVideoPayloadPreview({
   includeDirectorNotes = true,
   frameAssignment = null,
 } = {}) {
-  if (!falIsConfigured()) {
-    throw new FalNotConfiguredError();
-  }
-
-  const chosenId = modelId || config.fal.defaultModelId;
-  const model = await getVideoModelOrCatalog(chosenId);
-  if (!model) throw new UnknownVideoModelError(chosenId);
-
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-
-  const assignment = resolveFrameAssignment(model, sb, frameAssignment);
-  const missing = validateAssignment(model, assignment, sb);
-  if (missing.length) throw new MissingInputsError(missing, model.label);
+  const { model, storyboard: sb, assignment } = await prepareShotVideoJob({
+    projectId,
+    storyboardId,
+    modelId,
+    frameAssignment,
+  });
 
   const needs = model.inputs;
   const wants = (key) => needs[key] && needs[key] !== 'unused';
@@ -951,7 +1020,7 @@ function buildPersistedParameters({ bundle, payload, audioDurationSeconds = null
 // the structured PRICING table first (model.pricingId), falls back to
 // the catalog's regex-parsed price_text when no structured rate exists,
 // returns null otherwise.
-function computeCost({ model, bundle, payload, catalogRow }) {
+export function computeCost({ model, bundle, payload, catalogRow }) {
   const lookup = {
     durationSeconds: bundle.durationSeconds,
     generateAudio: bundle.generateAudio,
@@ -976,7 +1045,7 @@ function parseDurationNumber(d) {
   return Number(String(d).replace(/s$/i, ''));
 }
 
-function pickDurationSeconds({ requested, storyboard, model }) {
+export function pickDurationSeconds({ requested, storyboard, model }) {
   const defaultDur = parseDurationNumber(model.defaultDuration);
   const candidate =
     Number.isFinite(Number(requested)) && Number(requested) > 0

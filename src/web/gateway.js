@@ -1761,6 +1761,7 @@ export async function createStoryboardViaGateway({
   transitionIn = null,
   charactersInScene = [],
   setsInScene = [],
+  dialogIds = [],
 }) {
   const sb = await mongoCreateStoryboard({
     projectId,
@@ -1773,6 +1774,7 @@ export async function createStoryboardViaGateway({
     transitionIn,
     charactersInScene,
     setsInScene,
+    dialogIds,
   });
   // Seed the y-doc fragment(s) BEFORE broadcasting the ping. Otherwise the
   // SPA refetches and mounts its CollabField on an empty fragment before the
@@ -1993,6 +1995,7 @@ const STORYBOARD_SCALAR_FIELDS = new Set([
   'transition_in',
   'characters_in_scene',
   'sets_in_scene',
+  'dialog_ids',
 ]);
 
 export async function updateStoryboardScalarsViaGateway({ projectId, storyboardId, patch }) {
@@ -2004,6 +2007,16 @@ export async function updateStoryboardScalarsViaGateway({ projectId, storyboardI
   }
   if (!Object.keys(filtered).length) {
     throw new Error('updateStoryboardScalars: no recognized fields');
+  }
+  // dialog_ids must all belong to this shot's beat — a stale id from another
+  // beat would silently pull the wrong audio into a lip-sync render.
+  if (Array.isArray(filtered.dialog_ids) && filtered.dialog_ids.length) {
+    const beatDialogs = await listDialogs({ projectId, beatId: sb.beat_id });
+    const allowed = new Set(beatDialogs.map((d) => String(d._id)));
+    const foreign = filtered.dialog_ids.filter((id) => !allowed.has(String(id)));
+    if (foreign.length) {
+      throw new Error(`update_storyboard: dialog_ids must belong to this beat (unknown: ${foreign.join(', ')})`);
+    }
   }
   const result = await mongoUpdateStoryboard(projectId, storyboardId, filtered);
   broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
@@ -2212,6 +2225,29 @@ export async function setStoryboardVideoViaGateway({
     storyboard_id: String(storyboardId),
   });
   return mongoGetStoryboard(projectId, storyboardId);
+}
+
+// Assembled beat video: write the beat's pointer, delete the previous file
+// (best-effort), and ping the beat's storyboards room so the beat page's
+// player re-renders. fileId=null discards.
+export async function setBeatVideoViaGateway({ projectId, beatId, fileId = null, durationSeconds = null }) {
+  const before = await Plots.getBeat(projectId, beatId);
+  if (!before) throw new Error(`Beat not found: ${beatId}`);
+  const oldId = before.video_file_id ? String(before.video_file_id) : null;
+  const beat = await Plots.setBeatVideo(projectId, before._id, { fileId, durationSeconds });
+  if (oldId && oldId !== (fileId == null ? null : String(fileId))) {
+    try {
+      const { deleteAttachment } = await import('../mongo/attachments.js');
+      await deleteAttachment(oldId);
+    } catch (e) {
+      logger.warn(`gateway: previous beat video ${oldId} cleanup failed: ${e.message}`);
+    }
+  }
+  broadcastFieldsUpdated(buildRoomName('storyboards', String(before._id)), {
+    changed: ['beat_video'],
+    beat_id: String(before._id),
+  });
+  return beat;
 }
 
 // Copy an existing GridFS attachment (e.g. one attached to a beat or
@@ -2491,6 +2527,14 @@ export async function deleteBeatViaGateway(projectId, identifier) {
   await clearAllFrameImagesForBeatViaGateway({ projectId, beatId }).catch((e) =>
     logger.warn(`gateway: delete beat frame images failed: ${e.message}`),
   );
+  if (target.video_file_id) {
+    try {
+      const { deleteAttachment } = await import('../mongo/attachments.js');
+      await deleteAttachment(target.video_file_id);
+    } catch (e) {
+      logger.warn(`gateway: delete beat video ${target.video_file_id} failed: ${e.message}`);
+    }
+  }
   const res = await deleteBeat(projectId, beatId);
   const storyboards = await mongoDeleteStoryboardsForBeat(beatId);
   const dialogs = await mongoDeleteDialogsForBeat(beatId);
@@ -2595,11 +2639,27 @@ export async function createCharacterViaGateway({ projectId, name, hollywood_act
 export async function setDialogAudioViaGateway({ projectId, dialogId, audioFileId }) {
   const d = await mongoGetDialog(projectId, dialogId);
   if (!d) throw new Error(`Dialog not found: ${dialogId}`);
-  await mongoUpdateDialog(projectId, dialogId, {
+  const patch = {
     audio_file_id: audioFileId == null ? null : String(audioFileId),
-  });
+  };
+  // Probe the recording's duration (same as the storyboard audio path) so
+  // shot duration estimates and lip-sync planning never need a fal round
+  // trip. Probe failures log and store null; the planner falls back to a
+  // speech-rate estimate for that line.
+  if (audioFileId == null) {
+    patch.audio_duration_seconds = null;
+  } else {
+    try {
+      const { probeDialogAudioDuration } = await import('./dialogAudioProbe.js');
+      patch.audio_duration_seconds = (await probeDialogAudioDuration(audioFileId)) || null;
+    } catch (e) {
+      logger.warn(`gateway: dialog audio duration probe failed for ${audioFileId}: ${e.message}`);
+      patch.audio_duration_seconds = null;
+    }
+  }
+  await mongoUpdateDialog(projectId, dialogId, patch);
   broadcastFieldsUpdated(buildRoomName('dialogs', d.beat_id.toString()), {
-    changed: ['audio_file_id'],
+    changed: Object.keys(patch),
     dialog_id: String(dialogId),
   });
   return mongoGetDialog(projectId, dialogId);

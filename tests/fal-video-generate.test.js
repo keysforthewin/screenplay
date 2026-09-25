@@ -623,3 +623,58 @@ describe('frame-pool → reference-image mapping for slot-less models', () => {
     expect(input.image_urls).toEqual(['https://fal.media/inputs/start']);
   });
 });
+
+describe('prepareShotVideoJob / runShotVideoInline (beat renderer building blocks)', () => {
+  it('prepareShotVideoJob validates without creating a job, and resolves a registered endpoint id', async () => {
+    const { sb } = await seedScene({ start: true, end: false });
+    const prepared = await Falgen.prepareShotVideoJob({
+      projectId,
+      storyboardId: sb._id.toString(),
+      modelId: 'fal-ai/kling-video/v3/pro/image-to-video',
+    });
+    expect(prepared.model.id).toBe('kling-3-pro');
+    expect(prepared.assignment.startFrameId).toBeTruthy();
+    expect(prepared.storyboard._id.toString()).toBe(sb._id.toString());
+    expect(falStubs.submitCalls).toHaveLength(0);
+  });
+
+  it('prepareShotVideoJob throws MissingInputsError for a model whose required inputs are absent', async () => {
+    const { sb } = await seedScene({ start: false, end: false });
+    await expect(
+      Falgen.prepareShotVideoJob({ projectId, storyboardId: sb._id.toString(), modelId: 'kling-3-pro' }),
+    ).rejects.toBeInstanceOf(Falgen.MissingInputsError);
+  });
+
+  it('runShotVideoInline renders under a lock the caller already holds and returns the finished job', async () => {
+    const { beat, sb } = await seedScene({ start: true, end: false });
+    const created = [];
+    const job = await BeatLocks.withBeatLock(beat._id, () =>
+      Falgen.runShotVideoInline({
+        projectId,
+        storyboardId: sb._id.toString(),
+        modelId: 'kling-3-pro',
+        durationSeconds: 4,
+        onJobCreated: (j) => created.push(j.job_id),
+      }),
+    );
+    expect(created).toHaveLength(1);
+    expect(job.job_id).toBe(created[0]);
+    expect(job.status).toBe('done');
+    expect(job.video_file_id).toBeTruthy();
+    // The job is registered for SSE / reconnect like a normal one.
+    expect(Falgen.getVideoGenerationJob(job.job_id)?.status).toBe('done');
+    expect(falStubs.submitCalls).toHaveLength(1);
+    const fresh = await Storyboards.getStoryboard(projectId, sb._id);
+    expect(fresh.video_file_id?.toString()).toBe(job.video_file_id);
+  });
+
+  it('runShotVideoInline reports a fal failure on the job instead of throwing', async () => {
+    const { beat, sb } = await seedScene({ start: true, end: false });
+    falStubs.resultImpl = async () => { throw new Error('fal exploded'); };
+    const job = await BeatLocks.withBeatLock(beat._id, () =>
+      Falgen.runShotVideoInline({ projectId, storyboardId: sb._id.toString(), modelId: 'kling-3-pro' }),
+    );
+    expect(job.status).toBe('error');
+    expect(job.error).toMatch(/fal exploded/);
+  });
+});

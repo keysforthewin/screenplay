@@ -464,15 +464,48 @@ function dedupeIds(ids) {
 //
 // Returns { startFrameId, endFrameId, referenceImageIds } with original id
 // values (ObjectId or string) so downstream GridFS lookups still accept them.
+// How many reference images a video model is sent by default. The catalog
+// does not record per-endpoint limits; the common floor across the
+// reference-to-video endpoints we target (Veo 3.1, Kling O3, Vidu) is three.
+// A registered model may raise it via `maxReferenceImages`.
+export const DEFAULT_VIDEO_REFERENCE_LIMIT = 3;
+
+export function maxReferenceImagesForVideoModel(model) {
+  const n = Number(model?.maxReferenceImages);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_VIDEO_REFERENCE_LIMIT;
+}
+
+// The shot's planner-scored references (frames[0].reference_ids ordered by
+// frames[0].reference_scores, highest first; ties keep the stored order).
+// These are the character/set artwork the planner matched to the prompt —
+// what a reference-to-video model should be handed when the shot has no
+// rendered still to use as a start frame.
+export function scoredShotReferenceIds(storyboard) {
+  const f0 = Array.isArray(storyboard?.frames) ? storyboard.frames[0] : null;
+  const ids = Array.isArray(f0?.reference_ids) ? f0.reference_ids.filter(Boolean) : [];
+  const scores = f0?.reference_scores && typeof f0.reference_scores === 'object' ? f0.reference_scores : {};
+  const scoreOf = (id) => {
+    const s = scores[String(id)];
+    return Number.isFinite(s) ? s : -Infinity;
+  };
+  return ids
+    .map((id, i) => ({ id, i, s: scoreOf(id) }))
+    .sort((a, b) => (a.s === b.s ? a.i - b.i : b.s - a.s))
+    .map((x) => x.id);
+}
+
 export function resolveFrameAssignment(model, storyboard, requested = {}) {
   const needs = model?.inputs || {};
   const accepts = (key) => needs[key] && needs[key] !== INPUT_NEEDS.UNUSED;
   const frames = Array.isArray(storyboard?.frames) ? storyboard.frames : [];
   const frameImageIds = frames.map((f) => f?.image_id).filter(Boolean);
-  const validKeys = new Set(frameImageIds.map((x) => String(x)));
+  // Explicit `ref` lists may name frame images OR the shot's scored references.
+  const shotReferenceIds = scoredShotReferenceIds(storyboard);
+  const knownIds = [...frameImageIds, ...shotReferenceIds];
+  const validKeys = new Set(knownIds.map((x) => String(x)));
   const resolveId = (id) =>
     id != null && validKeys.has(String(id))
-      ? frameImageIds.find((x) => String(x) === String(id))
+      ? knownIds.find((x) => String(x) === String(id))
       : null;
   const req = requested && typeof requested === 'object' ? requested : {};
 
@@ -497,13 +530,34 @@ export function resolveFrameAssignment(model, storyboard, requested = {}) {
       const list = Array.isArray(req.ref) ? req.ref : [];
       referenceImageIds = dedupeIds(list.map(resolveId).filter(Boolean));
     } else {
+      // Frame-pool images not already used as start/end first (the user
+      // attached those on purpose, so they are never capped), then the
+      // planner's scored character/set artwork filling the remaining slots
+      // up to the model's default limit. Models that don't accept references
+      // never reach this branch, so artwork is only uploaded when the
+      // endpoint can use it.
       const used = new Set([startFrameId, endFrameId].filter(Boolean).map(String));
-      referenceImageIds = dedupeIds(
-        frameImageIds.filter((x) => !used.has(String(x))),
-      );
+      const fromPool = dedupeIds(frameImageIds.filter((x) => !used.has(String(x))));
+      const room = Math.max(0, maxReferenceImagesForVideoModel(model) - fromPool.length);
+      const poolKeys = new Set(fromPool.map(String));
+      const fromShot = dedupeIds(shotReferenceIds.filter((x) => !poolKeys.has(String(x)))).slice(0, room);
+      referenceImageIds = [...fromPool, ...fromShot];
     }
   }
   return { startFrameId, endFrameId, referenceImageIds };
+}
+
+// Resolve a model by ANY of its ids: registry id ('kling-3-pro'), a registered
+// model's fal endpoint ('fal-ai/kling-video/v3/pro/image-to-video' — which the
+// project model-defaults store), or a catalog endpoint that synthesizes. This
+// keeps a registered model from being re-synthesized from the catalog (and
+// losing its hand-tuned buildInput) when it is addressed by endpoint id.
+export async function resolveVideoModelByAnyId(id) {
+  if (!id) return null;
+  const key = String(id);
+  const registered = getVideoModel(key) || VIDEO_MODELS.find((m) => m.falModel === key) || null;
+  if (registered) return registered;
+  return getVideoModelOrCatalog(key);
 }
 
 // Validate that a resolved frame assignment (plus the storyboard's media)

@@ -1905,6 +1905,50 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'plan_shots',
+    keywords: ['storyboard', 'plan', 'shots', 'shot list', 'prompts', 'video prompts', 'break down', 'scene', 'beat', 'generate storyboard', 'shotlist', 'coverage'],
+    description:
+      'Plan a beat into shots: one self-contained video prompt per shot (opening composition + what the camera and cast do), reference images matched from the cast/sets, and every dialogue line assigned to the shot that covers it. REPLACES the beat\'s existing shots. Runs in the background — returns a job id and the storyboard page link; call get_beat_render_status with the job id to check progress. Dialogue words are never written into prompts.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name. Defaults to the current beat.' },
+        count: { type: 'integer', minimum: 1, maximum: 40, description: 'Target number of shots (optional).' },
+        direction: { type: 'string', description: 'Optional creative direction for the planner (tone, pacing, what to emphasise).' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'render_beat',
+    keywords: ['render', 'video', 'beat video', 'generate video', 'clips', 'lip sync', 'lipsync', 'assemble', 'mp4', 'movie', 'film the beat', 'shoot'],
+    description:
+      'Render a planned beat to video: each shot becomes a clip (lip-synced from the covered lines\' real recordings when every line is recorded; otherwise straight from the prompt + reference images, or from an auto-rendered still when the model needs a start frame), then the clips are joined into one beat MP4. Spends fal.ai credits. Skips shots that already have a clip unless skip_rendered is false. Returns a job id — poll with get_beat_render_status.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name. Defaults to the current beat.' },
+        skip_rendered: { type: 'boolean', description: 'Skip shots that already have a clip (default true). False re-renders everything.' },
+        lipsync_model: { type: 'string', description: 'Override the lip-sync model (fal endpoint or registry id).' },
+        direct_model: { type: 'string', description: 'Override the reference-to-video model used for shots without recorded dialogue.' },
+        start_only_model: { type: 'string', description: 'Override the image-to-video model used when no direct model is configured.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'get_beat_render_status',
+    keywords: ['status', 'progress', 'job', 'render', 'video', 'plan', 'shots', 'done yet', 'check', 'poll'],
+    description:
+      'Check a plan_shots or render_beat job: status, per-shot progress, coverage warnings, and — once assembled — the beat video download link.',
+    input_schema: {
+      type: 'object',
+      properties: { job_id: { type: 'string', description: 'The job id returned by plan_shots or render_beat.' } },
+      required: ['job_id'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 // Tools always present in the model's tools list, regardless of any

@@ -34,6 +34,12 @@ const VIDEO_SLOTS = [
     accepts: (caps) => caps?.start_frame === true,
   },
   {
+    key: 'video_direct',
+    label: 'Direct to video (prompt + references)',
+    help: 'Used by "Render beat" for shots without recorded dialogue: the shot prompt plus its matched reference images go straight to a reference-to-video model, so no storyboard still is needed. Leave unset to render a still first and animate it with the start-frame model.',
+    accepts: (caps) => caps?.reference_images === true,
+  },
+  {
     key: 'lipsync',
     label: 'Lip sync (avatar)',
     help: 'Used when generating a lip-synced performance from a frame and real recorded audio.',

@@ -81,6 +81,10 @@
 //   transition_in: string | null      (short continuity note, ≤ MAX_TRANSITION_LEN)
 //   characters_in_scene: string[]     (deduped, stripped names)
 //   sets_in_scene: string[]           (deduped, stripped set names — where the shot plays)
+//   dialog_ids: ObjectId[]            (dialogs collection; the beat's dialog lines
+//                                      this shot COVERS, in dialog order. Planner-
+//                                      assigned, user-adjustable. Drives duration
+//                                      estimation and lip-sync audio at render time)
 //   created_at, updated_at: Date
 
 import { ObjectId } from 'mongodb';
@@ -153,6 +157,25 @@ function sanitizeCharacterList(list) {
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(stripped);
+  }
+  return out;
+}
+
+// Coerce a dialog_ids patch/list into deduped ObjectIds, order preserved.
+// Throws on a malformed entry (a typo from the SPA is a real bug), skips
+// null/undefined holes.
+function sanitizeDialogIdList(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const v of list) {
+    if (v == null) continue;
+    const oid = v instanceof ObjectId ? v : typeof v === 'string' && HEX24.test(v) ? new ObjectId(v) : null;
+    if (!oid) throw new Error(`invalid dialog id: ${v}`);
+    const key = oid.toString();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(oid);
   }
   return out;
 }
@@ -368,6 +391,9 @@ function backfill(doc) {
     sets_in_scene: Array.isArray(doc.sets_in_scene)
       ? doc.sets_in_scene.filter((s) => typeof s === 'string')
       : [],
+    dialog_ids: Array.isArray(doc.dialog_ids)
+      ? doc.dialog_ids.filter((v) => v instanceof ObjectId || (typeof v === 'string' && HEX24.test(v)))
+      : [],
   };
 }
 
@@ -450,6 +476,7 @@ export async function createStoryboard({
   transitionIn = null,
   charactersInScene = [],
   setsInScene = [],
+  dialogIds = [],
 } = {}) {
   if (!beatId) throw new Error('beatId required');
   const pid = await resolveProjectId(projectId);
@@ -503,6 +530,7 @@ export async function createStoryboard({
     transition_in: sanitizeTransition(transitionIn),
     characters_in_scene: sanitizeCharacterList(charactersInScene),
     sets_in_scene: sanitizeCharacterList(setsInScene),
+    dialog_ids: sanitizeDialogIdList(dialogIds),
     created_at: now,
     updated_at: now,
   };
@@ -583,6 +611,15 @@ export async function updateStoryboard(projectId, id, patch) {
         );
       }
       set[k] = sanitizeCharacterList(v);
+    } else if (k === 'dialog_ids') {
+      if (!Array.isArray(v)) {
+        throw new Error('update_storyboard: dialog_ids must be an array of ids');
+      }
+      try {
+        set[k] = sanitizeDialogIdList(v);
+      } catch (e) {
+        throw new Error(`update_storyboard: ${e.message}`);
+      }
     } else if (
       k === 'video_duration_seconds' ||
       k === 'audio_duration_seconds' ||
