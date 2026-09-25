@@ -4111,3 +4111,18 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .readiness-panel__badge {
   font-size: 11px;
 }
+
+/* Admin → Models: one card per feature slot. */
+.model-slots-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px 24px;
+  margin: 16px 0;
+}
+.model-slot select { width: 100%; }
+.model-slot .field-help {
+  margin: 6px 0 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}

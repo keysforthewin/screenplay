@@ -2,6 +2,7 @@ import PDFDocument from 'pdfkit';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { findAllCharacters, getCharacter } from '../mongo/characters.js';
 import { getPlot, searchBeats } from '../mongo/plots.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
@@ -113,7 +114,7 @@ export async function inferExportTitle(meta) {
     const text = await analyzeText({
       system,
       user,
-      model: config.anthropic.enhancerModel,
+      model: modelFor('enhancer'),
       // The title itself is ~15 tokens; the rest is thinking headroom.
       maxTokens: 2000,
     });

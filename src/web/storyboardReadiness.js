@@ -13,6 +13,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
 import { stripMarkdown } from '../util/markdown.js';
@@ -21,7 +22,6 @@ import { findCharactersInBeat, findSetsInBeat, clipField } from './storyboardGen
 
 // Cheap tier — this is triage, not judgment (same tier the frame-reference
 // scorer uses).
-const GAP_MODEL = config.anthropic.enhancerModel;
 
 const GAP_TOOL = {
   name: 'report_visual_gaps',
@@ -256,7 +256,7 @@ async function reportVisualGaps({ beat, characters, sets }) {
   ].join('\n');
   const client = getAnthropic();
   const resp = await client.messages.create({
-    model: GAP_MODEL,
+    model: modelFor('enhancer'),
     max_tokens: 2000,
     system: GAP_SYSTEM,
     tools: [GAP_TOOL],
@@ -312,7 +312,7 @@ export async function buildReadinessReport({ projectId, beat }) {
   const infos = checks.filter((c) => c.severity === 'info').length;
   return {
     created_at: new Date(),
-    model: GAP_MODEL,
+    model: modelFor('enhancer'),
     checks,
     gaps,
     summary,

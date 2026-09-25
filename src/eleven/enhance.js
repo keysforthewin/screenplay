@@ -4,6 +4,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { flattenAudioTags } from './tags.js';
 
@@ -30,7 +31,7 @@ export async function enhanceWithAudioTags(text) {
   let resp;
   try {
     resp = await client.messages.create({
-      model: config.anthropic.enhancerModel,
+      model: modelFor('enhancer'),
       max_tokens: config.anthropic.maxTokens,
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: `<text_to_annotate>\n${trimmed}\n</text_to_annotate>` }],

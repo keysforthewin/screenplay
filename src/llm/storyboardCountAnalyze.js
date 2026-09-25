@@ -10,6 +10,7 @@
 // back to the existing count — the dialog never blocks on a miss.
 
 import { config } from '../config.js';
+import { modelFor } from './modelSlots.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
 import { stripMarkdown } from '../util/markdown.js';
@@ -106,7 +107,7 @@ export async function analyzeStoryboardCount({
   try {
     const client = getAnthropic();
     const resp = await client.messages.create({
-      model: config.anthropic.model,
+      model: modelFor('storyboard'),
       max_tokens: 2000,
       system: SYSTEM_PROMPT,
       tools: [SUGGEST_COUNT_TOOL],

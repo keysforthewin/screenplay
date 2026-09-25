@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { modelFor } from './modelSlots.js';
 import { getAnthropic } from '../anthropic/client.js';
 
 export async function analyzeText({ system, user, model, maxTokens } = {}) {
@@ -7,7 +8,7 @@ export async function analyzeText({ system, user, model, maxTokens } = {}) {
   }
   const client = getAnthropic();
   const resp = await client.messages.create({
-    model: model || config.anthropic.model,
+    model: model || modelFor('analysis'),
     max_tokens: maxTokens || 4000,
     system: system || undefined,
     messages: [{ role: 'user', content: user }],

@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { channelMutex } from '../agent/channelMutex.js';
 import { cleanupTmpAttachments } from '../util/tmpFiles.js';
@@ -182,7 +183,7 @@ export async function handleMessage(msg) {
           await recordAnthropicTextUsage({
             discordUser,
             channelId: msg.channelId,
-            model: config.anthropic.enhancerModel,
+            model: modelFor('enhancer'),
             totals: {
               input_tokens: enhancement.usage.input_tokens || 0,
               output_tokens: enhancement.usage.output_tokens || 0,

@@ -5,10 +5,10 @@
 // of vision.
 
 import { config } from '../config.js';
+import { modelFor } from './modelSlots.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
 
-const VISION_MODEL = config.anthropic.enhancerModel;
 const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const MAX_RAW = 4 * 1024 * 1024; // ~5 MB cap on raw vision input bytes.
 
@@ -66,7 +66,7 @@ export async function analyzeLibraryImage(buffer, contentType) {
   try {
     const client = getAnthropic();
     const resp = await client.messages.create({
-      model: VISION_MODEL,
+      model: modelFor('enhancer'),
       max_tokens: 3000,
       system: SYSTEM,
       output_config: { format: CAPTION_FORMAT },

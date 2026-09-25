@@ -7,6 +7,7 @@
 // we map those back to dialog ids.
 
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { listDialogs } from '../mongo/dialogs.js';
 import { getBeat } from '../mongo/plots.js';
@@ -99,7 +100,7 @@ export async function critiqueDialog({ projectId, beatId } = {}) {
 
   const client = getAnthropic();
   const resp = await client.messages.create({
-    model: config.anthropic.model,
+    model: modelFor('dialog'),
     max_tokens: 6000,
     system: SYSTEM_PROMPT,
     tools: [SCORE_TOOL],

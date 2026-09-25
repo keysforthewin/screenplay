@@ -6,10 +6,10 @@
 // collapse to an empty Map so generation is never blocked.
 
 import { config } from '../config.js';
+import { modelFor } from './modelSlots.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
 
-const SELECTOR_MODEL = config.anthropic.enhancerModel;
 
 function buildCatalogText(candidates) {
   return candidates
@@ -119,7 +119,7 @@ export async function scoreFrameReferences({ frameText, candidates }) {
   try {
     const client = getAnthropic();
     const resp = await client.messages.create({
-      model: SELECTOR_MODEL,
+      model: modelFor('enhancer'),
       max_tokens: 3000,
       system: SCORE_SYSTEM,
       output_config: { format: SCORE_FORMAT },

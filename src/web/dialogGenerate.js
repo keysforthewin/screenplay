@@ -17,6 +17,7 @@
 
 import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { getBeat } from '../mongo/plots.js';
 import { stripMarkdown } from '../util/markdown.js';
@@ -237,7 +238,7 @@ async function extractEntries({ beat, projectId }) {
 
   const client = getAnthropic();
   const resp = await client.messages.create({
-    model: config.anthropic.model,
+    model: modelFor('dialog'),
     max_tokens: 8192,
     system: SYSTEM_PROMPT,
     tools: [POPULATE_TOOL],

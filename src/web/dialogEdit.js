@@ -11,6 +11,7 @@
 // within one batch; the system prompt tells the model so explicitly.
 
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { listDialogs } from '../mongo/dialogs.js';
 import { stripMarkdown } from '../util/markdown.js';
@@ -132,7 +133,7 @@ export async function editDialog({ projectId, beatId, instructions }) {
 
   const client = getAnthropic();
   const resp = await client.messages.create({
-    model: config.anthropic.model,
+    model: modelFor('dialog'),
     max_tokens: 6000,
     system: SYSTEM_PROMPT,
     tools: EDIT_TOOLS,

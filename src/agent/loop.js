@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import {
   TOOLS,
@@ -449,10 +450,10 @@ export async function runAgent({
   };
   // Two-tier: the loop runs on the (cheaper) orchestrator model and creative
   // text tools live behind the delegate_writing → writer subagent, which runs
-  // on `config.anthropic.model`. When both models are the same, delegation is
+  // on `modelFor('writer')`. When both models are the same, delegation is
   // pointless overhead — revert to the legacy single-model surface.
-  const model = config.anthropic.agentModel;
-  const twoTier = config.anthropic.agentModel !== config.anthropic.model;
+  const model = modelFor('agent');
+  const twoTier = modelFor('agent') !== modelFor('writer');
 
   const anthropicTotals = {
     input_tokens: 0,
@@ -677,7 +678,7 @@ export async function runAgent({
           // (like tool_search) rather than dispatched through HANDLERS so it
           // can share this turn's context and emit progress events. The
           // review-mode branch above already blocked it when review is active.
-          logger.info(`delegate_writing → writer subagent (${config.anthropic.model})`);
+          logger.info(`delegate_writing → writer subagent (${modelFor('writer')})`);
           const { ok, text } = await runWriterAgent({
             task: tu.input?.task,
             beat: tu.input?.beat ?? null,

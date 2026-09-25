@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { stripMarkdown } from '../util/markdown.js';
 
@@ -96,7 +97,7 @@ export async function enhancePrompt({
   let resp;
   try {
     resp = await client.messages.create({
-      model: config.anthropic.enhancerModel,
+      model: modelFor('enhancer'),
       max_tokens: 3000,
       system: SYSTEM_PROMPT,
       output_config: { format: ENHANCE_FORMAT },
@@ -115,7 +116,7 @@ export async function enhancePrompt({
   const parsed = parseJsonObject(text);
   if (!parsed) {
     logger.warn(
-      `prompt enhancer: malformed JSON output (model=${config.anthropic.enhancerModel})`,
+      `prompt enhancer: malformed JSON output (model=${modelFor('enhancer')})`,
     );
     return { notes: null, summary: null, usage: resp?.usage || null };
   }

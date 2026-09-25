@@ -17,8 +17,8 @@
 
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
+import { modelFor } from '../llm/modelSlots.js';
 import {
-  STORYBOARD_MODEL,
   buildBeatContextBlock,
 } from './storyboardGenerate.js';
 
@@ -474,7 +474,7 @@ async function callPhase1Anthropic(args) {
   const client = getAnthropic();
   const resp = await client.messages
     .stream({
-      model: STORYBOARD_MODEL,
+      model: modelFor('storyboard'),
       max_tokens: 8000,
       system: SCENE_PLATE_PLAN_SYSTEM_PROMPT,
       tools: [SCENE_PLATE_PLAN_TOOL],
@@ -483,7 +483,7 @@ async function callPhase1Anthropic(args) {
     })
     .finalMessage();
   if (resp.stop_reason === 'max_tokens') {
-    logger.warn(`beat plate planner (phase 1): hit max_tokens cap (model=${STORYBOARD_MODEL}); response may be truncated`);
+    logger.warn(`beat plate planner (phase 1): hit max_tokens cap (model=${modelFor('storyboard')}); response may be truncated`);
   }
   const toolUse = (resp.content || []).find((b) => b.type === 'tool_use' && b.name === 'plan_scene_plates');
   if (!toolUse) {
@@ -498,7 +498,7 @@ async function callPhase2Anthropic({ beat, characters, direction, directorNotes,
   const client = getAnthropic();
   const resp = await client.messages
     .stream({
-      model: STORYBOARD_MODEL,
+      model: modelFor('storyboard'),
       max_tokens: 6000,
       system: SCENE_PLATE_CRITIQUE_SYSTEM_PROMPT,
       tools: [SCENE_PLATE_CRITIQUE_TOOL],

@@ -6,6 +6,10 @@
 import express from 'express';
 import { listUsers, getUserById, setUserProjects } from '../mongo/users.js';
 import { listProjects } from '../mongo/projects.js';
+import { getModelSettings, setModelSettings } from '../mongo/appSettings.js';
+import { describeModelSlots, KNOWN_MODELS } from '../llm/modelSlots.js';
+import { getAnthropic } from '../anthropic/client.js';
+import { logger } from '../log.js';
 
 const HEX24 = /^[a-f0-9]{24}$/i;
 
@@ -54,5 +58,83 @@ export function buildAdminRouter() {
     }
   });
 
+  // ── Per-feature Claude model selection ────────────────────────────────
+  // GET returns every slot (default / override / effective) plus the model
+  // catalog the dropdown offers: the static KNOWN_MODELS list merged with
+  // whatever the Anthropic Models API says this key can reach (best-effort,
+  // cached briefly — an unreachable API just means the static list).
+  router.get('/models', async (_req, res, next) => {
+    try {
+      const settings = await getModelSettings();
+      const [catalog, live_catalog] = await fetchModelCatalog();
+      res.json({
+        slots: describeModelSlots(),
+        catalog,
+        live_catalog,
+        updated_at: settings.updated_at,
+        updated_by: settings.updated_by,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // PUT { slots: { writer: 'claude-fable-5-1', dialog: null, … } } — a partial
+  // merge; null reverts a slot to its env default. Applies in-process
+  // immediately (single writer process), so the next Claude call uses it.
+  router.put('/models', async (req, res, next) => {
+    try {
+      const patch = req.body?.slots;
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        return res.status(400).json({ error: 'slots must be an object' });
+      }
+      let settings;
+      try {
+        settings = await setModelSettings(patch, { updatedBy: req.session?.username || null });
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+      logger.info(
+        `admin: model slots updated by ${req.session?.username || '?'}: ${JSON.stringify(settings.slots)}`,
+      );
+      res.json({
+        slots: describeModelSlots(),
+        updated_at: settings.updated_at,
+        updated_by: settings.updated_by,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
   return router;
+}
+
+// Models API list, cached for 10 minutes. Returns [mergedCatalog, liveOk].
+let catalogCache = { at: 0, ids: null };
+const CATALOG_TTL_MS = 10 * 60 * 1000;
+async function fetchModelCatalog() {
+  let live = null;
+  if (catalogCache.ids && Date.now() - catalogCache.at < CATALOG_TTL_MS) {
+    live = catalogCache.ids;
+  } else {
+    try {
+      const client = getAnthropic();
+      const ids = [];
+      const page = await client.models.list({ limit: 100 }, { timeout: 5000 });
+      for await (const m of page) {
+        if (m?.id) ids.push({ id: m.id, label: m.display_name || m.id });
+      }
+      live = ids;
+      catalogCache = { at: Date.now(), ids };
+    } catch (e) {
+      logger.warn(`admin: Anthropic models.list failed (using static catalog): ${e?.message || e}`);
+    }
+  }
+  const byId = new Map();
+  for (const m of KNOWN_MODELS) byId.set(m.id, { ...m, known: true });
+  for (const m of live || []) {
+    if (!byId.has(m.id)) byId.set(m.id, { id: m.id, label: m.label, known: false });
+  }
+  return [Array.from(byId.values()), live !== null];
 }

@@ -15,7 +15,7 @@
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
 import { stripMarkdown } from '../util/markdown.js';
-import { STORYBOARD_MODEL } from './storyboardGenerate.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { STATIC_PLATE_CONSTRAINTS } from './beatSheetPlanner.js';
 
 // ---------------------------------------------------------------------------
@@ -109,7 +109,7 @@ export async function scanShotForPlateGap({ sb, existingPlates = [] }) {
   try {
     const client = getAnthropic();
     const resp = await client.messages.create({
-      model: STORYBOARD_MODEL,
+      model: modelFor('storyboard'),
       max_tokens: 5000,
       system: SHOT_PLATE_SCAN_SYSTEM_PROMPT,
       tools: [SHOT_PLATE_SCAN_TOOL],
@@ -206,7 +206,7 @@ export async function consolidatePlateProposals({ proposals, existingPlates = []
   try {
     const client = getAnthropic();
     const resp = await client.messages.create({
-      model: STORYBOARD_MODEL,
+      model: modelFor('storyboard'),
       max_tokens: 8000,
       system: CONSOLIDATE_PLATES_SYSTEM_PROMPT,
       tools: [CONSOLIDATE_PLATES_TOOL],

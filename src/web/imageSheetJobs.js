@@ -20,6 +20,7 @@
 
 import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { isValidImageModel, IMAGE_MODEL_ERROR, assertImageModelConfigured } from './imageModelValidate.js';
 import { createPendingArtworkViaGateway, setArtworkStatusViaGateway } from './gateway.js';
@@ -32,7 +33,6 @@ import {
   findBeatsReferencingSet,
   loadImageInput,
   clipField,
-  STORYBOARD_MODEL,
 } from './storyboardGenerate.js';
 import { clipBlock, MAX_CONTEXT_BEATS } from './setDescriptionGenerate.js';
 import { buildCharacterSheetShots, selectSheetShots } from './characterSheetShots.js';
@@ -650,7 +650,7 @@ export async function startShotPlanJob({
     started_at: new Date(),
     finished_at: null,
     error: null,
-    planner_model: STORYBOARD_MODEL,
+    planner_model: modelFor('storyboard'),
     reference_image_ids: refIds,
     main_beat_id: cleanMainBeatId,
     beat_ids: cleanBeatIds,
@@ -745,7 +745,7 @@ export async function startTuneScanJob({ projectId, hostId, referenceImageIds = 
     started_at: new Date(),
     finished_at: null,
     error: null,
-    planner_model: STORYBOARD_MODEL,
+    planner_model: modelFor('storyboard'),
     reference_image_ids: (referenceImageIds || []).map(String),
     planned: 0,
     completed: 0,

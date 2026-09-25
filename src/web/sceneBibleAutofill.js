@@ -9,6 +9,7 @@
 // and the values persist to beats.$.scene_bible.
 
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { getBeat, getPlot } from '../mongo/plots.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
@@ -158,7 +159,7 @@ export async function autofillSceneBible({ projectId, beatId } = {}) {
 
     const client = getAnthropic();
     const resp = await client.messages.create({
-      model: config.anthropic.model,
+      model: modelFor('storyboard'),
       max_tokens: 5000,
       system: SYSTEM_PROMPT,
       tools: [FILL_TOOL],

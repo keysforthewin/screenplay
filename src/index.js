@@ -1,5 +1,6 @@
 import { connectMongo } from './mongo/client.js';
 import { ensureAuthIndexes } from './mongo/auth.js';
+import { loadModelOverrides } from './mongo/appSettings.js';
 import { seedDefaults } from './seed/defaults.js';
 import { createDiscordClient } from './discord/client.js';
 import { setDiscordClient } from './discord/announcer.js';
@@ -18,6 +19,8 @@ async function main() {
   // installs JSDOM globals on first use, which trips the SDK's browser guard.
   getAnthropic();
   await connectMongo();
+  // Admin-page model overrides must be live before the first Claude call.
+  await loadModelOverrides();
   await ensureAuthIndexes();
   await seedDefaults();
   await startBackupScheduler();

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiGet, apiPutJson } from '../api.js';
+import { ModelSlotsPanel } from '../widgets/ModelSlotsPanel.jsx';
 
 // Admin page: every user who has ever been approved, with checkboxes for
 // which projects they can access. Admin-only — the route in App.jsx redirects
@@ -79,7 +80,11 @@ export function Admin({ session }) {
       <p>
         <a href="#" onClick={(e) => { e.preventDefault(); navigate('/'); }}>← Back to TOC</a>
       </p>
-      <h1 style={{ marginTop: 0 }}>Admin — project access</h1>
+      <h1 style={{ marginTop: 0 }}>Admin</h1>
+
+      <ModelSlotsPanel />
+
+      <h2 style={{ marginTop: 40 }}>Project access</h2>
       <p style={{ color: 'var(--fg-muted)' }}>
         Pick a user, check the projects they may see and edit, then save. Users
         with no checked projects can log in but see nothing.

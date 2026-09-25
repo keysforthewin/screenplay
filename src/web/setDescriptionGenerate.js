@@ -8,6 +8,7 @@
 // the description replace itself live (y-doc), persisting to sets.description.
 
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { getPlot } from '../mongo/plots.js';
 import { getSet } from '../mongo/sets.js';
@@ -171,7 +172,7 @@ export async function generateSetDescription({ projectId, setId, beatIds = [], d
 
   const client = getAnthropic();
   const resp = await client.messages.create({
-    model: config.anthropic.model,
+    model: modelFor('storyboard'),
     max_tokens: 4000,
     system: SYSTEM_PROMPT,
     tools: [WRITE_TOOL],

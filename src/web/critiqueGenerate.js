@@ -5,6 +5,7 @@
 
 import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { resolveProjectId } from '../mongo/projects.js';
@@ -17,7 +18,6 @@ import {
   finalizeCritique,
 } from '../mongo/critiques.js';
 
-export const CRITIQUE_MODEL = config.anthropic.model;
 const TERMINAL_RETENTION_MS = 5 * 60 * 1000;
 
 const jobs = new Map();
@@ -127,7 +127,7 @@ async function generateFacet(facet, ctx) {
   if (facetGeneratorOverride) return facetGeneratorOverride(facet, ctx);
   const client = getAnthropic();
   const resp = await client.messages.create({
-    model: CRITIQUE_MODEL,
+    model: modelFor('critique'),
     max_tokens: 5000,
     system: facet.systemPrompt,
     tools: [CRITIQUE_FACET_TOOL],
@@ -174,7 +174,7 @@ export async function runCritique({ projectId, job }) {
   try {
     const beat = await getBeat(projectId, job.beat_id);
     if (!beat) throw new Error(`beat not found: ${job.beat_id}`);
-    await setCritiquePending(projectId, beat._id, { model: CRITIQUE_MODEL, facets: facetStubs() });
+    await setCritiquePending(projectId, beat._id, { model: modelFor('critique'), facets: facetStubs() });
     job.status = 'running';
     publish(job);
 

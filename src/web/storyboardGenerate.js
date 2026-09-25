@@ -30,6 +30,7 @@
 
 import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
 import { getBeat, listBeats, setBeatSceneBible } from '../mongo/plots.js';
@@ -90,7 +91,6 @@ const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
 // Config-driven via ANTHROPIC_MODEL so a model bump is one env change rather
 // than a code change — set that var to a top-tier model, never a cheap one.
 // Exported so the image-sheet beat planner runs on the same model.
-export const STORYBOARD_MODEL = config.anthropic.model;
 export const DEFAULT_TARGET_COUNT = 11;
 // A beat that is genuinely one or two shots must be allowed to stay one or two
 // shots — a floor of 3 forced padding frames onto scenes that didn't want them.
@@ -605,7 +605,7 @@ export async function startStoryboardGenerationJob({
   }
   const cleanDirection = sanitizeDirection(direction);
   const resolvedCount = clampTargetCount(targetCount);
-  // Both passes run on STORYBOARD_MODEL; surfaced on the job so the SPA
+  // Both passes run on modelFor('storyboard'); surfaced on the job so the SPA
   // progress display can name the model doing the work.
   const jobId = makeJobId();
   const job = {
@@ -620,7 +620,7 @@ export async function startStoryboardGenerationJob({
     failed: 0,
     direction: cleanDirection,
     target_count_requested: resolvedCount,
-    model: STORYBOARD_MODEL,
+    model: modelFor('storyboard'),
     image_model: imageModel,
     progress: null,
     events: [],
@@ -1138,7 +1138,7 @@ async function planScene({ beat, characters, sets = [], targetCount, direction, 
   // cap (Opus 4 family). finalMessage() yields the same Message shape.
   const resp = await client.messages
     .stream({
-      model: STORYBOARD_MODEL,
+      model: modelFor('storyboard'),
       max_tokens: 16000,
       system: SCENE_PLAN_SYSTEM_PROMPT,
       tools: [SCENE_PLAN_TOOL],
@@ -1148,7 +1148,7 @@ async function planScene({ beat, characters, sets = [], targetCount, direction, 
     .finalMessage();
   if (resp.stop_reason === 'max_tokens') {
     logger.warn(
-      `storyboard plan_scene: hit max_tokens cap (model=${STORYBOARD_MODEL}, target=${targetCount}); response may be truncated`,
+      `storyboard plan_scene: hit max_tokens cap (model=${modelFor('storyboard')}, target=${targetCount}); response may be truncated`,
     );
   }
   const toolUse = (resp.content || []).find((b) => b.type === 'tool_use' && b.name === 'plan_scene');
@@ -1365,7 +1365,7 @@ async function expandShots({ beat, characters, sets = [], sceneBible, outline, d
   // non-streaming cap. finalMessage() yields the same Message shape.
   const resp = await client.messages
     .stream({
-      model: STORYBOARD_MODEL,
+      model: modelFor('storyboard'),
       max_tokens: 16000,
       system: SHOT_EXPAND_SYSTEM_PROMPT,
       tools: [SHOT_EXPAND_TOOL],
@@ -1375,7 +1375,7 @@ async function expandShots({ beat, characters, sets = [], sceneBible, outline, d
     .finalMessage();
   if (resp.stop_reason === 'max_tokens') {
     logger.warn(
-      `storyboard expand_shots: hit max_tokens cap (model=${STORYBOARD_MODEL}, shots=${outline.length}); response may be truncated`,
+      `storyboard expand_shots: hit max_tokens cap (model=${modelFor('storyboard')}, shots=${outline.length}); response may be truncated`,
     );
   }
   const toolUse = (resp.content || []).find((b) => b.type === 'tool_use' && b.name === 'expand_shots');

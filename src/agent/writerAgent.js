@@ -1,7 +1,7 @@
 // The Fable 5 writer subagent — a mini agent loop spawned by the orchestrator's
 // `delegate_writing` tool in two-tier mode. The orchestrator (a cheaper model)
 // routes tools and talks to the user; ALL prose lands here, authored by the
-// expensive creative model (`config.anthropic.model`).
+// expensive creative model (`modelFor('writer')`).
 //
 // Design constraints:
 // - The writer never sees the Discord conversation. Its whole world is the
@@ -15,6 +15,7 @@
 //   orchestrator handles them like any other failed tool call.
 
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { writerToolDefs } from './tools.js';
@@ -162,7 +163,7 @@ export async function runWriterAgent({
   };
 
   const client = getAnthropic();
-  const model = config.anthropic.model;
+  const model = modelFor('writer');
   const totals = {
     input_tokens: 0,
     output_tokens: 0,

@@ -15,6 +15,7 @@
 //     the end frame call has a verbal anchor for what to preserve.
 
 import { config } from '../config.js';
+import { modelFor } from './modelSlots.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
 
@@ -22,7 +23,6 @@ import { logger } from '../log.js';
 // passes via ANTHROPIC_ENHANCER_MODEL. Used by the library vision worker
 // (batches of dozens of images), so it is the knob to turn if that batch cost
 // matters. Callers wanting something else pass an explicit `model`.
-const DEFAULT_VISION_MODEL = config.anthropic.enhancerModel;
 const ANTHROPIC_OK = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const MAX_RAW = 4 * 1024 * 1024;
 
@@ -150,7 +150,7 @@ export async function describeReferenceImage({ buffer, contentType, kind = 'auto
   try {
     const client = getAnthropic();
     const resp = await client.messages.create({
-      model: model || DEFAULT_VISION_MODEL,
+      model: model || modelFor('enhancer'),
       max_tokens: 5000,
       system: sys,
       output_config: { format: DESCRIBE_FORMAT },

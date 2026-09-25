@@ -13,6 +13,7 @@
 // in the dialog's collaborative `direction` field.
 
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { getDialog, listDialogs } from '../mongo/dialogs.js';
 import { getBeat } from '../mongo/plots.js';
@@ -119,7 +120,7 @@ export async function generateDirectionForLine({ projectId, dialogId } = {}) {
 
   const client = getAnthropic();
   const resp = await client.messages.create({
-    model: config.anthropic.model,
+    model: modelFor('dialog'),
     max_tokens: 5000,
     system: SYSTEM_PROMPT,
     tools: [WRITE_DIRECTION_TOOL],
@@ -170,7 +171,7 @@ export async function generateDirectionForBeat({ projectId, beatId } = {}) {
 
   const client = getAnthropic();
   const resp = await client.messages.create({
-    model: config.anthropic.model,
+    model: modelFor('dialog'),
     max_tokens: 8000,
     system: SYSTEM_PROMPT,
     tools: [WRITE_DIRECTIONS_TOOL],

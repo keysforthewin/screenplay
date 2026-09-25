@@ -10,6 +10,7 @@ import { getBeat } from '../mongo/plots.js';
 import { getBeatCritique, setCritiqueStrategy, stashPreviousBody, getPreviousBody, clearPreviousBody } from '../mongo/critiques.js';
 import { setBeatBodyViaGateway } from './gateway.js';
 import { SCREENPLAY_STYLE_GUIDE } from '../agent/screenplayStyle.js';
+import { modelFor } from '../llm/modelSlots.js';
 
 function httpError(message, status) {
   const e = new Error(message);
@@ -49,6 +50,7 @@ const REGEN_SYSTEM = [
 
 export async function normalizeBeatBody(body) {
   const out = await analyzeText({
+    model: modelFor('critique'),
     system: NORMALIZE_SYSTEM,
     user: `Reformat this beat body:\n\n${String(body || '')}`,
     maxTokens: 4000,
@@ -72,7 +74,7 @@ export async function synthesizeRewriteStrategy({ beat, critique }) {
     '# Current beat body',
     String(beat?.body || ''),
   ].join('\n');
-  const out = await analyzeText({ system: SYNTHESIZE_SYSTEM, user, maxTokens: 4000 });
+  const out = await analyzeText({ model: modelFor('critique'), system: SYNTHESIZE_SYSTEM, user, maxTokens: 4000 });
   return out.trim();
 }
 
@@ -85,7 +87,7 @@ export async function regenerateBeatBody({ beat, strategy }) {
     '# Current beat body to rewrite',
     String(beat?.body || ''),
   ].join('\n');
-  const out = await analyzeText({ system: REGEN_SYSTEM, user, maxTokens: 4000 });
+  const out = await analyzeText({ model: modelFor('critique'), system: REGEN_SYSTEM, user, maxTokens: 4000 });
   return out.trim();
 }
 

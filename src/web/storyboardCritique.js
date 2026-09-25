@@ -4,6 +4,7 @@
 // so one hard failure can't be averaged away).
 
 import { config } from '../config.js';
+import { modelFor } from '../llm/modelSlots.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
 import { stripMarkdown } from '../util/markdown.js';
@@ -87,7 +88,6 @@ export function aggregateCritique(lensResults) {
 }
 
 // Top-tier model, matching the rest of the storyboard surface.
-const CRITIQUE_MODEL = config.anthropic.model;
 
 // Strict tool schema: every lens judge returns one score + comments.
 const JUDGE_TOOL = {
@@ -170,7 +170,7 @@ async function runLensJudge({ lens, target, context, imageInput }) {
   }
   const client = getAnthropic();
   const resp = await client.messages.create({
-    model: CRITIQUE_MODEL,
+    model: modelFor('critique'),
     max_tokens: 5000,
     system,
     tools: [JUDGE_TOOL],
@@ -213,5 +213,5 @@ export async function critiquePanel({ target, sceneBible, directorNotes, shot, p
   // aggregate so a transient API failure can't paint a shot as critically bad.
   const scored = lensResults.filter((l) => !l.error);
   const { overall, lowest_lens } = aggregateCritique(scored);
-  return { overall, lowest_lens, lenses: lensResults, model: CRITIQUE_MODEL, created_at: new Date(), target };
+  return { overall, lowest_lens, lenses: lensResults, model: modelFor('critique'), created_at: new Date(), target };
 }
