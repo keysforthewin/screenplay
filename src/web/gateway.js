@@ -2478,16 +2478,39 @@ export async function createBeatViaGateway(opts) {
   return beat;
 }
 
+// Full delete: drop the beat from the plot, then cascade to everything keyed
+// off its _id — storyboards (freeing their generated frame images first, with
+// the shared-reference guard), dialogs, the legacy beat gallery images, and the
+// beat's RAG chunks. Both the agent's delete_beat tool and DELETE /api/beat/:id
+// route here so the two entry points can never drift in what they clean up.
 export async function deleteBeatViaGateway(projectId, identifier) {
   const { deleteBeat } = await import('../mongo/plots.js');
-  const res = await deleteBeat(projectId, identifier);
+  const target = await getBeat(projectId, String(identifier));
+  if (!target) throw new Error(`Beat not found: ${identifier}`);
+  const beatId = target._id.toString();
+  await clearAllFrameImagesForBeatViaGateway({ projectId, beatId }).catch((e) =>
+    logger.warn(`gateway: delete beat frame images failed: ${e.message}`),
+  );
+  const res = await deleteBeat(projectId, beatId);
+  const storyboards = await mongoDeleteStoryboardsForBeat(beatId);
+  const dialogs = await mongoDeleteDialogsForBeat(beatId);
+  if (res.image_ids.length) {
+    await deleteImages(res.image_ids).catch((e) =>
+      logger.warn(`gateway: delete beat images failed: ${e.message}`),
+    );
+  }
+  deleteEntity('beat', beatId).catch(() => {});
   await broadcastBeatsChanged(projectId);
   const editor = currentEditor();
   if (editor) {
     const pid = await resolveProjectId(projectId);
     announceBeatLifecycle({ projectId: pid, beat: res, editor, verb: 'deleted' });
   }
-  return res;
+  return {
+    ...res,
+    storyboards_removed: storyboards.length,
+    dialogs_removed: dialogs.length,
+  };
 }
 
 // Ping the project-wide singleton room so any open TOC refetches its set /

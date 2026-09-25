@@ -111,6 +111,7 @@ import {
   reorderDialogsViaGateway,
   reorderBeatsViaGateway,
   createBeatViaGateway,
+  deleteBeatViaGateway,
   reorderStoryboardsViaGateway,
   setBeatMainImageViaGateway,
   setCharacterMainImageViaGateway,
@@ -2054,6 +2055,30 @@ export function buildApiRouter() {
 
       const result = await updateBeatViaGateway(req.projectId, beatId, patch);
       res.json({ beat: result });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Delete a beat outright (the SPA's "Delete beat" button at the bottom of
+  // the beat page). The gateway cascades to the beat's storyboards, dialogs,
+  // images and RAG chunks and pings the TOC room so open clients refetch.
+  router.delete('/beat/:id', async (req, res, next) => {
+    try {
+      // getBeat (not resolveBeatId) so an unknown or cross-project hex id is a
+      // 404 rather than a gateway throw.
+      const beat = await getBeat(req.projectId, String(req.params.id));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const result = await deleteBeatViaGateway(req.projectId, beat._id.toString());
+      res.json({
+        ok: true,
+        deleted: {
+          _id: String(result._id),
+          name: result.name,
+          storyboards_removed: result.storyboards_removed,
+          dialogs_removed: result.dialogs_removed,
+        },
+      });
     } catch (e) {
       next(e);
     }

@@ -1882,6 +1882,16 @@ button.danger:hover:not(:disabled) {
 }
 button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* Bottom-of-page delete control on the beat editor: visually separated from
+   the pager so it is never hit by a stray "next beat" click. */
+.beat-danger-zone {
+  margin-top: 40px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  display: flex;
+  justify-content: flex-end;
+}
+
 .tab-nav {
   display: flex;
   gap: 0;

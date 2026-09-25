@@ -1951,8 +1951,7 @@ export const HANDLERS = {
 
   async delete_beat({ identifier }, context = null) {
     const res = await Gateway.deleteBeatViaGateway(context?.projectId, identifier);
-    await Images.deleteImages(res.image_ids);
-    return `Deleted beat "${res.name}" and ${res.image_ids.length} image(s).`;
+    return `Deleted beat "${res.name}" (${res.image_ids.length} image(s), ${res.storyboards_removed} storyboard(s), ${res.dialogs_removed} dialog item(s) removed with it).`;
   },
 
   async normalize_beat({ beat } = {}, context = null) {
