@@ -134,7 +134,7 @@ export async function loadDirectorNotesForPlanner(projectId) {
 }
 
 // Pass-1 scene-planner tool: scene bible + ordered shot skeleton in one call.
-const SCENE_PLAN_TOOL = {
+export const SCENE_PLAN_TOOL = {
   name: 'plan_scene',
   strict: true,
   description:
@@ -212,7 +212,10 @@ const SCENE_PLAN_TOOL = {
             },
             dialog_lines: {
               type: 'array',
-              items: { type: 'integer', minimum: 1 },
+              // No `minimum` here: the Messages API rejects numeric bounds on
+              // integer items in forced-tool schemas (400 "property 'minimum'
+              // is not supported"). dialogLinesToIds drops out-of-range numbers.
+              items: { type: 'integer' },
               description:
                 'The 1-based NUMBERS of the dialogue lines (from the numbered dialogue list in the context) this shot COVERS — the lines whose recorded audio is lip-synced into this clip. Every line goes to exactly one shot, in script order, contiguous within a shot; the covering shot must frame the speaker with the mouth visible. Empty (or omitted) for a shot with no spoken line.',
             },

@@ -372,6 +372,9 @@ describe('tool schemas', () => {
 
   it('plan_scene carries dialog_lines and the coverage rules', () => {
     expect(src).toContain('dialog_lines');
+    // The API rejects `minimum` on integer items in tool schemas (prod 400).
+    const dl = gen.SCENE_PLAN_TOOL.input_schema.properties.frames.items.properties.dialog_lines;
+    expect(dl.items).toEqual({ type: 'integer' });
     expect(gen.SCENE_PLAN_SYSTEM_PROMPT).toContain('Dialogue coverage');
     expect(gen.SCENE_PLAN_SYSTEM_PROMPT).toContain('EXACTLY ONE shot');
   });
