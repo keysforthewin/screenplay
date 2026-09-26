@@ -3,8 +3,9 @@ import { apiGet, thumbUrl } from '../api.js';
 import { Modal } from './Modal.jsx';
 
 // Picker for a Prompts-tab row's reference images. Offers exactly the
-// catalog the auto-generator picks from (GET /video-prompts/candidates: every
-// image the beat's characters and sets carry), grouped by owner. Multi-pick;
+// catalog the auto-generator picks from (GET /video-prompts/candidates: the
+// ARTWORK of the beat's characters and sets — done artworks only, never
+// uploaded portraits, sheets or gallery images), grouped by owner. Multi-pick;
 // the chosen ids are APPENDED to the row's ordered list in the order they
 // were clicked, so the next @ImageN handle is predictable.
 export function PromptReferencePicker({ open, beatId, existingIds, maxTotal, onClose, onPick }) {
@@ -54,7 +55,7 @@ export function PromptReferencePicker({ open, beatId, existingIds, maxTotal, onC
   return (
     <Modal
       open={open}
-      title="Add reference images"
+      title="Add reference images (artwork)"
       onClose={onClose}
       size="wide"
       footer={
@@ -78,8 +79,8 @@ export function PromptReferencePicker({ open, beatId, existingIds, maxTotal, onC
       ) : null}
       {catalog && !catalog.length ? (
         <p style={{ color: 'var(--fg-muted)' }}>
-          No images available. Add portraits, character sheets, or artwork to this beat's
-          characters and sets first.
+          No artwork available. Generate or import artwork on this beat's characters and
+          sets first — only the Artwork section is offered here.
         </p>
       ) : null}
       {remaining === 0 ? (

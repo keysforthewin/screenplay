@@ -7,9 +7,10 @@
 // broadcasts to the "video_prompts:<beatId>" room as each row is persisted.
 //
 // Pipeline (single LLM call, text only):
-//   1. Build the reference image CATALOG for the beat: every image the beat's
-//      characters and sets carry (sheets, portraits, gallery, done artworks),
-//      numbered 1..N with name / description / caption.
+//   1. Build the reference image CATALOG for the beat: the ARTWORK of the
+//      beat's characters and sets (done artworks only — uploaded portraits,
+//      character sheets and gallery images are deliberately excluded; the
+//      Artwork section is the curated look), numbered 1..N with description.
 //   2. One Anthropic call with the whole beat in context (directorial voice,
 //      beat text, scene bible, characters, sets, director's notes, dialogue
 //      for turn order only, the catalog). The model answers via the
@@ -61,8 +62,8 @@ import {
   FRAGILITY_RULES,
 } from './storyboardConstraints.js';
 
-// Catalog cap: enough for two or three characters with sheets + artwork and
-// a set or two, small enough that the context stays a list rather than a wall.
+// Catalog cap: enough for two or three characters' artwork and a set or two,
+// small enough that the context stays a list rather than a wall.
 export const MAX_CATALOG_ENTRIES = 40;
 const MAX_PROMPTS = 12;
 const BEAT_TEXT_CAP = 12000;
@@ -84,38 +85,15 @@ async function imageMeta(id) {
   }
 }
 
-// Every image a host (character or set doc) carries, in priority order:
-// character sheets → main image → gallery images → done artworks. Each entry
-// carries a human label ("Sarah — character sheet") and the best description
-// we have (GridFS metadata description, gallery caption, artwork description
-// or prompt).
-function hostImageSlots(host, ownerType) {
+// The artwork a host (character or set doc) carries — its "Artwork" section,
+// done artworks with a result image only. Uploaded portraits, character
+// sheets and gallery images are NOT offered: the Artwork section is the
+// curated look, and the user asked for prompts to draw from it alone. Each
+// entry carries a human label ("Sarah — artwork: Rain plate") and the best
+// description we have (GridFS metadata description, then the artwork's own
+// description or prompt).
+function hostImageSlots(host) {
   const slots = [];
-  const captionById = new Map();
-  for (const img of host?.images || []) {
-    if (img?._id) captionById.set(String(img._id), String(img.caption || '').trim());
-  }
-  if (ownerType === 'character') {
-    const sheets = Array.isArray(host?.character_sheet_image_ids)
-      ? host.character_sheet_image_ids
-      : host?.character_sheet_image_id
-        ? [host.character_sheet_image_id]
-        : [];
-    for (const sid of sheets) {
-      if (sid) slots.push({ id: String(sid), kind: 'character sheet', caption: '' });
-    }
-  }
-  if (host?.main_image_id) {
-    slots.push({
-      id: String(host.main_image_id),
-      kind: ownerType === 'character' ? 'portrait' : 'main image',
-      caption: captionById.get(String(host.main_image_id)) || '',
-    });
-  }
-  for (const img of host?.images || []) {
-    if (!img?._id) continue;
-    slots.push({ id: String(img._id), kind: 'image', caption: String(img.caption || '').trim() });
-  }
   for (const a of host?.artworks || []) {
     if (a?.status !== 'done' || !a.result_image_id) continue;
     slots.push({
@@ -127,7 +105,7 @@ function hostImageSlots(host, ownerType) {
   return slots;
 }
 
-// Build the numbered reference catalog for a beat. Returns
+// Build the numbered reference catalog for a beat — artwork only. Returns
 // [{ index (1-based), image_id (string), owner_type, owner_name, label,
 //    description }] deduped by image id and capped at MAX_CATALOG_ENTRIES.
 // Exported for the /video-prompts/candidates route (the SPA's picker) and
@@ -145,7 +123,7 @@ export async function buildReferenceCatalog(projectId, beat) {
   const seen = new Set();
   for (const { doc, ownerType } of hosts) {
     const ownerName = stripMarkdown(doc?.name || '').trim() || (ownerType === 'set' ? 'Set' : 'Character');
-    for (const slot of hostImageSlots(doc, ownerType)) {
+    for (const slot of hostImageSlots(doc)) {
       if (seen.has(slot.id)) continue;
       if (out.length >= MAX_CATALOG_ENTRIES) break;
       seen.add(slot.id);
@@ -167,7 +145,7 @@ export async function buildReferenceCatalog(projectId, beat) {
 }
 
 export function formatReferenceCatalog(catalog) {
-  if (!catalog?.length) return '(no reference images available — write the prompts without @Image handles)';
+  if (!catalog?.length) return '(no artwork available for this beat\'s characters and sets — write the prompts without @Image handles)';
   return catalog
     .map((e) => {
       const tag = e.owner_type === 'set' ? 'SET' : 'CHARACTER';
@@ -253,14 +231,15 @@ export const SYSTEM_PROMPT = [
   '  seconds", "over the last 5 seconds").',
   '',
   'Reference images — the catalog:',
-  '- The catalog lists every image available, numbered. Pick the ones this prompt needs (a character sheet or',
-  '  portrait for each person on screen; a set image or artwork for the location) and list their catalog',
-  '  numbers in reference_image_indexes. The FIRST number becomes @Image1, the second @Image2, and so on.',
+  '- The catalog lists the artwork available, numbered. Pick the ones this prompt needs (one clear image of',
+  '  each person on screen; one of the location) and list their catalog numbers in reference_image_indexes.',
+  '  The FIRST number becomes @Image1, the second @Image2, and so on.',
   '- The FIRST SENTENCE of the prompt binds every handle: "@Image1 is Sarah, @Image2 is Tom, @Image3 is the',
   '  diner interior." After that, refer to people and places by their handle (or by handle plus a short',
   '  physical description) — never by their character name alone, because the model does not know names.',
   '- Only reference handles you listed, and list only handles the prompt names. At most 9 per prompt.',
-  '- When two images show the same person, prefer the character sheet, then the portrait, then artwork.',
+  '- When several artworks show the same person or place, pick the one whose description best matches the',
+  '  framing and state this prompt needs (full body for wides, face for close-ups, the right time of day).',
   '',
   'What the prompt describes:',
   '- Lighting key, palette, time of day, weather, the materials and surfaces in the location.',
@@ -309,7 +288,7 @@ export function buildUserText({ beat, characters, sets, directorNotes, dialogs, 
   lines.push(
     '',
     '# Reference image catalog',
-    'Pick from these by number. The first number you list becomes @Image1, the second @Image2, and so on.',
+    'Artwork of this beat\'s characters and sets. Pick by number. The first number you list becomes @Image1, the second @Image2, and so on.',
     formatReferenceCatalog(catalog),
     '',
     'Write the prompts that cover this whole beat with the write_video_prompts tool. Each prompt is a',

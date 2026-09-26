@@ -64,6 +64,11 @@ function newImage(desc = '') {
 }
 
 async function seedBeatWithRefs() {
+  // Only ARTWORK is catalogued: the uploaded sheet/portrait/main images below
+  // must never appear.
+  const uploadedSheet = newImage('Sarah full-body turnaround (uploaded sheet)');
+  const uploadedPortrait = newImage('Sarah close portrait (uploaded)');
+  const uploadedSetMain = newImage('Diner interior (uploaded main)');
   const sheet = newImage('Sarah full-body turnaround, red coat');
   const portrait = newImage('Sarah close portrait');
   const setMain = newImage('Diner interior, chrome counter, neon');
@@ -73,10 +78,14 @@ async function seedBeatWithRefs() {
     project_id: projectId,
     name: 'Sarah',
     name_lower: 'sarah',
-    character_sheet_image_ids: [sheet],
-    main_image_id: portrait,
-    images: [{ _id: portrait, caption: 'portrait' }],
-    artworks: [],
+    character_sheet_image_ids: [uploadedSheet],
+    main_image_id: uploadedPortrait,
+    images: [{ _id: uploadedPortrait, caption: 'portrait' }],
+    artworks: [
+      { _id: new ObjectId(), status: 'done', result_image_id: sheet, name: 'Turnaround', description: '' },
+      { _id: new ObjectId(), status: 'done', result_image_id: portrait, name: 'Close', description: '' },
+      { _id: new ObjectId(), status: 'error', result_image_id: null },
+    ],
     fields: {},
     created_at: new Date(),
     updated_at: new Date(),
@@ -87,9 +96,10 @@ async function seedBeatWithRefs() {
     name: 'Diner',
     name_lower: 'diner',
     description: 'A roadside diner.',
-    main_image_id: setMain,
-    images: [{ _id: setMain, caption: '' }],
+    main_image_id: uploadedSetMain,
+    images: [{ _id: uploadedSetMain, caption: '' }],
     artworks: [
+      { _id: new ObjectId(), status: 'done', result_image_id: setMain, name: 'Interior plate', description: '' },
       { _id: new ObjectId(), status: 'done', result_image_id: artworkId, name: 'Night plate', description: 'Diner exterior at night' },
       { _id: new ObjectId(), status: 'pending', result_image_id: null },
     ],
@@ -130,20 +140,33 @@ async function waitForJob(jobId) {
 }
 
 describe('buildReferenceCatalog', () => {
-  it('numbers character sheets → portrait → images → artworks, then set images, deduped', async () => {
+  it('numbers done artworks only (characters then sets), skipping uploaded sheets/portraits/gallery and non-done artworks', async () => {
     const { beat, sheet, portrait, setMain, artworkId } = await seedBeatWithRefs();
     const catalog = await Gen.buildReferenceCatalog(projectId, beat);
     expect(catalog.map((e) => e.image_id)).toEqual([
       sheet.toString(), portrait.toString(), setMain.toString(), artworkId.toString(),
     ]);
     expect(catalog.map((e) => e.index)).toEqual([1, 2, 3, 4]);
-    expect(catalog[0]).toMatchObject({ owner_type: 'character', owner_name: 'Sarah', label: 'Sarah — character sheet' });
+    expect(catalog[0]).toMatchObject({ owner_type: 'character', owner_name: 'Sarah', label: 'Sarah — artwork: Turnaround' });
     expect(catalog[0].description).toBe('Sarah full-body turnaround, red coat');
-    expect(catalog[2]).toMatchObject({ owner_type: 'set', owner_name: 'Diner', label: 'Diner — main image' });
+    expect(catalog[2]).toMatchObject({ owner_type: 'set', owner_name: 'Diner', label: 'Diner — artwork: Interior plate' });
     expect(catalog[3].label).toBe('Diner — artwork: Night plate');
     const text = Gen.formatReferenceCatalog(catalog);
-    expect(text).toContain('1. [CHARACTER Sarah] Sarah — character sheet — Sarah full-body turnaround, red coat');
-    expect(text).toContain('3. [SET Diner] Diner — main image');
+    expect(text).toContain('1. [CHARACTER Sarah] Sarah — artwork: Turnaround — Sarah full-body turnaround, red coat');
+    expect(text).toContain('3. [SET Diner] Diner — artwork: Interior plate');
+    expect(text).not.toMatch(/uploaded/);
+  });
+
+  it('a beat whose hosts have no artwork yields an empty catalog even when they have uploads', async () => {
+    const portrait = newImage('uploaded portrait');
+    await fakeDb.collection('characters').insertOne({
+      _id: new ObjectId(), project_id: projectId, name: 'Tom', name_lower: 'tom',
+      character_sheet_image_ids: [newImage('sheet')], main_image_id: portrait, images: [{ _id: portrait }], artworks: [],
+      fields: {}, created_at: new Date(), updated_at: new Date(),
+    });
+    const beat = await Plots.createBeat({ projectId, name: 'B', characters: ['Tom'] });
+    expect(await Gen.buildReferenceCatalog(projectId, beat)).toEqual([]);
+    expect(Gen.formatReferenceCatalog([])).toMatch(/no artwork available/);
   });
 });
 

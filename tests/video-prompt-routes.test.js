@@ -149,14 +149,17 @@ function newImage(desc = '') {
 async function seedBeat() {
   const sheet = newImage('sheet');
   const setMain = newImage('diner');
+  const uploaded = newImage('uploaded-portrait');
   await fakeDb.collection('characters').insertOne({
     _id: new ObjectId(), project_id: projectId, name: 'Sarah', name_lower: 'sarah',
-    character_sheet_image_ids: [sheet], images: [], artworks: [], fields: {},
+    character_sheet_image_ids: [uploaded], main_image_id: uploaded, images: [{ _id: uploaded }], fields: {},
+    artworks: [{ _id: new ObjectId(), status: 'done', result_image_id: sheet, name: 'Sheet', description: 'sheet' }],
     created_at: new Date(), updated_at: new Date(),
   });
   await fakeDb.collection('sets').insertOne({
     _id: new ObjectId(), project_id: projectId, name: 'Diner', name_lower: 'diner', description: '',
-    main_image_id: setMain, images: [{ _id: setMain, caption: '' }], artworks: [],
+    images: [],
+    artworks: [{ _id: new ObjectId(), status: 'done', result_image_id: setMain, name: 'Main', description: 'diner' }],
     created_at: new Date(), updated_at: new Date(),
   });
   const beat = await Plots.createBeat({ projectId, name: 'Arrival', body: 'Sarah enters.', characters: ['Sarah'], sets: ['Diner'] });
@@ -192,7 +195,7 @@ describe('video prompt routes', () => {
     const r = await call('GET', `/api/video-prompts/candidates?beat_id=${beat._id.toString()}`);
     expect(r.status).toBe(200);
     expect(r.json.candidates.map((c) => c.image_id)).toEqual([sheet.toString(), setMain.toString()]);
-    expect(r.json.candidates[0].label).toBe('Sarah — character sheet');
+    expect(r.json.candidates[0].label).toBe('Sarah — artwork: Sheet');
   });
 
   it('PATCH /video-prompt/:id sets duration and resolves ordered reference ids against the catalog', async () => {
@@ -205,7 +208,7 @@ describe('video prompt routes', () => {
     expect(ok.status).toBe(200);
     expect(ok.json.prompt.duration_seconds).toBe(22);
     expect(ok.json.prompt.reference_images.map((r) => r.owner_name)).toEqual(['Diner', 'Sarah']);
-    expect(ok.json.prompt.reference_images[1].label).toBe('Sarah — character sheet');
+    expect(ok.json.prompt.reference_images[1].label).toBe('Sarah — artwork: Sheet');
 
     const unknown = await call('PATCH', `/api/video-prompt/${p._id}`, { reference_image_ids: [new ObjectId().toString()] });
     expect(unknown.status).toBe(400);

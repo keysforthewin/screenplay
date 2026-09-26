@@ -196,7 +196,7 @@ export function VideoPromptItem({ prompt, index, beatId, disabled, onRefresh, on
               type="button"
               className="video-prompt-ref-add"
               disabled={busy || disabled || refs.length >= MAX_REFS}
-              title={refs.length >= MAX_REFS ? `At most ${MAX_REFS} references` : 'Add reference images from this beat\'s characters and sets'}
+              title={refs.length >= MAX_REFS ? `At most ${MAX_REFS} references` : 'Add artwork from this beat\'s characters and sets as reference images'}
               onClick={() => setPickerOpen(true)}
             >
               + Add reference
