@@ -73,6 +73,10 @@ const EMPTY_FACETS = Object.freeze({
   video_input: false,
 });
 
+// Seedance 2.5 reference-to-video: the endpoint the Prompts-tab generator
+// writes for (up to 9 @ImageN references, up to 30 s, bracketed multi-shot).
+const PROMPT_DEFAULT_ENDPOINT = 'bytedance/seedance-2.5/reference-to-video';
+
 // localStorage key for the most recently generated-with video model. We persist
 // the endpoint_id (not model_id) because the picker selects rows by endpoint —
 // a single registered model can have multiple endpoint variants in the catalog.
@@ -93,7 +97,23 @@ function writeLastEndpoint(endpointId) {
 // side even if the user closes the dialog — when the storyboard's
 // video_file_id lands the inline player will appear automatically via the
 // room's fields_updated ping.
-export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh }) {
+// `variant` selects the owner: 'storyboard' (default — the scene row's frame
+// pool feeds the model's image slots) or 'video_prompt' (a Prompts-tab row:
+// its ordered reference_images are shipped as @Image1..N, no slot editing,
+// generate_audio and director's notes default OFF, and the request goes to
+// /video-prompt/:id/...). `promptField` is the y-doc fragment that holds the
+// live prompt text (defaults to the storyboard's item:<id>:text_prompt).
+export function GenerateVideoDialog({
+  open,
+  onClose,
+  storyboardId,
+  sb,
+  onRefresh,
+  variant = 'storyboard',
+  promptField = null,
+}) {
+  const isPromptOwner = variant === 'video_prompt';
+  const endpointBase = isPromptOwner ? `/video-prompt/${storyboardId}` : `/storyboard/${storyboardId}`;
   const { ydoc } = useCollabRoom();
   const [registry, setRegistry] = useState(null); // { default_model_id, configured, catalog_generated_at, catalog_error, models: [...] }
   const [registryError, setRegistryError] = useState(null);
@@ -254,8 +274,8 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     setPreview(null);
     setPreviewLoading(false);
     setGenerateAudio(false);
-    setIncludeDirectorNotes(true);
-    setActiveFacets({ ...EMPTY_FACETS });
+    setIncludeDirectorNotes(!isPromptOwner);
+    setActiveFacets({ ...EMPTY_FACETS, reference_images: isPromptOwner });
     setSearch('');
     // Prefer the live y-doc fragment text over the (possibly stale) sb prop:
     // sb.text_prompt comes from the last REST fetch, which lags any in-flight
@@ -266,7 +286,7 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     let initialPrompt = '';
     if (ydoc && storyboardId) {
       try {
-        initialPrompt = readFragmentMarkdown(ydoc, `item:${storyboardId}:text_prompt`).trim();
+        initialPrompt = readFragmentMarkdown(ydoc, promptField || `item:${storyboardId}:text_prompt`).trim();
       } catch {
         // Y-doc not yet hydrated or fragment never written — fall through.
       }
@@ -285,18 +305,31 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
       // last-used): start+end slot when the scene offers two frames, else the
       // start-only slot. Falls through the legacy chain when unset/unmatched.
       const frameCount = frameImageIds(sb).length;
-      const projectRow = frameCount >= 1
-        ? (frameCount >= 2 ? findRegistered(modelDefaults?.video_start_end) : null)
-          || findRegistered(modelDefaults?.video_start_only)
-        : null;
-      const defaultRow = projectRow
-        || findRegistered(storedEndpoint)
-        || registry.models.find((m) => m.is_registered && m.id === registry.default_model_id)
-        || registry.models.find((m) => m.is_registered)
-        || null;
+      let defaultRow;
+      if (isPromptOwner) {
+        // Prompt rows were written for a reference-to-video model: this
+        // browser's last pick, then the project's direct-render default,
+        // then Seedance 2.5 reference-to-video, then any reference model.
+        defaultRow = findRegistered(storedEndpoint)
+          || findRegistered(modelDefaults?.video_direct)
+          || findRegistered(PROMPT_DEFAULT_ENDPOINT)
+          || registry.models.find((m) => m.is_registered && m.capabilities?.reference_images === true)
+          || registry.models.find((m) => m.is_registered)
+          || null;
+      } else {
+        const projectRow = frameCount >= 1
+          ? (frameCount >= 2 ? findRegistered(modelDefaults?.video_start_end) : null)
+            || findRegistered(modelDefaults?.video_start_only)
+          : null;
+        defaultRow = projectRow
+          || findRegistered(storedEndpoint)
+          || registry.models.find((m) => m.is_registered && m.id === registry.default_model_id)
+          || registry.models.find((m) => m.is_registered)
+          || null;
+      }
       setSelectedEndpoint(defaultRow?.endpoint_id || null);
     }
-  }, [open, sb?._id, registry, ydoc, storyboardId, modelDefaults]);
+  }, [open, sb?._id, registry, ydoc, storyboardId, modelDefaults, isPromptOwner, promptField]);
 
   // Fetch the project's model defaults on open. Landing after the reset
   // effect above is fine — it re-runs (like it does when the registry loads)
@@ -328,7 +361,8 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
       );
       setDuration(closest);
     } else if (modelNeedsDuration(chosenModel)) {
-      const free = Number.isFinite(sbDur) && sbDur > 0 ? Math.min(15, Math.round(sbDur)) : 5;
+      const cap = isPromptOwner ? 30 : 15;
+      const free = Number.isFinite(sbDur) && sbDur > 0 ? Math.min(cap, Math.round(sbDur)) : 5;
       setDuration(free);
     } else {
       setDuration(null);
@@ -348,9 +382,17 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
   // disable the button and show a tooltip without a round-trip.
   // Reset the assignment to order-based defaults whenever the chosen model or
   // the frame pool changes. User edits below override until the next reset.
-  const framesSig = useMemo(() => frameImageIds(sb).join(','), [sb]);
+  // A prompt row carries its images as reference_images (not frames); expose
+  // them as a frame pool so the slot defaults and the pre-flight check see
+  // them the same way the server's owner shim does.
+  const slotRow = useMemo(() => {
+    if (!isPromptOwner) return sb;
+    const refs = Array.isArray(sb?.reference_images) ? sb.reference_images : [];
+    return { ...sb, frames: refs.map((r) => ({ image_id: r.image_id })) };
+  }, [sb, isPromptOwner]);
+  const framesSig = useMemo(() => frameImageIds(slotRow).join(','), [slotRow]);
   useEffect(() => {
-    setAssignment(defaultAssignment(chosenModel, sb));
+    setAssignment(defaultAssignment(chosenModel, slotRow));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chosenModel?.id, framesSig]);
 
@@ -450,6 +492,9 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     if (shouldShowFps(chosenModel) && Number.isFinite(fps) && fps > 0) {
       body.fps = fps;
     }
+    // A prompt row's ordered references ARE the assignment — the server ships
+    // them as @Image1..N in stored order and never takes an override.
+    if (isPromptOwner) return body;
     // Map the frame pool onto the model's image slots. Only send what the model
     // accepts so the server doesn't have to second-guess the shape.
     const fa = {};
@@ -469,7 +514,7 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
     setPreviewLoading(true);
     try {
       const body = buildRequestBody();
-      const r = await apiPostJson(`/storyboard/${storyboardId}/video/preview`, body);
+      const r = await apiPostJson(`${endpointBase}/video/preview`, body);
       setPreview(r);
     } catch (e) {
       let msg = e.message || 'Preview failed.';
@@ -494,7 +539,7 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
         return;
       }
       const body = buildRequestBody();
-      const r = await apiPostJson(`/storyboard/${storyboardId}/video/generate`, body);
+      const r = await apiPostJson(`${endpointBase}/video/generate`, body);
       const jobId = r?.job_id;
       if (!jobId) {
         setGenerating(false);
@@ -503,7 +548,7 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
       }
       writeLastEndpoint(chosenModel.endpoint_id);
       const es = new EventSource(
-        apiSseUrl(`/storyboard/${storyboardId}/video-job/${jobId}/events`),
+        apiSseUrl(`${endpointBase}/video-job/${jobId}/events`),
       );
       esRef.current = es;
       es.addEventListener('snapshot', (ev) => setJob(safeParse(ev.data)));
@@ -599,25 +644,29 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
 
         {generating || job ? <VideoProgressBar job={job} /> : null}
 
-        <FrameAssignmentRow
-          sb={sb}
-          storyboardId={storyboardId}
-          chosenModel={chosenModel}
-          assignment={assignment}
-          onAssignmentChange={setAssignment}
-          generating={generating}
-          onRefresh={onRefresh}
-        />
+        {isPromptOwner ? (
+          <PromptReferenceStrip sb={sb} chosenModel={chosenModel} />
+        ) : (
+          <FrameAssignmentRow
+            sb={sb}
+            storyboardId={storyboardId}
+            chosenModel={chosenModel}
+            assignment={assignment}
+            onAssignmentChange={setAssignment}
+            generating={generating}
+            onRefresh={onRefresh}
+          />
+        )}
 
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span className="field-label">Prompt (override)</span>
+          <span className="field-label">{isPromptOwner ? 'Prompt' : 'Prompt (override)'}</span>
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             disabled={generating}
-            rows={6}
+            rows={isPromptOwner ? 10 : 6}
             style={{ fontFamily: 'monospace', fontSize: 12 }}
-            placeholder="Leave blank to use the scene's text_prompt"
+            placeholder={isPromptOwner ? "Leave blank to use the row's prompt text" : "Leave blank to use the scene's text_prompt"}
           />
           <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
             Markdown is stripped server-side. Long prompts are truncated at 2000 chars.
@@ -646,13 +695,13 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
               <input
                 type="number"
                 min={1}
-                max={15}
+                max={isPromptOwner ? 30 : 15}
                 step={1}
                 value={duration ?? ''}
                 disabled={generating}
                 onChange={(e) => {
                   const n = Number(e.target.value);
-                  if (Number.isFinite(n) && n >= 1 && n <= 15) setDuration(n);
+                  if (Number.isFinite(n) && n >= 1 && n <= (isPromptOwner ? 30 : 15)) setDuration(n);
                   else if (e.target.value === '') setDuration(null);
                 }}
                 style={{ width: 70 }}
@@ -784,6 +833,48 @@ export function GenerateVideoDialog({ open, onClose, storyboardId, sb, onRefresh
       </div>
 
     </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PromptReferenceStrip: read-only view of a Prompts-tab row's ordered
+// references — what ships as @Image1..N. Editing the list happens on the
+// prompt row itself, not per generation, because the prompt text's handles
+// depend on the order.
+
+function PromptReferenceStrip({ sb, chosenModel }) {
+  const refs = Array.isArray(sb?.reference_images) ? sb.reference_images : [];
+  const acceptsRefs = modelAccepts(chosenModel, 'referenceImages');
+  const acceptsStart = modelAccepts(chosenModel, 'startFrame');
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <span className="field-label">Reference images (sent as @Image1…@Image{refs.length || 'N'})</span>
+      {refs.length === 0 ? (
+        <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+          No reference images on this prompt. Add some on the prompt row if the model needs them.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {refs.map((r, i) => {
+            const id = r.image_id?.toString?.() || String(r.image_id);
+            return (
+              <div key={id} className="video-prompt-ref-chip" title={r.label || ''}>
+                <img src={thumbUrl(id)} alt={r.label || `Reference ${i + 1}`} loading="lazy" />
+                <span className="video-prompt-ref-handle">@Image{i + 1}</span>
+                <span className="video-prompt-ref-owner">{r.owner_name || ''}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {chosenModel && refs.length > 0 && !acceptsRefs ? (
+        <div style={{ fontSize: 12, color: '#ffb86b' }}>
+          {acceptsStart
+            ? 'This model takes a single start frame: only @Image1 is used and the other handles in the prompt will not resolve.'
+            : 'This model takes no images: the @Image handles in the prompt will not resolve. Pick a reference-image model (e.g. Seedance) for this row.'}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

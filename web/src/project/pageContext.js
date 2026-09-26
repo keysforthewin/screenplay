@@ -47,6 +47,12 @@ export function pageContextFromPath(pathname) {
     const ref = decodeURIComponent(dialogBeat[1]);
     return { kind: 'dialog', ref, label: `Dialog · Beat ${ref}` };
   }
+  const promptsBeat = remainder.match(/^\/prompts\/(.+)$/);
+  if (promptsBeat) {
+    const ref = decodeURIComponent(promptsBeat[1]);
+    return { kind: 'prompts', ref, label: `Prompts · Beat ${ref}` };
+  }
+  if (remainder === '/prompts') return { kind: 'prompts-index', ref: null, label: 'Prompts' };
   if (remainder === '/storyboard') return { kind: 'storyboard-index', ref: null, label: 'Storyboards' };
   if (remainder === '/dialog') return { kind: 'dialog-index', ref: null, label: 'Dialogs' };
   if (remainder === '/notes') return { kind: 'notes', ref: null, label: 'Notes' };

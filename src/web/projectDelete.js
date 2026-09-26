@@ -38,6 +38,7 @@ const CONTENT_COLLECTIONS = [
   'messages',
   'storyboards',
   'dialogs',
+  'video_prompts',
   'edit_announcements',
   'eleven_voices',
 ];
@@ -108,7 +109,7 @@ export async function deleteProjectCascade(projectId) {
   // 5. y-docs: the three project singletons plus every entity room.
   const rooms = [
     ...SINGLETON_ROOMS.map((r) => `${r}:${pid}`),
-    ...beatIds.flatMap((id) => [`beat:${id}`, `storyboards:${id}`, `dialogs:${id}`]),
+    ...beatIds.flatMap((id) => [`beat:${id}`, `storyboards:${id}`, `dialogs:${id}`, `video_prompts:${id}`]),
     ...characterIds.map((id) => `character:${id}`),
     ...setIds.map((id) => `set:${id}`),
   ];

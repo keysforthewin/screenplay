@@ -55,6 +55,7 @@ import {
   MissingInputsError,
   FalNotConfiguredError,
   UnknownVideoModelError,
+  OWNER_VIDEO_PROMPT,
 } from './falVideoGenerate.js';
 import {
   startPlaygroundJob,
@@ -142,6 +143,12 @@ import {
   moveSetImageToLibraryViaGateway,
   createSetViaGateway,
   createCharacterViaGateway,
+  createVideoPromptViaGateway,
+  deleteVideoPromptViaGateway,
+  reorderVideoPromptsViaGateway,
+  deleteAllVideoPromptsForBeatViaGateway,
+  updateVideoPromptScalarsViaGateway,
+  setVideoPromptVideoViaGateway,
 } from './gateway.js';
 import {
   kickoffLibraryVisionSeed,
@@ -180,6 +187,12 @@ import {
   getDialog,
   listDialogs,
 } from '../mongo/dialogs.js';
+import {
+  getVideoPrompt,
+  listVideoPrompts,
+  countVideoPromptsByBeat,
+  MAX_REFERENCE_IMAGES as MAX_PROMPT_REFERENCE_IMAGES,
+} from '../mongo/videoPrompts.js';
 import { listCharacters, getCharacter, findAllCharacters } from '../mongo/characters.js';
 import { getSet, findAllSets } from '../mongo/sets.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
@@ -394,8 +407,10 @@ export function buildApiRouter() {
 
   // Server-Sent Events stream of fal video-generation job status. Registered
   // BEFORE requireSession() because EventSource cannot set custom headers —
-  // so this route validates a session id from the query string instead.
-  router.get('/storyboard/:id/video-job/:jobId/events', async (req, res, next) => {
+  // so this route validates a session id from the query string instead. The
+  // same handler serves the storyboard path and the Prompts-tab path: the
+  // job id is the capability, the :id segment is ignored.
+  const videoJobEventsHandler = async (req, res, next) => {
     try {
       const sid = String(req.query?.session_id || '');
       if (!sid) {
@@ -459,7 +474,9 @@ export function buildApiRouter() {
     } catch (e) {
       next(e);
     }
-  });
+  };
+  router.get('/storyboard/:id/video-job/:jobId/events', videoJobEventsHandler);
+  router.get('/video-prompt/:id/video-job/:jobId/events', videoJobEventsHandler);
 
   // Server-Sent Events stream of a beat render job (src/web/beatRender.js).
   // Same pre-auth session_id handshake as the video-job stream above; the
@@ -909,7 +926,7 @@ export function buildApiRouter() {
     // listDialogs() / listStoryboards() unfiltered return every row; we group
     // them per beat in buildTocResponse to back the dialog/storyboard tab
     // filter without forcing N+1 round trips here.
-    const [characters, sets, beatList, notes, storyboardCounts, dialogCounts, allDialogs, allStoryboards] =
+    const [characters, sets, beatList, notes, storyboardCounts, dialogCounts, allDialogs, allStoryboards, videoPromptCounts] =
       await Promise.all([
         findAllCharacters(req.projectId),
         findAllSets(req.projectId),
@@ -919,6 +936,7 @@ export function buildApiRouter() {
         countDialogsByBeat(req.projectId),
         listDialogs({ projectId: req.projectId }),
         listStoryboards({ projectId: req.projectId }),
+        countVideoPromptsByBeat(req.projectId),
       ]);
     res.json(
       buildTocResponse(
@@ -927,7 +945,7 @@ export function buildApiRouter() {
         (notes.notes || []).length,
         storyboardCounts,
         dialogCounts,
-        { allDialogs, allStoryboards, sets },
+        { allDialogs, allStoryboards, sets, videoPromptCounts },
       ),
     );
   });
@@ -6997,6 +7015,357 @@ export function buildApiRouter() {
       const { deleteAllDialogsForBeatViaGateway } = await import('./gateway.js');
       const result = await deleteAllDialogsForBeatViaGateway({ projectId: req.projectId, beatId: beat._id });
       res.json({ ...result, beat_id: beat._id.toString() });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── video prompts (Prompts tab) ─────────────────────────────────────────
+  //
+  // The standalone beat → prompts → video path. Rows live in `video_prompts`
+  // (src/mongo/videoPrompts.js), text edits flow through the
+  // video_prompts:<beatId> y-doc room, scalars (duration, ordered reference
+  // images) and the rendered video are patched through the gateway.
+
+  async function resolveVideoPromptId(req) {
+    const { id } = req.params;
+    if (!isOidHex(id)) return null;
+    const p = await getVideoPrompt(req.projectId, id);
+    return p?._id?.toString() || null;
+  }
+
+  router.get('/video-prompts', async (req, res, next) => {
+    try {
+      const beatRef = req.query.beat_id;
+      if (beatRef == null || beatRef === '') {
+        return res.status(400).json({ error: 'beat_id required' });
+      }
+      const beat = await getBeat(req.projectId, String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const items = await listVideoPrompts({ beatId: beat._id });
+      res.json({
+        beat: {
+          _id: beat._id,
+          order: beat.order,
+          name: beat.name,
+          characters: beat.characters || [],
+          sets: beat.sets || [],
+        },
+        prompts: items,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // The numbered reference catalog the generator picks from — surfaced so
+  // the SPA's "+ Add reference" picker offers exactly the same images.
+  router.get('/video-prompts/candidates', async (req, res, next) => {
+    try {
+      const beatRef = req.query.beat_id;
+      if (beatRef == null || beatRef === '') {
+        return res.status(400).json({ error: 'beat_id required' });
+      }
+      const beat = await getBeat(req.projectId, String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { buildReferenceCatalog } = await import('./videoPromptGenerate.js');
+      const catalog = await buildReferenceCatalog(req.projectId, beat);
+      res.json({ beat_id: beat._id, candidates: catalog });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/video-prompts', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(req.projectId, String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const p = await createVideoPromptViaGateway({
+        projectId: req.projectId,
+        beatId: beat._id,
+        title: String(req.body?.title || ''),
+        prompt: String(req.body?.prompt || ''),
+      });
+      res.json({ prompt: p });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete('/video-prompt/:id', async (req, res, next) => {
+    try {
+      const pId = await resolveVideoPromptId(req);
+      if (!pId) return res.status(404).json({ error: 'video prompt not found' });
+      const result = await deleteVideoPromptViaGateway({ projectId: req.projectId, promptId: pId });
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Patch a prompt's scalars: duration_seconds and/or the ORDERED
+  // reference_image_ids list (index i becomes @Image(i+1)). Ids must come
+  // from the beat's reference catalog so owner metadata can be stamped on
+  // each entry; unknown ids → 400. Text fields are y-doc edits, not PATCHes.
+  router.patch('/video-prompt/:id', async (req, res, next) => {
+    try {
+      const pId = await resolveVideoPromptId(req);
+      if (!pId) return res.status(404).json({ error: 'video prompt not found' });
+      const body = req.body || {};
+      const hasDuration = Object.prototype.hasOwnProperty.call(body, 'duration_seconds');
+      const hasRefs = Object.prototype.hasOwnProperty.call(body, 'reference_image_ids');
+      if (!hasDuration && !hasRefs) {
+        return res.status(400).json({ error: 'duration_seconds or reference_image_ids required' });
+      }
+      let durationSeconds;
+      if (hasDuration) {
+        if (body.duration_seconds == null || body.duration_seconds === '') {
+          durationSeconds = null;
+        } else {
+          const n = Number(body.duration_seconds);
+          if (!Number.isFinite(n) || n < 1 || n > 60) {
+            return res
+              .status(400)
+              .json({ error: 'duration_seconds must be a number between 1 and 60, or null' });
+          }
+          durationSeconds = Math.round(n);
+        }
+      }
+      let referenceImages;
+      if (hasRefs) {
+        const ids = body.reference_image_ids;
+        if (!Array.isArray(ids) || ids.some((x) => !isOidHex(String(x)))) {
+          return res.status(400).json({ error: 'reference_image_ids must be an array of image ids' });
+        }
+        if (ids.length > MAX_PROMPT_REFERENCE_IMAGES) {
+          return res
+            .status(400)
+            .json({ error: `at most ${MAX_PROMPT_REFERENCE_IMAGES} reference images per prompt` });
+        }
+        const p = await getVideoPrompt(req.projectId, pId);
+        const beat = await getBeat(req.projectId, String(p.beat_id));
+        const { buildReferenceCatalog } = await import('./videoPromptGenerate.js');
+        const catalog = beat ? await buildReferenceCatalog(req.projectId, beat) : [];
+        const byId = new Map(catalog.map((e) => [e.image_id, e]));
+        // Entries already on the row stay resolvable even if the catalog no
+        // longer lists them (e.g. the character was unlinked from the beat).
+        for (const r of p.reference_images || []) {
+          const k = String(r.image_id);
+          if (!byId.has(k)) byId.set(k, { image_id: k, owner_type: r.owner_type, owner_name: r.owner_name, label: r.label });
+        }
+        referenceImages = [];
+        for (const raw of ids) {
+          const e = byId.get(String(raw));
+          if (!e) return res.status(400).json({ error: `unknown reference image ${raw}` });
+          referenceImages.push({
+            image_id: e.image_id,
+            owner_type: e.owner_type,
+            owner_name: e.owner_name,
+            label: e.label,
+          });
+        }
+      }
+      const updated = await updateVideoPromptScalarsViaGateway({
+        projectId: req.projectId,
+        promptId: pId,
+        durationSeconds,
+        referenceImages,
+      });
+      res.json({ prompt: updated });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/video-prompts/reorder', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      const orderedIds = req.body?.ordered_ids;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      if (!Array.isArray(orderedIds)) {
+        return res.status(400).json({ error: 'ordered_ids must be an array' });
+      }
+      const beat = await getBeat(req.projectId, String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const result = await reorderVideoPromptsViaGateway({
+        projectId: req.projectId,
+        beatId: beat._id,
+        orderedIds,
+      });
+      res.json({ prompts: result });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Auto-generate: one LLM pass over the whole beat → N Seedance-style
+  // prompts with reference images. 202 + job id; the SPA polls the job and
+  // refetches on the room's pings as rows land.
+  router.post('/video-prompts/generate', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(req.projectId, String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const direction = typeof req.body?.direction === 'string' ? req.body.direction.slice(0, 4000) : '';
+      const { startVideoPromptGenerationJob, BeatBusyError } = await import('./videoPromptGenerate.js');
+      try {
+        const jobId = await startVideoPromptGenerationJob({
+          projectId: req.projectId,
+          beatId: beat._id.toString(),
+          direction,
+        });
+        res.status(202).json({ job_id: jobId, beat_id: beat._id });
+      } catch (e) {
+        if (e instanceof BeatBusyError) {
+          return res.status(409).json({ error: e.message });
+        }
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/video-prompts/generate/:jobId', async (req, res, next) => {
+    try {
+      const { getVideoPromptGenerationJob } = await import('./videoPromptGenerate.js');
+      const job = getVideoPromptGenerationJob(req.params.jobId);
+      if (!job) return res.status(404).json({ error: 'job not found' });
+      res.json({ job });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/video-prompts/clear', async (req, res, next) => {
+    try {
+      const beatRef = req.body?.beat_id;
+      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
+      const beat = await getBeat(req.projectId, String(beatRef));
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { isBeatLocked } = await import('./beatLocks.js');
+      if (isBeatLocked(beat._id)) {
+        return res.status(409).json({ error: 'Work in progress for this beat; try again' });
+      }
+      const result = await deleteAllVideoPromptsForBeatViaGateway({
+        projectId: req.projectId,
+        beatId: beat._id,
+      });
+      res.json({ ...result, beat_id: beat._id.toString() });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Parse the shared body of the prompt-owner video routes. Differences from
+  // the storyboard routes: no frame_assignment (the row's ordered references
+  // ARE the assignment), duration up to 60 s (Seedance 2.5 renders 30 s; the
+  // model snaps anything longer), and generate_audio / include_director_notes
+  // default OFF — the prompt already folded the notes in, and real voices are
+  // recorded separately.
+  function parseVideoPromptVideoBody(req, res) {
+    const prompt =
+      typeof req.body?.prompt === 'string' && req.body.prompt.trim() ? req.body.prompt.trim() : null;
+    if (prompt && prompt.length > 2000) {
+      res.status(400).json({ error: 'prompt must be ≤ 2000 chars' });
+      return ERR;
+    }
+    const rawDuration = req.body?.duration_seconds;
+    let durationSeconds = null;
+    if (rawDuration != null && rawDuration !== '') {
+      const n = Number(rawDuration);
+      if (!Number.isFinite(n) || n < 1 || n > 60) {
+        res.status(400).json({ error: 'duration_seconds must be a number between 1 and 60' });
+        return ERR;
+      }
+      durationSeconds = n;
+    }
+    const modelId =
+      typeof req.body?.model_id === 'string' && req.body.model_id.trim() ? req.body.model_id.trim() : null;
+    const generateAudio = Boolean(req.body?.generate_audio);
+    const includeDirectorNotes = Boolean(req.body?.include_director_notes);
+    const resolution = parseResolutionField(req.body?.resolution, res);
+    if (resolution === ERR) return ERR;
+    const fps = parseFpsField(req.body?.fps, res);
+    if (fps === ERR) return ERR;
+    return { prompt, durationSeconds, modelId, generateAudio, includeDirectorNotes, resolution, fps };
+  }
+
+  function sendVideoRouteError(e, res) {
+    if (e instanceof VideoBeatBusyError) return res.status(409).json({ error: e.message });
+    if (e instanceof MissingInputsError) return res.status(400).json({ error: e.message, missing: e.missing });
+    if (e instanceof FalNotConfiguredError) return res.status(503).json({ error: e.message });
+    if (e instanceof UnknownVideoModelError) return res.status(400).json({ error: e.message });
+    throw e;
+  }
+
+  router.post('/video-prompt/:id/video/preview', async (req, res, next) => {
+    try {
+      const pId = await resolveVideoPromptId(req);
+      if (!pId) return res.status(404).json({ error: 'video prompt not found' });
+      const parsed = parseVideoPromptVideoBody(req, res);
+      if (parsed === ERR) return;
+      try {
+        const preview = await buildVideoPayloadPreview({
+          projectId: req.projectId,
+          ...parsed,
+          owner: { kind: OWNER_VIDEO_PROMPT, id: pId },
+        });
+        res.json(preview);
+      } catch (e) {
+        return sendVideoRouteError(e, res);
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/video-prompt/:id/video/generate', async (req, res, next) => {
+    try {
+      const pId = await resolveVideoPromptId(req);
+      if (!pId) return res.status(404).json({ error: 'video prompt not found' });
+      const parsed = parseVideoPromptVideoBody(req, res);
+      if (parsed === ERR) return;
+      try {
+        const { job_id } = await startVideoGenerationJob({
+          projectId: req.projectId,
+          ...parsed,
+          owner: { kind: OWNER_VIDEO_PROMPT, id: pId },
+          announceUsername: req?.session?.username || null,
+        });
+        res.status(202).json({ job_id });
+      } catch (e) {
+        return sendVideoRouteError(e, res);
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Discard the rendered video on a prompt row: clear the pointer, delete
+  // the GridFS attachment (best-effort).
+  router.delete('/video-prompt/:id/video', async (req, res, next) => {
+    try {
+      const pId = await resolveVideoPromptId(req);
+      if (!pId) return res.status(404).json({ error: 'video prompt not found' });
+      const p = await getVideoPrompt(req.projectId, pId);
+      const oldId = p?.video_file_id || null;
+      const result = await setVideoPromptVideoViaGateway({
+        projectId: req.projectId,
+        promptId: pId,
+        videoFileId: null,
+      });
+      if (oldId) {
+        try {
+          await deleteAttachment(oldId);
+        } catch (e) {
+          logger.warn(`video prompt video delete: GridFS cleanup ${oldId} failed: ${e.message}`);
+        }
+      }
+      res.json({ prompt: result });
     } catch (e) {
       next(e);
     }

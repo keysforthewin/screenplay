@@ -34,6 +34,10 @@ import {
   updateDialog,
 } from '../mongo/dialogs.js';
 import {
+  listVideoPrompts,
+  updateVideoPrompt,
+} from '../mongo/videoPrompts.js';
+import {
   listLibraryImages,
   setLibraryImageMeta,
   setOwnedImageMeta,
@@ -79,7 +83,8 @@ export function parseRoomName(roomName) {
     type === 'character' ||
     type === 'set' ||
     type === 'storyboards' ||
-    type === 'dialogs'
+    type === 'dialogs' ||
+    type === 'video_prompts'
   ) {
     if (!isOidHex(rest)) return null;
     return { type, id: rest };
@@ -726,6 +731,63 @@ async function describeDialogsRoom(beatId) {
   };
 }
 
+// Video prompts ---------------------------------------------------------------
+//
+// One y-doc per beat (room: "video_prompts:<beatId>") for the Prompts tab.
+// Each prompt row exposes two fragments: "item:<prompt _id>:title" and
+// "item:<prompt _id>:prompt". Reference images, duration and the rendered
+// video are scalar Mongo fields patched through the gateway (which pings the
+// room), not y-doc text.
+
+const VIDEO_PROMPT_FIELD_NAMES = ['title', 'prompt'];
+
+function videoPromptFieldName(promptId, field) {
+  return `item:${promptId}:${field}`;
+}
+
+async function describeVideoPromptsRoom(beatId) {
+  const projectId = await verifiedProjectIdForBeat(beatId);
+  if (!projectId) return null;
+  const rows = await listVideoPrompts({ projectId, beatId });
+  const fields = [];
+  const seed = {};
+  const rowById = new Map();
+  for (const r of rows) {
+    const id = r._id.toString();
+    rowById.set(id, r);
+    for (const f of VIDEO_PROMPT_FIELD_NAMES) {
+      const fieldName = videoPromptFieldName(id, f);
+      fields.push(fieldName);
+      seed[fieldName] = r[f] || '';
+    }
+  }
+  return {
+    type: 'video_prompts',
+    id: beatId,
+    fields,
+    seed,
+    persistFields: async (snapshot) => {
+      const changedFields = [];
+      for (const [field, value] of Object.entries(snapshot)) {
+        const m = field.match(/^item:([a-f0-9]{24}):(title|prompt)$/);
+        if (!m) continue;
+        const pId = m[1];
+        const fieldName = m[2];
+        const current = rowById.get(pId);
+        if (!current) continue;
+        if (value === (current[fieldName] || '')) continue;
+        try {
+          await updateVideoPrompt(projectId, pId, { [fieldName]: value });
+          changedFields.push(field);
+        } catch (e) {
+          logger.warn(`video_prompts persist failed prompt=${pId} field=${fieldName}: ${e.message}`);
+        }
+      }
+      return changedFields.length ? { changed: true, fields: changedFields } : { changed: false };
+    },
+  };
+}
+
 // Library -------------------------------------------------------------------
 //
 // One y-doc shared by the entire library (room: "library"). Each library
@@ -905,6 +967,8 @@ export async function resolveRoom(roomName) {
       return describeStoryboardsRoom(parsed.id);
     case 'dialogs':
       return describeDialogsRoom(parsed.id);
+    case 'video_prompts':
+      return describeVideoPromptsRoom(parsed.id);
     default:
       return null;
   }

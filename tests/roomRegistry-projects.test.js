@@ -49,6 +49,8 @@ describe('project-scoped room names', () => {
     expect(buildRoomName('beat', id)).toBe(`beat:${id}`);
     expect(parseRoomName(`character:${id}`)).toEqual({ type: 'character', id });
     expect(parseRoomName(`storyboards:${id}`)).toEqual({ type: 'storyboards', id });
+    expect(parseRoomName(`video_prompts:${id}`)).toEqual({ type: 'video_prompts', id });
+    expect(buildRoomName('video_prompts', id)).toBe(`video_prompts:${id}`);
   });
 
   it('assertRoomProjectKnown accepts known projects and rejects unknown ones', async () => {
@@ -85,11 +87,30 @@ describe('project-scoped room names', () => {
     expect(await projectIdForRoom(`beat:${beatId.toString()}`)).toBe(pid);
     expect(await projectIdForRoom(`storyboards:${beatId.toString()}`)).toBe(pid);
     expect(await projectIdForRoom(`dialogs:${beatId.toString()}`)).toBe(pid);
+    expect(await projectIdForRoom(`video_prompts:${beatId.toString()}`)).toBe(pid);
     expect(await projectIdForRoom(`character:${charId.toString()}`)).toBe(pid);
     // Unparseable rooms and unknown entities resolve to null.
     expect(await projectIdForRoom('garbage')).toBeNull();
     expect(await projectIdForRoom(`beat:${new ObjectId().toString()}`)).toBeNull();
     expect(await projectIdForRoom(`character:${new ObjectId().toString()}`)).toBeNull();
+  });
+
+  it('video_prompts rooms expose item:<id>:title|prompt fragments and persist through updateVideoPrompt', async () => {
+    const p = await Projects.createProject('Western');
+    const pid = p._id.toString();
+    const Plots = await import('../src/mongo/plots.js');
+    const VP = await import('../src/mongo/videoPrompts.js');
+    const beat = await Plots.createBeat({ projectId: pid, name: 'B1' });
+    const row = await VP.createVideoPrompt({ projectId: pid, beatId: beat._id, title: 'T', prompt: 'P' });
+    const desc = await resolveRoom(`video_prompts:${beat._id.toString()}`);
+    expect(desc.type).toBe('video_prompts');
+    const id = row._id.toString();
+    expect(desc.fields).toEqual([`item:${id}:title`, `item:${id}:prompt`]);
+    expect(desc.seed).toEqual({ [`item:${id}:title`]: 'T', [`item:${id}:prompt`]: 'P' });
+    const result = await desc.persistFields({ [`item:${id}:title`]: 'T', [`item:${id}:prompt`]: 'P2' });
+    expect(result).toEqual({ changed: true, fields: [`item:${id}:prompt`] });
+    expect((await VP.getVideoPrompt(pid, id)).prompt).toBe('P2');
+    expect(await resolveRoom(`video_prompts:${new ObjectId().toString()}`)).toBeNull();
   });
 
   it('resolveRoom returns null for a singleton room of an unknown project', async () => {

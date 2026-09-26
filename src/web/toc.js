@@ -43,6 +43,7 @@ export function buildTocResponse(
   const dialogs = dialogCounts || new Map();
   const allDialogs = options.allDialogs || [];
   const allStoryboards = options.allStoryboards || [];
+  const videoPrompts = options.videoPromptCounts || new Map();
 
   // Aggregate per-beat searchable text from dialog lines (body + speaker)
   // and storyboard scene prompts. Keyed by hex beat id so the lookup matches
@@ -128,6 +129,7 @@ export function buildTocResponse(
         body_empty: bodyIsEmpty(b.body),
         storyboard_count: counts.get(id) || 0,
         dialog_count: dialogs.get(id) || 0,
+        video_prompt_count: videoPrompts.get(id) || 0,
         search_text: blob(b.name, b.body, charactersJoined, setsJoined),
         dialog_search_text: dialogTextByBeat.get(id) || '',
         storyboard_search_text: storyboardTextByBeat.get(id) || '',

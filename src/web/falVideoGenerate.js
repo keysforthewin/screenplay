@@ -36,9 +36,10 @@ import {
   uploadAttachmentBuffer,
 } from '../mongo/attachments.js';
 import { getStoryboard as mongoGetStoryboard } from '../mongo/storyboards.js';
+import { getVideoPrompt as mongoGetVideoPrompt } from '../mongo/videoPrompts.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import { stripMarkdown } from '../util/markdown.js';
-import { setStoryboardVideoViaGateway } from './gateway.js';
+import { setStoryboardVideoViaGateway, setVideoPromptVideoViaGateway } from './gateway.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 import { fal, isConfigured as falIsConfigured } from '../fal/client.js';
 import { uploadFalAsset } from '../fal/upload.js';
@@ -119,6 +120,8 @@ export function serializeJob(job) {
   return {
     job_id: job.job_id,
     storyboard_id: job.storyboard_id,
+    owner_type: job.owner_type || 'storyboard',
+    owner_id: job.owner_id || job.storyboard_id,
     beat_id: job.beat_id,
     model_id: job.model_id,
     fal_model: job.fal_model,
@@ -170,6 +173,51 @@ export class UnknownVideoModelError extends Error {
   }
 }
 
+// Owner hook: the pipeline renders for a storyboard row by default, or —
+// when `owner = { kind: 'video_prompt', id }` is passed — for a Prompts-tab
+// row. The prompt row is adapted into a storyboard-shaped shim so every step
+// below (assignment, prompt, duration, persistence) works unchanged: its
+// ordered reference_images become the frame pool AND the default `ref` list,
+// so a reference-to-video model receives the images in @Image1..N order and
+// an image-to-video model gets @Image1 as its start frame.
+export const OWNER_VIDEO_PROMPT = 'video_prompt';
+
+function isPromptOwner(owner) {
+  return owner && owner.kind === OWNER_VIDEO_PROMPT;
+}
+
+export async function loadVideoPromptOwner(projectId, promptId) {
+  const p = await mongoGetVideoPrompt(projectId, promptId);
+  if (!p) return null;
+  const refs = (p.reference_images || []).map((r) => r.image_id).filter(Boolean);
+  return {
+    _id: p._id,
+    beat_id: p.beat_id,
+    order: p.order,
+    title: p.title,
+    text_prompt: p.prompt,
+    duration_seconds: p.duration_seconds,
+    frames: refs.map((id) => ({ image_id: id, reference_ids: [] })),
+    reference_image_ids: refs,
+    audio_file_id: null,
+    audio_duration_seconds: null,
+    video_upload_file_id: null,
+    video_file_id: p.video_file_id,
+    __owner: { kind: OWNER_VIDEO_PROMPT, id: p._id.toString() },
+  };
+}
+
+async function loadOwnerRow({ projectId, storyboardId, owner }) {
+  if (isPromptOwner(owner)) {
+    const row = await loadVideoPromptOwner(projectId, owner.id);
+    if (!row) throw new Error(`Video prompt not found: ${owner.id}`);
+    return row;
+  }
+  const sb = await mongoGetStoryboard(projectId, storyboardId);
+  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  return sb;
+}
+
 // Resolve everything a shot render needs WITHOUT side effects: the model (by
 // registry id, registered endpoint id, or catalog endpoint), the storyboard
 // row, the frame/reference assignment, and the required-input check. Throws
@@ -180,6 +228,7 @@ export async function prepareShotVideoJob({
   storyboardId,
   modelId = null,
   frameAssignment = null,
+  owner = null,
 } = {}) {
   if (!falIsConfigured()) {
     throw new FalNotConfiguredError();
@@ -188,10 +237,16 @@ export async function prepareShotVideoJob({
   const model = await resolveVideoModelByAnyId(chosenId);
   if (!model) throw new UnknownVideoModelError(chosenId);
 
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
+  const sb = await loadOwnerRow({ projectId, storyboardId, owner });
 
-  const assignment = resolveFrameAssignment(model, sb, frameAssignment);
+  // A prompt row's references are always shipped in stored order — the
+  // prompt text's @ImageN handles depend on it — so the explicit `ref` list
+  // (never capped by resolveFrameAssignment) is the default assignment.
+  const effectiveAssignment =
+    isPromptOwner(owner) && !frameAssignment
+      ? { ref: sb.reference_image_ids || [] }
+      : frameAssignment;
+  const assignment = resolveFrameAssignment(model, sb, effectiveAssignment);
   const missing = validateAssignment(model, assignment, sb);
   if (missing.length) throw new MissingInputsError(missing, model.label);
   return { model, storyboard: sb, assignment };
@@ -199,9 +254,12 @@ export async function prepareShotVideoJob({
 
 function createShotVideoJob({ model, storyboard }) {
   const jobId = makeJobId();
+  const owner = storyboard.__owner || null;
   const job = {
     job_id: jobId,
-    storyboard_id: storyboard._id.toString(),
+    storyboard_id: owner ? null : storyboard._id.toString(),
+    owner_type: owner ? owner.kind : 'storyboard',
+    owner_id: storyboard._id.toString(),
     beat_id: storyboard.beat_id.toString(),
     model_id: model.id,
     fal_model: model.falModel,
@@ -238,12 +296,14 @@ export async function runShotVideoInline({
   frameAssignment = null,
   announceUsername = null,
   onJobCreated = null,
+  owner = null,
 } = {}) {
   const { model, storyboard, assignment } = await prepareShotVideoJob({
     projectId,
     storyboardId,
     modelId,
     frameAssignment,
+    owner,
   });
   const job = createShotVideoJob({ model, storyboard });
   try {
@@ -286,12 +346,14 @@ export async function startVideoGenerationJob({
   includeDirectorNotes = true,
   frameAssignment = null,
   announceUsername = null,
+  owner = null,
 } = {}) {
   const { model, storyboard: sb, assignment } = await prepareShotVideoJob({
     projectId,
     storyboardId,
     modelId,
     frameAssignment,
+    owner,
   });
 
   if (isBeatLocked(sb.beat_id)) {
@@ -518,12 +580,14 @@ export async function buildVideoPayloadPreview({
   fps = null,
   includeDirectorNotes = true,
   frameAssignment = null,
+  owner = null,
 } = {}) {
   const { model, storyboard: sb, assignment } = await prepareShotVideoJob({
     projectId,
     storyboardId,
     modelId,
     frameAssignment,
+    owner,
   });
 
   const needs = model.inputs;
@@ -820,17 +884,17 @@ async function runVideoGenerationJob({
 
     // 6. Persist into GridFS attachments as a beat-owned video.
     setStep(job, 'persisting', 'Saving video');
+    const promptOwner = isPromptOwner(storyboard.__owner);
     const file = await uploadAttachmentBuffer(projectId, {
       buffer,
-      filename: `storyboard-${storyboard._id}-video-${Date.now()}.mp4`,
+      filename: `${promptOwner ? 'video-prompt' : 'storyboard'}-${storyboard._id}-video-${Date.now()}.mp4`,
       contentType: contentType || 'video/mp4',
       ownerType: 'beat',
       ownerId: storyboard.beat_id,
     });
 
-    await setStoryboardVideoViaGateway({
+    const persistArgs = {
       projectId,
-      storyboardId: storyboard._id,
       videoFileId: file._id,
       durationSeconds: bundle.durationSeconds,
       modelId: model.id,
@@ -841,7 +905,23 @@ async function runVideoGenerationJob({
       modelAddedAt: catalogMeta?.added_at || null,
       parameters: persistedParameters,
       costUsd: cost?.totalUsd ?? null,
-    });
+    };
+    if (promptOwner) {
+      // Replace-on-render: a prompt row holds one video, so the previous
+      // file is dropped once the new pointer is written.
+      const previousId = storyboard.video_file_id || null;
+      await setVideoPromptVideoViaGateway({ ...persistArgs, promptId: storyboard._id });
+      if (previousId && String(previousId) !== String(file._id)) {
+        try {
+          const { deleteAttachment } = await import('../mongo/attachments.js');
+          await deleteAttachment(previousId);
+        } catch (e) {
+          logger.warn(`video prompt render: previous video ${previousId} cleanup failed: ${e?.message || e}`);
+        }
+      }
+    } else {
+      await setStoryboardVideoViaGateway({ ...persistArgs, storyboardId: storyboard._id });
+    }
 
     job.video_file_id = file._id.toString();
     job.finished_at = new Date();
@@ -852,7 +932,7 @@ async function runVideoGenerationJob({
     if (announceUsername) {
       try {
         const { announceMediaEvent } = await import('../discord/announcer.js');
-        const { storyboardUrl } = await import('./links.js');
+        const { storyboardUrl, promptsUrl } = await import('./links.js');
         const { stripMarkdown } = await import('../util/markdown.js');
         const { getBeat } = await import('../mongo/plots.js');
         const { getProjectById } = await import('../mongo/projects.js');
@@ -861,14 +941,17 @@ async function runVideoGenerationJob({
         const name = beat ? stripMarkdown(beat.name || '').trim() : '';
         const order = beat && Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
         const beatLabel = name ? `${order}: ${name}` : order;
-        const orderHint = Number.isFinite(storyboard.order)
-          ? ` (shot ${storyboard.order + 1})`
-          : '';
+        const entityLabel = promptOwner
+          ? `Prompt${Number.isFinite(storyboard.order) ? ` ${storyboard.order}` : ''} — ${beatLabel}`
+          : `Storyboard — ${beatLabel}${Number.isFinite(storyboard.order) ? ` (shot ${storyboard.order + 1})` : ''}`;
+        const entityUrl = beat
+          ? (promptOwner ? promptsUrl(project?.title ?? null, beat) : storyboardUrl(project?.title ?? null, beat))
+          : null;
         announceMediaEvent({
           username: announceUsername,
           verb: 'generated video for',
-          entityLabel: `Storyboard — ${beatLabel}${orderHint}`,
-          entityUrl: beat ? storyboardUrl(project?.title ?? null, beat) : null,
+          entityLabel,
+          entityUrl,
           mediaFileId: file._id,
           mediaLabel: model?.label ? `video (${model.label})` : 'video',
           prompt,

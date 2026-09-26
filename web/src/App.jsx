@@ -10,6 +10,8 @@ import { StoryboardIndex } from './routes/StoryboardIndex.jsx';
 import { StoryboardBeat } from './routes/StoryboardBeat.jsx';
 import { DialogIndex } from './routes/DialogIndex.jsx';
 import { DialogBeat } from './routes/DialogBeat.jsx';
+import { PromptsIndex } from './routes/PromptsIndex.jsx';
+import { PromptsBeat } from './routes/PromptsBeat.jsx';
 import { About } from './routes/About.jsx';
 import { Playground } from './routes/Playground.jsx';
 import { Header } from './widgets/Header.jsx';
@@ -73,6 +75,8 @@ function ProjectShell({ session, onLogout }) {
           <Route path="/storyboard/:order" element={<StoryboardBeat session={session} />} />
           <Route path="/dialog" element={<DialogIndex session={session} />} />
           <Route path="/dialog/:order" element={<DialogBeat session={session} />} />
+          <Route path="/prompts" element={<PromptsIndex session={session} />} />
+          <Route path="/prompts/:order" element={<PromptsBeat session={session} />} />
           <Route path="/about" element={<About session={session} />} />
           <Route
             path="/admin"

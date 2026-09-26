@@ -678,3 +678,111 @@ describe('prepareShotVideoJob / runShotVideoInline (beat renderer building block
     expect(job.error).toMatch(/fal exploded/);
   });
 });
+
+const VP = await import('../src/mongo/videoPrompts.js');
+
+describe('video prompt owner (Prompts tab rows)', () => {
+  const REF_MODEL = 'bytedance/seedance-2.5/reference-to-video';
+
+  async function seedPromptRow() {
+    const beat = await Plots.createBeat({ projectId, name: 'Prompt beat', body: 'body' });
+    const a = new ObjectId();
+    const b = new ObjectId();
+    fakeImageStore.set(a.toString(), { buffer: Buffer.from('sarah-sheet'), contentType: 'image/png' });
+    fakeImageStore.set(b.toString(), { buffer: Buffer.from('diner-main'), contentType: 'image/png' });
+    const row = await VP.createVideoPrompt({
+      projectId,
+      beatId: beat._id,
+      title: 'Arrival',
+      prompt: '@Image1 is Sarah, @Image2 is the diner. [Wide shot, static] she enters.',
+      durationSeconds: 12,
+      referenceImages: [
+        { image_id: a, owner_type: 'character', owner_name: 'Sarah', label: 'Sarah — character sheet' },
+        { image_id: b, owner_type: 'set', owner_name: 'Diner', label: 'Diner — main image' },
+      ],
+    });
+    return { beat, row, a, b };
+  }
+
+  it('ships the ordered references as image_urls, skips director notes, persists on the prompt row, leaves storyboards alone', async () => {
+    const VideoModels = await import('../src/fal/videoModels.js');
+    if (!(await VideoModels.getVideoModelOrCatalog(REF_MODEL))) return; // manifest drift
+    await fakeDb.collection('prompts').insertOne({
+      _id: `${projectId}:director_notes`,
+      notes: [{ _id: new ObjectId(), text: 'Always shoot from the hip.' }],
+    });
+    falStubs.storageImpl = async (file) =>
+      `https://fal.media/inputs/${Buffer.from(await file.arrayBuffer()).toString()}`;
+    const { beat, row } = await seedPromptRow();
+
+    const { job_id } = await Falgen.startVideoGenerationJob({
+      projectId,
+      modelId: REF_MODEL,
+      owner: { kind: Falgen.OWNER_VIDEO_PROMPT, id: row._id.toString() },
+      includeDirectorNotes: false,
+      generateAudio: false,
+    });
+    await waitForBeatLock(beat._id);
+    const job = Falgen.getVideoGenerationJob(job_id);
+    expect(job.status).toBe('done');
+    expect(job.owner_type).toBe('video_prompt');
+    expect(job.owner_id).toBe(row._id.toString());
+    expect(job.storyboard_id).toBeNull();
+
+    const input = falStubs.submitCalls[0].args.input;
+    expect(input.image_urls).toEqual([
+      'https://fal.media/inputs/sarah-sheet',
+      'https://fal.media/inputs/diner-main',
+    ]);
+    expect(input.prompt).toBe('@Image1 is Sarah, @Image2 is the diner. [Wide shot, static] she enters.');
+    expect(input.prompt).not.toMatch(/shoot from the hip/);
+    expect(uploadedAttachments[0].filename).toMatch(/^video-prompt-/);
+    expect(uploadedAttachments[0].metadata.owner_type).toBe('beat');
+
+    const fresh = await VP.getVideoPrompt(projectId, row._id);
+    expect(fresh.video_file_id?.toString()).toBe(job.video_file_id);
+    expect(fresh.video_fal_model).toBe(REF_MODEL);
+    expect(fresh.video_parameters.duration_seconds).toBe(12);
+    expect(await fakeDb.collection('storyboards').find({}).toArray()).toHaveLength(0);
+  });
+
+  it('preview for a prompt owner uses the row prompt/duration and the stored reference order', async () => {
+    const VideoModels = await import('../src/fal/videoModels.js');
+    if (!(await VideoModels.getVideoModelOrCatalog(REF_MODEL))) return;
+    const { row, a, b } = await seedPromptRow();
+    const preview = await Falgen.buildVideoPayloadPreview({
+      projectId,
+      modelId: REF_MODEL,
+      owner: { kind: Falgen.OWNER_VIDEO_PROMPT, id: row._id.toString() },
+      includeDirectorNotes: false,
+    });
+    expect(preview.payload.image_urls).toEqual([
+      `screenplay-preview://image/${a}`,
+      `screenplay-preview://image/${b}`,
+    ]);
+    expect(preview.prompt).toMatch(/^@Image1 is Sarah/);
+    expect(preview.duration_seconds).toBe(12);
+    expect(preview.inputs.filter((i) => i.slot === 'referenceImages').map((i) => i.image_id)).toEqual([a.toString(), b.toString()]);
+  });
+
+  it('a start-frame model gets @Image1 as its start frame from a prompt row', async () => {
+    const { row, a } = await seedPromptRow();
+    const prepared = await Falgen.prepareShotVideoJob({
+      projectId,
+      modelId: 'kling-3-pro',
+      owner: { kind: Falgen.OWNER_VIDEO_PROMPT, id: row._id.toString() },
+    });
+    expect(prepared.assignment.startFrameId?.toString()).toBe(a.toString());
+    expect(prepared.storyboard.__owner).toEqual({ kind: 'video_prompt', id: row._id.toString() });
+  });
+
+  it('an unknown prompt id throws before any job is created', async () => {
+    await expect(
+      Falgen.prepareShotVideoJob({
+        projectId,
+        modelId: 'kling-3-pro',
+        owner: { kind: Falgen.OWNER_VIDEO_PROMPT, id: new ObjectId().toString() },
+      }),
+    ).rejects.toThrow(/Video prompt not found/);
+  });
+});

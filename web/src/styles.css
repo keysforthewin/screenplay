@@ -4426,3 +4426,139 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   background: #000;
   border-radius: 6px;
 }
+
+/* ─── Prompts tab (video prompts) ─────────────────────────────────────── */
+.video-prompt-item .dialog-item-header {
+  align-items: center;
+  gap: 10px;
+}
+.video-prompt-index {
+  font-weight: 600;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.video-prompt-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.video-prompt-title .ProseMirror {
+  font-weight: 600;
+}
+.video-prompt-duration {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.video-prompt-refs {
+  margin-bottom: 10px;
+}
+.video-prompt-ref-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: stretch;
+  margin-top: 6px;
+}
+.video-prompt-ref-chip {
+  position: relative;
+  width: 112px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  font-size: 11px;
+}
+.video-prompt-ref-chip img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #000;
+}
+.video-prompt-ref-handle {
+  font-family: monospace;
+  font-weight: 600;
+  color: var(--accent, #6aa9ff);
+}
+.video-prompt-ref-owner {
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.video-prompt-ref-actions {
+  display: flex;
+  gap: 2px;
+  justify-content: space-between;
+}
+.video-prompt-ref-actions button {
+  flex: 1 1 0;
+  padding: 1px 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.video-prompt-ref-add {
+  align-self: center;
+  min-height: 60px;
+}
+.video-prompt-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0 12px;
+}
+.video-prompt-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+.video-prompt-picker-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  border: 2px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  cursor: pointer;
+  text-align: left;
+  font-size: 11px;
+}
+.video-prompt-picker-cell img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #000;
+}
+.video-prompt-picker-cell.is-picked {
+  border-color: var(--accent, #6aa9ff);
+}
+.video-prompt-picker-cell.is-existing {
+  opacity: 0.45;
+  cursor: default;
+}
+.video-prompt-picker-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.video-prompt-picker-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+}
+.video-prompt-picker-badge.is-picked {
+  background: var(--accent, #6aa9ff);
+  color: #000;
+  font-family: monospace;
+}

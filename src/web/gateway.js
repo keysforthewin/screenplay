@@ -124,6 +124,15 @@ import {
   listDialogs,
 } from '../mongo/dialogs.js';
 import {
+  createVideoPrompt as mongoCreateVideoPrompt,
+  updateVideoPrompt as mongoUpdateVideoPrompt,
+  deleteVideoPrompt as mongoDeleteVideoPrompt,
+  deleteVideoPromptsForBeat as mongoDeleteVideoPromptsForBeat,
+  getVideoPrompt as mongoGetVideoPrompt,
+  reorderVideoPromptsForBeat as mongoReorderVideoPrompts,
+  listVideoPrompts,
+} from '../mongo/videoPrompts.js';
+import {
   setMainCharacterImage,
   removeCharacterImage,
   setMainSetImage,
@@ -394,6 +403,13 @@ async function readEntityField({ projectId, entityType, entityId, field }) {
     if (!d) throw new Error(`Dialog not found: ${m[1]}`);
     return String(d[m[2]] || '');
   }
+  if (entityType === 'video_prompts') {
+    const m = field.match(/^item:([a-f0-9]{24}):(title|prompt)$/);
+    if (!m) throw new Error(`gateway fallback: unknown video_prompts field "${field}"`);
+    const p = await mongoGetVideoPrompt(projectId, m[1]);
+    if (!p) throw new Error(`Video prompt not found: ${m[1]}`);
+    return String(p[m[2]] || '');
+  }
   if (entityType === 'library') {
     {
       const m = field.match(/^library:([a-f0-9]{24}):(name|description)$/);
@@ -522,6 +538,11 @@ async function fallbackTextWrite({ projectId, entityType, entityId, field, op, .
     const m = field.match(/^item:([a-f0-9]{24}):(body|character|direction)$/);
     if (!m) throw new Error(`gateway fallback: unknown dialogs field "${field}"`);
     return mongoUpdateDialog(projectId, m[1], { [m[2]]: args.markdown });
+  }
+  if (entityType === 'video_prompts') {
+    const m = field.match(/^item:([a-f0-9]{24}):(title|prompt)$/);
+    if (!m) throw new Error(`gateway fallback: unknown video_prompts field "${field}"`);
+    return mongoUpdateVideoPrompt(projectId, m[1], { [m[2]]: args.markdown });
   }
   if (entityType === 'library') {
     {
@@ -2477,6 +2498,211 @@ export async function deleteAllDialogsForBeatViaGateway({ projectId, beatId }) {
   return { ok: true, removed_count: removed.length };
 }
 
+// ─── Video prompts (Prompts tab) ────────────────────────────────────────────
+//
+// One y-doc per beat (room: "video_prompts:<beatId>") with two fragments per
+// row — "item:<id>:title" and "item:<id>:prompt". Scalars (duration, the
+// ordered reference images, the rendered video) live in Mongo and are
+// patched here with a `fields_updated` ping so open Prompts pages refetch.
+
+function videoPromptItemField(promptId, field) {
+  return `item:${promptId}:${field}`;
+}
+
+const VIDEO_PROMPT_TEXT_FIELDS = new Set(['title', 'prompt']);
+
+export async function setVideoPromptTextFieldViaGateway({ projectId, promptId, field, text }) {
+  if (!VIDEO_PROMPT_TEXT_FIELDS.has(field)) {
+    throw new Error(`unknown video prompt field: ${field}`);
+  }
+  const p = await mongoGetVideoPrompt(projectId, promptId);
+  if (!p) throw new Error(`Video prompt not found: ${promptId}`);
+  await setEntityFieldMarkdown({
+    projectId,
+    entityType: 'video_prompts',
+    entityId: p.beat_id.toString(),
+    field: videoPromptItemField(p._id.toString(), field),
+    markdown: text,
+  });
+}
+
+// Patch the non-text scalars of a prompt row (duration_seconds and/or the
+// ordered reference_images list) and ping the room.
+export async function updateVideoPromptScalarsViaGateway({
+  projectId,
+  promptId,
+  durationSeconds,
+  referenceImages,
+}) {
+  const p = await mongoGetVideoPrompt(projectId, promptId);
+  if (!p) throw new Error(`Video prompt not found: ${promptId}`);
+  const patch = {};
+  if (durationSeconds !== undefined) patch.duration_seconds = durationSeconds;
+  if (referenceImages !== undefined) patch.reference_images = referenceImages;
+  if (!Object.keys(patch).length) return p;
+  const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), patch);
+  broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
+    changed: Object.keys(patch),
+    video_prompt_id: p._id.toString(),
+  });
+  return updated;
+}
+
+export async function createVideoPromptViaGateway({
+  projectId,
+  beatId,
+  title = '',
+  prompt = '',
+  durationSeconds = null,
+  referenceImages = [],
+  order,
+  seedFragments,
+}) {
+  const p = await mongoCreateVideoPrompt({
+    projectId,
+    beatId,
+    title,
+    prompt,
+    durationSeconds,
+    referenceImages,
+    order,
+  });
+  // Seed the y-doc fragments BEFORE broadcasting the ping (see
+  // createDialogViaGateway): the SPA's CollabFields for the new row then
+  // mount against populated fragments instead of showing blank text.
+  if (seedFragments) {
+    for (const [field, text] of Object.entries(seedFragments)) {
+      if (!VIDEO_PROMPT_TEXT_FIELDS.has(field)) continue;
+      try {
+        await setEntityFieldMarkdown({
+          projectId,
+          entityType: 'video_prompts',
+          entityId: String(beatId),
+          field: videoPromptItemField(p._id.toString(), field),
+          markdown: text,
+        });
+      } catch (e) {
+        logger.warn(`createVideoPrompt: seed ${field} failed: ${e.message}`);
+      }
+    }
+  }
+  broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
+    changed: ['video_prompts'],
+    added_video_prompt_id: p._id.toString(),
+  });
+  return p;
+}
+
+// Delete one prompt row (and its rendered video file, best-effort), then
+// recompact the remaining orders to 1..N-1.
+export async function deleteVideoPromptViaGateway({ projectId, promptId }) {
+  const p = await mongoGetVideoPrompt(projectId, promptId);
+  if (!p) throw new Error(`Video prompt not found: ${promptId}`);
+  const beatId = p.beat_id.toString();
+  await mongoDeleteVideoPrompt(p._id);
+  if (p.video_file_id) {
+    try {
+      const { deleteAttachment } = await import('../mongo/attachments.js');
+      await deleteAttachment(p.video_file_id);
+    } catch (e) {
+      logger.warn(`gateway: delete video prompt video ${p.video_file_id} failed: ${e.message}`);
+    }
+  }
+  const remaining = await listVideoPrompts({ projectId, beatId });
+  await mongoReorderVideoPrompts(
+    beatId,
+    remaining.map((x) => x._id.toString()),
+  );
+  broadcastFieldsUpdated(buildRoomName('video_prompts', beatId), {
+    changed: ['video_prompts'],
+    removed_video_prompt_id: p._id.toString(),
+  });
+  return { ok: true, beat_id: beatId };
+}
+
+export async function reorderVideoPromptsViaGateway({ projectId, beatId, orderedIds }) {
+  const result = await mongoReorderVideoPrompts(beatId, orderedIds);
+  broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
+    changed: ['order'],
+  });
+  return result;
+}
+
+// Wipe every prompt for a beat, deleting their rendered videos (best-effort).
+export async function deleteAllVideoPromptsForBeatViaGateway({ projectId, beatId }) {
+  const removed = await mongoDeleteVideoPromptsForBeat(beatId);
+  const fileIds = removed.map((r) => r.video_file_id).filter(Boolean);
+  if (fileIds.length) {
+    try {
+      await deleteAttachments(fileIds);
+    } catch (e) {
+      logger.warn(`gateway: delete video prompt videos failed: ${e.message}`);
+    }
+  }
+  broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
+    changed: ['video_prompts'],
+    cleared: true,
+  });
+  return { ok: true, removed_count: removed.length };
+}
+
+// Persist a rendered video onto a prompt row — the prompt-owner twin of
+// setStoryboardVideoViaGateway with the same field set, so the SPA's video
+// panel renders either owner. videoFileId=null clears the slot.
+export async function setVideoPromptVideoViaGateway({
+  projectId,
+  promptId,
+  videoFileId,
+  durationSeconds = null,
+  modelId = null,
+  modelLabel = null,
+  falModel = null,
+  modelLab = null,
+  modelFamily = null,
+  modelAddedAt = null,
+  parameters = null,
+  costUsd = null,
+}) {
+  const p = await mongoGetVideoPrompt(projectId, promptId);
+  if (!p) throw new Error(`Video prompt not found: ${promptId}`);
+  const patch = {
+    video_file_id: videoFileId == null ? null : String(videoFileId),
+  };
+  if (videoFileId == null) {
+    patch.video_duration_seconds = null;
+    patch.video_generated_at = null;
+    patch.video_model_id = null;
+    patch.video_model_label = null;
+    patch.video_fal_model = null;
+    patch.video_model_lab = null;
+    patch.video_model_family = null;
+    patch.video_model_added_at = null;
+    patch.video_parameters = null;
+    patch.video_cost_usd = null;
+  } else {
+    if (durationSeconds != null && Number.isFinite(Number(durationSeconds))) {
+      patch.video_duration_seconds = Number(durationSeconds);
+    }
+    patch.video_generated_at = new Date();
+    patch.video_model_id = modelId ? String(modelId) : null;
+    patch.video_model_label = modelLabel ? String(modelLabel) : null;
+    patch.video_fal_model = falModel ? String(falModel) : null;
+    patch.video_model_lab = modelLab ? String(modelLab) : null;
+    patch.video_model_family = modelFamily ? String(modelFamily) : null;
+    patch.video_model_added_at = modelAddedAt ?? null;
+    patch.video_parameters =
+      parameters && typeof parameters === 'object' && !Array.isArray(parameters) ? parameters : null;
+    patch.video_cost_usd =
+      typeof costUsd === 'number' && Number.isFinite(costUsd) && costUsd >= 0 ? costUsd : null;
+  }
+  await mongoUpdateVideoPrompt(projectId, p._id.toString(), patch);
+  broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
+    changed: Object.keys(patch),
+    video_prompt_id: p._id.toString(),
+  });
+  return mongoGetVideoPrompt(projectId, p._id.toString());
+}
+
 // Ping the project-wide singleton room so any open Table of Contents refetches
 // its beat list. Beat CONTENT lives in per-beat rooms; this only signals "the
 // beat list/order changed". No-op (returns false) when no clients are connected.
@@ -2538,6 +2764,15 @@ export async function deleteBeatViaGateway(projectId, identifier) {
   const res = await deleteBeat(projectId, beatId);
   const storyboards = await mongoDeleteStoryboardsForBeat(beatId);
   const dialogs = await mongoDeleteDialogsForBeat(beatId);
+  const videoPrompts = await mongoDeleteVideoPromptsForBeat(beatId);
+  {
+    const fileIds = videoPrompts.map((r) => r.video_file_id).filter(Boolean);
+    if (fileIds.length) {
+      await deleteAttachments(fileIds).catch((e) =>
+        logger.warn(`gateway: delete beat video prompt videos failed: ${e.message}`),
+      );
+    }
+  }
   if (res.image_ids.length) {
     await deleteImages(res.image_ids).catch((e) =>
       logger.warn(`gateway: delete beat images failed: ${e.message}`),
@@ -2554,6 +2789,7 @@ export async function deleteBeatViaGateway(projectId, identifier) {
     ...res,
     storyboards_removed: storyboards.length,
     dialogs_removed: dialogs.length,
+    video_prompts_removed: videoPrompts.length,
   };
 }
 
