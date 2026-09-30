@@ -80,4 +80,16 @@ describe('headlessEditor', () => {
     const out = fragmentToMarkdown(ydoc, 'body');
     expect(out).toMatch(/first paragraph\s+second paragraph/);
   });
+
+  it('leaves no observers on the y-doc once the editor is gone (a live room would pin every editor)', () => {
+    const ydoc = new Y.Doc();
+    const observerCount = () => [...ydoc._observers.values()].reduce((n, set) => n + set.size, 0);
+    const before = observerCount();
+    for (let i = 0; i < 20; i++) {
+      setFragmentMarkdown(ydoc, `f${i % 3}`, `text ${i}`);
+      fragmentToMarkdown(ydoc, `f${i % 3}`);
+    }
+    expect(fragmentToMarkdown(ydoc, 'f1')).toBe('text 19');
+    expect(observerCount()).toBe(before);
+  });
 });

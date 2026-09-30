@@ -52,6 +52,20 @@ const STARTER_KIT_OPTS = {
   // the client editor.
 };
 
+// Collaboration without y-prosemirror's undo plugin. The plugin builds a
+// Y.UndoManager whose constructor subscribes `doc.on('destroy', …)` and never
+// unsubscribes (yjs 13.6), so every short-lived editor we create stayed pinned
+// to the room's Y.Doc — markdown-it, schema, plugins, ~0.5 MB each — for as
+// long as a browser kept the room loaded. The store hook renders every field
+// of a room on every tick, so a plan writing 25 cuts into an open Prompts tab
+// leaked thousands of editors and ran the heap out. Headless editors never
+// undo, and the sync plugin treats a missing undo state as "no undo manager".
+const HeadlessCollaboration = Collaboration.extend({
+  addProseMirrorPlugins() {
+    return this.parent().filter((plugin) => !String(plugin.key).startsWith('y-undo$'));
+  },
+});
+
 function makeEditor({ ydoc, field }) {
   installDom();
   return new Editor({
@@ -64,7 +78,7 @@ function makeEditor({ ydoc, field }) {
         // Do not let the editor break a long line of trailing whitespace.
         breaks: false,
       }),
-      Collaboration.configure({ document: ydoc, field }),
+      HeadlessCollaboration.configure({ document: ydoc, field }),
     ],
   });
 }
