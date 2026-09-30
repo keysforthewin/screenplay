@@ -108,7 +108,7 @@ export async function getDialog(projectId, id) {
   return doc;
 }
 
-export async function createDialog({ projectId, beatId, order, body = '', character = '' } = {}) {
+export async function createDialog({ projectId, beatId, order, body = '', character = '', direction = '', id = null } = {}) {
   if (!beatId) throw new Error('beatId required');
   const pid = await resolveProjectId(projectId);
   const beatOid = toOid(beatId);
@@ -123,13 +123,13 @@ export async function createDialog({ projectId, beatId, order, body = '', charac
   }
   const now = new Date();
   const doc = {
-    _id: new ObjectId(),
+    _id: id ? toOid(id) : new ObjectId(),
     project_id: pid,
     beat_id: beatOid,
     order: Number(nextOrder),
     body: String(body || ''),
     character: String(character || ''),
-    direction: '',
+    direction: String(direction || ''),
     audio_file_id: null,
     audio_duration_seconds: null,
     created_at: now,

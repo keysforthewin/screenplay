@@ -449,6 +449,7 @@ export async function getVideoPrompt(projectId, id) {
 }
 
 export async function createVideoPrompt({
+  id = null,
   projectId,
   beatId,
   order,
@@ -502,7 +503,7 @@ export async function createVideoPrompt({
   }
   const now = new Date();
   const doc = {
-    _id: new ObjectId(),
+    _id: id ? toOid(id) : new ObjectId(),
     project_id: pid,
     beat_id: beatOid,
     order: Number(nextOrder),

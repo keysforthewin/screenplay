@@ -1782,6 +1782,31 @@ export async function clearAssembledVideosForBeat(projectId, beatId, { sceneId =
 // that change room composition (create / delete / reorder) broadcast a
 // `fields_updated` ping to the room so the SPA refetches.
 
+// Seed a new row's text fragments into its beat room BEFORE the Mongo row is
+// inserted (the caller pre-generates the row id). Seeding after the insert left
+// a window where a store tick saw the row with empty fragments and wrote ''
+// over the text the row was created with; the seed restored it only if a
+// later tick ran and the two persists landed in order. The store hook skips
+// fragments whose row does not exist yet, and once the row lands its values
+// already equal the fragments. Without Hocuspocus the Mongo row carries the
+// text itself, so there is nothing to seed.
+async function seedNewRowFragments({ projectId, entityType, beatId, fragments, label }) {
+  if (!isHocuspocusRunning()) return;
+  for (const [field, text] of fragments) {
+    try {
+      await setEntityFieldMarkdown({ projectId, entityType, entityId: String(beatId), field, markdown: text });
+    } catch (e) {
+      logger.warn(`${label}: seed ${field} failed: ${e.message}`);
+    }
+  }
+}
+
+// The seedFragments entries for `allowed` fields. The seed text is what the
+// new row is created with, so Mongo and the y-doc start out identical.
+function textSeeds(seedFragments, allowed) {
+  return Object.fromEntries(Object.entries(seedFragments || {}).filter(([field]) => allowed.has(field)));
+}
+
 function dialogItemField(dialogId, field) {
   return `item:${dialogId}:${field}`;
 }
@@ -1838,27 +1863,27 @@ export async function setDialogCharacterViaGateway({ projectId, dialogId, charac
 }
 
 export async function createDialogViaGateway({ projectId, beatId, body, character, order, seedFragments }) {
-  const d = await mongoCreateDialog({ projectId, beatId, body, character, order });
-  // Seed body / character y-doc fragments BEFORE broadcasting the ping.
-  // Without this, the
-  // SPA's CollabField for the new dialog mounts against an empty fragment
-  // and shows a blank body until the user reloads.
-  if (seedFragments) {
-    for (const [field, text] of Object.entries(seedFragments)) {
-      if (!DIALOG_TEXT_FIELDS.has(field)) continue;
-      try {
-        await setEntityFieldMarkdown({
-          projectId,
-          entityType: 'dialogs',
-          entityId: String(beatId),
-          field: dialogItemField(d._id.toString(), field),
-          markdown: text,
-        });
-      } catch (e) {
-        logger.warn(`createDialog: seed ${field} failed: ${e.message}`);
-      }
-    }
-  }
+  // Seed body / character y-doc fragments BEFORE the insert (see
+  // seedNewRowFragments) and so before the ping: the SPA's CollabField for
+  // the new dialog mounts against a populated fragment, not a blank body.
+  const id = new ObjectId();
+  const seeded = textSeeds(seedFragments, DIALOG_TEXT_FIELDS);
+  await seedNewRowFragments({
+    projectId,
+    entityType: 'dialogs',
+    beatId,
+    fragments: Object.entries(seeded).map(([field, text]) => [dialogItemField(id.toString(), field), text]),
+    label: 'createDialog',
+  });
+  const d = await mongoCreateDialog({
+    id,
+    projectId,
+    beatId,
+    body: seeded.body ?? body,
+    character: seeded.character ?? character,
+    direction: seeded.direction ?? '',
+    order,
+  });
   broadcastFieldsUpdated(buildRoomName('dialogs', String(beatId)), {
     changed: ['dialogs'],
     added_dialog_id: d._id.toString(),
@@ -1911,6 +1936,13 @@ export async function deleteAllDialogsForBeatViaGateway({ projectId, beatId }) {
 // sub-doc, the rendered video, a scene's read / scope / load) lives in Mongo
 // and is patched here with a `fields_updated` ping so open Prompts pages
 // refetch. Rows of `video_prompts` are CUTS; `video_scenes` groups them.
+
+// A frame object whose prompt is the seeded text (a seed with no frame yet
+// starts one); no seed leaves the frame as given.
+function withSeededPrompt(frame, prompt) {
+  if (prompt === undefined) return frame;
+  return { ...(frame || {}), prompt };
+}
 
 function videoPromptItemField(promptId, field) {
   return `item:${promptId}:${field}`;
@@ -2055,11 +2087,24 @@ export async function createVideoPromptViaGateway({
   // to a scene lands at the end of that scene rather than the end of the beat.
   recompute = false,
 }) {
+  // Seed the y-doc fragments BEFORE the insert (see seedNewRowFragments) and
+  // so before the ping: the SPA's CollabFields for the new row mount against
+  // populated fragments instead of showing blank text.
+  const id = new ObjectId();
+  const seeded = textSeeds(seedFragments, VIDEO_PROMPT_TEXT_FIELDS);
+  await seedNewRowFragments({
+    projectId,
+    entityType: 'video_prompts',
+    beatId,
+    fragments: Object.entries(seeded).map(([field, text]) => [videoPromptItemField(id.toString(), field), text]),
+    label: 'createVideoPrompt',
+  });
   let p = await mongoCreateVideoPrompt({
+    id,
     projectId,
     beatId,
-    title,
-    prompt,
+    title: seeded.title ?? title,
+    prompt: seeded.prompt ?? prompt,
     durationSeconds,
     referenceImages,
     order,
@@ -2086,32 +2131,11 @@ export async function createVideoPromptViaGateway({
     referenceBinding,
     exclusions,
     lint,
-    startFrame,
-    endFrame,
+    startFrame: withSeededPrompt(startFrame, seeded.start_frame_prompt),
+    endFrame: withSeededPrompt(endFrame, seeded.end_frame_prompt),
   });
-  // Seed the y-doc fragments BEFORE broadcasting the ping (see
-  // createDialogViaGateway): the SPA's CollabFields for the new row then
-  // mount against populated fragments instead of showing blank text.
-  if (seedFragments) {
-    for (const [field, text] of Object.entries(seedFragments)) {
-      if (!VIDEO_PROMPT_TEXT_FIELDS.has(field)) continue;
-      try {
-        await setEntityFieldMarkdown({
-          projectId,
-          entityType: 'video_prompts',
-          entityId: String(beatId),
-          field: videoPromptItemField(p._id.toString(), field),
-          markdown: text,
-        });
-      } catch (e) {
-        logger.warn(`createVideoPrompt: seed ${field} failed: ${e.message}`);
-      }
-    }
-  }
   if (recompute) {
     await mongoRecomputeCutOrder(beatId);
-  }
-  if (recompute || seedFragments) {
     p = (await mongoGetVideoPrompt(projectId, p._id.toString())) || p;
   }
   broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
@@ -2361,7 +2385,17 @@ export async function createVideoSceneViaGateway({
   load = null,
   seedFragments,
 }) {
-  let s = await mongoCreateVideoScene({
+  const id = new ObjectId();
+  const seeded = textSeeds(seedFragments, VIDEO_SCENE_TEXT_FIELDS);
+  await seedNewRowFragments({
+    projectId,
+    entityType: 'video_prompts',
+    beatId,
+    fragments: Object.entries(seeded).map(([field, text]) => [videoSceneField(id.toString(), field), text]),
+    label: 'createVideoScene',
+  });
+  const s = await mongoCreateVideoScene({
+    id,
     projectId,
     beatId,
     order,
@@ -2373,27 +2407,10 @@ export async function createVideoSceneViaGateway({
     directorsRead,
     intention,
     scope,
-    floorPlan,
+    floorPlan: seeded.floor_plan ?? floorPlan,
     dialogIds,
     load,
   });
-  if (seedFragments) {
-    for (const [field, text] of Object.entries(seedFragments)) {
-      if (!VIDEO_SCENE_TEXT_FIELDS.has(field)) continue;
-      try {
-        await setEntityFieldMarkdown({
-          projectId,
-          entityType: 'video_prompts',
-          entityId: String(beatId),
-          field: videoSceneField(s._id.toString(), field),
-          markdown: text,
-        });
-      } catch (e) {
-        logger.warn(`createVideoScene: seed ${field} failed: ${e.message}`);
-      }
-    }
-    s = (await mongoGetVideoScene(projectId, s._id.toString())) || s;
-  }
   broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
     changed: ['video_scenes'],
     added_video_scene_id: s._id.toString(),
