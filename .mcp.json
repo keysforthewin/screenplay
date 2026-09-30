@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "comfy-mcp": {
+      "command": "comfy-mcp",
+      "env": {
+        "COMFY_BIN": "/home/mulligan/.local/share/uv/tools/comfy-mcp/bin/comfy",
+        "COMFYUI_URL": "http://127.0.0.1:8188"
+      }
+    }
+  }
+}
