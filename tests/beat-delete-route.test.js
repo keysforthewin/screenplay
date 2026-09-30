@@ -16,7 +16,6 @@ vi.mock('../src/log.js', () => ({
 
 const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
-const Storyboards = await import('../src/mongo/storyboards.js');
 const Dialogs = await import('../src/mongo/dialogs.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
 
@@ -44,26 +43,22 @@ async function del(path, pid = projectId) {
 }
 
 describe('DELETE /api/beat/:id', () => {
-  it('removes the beat, renumbers the rest, and cascades to storyboards + dialogs', async () => {
+  it('removes the beat, renumbers the rest, and cascades to dialogs', async () => {
     const A = await Plots.createBeat({ projectId, name: 'A', body: 'x' });
     const B = await Plots.createBeat({ projectId, name: 'B', body: 'x' });
     const C = await Plots.createBeat({ projectId, name: 'C', body: 'x' });
-    await Storyboards.createStoryboard({ projectId, beatId: B._id, description: 'shot 1' });
-    await Storyboards.createStoryboard({ projectId, beatId: B._id, description: 'shot 2' });
-    await Storyboards.createStoryboard({ projectId, beatId: C._id, description: 'keep me' });
+    await Dialogs.createDialog({ projectId, beatId: C._id, character: 'Steve', body: 'keep me' });
     await Dialogs.createDialog({ projectId, beatId: B._id, character: 'Steve', body: 'hi' });
 
     const { status, json } = await del(`/api/beat/${B._id.toString()}`);
     expect(status).toBe(200);
     expect(json.ok).toBe(true);
     expect(json.deleted.name).toBe('B');
-    expect(json.deleted.storyboards_removed).toBe(2);
     expect(json.deleted.dialogs_removed).toBe(1);
 
     const plot = await Plots.getPlot(projectId);
     expect(plot.beats.map((b) => [b.name, b.order])).toEqual([['A', 1], ['C', 2]]);
-    expect(await Storyboards.listStoryboards({ projectId, beatId: B._id })).toEqual([]);
-    expect(await Storyboards.listStoryboards({ projectId, beatId: C._id })).toHaveLength(1);
+    expect(await Dialogs.listDialogs({ projectId, beatId: C._id })).toHaveLength(1);
     expect(await Dialogs.listDialogs({ projectId, beatId: B._id })).toEqual([]);
     void A;
   });

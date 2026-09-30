@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { apiGet } from '../api.js';
 
 // Index of the Prompts tab: one row per beat linking to /prompts/:order, with
-// the number of video prompts the beat has. Mirrors DialogIndex.
+// the number of cuts the beat has. Mirrors DialogIndex.
 export function PromptsIndex() {
   const [toc, setToc] = useState(null);
   const [error, setError] = useState(null);
@@ -52,6 +52,7 @@ export function PromptsIndex() {
       title: b.plain_name || b.name || 'Untitled',
       missing: !b.video_prompt_count,
       count: b.video_prompt_count || 0,
+      video: Boolean(b.prompts_video_file_id),
     }))
     .filter((b) => matches(`#${b.order} — ${b.title}`));
 
@@ -62,8 +63,8 @@ export function PromptsIndex() {
       </p>
       <h1 style={{ marginBottom: 8 }}>Prompts</h1>
       <p style={{ color: 'var(--fg-muted)', marginTop: 0 }}>
-        Each beat has its own video prompts — self-contained multi-shot prompts with reference
-        images, ready to render. <strong>*</strong> marks beats with no prompts yet.
+        Each beat is broken into scenes and cuts: one camera setup per cut, a compiled block with a
+        lock line, a rendered start frame, then a clip. <strong>*</strong> marks beats with no cuts yet; 🎞 marks an assembled beat video.
       </p>
 
       <div className="toc-filter">
@@ -97,7 +98,7 @@ export function PromptsIndex() {
           <ul>
             {beats.map((b) => {
               const prefix = b.missing ? '* ' : '';
-              const suffix = b.missing ? '' : ` (${b.count})`;
+              const suffix = b.missing ? '' : ` (${b.count})${b.video ? ' 🎞' : ''}`;
               const text = `${prefix}#${b.order} — ${b.title}${suffix}`;
               return (
                 <li key={b.key}>

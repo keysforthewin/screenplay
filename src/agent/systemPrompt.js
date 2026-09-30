@@ -51,6 +51,7 @@ The screenplay has a collaborative browser editor at ${webBaseUrl}/. Anyone the 
 - Home / table of contents / overview / "all beats" / "all characters" → ${webBaseUrl}/p/My%20Film/
 - A single beat → ${webBaseUrl}/p/My%20Film/beat/<order> (e.g. ${webBaseUrl}/p/My%20Film/beat/1)
 - A single character → ${webBaseUrl}/p/My%20Film/character/<name> (URL-encode the name; the route resolves the stripped-markdown name)
+- A beat's Prompts tab (scenes, cuts, start frames, clips) → ${webBaseUrl}/p/My%20Film/prompts/<order>
 - Director's notes → ${webBaseUrl}/p/My%20Film/notes
 - Unassigned image library → ${webBaseUrl}/p/My%20Film/library
 
@@ -178,8 +179,8 @@ When the user asks for a deep description of a beat, call \`get_beat\` and prese
 
 A beat's \`characters\` array stores character NAMES as plain strings — there are no \`_id\` references. So when you rename a character, the rename does NOT propagate automatically. Right after a rename, call \`list_beats\` and on each affected beat call \`set_field({collection: 'beat', identifier, field: 'characters', value: ['Alicia', ...]})\` with the corrected name list. The same is true of a set's \`name\` and beats' \`sets\` arrays.
 
-# Shots & video
-A beat becomes a film in two background steps: \`plan_shots\` turns the beat (and its dialogue) into shots — one self-contained video prompt each, reference images matched from the cast/sets, every dialogue line assigned to the shot that covers it — and \`render_beat\` turns those shots into clips and joins them into one beat MP4 (lip-synced from the lines' REAL recordings when every covered line is recorded; dialogue words are never written into prompts). Both return a job id; \`get_beat_render_status\` reports progress, coverage warnings, and the finished video link. Plan first, let the user review the prompts on the storyboard page, then render.
+# Cuts & video (Prompts tab)
+A beat becomes video on its Prompts tab: \`plan_cuts\` reads the WHOLE beat and breaks it into scenes (director's read, floor plan) → a shot table → ONE prose block per cut with a lock line → a start-frame and an end-frame still prompt per cut; \`render_cut_start_frames\` renders those stills (both by default — the end frame is what a first-last-frame video model lands on, so a moving camera stays on the real set); \`render_cut_video\` turns every cut into a clip (lip-synced from the covered lines' REAL recordings when every line is recorded; dialogue words never enter a prompt) and joins them into the beat MP4 — or renders ONE cut when given its "scene.cut" label. Video renders on the local ComfyUI GPU when this server has one (\`provider: "comfy"\`; it is disabled in production — the tool says so and fal.ai remains available) or on fal.ai. Every job returns an id; \`get_cut_job_status\` reports progress and the finished video link. Plan first, let the user review the blocks on the Prompts page, then render start frames, then the beat.
 
 # Sets (reusable settings/locations)
 Sets are reusable settings/locations — "The Diner", "Alice's Apartment" — linked to beats by name via a beat's \`sets\` array, the same roster pattern as \`characters\`. Unlike characters, a set has a fixed schema: only \`name\` and \`description\` (no custom template fields). The storyboard generator draws location reference images from a beat's linked sets, so linking the right set(s) when a beat is written measurably improves generated frames. ${twoTier

@@ -1,4 +1,4 @@
-// Auto-select reference images for a storyboard frame. Builds a candidate
+// Auto-select reference images for a shot (a cut's start frame). Builds a candidate
 // pool from each scene set's artwork plus each scene character's artwork (the
 // "Artwork" sections — NOT every reference image owned by the set/character),
 // asks the LLM selector to pick the most useful ones, and persists them onto
@@ -15,7 +15,6 @@ import { getCharacter } from '../mongo/characters.js';
 import { getSet } from '../mongo/sets.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { scoreFrameReferences } from '../llm/frameReferenceSelector.js';
-import { setStoryboardFrameReferenceImagesViaGateway } from './gateway.js';
 import { maxReferenceImagesFor } from './imageModelInfo.js';
 
 export const AUTO_REFERENCE_MAX = 6;
@@ -28,13 +27,6 @@ export const RELEVANCE_THRESHOLD = 0.5;
 // regardless of the model's own (often higher) cap. The effective send count is
 // min(MAX_ATTACHED_REFERENCE_IMAGES, model cap), always the highest-scored.
 export const MAX_ATTACHED_REFERENCE_IMAGES = 8;
-// Generous ceiling for the *stored* reference LIST (distinct from the per-model
-// send cap above). Seeding/auto-suggest fill the list up to here so the
-// per-source floor (2 per set + 2 per character) survives for multi-character
-// shots; render-time loadFrameReferenceImages then trims best-first to the
-// model's send cap. The two slots the retired beat source used to occupy now
-// belong to sets — holds 2 for one set + 2 each for up to 5 characters.
-export const REFERENCE_LIST_MAX = 12;
 
 // Map selected reference ids -> relevance score, so the generation step can
 // order references best-first without re-scoring. `scores` is the 1-based index
@@ -238,8 +230,7 @@ function fallbackReferenceIds({ candidates, maxTotal }) {
 // Shared shot-reference selection: build the artwork candidate pool, score it,
 // and run the floored selection. Returns the chosen ids plus the candidates,
 // raw scores, and the id->score map so callers can persist relevance and log
-// diagnostics. Used by both the SPA auto-suggest endpoint and storyboard
-// generation so the two paths produce identical results.
+// diagnostics.
 export async function selectFrameReferencesForShot({
   projectId,
   sb,
@@ -253,8 +244,7 @@ export async function selectFrameReferencesForShot({
     return { ids: [], candidates, scores: new Map(), referenceScores: {} };
   }
   const scores = await scoreFrameReferences({ frameText: text, candidates });
-  // An explicit maxTotal lets the caller seed a generous list (e.g. storyboard
-  // generation, which keeps the per-character floor for big ensembles and lets
+  // An explicit maxTotal lets the caller seed a generous list (which keeps the per-character floor for big ensembles and lets
   // render-time clamping trim best-first). Defaults to the model's edit cap.
   const cap = Number.isFinite(maxTotal) ? maxTotal : maxReferenceImagesFor(imageModel);
   let ids = selectScoredFrameReferences({ candidates, scores, maxTotal: cap });
@@ -271,36 +261,3 @@ export async function selectFrameReferencesForShot({
   };
 }
 
-export async function autoFillFrameReferencesIfEmpty({
-  projectId,
-  sb,
-  frame,
-  frameText,
-  autoReferences = true,
-  imageModel = null,
-}) {
-  if (!autoReferences) return [];
-  if ((frame?.reference_ids || []).length > 0) return [];
-  try {
-    const { ids, referenceScores } = await selectFrameReferencesForShot({
-      projectId,
-      sb,
-      frameText,
-      imageModel,
-    });
-    if (!ids.length) return [];
-    await setStoryboardFrameReferenceImagesViaGateway({
-      projectId,
-      storyboardId: sb._id,
-      frameId: frame._id,
-      imageIds: ids,
-      mode: 'replace',
-      scores: referenceScores,
-    });
-    frame.reference_ids = ids;
-    return ids;
-  } catch (e) {
-    logger.warn(`frameReferences: auto-fill failed for frame ${frame?._id}: ${e.message}`);
-    return [];
-  }
-}

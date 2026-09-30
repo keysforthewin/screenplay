@@ -75,18 +75,18 @@ async function ensureBeatIds(plot) {
       next.critique = null;
       changed = true;
     }
-    // Assembled beat video (src/web/beatAssemble.js): GridFS attachment id,
-    // its length, and when it was built.
-    if (next.video_file_id === undefined) {
-      next.video_file_id = null;
+    // The assembled beat video (src/web/cutAssemble.js): GridFS attachment
+    // id, its length, and when it was built.
+    if (next.prompts_video_file_id === undefined) {
+      next.prompts_video_file_id = null;
       changed = true;
     }
-    if (next.video_duration_seconds === undefined) {
-      next.video_duration_seconds = null;
+    if (next.prompts_video_duration_seconds === undefined) {
+      next.prompts_video_duration_seconds = null;
       changed = true;
     }
-    if (next.video_generated_at === undefined) {
-      next.video_generated_at = null;
+    if (next.prompts_video_generated_at === undefined) {
+      next.prompts_video_generated_at = null;
       changed = true;
     }
     if (next.previous_body === undefined) {
@@ -367,9 +367,6 @@ export async function createBeat({ projectId, name, desc = '', body = '', charac
     images: [],
     main_image_id: null,
     scene_bible: null,
-    video_file_id: null,
-    video_duration_seconds: null,
-    video_generated_at: null,
     attachments: [],
     artworks: [],
     created_at: now,
@@ -482,41 +479,26 @@ export async function setBeatBody(projectId, identifier, body) {
   return fetchBeat(projectId, beat._id);
 }
 
-// Persist a beat's scene bible (the per-beat "look book" that all storyboard
-// shots inherit). Stored as a normalized sub-doc under beats.$.scene_bible.
-// Pass null/empty to clear. Uses the atomic per-beat write path.
-// Persist a beat's advisory readiness report (visual-backing inventory built
-// by src/web/storyboardReadiness.js). Same generation-derived-state precedent
-// as the scene bible; pass null to clear.
-// Point a beat at its assembled video (or clear it with fileId=null). The
-// gateway wrapper (setBeatVideoViaGateway) owns the broadcast + old-file
-// cleanup; this is the bare write.
-export async function setBeatVideo(projectId, identifier, { fileId = null, durationSeconds = null } = {}) {
+// The assembled beat video (cut clips joined; src/web/cutAssemble.js).
+// Gateway wrapper: setBeatPromptsVideoViaGateway.
+export async function setBeatPromptsVideo(projectId, identifier, { fileId = null, durationSeconds = null } = {}) {
   projectId = await resolveProjectId(projectId);
   const plot = await getPlot(projectId);
   const beat = findBeat(plot, identifier);
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   const dur = Number(durationSeconds);
   await updateBeatFields(projectId, beat._id, {
-    'beats.$.video_file_id': fileId == null ? null : String(fileId),
-    'beats.$.video_duration_seconds': fileId != null && Number.isFinite(dur) && dur > 0 ? dur : null,
-    'beats.$.video_generated_at': fileId == null ? null : new Date(),
+    'beats.$.prompts_video_file_id': fileId == null ? null : String(fileId),
+    'beats.$.prompts_video_duration_seconds': fileId != null && Number.isFinite(dur) && dur > 0 ? dur : null,
+    'beats.$.prompts_video_generated_at': fileId == null ? null : new Date(),
   });
-  logger.info(`mongo: beat video set id=${beat._id} cleared=${fileId == null}`);
+  logger.info(`mongo: beat prompts video set id=${beat._id} cleared=${fileId == null}`);
   return fetchBeat(projectId, beat._id);
 }
 
-export async function setBeatReadinessReport(projectId, identifier, report) {
-  projectId = await resolveProjectId(projectId);
-  const plot = await getPlot(projectId);
-  const beat = findBeat(plot, identifier);
-  if (!beat) throw new Error(`Beat not found: ${identifier}`);
-  const value = report == null ? null : { ...report };
-  await updateBeatFields(projectId, beat._id, { 'beats.$.readiness_report': value });
-  logger.info(`mongo: beat readiness_report set id=${beat._id} cleared=${value === null}`);
-  return fetchBeat(projectId, beat._id);
-}
-
+// Persist a beat's scene bible (the per-beat "look book" the cut planner
+// reads). Stored as a normalized sub-doc under beats.$.scene_bible. Pass
+// null/empty to clear. Uses the atomic per-beat write path.
 export async function setBeatSceneBible(projectId, identifier, bible) {
   projectId = await resolveProjectId(projectId);
   const plot = await getPlot(projectId);

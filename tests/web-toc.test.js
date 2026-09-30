@@ -73,45 +73,32 @@ describe('buildTocResponse', () => {
         name: 'Opening',
         plain_name: 'Opening',
         body_empty: true,
-        storyboard_count: 0,
         dialog_count: 0,
         video_prompt_count: 0,
+        prompts_video_file_id: null,
         search_text: 'opening\nalice',
         dialog_search_text: '',
-        storyboard_search_text: '',
       },
     ]);
   });
 
-  it('flags beats with empty body and includes storyboard counts', () => {
+  it('flags beats with empty body and threads dialog and cut counts', () => {
     const beats = [
       { ...beat(1, 'Opening', []), body: 'has content' },
       { ...beat(2, 'Closing', []), body: '' },
       beat(3, 'Climax'),
     ];
-    const counts = new Map();
-    counts.set(beats[0]._id.toString(), 3);
-    counts.set(beats[2]._id.toString(), 1);
-    const out = buildTocResponse([], beats, 0, counts);
+    const dialogCounts = new Map([[beats[0]._id.toString(), 3]]);
+    const videoPromptCounts = new Map([[beats[2]._id.toString(), 4]]);
+    const out = buildTocResponse([], beats, 0, dialogCounts, { videoPromptCounts });
     expect(out.beats[0].body_empty).toBe(false);
-    expect(out.beats[0].storyboard_count).toBe(3);
+    expect(out.beats[0].dialog_count).toBe(3);
+    expect(out.beats[0].video_prompt_count).toBe(0);
     expect(out.beats[1].body_empty).toBe(true);
-    expect(out.beats[1].storyboard_count).toBe(0);
+    expect(out.beats[1].dialog_count).toBe(0);
     expect(out.beats[2].body_empty).toBe(true);
-    expect(out.beats[2].storyboard_count).toBe(1);
-  });
-
-  it('threads dialog_count through alongside storyboard_count', () => {
-    const beats = [beat(1, 'Opening', []), beat(2, 'Confrontation', [])];
-    const sbCounts = new Map();
-    sbCounts.set(beats[0]._id.toString(), 2);
-    const dCounts = new Map();
-    dCounts.set(beats[1]._id.toString(), 5);
-    const out = buildTocResponse([], beats, 0, sbCounts, dCounts);
-    expect(out.beats[0].storyboard_count).toBe(2);
-    expect(out.beats[0].dialog_count).toBe(0);
-    expect(out.beats[1].storyboard_count).toBe(0);
-    expect(out.beats[1].dialog_count).toBe(5);
+    expect(out.beats[2].video_prompt_count).toBe(4);
+    expect(out.beats[0]).not.toHaveProperty('storyboard_count');
   });
 
   it('builds search_text on beats from name + body + characters list', () => {
@@ -137,7 +124,7 @@ describe('buildTocResponse', () => {
       { beat_id: beats[0]._id, body: 'Why not?', character: 'Lisa' },
       { beat_id: beats[1]._id, body: 'Run!', character: 'Sam' },
     ];
-    const out = buildTocResponse([], beats, 0, null, null, {
+    const out = buildTocResponse([], beats, 0, null, {
       allDialogs,
     });
     const diner = out.beats.find((b) => b.order === 1);
@@ -148,24 +135,6 @@ describe('buildTocResponse', () => {
     expect(diner.dialog_search_text).not.toContain('run!');
     expect(park.dialog_search_text).toContain('run!');
     expect(park.dialog_search_text).toContain('sam');
-  });
-
-  it('aggregates storyboard scene prompts per beat into storyboard_search_text', () => {
-    const beats = [beat(1, 'Chase', []), beat(2, 'Quiet', [])];
-    const allStoryboards = [
-      { beat_id: beats[0]._id, text_prompt: 'wide shot of the alley at dusk' },
-      { beat_id: beats[0]._id, text_prompt: 'close on running feet' },
-      { beat_id: beats[1]._id, text_prompt: 'still life of teacup' },
-    ];
-    const out = buildTocResponse([], beats, 0, null, null, {
-      allStoryboards,
-    });
-    const chase = out.beats.find((b) => b.order === 1);
-    const quiet = out.beats.find((b) => b.order === 2);
-    expect(chase.storyboard_search_text).toContain('alley at dusk');
-    expect(chase.storyboard_search_text).toContain('running feet');
-    expect(chase.storyboard_search_text).not.toContain('teacup');
-    expect(quiet.storyboard_search_text).toContain('teacup');
   });
 
   it('builds character search_text from name + hollywood_actor + fields values', () => {

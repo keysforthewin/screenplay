@@ -1,5 +1,6 @@
-// assembleBeatVideo: normalize each clip (silent ones get a generated track),
-// concat by demuxer, upload, point the beat at the result, clean tmp.
+// assembleClips: normalize each clip (silent ones get a generated track),
+// concat by demuxer, upload, clean tmp. (Persisting the pointer is the
+// caller's job — see tests/cut-assemble.test.js.)
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import fsp from 'fs/promises';
@@ -29,15 +30,17 @@ vi.mock('../src/mongo/attachments.js', () => ({
   }),
 }));
 
-const gatewayCalls = [];
-vi.mock('../src/web/gateway.js', () => ({
-  setBeatVideoViaGateway: vi.fn(async (args) => {
-    gatewayCalls.push(args);
-    return { _id: args.beatId, video_file_id: String(args.fileId) };
-  }),
-}));
-
 const Assemble = await import('../src/web/beatAssemble.js');
+
+const assemble = ({ projectId, beat, shots }) =>
+  Assemble.assembleClips({
+    projectId,
+    clips: shots,
+    ownerId: beat._id,
+    filename: `beat-${beat._id}-video.mp4`,
+    generatedBy: 'beat-assemble',
+    label: 'shot',
+  });
 
 const calls = [];
 function fakeSpawn({ silentIds = [], duration = '12.5' } = {}) {
@@ -64,7 +67,6 @@ beforeEach(() => {
   calls.length = 0;
   uploaded.length = 0;
   streamed.length = 0;
-  gatewayCalls.length = 0;
 });
 afterEach(() => Assemble.__setAssembleSpawnImplForTests(null));
 
@@ -94,11 +96,11 @@ describe('normalizeArgs / concatArgs', () => {
   });
 });
 
-describe('assembleBeatVideo', () => {
-  it('normalizes every clip in order, joins them, uploads, and points the beat at the result', async () => {
+describe('assembleClips', () => {
+  it('normalizes every clip in order, joins them and uploads the result', async () => {
     const shots = [shot(2), shot(0, { video_duration_seconds: 7 }), shot(1)];
     Assemble.__setAssembleSpawnImplForTests(fakeSpawn({ silentIds: [shots[2].video_file_id] }));
-    const { file, durationSeconds } = await Assemble.assembleBeatVideo({ projectId: 'p', beat, shots });
+    const { file, durationSeconds } = await assemble({ projectId: 'p', beat, shots });
 
     // 3 audio probes + 3 normalizes + 1 concat + 1 duration probe
     const ffmpegs = calls.filter((c) => c.bin === 'ffmpeg');
@@ -118,7 +120,6 @@ describe('assembleBeatVideo', () => {
     expect(uploaded[0].ownerType).toBe('beat');
     expect(uploaded[0].generatedBy).toBe('beat-assemble');
     expect(file._id).toBe(uploaded[0]._id);
-    expect(gatewayCalls).toEqual([{ projectId: 'p', beatId: beat._id, fileId: uploaded[0]._id, durationSeconds: 12.5 }]);
     // tmp cleanup: downloaded clips are gone
     for (const p of streamed) expect(fs.existsSync(p)).toBe(false);
   });
@@ -131,14 +132,14 @@ describe('assembleBeatVideo', () => {
       fs.writeFileSync(args[args.length - 1], Buffer.from('x'));
       return { stdout: '' };
     });
-    const { durationSeconds } = await Assemble.assembleBeatVideo({ projectId: 'p', beat, shots });
+    const { durationSeconds } = await assemble({ projectId: 'p', beat, shots });
     expect(durationSeconds).toBe(10);
   });
 
   it('refuses when a shot has no clip', async () => {
     Assemble.__setAssembleSpawnImplForTests(fakeSpawn());
     await expect(
-      Assemble.assembleBeatVideo({ projectId: 'p', beat, shots: [shot(0), shot(1, { video_file_id: null })] }),
+      assemble({ projectId: 'p', beat, shots: [shot(0), shot(1, { video_file_id: null })] }),
     ).rejects.toThrow(/without a rendered clip \(shot 2\)/);
     expect(calls).toHaveLength(0);
   });
@@ -148,9 +149,8 @@ describe('assembleBeatVideo', () => {
     Assemble.__setAssembleSpawnImplForTests(async ({ bin }) => {
       throw new Assemble.FfmpegMissingError(bin);
     });
-    await expect(Assemble.assembleBeatVideo({ projectId: 'p', beat, shots })).rejects.toBeInstanceOf(Assemble.FfmpegMissingError);
+    await expect(assemble({ projectId: 'p', beat, shots })).rejects.toBeInstanceOf(Assemble.FfmpegMissingError);
     expect(uploaded).toHaveLength(0);
-    expect(gatewayCalls).toHaveLength(0);
     for (const p of streamed) expect(fs.existsSync(p)).toBe(false);
   });
 });

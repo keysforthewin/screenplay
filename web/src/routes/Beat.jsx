@@ -99,13 +99,13 @@ export function Beat({ session, section = 'writing' }) {
     catch (e) { setError(e.message); } finally { setBgBusy(null); }
   }
 
-  // Whole-beat delete. The server cascades to the beat's storyboards, dialogs
+  // Whole-beat delete. The server cascades to the beat's dialogs, scenes and cuts
   // and images and renumbers the rest, so we land back on the TOC (this beat's
   // /beat/:order URL now points at whatever slid into its slot).
   const [deleting, setDeleting] = useState(false);
   async function deleteBeat() {
     const label = beat.name ? `beat #${beat.order} "${beat.name}"` : `beat #${beat.order}`;
-    if (!confirm(`Delete ${label}? Its storyboards and dialog will be deleted too. This cannot be undone.`)) return;
+    if (!confirm(`Delete ${label}? Its dialog, scenes and cuts will be deleted too. This cannot be undone.`)) return;
     setDeleting(true);
     try {
       await apiDelete(`/beat/${beat._id}`);

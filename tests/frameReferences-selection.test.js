@@ -5,7 +5,6 @@ import {
   RELEVANCE_THRESHOLD,
 } from '../src/web/frameReferences.js';
 
-// ---- Mocks for autoFillFrameReferencesIfEmpty integration test ----
 
 vi.mock('../src/log.js', () => ({
   logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
@@ -14,20 +13,15 @@ vi.mock('../src/log.js', () => ({
 vi.mock('../src/mongo/plots.js', () => ({ getBeat: vi.fn() }));
 vi.mock('../src/mongo/characters.js', () => ({ getCharacter: vi.fn() }));
 
-vi.mock('../src/web/gateway.js', () => ({
-  setStoryboardFrameReferenceImagesViaGateway: vi.fn(),
-}));
+vi.mock('../src/web/gateway.js', () => ({}));
 
 const { getBeat } = await import('../src/mongo/plots.js');
 const { getCharacter } = await import('../src/mongo/characters.js');
-const { setStoryboardFrameReferenceImagesViaGateway: setRefs } = await import('../src/web/gateway.js');
-const { autoFillFrameReferencesIfEmpty } = await import('../src/web/frameReferences.js');
 const { _setFrameReferenceScorerForTests } = await import('../src/llm/frameReferenceSelector.js');
 
 beforeEach(() => {
   getBeat.mockReset();
   getCharacter.mockReset();
-  setRefs.mockReset();
   _setFrameReferenceScorerForTests(null);
 });
 
@@ -89,37 +83,3 @@ describe('selectScoredFrameReferences', () => {
 // ============================================================================
 // autoFillFrameReferencesIfEmpty — model cap integration
 // ============================================================================
-
-describe('autoFillFrameReferencesIfEmpty model cap', () => {
-  it('clamps auto-fill to the model cap (klein=4)', async () => {
-    // Build 6 beat artworks — more than the klein cap of 4.
-    const artworks = Array.from({ length: 6 }, (_, i) => ({
-      _id: `art${i + 1}`,
-      status: 'done',
-      result_image_id: `img${i + 1}`,
-      name: `image ${i + 1}`,
-      prompt: '',
-    }));
-    getBeat.mockResolvedValueOnce({ _id: 'beat1', artworks });
-
-    // Score all 6 above threshold so they would normally all be picked.
-    _setFrameReferenceScorerForTests(async ({ candidates }) => {
-      const m = new Map();
-      candidates.forEach((_, i) => m.set(i + 1, 0.9));
-      return m;
-    });
-
-    const frame = { _id: 'f1', reference_ids: [] };
-    const sb = { _id: 'sb1', beat_id: 'beat1', characters_in_scene: [] };
-    const ids = await autoFillFrameReferencesIfEmpty({
-      projectId: 'p',
-      sb,
-      frame,
-      frameText: 'x',
-      autoReferences: true,
-      imageModel: 'flux-2-klein',
-    });
-
-    expect(ids.length).toBeLessThanOrEqual(4);
-  });
-});

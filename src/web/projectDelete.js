@@ -1,7 +1,8 @@
 // projectDelete.js
 //
 // Full cascade delete of ONE project. Everything a project owns lives in eight
-// places; the order below matters:
+// places; the order below matters. (Cut start-frame images live in the GridFS
+// `images` bucket stamped with metadata.project_id, so step 4 covers them.)
 //
 //   1. collect beat + character + set ids (needed to derive y-doc room names)
 //   2. content collections keyed on project_id
@@ -36,9 +37,10 @@ const CONTENT_COLLECTIONS = [
   'characters',
   'sets',
   'messages',
-  'storyboards',
+  'storyboards', // retired feature; legacy rows are still swept with the project
   'dialogs',
   'video_prompts',
+  'video_scenes',
   'edit_announcements',
   'eleven_voices',
 ];

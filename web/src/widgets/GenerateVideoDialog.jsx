@@ -11,12 +11,10 @@ import {
 } from '../api.js';
 import { computeVideoCost, formatUsd as formatUsdAmount } from '../videoCost.js';
 import { VideoProgressBar } from './VideoProgressBar.jsx';
-import { ReferencePickerModal } from './ReferencePickerModal.jsx';
 import { useCollabRoom } from '../editor/CollabSurface.jsx';
 import { readFragmentMarkdown } from '../editor/fragmentRead.js';
 
-// The image-id strings of a storyboard's frame pool, in order, skipping frames
-// with no rendered image yet.
+// The image-id strings of a row's frame pool, in order, skipping empty slots.
 function frameImageIds(sb) {
   return (sb?.frames || [])
     .map((f) => (f?.image_id ? f.image_id.toString?.() || String(f.image_id) : null))
@@ -89,31 +87,27 @@ function writeLastEndpoint(endpointId) {
   try { if (endpointId) localStorage.setItem(LAST_MODEL_KEY, endpointId); } catch {}
 }
 
-// "Generate video…" dialog opened from the storyboard scene's AudioSlot.
-// Lets the user filter the fal.ai i2v catalog (data/fal-models.json) by the
-// input modalities the scene provides, pick a model, then POSTs the request
-// and opens an EventSource on the matching job stream so the progress bar
-// updates as fal's queue position changes. The fal task continues server-
-// side even if the user closes the dialog — when the storyboard's
-// video_file_id lands the inline player will appear automatically via the
-// room's fields_updated ping.
-// `variant` selects the owner: 'storyboard' (default — the scene row's frame
-// pool feeds the model's image slots) or 'video_prompt' (a Prompts-tab row:
-// its ordered reference_images are shipped as @Image1..N, no slot editing,
-// generate_audio and director's notes default OFF, and the request goes to
-// /video-prompt/:id/...). `promptField` is the y-doc fragment that holds the
-// live prompt text (defaults to the storyboard's item:<id>:text_prompt).
+// "Generate video (fal.ai)…" dialog for one Prompts-tab cut. Lets the user
+// filter the fal.ai catalog (data/fal-models.json), pick a model, preview the
+// exact payload, then POSTs the request and opens an EventSource on the job
+// stream so the progress bar follows fal's queue. The fal task continues
+// server-side if the dialog closes; the clip appears via the room's ping.
+// The cut's ordered reference_images ship as @Image1..N (no slot editing);
+// generate_audio and director's notes default OFF. `storyboardId` is the cut
+// id (prop name kept from the retired storyboard dialog); `promptField` is the
+// y-doc fragment holding the live block text.
 export function GenerateVideoDialog({
   open,
   onClose,
   storyboardId,
   sb,
   onRefresh,
-  variant = 'storyboard',
   promptField = null,
 }) {
-  const isPromptOwner = variant === 'video_prompt';
-  const endpointBase = isPromptOwner ? `/video-prompt/${storyboardId}` : `/storyboard/${storyboardId}`;
+  // The cut routes keep the fal body under /fal-video so the ComfyUI routes
+  // can own /cut/:id/video; the job stream is /cut/:id/video-job/:jobId/events.
+  const renderBase = `/cut/${storyboardId}/fal-video`;
+  const jobBase = `/cut/${storyboardId}`;
   const { ydoc } = useCollabRoom();
   const [registry, setRegistry] = useState(null); // { default_model_id, configured, catalog_generated_at, catalog_error, models: [...] }
   const [registryError, setRegistryError] = useState(null);
@@ -274,8 +268,8 @@ export function GenerateVideoDialog({
     setPreview(null);
     setPreviewLoading(false);
     setGenerateAudio(false);
-    setIncludeDirectorNotes(!isPromptOwner);
-    setActiveFacets({ ...EMPTY_FACETS, reference_images: isPromptOwner });
+    setIncludeDirectorNotes(false);
+    setActiveFacets({ ...EMPTY_FACETS, reference_images: true });
     setSearch('');
     // Prefer the live y-doc fragment text over the (possibly stale) sb prop:
     // sb.text_prompt comes from the last REST fetch, which lags any in-flight
@@ -301,35 +295,18 @@ export function GenerateVideoDialog({
       const findRegistered = (endpoint) => (endpoint
         ? registry.models.find((m) => m.endpoint_id === endpoint && m.is_registered) || null
         : null);
-      // Project default first (an explicit setting beats this browser's
-      // last-used): start+end slot when the scene offers two frames, else the
-      // start-only slot. Falls through the legacy chain when unset/unmatched.
-      const frameCount = frameImageIds(sb).length;
-      let defaultRow;
-      if (isPromptOwner) {
-        // Prompt rows were written for a reference-to-video model: this
-        // browser's last pick, then the project's direct-render default,
-        // then Seedance 2.5 reference-to-video, then any reference model.
-        defaultRow = findRegistered(storedEndpoint)
-          || findRegistered(modelDefaults?.video_direct)
-          || findRegistered(PROMPT_DEFAULT_ENDPOINT)
-          || registry.models.find((m) => m.is_registered && m.capabilities?.reference_images === true)
-          || registry.models.find((m) => m.is_registered)
-          || null;
-      } else {
-        const projectRow = frameCount >= 1
-          ? (frameCount >= 2 ? findRegistered(modelDefaults?.video_start_end) : null)
-            || findRegistered(modelDefaults?.video_start_only)
-          : null;
-        defaultRow = projectRow
-          || findRegistered(storedEndpoint)
-          || registry.models.find((m) => m.is_registered && m.id === registry.default_model_id)
-          || registry.models.find((m) => m.is_registered)
-          || null;
-      }
+      // Cut blocks are written for a reference-to-video model: this browser's
+      // last pick, then the project's direct-render default, then Seedance 2.5
+      // reference-to-video, then any reference model.
+      const defaultRow = findRegistered(storedEndpoint)
+        || findRegistered(modelDefaults?.video_direct)
+        || findRegistered(PROMPT_DEFAULT_ENDPOINT)
+        || registry.models.find((m) => m.is_registered && m.capabilities?.reference_images === true)
+        || registry.models.find((m) => m.is_registered)
+        || null;
       setSelectedEndpoint(defaultRow?.endpoint_id || null);
     }
-  }, [open, sb?._id, registry, ydoc, storyboardId, modelDefaults, isPromptOwner, promptField]);
+  }, [open, sb?._id, registry, ydoc, storyboardId, modelDefaults, promptField]);
 
   // Fetch the project's model defaults on open. Landing after the reset
   // effect above is fine — it re-runs (like it does when the registry loads)
@@ -361,7 +338,7 @@ export function GenerateVideoDialog({
       );
       setDuration(closest);
     } else if (modelNeedsDuration(chosenModel)) {
-      const cap = isPromptOwner ? 30 : 15;
+      const cap = 30;
       const free = Number.isFinite(sbDur) && sbDur > 0 ? Math.min(cap, Math.round(sbDur)) : 5;
       setDuration(free);
     } else {
@@ -386,10 +363,9 @@ export function GenerateVideoDialog({
   // them as a frame pool so the slot defaults and the pre-flight check see
   // them the same way the server's owner shim does.
   const slotRow = useMemo(() => {
-    if (!isPromptOwner) return sb;
     const refs = Array.isArray(sb?.reference_images) ? sb.reference_images : [];
     return { ...sb, frames: refs.map((r) => ({ image_id: r.image_id })) };
-  }, [sb, isPromptOwner]);
+  }, [sb]);
   const framesSig = useMemo(() => frameImageIds(slotRow).join(','), [slotRow]);
   useEffect(() => {
     setAssignment(defaultAssignment(chosenModel, slotRow));
@@ -494,14 +470,6 @@ export function GenerateVideoDialog({
     }
     // A prompt row's ordered references ARE the assignment — the server ships
     // them as @Image1..N in stored order and never takes an override.
-    if (isPromptOwner) return body;
-    // Map the frame pool onto the model's image slots. Only send what the model
-    // accepts so the server doesn't have to second-guess the shape.
-    const fa = {};
-    if (modelAccepts(chosenModel, 'startFrame')) fa.start_frame = assignment.start_frame || null;
-    if (modelAccepts(chosenModel, 'endFrame')) fa.end_frame = assignment.end_frame || null;
-    if (modelAccepts(chosenModel, 'referenceImages')) fa.ref = assignment.ref || [];
-    if (Object.keys(fa).length) body.frame_assignment = fa;
     return body;
   }
 
@@ -514,7 +482,7 @@ export function GenerateVideoDialog({
     setPreviewLoading(true);
     try {
       const body = buildRequestBody();
-      const r = await apiPostJson(`${endpointBase}/video/preview`, body);
+      const r = await apiPostJson(`${renderBase}/preview`, body);
       setPreview(r);
     } catch (e) {
       let msg = e.message || 'Preview failed.';
@@ -539,7 +507,7 @@ export function GenerateVideoDialog({
         return;
       }
       const body = buildRequestBody();
-      const r = await apiPostJson(`${endpointBase}/video/generate`, body);
+      const r = await apiPostJson(`${renderBase}/generate`, body);
       const jobId = r?.job_id;
       if (!jobId) {
         setGenerating(false);
@@ -548,7 +516,7 @@ export function GenerateVideoDialog({
       }
       writeLastEndpoint(chosenModel.endpoint_id);
       const es = new EventSource(
-        apiSseUrl(`${endpointBase}/video-job/${jobId}/events`),
+        apiSseUrl(`${jobBase}/video-job/${jobId}/events`),
       );
       esRef.current = es;
       es.addEventListener('snapshot', (ev) => setJob(safeParse(ev.data)));
@@ -644,29 +612,17 @@ export function GenerateVideoDialog({
 
         {generating || job ? <VideoProgressBar job={job} /> : null}
 
-        {isPromptOwner ? (
-          <PromptReferenceStrip sb={sb} chosenModel={chosenModel} />
-        ) : (
-          <FrameAssignmentRow
-            sb={sb}
-            storyboardId={storyboardId}
-            chosenModel={chosenModel}
-            assignment={assignment}
-            onAssignmentChange={setAssignment}
-            generating={generating}
-            onRefresh={onRefresh}
-          />
-        )}
+        <PromptReferenceStrip sb={sb} chosenModel={chosenModel} />
 
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span className="field-label">{isPromptOwner ? 'Prompt' : 'Prompt (override)'}</span>
+          <span className="field-label">Prompt</span>
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             disabled={generating}
-            rows={isPromptOwner ? 10 : 6}
+            rows={10}
             style={{ fontFamily: 'monospace', fontSize: 12 }}
-            placeholder={isPromptOwner ? "Leave blank to use the row's prompt text" : "Leave blank to use the scene's text_prompt"}
+            placeholder="Leave blank to use the cut's block"
           />
           <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
             Markdown is stripped server-side. Long prompts are truncated at 2000 chars.
@@ -695,13 +651,13 @@ export function GenerateVideoDialog({
               <input
                 type="number"
                 min={1}
-                max={isPromptOwner ? 30 : 15}
+                max={30}
                 step={1}
                 value={duration ?? ''}
                 disabled={generating}
                 onChange={(e) => {
                   const n = Number(e.target.value);
-                  if (Number.isFinite(n) && n >= 1 && n <= (isPromptOwner ? 30 : 15)) setDuration(n);
+                  if (Number.isFinite(n) && n >= 1 && n <= 30) setDuration(n);
                   else if (e.target.value === '') setDuration(null);
                 }}
                 style={{ width: 70 }}
@@ -879,200 +835,6 @@ function PromptReferenceStrip({ sb, chosenModel }) {
 }
 
 // ---------------------------------------------------------------------------
-// FrameAssignmentRow: shows the storyboard's frame pool and lets the user map
-// frames onto the chosen model's image slots (start_frame / end_frame / an
-// ordered reference list). Defaults are computed by frame order; this widget
-// only edits the per-generation override. A "+ Add frame" button opens the
-// shared picker in add_frame mode so users can grow the pool without leaving.
-
-function frameLabelFor(sb, imageId) {
-  const ids = frameImageIds(sb);
-  const idx = ids.indexOf(String(imageId));
-  return idx >= 0 ? `Frame ${idx + 1}` : '—';
-}
-
-function FrameAssignmentRow({
-  sb,
-  storyboardId,
-  chosenModel,
-  assignment,
-  onAssignmentChange,
-  generating,
-  onRefresh,
-}) {
-  const [addOpen, setAddOpen] = useState(false);
-  const ids = frameImageIds(sb);
-  const frames = sb?.frames || [];
-  const wantsStart = modelAccepts(chosenModel, 'startFrame');
-  const wantsEnd = modelAccepts(chosenModel, 'endFrame');
-  const wantsRef = modelAccepts(chosenModel, 'referenceImages');
-  const anySlot = wantsStart || wantsEnd || wantsRef;
-
-  function setSlot(key, value) {
-    onAssignmentChange({ ...assignment, [key]: value });
-  }
-  function toggleRef(imageId) {
-    const id = String(imageId);
-    const cur = assignment.ref || [];
-    // Toggle while preserving pool order so the ref list stays deterministic.
-    const has = cur.includes(id);
-    const nextSet = new Set(has ? cur.filter((x) => x !== id) : [...cur, id]);
-    onAssignmentChange({ ...assignment, ref: ids.filter((x) => nextSet.has(x)) });
-  }
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <span className="field-label">Frames ({ids.length})</span>
-        {frames.length < 6 && (
-          <button
-            type="button"
-            disabled={generating}
-            onClick={() => setAddOpen(true)}
-          >
-            + Add frame
-          </button>
-        )}
-      </div>
-
-      {/* Pool strip — read-only thumbnails labelled Frame 1..N. */}
-      {ids.length ? (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          {frames.map((f, i) => {
-            const imgId = f.image_id ? f.image_id.toString?.() || String(f.image_id) : null;
-            return (
-              <div key={f._id?.toString?.() || i} style={{ textAlign: 'center' }}>
-                <div
-                  style={{
-                    width: 84,
-                    height: 56,
-                    border: '1px solid var(--border)',
-                    borderRadius: 4,
-                    overflow: 'hidden',
-                    background: 'var(--bg-elevated)',
-                  }}
-                >
-                  {imgId ? (
-                    <img
-                      src={thumbUrl(imgId)}
-                      alt={`Frame ${i + 1}`}
-                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                    />
-                  ) : (
-                    <span style={{ fontSize: 10, color: 'var(--fg-muted)' }}>no image</span>
-                  )}
-                </div>
-                <span style={{ fontSize: 10, color: 'var(--fg-muted)' }}>Frame {i + 1}</span>
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: 0 }}>
-          No frames yet. Add at least one for image-conditioned models.
-        </p>
-      )}
-
-      {/* Per-slot assignment controls, only for the slots this model accepts. */}
-      {anySlot && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
-          {wantsStart && (
-            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
-              <span className="field-label">
-                Start frame{chosenModel.inputs.startFrame === 'required' ? ' *' : ''}
-              </span>
-              <select
-                value={assignment.start_frame || ''}
-                disabled={generating}
-                onChange={(e) => setSlot('start_frame', e.target.value || null)}
-              >
-                <option value="">— none —</option>
-                {ids.map((id, i) => (
-                  <option key={id} value={id}>{`Frame ${i + 1}`}</option>
-                ))}
-              </select>
-            </label>
-          )}
-          {wantsEnd && (
-            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
-              <span className="field-label">
-                End frame{chosenModel.inputs.endFrame === 'required' ? ' *' : ''}
-              </span>
-              <select
-                value={assignment.end_frame || ''}
-                disabled={generating}
-                onChange={(e) => setSlot('end_frame', e.target.value || null)}
-              >
-                <option value="">— none —</option>
-                {ids.map((id, i) => (
-                  <option key={id} value={id}>{`Frame ${i + 1}`}</option>
-                ))}
-              </select>
-            </label>
-          )}
-          {wantsRef && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
-              <span className="field-label">
-                Reference images{chosenModel.inputs.referenceImages === 'required' ? ' *' : ''}
-              </span>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {ids.length === 0 ? (
-                  <span style={{ color: 'var(--fg-muted)' }}>add frames to use as references</span>
-                ) : (
-                  ids.map((id, i) => {
-                    const checked = (assignment.ref || []).includes(id);
-                    return (
-                      <label
-                        key={id}
-                        style={{ display: 'flex', alignItems: 'center', gap: 4 }}
-                        title={`Frame ${i + 1}`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={generating}
-                          onChange={() => toggleRef(id)}
-                        />
-                        {`Frame ${i + 1}`}
-                      </label>
-                    );
-                  })
-                )}
-              </div>
-              {(assignment.ref || []).length > 0 && (
-                <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-                  Order: {(assignment.ref || []).map((id) => frameLabelFor(sb, id)).join(' → ')}
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      <ReferencePickerModal
-        open={addOpen}
-        onClose={() => setAddOpen(false)}
-        sbId={storyboardId}
-        beatId={sb?.beat_id ? String(sb.beat_id) : null}
-        charactersInScene={sb?.characters_in_scene}
-        mode="add_frame"
-        frameCount={frames.length}
-        onAttached={async () => {
-          setAddOpen(false);
-          await onRefresh?.();
-        }}
-      />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// PayloadPreviewPanel: shows the exact payload that would be POSTed to fal.
-// Renders the resolved prompt, every input file (with thumbnail) the
-// orchestrator would upload, and the JSON object fal would receive (with
-// screenplay-preview:// sentinel URLs). User must click Approve before the
-// real /video/generate request goes out.
-
 const PREVIEW_IMAGE_RE = /^screenplay-preview:\/\/image\/([a-f0-9]{24})$/i;
 const PREVIEW_ATTACHMENT_RE = /^screenplay-preview:\/\/attachment\/([a-f0-9]{24})$/i;
 

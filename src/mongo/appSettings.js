@@ -1,9 +1,10 @@
 // Process-wide (not per-project) settings that are plain configuration.
-// One doc per settings key in `app_settings`; today only `_id: 'models'`,
-// which holds the Admin page's per-feature Claude model overrides:
+// One doc per settings key in `app_settings`:
 //   { _id: 'models', slots: { agent: 'claude-…', writer: null, … },
-//     updated_at, updated_by }
-// Absent doc / null slot = use the env default (see src/llm/modelSlots.js).
+//     updated_at, updated_by }             — Admin → Models (src/llm/modelSlots.js)
+//   { _id: 'comfy_models', models: [registry entry…], updated_at, updated_by }
+//                                          — Admin → ComfyUI templates
+// Absent doc / null slot = use the env default.
 
 import { getDb } from './client.js';
 import {
@@ -11,9 +12,11 @@ import {
   isValidModelId,
   setModelOverrides,
 } from '../llm/modelSlots.js';
+import { registerComfyVideoModels } from '../comfy/videoModels.js';
 
 const COL = 'app_settings';
 const MODELS_ID = 'models';
+const COMFY_MODELS_ID = 'comfy_models';
 
 function emptySlots() {
   const out = {};
@@ -77,4 +80,37 @@ export async function loadModelOverrides() {
   const { slots } = await getModelSettings();
   setModelOverrides(slots);
   return slots;
+}
+
+// ── ComfyUI models registered from the gallery (Admin) ─────────────────────
+
+export async function getComfyModelSettings() {
+  const doc = await getDb().collection(COL).findOne({ _id: COMFY_MODELS_ID });
+  return {
+    models: Array.isArray(doc?.models) ? doc.models : [],
+    updated_at: doc?.updated_at || null,
+    updated_by: doc?.updated_by || null,
+  };
+}
+
+// Replace the whole registered list (callers validate entries first with
+// validateRegistryEntry) and apply it in-process at once.
+export async function setComfyModelSettings(models, { updatedBy = null } = {}) {
+  const list = Array.isArray(models) ? models : [];
+  const now = new Date();
+  await getDb().collection(COL).updateOne(
+    { _id: COMFY_MODELS_ID },
+    { $set: { models: list, updated_at: now, updated_by: updatedBy } },
+    { upsert: true },
+  );
+  registerComfyVideoModels(list);
+  return { models: list, updated_at: now, updated_by: updatedBy };
+}
+
+// Boot-time: pull the registered ComfyUI models into the registry. Called
+// from src/index.js right after loadModelOverrides().
+export async function loadComfyModelOverrides() {
+  const { models } = await getComfyModelSettings();
+  registerComfyVideoModels(models);
+  return models;
 }

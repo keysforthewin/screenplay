@@ -1,6 +1,6 @@
 import { connectMongo } from './mongo/client.js';
 import { ensureAuthIndexes } from './mongo/auth.js';
-import { loadModelOverrides } from './mongo/appSettings.js';
+import { loadModelOverrides, loadComfyModelOverrides } from './mongo/appSettings.js';
 import { seedDefaults } from './seed/defaults.js';
 import { createDiscordClient } from './discord/client.js';
 import { setDiscordClient } from './discord/announcer.js';
@@ -21,6 +21,8 @@ async function main() {
   await connectMongo();
   // Admin-page model overrides must be live before the first Claude call.
   await loadModelOverrides();
+  // ComfyUI models registered from the gallery (Admin page).
+  await loadComfyModelOverrides();
   await ensureAuthIndexes();
   await seedDefaults();
   await startBackupScheduler();

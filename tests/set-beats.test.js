@@ -27,7 +27,7 @@ vi.mock('../src/rag/indexer.js', () => ({
 const Projects = await import('../src/mongo/projects.js');
 const Sets = await import('../src/mongo/sets.js');
 const Plots = await import('../src/mongo/plots.js');
-const { findBeatsReferencingSet } = await import('../src/web/storyboardGenerate.js');
+const { findBeatsReferencingSet } = await import('../src/web/beatPlanShared.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
 
 let server;

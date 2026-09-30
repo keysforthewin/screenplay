@@ -4,7 +4,6 @@ import { describe, it, expect } from 'vitest';
 import {
   estimateLineSeconds,
   estimateSpeechSeconds,
-  estimateShotDuration,
   allLinesRecorded,
   WORDS_PER_SECOND,
   BREATH_PER_LINE_SECONDS,
@@ -35,32 +34,7 @@ describe('estimateLineSeconds', () => {
   });
 });
 
-describe('estimateShotDuration', () => {
-  it('uses the planner value for a silent shot', () => {
-    const r = estimateShotDuration({ frame: { shot_type: 'medium', duration_seconds: 7 }, coveredDialogs: [] });
-    expect(r).toMatchObject({ seconds: 7, source: 'planner' });
-  });
-
-  it('sums recorded audio plus head/tail when every line is recorded', () => {
-    const r = estimateShotDuration({
-      frame: { shot_type: 'medium', duration_seconds: 2 },
-      coveredDialogs: [
-        { body: 'a', audio_file_id: 'x', audio_duration_seconds: 2.2 },
-        { body: 'b', audio_file_id: 'y', audio_duration_seconds: 1.1 },
-      ],
-    });
-    expect(r.source).toBe('audio');
-    expect(r.seconds).toBe(Math.ceil(3.3 + 0.8));
-  });
-
-  it('estimates when some lines lack recordings, and clamps to the shot_type cap', () => {
-    const long = 'word '.repeat(40).trim(); // 40 words → 16s + pauses
-    const r = estimateShotDuration({ frame: { shot_type: 'close_up', duration_seconds: 3 }, coveredDialogs: [{ body: long }] });
-    expect(r.source).toBe('estimate');
-    expect(r.speechSeconds).toBeGreaterThan(5);
-    expect(r.seconds).toBe(5); // close_up cap
-  });
-
+describe('allLinesRecorded', () => {
   it('allLinesRecorded is false for an empty list or any unrecorded line', () => {
     expect(allLinesRecorded([])).toBe(false);
     expect(allLinesRecorded([{ audio_duration_seconds: 1 }, { audio_duration_seconds: null }])).toBe(false);

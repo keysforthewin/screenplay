@@ -109,7 +109,7 @@ export function ProjectDangerZone({ project }) {
       <h2>Danger zone</h2>
       <p>
         Deleting <strong>{project.title}</strong> permanently removes its beats,
-        characters, storyboards, dialogue, director's notes, chat history, every
+        characters, scenes and cuts, dialogue, director's notes, chat history, every
         image and attachment, and all of its editor history. Other projects are
         untouched. This cannot be undone.
       </p>

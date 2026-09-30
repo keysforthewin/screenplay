@@ -1,6 +1,6 @@
 // fal.ai image generation adapter — fronts the Flux Pro Kontext, Flux 2 Pro,
 // and Nano Banana Pro (Google Gemini 3 Pro Image) endpoints via @fal-ai/client.
-// Designed to slot into storyboardImageDispatch.js / imageReplaceDispatch.js
+// Designed to slot into stillImageDispatch.js / imageReplaceDispatch.js
 // alongside the OpenAI branch.
 //
 // Each model exposes one helper that auto-routes between its generate and

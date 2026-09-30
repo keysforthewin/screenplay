@@ -34,26 +34,26 @@ export const MODEL_SLOTS = Object.freeze([
   },
   {
     key: 'storyboard',
-    label: 'Storyboard & scene planning',
-    help: 'Shot planning and expansion, frame-count analysis, storyboard prompt edits, plate planners and sheet tuners, scene bible autofill and set description generation.',
+    label: 'Scene & cut planning',
+    help: 'The Prompts-tab planner (scenes, shot table, blocks, still prompts), plate planners for image sheets, scene bible autofill and set description generation. (Slot key stays "storyboard" so saved overrides keep working.)',
     family: 'creative',
   },
   {
     key: 'critique',
     label: 'Critique & rewrite',
-    help: 'Beat critique facets, the beat rewrite / normalize passes, and the storyboard critique lens.',
+    help: 'Beat critique facets, and the beat rewrite / normalize passes.',
     family: 'creative',
   },
   {
     key: 'analysis',
     label: 'Analysis & summaries',
-    help: 'Generic one-shot analysis: the analyze tools in chat and the short shot summaries.',
+    help: 'Generic one-shot analysis: the analyze tools in chat.',
     family: 'creative',
   },
   {
     key: 'enhancer',
     label: 'Auxiliary passes',
-    help: 'Cheap helper calls: image-prompt enhancement, vision captions, reference selection, the storyboard readiness gap pass, PDF filename inference, chat titles and ElevenLabs text annotation.',
+    help: 'Cheap helper calls: image-prompt enhancement, vision captions, reference selection, PDF filename inference, chat titles and ElevenLabs text annotation.',
     family: 'enhancer',
   },
 ]);

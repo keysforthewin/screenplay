@@ -4,7 +4,20 @@
 # vitest, vite, and friends are available).
 FROM node:22-alpine
 WORKDIR /app
-RUN apk add --no-cache mongodb-tools curl
+# ffmpeg: clip normalizing/joining and dialogue-audio concat, as in prod.
+# python3 + uv: comfy-mcp (the ComfyUI bridge the bot spawns) is a Python tool;
+# git: comfy-cli imports GitPython, which aborts without the binary.
+# socat: docker-compose.dev.yml forwards the container's 127.0.0.1:8188 to the
+# host bridge so comfy-cli's local-only tools (validate, set slots) see ComfyUI.
+# It is DEV-ONLY — the production image has no ComfyUI provider; see
+# docker-compose.dev.yml for how the container reaches a ComfyUI on the host.
+RUN apk add --no-cache mongodb-tools curl ffmpeg git socat python3 uv
+ENV UV_TOOL_BIN_DIR=/usr/local/bin
+# System interpreter (no managed Python download). comfy-cli is a separate
+# package (comfy-mcp only declares it loosely), and uv links only the top
+# package's entry points, so `comfy` is pointed at explicitly via COMFY_BIN.
+RUN uv tool install --python /usr/bin/python3 --with 'comfy-cli>=1.22.0' comfy-mcp==0.10.0
+ENV COMFY_BIN=/root/.local/share/uv/tools/comfy-mcp/bin/comfy
 COPY package.json package-lock.json* ./
 RUN npm ci
 RUN mkdir -p /data/exports /data/backups

@@ -3,9 +3,7 @@ import { apiDelete, attachmentUrl } from '../api.js';
 import { AudioPickerModal } from './AudioPickerModal.jsx';
 
 // Audio attachment widget. The "Add / Replace audio" button opens
-// AudioPickerModal which consolidates upload, mic recording, picking from
-// any beat/character audio attachment ("Reference"), and (for storyboard
-// scenes) copying from an in-beat dialog item ("From dialog").
+// AudioPickerModal (upload or mic recording).
 //
 // Props:
 //   audioId           — GridFS attachments _id or null
@@ -13,12 +11,6 @@ import { AudioPickerModal } from './AudioPickerModal.jsx';
 //   deleteEndpoint    — DELETE URL (clears the entity's audio_file_id)
 //   recordingPrefix   — base name for recorded files (e.g. `dialog-<id>`)
 //   label             — header label, defaults to "Audio"
-//   storyboardId      — storyboard hex id | null. If set, the picker
-//                       shows a "Reference" tab listing project-wide
-//                       audio attachments on beats and characters.
-//   dialogPicker      — { storyboardId, beatId } | null — if set, the
-//                       picker shows a "From dialog" tab that copies a
-//                       dialog item's audio onto this scene.
 //   onRefresh         — called after every successful mutation
 //   extraActions      — optional ({ busy }) => ReactNode rendered alongside
 //                       the Add/Replace button. Used for entity-specific
@@ -29,8 +21,6 @@ export function AudioSlot({
   deleteEndpoint,
   recordingPrefix = 'recording',
   label = 'Audio',
-  storyboardId = null,
-  dialogPicker = null,
   onRefresh,
   extraActions,
 }) {
@@ -82,8 +72,6 @@ export function AudioSlot({
         onClose={() => setPickerOpen(false)}
         uploadEndpoint={uploadEndpoint}
         recordingPrefix={recordingPrefix}
-        storyboardId={storyboardId}
-        dialogPicker={dialogPicker}
         onAttached={onRefresh}
       />
     </div>

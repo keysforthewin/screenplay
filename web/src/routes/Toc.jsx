@@ -12,7 +12,7 @@ const TABS = [
   { id: 'sets', label: 'Sets' },
   { id: 'beats', label: 'Beats' },
   { id: 'dialog', label: 'Dialog' },
-  { id: 'storyboards', label: 'Storyboards' },
+  { id: 'prompts', label: 'Prompts' },
   { id: 'library', label: 'Library' },
 ];
 const TAB_IDS = TABS.map((t) => t.id);
@@ -196,21 +196,21 @@ export function Toc({ session }) {
     })
     .filter((b) => matches(b.searchLabel, b.searchText));
 
-  const storyboardBeats = [...(toc.beats || [])]
+  const promptBeats = [...(toc.beats || [])]
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
     .map((b) => {
       const title = b.plain_name || b.name || 'Untitled';
-      const count = b.storyboard_count || 0;
+      const count = b.video_prompt_count || 0;
       const missing = count === 0;
       return {
         key: b._id,
-        to: `/storyboard/${b.order}`,
+        to: `/prompts/${b.order}`,
         order: b.order,
         title,
         missing,
         count,
         searchLabel: `#${b.order} — ${title}`,
-        searchText: b.storyboard_search_text || '',
+        searchText: '',
       };
     })
     .filter((b) => matches(b.searchLabel, b.searchText));
@@ -243,7 +243,7 @@ export function Toc({ session }) {
     sets: sets.length,
     beats: beats.length,
     dialog: dialogBeats.length,
-    storyboards: storyboardBeats.length,
+    prompts: promptBeats.length,
     library: libraryVisible ? Math.max(libraryMatchCount, matches('Library') ? 1 : 0) : 0,
   };
   // While the filter is active, hide tabs whose contents don't match. With no
@@ -462,12 +462,12 @@ export function Toc({ session }) {
         )}
       </div>
 
-      <div className="tab-panel" hidden={displayedTab !== 'storyboards' || noResults}>
+      <div className="tab-panel" hidden={displayedTab !== 'prompts' || noResults}>
         <p style={{ color: 'var(--fg-muted)', marginTop: 0 }}>
-          Each beat has its own storyboard. <strong>*</strong> marks beats with no
-          storyboards yet.
+          Each beat has its own scenes and cuts. <strong>*</strong> marks beats with no
+          cuts planned yet.
         </p>
-        {storyboardBeats.length === 0 ? (
+        {promptBeats.length === 0 ? (
           <p style={{ color: 'var(--fg-muted)' }}>No beats yet.</p>
         ) : (
           <section className="toc-section">
@@ -475,10 +475,10 @@ export function Toc({ session }) {
               disabled={!!filter}
               onReordered={refetchToc}
               onError={setError}
-              items={storyboardBeats.map((b) => ({
+              items={promptBeats.map((b) => ({
                 id: b.key,
                 to: b.to,
-                title: b.missing ? 'No storyboards for this beat yet' : undefined,
+                title: b.missing ? 'No cuts planned for this beat yet' : undefined,
                 content: `${b.missing ? '* ' : ''}#${b.order} — ${b.title}${b.missing ? '' : ` (${b.count})`}`,
               }))}
             />

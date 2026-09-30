@@ -3,7 +3,7 @@ import { apiGet, thumbUrl } from '../api.js';
 import { Modal } from './Modal.jsx';
 
 // Picker for a Prompts-tab row's reference images. Offers exactly the
-// catalog the auto-generator picks from (GET /video-prompts/candidates: the
+// catalog the auto-generator picks from (GET /cuts/candidates: the
 // ARTWORK of the beat's characters and sets — done artworks only, never
 // uploaded portraits, sheets or gallery images), grouped by owner. Multi-pick;
 // the chosen ids are APPENDED to the row's ordered list in the order they
@@ -18,7 +18,7 @@ export function PromptReferencePicker({ open, beatId, existingIds, maxTotal, onC
     setPicked([]);
     setError(null);
     let cancelled = false;
-    apiGet(`/video-prompts/candidates?beat_id=${encodeURIComponent(beatId)}`)
+    apiGet(`/cuts/candidates?beat_id=${encodeURIComponent(beatId)}`)
       .then((r) => {
         if (!cancelled) setCatalog(r.candidates || []);
       })

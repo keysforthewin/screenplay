@@ -2,7 +2,7 @@
 // posts the full new id sequence to /beats/reorder, which renumbers beats
 // 1..N server-side. Mirrors the dnd-kit wiring in DialogBeat.jsx. `items` are
 // pre-sorted rows; `content` is the caller's per-tab label so the Beats /
-// Dialog / Storyboard tabs keep their distinct row text.
+// Dialog / Prompts tabs keep their distinct row text.
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {

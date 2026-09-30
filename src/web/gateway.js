@@ -94,27 +94,6 @@ import {
   pullDirectorNoteAttachment,
 } from '../mongo/directorNotes.js';
 import {
-  createStoryboard as mongoCreateStoryboard,
-  updateStoryboard as mongoUpdateStoryboard,
-  addFrame as mongoAddFrame,
-  removeFrame as mongoRemoveFrame,
-  reorderFrames as mongoReorderFrames,
-  setFrameImage as mongoSetFrameImage,
-  setFramePrompt as mongoSetFramePrompt,
-  rotateFrameImageEdit as mongoRotateFrameImageEdit,
-  undoFrameImageEdit as mongoUndoFrameImageEdit,
-  deleteStoryboard as mongoDeleteStoryboard,
-  deleteStoryboardsForBeat as mongoDeleteStoryboardsForBeat,
-  clearAllFrameImagesForBeat as mongoClearAllFrameImagesForBeat,
-  getStoryboard as mongoGetStoryboard,
-  reorderStoryboardsForBeat as mongoReorderStoryboards,
-  pushFrameReferenceImage as mongoPushFrameReferenceImage,
-  pullFrameReferenceImage as mongoPullFrameReferenceImage,
-  pushFrameReferenceImages as mongoPushFrameReferenceImages,
-  setFrameReferenceImages as mongoSetFrameReferenceImages,
-  listStoryboards,
-} from '../mongo/storyboards.js';
-import {
   createDialog as mongoCreateDialog,
   updateDialog as mongoUpdateDialog,
   deleteDialog as mongoDeleteDialog,
@@ -128,10 +107,23 @@ import {
   updateVideoPrompt as mongoUpdateVideoPrompt,
   deleteVideoPrompt as mongoDeleteVideoPrompt,
   deleteVideoPromptsForBeat as mongoDeleteVideoPromptsForBeat,
+  deleteVideoPromptsForScene as mongoDeleteVideoPromptsForScene,
   getVideoPrompt as mongoGetVideoPrompt,
   reorderVideoPromptsForBeat as mongoReorderVideoPrompts,
-  listVideoPrompts,
+  recomputeCutOrderForBeat as mongoRecomputeCutOrder,
+  reorderCutsInScene as mongoReorderCutsInScene,
+  normalizeStartFrame,
 } from '../mongo/videoPrompts.js';
+import {
+  createVideoScene as mongoCreateVideoScene,
+  updateVideoScene as mongoUpdateVideoScene,
+  deleteVideoScene as mongoDeleteVideoScene,
+  deleteVideoScenesForBeat as mongoDeleteVideoScenesForBeat,
+  getVideoScene as mongoGetVideoScene,
+  reorderVideoScenesForBeat as mongoReorderVideoScenes,
+  setVideoSceneVideo as mongoSetVideoSceneVideo,
+  listVideoScenes,
+} from '../mongo/videoScenes.js';
 import {
   setMainCharacterImage,
   removeCharacterImage,
@@ -153,7 +145,6 @@ import {
   setOwnedAttachmentMeta,
   findAttachmentFile,
   readAttachmentBuffer,
-  copyAttachmentBuffer,
   attachExistingAttachmentToBeat,
   attachExistingAttachmentToCharacter,
   attachExistingAttachmentToDirectorNote,
@@ -382,20 +373,6 @@ async function readEntityField({ projectId, entityType, entityId, field }) {
     const plot = await Plots.getPlot(projectId);
     return plot[field] != null ? String(plot[field]) : '';
   }
-  if (entityType === 'storyboards') {
-    const fm = field.match(/^item:([a-f0-9]{24}):frame:([a-f0-9]{24}):prompt$/);
-    if (fm) {
-      const sb = await mongoGetStoryboard(projectId, fm[1]);
-      if (!sb) throw new Error(`Storyboard not found: ${fm[1]}`);
-      const frame = (sb.frames || []).find((f) => f._id.toString() === fm[2]);
-      return String(frame?.prompt || '');
-    }
-    const m = field.match(/^item:([a-f0-9]{24}):(text_prompt|summary)$/);
-    if (!m) throw new Error(`gateway fallback: unknown storyboards field "${field}"`);
-    const sb = await mongoGetStoryboard(projectId, m[1]);
-    if (!sb) throw new Error(`Storyboard not found: ${m[1]}`);
-    return String(sb[m[2]] || '');
-  }
   if (entityType === 'dialogs') {
     const m = field.match(/^item:([a-f0-9]{24}):(body|character)$/);
     if (!m) throw new Error(`gateway fallback: unknown dialogs field "${field}"`);
@@ -404,10 +381,18 @@ async function readEntityField({ projectId, entityType, entityId, field }) {
     return String(d[m[2]] || '');
   }
   if (entityType === 'video_prompts') {
-    const m = field.match(/^item:([a-f0-9]{24}):(title|prompt)$/);
+    const sm = field.match(/^scene:([a-f0-9]{24}):floor_plan$/);
+    if (sm) {
+      const s = await mongoGetVideoScene(projectId, sm[1]);
+      if (!s) throw new Error(`Video scene not found: ${sm[1]}`);
+      return String(s.floor_plan || '');
+    }
+    const m = field.match(/^item:([a-f0-9]{24}):(title|prompt|start_frame_prompt|end_frame_prompt)$/);
     if (!m) throw new Error(`gateway fallback: unknown video_prompts field "${field}"`);
     const p = await mongoGetVideoPrompt(projectId, m[1]);
     if (!p) throw new Error(`Video prompt not found: ${m[1]}`);
+    if (m[2] === 'start_frame_prompt') return String(p.start_frame?.prompt || '');
+    if (m[2] === 'end_frame_prompt') return String(p.end_frame?.prompt || '');
     return String(p[m[2]] || '');
   }
   if (entityType === 'library') {
@@ -524,13 +509,6 @@ async function fallbackTextWrite({ projectId, entityType, entityId, field, op, .
   if (entityType === 'plot') {
     return Plots.updatePlot(projectId, { [field]: args.markdown });
   }
-  if (entityType === 'storyboards') {
-    const fm = field.match(/^item:([a-f0-9]{24}):frame:([a-f0-9]{24}):prompt$/);
-    if (fm) return mongoSetFramePrompt(projectId, fm[1], fm[2], args.markdown);
-    const m = field.match(/^item:([a-f0-9]{24}):(text_prompt|summary)$/);
-    if (!m) throw new Error(`gateway fallback: unknown storyboards field "${field}"`);
-    return mongoUpdateStoryboard(projectId, m[1], { [m[2]]: args.markdown });
-  }
   if (entityType === 'dialogs') {
     if (field === 'dialog_notes') {
       return Plots.updateBeat(projectId, entityId, { dialog_notes: args.markdown });
@@ -540,7 +518,9 @@ async function fallbackTextWrite({ projectId, entityType, entityId, field, op, .
     return mongoUpdateDialog(projectId, m[1], { [m[2]]: args.markdown });
   }
   if (entityType === 'video_prompts') {
-    const m = field.match(/^item:([a-f0-9]{24}):(title|prompt)$/);
+    const sm = field.match(/^scene:([a-f0-9]{24}):floor_plan$/);
+    if (sm) return mongoUpdateVideoScene(projectId, sm[1], { floor_plan: args.markdown });
+    const m = field.match(/^item:([a-f0-9]{24}):(title|prompt|start_frame_prompt|end_frame_prompt)$/);
     if (!m) throw new Error(`gateway fallback: unknown video_prompts field "${field}"`);
     return mongoUpdateVideoPrompt(projectId, m[1], { [m[2]]: args.markdown });
   }
@@ -1712,662 +1692,85 @@ export async function removeDirectorNoteAttachmentViaGateway({ projectId, noteId
   return result;
 }
 
-// ─── Storyboards ──────────────────────────────────────────────────────────
-//
-// Storyboards live in their own top-level collection but share one y-doc per
-// beat (room: "storyboards:<beatId>"). Scalar text fragments per item:
-// "item:<storyboardId>:text_prompt" and ":summary"; plus one fragment per frame
-// in the pool: "item:<storyboardId>:frame:<frameId>:prompt". Mutations that
-// change room composition (create / delete / reorder storyboards, add / remove
-// frames) broadcast a `fields_updated` ping so the SPA refetches and recomposes.
-
-const STORYBOARD_COLLAB_FIELDS = new Set(['text_prompt', 'summary']);
-
-function storyboardItemField(storyboardId, field) {
-  return `item:${storyboardId}:${field}`;
-}
-
-function framePromptFragment(storyboardId, frameId) {
-  return `item:${storyboardId}:frame:${frameId}:prompt`;
-}
-
-export async function setStoryboardTextPromptViaGateway({ projectId, storyboardId, text }) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  return setEntityFieldMarkdown({
-    projectId,
-    entityType: 'storyboards',
-    entityId: sb.beat_id.toString(),
-    field: storyboardItemField(sb._id.toString(), 'text_prompt'),
-    markdown: text,
-  });
-}
-
-export async function setStoryboardSummaryViaGateway({ projectId, storyboardId, text }) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  return setEntityFieldMarkdown({
-    projectId,
-    entityType: 'storyboards',
-    entityId: sb.beat_id.toString(),
-    field: storyboardItemField(sb._id.toString(), 'summary'),
-    markdown: text,
-  });
-}
-
-export async function setStoryboardFramePromptViaGateway({ projectId, storyboardId, frameId, text }) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  if (!(sb.frames || []).some((f) => f._id.toString() === String(frameId))) {
-    throw new Error(`frame not found: ${frameId}`);
-  }
-  return setEntityFieldMarkdown({
-    projectId,
-    entityType: 'storyboards',
-    entityId: sb.beat_id.toString(),
-    field: framePromptFragment(sb._id.toString(), String(frameId)),
-    markdown: text,
-  });
-}
-
-export async function createStoryboardViaGateway({
-  projectId,
-  beatId,
-  textPrompt,
-  summary = '',
-  order,
-  seedFragments,
-  durationSeconds = null,
-  shotType = null,
-  transitionIn = null,
-  charactersInScene = [],
-  setsInScene = [],
-  dialogIds = [],
-}) {
-  const sb = await mongoCreateStoryboard({
-    projectId,
-    beatId,
-    textPrompt,
-    summary,
-    order,
-    durationSeconds,
-    shotType,
-    transitionIn,
-    charactersInScene,
-    setsInScene,
-    dialogIds,
-  });
-  // Seed the y-doc fragment(s) BEFORE broadcasting the ping. Otherwise the
-  // SPA refetches and mounts its CollabField on an empty fragment before the
-  // seed write lands, so the user sees an empty editor (and the next
-  // onStoreDocument tick clobbers Mongo back to empty).
-  if (seedFragments) {
-    for (const [key, text] of Object.entries(seedFragments)) {
-      if (!STORYBOARD_COLLAB_FIELDS.has(key)) continue;
-      try {
-        await setEntityFieldMarkdown({
-          projectId,
-          entityType: 'storyboards',
-          entityId: String(beatId),
-          field: storyboardItemField(sb._id.toString(), key),
-          markdown: text,
-        });
-      } catch (e) {
-        logger.warn(`createStoryboard: seed ${key} failed: ${e.message}`);
-      }
-    }
-  }
-  broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
-    changed: ['storyboards'],
-    added_storyboard_id: sb._id.toString(),
-  });
-  return sb;
-}
-
-// Persist a shot's critique (prompt_critique or image_critique) and notify the
-// storyboards room so connected SPAs re-render the score. target is
-// 'prompt' | 'image'. critique is the object from critiquePanel (or null).
-export async function setStoryboardCritiqueViaGateway({ projectId, storyboardId, beatId, target, critique }) {
-  const field = target === 'image' ? 'image_critique' : 'prompt_critique';
-  const updated = await mongoUpdateStoryboard(projectId, String(storyboardId), { [field]: critique });
-  try {
-    broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
-      changed: ['critique'],
-      storyboard_id: String(storyboardId),
-      critique_target: target,
-    });
-  } catch (e) {
-    logger.warn(`gateway: critique broadcast failed: ${e?.message || e}`);
-  }
-  return updated;
-}
-
-export async function deleteStoryboardViaGateway({ projectId, storyboardId }) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const beatId = sb.beat_id.toString();
-  await mongoDeleteStoryboard(storyboardId);
-  // Recompact orders so the remaining items are 1..N-1 contiguous.
-  const remaining = await listStoryboards({ projectId, beatId });
-  await mongoReorderStoryboards(
-    beatId,
-    remaining.map((s) => s._id.toString()),
-  );
-  broadcastFieldsUpdated(buildRoomName('storyboards', beatId), {
-    changed: ['storyboards'],
-    removed_storyboard_id: String(storyboardId),
-  });
-  return { ok: true, beat_id: beatId };
-}
-
-export async function reorderStoryboardsViaGateway({ projectId, beatId, orderedIds }) {
-  const result = await mongoReorderStoryboards(beatId, orderedIds);
-  broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
-    changed: ['order'],
-  });
-  return result;
-}
-
-export async function deleteAllStoryboardsForBeatViaGateway({ projectId, beatId }) {
-  const removed = await mongoDeleteStoryboardsForBeat(beatId);
-  broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
-    changed: ['storyboards'],
-    cleared: true,
-  });
-  return { ok: true, removed_count: removed.length };
-}
-
-// "Delete all images" for a beat: clear every frame's generated image (current +
-// undo), free the underlying GridFS blobs, and ping the room so SPAs re-render.
-// Never deletes a blob still used as a frame reference or as the beat's hero
-// image (the codebase "may be shared" guard). Keeps prompts and references.
-export async function clearAllFrameImagesForBeatViaGateway({ projectId, beatId }) {
-  const { freedImageIds, referencedIds, storyboardIds } =
-    await mongoClearAllFrameImagesForBeat(beatId);
-  const beat = await getBeat(projectId, beatId);
-  const protectedIds = new Set([
-    ...referencedIds.map(String),
-    ...(beat?.main_image_id ? [String(beat.main_image_id)] : []),
-  ]);
-  const toDelete = [...new Set(freedImageIds.map(String))].filter(
-    (id) => !protectedIds.has(id),
-  );
-  for (const id of toDelete) {
-    await tryDeleteImage(id, 'cleared all storyboard frame images');
-  }
-  broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
-    changed: ['frames'],
-    cleared_images: true,
-  });
-  return { cleared: storyboardIds.length, freed: toDelete.length };
-}
-
-// Broadcast helper: every frame mutation re-renders the whole frame strip on
-// connected SPAs, so we ping `frames` rather than enumerating fields.
-function broadcastFrames(beatId, storyboardId, extra = {}) {
-  broadcastFieldsUpdated(buildRoomName('storyboards', String(beatId)), {
-    changed: ['frames'],
-    storyboard_id: String(storyboardId),
-    ...extra,
-  });
-}
-
-// Append an image to the frame pool. When the new frame carries a prompt, seed
-// its collaborative y-doc fragment BEFORE broadcasting (mirrors
-// createStoryboardViaGateway) so the SPA mounts its editor on seeded content.
-export async function addStoryboardFrameViaGateway({
-  projectId,
-  storyboardId,
-  imageId = null,
-  prompt = '',
-  referenceIds = [],
-}) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const { storyboard, frameId } = await mongoAddFrame(storyboardId, {
-    imageId,
-    prompt,
-    referenceIds,
-  });
-  if (prompt) {
-    try {
-      await setEntityFieldMarkdown({
-        projectId,
-        entityType: 'storyboards',
-        entityId: sb.beat_id.toString(),
-        field: framePromptFragment(sb._id.toString(), frameId.toString()),
-        markdown: prompt,
-      });
-    } catch (e) {
-      logger.warn(`addStoryboardFrame: seed prompt failed: ${e.message}`);
-    }
-  }
-  broadcastFrames(sb.beat_id, storyboardId, { added_frame_id: frameId.toString() });
-  return { storyboard, frameId };
-}
-
-// Remove a frame from the pool, deleting any displaced internal undo image.
-export async function removeStoryboardFrameViaGateway({ projectId, storyboardId, frameId }) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const { storyboard, orphanedImageIds } = await mongoRemoveFrame(storyboardId, frameId);
-  for (const oid of orphanedImageIds || []) {
-    await tryDeleteImage(oid, 'removed storyboard frame');
-  }
-  broadcastFrames(sb.beat_id, storyboardId, { removed_frame_id: String(frameId) });
-  return storyboard;
-}
-
-export async function reorderStoryboardFramesViaGateway({ projectId, storyboardId, orderedFrameIds }) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const next = await mongoReorderFrames(storyboardId, orderedFrameIds);
-  broadcastFrames(sb.beat_id, storyboardId);
-  return next;
-}
-
-// Install (or clear) the current image of an existing frame — used by the
-// "Replace" action and single-image install from the Add Frame picker.
-export async function setStoryboardFrameImageViaGateway({ projectId, storyboardId, frameId, imageId }) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const next = await mongoSetFrameImage(storyboardId, frameId, imageId);
-  broadcastFrames(sb.beat_id, storyboardId, { frame_id: String(frameId) });
-  return next;
-}
-
-// Edit-flow persistence: current → previous, new becomes current, the old
-// previous is deleted from GridFS. Mirrors setArtworkResultViaGateway with
-// rotateToPrevious=true. Broadcasts a fields_updated ping so connected SPAs
-// re-render with the new image and undo-availability state.
-export async function setStoryboardFrameEditResultViaGateway({
-  storyboardId,
-  frameId,
-  newImageId,
-  editPrompt,
-}) {
-  const result = await mongoRotateFrameImageEdit({
-    id: storyboardId,
-    frameId,
-    newImageId,
-    editPrompt,
-  });
-  await tryDeleteImage(result.orphanedImageId, 'orphaned storyboard frame');
-  broadcastFrames(result.storyboard.beat_id, storyboardId, { frame_id: String(frameId) });
-  return result.storyboard;
-}
-
-// Undo the last frame edit: previous → current, clears the previous and the
-// last edit prompt. The image that was current is deleted from GridFS.
-export async function undoStoryboardFrameEditViaGateway({ storyboardId, frameId }) {
-  const result = await mongoUndoFrameImageEdit({ id: storyboardId, frameId });
-  await tryDeleteImage(result.orphanedImageId, 'undone storyboard frame');
-  broadcastFrames(result.storyboard.beat_id, storyboardId, { frame_id: String(frameId) });
-  return result.storyboard;
-}
-
-// PATCH-style scalar update for the SPA's editable shot metadata. Validates
-// each field via mongoUpdateStoryboard's existing rules (clamp + warn for
-// duration, throw on bad shot_type, trim characters_in_scene). Broadcasts a
-// fields_updated ping so other connected SPA tabs refresh.
-const STORYBOARD_SCALAR_FIELDS = new Set([
-  'duration_seconds',
-  'shot_type',
-  'transition_in',
-  'characters_in_scene',
-  'sets_in_scene',
-  'dialog_ids',
-]);
-
-export async function updateStoryboardScalarsViaGateway({ projectId, storyboardId, patch }) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const filtered = {};
-  for (const [k, v] of Object.entries(patch || {})) {
-    if (STORYBOARD_SCALAR_FIELDS.has(k)) filtered[k] = v;
-  }
-  if (!Object.keys(filtered).length) {
-    throw new Error('updateStoryboardScalars: no recognized fields');
-  }
-  // dialog_ids must all belong to this shot's beat — a stale id from another
-  // beat would silently pull the wrong audio into a lip-sync render.
-  if (Array.isArray(filtered.dialog_ids) && filtered.dialog_ids.length) {
-    const beatDialogs = await listDialogs({ projectId, beatId: sb.beat_id });
-    const allowed = new Set(beatDialogs.map((d) => String(d._id)));
-    const foreign = filtered.dialog_ids.filter((id) => !allowed.has(String(id)));
-    if (foreign.length) {
-      throw new Error(`update_storyboard: dialog_ids must belong to this beat (unknown: ${foreign.join(', ')})`);
-    }
-  }
-  const result = await mongoUpdateStoryboard(projectId, storyboardId, filtered);
-  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
-    changed: Object.keys(filtered),
-    storyboard_id: String(storyboardId),
-  });
-  return result;
-}
-
-export async function addStoryboardFrameReferenceImageViaGateway({
-  projectId,
-  storyboardId,
-  frameId,
-  imageId,
-}) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const next = await mongoPushFrameReferenceImage(storyboardId, frameId, imageId);
-  broadcastFrames(sb.beat_id, storyboardId, { frame_id: String(frameId) });
-  return next;
-}
-
-export async function removeStoryboardFrameReferenceImageViaGateway({
-  projectId,
-  storyboardId,
-  frameId,
-  imageId,
-}) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const next = await mongoPullFrameReferenceImage(storyboardId, frameId, imageId);
-  broadcastFrames(sb.beat_id, storyboardId, { frame_id: String(frameId) });
-  return next;
-}
-
-// Batch helper for a single frame's reference list: append-many or
-// replace-the-whole-list. Exactly one fields_updated broadcast fires per call,
-// used by the auto-suggest endpoint and the multi-select picker's Apply.
-export async function setStoryboardFrameReferenceImagesViaGateway({
-  projectId,
-  storyboardId,
-  frameId,
-  imageIds,
-  mode = 'replace',
-  scores = null,
-}) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const ids = Array.isArray(imageIds) ? imageIds : [];
-  let next;
-  if (mode === 'append') {
-    next = await mongoPushFrameReferenceImages(storyboardId, frameId, ids, scores);
-  } else if (mode === 'replace') {
-    next = await mongoSetFrameReferenceImages(storyboardId, frameId, ids, scores);
-  } else {
-    throw new Error(`setStoryboardFrameReferenceImagesViaGateway: invalid mode ${mode}`);
-  }
-  broadcastFrames(sb.beat_id, storyboardId, { frame_id: String(frameId) });
-  return next;
-}
-
-export async function setStoryboardAudioViaGateway({ projectId, storyboardId, audioFileId }) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const patch = {
-    audio_file_id: audioFileId == null ? null : String(audioFileId),
-  };
-  // Probe the attached audio's duration so lip-sync cost estimates can
-  // render without a round-trip to fal. Failures (corrupt headers,
-  // unsupported codec) log+null — the cost UI degrades gracefully.
-  if (audioFileId == null) {
-    patch.audio_duration_seconds = null;
-  } else {
-    try {
-      const read = await readAttachmentBuffer(audioFileId);
-      if (read?.buffer) {
-        const mime =
-          read.file?.contentType || read.file?.metadata?.content_type || null;
-        const dur = await probeAudioDurationSeconds(read.buffer, mime);
-        patch.audio_duration_seconds = dur || null;
-      } else {
-        patch.audio_duration_seconds = null;
-      }
-    } catch (e) {
-      logger.warn(`gateway: audio duration probe failed for ${audioFileId}: ${e.message}`);
-      patch.audio_duration_seconds = null;
-    }
-  }
-  await mongoUpdateStoryboard(projectId, storyboardId, patch);
-  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
-    changed: Object.keys(patch),
-    storyboard_id: String(storyboardId),
-  });
-  return mongoGetStoryboard(projectId, storyboardId);
-}
-
-// Attach a user-uploaded source video to a storyboard. This is the input
-// side of video-to-video models — distinct from `video_file_id`, which is
-// reserved for the MP4 generated by fal. Pass videoFileId=null to clear.
-// Duration is probed via the same music-metadata helper that handles audio
-// (works for MP4 containers); failures fall back to null.
-export async function setStoryboardUploadedVideoViaGateway({
-  projectId,
-  storyboardId,
-  videoFileId,
-}) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const patch = {
-    video_upload_file_id: videoFileId == null ? null : String(videoFileId),
-  };
-  if (videoFileId == null) {
-    patch.video_upload_duration_seconds = null;
-  } else {
-    try {
-      const read = await readAttachmentBuffer(videoFileId);
-      if (read?.buffer) {
-        const mime =
-          read.file?.contentType || read.file?.metadata?.content_type || null;
-        const dur = await probeAudioDurationSeconds(read.buffer, mime);
-        patch.video_upload_duration_seconds = dur || null;
-      } else {
-        patch.video_upload_duration_seconds = null;
-      }
-    } catch (e) {
-      logger.warn(
-        `gateway: uploaded video duration probe failed for ${videoFileId}: ${e.message}`,
-      );
-      patch.video_upload_duration_seconds = null;
-    }
-  }
-  await mongoUpdateStoryboard(projectId, storyboardId, patch);
-  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
-    changed: Object.keys(patch),
-    storyboard_id: String(storyboardId),
-  });
-  return mongoGetStoryboard(projectId, storyboardId);
-}
-
-// Attach a generated video to a storyboard. Used by the fal.ai video
-// pipeline after it downloads the MP4 into our GridFS attachments bucket.
-// Pass videoFileId=null to clear the slot. durationSeconds (when known) is
-// the actual MP4 duration the inline player uses for its timeline. The
-// model metadata (id/label/lab/family/added_at/falModel), input
-// `parameters`, and `costUsd` are surfaced under the inline player so the
-// user can tell at a glance which model rendered the clip, with what
-// arguments, and at what cost.
-export async function setStoryboardVideoViaGateway({
-  projectId,
-  storyboardId,
-  videoFileId,
-  durationSeconds = null,
-  modelId = null,
-  modelLabel = null,
-  falModel = null,
-  modelLab = null,
-  modelFamily = null,
-  modelAddedAt = null,
-  parameters = null,
-  costUsd = null,
-}) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const patch = {
-    video_file_id: videoFileId == null ? null : String(videoFileId),
-  };
-  if (videoFileId == null) {
-    patch.video_duration_seconds = null;
-    patch.video_generated_at = null;
-    patch.video_model_id = null;
-    patch.video_model_label = null;
-    patch.video_fal_model = null;
-    patch.video_model_lab = null;
-    patch.video_model_family = null;
-    patch.video_model_added_at = null;
-    patch.video_parameters = null;
-    patch.video_cost_usd = null;
-  } else {
-    if (durationSeconds != null && Number.isFinite(Number(durationSeconds))) {
-      patch.video_duration_seconds = Number(durationSeconds);
-    }
-    patch.video_generated_at = new Date();
-    patch.video_model_id = modelId ? String(modelId) : null;
-    patch.video_model_label = modelLabel ? String(modelLabel) : null;
-    patch.video_fal_model = falModel ? String(falModel) : null;
-    patch.video_model_lab = modelLab ? String(modelLab) : null;
-    patch.video_model_family = modelFamily ? String(modelFamily) : null;
-    if (modelAddedAt != null) {
-      const d = modelAddedAt instanceof Date ? modelAddedAt : new Date(modelAddedAt);
-      patch.video_model_added_at = Number.isNaN(d.getTime()) ? null : d;
-    } else {
-      patch.video_model_added_at = null;
-    }
-    patch.video_parameters =
-      parameters && typeof parameters === 'object' && !Array.isArray(parameters)
-        ? parameters
-        : null;
-    patch.video_cost_usd =
-      typeof costUsd === 'number' && Number.isFinite(costUsd) && costUsd >= 0
-        ? costUsd
-        : null;
-  }
-  await mongoUpdateStoryboard(projectId, storyboardId, patch);
-  broadcastFieldsUpdated(buildRoomName('storyboards', sb.beat_id.toString()), {
-    changed: Object.keys(patch),
-    storyboard_id: String(storyboardId),
-  });
-  return mongoGetStoryboard(projectId, storyboardId);
-}
-
-// Assembled beat video: write the beat's pointer, delete the previous file
-// (best-effort), and ping the beat's storyboards room so the beat page's
-// player re-renders. fileId=null discards.
-export async function setBeatVideoViaGateway({ projectId, beatId, fileId = null, durationSeconds = null }) {
+// The Prompts tab's assembled beat video (beats.$.prompts_video_*, joined cut
+// clips; src/web/cutAssemble.js). Stored apart from the legacy video_*
+// so neither tab overwrites the other's MP4. Same contract as
+// setBeatVideoViaGateway; pings the beat's video_prompts room instead.
+export async function setBeatPromptsVideoViaGateway({ projectId, beatId, fileId = null, durationSeconds = null }) {
   const before = await Plots.getBeat(projectId, beatId);
   if (!before) throw new Error(`Beat not found: ${beatId}`);
-  const oldId = before.video_file_id ? String(before.video_file_id) : null;
-  const beat = await Plots.setBeatVideo(projectId, before._id, { fileId, durationSeconds });
+  const oldId = before.prompts_video_file_id ? String(before.prompts_video_file_id) : null;
+  const beat = await Plots.setBeatPromptsVideo(projectId, before._id, { fileId, durationSeconds });
   if (oldId && oldId !== (fileId == null ? null : String(fileId))) {
     try {
-      const { deleteAttachment } = await import('../mongo/attachments.js');
-      await deleteAttachment(oldId);
+      await deleteAttachments([oldId]);
     } catch (e) {
-      logger.warn(`gateway: previous beat video ${oldId} cleanup failed: ${e.message}`);
+      logger.warn(`gateway: previous prompts beat video ${oldId} cleanup failed: ${e.message}`);
     }
   }
-  broadcastFieldsUpdated(buildRoomName('storyboards', String(before._id)), {
+  broadcastFieldsUpdated(buildRoomName('video_prompts', String(before._id)), {
     changed: ['beat_video'],
     beat_id: String(before._id),
   });
   return beat;
 }
 
-// Copy an existing GridFS attachment (e.g. one attached to a beat or
-// character) into a fresh file owned by the storyboard's beat, then point the
-// storyboard's audio_file_id or video_upload_file_id at the new file. Source
-// and destination end up holding independent copies — deleting or replacing
-// one does not affect the other. `kind` is 'audio' or 'video'; the source
-// attachment's content_type must match the kind.
-export async function copyAttachmentToStoryboardMediaViaGateway({
-  projectId,
-  storyboardId,
-  attachmentId,
-  kind,
-}) {
-  if (kind !== 'audio' && kind !== 'video') {
-    throw new Error(`copyAttachmentToStoryboardMediaViaGateway: invalid kind ${kind}`);
+// A scene's assembled MP4 (video_scenes.video_*). fileId=null discards; the
+// previous file is deleted best-effort and the beat's video_prompts room pinged.
+export async function setVideoSceneVideoViaGateway({ projectId, sceneId, fileId = null, durationSeconds = null }) {
+  const s = await mongoGetVideoScene(projectId, sceneId);
+  if (!s) throw new Error(`Video scene not found: ${sceneId}`);
+  const oldId = s.video_file_id ? String(s.video_file_id) : null;
+  const updated = await mongoSetVideoSceneVideo(s._id, { fileId, durationSeconds });
+  if (oldId && oldId !== (fileId == null ? null : String(fileId))) {
+    try {
+      await deleteAttachments([oldId]);
+    } catch (e) {
+      logger.warn(`gateway: previous scene video ${oldId} cleanup failed: ${e.message}`);
+    }
   }
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const source = await findAttachmentFile(attachmentId);
-  if (!source) throw new Error(`Attachment not found: ${attachmentId}`);
-  const sourceCt =
-    source.contentType || source.metadata?.content_type || '';
-  const expectedPrefix = kind === 'audio' ? 'audio/' : 'video/';
-  if (!sourceCt.startsWith(expectedPrefix)) {
-    throw new Error(
-      `Attachment ${attachmentId} content type "${sourceCt}" is not ${expectedPrefix}*`,
-    );
-  }
-  const newFile = await copyAttachmentBuffer({
-    sourceFileId: attachmentId,
-    filename: source.filename || `scene-${storyboardId}-${kind}-${Date.now()}`,
-    ownerType: 'beat',
-    ownerId: sb.beat_id,
+  broadcastFieldsUpdated(buildRoomName('video_prompts', s.beat_id.toString()), {
+    changed: ['scene_video'],
+    video_scene_id: s._id.toString(),
   });
-  const storyboard =
-    kind === 'audio'
-      ? await setStoryboardAudioViaGateway({
-          projectId,
-          storyboardId,
-          audioFileId: newFile._id,
-        })
-      : await setStoryboardUploadedVideoViaGateway({
-          projectId,
-          storyboardId,
-          videoFileId: newFile._id,
-        });
-  return {
-    storyboard,
-    [kind]: {
-      _id: newFile._id,
-      filename: newFile.filename,
-      content_type: newFile.content_type,
-      size: newFile.size,
-    },
-  };
+  return updated;
 }
 
-// Copy a dialog item's audio bytes into a fresh GridFS file owned by the
-// target storyboard, then point the storyboard's audio_file_id at the new
-// file. The dialog and storyboard end up holding independent copies — deleting
-// or replacing one does not affect the other.
-export async function copyDialogAudioToStoryboardViaGateway({
-  projectId,
-  storyboardId,
-  dialogId,
-}) {
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  const d = await mongoGetDialog(projectId, dialogId);
-  if (!d) throw new Error(`Dialog not found: ${dialogId}`);
-  if (!d.audio_file_id) {
-    throw new Error(`Dialog ${dialogId} has no audio to copy.`);
+// Assembled MP4s go stale when the cut SET changes — a cut or scene deleted or
+// reordered, the beat wiped. Re-plan and delete
+// clear the beat video, a single re-render does not. Clears the beat's
+// Prompts-tab MP4 and, unless beatOnly, the given scene's MP4 (sceneId) or
+// every scene's. Best-effort: a cleanup failure never fails the caller.
+export async function clearAssembledVideosForBeat(projectId, beatId, { sceneId = null, beatOnly = false } = {}) {
+  const bid = String(beatId);
+  try {
+    const beat = await Plots.getBeat(projectId, bid);
+    if (beat?.prompts_video_file_id) {
+      await setBeatPromptsVideoViaGateway({ projectId, beatId: beat._id, fileId: null });
+    }
+  } catch (e) {
+    logger.warn(`gateway: clear prompts beat video for ${bid} failed: ${e.message}`);
   }
-  if (sb.beat_id.toString() !== d.beat_id.toString()) {
-    throw new Error(
-      `Dialog ${dialogId} and storyboard ${storyboardId} belong to different beats.`,
-    );
+  if (beatOnly) return;
+  let targets = [];
+  try {
+    if (sceneId) {
+      const s = await mongoGetVideoScene(projectId, sceneId);
+      if (s) targets = [s];
+    } else {
+      targets = await listVideoScenes({ projectId, beatId: bid });
+    }
+  } catch (e) {
+    logger.warn(`gateway: list scenes for video clear failed: ${e.message}`);
   }
-  const newFile = await copyAttachmentBuffer({
-    sourceFileId: d.audio_file_id,
-    filename: `scene-${storyboardId}-audio-${Date.now()}`,
-    ownerType: 'beat',
-    ownerId: sb.beat_id,
-  });
-  const storyboard = await setStoryboardAudioViaGateway({
-    projectId,
-    storyboardId,
-    audioFileId: newFile._id,
-  });
-  return {
-    storyboard,
-    audio: {
-      _id: newFile._id,
-      filename: newFile.filename,
-      content_type: newFile.content_type,
-      size: newFile.size,
-    },
-  };
+  for (const s of targets) {
+    if (!s?.video_file_id) continue;
+    try {
+      await setVideoSceneVideoViaGateway({ projectId, sceneId: s._id, fileId: null });
+    } catch (e) {
+      logger.warn(`gateway: clear scene video ${s._id} failed: ${e.message}`);
+    }
+  }
 }
 
 // ─── Dialogs ──────────────────────────────────────────────────────────────
@@ -2436,8 +1839,8 @@ export async function setDialogCharacterViaGateway({ projectId, dialogId, charac
 
 export async function createDialogViaGateway({ projectId, beatId, body, character, order, seedFragments }) {
   const d = await mongoCreateDialog({ projectId, beatId, body, character, order });
-  // Seed body / character y-doc fragments BEFORE broadcasting the ping (see
-  // createStoryboardViaGateway for the same reasoning). Without this, the
+  // Seed body / character y-doc fragments BEFORE broadcasting the ping.
+  // Without this, the
   // SPA's CollabField for the new dialog mounts against an empty fragment
   // and shows a blank body until the user reloads.
   if (seedFragments) {
@@ -2498,18 +1901,75 @@ export async function deleteAllDialogsForBeatViaGateway({ projectId, beatId }) {
   return { ok: true, removed_count: removed.length };
 }
 
-// ─── Video prompts (Prompts tab) ────────────────────────────────────────────
+// ─── Video prompts (Prompts tab): cuts and scenes ───────────────────────────
 //
-// One y-doc per beat (room: "video_prompts:<beatId>") with two fragments per
-// row — "item:<id>:title" and "item:<id>:prompt". Scalars (duration, the
-// ordered reference images, the rendered video) live in Mongo and are
-// patched here with a `fields_updated` ping so open Prompts pages refetch.
+// One y-doc per beat (room: "video_prompts:<beatId>") with three fragments
+// per cut — "item:<id>:title", "item:<id>:prompt", "item:<id>:start_frame_prompt",
+// "item:<id>:end_frame_prompt"
+// — and one per scene — "scene:<id>:floor_plan". Everything else (the
+// shot-table cells, duration, the ordered reference images, the start-frame
+// sub-doc, the rendered video, a scene's read / scope / load) lives in Mongo
+// and is patched here with a `fields_updated` ping so open Prompts pages
+// refetch. Rows of `video_prompts` are CUTS; `video_scenes` groups them.
 
 function videoPromptItemField(promptId, field) {
   return `item:${promptId}:${field}`;
 }
 
-const VIDEO_PROMPT_TEXT_FIELDS = new Set(['title', 'prompt']);
+function videoSceneField(sceneId, field) {
+  return `scene:${sceneId}:${field}`;
+}
+
+const VIDEO_PROMPT_TEXT_FIELDS = new Set(['title', 'prompt', 'start_frame_prompt', 'end_frame_prompt']);
+const VIDEO_SCENE_TEXT_FIELDS = new Set(['floor_plan']);
+
+// The GridFS image ids a cut's start and end frames hold (current + one undo
+// step each).
+function startFrameImageIds(row) {
+  return [row?.start_frame, row?.end_frame]
+    .filter(Boolean)
+    .flatMap((f) => [f.image_id, f.previous_image_id])
+    .filter(Boolean)
+    .map((id) => String(id));
+}
+
+// 'start' | 'end' → the cut field that holds that frame.
+export function cutFrameKey(frame) {
+  return frame === 'end' ? 'end_frame' : 'start_frame';
+}
+
+// Best-effort media cleanup for a batch of cut rows: rendered clips and the
+// joined dialogue recording (attachments bucket) and start-frame images
+// (images bucket).
+async function deleteCutMedia(rows) {
+  const fileIds = rows.flatMap((r) => [r.video_file_id, r.audio_file_id]).filter(Boolean);
+  if (fileIds.length) {
+    try {
+      await deleteAttachments(fileIds);
+    } catch (e) {
+      logger.warn(`gateway: delete cut videos failed: ${e.message}`);
+    }
+  }
+  const imageIds = rows.flatMap(startFrameImageIds);
+  if (imageIds.length) {
+    try {
+      await deleteImages(imageIds);
+    } catch (e) {
+      logger.warn(`gateway: delete cut start-frame images failed: ${e.message}`);
+    }
+  }
+}
+
+// Best-effort cleanup of scenes' assembled MP4s (attachments bucket).
+async function deleteSceneVideos(scenes) {
+  const ids = (scenes || []).map((s) => s?.video_file_id).filter(Boolean).map(String);
+  if (!ids.length) return;
+  try {
+    await deleteAttachments(ids);
+  } catch (e) {
+    logger.warn(`gateway: delete scene videos failed: ${e.message}`);
+  }
+}
 
 export async function setVideoPromptTextFieldViaGateway({ projectId, promptId, field, text }) {
   if (!VIDEO_PROMPT_TEXT_FIELDS.has(field)) {
@@ -2526,23 +1986,32 @@ export async function setVideoPromptTextFieldViaGateway({ projectId, promptId, f
   });
 }
 
-// Patch the non-text scalars of a prompt row (duration_seconds and/or the
-// ordered reference_images list) and ping the room.
+// Patch the non-text scalars of a cut and ping the room. The legacy
+// `durationSeconds` / `referenceImages` args still work; `patch` carries any
+// structured cut field (camera, in_frame, action, dialog_ids, lock_line,
+// scene_id, cut_index, …) and is validated by updateVideoPrompt.
 export async function updateVideoPromptScalarsViaGateway({
   projectId,
   promptId,
   durationSeconds,
   referenceImages,
+  patch,
 }) {
   const p = await mongoGetVideoPrompt(projectId, promptId);
   if (!p) throw new Error(`Video prompt not found: ${promptId}`);
-  const patch = {};
-  if (durationSeconds !== undefined) patch.duration_seconds = durationSeconds;
-  if (referenceImages !== undefined) patch.reference_images = referenceImages;
-  if (!Object.keys(patch).length) return p;
-  const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), patch);
+  const merged = {};
+  if (durationSeconds !== undefined) merged.duration_seconds = durationSeconds;
+  if (referenceImages !== undefined) merged.reference_images = referenceImages;
+  if (patch && typeof patch === 'object' && !Array.isArray(patch)) {
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined) continue;
+      merged[k] = v;
+    }
+  }
+  if (!Object.keys(merged).length) return p;
+  const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), merged);
   broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
-    changed: Object.keys(patch),
+    changed: Object.keys(merged),
     video_prompt_id: p._id.toString(),
   });
   return updated;
@@ -2556,9 +2025,37 @@ export async function createVideoPromptViaGateway({
   durationSeconds = null,
   referenceImages = [],
   order,
+  sceneId = null,
+  cutIndex = null,
+  camera = null,
+  inFrame = [],
+  actionBy = '',
+  reaction = false,
+  eyeline = '',
+  action = '',
+  others = '',
+  lastFrame = '',
+  sound = '',
+  crossing = false,
+  contact = false,
+  soundOnAction = false,
+  charactersInScene = [],
+  setsInScene = [],
+  primarySpend = null,
+  feltIntent = '',
+  dialogIds = [],
+  lockLine = '',
+  referenceBinding = '',
+  exclusions = [],
+  lint = [],
+  startFrame = null,
+  endFrame = null,
   seedFragments,
+  // true → recompute the beat's global cut order after insert so a cut added
+  // to a scene lands at the end of that scene rather than the end of the beat.
+  recompute = false,
 }) {
-  const p = await mongoCreateVideoPrompt({
+  let p = await mongoCreateVideoPrompt({
     projectId,
     beatId,
     title,
@@ -2566,6 +2063,31 @@ export async function createVideoPromptViaGateway({
     durationSeconds,
     referenceImages,
     order,
+    sceneId,
+    cutIndex,
+    camera,
+    inFrame,
+    actionBy,
+    reaction,
+    eyeline,
+    action,
+    others,
+    lastFrame,
+    sound,
+    crossing,
+    contact,
+    soundOnAction,
+    charactersInScene,
+    setsInScene,
+    primarySpend,
+    feltIntent,
+    dialogIds,
+    lockLine,
+    referenceBinding,
+    exclusions,
+    lint,
+    startFrame,
+    endFrame,
   });
   // Seed the y-doc fragments BEFORE broadcasting the ping (see
   // createDialogViaGateway): the SPA's CollabFields for the new row then
@@ -2586,6 +2108,12 @@ export async function createVideoPromptViaGateway({
       }
     }
   }
+  if (recompute) {
+    await mongoRecomputeCutOrder(beatId);
+  }
+  if (recompute || seedFragments) {
+    p = (await mongoGetVideoPrompt(projectId, p._id.toString())) || p;
+  }
   broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
     changed: ['video_prompts'],
     added_video_prompt_id: p._id.toString(),
@@ -2593,26 +2121,16 @@ export async function createVideoPromptViaGateway({
   return p;
 }
 
-// Delete one prompt row (and its rendered video file, best-effort), then
-// recompact the remaining orders to 1..N-1.
+// Delete one cut (its rendered video and start-frame images, best-effort),
+// then recompact the beat's order (and its scene's cut_index) to 1..N-1.
 export async function deleteVideoPromptViaGateway({ projectId, promptId }) {
   const p = await mongoGetVideoPrompt(projectId, promptId);
   if (!p) throw new Error(`Video prompt not found: ${promptId}`);
   const beatId = p.beat_id.toString();
   await mongoDeleteVideoPrompt(p._id);
-  if (p.video_file_id) {
-    try {
-      const { deleteAttachment } = await import('../mongo/attachments.js');
-      await deleteAttachment(p.video_file_id);
-    } catch (e) {
-      logger.warn(`gateway: delete video prompt video ${p.video_file_id} failed: ${e.message}`);
-    }
-  }
-  const remaining = await listVideoPrompts({ projectId, beatId });
-  await mongoReorderVideoPrompts(
-    beatId,
-    remaining.map((x) => x._id.toString()),
-  );
+  await deleteCutMedia([p]);
+  await mongoRecomputeCutOrder(beatId);
+  await clearAssembledVideosForBeat(projectId, beatId, p.scene_id ? { sceneId: String(p.scene_id) } : { beatOnly: true });
   broadcastFieldsUpdated(buildRoomName('video_prompts', beatId), {
     changed: ['video_prompts'],
     removed_video_prompt_id: p._id.toString(),
@@ -2622,33 +2140,33 @@ export async function deleteVideoPromptViaGateway({ projectId, promptId }) {
 
 export async function reorderVideoPromptsViaGateway({ projectId, beatId, orderedIds }) {
   const result = await mongoReorderVideoPrompts(beatId, orderedIds);
+  await clearAssembledVideosForBeat(projectId, beatId);
   broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
     changed: ['order'],
   });
   return result;
 }
 
-// Wipe every prompt for a beat, deleting their rendered videos (best-effort).
+// Wipe every scene AND every cut of a beat, deleting rendered videos and
+// start-frame images (best-effort). The Prompts tab's "Delete all".
 export async function deleteAllVideoPromptsForBeatViaGateway({ projectId, beatId }) {
   const removed = await mongoDeleteVideoPromptsForBeat(beatId);
-  const fileIds = removed.map((r) => r.video_file_id).filter(Boolean);
-  if (fileIds.length) {
-    try {
-      await deleteAttachments(fileIds);
-    } catch (e) {
-      logger.warn(`gateway: delete video prompt videos failed: ${e.message}`);
-    }
-  }
+  const scenes = await mongoDeleteVideoScenesForBeat(beatId);
+  await deleteCutMedia(removed);
+  await deleteSceneVideos(scenes);
+  await clearAssembledVideosForBeat(projectId, beatId, { beatOnly: true });
   broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
-    changed: ['video_prompts'],
+    changed: ['video_prompts', 'video_scenes'],
     cleared: true,
   });
-  return { ok: true, removed_count: removed.length };
+  return { ok: true, removed_count: removed.length, scenes_removed: scenes.length };
 }
 
-// Persist a rendered video onto a prompt row — the prompt-owner twin of
-// setStoryboardVideoViaGateway with the same field set, so the SPA's video
-// panel renders either owner. videoFileId=null clears the slot.
+export const deleteAllVideoScenesForBeatViaGateway = deleteAllVideoPromptsForBeatViaGateway;
+
+// Persist a rendered video onto a cut. videoFileId=null clears the slot. `provider`
+// ('fal' | 'comfy', default 'fal') and `comfy` ({ template, model_id, params,
+// prompt_id }) record which path rendered the clip.
 export async function setVideoPromptVideoViaGateway({
   projectId,
   promptId,
@@ -2662,6 +2180,8 @@ export async function setVideoPromptVideoViaGateway({
   modelAddedAt = null,
   parameters = null,
   costUsd = null,
+  provider = null,
+  comfy = null,
 }) {
   const p = await mongoGetVideoPrompt(projectId, promptId);
   if (!p) throw new Error(`Video prompt not found: ${promptId}`);
@@ -2679,6 +2199,8 @@ export async function setVideoPromptVideoViaGateway({
     patch.video_model_added_at = null;
     patch.video_parameters = null;
     patch.video_cost_usd = null;
+    patch.video_provider = null;
+    patch.video_comfy = null;
   } else {
     if (durationSeconds != null && Number.isFinite(Number(durationSeconds))) {
       patch.video_duration_seconds = Number(durationSeconds);
@@ -2694,6 +2216,8 @@ export async function setVideoPromptVideoViaGateway({
       parameters && typeof parameters === 'object' && !Array.isArray(parameters) ? parameters : null;
     patch.video_cost_usd =
       typeof costUsd === 'number' && Number.isFinite(costUsd) && costUsd >= 0 ? costUsd : null;
+    patch.video_provider = provider === 'comfy' ? 'comfy' : 'fal';
+    patch.video_comfy = comfy && typeof comfy === 'object' && !Array.isArray(comfy) ? comfy : null;
   }
   await mongoUpdateVideoPrompt(projectId, p._id.toString(), patch);
   broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
@@ -2701,6 +2225,264 @@ export async function setVideoPromptVideoViaGateway({
     video_prompt_id: p._id.toString(),
   });
   return mongoGetVideoPrompt(projectId, p._id.toString());
+}
+
+// The joined dialogue recording a lip-sync render of a cut used : probes the duration, deletes the
+// previous concat file (best-effort) and pings the room. audioFileId=null clears.
+export async function setVideoPromptAudioViaGateway({ projectId, promptId, audioFileId }) {
+  const p = await mongoGetVideoPrompt(projectId, promptId);
+  if (!p) throw new Error(`Video prompt not found: ${promptId}`);
+  const patch = { audio_file_id: audioFileId == null ? null : String(audioFileId) };
+  if (audioFileId == null) {
+    patch.audio_duration_seconds = null;
+  } else {
+    try {
+      const read = await readAttachmentBuffer(audioFileId);
+      if (read?.buffer) {
+        const mime = read.file?.contentType || read.file?.metadata?.content_type || null;
+        const dur = await probeAudioDurationSeconds(read.buffer, mime);
+        patch.audio_duration_seconds = dur || null;
+      } else {
+        patch.audio_duration_seconds = null;
+      }
+    } catch (e) {
+      logger.warn(`gateway: cut audio duration probe failed for ${audioFileId}: ${e.message}`);
+      patch.audio_duration_seconds = null;
+    }
+  }
+  const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), patch);
+  const oldId = p.audio_file_id ? String(p.audio_file_id) : null;
+  if (oldId && oldId !== patch.audio_file_id) {
+    try {
+      await deleteAttachments([oldId]);
+    } catch (e) {
+      logger.warn(`gateway: previous cut audio ${oldId} cleanup failed: ${e.message}`);
+    }
+  }
+  broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
+    changed: Object.keys(patch),
+    video_prompt_id: p._id.toString(),
+  });
+  return updated;
+}
+
+// Replace a cut's start-frame (or, with `frame: 'end'`, end-frame) sub-doc.
+// When the image changes, the previous image becomes the one-step undo target
+// (`previous_image_id`) and the older undo target is deleted (best-effort).
+// `startFrame: null` clears the slot and deletes both files. A missing
+// `prompt` keeps the current prompt (it is a collab fragment the caller may
+// not have in hand).
+export async function setVideoPromptStartFrameViaGateway({ projectId, promptId, startFrame, frame = 'start' }) {
+  const key = cutFrameKey(frame);
+  const p = await mongoGetVideoPrompt(projectId, promptId);
+  if (!p) throw new Error(`Video prompt not found: ${promptId}`);
+  const prev = p[key] || null;
+  if (startFrame == null) {
+    await deleteCutMedia([{ [key]: prev }]);
+    const cleared = await mongoUpdateVideoPrompt(projectId, p._id.toString(), { [key]: null });
+    broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
+      changed: [key],
+      video_prompt_id: p._id.toString(),
+    });
+    return cleared;
+  }
+  const next = normalizeStartFrame(startFrame);
+  if (startFrame.prompt === undefined && prev) next.prompt = prev.prompt || '';
+  const prevImage = prev?.image_id ? String(prev.image_id) : null;
+  const nextImage = next.image_id ? String(next.image_id) : null;
+  if (prevImage && prevImage !== nextImage) {
+    const older = prev.previous_image_id ? String(prev.previous_image_id) : null;
+    if (older && older !== prevImage && older !== nextImage) {
+      try {
+        await deleteImages([older]);
+      } catch (e) {
+        logger.warn(`gateway: delete older ${frame} frame ${older} failed: ${e.message}`);
+      }
+    }
+    next.previous_image_id = new ObjectId(prevImage);
+  } else if (!next.previous_image_id && prev?.previous_image_id) {
+    next.previous_image_id = prev.previous_image_id;
+  }
+  const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), { [key]: next });
+  broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
+    changed: [key],
+    video_prompt_id: p._id.toString(),
+  });
+  return updated;
+}
+
+// Swap the current start-frame (or end-frame) image back to the undo target.
+// The discarded current image is deleted (best-effort). Throws when there is
+// nothing to undo.
+export async function undoVideoPromptStartFrameViaGateway({ projectId, promptId, frame = 'start' }) {
+  const key = cutFrameKey(frame);
+  const p = await mongoGetVideoPrompt(projectId, promptId);
+  if (!p) throw new Error(`Video prompt not found: ${promptId}`);
+  const prev = p[key];
+  if (!prev?.previous_image_id) throw new Error(`No previous ${frame} frame to restore`);
+  const discarded = prev.image_id ? String(prev.image_id) : null;
+  const next = {
+    ...prev,
+    image_id: prev.previous_image_id,
+    previous_image_id: null,
+    generated_at: new Date(),
+  };
+  const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), { [key]: next });
+  if (discarded && discarded !== String(next.image_id)) {
+    try {
+      await deleteImages([discarded]);
+    } catch (e) {
+      logger.warn(`gateway: delete discarded ${frame} frame ${discarded} failed: ${e.message}`);
+    }
+  }
+  broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
+    changed: [key],
+    video_prompt_id: p._id.toString(),
+  });
+  return updated;
+}
+
+// ── Scenes ──────────────────────────────────────────────────────────────────
+
+export async function createVideoSceneViaGateway({
+  projectId,
+  beatId,
+  order,
+  title = '',
+  slug = '',
+  setNames = [],
+  characterNames = [],
+  textSpan = null,
+  directorsRead = null,
+  intention = '',
+  scope = null,
+  floorPlan = '',
+  dialogIds = [],
+  load = null,
+  seedFragments,
+}) {
+  let s = await mongoCreateVideoScene({
+    projectId,
+    beatId,
+    order,
+    title,
+    slug,
+    setNames,
+    characterNames,
+    textSpan,
+    directorsRead,
+    intention,
+    scope,
+    floorPlan,
+    dialogIds,
+    load,
+  });
+  if (seedFragments) {
+    for (const [field, text] of Object.entries(seedFragments)) {
+      if (!VIDEO_SCENE_TEXT_FIELDS.has(field)) continue;
+      try {
+        await setEntityFieldMarkdown({
+          projectId,
+          entityType: 'video_prompts',
+          entityId: String(beatId),
+          field: videoSceneField(s._id.toString(), field),
+          markdown: text,
+        });
+      } catch (e) {
+        logger.warn(`createVideoScene: seed ${field} failed: ${e.message}`);
+      }
+    }
+    s = (await mongoGetVideoScene(projectId, s._id.toString())) || s;
+  }
+  broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
+    changed: ['video_scenes'],
+    added_video_scene_id: s._id.toString(),
+  });
+  return s;
+}
+
+export async function setVideoSceneTextFieldViaGateway({ projectId, sceneId, field, text }) {
+  if (!VIDEO_SCENE_TEXT_FIELDS.has(field)) {
+    throw new Error(`unknown video scene field: ${field}`);
+  }
+  const s = await mongoGetVideoScene(projectId, sceneId);
+  if (!s) throw new Error(`Video scene not found: ${sceneId}`);
+  await setEntityFieldMarkdown({
+    projectId,
+    entityType: 'video_prompts',
+    entityId: s.beat_id.toString(),
+    field: videoSceneField(s._id.toString(), field),
+    markdown: text,
+  });
+}
+
+// Patch a scene's scalars (title, slug, set/character names, text span,
+// director's read, intention, scope, dialog ids, load) and ping the room.
+export async function updateVideoSceneViaGateway({ projectId, sceneId, patch }) {
+  const s = await mongoGetVideoScene(projectId, sceneId);
+  if (!s) throw new Error(`Video scene not found: ${sceneId}`);
+  const merged = {};
+  if (patch && typeof patch === 'object' && !Array.isArray(patch)) {
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined) continue;
+      merged[k] = v;
+    }
+  }
+  if (!Object.keys(merged).length) return s;
+  const updated = await mongoUpdateVideoScene(projectId, s._id.toString(), merged);
+  broadcastFieldsUpdated(buildRoomName('video_prompts', s.beat_id.toString()), {
+    changed: Object.keys(merged),
+    video_scene_id: s._id.toString(),
+  });
+  return updated;
+}
+
+// Delete a scene and every cut in it (videos + start-frame images
+// best-effort), renumber the remaining scenes and recompute the beat's cut
+// order.
+export async function deleteVideoSceneViaGateway({ projectId, sceneId }) {
+  const s = await mongoGetVideoScene(projectId, sceneId);
+  if (!s) throw new Error(`Video scene not found: ${sceneId}`);
+  const beatId = s.beat_id.toString();
+  const cuts = await mongoDeleteVideoPromptsForScene(s._id);
+  await deleteCutMedia(cuts);
+  await deleteSceneVideos([s]);
+  await mongoDeleteVideoScene(s._id);
+  const remaining = await listVideoScenes({ projectId, beatId });
+  const remainingIds = remaining.map((x) => x._id.toString());
+  await mongoReorderVideoScenes(beatId, remainingIds);
+  await mongoRecomputeCutOrder(beatId, remainingIds);
+  await clearAssembledVideosForBeat(projectId, beatId, { beatOnly: true });
+  broadcastFieldsUpdated(buildRoomName('video_prompts', beatId), {
+    changed: ['video_scenes', 'video_prompts'],
+    removed_video_scene_id: s._id.toString(),
+  });
+  return { ok: true, beat_id: beatId, cuts_removed: cuts.length };
+}
+
+export async function reorderVideoScenesViaGateway({ projectId, beatId, orderedIds }) {
+  const scenes = await mongoReorderVideoScenes(beatId, orderedIds);
+  await mongoRecomputeCutOrder(
+    beatId,
+    scenes.map((x) => x._id.toString()),
+  );
+  await clearAssembledVideosForBeat(projectId, beatId, { beatOnly: true });
+  broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
+    changed: ['video_scenes', 'order'],
+  });
+  return scenes;
+}
+
+export async function reorderCutsInSceneViaGateway({ projectId, sceneId, orderedIds }) {
+  const s = await mongoGetVideoScene(projectId, sceneId);
+  if (!s) throw new Error(`Video scene not found: ${sceneId}`);
+  const cuts = await mongoReorderCutsInScene(s._id, orderedIds);
+  await clearAssembledVideosForBeat(projectId, s.beat_id.toString(), { sceneId: s._id.toString() });
+  broadcastFieldsUpdated(buildRoomName('video_prompts', s.beat_id.toString()), {
+    changed: ['order'],
+    video_scene_id: s._id.toString(),
+  });
+  return cuts;
 }
 
 // Ping the project-wide singleton room so any open Table of Contents refetches
@@ -2741,38 +2523,32 @@ export async function createBeatViaGateway(opts) {
 }
 
 // Full delete: drop the beat from the plot, then cascade to everything keyed
-// off its _id — storyboards (freeing their generated frame images first, with
-// the shared-reference guard), dialogs, the legacy beat gallery images, and the
-// beat's RAG chunks. Both the agent's delete_beat tool and DELETE /api/beat/:id
+// off its _id — dialogs, scenes and cuts (with their media), the legacy beat
+// gallery images, and the beat's RAG chunks. Both the agent's delete_beat tool and DELETE /api/beat/:id
 // route here so the two entry points can never drift in what they clean up.
 export async function deleteBeatViaGateway(projectId, identifier) {
   const { deleteBeat } = await import('../mongo/plots.js');
   const target = await getBeat(projectId, String(identifier));
   if (!target) throw new Error(`Beat not found: ${identifier}`);
   const beatId = target._id.toString();
-  await clearAllFrameImagesForBeatViaGateway({ projectId, beatId }).catch((e) =>
-    logger.warn(`gateway: delete beat frame images failed: ${e.message}`),
-  );
-  if (target.video_file_id) {
+  // The assembled beat MP4 (plus a legacy storyboard-era one, if
+  // scripts/purge-storyboards.js has not been run on this database).
+  const beatVideoIds = [target.video_file_id, target.prompts_video_file_id].filter(Boolean).map(String);
+  if (beatVideoIds.length) {
     try {
-      const { deleteAttachment } = await import('../mongo/attachments.js');
-      await deleteAttachment(target.video_file_id);
+      await deleteAttachments(beatVideoIds);
     } catch (e) {
-      logger.warn(`gateway: delete beat video ${target.video_file_id} failed: ${e.message}`);
+      logger.warn(`gateway: delete beat videos ${beatVideoIds.join(',')} failed: ${e.message}`);
     }
   }
   const res = await deleteBeat(projectId, beatId);
-  const storyboards = await mongoDeleteStoryboardsForBeat(beatId);
   const dialogs = await mongoDeleteDialogsForBeat(beatId);
   const videoPrompts = await mongoDeleteVideoPromptsForBeat(beatId);
-  {
-    const fileIds = videoPrompts.map((r) => r.video_file_id).filter(Boolean);
-    if (fileIds.length) {
-      await deleteAttachments(fileIds).catch((e) =>
-        logger.warn(`gateway: delete beat video prompt videos failed: ${e.message}`),
-      );
-    }
-  }
+  const videoScenes = await mongoDeleteVideoScenesForBeat(beatId);
+  // Cut media: rendered clips + start-frame images (current and undo step);
+  // scene MP4s.
+  await deleteCutMedia(videoPrompts);
+  await deleteSceneVideos(videoScenes);
   if (res.image_ids.length) {
     await deleteImages(res.image_ids).catch((e) =>
       logger.warn(`gateway: delete beat images failed: ${e.message}`),
@@ -2787,9 +2563,9 @@ export async function deleteBeatViaGateway(projectId, identifier) {
   }
   return {
     ...res,
-    storyboards_removed: storyboards.length,
     dialogs_removed: dialogs.length,
     video_prompts_removed: videoPrompts.length,
+    video_scenes_removed: videoScenes.length,
   };
 }
 
@@ -2870,15 +2646,14 @@ export async function createCharacterViaGateway({ projectId, name, hollywood_act
 }
 
 // Attach or detach a dialog item's recorded audio file. Pass `audioFileId:
-// null` to unlink (the GridFS bytes are left in place, mirroring the
-// storyboard-audio convention).
+// null` to unlink (the GridFS bytes are left in place).
 export async function setDialogAudioViaGateway({ projectId, dialogId, audioFileId }) {
   const d = await mongoGetDialog(projectId, dialogId);
   if (!d) throw new Error(`Dialog not found: ${dialogId}`);
   const patch = {
     audio_file_id: audioFileId == null ? null : String(audioFileId),
   };
-  // Probe the recording's duration (same as the storyboard audio path) so
+  // Probe the recording's duration (so) so
   // shot duration estimates and lip-sync planning never need a fal round
   // trip. Probe failures log and store null; the planner falls back to a
   // speech-rate estimate for that line.

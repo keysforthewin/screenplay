@@ -11,6 +11,7 @@ import {
   NANO_BANANA_2_EDIT_MAX_INPUTS,
   FLUX_2_KLEIN_EDIT_MAX_INPUTS,
 } from '../fal/imageCaps.js';
+import { isComfyImageModelId, getComfyImageModel } from '../comfy/imageModels.js';
 
 // OpenAI gpt-image-2 edit accepts multiple input images (image[] array); the
 // practical edit maximum is 16. Defined here since it isn't a fal endpoint.
@@ -96,6 +97,7 @@ export function listImageModelInfo() {
 }
 
 export function maxReferenceImagesFor(modelId) {
+  if (isComfyImageModelId(modelId)) return getComfyImageModel(modelId)?.maxReferenceImages || 1;
   const info = IMAGE_MODEL_INFO[modelId];
   return info ? info.maxReferenceImages : DEFAULT_MAX_REFERENCE_IMAGES;
 }

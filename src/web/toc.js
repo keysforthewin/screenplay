@@ -34,20 +34,16 @@ export function buildTocResponse(
   characters,
   beats,
   notesCount,
-  storyboardCounts,
   dialogCounts,
   options = {},
 ) {
   const sets = options.sets || [];
-  const counts = storyboardCounts || new Map();
   const dialogs = dialogCounts || new Map();
   const allDialogs = options.allDialogs || [];
-  const allStoryboards = options.allStoryboards || [];
   const videoPrompts = options.videoPromptCounts || new Map();
 
-  // Aggregate per-beat searchable text from dialog lines (body + speaker)
-  // and storyboard scene prompts. Keyed by hex beat id so the lookup matches
-  // the way storyboard_count / dialog_count are keyed.
+  // Aggregate per-beat searchable text from dialog lines (body + speaker).
+  // Keyed by hex beat id so the lookup matches the way dialog_count is keyed.
   const dialogTextByBeat = new Map();
   for (const d of allDialogs) {
     const k = d.beat_id?.toString?.();
@@ -58,17 +54,6 @@ export function buildTocResponse(
       prev + (prev ? '\n' : '') + blob(d.character, d.body),
     );
   }
-  const storyboardTextByBeat = new Map();
-  for (const sb of allStoryboards) {
-    const k = sb.beat_id?.toString?.();
-    if (!k) continue;
-    const prev = storyboardTextByBeat.get(k) || '';
-    storyboardTextByBeat.set(
-      k,
-      prev + (prev ? '\n' : '') + blob(sb.text_prompt),
-    );
-  }
-
   const beatsByCharacterKey = new Map();
   const beatsBySetKey = new Map();
   const sortedBeats = [...(beats || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
@@ -127,12 +112,11 @@ export function buildTocResponse(
         name: b.name,
         plain_name: stripMarkdown(b.name || ''),
         body_empty: bodyIsEmpty(b.body),
-        storyboard_count: counts.get(id) || 0,
         dialog_count: dialogs.get(id) || 0,
         video_prompt_count: videoPrompts.get(id) || 0,
+        prompts_video_file_id: b.prompts_video_file_id ? String(b.prompts_video_file_id) : null,
         search_text: blob(b.name, b.body, charactersJoined, setsJoined),
         dialog_search_text: dialogTextByBeat.get(id) || '',
-        storyboard_search_text: storyboardTextByBeat.get(id) || '',
       };
     }),
     notes_count: notesCount || 0,

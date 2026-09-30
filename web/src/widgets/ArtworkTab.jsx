@@ -4,7 +4,6 @@ import { ArtworkEditDialog } from './ArtworkEditDialog.jsx';
 import { ArtworkInfoDialog } from './ArtworkInfoDialog.jsx';
 import { EntityImagePickerModal } from './EntityImagePickerModal.jsx';
 import { ImageSheetDialog } from './ImageSheetDialog.jsx';
-import { TuneImageSheetDialog } from './TuneImageSheetDialog.jsx';
 import { GenerationProgress } from './GenerationProgress.jsx';
 import { apiDelete, apiGet, apiPatchJson, apiPostJson, imageUrl, thumbUrl } from '../api.js';
 
@@ -113,22 +112,6 @@ export function ArtworkTab({
 
   // Clear the poll interval on unmount (e.g. navigating away mid-job).
   useEffect(() => () => stopSheetPoll(), []);
-
-  // Beats only: load the storyboard count so the Tune button can disable when
-  // there are no storyboard elements to scan.
-  useEffect(() => {
-    if (hostType !== 'beat' || !hostId) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const r = await apiGet(`/storyboards?beat_id=${encodeURIComponent(hostId)}`);
-        if (!cancelled) setSbCount(Array.isArray(r?.storyboards) ? r.storyboards.length : 0);
-      } catch {
-        // leave at 0 → button stays disabled
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [hostType, hostId]);
 
   const sorted = [...(artworks || [])].sort((a, b) => {
     const aTime = +new Date(a.updated_at || a.created_at || 0);
@@ -314,20 +297,6 @@ export function ArtworkTab({
         >
           Create image sheet
         </button>
-        {hostType === 'beat' && (
-          <button
-            type="button"
-            onClick={() => setTuneOpen(true)}
-            disabled={sheetActive || sbCount === 0}
-            title={
-              sbCount === 0
-                ? 'Generate a storyboard for this beat first'
-                : 'Scan the storyboard and add only the plates it still needs'
-            }
-          >
-            Tune image sheet for storyboard
-          </button>
-        )}
       </div>
 
       {error && <div className="error-banner">{error}</div>}
@@ -586,16 +555,6 @@ export function ArtworkTab({
         hostId={hostId}
         hostLabel={hostLabel}
       />
-
-      {hostType === 'beat' && (
-        <TuneImageSheetDialog
-          open={tuneOpen}
-          onClose={() => setTuneOpen(false)}
-          onStarted={startSheetJob}
-          hostId={hostId}
-          hostLabel={hostLabel}
-        />
-      )}
 
       <ArtworkDialog
         open={regenerating != null}

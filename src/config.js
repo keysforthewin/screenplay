@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import os from 'node:os';
 import path from 'node:path';
 
 function required(name) {
@@ -157,6 +158,25 @@ export const config = {
     // Input assets are uploaded into fal storage with this lifecycle. fal
     // bills for storage, so we expire inputs after a week by default.
     storageLifetimeDays: Number(process.env.FAL_STORAGE_LIFETIME_DAYS) || 7,
+  },
+  comfy: {
+    // ComfyUI video provider, driven through the comfy-mcp stdio server
+    // (spawned as a child process; comfy-cli then talks to whatever ComfyUI
+    // COMFYUI_URL names — local or remote). Optional: without COMFYUI_URL the
+    // /api/comfy routes report unconfigured and the fal path keeps working.
+    url: process.env.COMFYUI_URL || null,
+    mcpCommand: process.env.COMFY_MCP_COMMAND || 'comfy-mcp',
+    comfyBin: process.env.COMFY_BIN || null,
+    // Per-job scratch (start-frame PNGs, the parameterised workflow copy and
+    // the fetched outputs). Must be on the machine running comfy-mcp.
+    workDir: process.env.COMFY_WORK_DIR || path.join(os.tmpdir(), 'screenplay-comfy'),
+    // Fetched template workflows are cached here (data/ is bind-mounted).
+    templateDir: process.env.COMFY_TEMPLATE_DIR || 'data/comfy/templates',
+    pollIntervalMs: Math.max(500, Number(process.env.COMFY_POLL_INTERVAL_MS) || 4000),
+    jobTimeoutMs: Math.max(10_000, Number(process.env.COMFY_JOB_TIMEOUT_MS) || 60 * 60 * 1000),
+    get enabled() {
+      return !!process.env.COMFYUI_URL;
+    },
   },
   tavily: {
     apiKey: process.env.TAVILY_API_KEY || null,

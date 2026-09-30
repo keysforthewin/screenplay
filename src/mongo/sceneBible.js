@@ -1,7 +1,7 @@
 // Pure scene-bible shape + rendering. No DB access — persistence lives in
 // plots.js (setBeatSceneBible). The bible is a compact structured "look book"
 // for a beat: location, lighting, palette, mood, blocking, continuity anchors,
-// camera language. Every storyboard shot of the beat inherits it, so per-shot
+// camera language. Every cut of the beat inherits it, so per-cut
 // prompts stay short and the scene's look stays unified.
 
 // Ordered list of the editable text fields. The order here is the order they

@@ -1,8 +1,8 @@
-// Join a beat's rendered shot clips into one MP4 (src/web/beatRender.js calls
-// this once every shot has a video). Straight cuts only: each clip is first
+// Join rendered clips into one MP4 (src/web/cutAssemble.js calls this for a
+// scene or a whole beat once every cut has a video). Straight cuts only: each clip is first
 // normalized to a common format (fal endpoints return different sizes, frame
 // rates, and some are silent), then the concat demuxer stream-copies them
-// together. The pair loop in assembleBeatVideo is the seam for a later
+// together. The pair loop in assembleClips is the seam for a later
 // xfade/acrossfade on `transition_in`.
 //
 // ffmpeg + ffprobe must be on PATH; ENOENT surfaces as FfmpegMissingError so
@@ -14,9 +14,7 @@ import { spawn } from 'child_process';
 import fsp from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import { logger } from '../log.js';
 import { streamAttachmentToTmp, uploadAttachmentBuffer } from '../mongo/attachments.js';
-import { setBeatVideoViaGateway } from './gateway.js';
 
 export const ASSEMBLE_WIDTH = 1920;
 export const ASSEMBLE_HEIGHT = 1080;
@@ -134,16 +132,29 @@ async function safeRm(p) {
   }
 }
 
-// shots: the beat's storyboard rows in order, each with video_file_id set.
-// Returns { file, durationSeconds } and points the beat at the new video via
-// the gateway (which deletes the previous one). Throws on any missing clip.
-export async function assembleBeatVideo({ projectId, beat, shots, onProgress = null }) {
-  const ordered = [...(shots || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  if (!ordered.length) throw new BeatAssembleError('no shots to assemble');
+// clips: rows in order ({ order, video_file_id, video_duration_seconds,
+// label? }), each with video_file_id set. Normalizes every clip, joins them,
+// uploads the MP4 as an attachment owned by `ownerId` (a beat) and returns
+// { file, durationSeconds, clipCount }. Persisting the pointer is the caller's
+// job (src/web/cutAssemble.js: the scene and beat MP4s). `label`
+// names the unit in error messages ("shot", "cut").
+export async function assembleClips({
+  projectId,
+  clips,
+  ownerId,
+  filename,
+  generatedBy,
+  label = 'clip',
+  onProgress = null,
+}) {
+  const ordered = [...(clips || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  if (!ordered.length) throw new BeatAssembleError(`no ${label}s to assemble`);
   const missing = ordered.filter((s) => !s.video_file_id);
   if (missing.length) {
     throw new BeatAssembleError(
-      `${missing.length} shot${missing.length === 1 ? '' : 's'} without a rendered clip (shot ${missing.map((s) => (s.order ?? 0) + 1).join(', ')})`,
+      `${missing.length} ${label}${missing.length === 1 ? '' : 's'} without a rendered clip (${label} ${missing
+        .map((s) => s.label || (s.order ?? 0) + 1)
+        .join(', ')})`,
     );
   }
   const progress = (message) => {
@@ -178,7 +189,7 @@ export async function assembleBeatVideo({ projectId, beat, shots, onProgress = n
       listPath,
       segmentPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n') + '\n',
     );
-    const outputPath = path.join(workDir, 'beat.mp4');
+    const outputPath = path.join(workDir, 'out.mp4');
     progress(`Joining ${segmentPaths.length} clips`);
     await spawnImpl({ bin: 'ffmpeg', args: concatArgs({ listPath, outputPath }) });
 
@@ -194,18 +205,16 @@ export async function assembleBeatVideo({ projectId, beat, shots, onProgress = n
     const summed = ordered.reduce((sum, s) => sum + (Number(s.video_duration_seconds) || 0), 0);
     const durationSeconds = probed || (summed > 0 ? summed : null);
 
-    progress('Saving beat video');
+    progress('Saving video');
     const file = await uploadAttachmentBuffer(projectId, {
       buffer,
-      filename: `beat-${beat._id}-video-${Date.now()}.mp4`,
+      filename,
       contentType: 'video/mp4',
       ownerType: 'beat',
-      ownerId: beat._id,
-      generatedBy: 'beat-assemble',
+      ownerId,
+      generatedBy,
     });
-    await setBeatVideoViaGateway({ projectId, beatId: beat._id, fileId: file._id, durationSeconds });
-    logger.info(`beat assemble: beat=${beat._id} clips=${ordered.length} file=${file._id} duration=${durationSeconds ?? '?'}s`);
-    return { file, durationSeconds };
+    return { file, durationSeconds, clipCount: ordered.length };
   } finally {
     await safeRm(workDir);
     for (const p of downloaded) await safeRm(p);

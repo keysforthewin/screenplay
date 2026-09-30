@@ -1,13 +1,25 @@
-// Admin-only REST endpoints for the SPA's Admin page: list users and set a
-// user's granted-project set. Mounted at /api/admin behind requireSession()
+// Admin-only REST endpoints for the SPA's Admin page: users and their
+// granted-project sets, per-feature Claude model slots, and ComfyUI models
+// registered from the gallery. Mounted at /api/admin behind requireSession()
 // AND requireAdmin() (entityRoutes.js); resolveProject skips /admin* paths so
 // a stale X-Project-Id can never 404 these calls.
 
 import express from 'express';
 import { listUsers, getUserById, setUserProjects } from '../mongo/users.js';
 import { listProjects } from '../mongo/projects.js';
-import { getModelSettings, setModelSettings } from '../mongo/appSettings.js';
+import { getModelSettings, setModelSettings, getComfyModelSettings, setComfyModelSettings } from '../mongo/appSettings.js';
 import { describeModelSlots, KNOWN_MODELS } from '../llm/modelSlots.js';
+import { comfy, isComfyConfigured, ComfyNotConfiguredError } from '../comfy/client.js';
+import {
+  getComfyVideoModel,
+  listRegisteredComfyVideoModels,
+  describeComfyVideoModel,
+  validateRegistryEntry,
+  COMFY_VIDEO_MODELS,
+} from '../comfy/videoModels.js';
+import { ensureTemplateFile, templateFilePath, ComfyTemplateNotRunnableError } from '../comfy/templates.js';
+import { slotAddressesFromListing } from '../comfy/paramMap.js';
+import { autoMapTemplate, summarizeGalleryRow } from '../comfy/templateMap.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { logger } from '../log.js';
 
@@ -102,6 +114,146 @@ export function buildAdminRouter() {
         updated_at: settings.updated_at,
         updated_by: settings.updated_by,
       });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── ComfyUI templates → registered models ─────────────────────────────
+  // Browse the ComfyUI gallery, auto-map a template's slots onto a registry
+  // entry for confirmation, and store the confirmed entry (applied live).
+  // Everything but the stored list needs a configured ComfyUI (503).
+  const galleryRows = (r) => (Array.isArray(r) ? r : r?.templates || r?.results || r?.items || r?.matches || []);
+
+  router.get('/comfy/templates', async (req, res, next) => {
+    try {
+      if (!isComfyConfigured()) return res.status(503).json({ error: new ComfyNotConfiguredError().message, code: 'COMFY_NOT_CONFIGURED' });
+      const query = typeof req.query.query === 'string' ? req.query.query.trim().slice(0, 200) : '';
+      const excludeApi = req.query.exclude_api === '1' || req.query.exclude_api === 'true';
+      const raw = await comfy.searchTemplates(query || 'video', { limit: 50 });
+      let templates = galleryRows(raw).map(summarizeGalleryRow).filter((t) => t.name);
+      if (excludeApi) templates = templates.filter((t) => !t.api);
+      res.json({ query, templates: templates.slice(0, 50) });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Template detail + the auto-mapped proposal. Fetches the workflow JSON
+  // into the template cache (so the slot listing can run) even when
+  // local_check says it is not runnable — the page shows the check either
+  // way; running is what the check gates.
+  router.get('/comfy/templates/:name', async (req, res, next) => {
+    try {
+      if (!isComfyConfigured()) return res.status(503).json({ error: new ComfyNotConfiguredError().message, code: 'COMFY_NOT_CONFIGURED' });
+      const name = String(req.params.name || '').trim();
+      if (!/^[A-Za-z0-9._-]{1,120}$/.test(name)) return res.status(400).json({ error: 'bad template name' });
+      let info = null;
+      try {
+        info = await comfy.getTemplate(name);
+      } catch (e) {
+        return res.status(404).json({ error: `template not found: ${e.message}` });
+      }
+      let localCheck = info?.local_check || null;
+      let filePath = null;
+      try {
+        const tpl = await ensureTemplateFile({ template: name });
+        filePath = tpl.path;
+        localCheck = tpl.local_check || localCheck;
+      } catch (e) {
+        if (e instanceof ComfyTemplateNotRunnableError) {
+          localCheck = e.local_check || localCheck;
+          filePath = templateFilePath(name);
+        } else {
+          throw e;
+        }
+      }
+      const listing = await comfy.listWorkflowSlots(filePath);
+      const slots = Array.isArray(listing?.slots) ? listing.slots : Array.isArray(listing) ? listing : [];
+      let notes = [];
+      try {
+        const n = await comfy.listWorkflowNotes(filePath);
+        notes = Array.isArray(n?.notes) ? n.notes : Array.isArray(n) ? n : [];
+      } catch (e) {
+        logger.warn(`admin comfy: notes for ${name} unavailable: ${e.message}`);
+      }
+      const summary = summarizeGalleryRow({ ...(info || {}), name });
+      const { proposal, warnings } = autoMapTemplate({ name, info, slots, api: summary.api });
+      res.json({
+        template: { ...summary, local_check: localCheck, runnable: localCheck && localCheck.checked ? localCheck.runnable !== false : null },
+        local_check: localCheck,
+        slots,
+        notes,
+        proposal,
+        warnings,
+        existing: getComfyVideoModel(proposal.id) ? describeComfyVideoModel(getComfyVideoModel(proposal.id)) : null,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/comfy/models', async (_req, res, next) => {
+    try {
+      const settings = await getComfyModelSettings();
+      res.json({
+        registered: listRegisteredComfyVideoModels().map(describeComfyVideoModel),
+        builtin_ids: COMFY_VIDEO_MODELS.map((m) => m.id),
+        updated_at: settings.updated_at,
+        updated_by: settings.updated_by,
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Upsert one registered model. The body is the full registry entry; it is
+  // validated against the template's live slot listing so a typo'd address
+  // can never reach set_workflow_slot.
+  router.put('/comfy/models/:id', async (req, res, next) => {
+    try {
+      const id = String(req.params.id || '').trim();
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      if (body.id && body.id !== id) return res.status(400).json({ error: 'body id must match the path id' });
+      const draft = { ...body, id };
+      if (COMFY_VIDEO_MODELS.some((m) => m.id === id)) return res.status(400).json({ error: `"${id}" is a built-in model` });
+      if (!isComfyConfigured()) return res.status(503).json({ error: new ComfyNotConfiguredError().message, code: 'COMFY_NOT_CONFIGURED' });
+      const template = String(draft.template || '').trim();
+      if (!template) return res.status(400).json({ error: 'template is required' });
+      let addresses = null;
+      try {
+        let filePath;
+        try {
+          filePath = (await ensureTemplateFile({ template })).path;
+        } catch (e) {
+          if (!(e instanceof ComfyTemplateNotRunnableError)) throw e;
+          filePath = templateFilePath(template);
+        }
+        addresses = slotAddressesFromListing(await comfy.listWorkflowSlots(filePath));
+      } catch (e) {
+        return res.status(400).json({ error: `template ${template} could not be inspected: ${e.message}` });
+      }
+      const { ok, errors, entry } = validateRegistryEntry(draft, addresses);
+      if (!ok) return res.status(400).json({ error: 'invalid registry entry', errors });
+      const current = await getComfyModelSettings();
+      const models = current.models.filter((m) => m.id !== id);
+      models.push(entry);
+      const saved = await setComfyModelSettings(models, { updatedBy: req.session?.username || null });
+      logger.info(`admin: ComfyUI model ${id} registered by ${req.session?.username || '?'} (template ${template})`);
+      res.json({ model: describeComfyVideoModel(getComfyVideoModel(id)), registered: listRegisteredComfyVideoModels().map(describeComfyVideoModel), updated_at: saved.updated_at });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete('/comfy/models/:id', async (req, res, next) => {
+    try {
+      const id = String(req.params.id || '').trim();
+      if (COMFY_VIDEO_MODELS.some((m) => m.id === id)) return res.status(400).json({ error: `"${id}" is built in and cannot be removed` });
+      const current = await getComfyModelSettings();
+      if (!current.models.some((m) => m.id === id)) return res.status(404).json({ error: 'unknown registered model' });
+      await setComfyModelSettings(current.models.filter((m) => m.id !== id), { updatedBy: req.session?.username || null });
+      res.json({ ok: true, registered: listRegisteredComfyVideoModels().map(describeComfyVideoModel) });
     } catch (e) {
       next(e);
     }

@@ -2,8 +2,8 @@
 // entityRoutes.js can fire announcements in one line. Each helper resolves
 // the entity label + SPA URL and pulls the SPA username from req.session.
 
-import { announceMediaEvent, announceText } from '../discord/announcer.js';
-import { beatUrl, characterUrl, setUrl, notesUrl, libraryUrl, storyboardUrl } from './links.js';
+import { announceMediaEvent } from '../discord/announcer.js';
+import { beatUrl, characterUrl, setUrl, notesUrl, libraryUrl } from './links.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { logger } from '../log.js';
 
@@ -35,13 +35,6 @@ function noteLabel(note) {
   const text = stripMarkdown(note.text || '').trim();
   const head = text ? text.slice(0, 60) : null;
   return head ? `Director’s notes: ${head}` : 'Director’s notes';
-}
-
-function storyboardLabel(beat, storyboard) {
-  const orderSegment = storyboard && Number.isFinite(storyboard.order)
-    ? ` (shot ${storyboard.order + 1})`
-    : '';
-  return `Storyboard — ${beatLabel(beat)}${orderSegment}`;
 }
 
 function fire(payload) {
@@ -135,28 +128,6 @@ export function announceNoteMedia({
   });
 }
 
-export function announceStoryboardMedia({
-  req,
-  beat,
-  storyboard,
-  verb,
-  imageFileId,
-  mediaFileId,
-  mediaLabel,
-  prompt,
-}) {
-  fire({
-    username: usernameFromReq(req),
-    verb,
-    entityLabel: storyboardLabel(beat, storyboard),
-    entityUrl: storyboardUrl(req?.projectTitle ?? null, beat),
-    imageFileId,
-    mediaFileId,
-    mediaLabel,
-    prompt,
-  });
-}
-
 export function announceLibraryMedia({
   req,
   verb,
@@ -175,15 +146,6 @@ export function announceLibraryMedia({
     mediaLabel,
     prompt,
   });
-}
-
-// Plain-text summary line for batch operations (storyboard generation, etc.)
-// where per-item embeds would spam the channel.
-export function announceBatchSummary({ req, message }) {
-  const who = usernameFromReq(req);
-  announceText(`${who} ${message}`).catch((e) =>
-    logger.warn(`announceHelpers: announceText threw: ${e?.message || e}`),
-  );
 }
 
 // Variant used by async job-completion callbacks where there is no `req`.

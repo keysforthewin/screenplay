@@ -31,7 +31,6 @@ export async function resolvePageContextNote({ projectId, projectTitle, context 
 
   switch (kind) {
     case 'beat':
-    case 'storyboard':
     case 'prompts':
     case 'dialog': {
       if (!ref) return null;
@@ -44,7 +43,6 @@ export async function resolvePageContextNote({ projectId, projectTitle, context 
       const name = stripMarkdown(beat.name || '').trim();
       const label = name ? `Beat ${beat.order} — "${name}"` : `Beat ${beat.order}`;
       const id = beat._id ? ` (beat id ${beat._id.toString()})` : '';
-      if (kind === 'storyboard') return note(`the storyboard page for ${label}${id}`);
       if (kind === 'dialog') return note(`the dialog page for ${label}${id}`);
       if (kind === 'prompts') return note(`the video prompts page for ${label}${id}`);
       return note(`${label}${id}`);
@@ -73,8 +71,6 @@ export async function resolvePageContextNote({ projectId, projectTitle, context 
       return note("the director's notes");
     case 'library':
       return note('the media library');
-    case 'storyboard-index':
-      return note("the storyboard index (all beats' storyboards)");
     case 'dialog-index':
       return note("the dialog index (all beats' dialogs)");
     case 'prompts-index':

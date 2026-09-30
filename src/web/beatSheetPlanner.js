@@ -20,7 +20,7 @@ import { logger } from '../log.js';
 import { modelFor } from '../llm/modelSlots.js';
 import {
   buildBeatContextBlock,
-} from './storyboardGenerate.js';
+} from './beatPlanShared.js';
 
 export const MAX_SCENE_IMAGE_COUNT = 20;
 // Per-plate critique calls run in parallel, bounded to avoid hammering the API.

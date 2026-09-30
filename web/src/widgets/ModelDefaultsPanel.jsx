@@ -5,11 +5,10 @@
 //                          references" selector
 //   - image_prompt_only  → pre-selected in the image-sheet "prompt-only
 //                          plates" selector
-//   - video_start_end    → pre-selected in the video dialog when the scene
-//                          provides a start AND an end frame
-//   - video_start_only   → pre-selected when the scene provides only a start
-//                          frame
-//   - lipsync            → pre-selected when the lip-sync facet is enabled
+//   - video_start_only   → fal "Render beat" model for cuts without recorded
+//                          dialogue (start frame → clip)
+//   - video_direct       → pre-selected in a cut's fal.ai video dialog
+//   - lipsync            → fal "Render beat" model for fully recorded cuts
 //
 // The two image slots reuse ImageModelSelect (same filtered pools as the
 // image-sheet dialog, which also writes these slots back whenever its
@@ -22,27 +21,21 @@ import { ImageModelSelect } from './ImageModelSelect.jsx';
 
 const VIDEO_SLOTS = [
   {
-    key: 'video_start_end',
-    label: 'Videos with a start and end frame',
-    help: 'Used when the scene assigns both frames — the model must accept a start AND an end frame.',
-    accepts: (caps) => caps?.start_frame === true && caps?.end_frame === true,
-  },
-  {
     key: 'video_start_only',
-    label: 'Videos with just a start frame',
-    help: 'Used when the scene provides a single frame — any start-frame-capable model qualifies.',
+    label: 'Clips from a start frame',
+    help: 'Used by "Render beat" on fal.ai for cuts without recorded dialogue: the cut\'s start frame is animated by this image-to-video model.',
     accepts: (caps) => caps?.start_frame === true,
   },
   {
     key: 'video_direct',
     label: 'Direct to video (prompt + references)',
-    help: 'Used by "Render beat" for shots without recorded dialogue: the shot prompt plus its matched reference images go straight to a reference-to-video model, so no storyboard still is needed. Leave unset to render a still first and animate it with the start-frame model.',
+    help: 'Pre-selected in a cut\'s fal.ai video dialog: the block plus the cut\'s ordered reference images go straight to a reference-to-video model.',
     accepts: (caps) => caps?.reference_images === true,
   },
   {
     key: 'lipsync',
     label: 'Lip sync (avatar)',
-    help: 'Used when generating a lip-synced performance from a frame and real recorded audio.',
+    help: 'Used by "Render beat" on fal.ai for cuts whose dialogue is fully recorded: the start frame plus the real recording.',
     accepts: (caps) => caps?.lip_sync === true,
   },
 ];

@@ -5,7 +5,6 @@
 
 import express from 'express';
 import multer from 'multer';
-import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
 import { logger } from '../log.js';
 import { contentTypeFromFilename } from '../util/contentType.js';
@@ -16,12 +15,14 @@ import { resolveProject } from './projectMiddleware.js';
 import { requireProjectAccess, requireAdmin, listProjectsFor } from './permissions.js';
 import { buildAdminRouter } from './adminRoutes.js';
 import { buildElevenRouter } from './elevenRoutes.js';
+import { buildComfyRouter, registerCutVideoRoutes } from './comfyRoutes.js';
+import { registerCutRoutes } from './cutRoutes.js';
+import { registerCutFalVideoRoutes, cutVideoJobEventsHandler } from './cutVideoRoutes.js';
 import {
   countProjects,
   createProject,
   getProjectById,
   getProjectByTitle,
-  listProjects,
   normalizeProjectTitle,
   renameProject,
 } from '../mongo/projects.js';
@@ -40,23 +41,8 @@ import {
   announceCharacterMedia,
   announceSetMedia,
   announceNoteMedia,
-  announceStoryboardMedia,
   announceLibraryMedia,
-  announceBatchSummary,
 } from './announceHelpers.js';
-import {
-  startVideoGenerationJob,
-  getVideoGenerationJob,
-  subscribeToJob,
-  unsubscribeFromJob,
-  serializeJob,
-  buildVideoPayloadPreview,
-  VideoBeatBusyError,
-  MissingInputsError,
-  FalNotConfiguredError,
-  UnknownVideoModelError,
-  OWNER_VIDEO_PROMPT,
-} from './falVideoGenerate.js';
 import {
   startPlaygroundJob,
   getPlaygroundJob,
@@ -83,19 +69,12 @@ import {
   addDirectorNoteImageViaGateway,
   addDirectorNoteViaGateway,
   addLibraryImageViaGateway,
-  addStoryboardFrameReferenceImageViaGateway,
   attachExistingAttachmentToBeatViaGateway,
   attachExistingAttachmentToCharacterViaGateway,
-  attachExistingAttachmentToDirectorNoteViaGateway,
   attachExistingImageToBeatViaGateway,
   attachExistingImageToCharacterViaGateway,
-  attachExistingImageToDirectorNoteViaGateway,
-  copyAttachmentToStoryboardMediaViaGateway,
-  copyDialogAudioToStoryboardViaGateway,
   createDialogViaGateway,
-  createStoryboardViaGateway,
   deleteDialogViaGateway,
-  deleteStoryboardViaGateway,
   removeBeatAttachmentViaGateway,
   removeBeatImageViaGateway,
   removeCharacterAttachmentViaGateway,
@@ -104,7 +83,6 @@ import {
   removeDirectorNoteImageViaGateway,
   removeDirectorNoteViaGateway,
   removeLibraryImageViaGateway,
-  removeStoryboardFrameReferenceImageViaGateway,
   replaceBeatImageViaGateway,
   replaceCharacterImageViaGateway,
   moveBeatImageToLibraryViaGateway,
@@ -113,25 +91,12 @@ import {
   reorderBeatsViaGateway,
   createBeatViaGateway,
   deleteBeatViaGateway,
-  reorderStoryboardsViaGateway,
   setBeatMainImageViaGateway,
   setCharacterMainImageViaGateway,
   setDirectorNoteMainImageViaGateway,
   setDialogAudioViaGateway,
-  setOwnedImageMetaViaGateway,
-  setStoryboardAudioViaGateway,
-  setStoryboardFramePromptViaGateway,
-  setStoryboardFrameReferenceImagesViaGateway,
-  addStoryboardFrameViaGateway,
-  removeStoryboardFrameViaGateway,
-  reorderStoryboardFramesViaGateway,
-  setStoryboardFrameImageViaGateway,
-  setStoryboardUploadedVideoViaGateway,
-  setStoryboardVideoViaGateway,
-  undoStoryboardFrameEditViaGateway,
   setEntityFieldMarkdown,
   updateBeatViaGateway,
-  updateStoryboardScalarsViaGateway,
   addSetImageViaGateway,
   addSetAttachmentViaGateway,
   removeSetImageViaGateway,
@@ -143,12 +108,6 @@ import {
   moveSetImageToLibraryViaGateway,
   createSetViaGateway,
   createCharacterViaGateway,
-  createVideoPromptViaGateway,
-  deleteVideoPromptViaGateway,
-  reorderVideoPromptsViaGateway,
-  deleteAllVideoPromptsForBeatViaGateway,
-  updateVideoPromptScalarsViaGateway,
-  setVideoPromptVideoViaGateway,
 } from './gateway.js';
 import {
   kickoffLibraryVisionSeed,
@@ -171,29 +130,14 @@ import {
   createArtworkFromImageViaGateway,
 } from './gateway.js';
 import {
-  cleanupBeatImageReferences,
-  countStoryboardsByBeat,
-  getPreviousStoryboardInBeat,
-  getStoryboard,
-  listStoryboards,
-} from '../mongo/storyboards.js';
-import {
-  grabFrameFromPrevious,
-  FfmpegMissingError,
-  FfmpegFailedError,
-} from './storyboardGrabFrame.js';
-import {
   countDialogsByBeat,
   getDialog,
   listDialogs,
 } from '../mongo/dialogs.js';
 import {
-  getVideoPrompt,
-  listVideoPrompts,
   countVideoPromptsByBeat,
-  MAX_REFERENCE_IMAGES as MAX_PROMPT_REFERENCE_IMAGES,
 } from '../mongo/videoPrompts.js';
-import { listCharacters, getCharacter, findAllCharacters } from '../mongo/characters.js';
+import { getCharacter, findAllCharacters } from '../mongo/characters.js';
 import { getSet, findAllSets } from '../mongo/sets.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import {
@@ -221,11 +165,6 @@ import {
 } from '../mongo/attachments.js';
 import { getCharacterTemplate, getPlotTemplate } from '../mongo/prompts.js';
 import { stripMarkdown } from '../util/markdown.js';
-import {
-  selectFrameReferencesForShot,
-  REFERENCE_LIST_MAX,
-  RELEVANCE_THRESHOLD,
-} from './frameReferences.js';
 import { buildTocResponse } from './toc.js';
 import { exportToPdf, slugifyFilename } from '../pdf/export.js';
 
@@ -233,7 +172,7 @@ const HEX24 = /^[a-f0-9]{24}$/i;
 
 const ALLOWED_CONTEXT_KINDS = new Set([
   'overview', 'beat', 'character', 'notes', 'library',
-  'storyboard', 'storyboard-index', 'dialog', 'dialog-index', 'about',
+  'dialog', 'dialog-index', 'about',
 ]);
 
 // Parse the SPA's optional page-context hint from a /chat body. Unknown/malformed
@@ -248,41 +187,6 @@ function parseChatContext(raw) {
     ref = String(raw.ref).trim().slice(0, 80) || null;
   }
   return { kind, ref };
-}
-
-// Sentinel returned by the resolution/fps validators when they've already
-// sent a 400. Callers check `=== ERR` and bail out of the route.
-const ERR = Symbol('input-validation-error');
-
-const RESOLUTION_RE = /^[A-Za-z0-9_]{1,24}$/;
-
-// Validate a `resolution` body field on the /video/preview and
-// /video/generate routes. Returns the trimmed string, null when absent,
-// or the ERR sentinel after writing a 400 to `res`.
-function parseResolutionField(raw, res) {
-  if (raw == null || raw === '') return null;
-  if (typeof raw !== 'string') {
-    res.status(400).json({ error: 'resolution must be a string' });
-    return ERR;
-  }
-  const trimmed = raw.trim();
-  if (!RESOLUTION_RE.test(trimmed)) {
-    res.status(400).json({ error: 'resolution must be a short alphanumeric tag like "720p"' });
-    return ERR;
-  }
-  return trimmed;
-}
-
-// Validate an `fps` body field. Returns an integer in [1, 120], null
-// when absent, or ERR after a 400.
-function parseFpsField(raw, res) {
-  if (raw == null || raw === '') return null;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 1 || n > 120) {
-    res.status(400).json({ error: 'fps must be a number between 1 and 120' });
-    return ERR;
-  }
-  return Math.round(n);
 }
 
 function isOidHex(s) {
@@ -361,27 +265,6 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
 });
 
-// Parse the optional `frame_assignment` from a video request body into the
-// { start_frame, end_frame, ref } shape resolveFrameAssignment expects. Unknown
-// ids are dropped downstream; here we only coerce shape (hex strings / arrays).
-// Returns null when nothing usable is present (backend then auto-defaults).
-function parseFrameAssignment(raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const out = {};
-  if ('start_frame' in raw) {
-    out.start_frame = typeof raw.start_frame === 'string' ? raw.start_frame : null;
-  }
-  if ('end_frame' in raw) {
-    out.end_frame = typeof raw.end_frame === 'string' ? raw.end_frame : null;
-  }
-  if ('ref' in raw) {
-    out.ref = Array.isArray(raw.ref)
-      ? raw.ref.filter((x) => typeof x === 'string')
-      : [];
-  }
-  return Object.keys(out).length ? out : null;
-}
-
 // Synthesize a discordUser-shaped object from the SPA session so token-usage
 // rows for web-triggered work attribute to the visitor's username (prefixed
 // with `web:` so a Discord user with the same display name doesn't merge).
@@ -405,12 +288,18 @@ export function buildApiRouter() {
   // can't 404 the recovery fetch. POST stays behind resolution for symmetry.
   router.use(resolveProject());
 
-  // Server-Sent Events stream of fal video-generation job status. Registered
-  // BEFORE requireSession() because EventSource cannot set custom headers —
-  // so this route validates a session id from the query string instead. The
-  // same handler serves the storyboard path and the Prompts-tab path: the
-  // job id is the capability, the :id segment is ignored.
-  const videoJobEventsHandler = async (req, res, next) => {
+  // Pre-auth SSE routes: EventSource cannot set custom headers, so each of
+  // these validates a session id from the query string instead.
+  // Cut renders (ComfyUI or fal) stream through the shared cut job lookup
+  // (src/web/cutVideoRoutes.js).
+  router.get('/cut/:id/video-job/:jobId/events', cutVideoJobEventsHandler);
+
+  // Server-Sent Events stream of a Prompts-tab cut render job
+  // (src/web/cutBeatRender.js). Same pre-auth session_id handshake.
+  // Cut planner (Auto generate / Replan) live progress: steps, activity log
+  // and the model's streamed output counters. Same auth + framing as the
+  // render feed above.
+  router.get('/video-scenes/generate/:jobId/events', async (req, res, next) => {
     try {
       const sid = String(req.query?.session_id || '');
       if (!sid) {
@@ -425,80 +314,9 @@ export function buildApiRouter() {
       touchSession(sid).catch(() => {});
       req.session = session;
 
-      const job = getVideoGenerationJob(req.params.jobId);
-      if (!job) {
-        res.status(404).json({ error: 'job not found' });
-        return;
-      }
-      // SSE preamble. flushHeaders ensures the browser opens the stream
-      // immediately rather than waiting for the first body bytes.
-      res.set({
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-transform',
-        Connection: 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-      res.flushHeaders?.();
-      // Initial snapshot so the SPA renders state immediately on connect.
-      res.write(`event: snapshot\ndata: ${JSON.stringify(serializeJob(job))}\n\n`);
-
-      const listener = (snap) => {
-        const terminal = snap.status === 'done' || snap.status === 'error';
-        const eventName = terminal ? snap.status : 'update';
-        res.write(`event: ${eventName}\ndata: ${JSON.stringify(snap)}\n\n`);
-        if (terminal) {
-          unsubscribeFromJob(snap.job_id, listener);
-          res.end();
-        }
-      };
-      subscribeToJob(req.params.jobId, listener);
-
-      // If the job is already terminal at connect time, close after the
-      // snapshot — no further events will fire.
-      if (job.status === 'done' || job.status === 'error') {
-        unsubscribeFromJob(req.params.jobId, listener);
-        res.end();
-        return;
-      }
-
-      // Periodic SSE comment to keep proxies from idling the socket.
-      const keepalive = setInterval(() => {
-        res.write(`: keepalive ${Date.now()}\n\n`);
-      }, 20_000);
-      keepalive.unref?.();
-
-      req.on('close', () => {
-        clearInterval(keepalive);
-        unsubscribeFromJob(req.params.jobId, listener);
-      });
-    } catch (e) {
-      next(e);
-    }
-  };
-  router.get('/storyboard/:id/video-job/:jobId/events', videoJobEventsHandler);
-  router.get('/video-prompt/:id/video-job/:jobId/events', videoJobEventsHandler);
-
-  // Server-Sent Events stream of a beat render job (src/web/beatRender.js).
-  // Same pre-auth session_id handshake as the video-job stream above; the
-  // job id is unguessable, so the stream is capability-keyed.
-  router.get('/beat/:id/render-job/:jobId/events', async (req, res, next) => {
-    try {
-      const sid = String(req.query?.session_id || '');
-      if (!sid) {
-        res.status(401).json({ error: 'missing session' });
-        return;
-      }
-      const session = await getSession(sid);
-      if (!session) {
-        res.status(401).json({ error: 'invalid session' });
-        return;
-      }
-      touchSession(sid).catch(() => {});
-      req.session = session;
-
-      const { getBeatRenderJob, subscribeToBeatJob, unsubscribeFromBeatJob, serializeBeatJob } =
-        await import('./beatRender.js');
-      const job = getBeatRenderJob(req.params.jobId);
+      const { getCutPlanJob, subscribeToCutPlanJob, unsubscribeFromCutPlanJob, serializeCutPlanJob } =
+        await import('./cutPlanner.js');
+      const job = getCutPlanJob(req.params.jobId);
       if (!job) {
         res.status(404).json({ error: 'job not found' });
         return;
@@ -511,21 +329,20 @@ export function buildApiRouter() {
         'X-Accel-Buffering': 'no',
       });
       res.flushHeaders?.();
-      res.write(`event: snapshot\ndata: ${JSON.stringify(serializeBeatJob(job))}\n\n`);
+      res.write(`event: snapshot\ndata: ${JSON.stringify(serializeCutPlanJob(job))}\n\n`);
 
       const listener = (snap) => {
         const terminal = isTerminal(snap.status);
-        const eventName = terminal ? snap.status : 'update';
-        res.write(`event: ${eventName}\ndata: ${JSON.stringify(snap)}\n\n`);
+        res.write(`event: ${terminal ? snap.status : 'update'}\ndata: ${JSON.stringify(snap)}\n\n`);
         if (terminal) {
-          unsubscribeFromBeatJob(snap.job_id, listener);
+          unsubscribeFromCutPlanJob(snap.job_id, listener);
           res.end();
         }
       };
-      subscribeToBeatJob(req.params.jobId, listener);
+      subscribeToCutPlanJob(req.params.jobId, listener);
 
       if (isTerminal(job.status)) {
-        unsubscribeFromBeatJob(req.params.jobId, listener);
+        unsubscribeFromCutPlanJob(req.params.jobId, listener);
         res.end();
         return;
       }
@@ -537,7 +354,70 @@ export function buildApiRouter() {
 
       req.on('close', () => {
         clearInterval(keepalive);
-        unsubscribeFromBeatJob(req.params.jobId, listener);
+        unsubscribeFromCutPlanJob(req.params.jobId, listener);
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/cuts/render/job/:jobId/events', async (req, res, next) => {
+    try {
+      const sid = String(req.query?.session_id || '');
+      if (!sid) {
+        res.status(401).json({ error: 'missing session' });
+        return;
+      }
+      const session = await getSession(sid);
+      if (!session) {
+        res.status(401).json({ error: 'invalid session' });
+        return;
+      }
+      touchSession(sid).catch(() => {});
+      req.session = session;
+
+      const { getCutBeatRenderJob, subscribeToCutBeatJob, unsubscribeFromCutBeatJob, serializeCutBeatJob } =
+        await import('./cutBeatRender.js');
+      const job = getCutBeatRenderJob(req.params.jobId);
+      if (!job) {
+        res.status(404).json({ error: 'job not found' });
+        return;
+      }
+      const isTerminal = (s) => s === 'done' || s === 'partial' || s === 'error';
+      res.set({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      res.flushHeaders?.();
+      res.write(`event: snapshot\ndata: ${JSON.stringify(serializeCutBeatJob(job))}\n\n`);
+
+      const listener = (snap) => {
+        const terminal = isTerminal(snap.status);
+        const eventName = terminal ? snap.status : 'update';
+        res.write(`event: ${eventName}\ndata: ${JSON.stringify(snap)}\n\n`);
+        if (terminal) {
+          unsubscribeFromCutBeatJob(snap.job_id, listener);
+          res.end();
+        }
+      };
+      subscribeToCutBeatJob(req.params.jobId, listener);
+
+      if (isTerminal(job.status)) {
+        unsubscribeFromCutBeatJob(req.params.jobId, listener);
+        res.end();
+        return;
+      }
+
+      const keepalive = setInterval(() => {
+        res.write(`: keepalive ${Date.now()}\n\n`);
+      }, 20_000);
+      keepalive.unref?.();
+
+      req.on('close', () => {
+        clearInterval(keepalive);
+        unsubscribeFromCutBeatJob(req.params.jobId, listener);
       });
     } catch (e) {
       next(e);
@@ -738,6 +618,16 @@ export function buildApiRouter() {
   // changer, isolator, STT, cloning, design. Kept in its own module.
   router.use('/eleven', buildElevenRouter());
 
+  // ComfyUI video provider (src/web/comfyRoutes.js): model registry + slots
+  // under /comfy, and the per-cut render routes on this router.
+  router.use('/comfy', buildComfyRouter());
+  registerCutVideoRoutes(router);
+
+  // Scenes & cuts (src/web/cutRoutes.js): the Prompts tab's planner, scene
+  // and cut CRUD, and start-frame rendering.
+  registerCutRoutes(router);
+  registerCutFalVideoRoutes(router);
+
   // Attribute every gateway text/cast edit made during an authenticated request
   // to the logged-in user, so AI-assist features (beat rewrite, restore, dialog
   // edits, etc.) announce like manual edits. Pure reads and edits to
@@ -923,19 +813,16 @@ export function buildApiRouter() {
   router.get('/toc', async (req, res) => {
     // findAllCharacters (not listCharacters) — we need fields.{...} content for
     // the deep filter to match on description/body-style template fields.
-    // listDialogs() / listStoryboards() unfiltered return every row; we group
-    // them per beat in buildTocResponse to back the dialog/storyboard tab
-    // filter without forcing N+1 round trips here.
-    const [characters, sets, beatList, notes, storyboardCounts, dialogCounts, allDialogs, allStoryboards, videoPromptCounts] =
+    // listDialogs() unfiltered returns every row; we group them per beat in
+    // buildTocResponse to back the dialog tab filter without N+1 round trips.
+    const [characters, sets, beatList, notes, dialogCounts, allDialogs, videoPromptCounts] =
       await Promise.all([
         findAllCharacters(req.projectId),
         findAllSets(req.projectId),
         listBeats(req.projectId),
         getDirectorNotes(req.projectId),
-        countStoryboardsByBeat(req.projectId),
         countDialogsByBeat(req.projectId),
         listDialogs({ projectId: req.projectId }),
-        listStoryboards({ projectId: req.projectId }),
         countVideoPromptsByBeat(req.projectId),
       ]);
     res.json(
@@ -943,9 +830,8 @@ export function buildApiRouter() {
         characters,
         beatList,
         (notes.notes || []).length,
-        storyboardCounts,
         dialogCounts,
-        { allDialogs, allStoryboards, sets, videoPromptCounts },
+        { allDialogs, sets, videoPromptCounts },
       ),
     );
   });
@@ -1059,16 +945,14 @@ export function buildApiRouter() {
   });
 
   // Resolve every character named in a beat to its current Mongo doc, with
-  // per-character sheet metadata so the storyboard page can render a
-  // pre-generation sheet picker. Uses the same name-resolution path as the
-  // storyboard renderer (findCharactersInBeat) — so the dropdown reflects
-  // exactly what generation will pick up.
+  // per-character sheet metadata for the artwork reference picker. Uses the
+  // shared name-resolution path (findCharactersInBeat).
   router.get('/beat/:id/characters', async (req, res, next) => {
     try {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const beat = await getBeat(req.projectId, beatId);
-      const { findCharactersInBeat } = await import('./storyboardGenerate.js');
+      const { findCharactersInBeat } = await import('./beatPlanShared.js');
       const docs = await findCharactersInBeat(req.projectId, beat);
       const out = [];
       for (const c of docs) {
@@ -1102,90 +986,8 @@ export function buildApiRouter() {
     }
   });
 
-  // All "done" artworks reachable from this beat — used by the Storyboard
-  // start/end frame picker's Artwork tab. Combines the artworks of every set
-  // in beat.sets[] with those of every character in beat.characters[], so the
-  // user can pick a location plate or character portrait as the frame image
-  // in a single click. Pending/error artworks are filtered out. (Beat-owned
-  // artworks are retired — legacy rows may still carry them, so they're kept
-  // as a trailing source until the migration has swept every beat.)
-  router.get('/beat/:id/scene-artworks', async (req, res, next) => {
-    try {
-      const beatId = await resolveBeatId(req);
-      if (!beatId) return res.status(404).json({ error: 'beat not found' });
-      const beat = await getBeat(req.projectId, beatId);
-      const { findCharactersInBeat, findSetsInBeat } = await import('./storyboardGenerate.js');
-      const charDocs = await findCharactersInBeat(req.projectId, beat);
-      const setDocs = await findSetsInBeat(req.projectId, beat);
-
-      const items = [];
-      const seen = new Set(); // dedupe by result_image_id
-
-      // Each linked set's artworks first — location plates lead the picker.
-      for (const s of setDocs) {
-        const sName = stripMarkdown(s.name || '').trim();
-        for (const a of s.artworks || []) {
-          if (a.status !== 'done' || !a.result_image_id) continue;
-          const key = String(a.result_image_id);
-          if (seen.has(key)) continue;
-          seen.add(key);
-          items.push({
-            _id: String(a._id),
-            result_image_id: key,
-            name: a.name || '',
-            prompt: a.prompt || '',
-            owner_kind: 'set',
-            owner_id: String(s._id),
-            owner_label: sName ? `Set: ${sName}` : 'Set',
-          });
-        }
-      }
-
-      // Legacy beat-owned artworks (pre-migration rows only).
-      for (const a of beat.artworks || []) {
-        if (a.status !== 'done' || !a.result_image_id) continue;
-        const key = String(a.result_image_id);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        items.push({
-          _id: String(a._id),
-          result_image_id: key,
-          name: a.name || '',
-          prompt: a.prompt || '',
-          owner_kind: 'beat',
-          owner_id: String(beat._id),
-          owner_label: `Beat: ${stripMarkdown(beat.name || '')}`.trim(),
-        });
-      }
-
-      // Each in-scene character's artworks.
-      for (const c of charDocs) {
-        const cName = stripMarkdown(c.name || '').trim();
-        for (const a of c.artworks || []) {
-          if (a.status !== 'done' || !a.result_image_id) continue;
-          const key = String(a.result_image_id);
-          if (seen.has(key)) continue;
-          seen.add(key);
-          items.push({
-            _id: String(a._id),
-            result_image_id: key,
-            name: a.name || '',
-            prompt: a.prompt || '',
-            owner_kind: 'character',
-            owner_id: String(c._id),
-            owner_label: cName ? `Character: ${cName}` : 'Character',
-          });
-        }
-      }
-
-      res.json({ artworks: items });
-    } catch (e) {
-      next(e);
-    }
-  });
-
   // Every GridFS image owned by this beat — superset of beat.images[] because
-  // it includes storyboard frames and reference uploads (those write to GridFS
+  // it includes generated stills such as cut start frames (those write to GridFS
   // with owner_type='beat' but don't mutate the embedded gallery array).
   // Filters out thumbnails and artwork result images (the latter live on the
   // beat's Artwork tab, so the References tab and frame picker shouldn't
@@ -1687,10 +1489,8 @@ export function buildApiRouter() {
     }
   });
 
-  // Delete a beat-owned GridFS image that is NOT in beat.images[] — i.e. a
-  // storyboard frame snapshot or per-frame reference upload. Cleans up
-  // dangling references in any storyboard rows on this beat (clears frame
-  // slots and pulls from reference lists), then removes the GridFS bytes.
+  // Delete a beat-owned GridFS image that is NOT in beat.images[] (a leftover
+  // generated still). Removes the GridFS bytes.
   router.delete('/beat/:id/orphan-image/:imageId', async (req, res, next) => {
     try {
       const beatId = await resolveBeatId(req);
@@ -1713,7 +1513,6 @@ export function buildApiRouter() {
           error: 'image is in beat.images[] — use DELETE /beat/:id/image/:imageId',
         });
       }
-      await cleanupBeatImageReferences(beatId, imageId);
       await deleteImage(imageId);
       res.json({ ok: true });
       announceBeatMedia({
@@ -2144,103 +1943,6 @@ export function buildApiRouter() {
     }
   });
 
-  // Delete a beat outright (the SPA's "Delete beat" button at the bottom of
-  // the beat page). The gateway cascades to the beat's storyboards, dialogs,
-  // images and RAG chunks and pings the TOC room so open clients refetch.
-  // ── Beat render: prompts → clips → beat MP4 (src/web/beatRender.js) ──
-  // Body: { overrides?: {lipsync, video_direct, video_start_only}, skip_rendered?,
-  //         include_director_notes?, image_model? }
-  function parseBeatRenderBody(body, res) {
-    const out = { overrides: {}, skipRendered: true, includeDirectorNotes: true, imageModel: null };
-    const src = body && typeof body === 'object' ? body : {};
-    const ov = src.overrides && typeof src.overrides === 'object' && !Array.isArray(src.overrides) ? src.overrides : {};
-    for (const key of ['lipsync', 'video_direct', 'video_start_only']) {
-      const v = ov[key];
-      if (v == null || v === '') continue;
-      if (typeof v !== 'string' || v.length > 300) {
-        res.status(400).json({ error: `overrides.${key} must be a model id string` });
-        return null;
-      }
-      out.overrides[key] = v.trim();
-    }
-    if (src.skip_rendered !== undefined) out.skipRendered = Boolean(src.skip_rendered);
-    if (src.include_director_notes !== undefined) out.includeDirectorNotes = Boolean(src.include_director_notes);
-    if (typeof src.image_model === 'string' && src.image_model.trim()) out.imageModel = src.image_model.trim().slice(0, 300);
-    return out;
-  }
-
-  router.post('/beat/:id/render/preview', async (req, res, next) => {
-    try {
-      const beat = await getBeat(req.projectId, String(req.params.id));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const parsed = parseBeatRenderBody(req.body, res);
-      if (!parsed) return;
-      const { buildBeatRenderPreview } = await import('./beatRender.js');
-      const preview = await buildBeatRenderPreview({
-        projectId: req.projectId,
-        beatId: beat._id,
-        overrides: parsed.overrides,
-        skipRendered: parsed.skipRendered,
-      });
-      res.json(preview);
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.post('/beat/:id/render', async (req, res, next) => {
-    try {
-      const beat = await getBeat(req.projectId, String(req.params.id));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const parsed = parseBeatRenderBody(req.body, res);
-      if (!parsed) return;
-      const { startBeatRenderJob, BeatRenderBusyError, BeatRenderEmptyError } = await import('./beatRender.js');
-      try {
-        const out = await startBeatRenderJob({
-          projectId: req.projectId,
-          beatId: beat._id,
-          overrides: parsed.overrides,
-          skipRendered: parsed.skipRendered,
-          includeDirectorNotes: parsed.includeDirectorNotes,
-          imageModel: parsed.imageModel,
-          announceUsername: req?.session?.username || null,
-        });
-        res.status(202).json(out);
-      } catch (e) {
-        if (e instanceof BeatRenderBusyError) return res.status(409).json({ error: e.message });
-        if (e instanceof BeatRenderEmptyError) return res.status(400).json({ error: e.message });
-        if (e instanceof FalNotConfiguredError) return res.status(503).json({ error: e.message });
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.get('/beat/:id/render-job/:jobId', async (req, res, next) => {
-    try {
-      const { getBeatRenderJob, serializeBeatJob } = await import('./beatRender.js');
-      const job = getBeatRenderJob(req.params.jobId);
-      if (!job) return res.status(404).json({ error: 'job not found' });
-      res.json({ job: serializeBeatJob(job) });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Discard the assembled beat video (the shot clips stay).
-  router.delete('/beat/:id/video', async (req, res, next) => {
-    try {
-      const beat = await getBeat(req.projectId, String(req.params.id));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const { setBeatVideoViaGateway } = await import('./gateway.js');
-      const updated = await setBeatVideoViaGateway({ projectId: req.projectId, beatId: beat._id, fileId: null });
-      res.json({ ok: true, beat: { _id: String(updated._id), video_file_id: updated.video_file_id } });
-    } catch (e) {
-      next(e);
-    }
-  });
-
   router.delete('/beat/:id', async (req, res, next) => {
     try {
       // getBeat (not resolveBeatId) so an unknown or cross-project hex id is a
@@ -2253,7 +1955,6 @@ export function buildApiRouter() {
         deleted: {
           _id: String(result._id),
           name: result.name,
-          storyboards_removed: result.storyboards_removed,
           dialogs_removed: result.dialogs_removed,
         },
       });
@@ -2366,8 +2067,7 @@ export function buildApiRouter() {
   });
 
   // Delete a character-owned GridFS image that is NOT in character.images[] —
-  // a counterpart to the beat orphan-image route. Characters don't own
-  // storyboards, so no cross-collection cleanup is needed; we just verify
+  // a counterpart to the beat orphan-image route. We just verify
   // ownership and drop the bytes.
   router.delete('/character/:id/orphan-image/:imageId', async (req, res, next) => {
     try {
@@ -2840,7 +2540,7 @@ export function buildApiRouter() {
       if (!sid) return res.status(404).json({ error: 'set not found' });
       const set = await getSet(req.projectId, sid);
       if (!set) return res.status(404).json({ error: 'set not found' });
-      const { findBeatsReferencingSet } = await import('./storyboardGenerate.js');
+      const { findBeatsReferencingSet } = await import('./beatPlanShared.js');
       const beats = await findBeatsReferencingSet(req.projectId, set);
       res.json({
         beats: beats.map((b) => ({
@@ -3852,30 +3552,6 @@ export function buildApiRouter() {
         }
       });
     }
-
-    if (hostType === 'beat') {
-      // POST /beat/:id/tune-scan — scan the beat's storyboard against its existing
-      // plates and propose new ones. Renders nothing; returns 202 + { job_id }. The
-      // SPA polls GET /image-sheet/:jobId until status==='derived', reviews
-      // job.shots, then POSTs the reviewed list to /beat/:id/image-sheet.
-      router.post(`${basePath}/:id/tune-scan`, async (req, res, next) => {
-        try {
-          const hostId = await resolveHostId(req);
-          if (!hostId) return res.status(404).json({ error: `${hostType} not found` });
-          const refs = await validateArtworkRefs(req, res);
-          if (!refs) return;
-          const { startTuneScanJob } = await import('./imageSheetJobs.js');
-          const result = await startTuneScanJob({
-            projectId: req.projectId,
-            hostId,
-            referenceImageIds: refs.ids,
-          });
-          res.status(202).json(result);
-        } catch (e) {
-          handleArtworkError(e, res, next);
-        }
-      });
-    }
   }
 
   registerArtworkRoutes({
@@ -3940,7 +3616,7 @@ export function buildApiRouter() {
       const target = await getCharacter(req.projectId, characterId);
       if (!target) return res.status(404).json({ error: 'character not found' });
       const targetIdStr = target._id?.toString?.() || String(target._id);
-      const { findCharactersInBeat } = await import('./storyboardGenerate.js');
+      const { findCharactersInBeat } = await import('./beatPlanShared.js');
       const beats = await listBeats(req.projectId);
       const out = [];
       for (const b of beats) {
@@ -4178,790 +3854,8 @@ export function buildApiRouter() {
     }
   });
 
-  // ── storyboard mutations ────────────────────────────────────────────────
-
-  async function resolveStoryboardId(req) {
-    const { id } = req.params;
-    if (!isOidHex(id)) return null;
-    const sb = await getStoryboard(req.projectId, id);
-    return sb?._id?.toString() || null;
-  }
-
-  // List all storyboards for a beat. Beat may be referred to by hex id or by
-  // beat order (e.g. "2"); we resolve to the beat's _id first.
-  router.get('/storyboards', async (req, res, next) => {
-    try {
-      const beatRef = req.query.beat_id;
-      if (beatRef == null || beatRef === '') {
-        return res.status(400).json({ error: 'beat_id required' });
-      }
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const items = await listStoryboards({ beatId: beat._id });
-      res.json({
-        beat: {
-          _id: beat._id,
-          order: beat.order,
-          name: beat.name,
-          body: beat.body,
-          characters: beat.characters || [],
-          images: beat.images || [],
-          main_image_id: beat.main_image_id || null,
-        },
-        storyboards: items,
-      });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.post('/storyboards', async (req, res, next) => {
-    try {
-      const beatRef = req.body?.beat_id;
-      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const sb = await createStoryboardViaGateway({
-        projectId: req.projectId,
-        beatId: beat._id,
-        textPrompt: String(req.body?.text_prompt || ''),
-      });
-      res.json({ storyboard: sb });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.delete('/storyboard/:id', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const result = await deleteStoryboardViaGateway({ projectId: req.projectId, storyboardId: sbId });
-      res.json(result);
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Edit shot metadata (duration / shot_type / transition / characters_in_scene).
-  // Validation/clamping happens inside updateStoryboard; we surface its
-  // human-readable error messages directly so the SPA can show them.
-  router.patch('/storyboard/:id', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const {
-        duration_seconds,
-        shot_type,
-        transition_in,
-        characters_in_scene,
-        sets_in_scene,
-        dialog_ids,
-      } = req.body || {};
-      const patch = {};
-      if (duration_seconds !== undefined) patch.duration_seconds = duration_seconds;
-      if (shot_type !== undefined) patch.shot_type = shot_type;
-      if (transition_in !== undefined) patch.transition_in = transition_in;
-      if (characters_in_scene !== undefined)
-        patch.characters_in_scene = characters_in_scene;
-      if (sets_in_scene !== undefined) patch.sets_in_scene = sets_in_scene;
-      if (dialog_ids !== undefined) patch.dialog_ids = dialog_ids;
-      if (!Object.keys(patch).length)
-        return res.status(400).json({ error: 'no patch fields' });
-      try {
-        const result = await updateStoryboardScalarsViaGateway({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          patch,
-        });
-        res.json({ storyboard: result });
-      } catch (e) {
-        if (typeof e?.message === 'string' && e.message.startsWith('update_storyboard:')) {
-          return res.status(400).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Auto-generate a one-sentence summary of this shot from its current
-  // text_prompt. The LLM result is written to the storyboard's `summary`
-  // y-doc fragment via the gateway, so connected SPAs see the new text
-  // appear live in the CollabField. Also returned in the response body so
-  // callers can confirm the value without waiting for the y-doc round-trip.
-  router.post('/storyboard/:id/generate-summary', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const sb = await getStoryboard(req.projectId, sbId);
-      if (!sb) return res.status(404).json({ error: 'storyboard not found' });
-      if (!sb.text_prompt || !String(sb.text_prompt).trim()) {
-        return res.status(400).json({ error: 'text_prompt is empty; nothing to summarize' });
-      }
-      const { summarizeStoryboardPrompt } = await import('../llm/storyboardSummarize.js');
-      const summary = await summarizeStoryboardPrompt(sb.text_prompt);
-      const { setStoryboardSummaryViaGateway } = await import('./gateway.js');
-      await setStoryboardSummaryViaGateway({ projectId: req.projectId, storyboardId: sb._id, text: summary });
-      res.json({ summary });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Bulk reorder for a single beat. Body: { beat_id, ordered_ids: [hex...] }
-  router.post('/storyboards/reorder', async (req, res, next) => {
-    try {
-      const beatRef = req.body?.beat_id;
-      const orderedIds = req.body?.ordered_ids;
-      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      if (!Array.isArray(orderedIds)) {
-        return res.status(400).json({ error: 'ordered_ids must be an array' });
-      }
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const result = await reorderStoryboardsViaGateway({
-        projectId: req.projectId,
-        beatId: beat._id,
-        orderedIds,
-      });
-      res.json({ storyboards: result });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Upload an image and append it as a new frame in the storyboard's pool.
-  // The image is owned by the storyboard's beat for GridFS bookkeeping.
-  router.post('/storyboard/:id/frame/upload', upload.single('file'), async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      if (!req.file) return res.status(400).json({ error: 'file required' });
-      const sniffed = validateImageBuffer(req.file.buffer);
-      const sb = await getStoryboard(req.projectId, sbId);
-      const file = await uploadGeneratedImage(req.projectId, {
-        buffer: req.file.buffer,
-        contentType: req.file.mimetype,
-        ownerType: 'beat',
-        ownerId: sb.beat_id,
-        filename: safeFilename(
-          req.file.originalname,
-          `storyboard-${sbId}-frame-${Date.now()}.png`,
-        ),
-      });
-      let result;
-      let frameId;
-      try {
-        ({ storyboard: result, frameId } = await addStoryboardFrameViaGateway({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          imageId: file._id,
-        }));
-      } catch (e) {
-        if (/maximum/i.test(e.message)) return res.status(409).json({ error: e.message });
-        throw e;
-      }
-      res.json({
-        storyboard: result,
-        frame_id: frameId.toString(),
-        image: { _id: file._id, content_type: file.content_type },
-      });
-      announceStoryboardMedia({
-        req,
-        beat: await getBeat(req.projectId, String(sb.beat_id)),
-        storyboard: result || sb,
-        verb: 'added a frame to',
-        imageFileId: file._id,
-      });
-      kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
-        ownerType: 'beat',
-        ownerId: sb.beat_id,
-        kind: 'auto',
-      });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Remove a frame from the pool.
-  router.delete('/storyboard/:id/frame/:frameId', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const frameId = String(req.params.frameId);
-      if (!isOidHex(frameId)) {
-        return res.status(400).json({ error: 'invalid frame id' });
-      }
-      let result;
-      try {
-        result = await removeStoryboardFrameViaGateway({ projectId: req.projectId, storyboardId: sbId, frameId });
-      } catch (e) {
-        if (/frame not found/i.test(e.message)) {
-          return res.status(404).json({ error: e.message });
-        }
-        throw e;
-      }
-      res.json({ storyboard: result });
-      if (result?.beat_id) {
-        announceStoryboardMedia({
-          req,
-          beat: await getBeat(req.projectId, String(result.beat_id)),
-          storyboard: result,
-          verb: 'removed a frame from',
-        });
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Reorder the frame pool. Body: { ordered_frame_ids: [hex, …] } — must be
-  // exactly the storyboard's current frame ids.
-  router.post('/storyboard/:id/frames/reorder', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const raw = req.body?.ordered_frame_ids;
-      if (!Array.isArray(raw)) {
-        return res.status(400).json({ error: 'ordered_frame_ids (array) required' });
-      }
-      const cleaned = [];
-      for (const v of raw) {
-        const s = String(v || '').trim();
-        if (!isOidHex(s)) return res.status(400).json({ error: `invalid frame id: ${s}` });
-        cleaned.push(s);
-      }
-      try {
-        const storyboard = await reorderStoryboardFramesViaGateway({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          orderedFrameIds: cleaned,
-        });
-        res.json({ storyboard });
-      } catch (e) {
-        if (/reorderFrames|frame|expected/i.test(e.message)) {
-          return res.status(400).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Grab the last frame of the previous storyboard's generated video and add it
-  // as a new frame in this storyboard's pool. Used for seamless joining between
-  // successive shots (Kling 3 Pro, Veo 3.1 first-last-frame).
-  router.post('/storyboard/:id/grab-frame-from-previous', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const sb = await getStoryboard(req.projectId, sbId);
-      const prev = await getPreviousStoryboardInBeat(req.projectId, sb.beat_id, sb.order);
-      if (!prev) {
-        return res.status(400).json({ error: 'no previous storyboard in this beat' });
-      }
-      if (!prev.video_file_id) {
-        return res.status(400).json({ error: 'previous shot has no generated video' });
-      }
-      try {
-        const result = await grabFrameFromPrevious({ projectId: req.projectId, currentSbId: sbId, prev });
-        res.json({
-          storyboard: result.storyboard,
-          frame_id: result.frame_id,
-          image: result.image,
-        });
-        if (result?.storyboard?.beat_id) {
-          announceStoryboardMedia({
-            req,
-            beat: await getBeat(req.projectId, String(result.storyboard.beat_id)),
-            storyboard: result.storyboard,
-            verb: 'grabbed a frame from the previous shot in',
-            imageFileId: result?.image?._id,
-          });
-        }
-      } catch (e) {
-        if (e instanceof FfmpegMissingError) {
-          return res.status(500).json({ error: e.message });
-        }
-        if (e instanceof FfmpegFailedError) {
-          return res.status(500).json({ error: e.message });
-        }
-        if (/maximum/i.test(e.message)) {
-          return res.status(409).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Regenerate a single frame in place. The frame's persisted reference list
-  // is read server-side; the caller supplies the prompt (also persisted back
-  // to the frame's stored prompt).
-  router.post('/storyboard/:id/frame/:frameId/generate', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const frameId = String(req.params.frameId);
-      if (!isOidHex(frameId)) {
-        return res.status(400).json({ error: 'invalid frame id' });
-      }
-      const imageModel = normalizeImageModel(req.body?.image_model);
-      if (!await isValidImageModel(imageModel)) {
-        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
-      }
-      const mode = req.body?.mode ?? 'generate';
-      if (!['generate', 'edit'].includes(mode)) {
-        return res.status(400).json({ error: 'mode must be generate|edit' });
-      }
-      let editPrompt = null;
-      let prompt = null;
-      if (mode === 'edit') {
-        const raw = req.body?.edit_prompt;
-        if (typeof raw !== 'string' || !raw.trim()) {
-          return res
-            .status(400)
-            .json({ error: 'edit_prompt (non-empty string) required when mode=edit' });
-        }
-        if (raw.length > 1024) {
-          return res
-            .status(400)
-            .json({ error: 'edit_prompt must be ≤ 1024 chars' });
-        }
-        editPrompt = raw;
-      } else {
-        const raw = req.body?.prompt;
-        if (typeof raw !== 'string' || !raw.trim()) {
-          return res
-            .status(400)
-            .json({ error: 'prompt (non-empty string) required when mode=generate' });
-        }
-        if (raw.length > 4096) {
-          return res
-            .status(400)
-            .json({ error: 'prompt must be ≤ 4096 chars' });
-        }
-        prompt = raw;
-      }
-      const {
-        startFrameGenerationJob,
-        BeatBusyError,
-        EditModeError,
-        FrameNotFoundError,
-      } = await import('./storyboardGenerate.js');
-      try {
-        const jobId = await startFrameGenerationJob({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          frameId,
-          imageModel,
-          mode,
-          editPrompt,
-          prompt,
-          announceUsername: req?.session?.username || null,
-        });
-        res.status(202).json({ job_id: jobId, storyboard_id: sbId, frame_id: frameId });
-      } catch (e) {
-        if (e instanceof BeatBusyError) {
-          return res.status(409).json({ error: e.message });
-        }
-        if (e instanceof FrameNotFoundError) {
-          return res.status(404).json({ error: e.message });
-        }
-        if (e instanceof EditModeError) {
-          return res.status(400).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Inline edit of an existing frame image. Mirrors the artwork edit flow:
-  // POST returns 202 with a job_id; the runner rotates current → previous and
-  // installs the new image. Synchronous undo lives at .../undo.
-  router.post('/storyboard/:id/frame/:frameId/edit', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const frameId = String(req.params.frameId);
-      if (!isOidHex(frameId)) {
-        return res.status(400).json({ error: 'invalid frame id' });
-      }
-      const model = normalizeImageModel(req.body?.model);
-      if (!await isValidImageModel(model)) {
-        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
-      }
-      const raw = req.body?.prompt;
-      if (typeof raw !== 'string' || !raw.trim()) {
-        return res
-          .status(400)
-          .json({ error: 'prompt (non-empty string) required' });
-      }
-      if (raw.length > 1024) {
-        return res.status(400).json({ error: 'prompt must be ≤ 1024 chars' });
-      }
-      const refs = await loadReferenceImages(req.body?.reference_image_ids);
-      if (refs.error) {
-        return res.status(refs.status || 400).json({ error: refs.error });
-      }
-      const {
-        startFrameGenerationJob,
-        BeatBusyError,
-        EditModeError,
-        FrameNotFoundError,
-      } = await import('./storyboardGenerate.js');
-      try {
-        const jobId = await startFrameGenerationJob({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          frameId,
-          imageModel: model,
-          mode: 'edit',
-          editPrompt: raw,
-          editReferenceImageIds: refs.ids,
-          rotateToPrevious: true,
-          announceUsername: req?.session?.username || null,
-        });
-        res.status(202).json({ job_id: jobId, storyboard_id: sbId, frame_id: frameId });
-      } catch (e) {
-        if (e instanceof BeatBusyError) {
-          return res.status(409).json({ error: e.message });
-        }
-        if (e instanceof FrameNotFoundError) {
-          return res.status(404).json({ error: e.message });
-        }
-        if (e instanceof EditModeError) {
-          return res.status(400).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Synchronous one-step undo of the last inline edit. Swaps a frame's
-  // previous_image_id → image_id and deletes the displaced GridFS bytes.
-  router.post('/storyboard/:id/frame/:frameId/undo', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const frameId = String(req.params.frameId);
-      if (!isOidHex(frameId)) {
-        return res.status(400).json({ error: 'invalid frame id' });
-      }
-      try {
-        const storyboard = await undoStoryboardFrameEditViaGateway({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          frameId,
-        });
-        res.json({ storyboard });
-      } catch (e) {
-        if (e?.status === 400) {
-          return res.status(400).json({ error: e.message });
-        }
-        if (/frame not found/i.test(e.message)) {
-          return res.status(404).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Read-only preview of the auto-suggested prompt for a frame. The SPA's
-  // generate modal calls this on open when the stored frame prompt is empty,
-  // so the user gets a sensible default they can keep or edit.
-  router.post(
-    '/storyboard/:id/frame/:frameId/preview-prompt',
-    async (req, res, next) => {
-      try {
-        const sbId = await resolveStoryboardId(req);
-        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const frameId = String(req.params.frameId);
-        if (!isOidHex(frameId)) {
-          return res.status(400).json({ error: 'invalid frame id' });
-        }
-        const {
-          previewFrameGenerationPrompt,
-          BeatBusyError,
-          FrameNotFoundError,
-        } = await import('./storyboardGenerate.js');
-        try {
-          const preview = await previewFrameGenerationPrompt({
-            projectId: req.projectId,
-            storyboardId: sbId,
-            frameId,
-          });
-          res.json(preview);
-        } catch (e) {
-          if (e instanceof BeatBusyError) {
-            return res.status(409).json({ error: e.message });
-          }
-          if (e instanceof FrameNotFoundError) {
-            return res.status(404).json({ error: e.message });
-          }
-          throw e;
-        }
-      } catch (e) {
-        next(e);
-      }
-    },
-  );
-
-  // Replace an existing frame's current image with an already-uploaded GridFS
-  // image (no rotation/undo). The frame tile's "Replace" action uses this for
-  // the Beat / Characters / Artwork / Library tabs.
-  router.post('/storyboard/:id/frame/:frameId/image/from-id', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const frameId = String(req.params.frameId);
-      if (!isOidHex(frameId)) {
-        return res.status(400).json({ error: 'invalid frame id' });
-      }
-      const imageId = String(req.body?.image_id || '').trim();
-      if (!isOidHex(imageId)) {
-        return res.status(400).json({ error: 'image_id (24-hex) required' });
-      }
-      const file = await findImageFile(imageId);
-      if (!file) return res.status(404).json({ error: 'image not found' });
-      let result;
-      try {
-        result = await setStoryboardFrameImageViaGateway({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          frameId,
-          imageId,
-        });
-      } catch (e) {
-        if (/frame not found/i.test(e.message)) {
-          return res.status(404).json({ error: e.message });
-        }
-        throw e;
-      }
-      res.json({
-        storyboard: result,
-        image: { _id: imageId, content_type: file.contentType || null },
-      });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Replace an existing frame's image by uploading a new file.
-  router.post(
-    '/storyboard/:id/frame/:frameId/image/upload',
-    upload.single('file'),
-    async (req, res, next) => {
-      try {
-        const sbId = await resolveStoryboardId(req);
-        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const frameId = String(req.params.frameId);
-        if (!isOidHex(frameId)) {
-          return res.status(400).json({ error: 'invalid frame id' });
-        }
-        if (!req.file) return res.status(400).json({ error: 'file required' });
-        const sniffed = validateImageBuffer(req.file.buffer);
-        const sb = await getStoryboard(req.projectId, sbId);
-        const file = await uploadGeneratedImage(req.projectId, {
-          buffer: req.file.buffer,
-          contentType: req.file.mimetype,
-          ownerType: 'beat',
-          ownerId: sb.beat_id,
-          filename: safeFilename(
-            req.file.originalname,
-            `storyboard-${sbId}-frame-${Date.now()}.png`,
-          ),
-        });
-        let result;
-        try {
-          result = await setStoryboardFrameImageViaGateway({
-            projectId: req.projectId,
-            storyboardId: sbId,
-            frameId,
-            imageId: file._id,
-          });
-        } catch (e) {
-          if (/frame not found/i.test(e.message)) {
-            return res.status(404).json({ error: e.message });
-          }
-          throw e;
-        }
-        res.json({ storyboard: result, image: { _id: file._id, content_type: file.content_type } });
-        kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
-          ownerType: 'beat',
-          ownerId: sb.beat_id,
-          kind: 'auto',
-        });
-      } catch (e) {
-        next(e);
-      }
-    },
-  );
-
-  // Reference-picker options for a frame. Returns three sections the SPA's
-  // "This beat" tab renders in order:
-  //   other_frames — the OTHER frames in this storyboard that have an image,
-  //                  each a one-click reference candidate labelled "Frame N"
-  //   beat_artwork — beat.artworks[] filtered to status='done' with a
-  //                  result_image_id, labelled with its prompt
-  //   beat_images  — every non-thumbnail GridFS image owned by the beat; the
-  //                  SPA dedupes against the two sections above
-  router.get(
-    '/storyboard/:id/frame/:frameId/picker-options',
-    async (req, res, next) => {
-      try {
-        const sbId = await resolveStoryboardId(req);
-        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const frameId = String(req.params.frameId);
-        if (!isOidHex(frameId)) {
-          return res.status(400).json({ error: 'invalid frame id' });
-        }
-        const sb = await getStoryboard(req.projectId, sbId);
-        if (!sb) return res.status(404).json({ error: 'storyboard not found' });
-        const beat = await getBeat(req.projectId, String(sb.beat_id));
-        if (!beat) return res.status(404).json({ error: 'beat not found' });
-
-        const otherFrames = (sb.frames || [])
-          .map((f, i) => ({ f, i }))
-          .filter(({ f }) => f._id.toString() !== frameId && f.image_id)
-          .map(({ f, i }) => ({
-            image_id: String(f.image_id),
-            label: `Frame ${i + 1}`,
-          }));
-
-        const beatArtwork = (beat.artworks || [])
-          .filter((a) => a.status === 'done' && a.result_image_id)
-          .map((a) => ({
-            _id: String(a.result_image_id),
-            name:
-              a.name ||
-              (a.prompt ? String(a.prompt).slice(0, 80) : '') ||
-              'artwork',
-            artwork_id: String(a._id),
-          }));
-
-        const files = await listImagesForBeat(req.projectId, beat._id);
-        const beatImages = files
-          .filter((f) => f.metadata?.kind !== 'thumbnail')
-          .map(imageFileToMeta);
-
-        res.json({
-          other_frames: otherFrames,
-          beat_artwork: beatArtwork,
-          beat_images: beatImages,
-        });
-      } catch (e) {
-        next(e);
-      }
-    },
-  );
-
-  // Persist the user's customized prompt for a frame. Idempotent; overwrites
-  // the prior stored value.
-  router.put('/storyboard/:id/frame/:frameId/prompt', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const frameId = String(req.params.frameId);
-      if (!isOidHex(frameId)) {
-        return res.status(400).json({ error: 'invalid frame id' });
-      }
-      const raw = req.body?.text;
-      if (typeof raw !== 'string') {
-        return res.status(400).json({ error: 'text (string) required' });
-      }
-      if (raw.length > 8192) {
-        return res.status(400).json({ error: 'text must be ≤ 8192 chars' });
-      }
-      try {
-        const storyboard = await setStoryboardFramePromptViaGateway({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          frameId,
-          text: raw,
-        });
-        res.json({ storyboard });
-      } catch (e) {
-        if (/frame not found/i.test(e.message)) {
-          return res.status(404).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // On-demand single-shot critique. POST kicks off an in-memory job; the GET
-  // below polls it. The job-poll route uses a literal `critique/job` path
-  // (not `/storyboard/:id/...`) so it can't be shadowed by the id-param routes.
-  router.post('/storyboard/:id/critique', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const target = req.query?.target === 'image' ? 'image' : 'prompt';
-      const { startCritiqueJob } = await import('./storyboardGenerate.js');
-      const jobId = await startCritiqueJob({ projectId: req.projectId, storyboardId: sbId, target });
-      res.status(202).json({ job_id: jobId, storyboard_id: sbId, target });
-    } catch (e) { next(e); }
-  });
-
-  // Regenerate ONE shot's prompts from critique guidance. Reruns Pass 2 for the
-  // single shot, steered either by explicit `critique_guidance` text or, when
-  // `use_critique` is set, by the comments merged from the stored prompt critique.
-  router.post('/storyboard/:id/reexpand', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      let guidance = typeof req.body?.critique_guidance === 'string' ? req.body.critique_guidance : '';
-      if (!guidance && req.body?.use_critique) {
-        const { getStoryboard } = await import('../mongo/storyboards.js');
-        const { mergeCritiqueComments } = await import('./storyboardGenerate.js');
-        const sb = await getStoryboard(req.projectId, sbId);
-        guidance = mergeCritiqueComments(sb?.prompt_critique) || '';
-      }
-      const { reExpandShot, BeatBusyError } = await import('./storyboardGenerate.js');
-      try {
-        const result = await reExpandShot({ projectId: req.projectId, storyboardId: sbId, critiqueGuidance: guidance });
-        res.json(result);
-      } catch (e) {
-        if (e instanceof BeatBusyError) return res.status(409).json({ error: e.message });
-        throw e;
-      }
-    } catch (e) { next(e); }
-  });
-
-  // Bulk re-expand ALL shots of a beat against the current scene bible. POST
-  // kicks off an in-memory job; the GET below polls it. The poll route uses a
-  // literal 4-segment path (`beat/reexpand/job/:jobId`) so it can't be shadowed
-  // by any 2-segment id-param route (there is no `GET /beat/:id`).
-  router.post('/beat/:beatId/reexpand-shots', async (req, res, next) => {
-    try {
-      const beat = await getBeat(req.projectId, String(req.params.beatId));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const { startReExpandAllJob, BeatBusyError } = await import('./storyboardGenerate.js');
-      try {
-        const jobId = await startReExpandAllJob({ projectId: req.projectId, beatId: beat._id.toString() });
-        res.status(202).json({ job_id: jobId, beat_id: beat._id });
-      } catch (e) {
-        if (e instanceof BeatBusyError) return res.status(409).json({ error: e.message });
-        throw e;
-      }
-    } catch (e) { next(e); }
-  });
-
   // Auto-fill the scene bible from the beat. Synchronous (one LLM pass, a few
-  // seconds — like the dialogue critic), unlike the polling reexpand job above.
+  // seconds — like the dialogue critic).
   router.post('/beat/:beatId/scene-bible/autofill', async (req, res, next) => {
     try {
       const beat = await getBeat(req.projectId, String(req.params.beatId));
@@ -5000,1085 +3894,6 @@ export function buildApiRouter() {
       res.json(result);
     } catch (e) {
       if (e?.status >= 400 && e?.status < 500) return res.status(e.status).json({ error: e.message });
-      next(e);
-    }
-  });
-
-  router.get('/beat/reexpand/job/:jobId', async (req, res, next) => {
-    try {
-      const { getReExpandAllJob } = await import('./storyboardGenerate.js');
-      const job = getReExpandAllJob(req.params.jobId);
-      if (!job) return res.status(404).json({ error: 'job not found' });
-      res.json({ job });
-    } catch (e) { next(e); }
-  });
-
-  router.get('/storyboard/critique/job/:jobId', async (req, res, next) => {
-    try {
-      const { getCritiqueJob } = await import('./storyboardGenerate.js');
-      const job = getCritiqueJob(req.params.jobId);
-      if (!job) return res.status(404).json({ error: 'job not found' });
-      res.json({ job });
-    } catch (e) { next(e); }
-  });
-
-  router.get('/storyboard/frame-generate/job/:jobId', async (req, res, next) => {
-    try {
-      const { getFrameGenerationJob } = await import('./storyboardGenerate.js');
-      const job = getFrameGenerationJob(req.params.jobId);
-      if (!job) return res.status(404).json({ error: 'job not found' });
-      res.json({ job });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Upload a reference image scoped to a single frame.
-  router.post(
-    '/storyboard/:id/frame/:frameId/reference',
-    upload.single('file'),
-    async (req, res, next) => {
-      try {
-        const sbId = await resolveStoryboardId(req);
-        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const frameId = String(req.params.frameId);
-        if (!isOidHex(frameId)) {
-          return res.status(400).json({ error: 'invalid frame id' });
-        }
-        if (!req.file) return res.status(400).json({ error: 'file required' });
-        const sniffed = validateImageBuffer(req.file.buffer);
-        const sb = await getStoryboard(req.projectId, sbId);
-        const file = await uploadGeneratedImage(req.projectId, {
-          buffer: req.file.buffer,
-          contentType: req.file.mimetype,
-          ownerType: 'beat',
-          ownerId: sb.beat_id,
-          filename: safeFilename(
-            req.file.originalname,
-            `storyboard-${sbId}-frame-ref-${Date.now()}.png`,
-          ),
-        });
-        let result;
-        try {
-          result = await addStoryboardFrameReferenceImageViaGateway({
-            projectId: req.projectId,
-            storyboardId: sbId,
-            frameId,
-            imageId: file._id,
-          });
-        } catch (e) {
-          if (/frame not found/i.test(e.message)) {
-            return res.status(404).json({ error: e.message });
-          }
-          throw e;
-        }
-        res.json({ storyboard: result, image: { _id: file._id, content_type: file.content_type } });
-        kickoffImageVisionSeed(file._id, req.file.buffer, sniffed || req.file.mimetype, {
-          ownerType: 'beat',
-          ownerId: sb.beat_id,
-          kind: 'auto',
-        });
-      } catch (e) {
-        next(e);
-      }
-    },
-  );
-
-  router.delete(
-    '/storyboard/:id/frame/:frameId/reference/:imageId',
-    async (req, res, next) => {
-      try {
-        const sbId = await resolveStoryboardId(req);
-        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const frameId = String(req.params.frameId);
-        if (!isOidHex(frameId)) {
-          return res.status(400).json({ error: 'invalid frame id' });
-        }
-        if (!isOidHex(req.params.imageId)) {
-          return res.status(400).json({ error: 'invalid image_id' });
-        }
-        const result = await removeStoryboardFrameReferenceImageViaGateway({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          frameId,
-          imageId: req.params.imageId,
-        });
-        res.json({ storyboard: result });
-      } catch (e) {
-        if (/frame not found/i.test(e.message)) {
-          return res.status(404).json({ error: e.message });
-        }
-        next(e);
-      }
-    },
-  );
-
-  // Attach an already-uploaded GridFS image as a per-frame reference.
-  router.post(
-    '/storyboard/:id/frame/:frameId/reference/attach',
-    async (req, res, next) => {
-      try {
-        const sbId = await resolveStoryboardId(req);
-        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const frameId = String(req.params.frameId);
-        if (!isOidHex(frameId)) {
-          return res.status(400).json({ error: 'invalid frame id' });
-        }
-        const imageId = String(req.body?.image_id || '').trim();
-        if (!isOidHex(imageId)) {
-          return res.status(400).json({ error: 'image_id (24-hex) required' });
-        }
-        const file = await findImageFile(imageId);
-        if (!file) return res.status(404).json({ error: 'image not found' });
-        let result;
-        try {
-          result = await addStoryboardFrameReferenceImageViaGateway({
-            projectId: req.projectId,
-            storyboardId: sbId,
-            frameId,
-            imageId,
-          });
-        } catch (e) {
-          if (/frame not found/i.test(e.message)) {
-            return res.status(404).json({ error: e.message });
-          }
-          throw e;
-        }
-        res.json({
-          storyboard: result,
-          image: { _id: imageId, content_type: file?.contentType || null },
-        });
-      } catch (e) {
-        next(e);
-      }
-    },
-  );
-
-  // Score the storyboard's scene artwork (the beat's Artwork section + each
-  // in-scene character's artwork — NOT the beat's plain reference images) and
-  // append the most relevant that aren't already attached to the chosen frame.
-  router.post(
-    '/storyboard/:id/frame/:frameId/reference/auto-populate',
-    async (req, res, next) => {
-      try {
-        const sbId = await resolveStoryboardId(req);
-        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const frameId = String(req.params.frameId);
-        if (!isOidHex(frameId)) {
-          return res.status(400).json({ error: 'invalid frame id' });
-        }
-        const sb = await getStoryboard(req.projectId, sbId);
-        if (!sb) return res.status(404).json({ error: 'storyboard not found' });
-        const frame = (sb.frames || []).find((f) => f._id.toString() === frameId);
-        if (!frame) return res.status(404).json({ error: 'frame not found' });
-        const shotText = [sb.summary, sb.text_prompt, frame.prompt]
-          .map((s) => stripMarkdown(String(s || '')).trim())
-          .filter(Boolean)
-          .join('\n');
-        const { ids, candidates, scores, referenceScores } = await selectFrameReferencesForShot({
-          projectId: req.projectId,
-          sb,
-          frameText: shotText,
-          // Generous list cap so the per-source floor (2 beat + 2 per character)
-          // survives for multi-character shots; render-time trims best-first.
-          maxTotal: REFERENCE_LIST_MAX,
-        });
-        // Diagnostic: per-source breakdown so the counts are unambiguous —
-        // candidates=<total images> [beat:N, <Character>:N, …] is how many IMAGES
-        // each source offered; selected=<kept> [beat:N, <Character>:N] is how many
-        // were taken from each (the selection floors at 2 per source). scored is
-        // the count the scorer returned; above<T> cleared the relevance cutoff.
-        {
-          const sourceOfId = new Map();
-          const candBySource = new Map(); // source -> image count
-          for (const c of candidates) {
-            const key = String(c.id);
-            if (!sourceOfId.has(key)) sourceOfId.set(key, c.source);
-            candBySource.set(c.source, (candBySource.get(c.source) || 0) + 1);
-          }
-          const selBySource = new Map();
-          for (const id of ids) {
-            const src = sourceOfId.get(String(id));
-            if (src) selBySource.set(src, (selBySource.get(src) || 0) + 1);
-          }
-          // beat first, then characters by descending image count.
-          const order = [...candBySource.entries()].sort((a, b) =>
-            (a[0] === 'beat' ? -1 : b[0] === 'beat' ? 1 : b[1] - a[1]));
-          const candBreakdown = order.map(([s, n]) => `${s}:${n}`).join(', ');
-          const selBreakdown = order
-            .filter(([s]) => selBySource.get(s))
-            .map(([s]) => `${s}:${selBySource.get(s)}`)
-            .join(', ');
-          const charCount = order.filter(([s]) => s !== 'beat').length;
-          const above = [...scores.values()].filter((s) => s >= RELEVANCE_THRESHOLD).length;
-          logger.info(
-            `auto-populate frame ${frameId}: candidates=${candidates.length} images ` +
-              `from beat+${charCount} character(s) [${candBreakdown}], scored=${scores.size}, ` +
-              `above${RELEVANCE_THRESHOLD}=${above}, selected=${ids.length} [${selBreakdown}], ` +
-              `shotLen=${shotText.length}`,
-          );
-        }
-        const existing = new Set((frame.reference_ids || []).map(String));
-        const added = ids.filter((id) => !existing.has(String(id)));
-        const storyboard = added.length
-          ? await setStoryboardFrameReferenceImagesViaGateway({
-              projectId: req.projectId,
-              storyboardId: sbId,
-              frameId,
-              imageIds: ids,
-              mode: 'append',
-              scores: referenceScores,
-            })
-          : sb;
-        res.json({ storyboard, added, total: ids.length });
-      } catch (e) {
-        next(e);
-      }
-    },
-  );
-
-  // Replace a frame's reference list with the exact list provided. Used by
-  // the multi-select picker's Apply button so a single round-trip commits
-  // both additions and removals.
-  router.post(
-    '/storyboard/:id/frame/:frameId/reference/set',
-    async (req, res, next) => {
-      try {
-        const sbId = await resolveStoryboardId(req);
-        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const frameId = String(req.params.frameId);
-        if (!isOidHex(frameId)) {
-          return res.status(400).json({ error: 'invalid frame id' });
-        }
-        const raw = req.body?.image_ids;
-        if (!Array.isArray(raw)) {
-          return res.status(400).json({ error: 'image_ids (array) required' });
-        }
-        const cleaned = [];
-        for (const v of raw) {
-          const s = String(v || '').trim();
-          if (!isOidHex(s)) {
-            return res.status(400).json({ error: `invalid image_id: ${s}` });
-          }
-          cleaned.push(s);
-        }
-        let storyboard;
-        try {
-          storyboard = await setStoryboardFrameReferenceImagesViaGateway({
-            projectId: req.projectId,
-            storyboardId: sbId,
-            frameId,
-            imageIds: cleaned,
-            mode: 'replace',
-          });
-        } catch (e) {
-          if (/frame not found/i.test(e.message)) {
-            return res.status(404).json({ error: e.message });
-          }
-          throw e;
-        }
-        res.json({ storyboard });
-      } catch (e) {
-        next(e);
-      }
-    },
-  );
-
-  // Generate a fresh image from a custom prompt and attach as a per-frame
-  // reference. The picker's Generate tab uses this from the reference editor.
-  router.post(
-    '/storyboard/:id/frame/:frameId/reference/generate',
-    async (req, res, next) => {
-      try {
-        const sbId = await resolveStoryboardId(req);
-        if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-        const frameId = String(req.params.frameId);
-        if (!isOidHex(frameId)) {
-          return res.status(400).json({ error: 'invalid frame id' });
-        }
-        const prompt = String(req.body?.prompt || '').trim();
-        if (!prompt) {
-          return res.status(400).json({ error: 'prompt (non-empty) required' });
-        }
-        if (prompt.length > 2048) {
-          return res.status(400).json({ error: 'prompt must be ≤ 2048 chars' });
-        }
-        const model = normalizeImageModel(req.body?.model);
-        if (!await isValidImageModel(model)) {
-          return res.status(400).json({ error: IMAGE_MODEL_ERROR });
-        }
-        const sb = await getStoryboard(req.projectId, sbId);
-        const { dispatchImageReplace } = await import('./imageReplaceDispatch.js');
-        const result = await dispatchImageReplace({
-          prompt,
-          mode: 'generate',
-          model,
-          discordUser: webDiscordUser(req),
-        });
-        const file = await uploadGeneratedImage(req.projectId, {
-          buffer: result.buffer,
-          contentType: result.contentType,
-          prompt,
-          generatedBy: result.model || model,
-          ownerType: 'beat',
-          ownerId: sb.beat_id,
-          filename: `storyboard-${sbId}-frame-ref-gen-${Date.now()}.png`,
-        });
-        let updated;
-        try {
-          updated = await addStoryboardFrameReferenceImageViaGateway({
-            projectId: req.projectId,
-            storyboardId: sbId,
-            frameId,
-            imageId: file._id,
-          });
-        } catch (e) {
-          if (/frame not found/i.test(e.message)) {
-            return res.status(404).json({ error: e.message });
-          }
-          throw e;
-        }
-        res.json({
-          storyboard: updated,
-          image: { _id: file._id, content_type: file.content_type },
-        });
-        kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
-          ownerType: 'beat',
-          ownerId: sb.beat_id,
-          kind: 'auto',
-        });
-      } catch (e) {
-        if (e?.status >= 400 && e?.status < 600) {
-          return res.status(e.status).json({ error: e.message });
-        }
-        next(e);
-      }
-    },
-  );
-
-  // Add an already-uploaded GridFS image to the frame pool as a new frame.
-  // The Add Frame picker uses this for the Beat / Characters / Artwork /
-  // Library tabs when the user picks an existing image.
-  router.post('/storyboard/:id/frame/from-id', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const imageId = String(req.body?.image_id || '').trim();
-      if (!isOidHex(imageId)) {
-        return res.status(400).json({ error: 'image_id (24-hex) required' });
-      }
-      const file = await findImageFile(imageId);
-      if (!file) return res.status(404).json({ error: 'image not found' });
-      let result;
-      let frameId;
-      try {
-        ({ storyboard: result, frameId } = await addStoryboardFrameViaGateway({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          imageId,
-        }));
-      } catch (e) {
-        if (/maximum/i.test(e.message)) return res.status(409).json({ error: e.message });
-        throw e;
-      }
-      res.json({
-        storyboard: result,
-        frame_id: frameId.toString(),
-        image: { _id: imageId, content_type: file.contentType || null },
-      });
-      if (result?.beat_id) {
-        announceStoryboardMedia({
-          req,
-          beat: await getBeat(req.projectId, String(result.beat_id)),
-          storyboard: result,
-          verb: 'added a frame to',
-          imageFileId: imageId,
-        });
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Generate an image from a custom prompt and add it as a new frame. No scene
-  // context, no references — pure text-to-image. The Add Frame picker's
-  // Generate tab uses this.
-  router.post('/storyboard/:id/frame/generate', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const prompt = String(req.body?.prompt || '').trim();
-      if (!prompt) {
-        return res.status(400).json({ error: 'prompt (non-empty) required' });
-      }
-      if (prompt.length > 2048) {
-        return res.status(400).json({ error: 'prompt must be ≤ 2048 chars' });
-      }
-      const model = normalizeImageModel(req.body?.model);
-      if (!await isValidImageModel(model)) {
-        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
-      }
-      const sb = await getStoryboard(req.projectId, sbId);
-      const { dispatchStoryboardImage } = await import('./storyboardImageDispatch.js');
-      const result = await dispatchStoryboardImage({
-        prompt,
-        model,
-        inputImages: [],
-        mode: 'generate',
-      });
-      const file = await uploadGeneratedImage(req.projectId, {
-        buffer: result.buffer,
-        contentType: result.contentType,
-        prompt,
-        generatedBy: result.model || model,
-        ownerType: 'beat',
-        ownerId: sb.beat_id,
-        filename: `storyboard-${sbId}-frame-gen-${Date.now()}.png`,
-      });
-      let updated;
-      let frameId;
-      try {
-        ({ storyboard: updated, frameId } = await addStoryboardFrameViaGateway({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          imageId: file._id,
-          prompt,
-        }));
-      } catch (e) {
-        if (/maximum/i.test(e.message)) return res.status(409).json({ error: e.message });
-        throw e;
-      }
-      res.json({
-        storyboard: updated,
-        frame_id: frameId.toString(),
-        image: { _id: file._id, content_type: file.content_type },
-      });
-      announceStoryboardMedia({
-        req,
-        beat: await getBeat(req.projectId, String(sb.beat_id)),
-        storyboard: updated || sb,
-        verb: 'generated a frame on',
-        imageFileId: file._id,
-        prompt,
-      });
-      kickoffImageVisionSeed(file._id, result.buffer, result.contentType, {
-        ownerType: 'beat',
-        ownerId: sb.beat_id,
-        kind: 'auto',
-      });
-    } catch (e) {
-      if (e?.status >= 400 && e?.status < 600) {
-        return res.status(e.status).json({ error: e.message });
-      }
-      next(e);
-    }
-  });
-
-  router.post('/storyboard/:id/audio', upload.single('file'), async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      if (!req.file) return res.status(400).json({ error: 'file required' });
-      let ct = req.file.mimetype || 'audio/mpeg';
-      if (!ct.startsWith('audio/')) {
-        // Recover a codec-qualified type the multipart parser couldn't read
-        // (see the video-upload route) from the filename extension.
-        const inferred = contentTypeFromFilename(req.file.originalname);
-        if (inferred?.startsWith('audio/')) ct = inferred;
-        else return res.status(400).json({ error: 'file must be audio/*' });
-      }
-      const sb = await getStoryboard(req.projectId, sbId);
-      let audio;
-      try {
-        audio = await normalizeUploadedAudioToMp3({
-          file: req.file,
-          contentType: ct,
-          fallbackName: `storyboard-${sbId}-audio-${Date.now()}.bin`,
-        });
-      } catch (e) {
-        const handled = sendAudioTranscodeError(res, e);
-        if (handled) return handled;
-        throw e;
-      }
-      const file = await uploadAttachmentBuffer(req.projectId, {
-        buffer: audio.buffer,
-        filename: audio.filename,
-        contentType: audio.contentType,
-        ownerType: 'beat',
-        ownerId: sb.beat_id,
-      });
-      const result = await setStoryboardAudioViaGateway({
-        projectId: req.projectId,
-        storyboardId: sbId,
-        audioFileId: file._id,
-      });
-      res.json({
-        storyboard: result,
-        audio: {
-          _id: file._id,
-          filename: file.filename,
-          content_type: file.content_type,
-          size: file.size,
-        },
-      });
-      announceStoryboardMedia({
-        req,
-        beat: await getBeat(req.projectId, String(sb.beat_id)),
-        storyboard: result || sb,
-        verb: 'added audio to',
-        mediaFileId: file._id,
-        mediaLabel: file.filename || 'audio',
-      });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.delete('/storyboard/:id/audio', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const result = await setStoryboardAudioViaGateway({
-        projectId: req.projectId,
-        storyboardId: sbId,
-        audioFileId: null,
-      });
-      res.json({ storyboard: result });
-      if (result?.beat_id) {
-        announceStoryboardMedia({
-          req,
-          beat: await getBeat(req.projectId, String(result.beat_id)),
-          storyboard: result,
-          verb: 'deleted audio from',
-        });
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Source video upload for video-to-video models. Distinct from the
-  // /video/generate flow: this saves the bytes the user wants to transform,
-  // and a later /video/generate call passes them to fal as the v2v input.
-  // The generated MP4 (if any) still lives under sb.video_file_id and is
-  // managed by DELETE /storyboard/:id/video.
-  router.post('/storyboard/:id/video-upload', upload.single('file'), async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      if (!req.file) return res.status(400).json({ error: 'file required' });
-      let ct = req.file.mimetype || 'video/mp4';
-      if (!ct.startsWith('video/')) {
-        // Some browsers send a codec-qualified type (e.g.
-        // `video/webm;codecs=vp9,opus`) whose unquoted comma defeats the
-        // multipart parser, leaving us with `text/plain`. Recover from the
-        // filename extension before rejecting.
-        const inferred = contentTypeFromFilename(req.file.originalname);
-        if (inferred?.startsWith('video/')) ct = inferred;
-        else return res.status(400).json({ error: 'file must be video/*' });
-      }
-      const sb = await getStoryboard(req.projectId, sbId);
-      const file = await uploadAttachmentBuffer(req.projectId, {
-        buffer: req.file.buffer,
-        filename: safeFilename(
-          req.file.originalname,
-          `storyboard-${sbId}-video-${Date.now()}.bin`,
-        ),
-        contentType: ct,
-        ownerType: 'beat',
-        ownerId: sb.beat_id,
-      });
-      const result = await setStoryboardUploadedVideoViaGateway({
-        projectId: req.projectId,
-        storyboardId: sbId,
-        videoFileId: file._id,
-      });
-      res.json({
-        storyboard: result,
-        video: {
-          _id: file._id,
-          filename: file.filename,
-          content_type: file.content_type,
-          size: file.size,
-        },
-      });
-      announceStoryboardMedia({
-        req,
-        beat: await getBeat(req.projectId, String(sb.beat_id)),
-        storyboard: result || sb,
-        verb: 'uploaded source video to',
-        mediaFileId: file._id,
-        mediaLabel: file.filename || 'video',
-      });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.delete('/storyboard/:id/video-upload', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const result = await setStoryboardUploadedVideoViaGateway({
-        projectId: req.projectId,
-        storyboardId: sbId,
-        videoFileId: null,
-      });
-      res.json({ storyboard: result });
-      if (result?.beat_id) {
-        announceStoryboardMedia({
-          req,
-          beat: await getBeat(req.projectId, String(result.beat_id)),
-          storyboard: result,
-          verb: 'removed uploaded source video from',
-        });
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // List every audio- or video-typed attachment owned by a beat or character
-  // in this project. Powers the "Reference" tab in the storyboard
-  // Add Audio / Add Video dialogs: pick something already uploaded
-  // elsewhere instead of re-uploading. The storyboard's currently-attached
-  // file (audio_file_id / video_upload_file_id) is excluded so it doesn't
-  // show up as a reference of itself.
-  router.get('/storyboard/:id/media-references', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const sb = await getStoryboard(req.projectId, sbId);
-      const type = String(req.query?.type || '').toLowerCase();
-      if (type !== 'audio' && type !== 'video') {
-        return res.status(400).json({ error: 'type must be "audio" or "video"' });
-      }
-      const currentFileId =
-        type === 'audio' ? sb.audio_file_id : sb.video_upload_file_id;
-      const excludeStr = currentFileId ? String(currentFileId) : null;
-      const prefix = `${type}/`;
-
-      const plot = await getPlot(req.projectId);
-      const characters = await listCharacters(req.projectId);
-      const refs = [];
-
-      for (const beat of plot?.beats || []) {
-        const beatName =
-          stripMarkdown(beat.name || '').trim() ||
-          (beat.order != null ? `Beat ${beat.order}` : '(unnamed beat)');
-        for (const att of beat.attachments || []) {
-          if (!att?._id) continue;
-          if (excludeStr && String(att._id) === excludeStr) continue;
-          const ct = String(att.content_type || '');
-          if (!ct.startsWith(prefix)) continue;
-          refs.push({
-            attachment_id: att._id,
-            filename: att.filename || '',
-            content_type: ct,
-            size: att.size || 0,
-            owner_type: 'beat',
-            owner_id: beat._id,
-            owner_name: beatName,
-            owner_order: beat.order ?? null,
-            uploaded_at: att.uploaded_at || null,
-          });
-        }
-      }
-
-      for (const c of characters || []) {
-        const charName =
-          stripMarkdown(c.name || '').trim() || '(unnamed character)';
-        for (const att of c.attachments || []) {
-          if (!att?._id) continue;
-          if (excludeStr && String(att._id) === excludeStr) continue;
-          const ct = String(att.content_type || '');
-          if (!ct.startsWith(prefix)) continue;
-          refs.push({
-            attachment_id: att._id,
-            filename: att.filename || '',
-            content_type: ct,
-            size: att.size || 0,
-            owner_type: 'character',
-            owner_id: c._id,
-            owner_name: charName,
-            owner_order: null,
-            uploaded_at: att.uploaded_at || null,
-          });
-        }
-      }
-
-      refs.sort((a, b) => {
-        const ta = a.uploaded_at ? new Date(a.uploaded_at).getTime() : 0;
-        const tb = b.uploaded_at ? new Date(b.uploaded_at).getTime() : 0;
-        return tb - ta;
-      });
-
-      res.json({ references: refs });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Every reusable source video in the project, for the "Storyboard" tab in
-  // the Add Video dialog. Two kinds, merged into one list so the user can pick
-  // any of them as the video-to-video source for this shot:
-  //   kind:'generated'  — a rendered clip on any shot (sb.video_file_id),
-  //                       INCLUDING the current shot (feed its own output back
-  //                       in for v2v iteration; flagged is_current_shot).
-  //   kind:'reference'  — a video attachment uploaded to any beat or character
-  //                       (the same superset as the Reference tab).
-  // Every item carries `video_file_id`, an attachments-bucket GridFS id used
-  // both to render a <video> thumbnail (/attachment/:id) and to pick it
-  // (/video-upload/from-attachment copies the bytes by id regardless of kind).
-  router.get('/storyboard/:id/video-source-storyboards', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const currentSb = await getStoryboard(req.projectId, sbId);
-
-      const plot = await getPlot(req.projectId);
-      const beatMetaById = new Map();
-      for (const b of plot?.beats || []) {
-        if (b._id) {
-          beatMetaById.set(b._id.toString(), {
-            name:
-              stripMarkdown(b.name || '').trim() ||
-              (b.order != null ? `Beat ${b.order}` : '(unnamed beat)'),
-            order: b.order ?? null,
-          });
-        }
-      }
-
-      // 1. Generated videos on every shot, including the current one.
-      const all = await listStoryboards({ projectId: req.projectId });
-      const generated = [];
-      for (const sb of all) {
-        if (!sb.video_file_id) continue;
-        const beatKey = sb.beat_id?.toString?.() || '';
-        const beatMeta = beatMetaById.get(beatKey) || {
-          name: '(unknown beat)',
-          order: null,
-        };
-        generated.push({
-          kind: 'generated',
-          storyboard_id: sb._id,
-          storyboard_order: sb.order ?? null,
-          is_current_shot: sb._id.toString() === sbId,
-          beat_id: sb.beat_id,
-          beat_name: beatMeta.name,
-          beat_order: beatMeta.order,
-          video_file_id: sb.video_file_id,
-          video_duration_seconds: sb.video_duration_seconds ?? null,
-          video_model_label: sb.video_model_label || null,
-          video_generated_at: sb.video_generated_at || null,
-          // First/last frame of the pool: an instant poster while the <video>
-          // element loads its own frame.
-          start_frame_id: sb.frames?.[0]?.image_id || null,
-          end_frame_id: sb.frames?.length
-            ? sb.frames[sb.frames.length - 1].image_id || null
-            : null,
-          summary: stripMarkdown(sb.summary || '').trim(),
-        });
-      }
-      generated.sort((a, b) => {
-        const ba = a.beat_order ?? Infinity;
-        const bb = b.beat_order ?? Infinity;
-        if (ba !== bb) return ba - bb;
-        const sa = a.storyboard_order ?? Infinity;
-        const sb_ = b.storyboard_order ?? Infinity;
-        return sa - sb_;
-      });
-
-      // 2. Uploaded video references on any beat or character. Exclude the
-      //    current shot's own attached source so it isn't a reference of itself.
-      const excludeStr = currentSb?.video_upload_file_id
-        ? String(currentSb.video_upload_file_id)
-        : null;
-      const characters = await listCharacters(req.projectId);
-      const references = [];
-      for (const beat of plot?.beats || []) {
-        const beatName =
-          stripMarkdown(beat.name || '').trim() ||
-          (beat.order != null ? `Beat ${beat.order}` : '(unnamed beat)');
-        for (const att of beat.attachments || []) {
-          if (!att?._id) continue;
-          if (excludeStr && String(att._id) === excludeStr) continue;
-          const ct = String(att.content_type || '');
-          if (!ct.startsWith('video/')) continue;
-          references.push({
-            kind: 'reference',
-            video_file_id: att._id,
-            filename: att.filename || '',
-            content_type: ct,
-            size: att.size || 0,
-            owner_type: 'beat',
-            owner_id: beat._id,
-            owner_name: beatName,
-            owner_order: beat.order ?? null,
-            uploaded_at: att.uploaded_at || null,
-          });
-        }
-      }
-      for (const c of characters || []) {
-        const charName =
-          stripMarkdown(c.name || '').trim() || '(unnamed character)';
-        for (const att of c.attachments || []) {
-          if (!att?._id) continue;
-          if (excludeStr && String(att._id) === excludeStr) continue;
-          const ct = String(att.content_type || '');
-          if (!ct.startsWith('video/')) continue;
-          references.push({
-            kind: 'reference',
-            video_file_id: att._id,
-            filename: att.filename || '',
-            content_type: ct,
-            size: att.size || 0,
-            owner_type: 'character',
-            owner_id: c._id,
-            owner_name: charName,
-            owner_order: null,
-            uploaded_at: att.uploaded_at || null,
-          });
-        }
-      }
-      references.sort((a, b) => {
-        const ta = a.uploaded_at ? new Date(a.uploaded_at).getTime() : 0;
-        const tb = b.uploaded_at ? new Date(b.uploaded_at).getTime() : 0;
-        return tb - ta;
-      });
-
-      // Generated clips first (by beat/shot), then uploaded references.
-      res.json({ sources: [...generated, ...references] });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Copy an existing beat-/character-owned attachment onto this storyboard
-  // as an independent audio file. Mirrors /audio/from-dialog: deleting the
-  // source attachment will not affect the storyboard's copy.
-  router.post('/storyboard/:id/audio/from-attachment', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const attachmentId = req.body?.attachment_id;
-      if (!isOidHex(String(attachmentId || ''))) {
-        return res.status(400).json({ error: 'attachment_id required' });
-      }
-      try {
-        const result = await copyAttachmentToStoryboardMediaViaGateway({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          attachmentId: String(attachmentId),
-          kind: 'audio',
-        });
-        res.json(result);
-        const sb = result?.storyboard || null;
-        if (sb?.beat_id) {
-          announceStoryboardMedia({
-            req,
-            beat: await getBeat(req.projectId, String(sb.beat_id)),
-            storyboard: sb,
-            verb: 'added audio (from a reference) to',
-            mediaFileId: sb.audio_file_id || null,
-            mediaLabel: result?.audio?.filename || 'audio',
-          });
-        }
-      } catch (e) {
-        if (/not found|content type|not audio/i.test(e.message || '')) {
-          return res.status(400).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Same idea for source video uploads.
-  router.post('/storyboard/:id/video-upload/from-attachment', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const attachmentId = req.body?.attachment_id;
-      if (!isOidHex(String(attachmentId || ''))) {
-        return res.status(400).json({ error: 'attachment_id required' });
-      }
-      try {
-        const result = await copyAttachmentToStoryboardMediaViaGateway({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          attachmentId: String(attachmentId),
-          kind: 'video',
-        });
-        res.json(result);
-        const sb = result?.storyboard || null;
-        if (sb?.beat_id) {
-          announceStoryboardMedia({
-            req,
-            beat: await getBeat(req.projectId, String(sb.beat_id)),
-            storyboard: sb,
-            verb: 'added source video (from a reference) to',
-            mediaFileId: sb.video_upload_file_id || null,
-            mediaLabel: result?.video?.filename || 'video',
-          });
-        }
-      } catch (e) {
-        if (/not found|content type|not video/i.test(e.message || '')) {
-          return res.status(400).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // fal.ai video generation. Returns 202 + { job_id } immediately; the SPA
-  // opens an EventSource at /storyboard/:id/video-job/:jobId/events for
-  // pushed status updates. `model_id` chooses which fal model — see
-  // src/fal/videoModels.js for the registered list; defaults to the
-  // configured default (kling-3-pro).
-  // Build a preview of the exact payload the orchestrator would send to fal.
-  // Returns the resolved prompt, duration, and per-input file metadata
-  // (image_id / attachment_id, filename, content_type, size) plus a payload
-  // object with screenplay-preview:// sentinel URLs in place of fal.media
-  // URLs. The SPA renders this so the user can confirm exactly which assets
-  // are about to leave the server before /video/generate is called for real.
-  router.post('/storyboard/:id/video/preview', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const prompt =
-        typeof req.body?.prompt === 'string' && req.body.prompt.trim()
-          ? req.body.prompt.trim()
-          : null;
-      if (prompt && prompt.length > 2000) {
-        return res.status(400).json({ error: 'prompt must be ≤ 2000 chars' });
-      }
-      const rawDuration = req.body?.duration_seconds;
-      let durationSeconds = null;
-      if (rawDuration != null && rawDuration !== '') {
-        const n = Number(rawDuration);
-        if (!Number.isFinite(n) || n < 1 || n > 15) {
-          return res
-            .status(400)
-            .json({ error: 'duration_seconds must be a number between 1 and 15' });
-        }
-        durationSeconds = n;
-      }
-      const modelId =
-        typeof req.body?.model_id === 'string' && req.body.model_id.trim()
-          ? req.body.model_id.trim()
-          : null;
-      const generateAudio =
-        req.body?.generate_audio === undefined ? true : Boolean(req.body.generate_audio);
-      const includeDirectorNotes =
-        req.body?.include_director_notes === undefined
-          ? true
-          : Boolean(req.body.include_director_notes);
-      const resolution = parseResolutionField(req.body?.resolution, res);
-      if (resolution === ERR) return; // response already sent
-      const fps = parseFpsField(req.body?.fps, res);
-      if (fps === ERR) return; // response already sent
-      try {
-        const preview = await buildVideoPayloadPreview({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          modelId,
-          prompt,
-          durationSeconds,
-          generateAudio,
-          resolution,
-          fps,
-          includeDirectorNotes,
-          frameAssignment: parseFrameAssignment(req.body?.frame_assignment),
-        });
-        res.json(preview);
-      } catch (e) {
-        if (e instanceof MissingInputsError) {
-          return res.status(400).json({ error: e.message, missing: e.missing });
-        }
-        if (e instanceof FalNotConfiguredError) {
-          return res.status(503).json({ error: e.message });
-        }
-        if (e instanceof UnknownVideoModelError) {
-          return res.status(400).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.post('/storyboard/:id/video/generate', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const prompt =
-        typeof req.body?.prompt === 'string' && req.body.prompt.trim()
-          ? req.body.prompt.trim()
-          : null;
-      if (prompt && prompt.length > 2000) {
-        return res.status(400).json({ error: 'prompt must be ≤ 2000 chars' });
-      }
-      const rawDuration = req.body?.duration_seconds;
-      let durationSeconds = null;
-      if (rawDuration != null && rawDuration !== '') {
-        const n = Number(rawDuration);
-        if (!Number.isFinite(n) || n < 1 || n > 15) {
-          return res
-            .status(400)
-            .json({ error: 'duration_seconds must be a number between 1 and 15' });
-        }
-        durationSeconds = n;
-      }
-      const modelId =
-        typeof req.body?.model_id === 'string' && req.body.model_id.trim()
-          ? req.body.model_id.trim()
-          : null;
-      const generateAudio =
-        req.body?.generate_audio === undefined ? true : Boolean(req.body.generate_audio);
-      const includeDirectorNotes =
-        req.body?.include_director_notes === undefined
-          ? true
-          : Boolean(req.body.include_director_notes);
-      const resolution = parseResolutionField(req.body?.resolution, res);
-      if (resolution === ERR) return; // response already sent
-      const fps = parseFpsField(req.body?.fps, res);
-      if (fps === ERR) return; // response already sent
-      try {
-        const { job_id } = await startVideoGenerationJob({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          modelId,
-          prompt,
-          durationSeconds,
-          generateAudio,
-          resolution,
-          fps,
-          includeDirectorNotes,
-          frameAssignment: parseFrameAssignment(req.body?.frame_assignment),
-          announceUsername: req?.session?.username || null,
-        });
-        res.status(202).json({ job_id });
-      } catch (e) {
-        if (e instanceof VideoBeatBusyError) {
-          return res.status(409).json({ error: e.message });
-        }
-        if (e instanceof MissingInputsError) {
-          return res.status(400).json({ error: e.message, missing: e.missing });
-        }
-        if (e instanceof FalNotConfiguredError) {
-          return res.status(503).json({ error: e.message });
-        }
-        if (e instanceof UnknownVideoModelError) {
-          return res.status(400).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
       next(e);
     }
   });
@@ -6282,237 +4097,6 @@ export function buildApiRouter() {
     }
   });
 
-  // Discard the current video on a storyboard scene. Deletes the GridFS
-  // attachment and clears video_file_id. The fal request can't be recalled,
-  // but its output URL expires on fal's storage TTL anyway.
-  router.delete('/storyboard/:id/video', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const sb = await getStoryboard(req.projectId, sbId);
-      const oldId = sb?.video_file_id || null;
-      const result = await setStoryboardVideoViaGateway({
-        projectId: req.projectId,
-        storyboardId: sbId,
-        videoFileId: null,
-      });
-      if (oldId) {
-        try {
-          await deleteAttachment(oldId);
-        } catch (e) {
-          logger.warn(`storyboard video delete: GridFS cleanup ${oldId} failed: ${e.message}`);
-        }
-      }
-      res.json({ storyboard: result });
-      if (result?.beat_id) {
-        announceStoryboardMedia({
-          req,
-          beat: await getBeat(req.projectId, String(result.beat_id)),
-          storyboard: result,
-          verb: 'deleted video from',
-        });
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Copy a dialog item's audio onto this scene as an independent file. The
-  // dialog and scene keep separate GridFS files — deleting one does not
-  // affect the other.
-  router.post('/storyboard/:id/audio/from-dialog', async (req, res, next) => {
-    try {
-      const sbId = await resolveStoryboardId(req);
-      if (!sbId) return res.status(404).json({ error: 'storyboard not found' });
-      const dialogId = req.body?.dialog_id;
-      if (!isOidHex(String(dialogId || ''))) {
-        return res.status(400).json({ error: 'dialog_id required' });
-      }
-      try {
-        const result = await copyDialogAudioToStoryboardViaGateway({
-          projectId: req.projectId,
-          storyboardId: sbId,
-          dialogId: String(dialogId),
-        });
-        res.json(result);
-        const sb = result?.storyboard || result;
-        if (sb?.beat_id) {
-          announceStoryboardMedia({
-            req,
-            beat: await getBeat(req.projectId, String(sb.beat_id)),
-            storyboard: sb,
-            verb: 'added audio (from a dialog) to',
-            mediaFileId: sb.audio_file_id || null,
-            mediaLabel: 'audio',
-          });
-        }
-      } catch (e) {
-        if (
-          /no audio to copy|different beats|not found/i.test(e.message || '')
-        ) {
-          return res.status(400).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Kick off auto-generation for a beat. Runs the generation pipeline in the
-  // background so the request returns quickly; the SPA listens for stateless
-  // ping broadcasts on storyboards:<beatId> and refetches as items appear.
-  router.post('/storyboards/generate', async (req, res, next) => {
-    try {
-      const beatRef = req.body?.beat_id;
-      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const target = Number(req.body?.count) > 0 ? Number(req.body.count) : null;
-      const imageModel = normalizeImageModel(req.body?.image_model);
-      if (!await isValidImageModel(imageModel)) {
-        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
-      }
-      const direction =
-        typeof req.body?.direction === 'string' ? req.body.direction : '';
-      const { startStoryboardGenerationJob, BeatBusyError } = await import(
-        './storyboardGenerate.js'
-      );
-      try {
-        const jobId = await startStoryboardGenerationJob({
-          projectId: req.projectId,
-          beatId: beat._id.toString(),
-          targetCount: target,
-          imageModel,
-          direction,
-          announceUsername: req?.session?.username || null,
-        });
-        res.status(202).json({ job_id: jobId, beat_id: beat._id });
-      } catch (e) {
-        if (e instanceof BeatBusyError) {
-          return res.status(409).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // LLM-suggested frame count for a beat. Returns { count, reason } where
-  // count may be null on failure (missing API key, model didn't tool-call,
-  // etc.) and reason carries either the rationale or an error code.
-  router.post('/storyboards/analyze-count', async (req, res, next) => {
-    try {
-      const beatRef = req.body?.beat_id;
-      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const direction =
-        typeof req.body?.direction === 'string' ? req.body.direction : '';
-      const { findCharactersInBeat } = await import('./storyboardGenerate.js');
-      const characters = await findCharactersInBeat(req.projectId, beat);
-      const { analyzeStoryboardCount } = await import(
-        '../llm/storyboardCountAnalyze.js'
-      );
-      const result = await analyzeStoryboardCount({ beat, characters, direction });
-      res.json(result);
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Returns the exact Pass 1 (scene-plan) system + user messages that would be
-  // sent to the planner with the current settings, plus the Pass 2
-  // (shot-expand) system prompt. No LLM call; powers the "Prompt Preview" tab
-  // on the storyboard generation dialog. The Pass-2 user message can't be
-  // previewed deterministically (it depends on the Pass-1 output), so only its
-  // system prompt is surfaced.
-  router.post('/storyboards/preview-prompt', async (req, res, next) => {
-    try {
-      const beatRef = req.body?.beat_id;
-      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const direction =
-        typeof req.body?.direction === 'string' ? req.body.direction : '';
-      const count =
-        Number(req.body?.count) > 0 ? Number(req.body.count) : null;
-      const {
-        findCharactersInBeat,
-        buildScenePlanUserText,
-        loadDirectorNotesForPlanner,
-        loadDialogsForPlanner,
-        loadDirectorialVoice,
-        SCENE_PLAN_SYSTEM_PROMPT,
-        SHOT_EXPAND_SYSTEM_PROMPT,
-      } = await import('./storyboardGenerate.js');
-      const characters = await findCharactersInBeat(req.projectId, beat);
-      const directorNotes = await loadDirectorNotesForPlanner(req.projectId);
-      const dialogs = await loadDialogsForPlanner(req.projectId, beat._id);
-      const directorialVoice = await loadDirectorialVoice(req.projectId);
-      const user = buildScenePlanUserText({
-        beat,
-        characters,
-        targetCount: count,
-        direction,
-        directorNotes,
-        dialogs,
-        directorialVoice,
-      });
-      // `system`/`user` describe Pass 1 (scene plan), preserving the original
-      // single-prompt response shape; `expand_system` adds the Pass-2 system
-      // prompt as a new field.
-      res.json({
-        system: SCENE_PLAN_SYSTEM_PROMPT,
-        user,
-        expand_system: SHOT_EXPAND_SYSTEM_PROMPT,
-      });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.get('/storyboards/generate/:jobId', async (req, res, next) => {
-    try {
-      const { getStoryboardGenerationJob } = await import('./storyboardGenerate.js');
-      const job = getStoryboardGenerationJob(req.params.jobId);
-      if (!job) return res.status(404).json({ error: 'job not found' });
-      res.json({ job });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Standalone advisory readiness check (also runs automatically as the first
-  // phase of every generate job). Read-only — no beat lock. 202 + poll.
-  router.post('/storyboards/readiness', async (req, res, next) => {
-    try {
-      const beatId = String(req.body?.beat_id || '');
-      if (!isOidHex(beatId)) return res.status(400).json({ error: 'beat_id (24-hex) required' });
-      const { startReadinessJob } = await import('./storyboardReadiness.js');
-      const result = await startReadinessJob({ projectId: req.projectId, beatId });
-      res.status(202).json(result);
-    } catch (e) {
-      if (e?.status === 404) return res.status(404).json({ error: e.message });
-      next(e);
-    }
-  });
-
-  router.get('/storyboards/readiness/:jobId', async (req, res, next) => {
-    try {
-      const { getReadinessJob } = await import('./storyboardReadiness.js');
-      const job = getReadinessJob(req.params.jobId);
-      if (!job) return res.status(404).json({ error: 'job not found' });
-      if (job.project_id && String(job.project_id) !== String(req.projectId)) {
-        return res.status(404).json({ error: 'job not found' });
-      }
-      res.json({ job });
-    } catch (e) {
-      next(e);
-    }
-  });
-
   // Poll an image-sheet job started via POST /:host/:id/image-sheet. Job ids are
   // global (not host-scoped), so verify the job belongs to the caller's project
   // before returning it.
@@ -6537,176 +4121,6 @@ export function buildApiRouter() {
     try {
       const { CHARACTER_SHEET_SHOTS } = await import('./characterSheetShots.js');
       res.json({ shots: CHARACTER_SHEET_SHOTS.map((s) => ({ name: s.name, hint: s.fragment })) });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Wipe every storyboard for a beat (page-level "Delete all" button).
-  router.post('/storyboards/clear', async (req, res, next) => {
-    try {
-      const beatRef = req.body?.beat_id;
-      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const { isBeatLocked } = await import('./beatLocks.js');
-      if (isBeatLocked(beat._id)) {
-        return res
-          .status(409)
-          .json({ error: 'Storyboard work in progress for this beat; try again' });
-      }
-      const { deleteAllStoryboardsForBeatViaGateway } = await import('./gateway.js');
-      const result = await deleteAllStoryboardsForBeatViaGateway({ projectId: req.projectId, beatId: beat._id });
-      res.json({ ...result, beat_id: beat._id.toString() });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Page-level "Generate all images": render every shot's missing start frame.
-  // Async — returns 202 + { job_id, planned }; SPA polls
-  // /storyboards/generate-images/:jobId.
-  router.post('/storyboards/generate-images', async (req, res, next) => {
-    try {
-      const beatRef = req.body?.beat_id;
-      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const imageModel = normalizeImageModel(req.body?.image_model);
-      if (!await isValidImageModel(imageModel)) {
-        return res.status(400).json({ error: IMAGE_MODEL_ERROR });
-      }
-      const autoReferences = req.body?.auto_references !== false; // default on
-      const { isBeatLocked } = await import('./beatLocks.js');
-      if (isBeatLocked(beat._id)) {
-        return res
-          .status(409)
-          .json({ error: 'Storyboard work in progress for this beat; try again' });
-      }
-      const { startBulkFrameGenerationJob, BeatBusyError } = await import('./storyboardGenerate.js');
-      try {
-        const { jobId, planned } = await startBulkFrameGenerationJob({
-          projectId: req.projectId,
-          beatId: beat._id,
-          imageModel,
-          autoReferences,
-        });
-        res.status(202).json({ job_id: jobId, planned, beat_id: beat._id.toString() });
-      } catch (e) {
-        if (e instanceof BeatBusyError) {
-          return res.status(409).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.get('/storyboards/generate-images/:jobId', async (req, res, next) => {
-    try {
-      const { getImageGenerationJob } = await import('./storyboardGenerate.js');
-      const job = getImageGenerationJob(req.params.jobId);
-      if (!job) return res.status(404).json({ error: 'job not found' });
-      res.json({ job });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Page-level "Assign reference images": wipe every frame's references in the
-  // beat and re-run the scored auto-suggest pipeline for each. Async job; poll
-  // GET /storyboards/reassign-references/:jobId.
-  router.post('/storyboards/reassign-references', async (req, res, next) => {
-    try {
-      const beatRef = req.body?.beat_id;
-      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const { isBeatLocked } = await import('./beatLocks.js');
-      if (isBeatLocked(beat._id)) {
-        return res.status(409).json({ error: 'Storyboard work in progress for this beat; try again' });
-      }
-      const { startReassignReferencesJob } = await import('./storyboardReferenceJobs.js');
-      const { BeatBusyError } = await import('./storyboardGenerate.js');
-      try {
-        const result = await startReassignReferencesJob({ projectId: req.projectId, beatId: beat._id });
-        res.status(202).json(result);
-      } catch (e) {
-        if (e instanceof BeatBusyError) return res.status(409).json({ error: e.message });
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.get('/storyboards/reassign-references/:jobId', async (req, res, next) => {
-    try {
-      const { getReassignReferencesJob } = await import('./storyboardReferenceJobs.js');
-      const job = getReassignReferencesJob(req.params.jobId);
-      if (!job) return res.status(404).json({ error: 'job not found' });
-      if (job.project_id && String(job.project_id) !== String(req.projectId)) {
-        return res.status(404).json({ error: 'job not found' });
-      }
-      res.json({ job });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Page-level "Delete all images": clear every generated frame image in the beat.
-  // Synchronous; keeps prompts + references.
-  router.post('/storyboards/clear-images', async (req, res, next) => {
-    try {
-      const beatRef = req.body?.beat_id;
-      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const { isBeatLocked } = await import('./beatLocks.js');
-      if (isBeatLocked(beat._id)) {
-        return res
-          .status(409)
-          .json({ error: 'Storyboard work in progress for this beat; try again' });
-      }
-      const { clearAllFrameImagesForBeatViaGateway } = await import('./gateway.js');
-      const result = await clearAllFrameImagesForBeatViaGateway({ projectId: req.projectId, beatId: beat._id });
-      res.json({ ...result, beat_id: beat._id.toString() });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // LLM-driven batch edit. Body: { beat_id, instructions }. Synchronous —
-  // returns the new storyboard list once Anthropic + apply have completed.
-  router.post('/storyboards/edit', async (req, res, next) => {
-    try {
-      const beatRef = req.body?.beat_id;
-      const instructions = req.body?.instructions;
-      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      if (!instructions || typeof instructions !== 'string' || !instructions.trim()) {
-        return res.status(400).json({ error: 'instructions (non-empty string) required' });
-      }
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const { isBeatLocked, withBeatLock } = await import('./beatLocks.js');
-      if (isBeatLocked(beat._id)) {
-        return res
-          .status(409)
-          .json({ error: 'Storyboard work in progress for this beat; try again' });
-      }
-      const { editStoryboard, InvalidOpsError } = await import('./storyboardEdit.js');
-      try {
-        const result = await withBeatLock(beat._id, () =>
-          editStoryboard({ projectId: req.projectId, beatId: beat._id, instructions }),
-        );
-        res.json(result);
-      } catch (e) {
-        if (e instanceof InvalidOpsError) {
-          return res.status(422).json({ error: e.message, details: e.details });
-        }
-        throw e;
-      }
     } catch (e) {
       next(e);
     }
@@ -7015,357 +4429,6 @@ export function buildApiRouter() {
       const { deleteAllDialogsForBeatViaGateway } = await import('./gateway.js');
       const result = await deleteAllDialogsForBeatViaGateway({ projectId: req.projectId, beatId: beat._id });
       res.json({ ...result, beat_id: beat._id.toString() });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // ── video prompts (Prompts tab) ─────────────────────────────────────────
-  //
-  // The standalone beat → prompts → video path. Rows live in `video_prompts`
-  // (src/mongo/videoPrompts.js), text edits flow through the
-  // video_prompts:<beatId> y-doc room, scalars (duration, ordered reference
-  // images) and the rendered video are patched through the gateway.
-
-  async function resolveVideoPromptId(req) {
-    const { id } = req.params;
-    if (!isOidHex(id)) return null;
-    const p = await getVideoPrompt(req.projectId, id);
-    return p?._id?.toString() || null;
-  }
-
-  router.get('/video-prompts', async (req, res, next) => {
-    try {
-      const beatRef = req.query.beat_id;
-      if (beatRef == null || beatRef === '') {
-        return res.status(400).json({ error: 'beat_id required' });
-      }
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const items = await listVideoPrompts({ beatId: beat._id });
-      res.json({
-        beat: {
-          _id: beat._id,
-          order: beat.order,
-          name: beat.name,
-          characters: beat.characters || [],
-          sets: beat.sets || [],
-        },
-        prompts: items,
-      });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // The numbered reference catalog the generator picks from — surfaced so
-  // the SPA's "+ Add reference" picker offers exactly the same images.
-  router.get('/video-prompts/candidates', async (req, res, next) => {
-    try {
-      const beatRef = req.query.beat_id;
-      if (beatRef == null || beatRef === '') {
-        return res.status(400).json({ error: 'beat_id required' });
-      }
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const { buildReferenceCatalog } = await import('./videoPromptGenerate.js');
-      const catalog = await buildReferenceCatalog(req.projectId, beat);
-      res.json({ beat_id: beat._id, candidates: catalog });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.post('/video-prompts', async (req, res, next) => {
-    try {
-      const beatRef = req.body?.beat_id;
-      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const p = await createVideoPromptViaGateway({
-        projectId: req.projectId,
-        beatId: beat._id,
-        title: String(req.body?.title || ''),
-        prompt: String(req.body?.prompt || ''),
-      });
-      res.json({ prompt: p });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.delete('/video-prompt/:id', async (req, res, next) => {
-    try {
-      const pId = await resolveVideoPromptId(req);
-      if (!pId) return res.status(404).json({ error: 'video prompt not found' });
-      const result = await deleteVideoPromptViaGateway({ projectId: req.projectId, promptId: pId });
-      res.json(result);
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Patch a prompt's scalars: duration_seconds and/or the ORDERED
-  // reference_image_ids list (index i becomes @Image(i+1)). Ids must come
-  // from the beat's reference catalog so owner metadata can be stamped on
-  // each entry; unknown ids → 400. Text fields are y-doc edits, not PATCHes.
-  router.patch('/video-prompt/:id', async (req, res, next) => {
-    try {
-      const pId = await resolveVideoPromptId(req);
-      if (!pId) return res.status(404).json({ error: 'video prompt not found' });
-      const body = req.body || {};
-      const hasDuration = Object.prototype.hasOwnProperty.call(body, 'duration_seconds');
-      const hasRefs = Object.prototype.hasOwnProperty.call(body, 'reference_image_ids');
-      if (!hasDuration && !hasRefs) {
-        return res.status(400).json({ error: 'duration_seconds or reference_image_ids required' });
-      }
-      let durationSeconds;
-      if (hasDuration) {
-        if (body.duration_seconds == null || body.duration_seconds === '') {
-          durationSeconds = null;
-        } else {
-          const n = Number(body.duration_seconds);
-          if (!Number.isFinite(n) || n < 1 || n > 60) {
-            return res
-              .status(400)
-              .json({ error: 'duration_seconds must be a number between 1 and 60, or null' });
-          }
-          durationSeconds = Math.round(n);
-        }
-      }
-      let referenceImages;
-      if (hasRefs) {
-        const ids = body.reference_image_ids;
-        if (!Array.isArray(ids) || ids.some((x) => !isOidHex(String(x)))) {
-          return res.status(400).json({ error: 'reference_image_ids must be an array of image ids' });
-        }
-        if (ids.length > MAX_PROMPT_REFERENCE_IMAGES) {
-          return res
-            .status(400)
-            .json({ error: `at most ${MAX_PROMPT_REFERENCE_IMAGES} reference images per prompt` });
-        }
-        const p = await getVideoPrompt(req.projectId, pId);
-        const beat = await getBeat(req.projectId, String(p.beat_id));
-        const { buildReferenceCatalog } = await import('./videoPromptGenerate.js');
-        const catalog = beat ? await buildReferenceCatalog(req.projectId, beat) : [];
-        const byId = new Map(catalog.map((e) => [e.image_id, e]));
-        // Entries already on the row stay resolvable even if the catalog no
-        // longer lists them (e.g. the character was unlinked from the beat).
-        for (const r of p.reference_images || []) {
-          const k = String(r.image_id);
-          if (!byId.has(k)) byId.set(k, { image_id: k, owner_type: r.owner_type, owner_name: r.owner_name, label: r.label });
-        }
-        referenceImages = [];
-        for (const raw of ids) {
-          const e = byId.get(String(raw));
-          if (!e) return res.status(400).json({ error: `unknown reference image ${raw}` });
-          referenceImages.push({
-            image_id: e.image_id,
-            owner_type: e.owner_type,
-            owner_name: e.owner_name,
-            label: e.label,
-          });
-        }
-      }
-      const updated = await updateVideoPromptScalarsViaGateway({
-        projectId: req.projectId,
-        promptId: pId,
-        durationSeconds,
-        referenceImages,
-      });
-      res.json({ prompt: updated });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.post('/video-prompts/reorder', async (req, res, next) => {
-    try {
-      const beatRef = req.body?.beat_id;
-      const orderedIds = req.body?.ordered_ids;
-      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      if (!Array.isArray(orderedIds)) {
-        return res.status(400).json({ error: 'ordered_ids must be an array' });
-      }
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const result = await reorderVideoPromptsViaGateway({
-        projectId: req.projectId,
-        beatId: beat._id,
-        orderedIds,
-      });
-      res.json({ prompts: result });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Auto-generate: one LLM pass over the whole beat → N Seedance-style
-  // prompts with reference images. 202 + job id; the SPA polls the job and
-  // refetches on the room's pings as rows land.
-  router.post('/video-prompts/generate', async (req, res, next) => {
-    try {
-      const beatRef = req.body?.beat_id;
-      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const direction = typeof req.body?.direction === 'string' ? req.body.direction.slice(0, 4000) : '';
-      const { startVideoPromptGenerationJob, BeatBusyError } = await import('./videoPromptGenerate.js');
-      try {
-        const jobId = await startVideoPromptGenerationJob({
-          projectId: req.projectId,
-          beatId: beat._id.toString(),
-          direction,
-        });
-        res.status(202).json({ job_id: jobId, beat_id: beat._id });
-      } catch (e) {
-        if (e instanceof BeatBusyError) {
-          return res.status(409).json({ error: e.message });
-        }
-        throw e;
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.get('/video-prompts/generate/:jobId', async (req, res, next) => {
-    try {
-      const { getVideoPromptGenerationJob } = await import('./videoPromptGenerate.js');
-      const job = getVideoPromptGenerationJob(req.params.jobId);
-      if (!job) return res.status(404).json({ error: 'job not found' });
-      res.json({ job });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.post('/video-prompts/clear', async (req, res, next) => {
-    try {
-      const beatRef = req.body?.beat_id;
-      if (!beatRef) return res.status(400).json({ error: 'beat_id required' });
-      const beat = await getBeat(req.projectId, String(beatRef));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const { isBeatLocked } = await import('./beatLocks.js');
-      if (isBeatLocked(beat._id)) {
-        return res.status(409).json({ error: 'Work in progress for this beat; try again' });
-      }
-      const result = await deleteAllVideoPromptsForBeatViaGateway({
-        projectId: req.projectId,
-        beatId: beat._id,
-      });
-      res.json({ ...result, beat_id: beat._id.toString() });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Parse the shared body of the prompt-owner video routes. Differences from
-  // the storyboard routes: no frame_assignment (the row's ordered references
-  // ARE the assignment), duration up to 60 s (Seedance 2.5 renders 30 s; the
-  // model snaps anything longer), and generate_audio / include_director_notes
-  // default OFF — the prompt already folded the notes in, and real voices are
-  // recorded separately.
-  function parseVideoPromptVideoBody(req, res) {
-    const prompt =
-      typeof req.body?.prompt === 'string' && req.body.prompt.trim() ? req.body.prompt.trim() : null;
-    if (prompt && prompt.length > 2000) {
-      res.status(400).json({ error: 'prompt must be ≤ 2000 chars' });
-      return ERR;
-    }
-    const rawDuration = req.body?.duration_seconds;
-    let durationSeconds = null;
-    if (rawDuration != null && rawDuration !== '') {
-      const n = Number(rawDuration);
-      if (!Number.isFinite(n) || n < 1 || n > 60) {
-        res.status(400).json({ error: 'duration_seconds must be a number between 1 and 60' });
-        return ERR;
-      }
-      durationSeconds = n;
-    }
-    const modelId =
-      typeof req.body?.model_id === 'string' && req.body.model_id.trim() ? req.body.model_id.trim() : null;
-    const generateAudio = Boolean(req.body?.generate_audio);
-    const includeDirectorNotes = Boolean(req.body?.include_director_notes);
-    const resolution = parseResolutionField(req.body?.resolution, res);
-    if (resolution === ERR) return ERR;
-    const fps = parseFpsField(req.body?.fps, res);
-    if (fps === ERR) return ERR;
-    return { prompt, durationSeconds, modelId, generateAudio, includeDirectorNotes, resolution, fps };
-  }
-
-  function sendVideoRouteError(e, res) {
-    if (e instanceof VideoBeatBusyError) return res.status(409).json({ error: e.message });
-    if (e instanceof MissingInputsError) return res.status(400).json({ error: e.message, missing: e.missing });
-    if (e instanceof FalNotConfiguredError) return res.status(503).json({ error: e.message });
-    if (e instanceof UnknownVideoModelError) return res.status(400).json({ error: e.message });
-    throw e;
-  }
-
-  router.post('/video-prompt/:id/video/preview', async (req, res, next) => {
-    try {
-      const pId = await resolveVideoPromptId(req);
-      if (!pId) return res.status(404).json({ error: 'video prompt not found' });
-      const parsed = parseVideoPromptVideoBody(req, res);
-      if (parsed === ERR) return;
-      try {
-        const preview = await buildVideoPayloadPreview({
-          projectId: req.projectId,
-          ...parsed,
-          owner: { kind: OWNER_VIDEO_PROMPT, id: pId },
-        });
-        res.json(preview);
-      } catch (e) {
-        return sendVideoRouteError(e, res);
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.post('/video-prompt/:id/video/generate', async (req, res, next) => {
-    try {
-      const pId = await resolveVideoPromptId(req);
-      if (!pId) return res.status(404).json({ error: 'video prompt not found' });
-      const parsed = parseVideoPromptVideoBody(req, res);
-      if (parsed === ERR) return;
-      try {
-        const { job_id } = await startVideoGenerationJob({
-          projectId: req.projectId,
-          ...parsed,
-          owner: { kind: OWNER_VIDEO_PROMPT, id: pId },
-          announceUsername: req?.session?.username || null,
-        });
-        res.status(202).json({ job_id });
-      } catch (e) {
-        return sendVideoRouteError(e, res);
-      }
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  // Discard the rendered video on a prompt row: clear the pointer, delete
-  // the GridFS attachment (best-effort).
-  router.delete('/video-prompt/:id/video', async (req, res, next) => {
-    try {
-      const pId = await resolveVideoPromptId(req);
-      if (!pId) return res.status(404).json({ error: 'video prompt not found' });
-      const p = await getVideoPrompt(req.projectId, pId);
-      const oldId = p?.video_file_id || null;
-      const result = await setVideoPromptVideoViaGateway({
-        projectId: req.projectId,
-        promptId: pId,
-        videoFileId: null,
-      });
-      if (oldId) {
-        try {
-          await deleteAttachment(oldId);
-        } catch (e) {
-          logger.warn(`video prompt video delete: GridFS cleanup ${oldId} failed: ${e.message}`);
-        }
-      }
-      res.json({ prompt: result });
     } catch (e) {
       next(e);
     }

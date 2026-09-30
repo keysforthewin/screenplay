@@ -1,0 +1,883 @@
+{
+ "video_ltx2_3_ia2v": {
+  "id": "video_ltx2_3_ia2v",
+  "count": 83,
+  "slots": [
+   {
+    "address": "269.image",
+    "name": "image",
+    "type": "COMBO",
+    "current_value": "cactus_man.png",
+    "instance_id": "269",
+    "node_type": "LoadImage",
+    "enum": [
+     "hollywood-ca-actor-tom-green-arrives-at-the-premiere-of-warner-bros-pictures-war-dogs-at-tcl.webp",
+     "smoke-start.png"
+    ]
+   },
+   {
+    "address": "341.filename_prefix",
+    "name": "filename_prefix",
+    "type": "STRING",
+    "current_value": "video/LTX_2.3_ia2v",
+    "instance_id": "341",
+    "node_type": "SaveVideo"
+   },
+   {
+    "address": "341.format",
+    "name": "format",
+    "type": "COMFY_DYNAMICCOMBO_V3",
+    "current_value": "auto",
+    "instance_id": "341",
+    "node_type": "SaveVideo",
+    "enum": [
+     "auto",
+     "mp4",
+     "mkv",
+     "webm"
+    ]
+   },
+   {
+    "address": "341.format.codec",
+    "name": "format.codec",
+    "type": "COMFY_DYNAMICCOMBO_V3",
+    "current_value": "auto",
+    "instance_id": "341",
+    "node_type": "SaveVideo",
+    "enum": [
+     "auto",
+     "h264",
+     "av1"
+    ]
+   },
+   {
+    "address": "341.codec",
+    "name": "codec",
+    "type": "COMFY_DYNAMICCOMBO_V3",
+    "current_value": "auto",
+    "instance_id": "341",
+    "node_type": "SaveVideo",
+    "enum": [
+     "auto",
+     "h264",
+     "av1"
+    ]
+   },
+   {
+    "address": "276.audio",
+    "name": "audio",
+    "type": "COMBO",
+    "current_value": "ltx_23_audio.mp3",
+    "instance_id": "276",
+    "node_type": "LoadAudio"
+   },
+   {
+    "address": "340.value",
+    "name": "value",
+    "type": "STRING",
+    "current_value": "The fuzzy cactus creature is talking to the viewer as it grips the steering wheel with one hand, the other hand gestures naturally as it speaks. The car is moving, revealing the sunlit coastal background, static camera fixed on character, smooth side-tracking shot matching the car speed\n\nscene: Sunlit coastal road trip, clear coastal background\ncharacter: Fuzzy cactus creature with big square sunglasses and a Hawaiian shirt\naction: One hand grips the steering wheel, the other gestures naturally while talking to the camera\ncamera: Fixed on character, smooth side-tracking shot matching car speed",
+    "instance_id": "340",
+    "node_type": "98ee9e5b-467b-40aa-a534-36033f27d0b4"
+   },
+   {
+    "address": "340.value_5",
+    "name": "value_5",
+    "type": "BOOLEAN",
+    "current_value": true,
+    "instance_id": "340",
+    "node_type": "98ee9e5b-467b-40aa-a534-36033f27d0b4"
+   },
+   {
+    "address": "340.value_1",
+    "name": "value_1",
+    "type": "INT",
+    "current_value": 1280,
+    "instance_id": "340",
+    "node_type": "98ee9e5b-467b-40aa-a534-36033f27d0b4"
+   },
+   {
+    "address": "340.value_2",
+    "name": "value_2",
+    "type": "INT",
+    "current_value": 720,
+    "instance_id": "340",
+    "node_type": "98ee9e5b-467b-40aa-a534-36033f27d0b4"
+   },
+   {
+    "address": "340.start_index",
+    "name": "start_index",
+    "type": "FLOAT",
+    "current_value": 0,
+    "instance_id": "340",
+    "node_type": "98ee9e5b-467b-40aa-a534-36033f27d0b4"
+   },
+   {
+    "address": "340.value_4",
+    "name": "value_4",
+    "type": "FLOAT",
+    "current_value": 9,
+    "instance_id": "340",
+    "node_type": "98ee9e5b-467b-40aa-a534-36033f27d0b4"
+   },
+   {
+    "address": "340.value_3",
+    "name": "value_3",
+    "type": "INT",
+    "current_value": 24,
+    "instance_id": "340",
+    "node_type": "98ee9e5b-467b-40aa-a534-36033f27d0b4"
+   },
+   {
+    "address": "340.noise_seed",
+    "name": "noise_seed",
+    "type": "INT",
+    "current_value": 225158785956033,
+    "instance_id": "340",
+    "node_type": "98ee9e5b-467b-40aa-a534-36033f27d0b4"
+   },
+   {
+    "address": "340.ckpt_name",
+    "name": "ckpt_name",
+    "type": "COMBO",
+    "current_value": "ltx-2.3-22b-dev-fp8.safetensors",
+    "instance_id": "340",
+    "node_type": "98ee9e5b-467b-40aa-a534-36033f27d0b4"
+   },
+   {
+    "address": "340.lora_name",
+    "name": "lora_name",
+    "type": "COMBO",
+    "current_value": "ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors",
+    "instance_id": "340",
+    "node_type": "98ee9e5b-467b-40aa-a534-36033f27d0b4"
+   },
+   {
+    "address": "340.text_encoder",
+    "name": "text_encoder",
+    "type": "COMBO",
+    "current_value": "gemma_3_12B_it_fp4_mixed.safetensors",
+    "instance_id": "340",
+    "node_type": "98ee9e5b-467b-40aa-a534-36033f27d0b4"
+   },
+   {
+    "address": "340.model_name",
+    "name": "model_name",
+    "type": "COMBO",
+    "current_value": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+    "instance_id": "340",
+    "node_type": "98ee9e5b-467b-40aa-a534-36033f27d0b4"
+   },
+   {
+    "address": "340.lora_name_1",
+    "name": "lora_name_1",
+    "type": "COMBO",
+    "current_value": "gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors",
+    "instance_id": "340",
+    "node_type": "98ee9e5b-467b-40aa-a534-36033f27d0b4"
+   },
+   {
+    "address": "340/285.noise_seed",
+    "name": "noise_seed",
+    "type": "INT",
+    "current_value": 42,
+    "instance_id": "340/285",
+    "node_type": "RandomNoise"
+   },
+   {
+    "address": "340/288.sampler_name",
+    "name": "sampler_name",
+    "type": "COMBO",
+    "current_value": "euler",
+    "instance_id": "340/288",
+    "node_type": "KSamplerSelect",
+    "enum": [
+     "euler",
+     "euler_cfg_pp",
+     "euler_ancestral",
+     "euler_ancestral_cfg_pp",
+     "heun",
+     "heunpp2",
+     "exp_heun_2_x0",
+     "exp_heun_2_x0_sde",
+     "dpm_2",
+     "dpm_2_ancestral",
+     "lms",
+     "dpm_fast",
+     "dpm_adaptive",
+     "dpmpp_2s_ancestral",
+     "dpmpp_2s_ancestral_cfg_pp",
+     "dpmpp_sde",
+     "dpmpp_sde_gpu",
+     "dpmpp_2m",
+     "dpmpp_2m_cfg_pp",
+     "dpmpp_2m_sde",
+     "dpmpp_2m_sde_gpu",
+     "dpmpp_2m_sde_heun",
+     "dpmpp_2m_sde_heun_gpu",
+     "dpmpp_3m_sde",
+     "dpmpp_3m_sde_gpu",
+     "ddpm",
+     "lcm",
+     "ipndm",
+     "ipndm_v",
+     "deis",
+     "cfgpp_ud10_ab",
+     "res_multistep",
+     "res_multistep_cfg_pp",
+     "res_multistep_ancestral",
+     "res_multistep_ancestral_cfg_pp",
+     "gradient_estimation",
+     "gradient_estimation_cfg_pp",
+     "er_sde",
+     "seeds_2",
+     "seeds_3",
+     "sa_solver",
+     "sa_solver_pece",
+     "ddim",
+     "uni_pc",
+     "uni_pc_bh2"
+    ]
+   },
+   {
+    "address": "340/289.sigmas",
+    "name": "sigmas",
+    "type": "STRING",
+    "current_value": "0.85, 0.7250, 0.4219, 0.0",
+    "instance_id": "340/289",
+    "node_type": "ManualSigmas"
+   },
+   {
+    "address": "340/290.cfg",
+    "name": "cfg",
+    "type": "FLOAT",
+    "current_value": 1,
+    "instance_id": "340/290",
+    "node_type": "CFGGuider"
+   },
+   {
+    "address": "340/296.strength",
+    "name": "strength",
+    "type": "FLOAT",
+    "current_value": 1,
+    "instance_id": "340/296",
+    "node_type": "LTXVImgToVideoInplace"
+   },
+   {
+    "address": "340/296.bypass",
+    "name": "bypass",
+    "type": "BOOLEAN",
+    "current_value": false,
+    "instance_id": "340/296",
+    "node_type": "LTXVImgToVideoInplace",
+    "linked_from": 666
+   },
+   {
+    "address": "340/298.sampler_name",
+    "name": "sampler_name",
+    "type": "COMBO",
+    "current_value": "euler",
+    "instance_id": "340/298",
+    "node_type": "KSamplerSelect",
+    "enum": [
+     "euler",
+     "euler_cfg_pp",
+     "euler_ancestral",
+     "euler_ancestral_cfg_pp",
+     "heun",
+     "heunpp2",
+     "exp_heun_2_x0",
+     "exp_heun_2_x0_sde",
+     "dpm_2",
+     "dpm_2_ancestral",
+     "lms",
+     "dpm_fast",
+     "dpm_adaptive",
+     "dpmpp_2s_ancestral",
+     "dpmpp_2s_ancestral_cfg_pp",
+     "dpmpp_sde",
+     "dpmpp_sde_gpu",
+     "dpmpp_2m",
+     "dpmpp_2m_cfg_pp",
+     "dpmpp_2m_sde",
+     "dpmpp_2m_sde_gpu",
+     "dpmpp_2m_sde_heun",
+     "dpmpp_2m_sde_heun_gpu",
+     "dpmpp_3m_sde",
+     "dpmpp_3m_sde_gpu",
+     "ddpm",
+     "lcm",
+     "ipndm",
+     "ipndm_v",
+     "deis",
+     "cfgpp_ud10_ab",
+     "res_multistep",
+     "res_multistep_cfg_pp",
+     "res_multistep_ancestral",
+     "res_multistep_ancestral_cfg_pp",
+     "gradient_estimation",
+     "gradient_estimation_cfg_pp",
+     "er_sde",
+     "seeds_2",
+     "seeds_3",
+     "sa_solver",
+     "sa_solver_pece",
+     "ddim",
+     "uni_pc",
+     "uni_pc_bh2"
+    ]
+   },
+   {
+    "address": "340/306.text",
+    "name": "text",
+    "type": "STRING",
+    "current_value": "",
+    "instance_id": "340/306",
+    "node_type": "CLIPTextEncode",
+    "linked_from": 755
+   },
+   {
+    "address": "340/307.frame_rate",
+    "name": "frame_rate",
+    "type": "FLOAT",
+    "current_value": 24,
+    "instance_id": "340/307",
+    "node_type": "LTXVConditioning",
+    "linked_from": 684
+   },
+   {
+    "address": "340/308.sigmas",
+    "name": "sigmas",
+    "type": "STRING",
+    "current_value": "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0",
+    "instance_id": "340/308",
+    "node_type": "ManualSigmas"
+   },
+   {
+    "address": "340/314.text",
+    "name": "text",
+    "type": "STRING",
+    "current_value": "pc game, console game, video game, cartoon, childish, ugly",
+    "instance_id": "340/314",
+    "node_type": "CLIPTextEncode"
+   },
+   {
+    "address": "340/315.cfg",
+    "name": "cfg",
+    "type": "FLOAT",
+    "current_value": 1,
+    "instance_id": "340/315",
+    "node_type": "CFGGuider"
+   },
+   {
+    "address": "340/316.tile_size",
+    "name": "tile_size",
+    "type": "INT",
+    "current_value": 768,
+    "instance_id": "340/316",
+    "node_type": "VAEDecodeTiled"
+   },
+   {
+    "address": "340/316.overlap",
+    "name": "overlap",
+    "type": "INT",
+    "current_value": 64,
+    "instance_id": "340/316",
+    "node_type": "VAEDecodeTiled"
+   },
+   {
+    "address": "340/316.temporal_size",
+    "name": "temporal_size",
+    "type": "INT",
+    "current_value": 4096,
+    "instance_id": "340/316",
+    "node_type": "VAEDecodeTiled"
+   },
+   {
+    "address": "340/316.temporal_overlap",
+    "name": "temporal_overlap",
+    "type": "INT",
+    "current_value": 4,
+    "instance_id": "340/316",
+    "node_type": "VAEDecodeTiled"
+   },
+   {
+    "address": "340/325.strength",
+    "name": "strength",
+    "type": "FLOAT",
+    "current_value": 0.7,
+    "instance_id": "340/325",
+    "node_type": "LTXVImgToVideoInplace"
+   },
+   {
+    "address": "340/325.bypass",
+    "name": "bypass",
+    "type": "BOOLEAN",
+    "current_value": false,
+    "instance_id": "340/325",
+    "node_type": "LTXVImgToVideoInplace",
+    "linked_from": 678
+   },
+   {
+    "address": "340/333.value",
+    "name": "value",
+    "type": "FLOAT",
+    "current_value": 0,
+    "instance_id": "340/333",
+    "node_type": "SolidMask"
+   },
+   {
+    "address": "340/333.width",
+    "name": "width",
+    "type": "INT",
+    "current_value": 1024,
+    "instance_id": "340/333",
+    "node_type": "SolidMask",
+    "linked_from": 716
+   },
+   {
+    "address": "340/333.height",
+    "name": "height",
+    "type": "INT",
+    "current_value": 1024,
+    "instance_id": "340/333",
+    "node_type": "SolidMask",
+    "linked_from": 717
+   },
+   {
+    "address": "340/335.ckpt_name",
+    "name": "ckpt_name",
+    "type": "COMBO",
+    "current_value": "ltx-2.3-22b-dev-fp8.safetensors",
+    "instance_id": "340/335",
+    "node_type": "LTXVAudioVAELoader",
+    "enum": [
+     "ltx-2.3-22b-dev-fp8.safetensors",
+     "sam3.1_multiplex_fp16.safetensors"
+    ],
+    "linked_from": 737
+   },
+   {
+    "address": "340/305.value",
+    "name": "value",
+    "type": "BOOLEAN",
+    "current_value": false,
+    "instance_id": "340/305",
+    "node_type": "PrimitiveBoolean"
+   },
+   {
+    "address": "340/334.img_compression",
+    "name": "img_compression",
+    "type": "INT",
+    "current_value": 18,
+    "instance_id": "340/334",
+    "node_type": "LTXVPreprocess"
+   },
+   {
+    "address": "340/301.expression",
+    "name": "expression",
+    "type": "STRING",
+    "current_value": "a/2",
+    "instance_id": "340/301",
+    "node_type": "ComfyMathExpression"
+   },
+   {
+    "address": "340/299.expression",
+    "name": "expression",
+    "type": "STRING",
+    "current_value": "a/2",
+    "instance_id": "340/299",
+    "node_type": "ComfyMathExpression"
+   },
+   {
+    "address": "340/304.expression",
+    "name": "expression",
+    "type": "STRING",
+    "current_value": "a",
+    "instance_id": "340/304",
+    "node_type": "ComfyMathExpression"
+   },
+   {
+    "address": "340/312.fps",
+    "name": "fps",
+    "type": "FLOAT",
+    "current_value": 24,
+    "instance_id": "340/312",
+    "node_type": "CreateVideo",
+    "linked_from": 697
+   },
+   {
+    "address": "340/312.bit_depth",
+    "name": "bit_depth",
+    "type": "COMBO",
+    "current_value": "auto",
+    "instance_id": "340/312",
+    "node_type": "CreateVideo",
+    "enum": [
+     "auto",
+     8,
+     10
+    ]
+   },
+   {
+    "address": "340/312.color_space",
+    "name": "color_space",
+    "type": "COMBO",
+    "current_value": "sRGB",
+    "instance_id": "340/312",
+    "node_type": "CreateVideo",
+    "enum": [
+     "sRGB",
+     "HDR",
+     "HDR PQ"
+    ]
+   },
+   {
+    "address": "340/312.codec",
+    "name": "codec",
+    "type": "COMBO",
+    "current_value": null,
+    "instance_id": "340/312",
+    "node_type": "CreateVideo",
+    "enum": [
+     "none",
+     "auto",
+     "h264",
+     "av1"
+    ]
+   },
+   {
+    "address": "340/302.width",
+    "name": "width",
+    "type": "INT",
+    "current_value": 768,
+    "instance_id": "340/302",
+    "node_type": "EmptyLTXVLatentVideo",
+    "linked_from": 673
+   },
+   {
+    "address": "340/302.height",
+    "name": "height",
+    "type": "INT",
+    "current_value": 512,
+    "instance_id": "340/302",
+    "node_type": "EmptyLTXVLatentVideo",
+    "linked_from": 674
+   },
+   {
+    "address": "340/302.length",
+    "name": "length",
+    "type": "INT",
+    "current_value": 97,
+    "instance_id": "340/302",
+    "node_type": "EmptyLTXVLatentVideo",
+    "linked_from": 712
+   },
+   {
+    "address": "340/302.batch_size",
+    "name": "batch_size",
+    "type": "INT",
+    "current_value": 1,
+    "instance_id": "340/302",
+    "node_type": "EmptyLTXVLatentVideo"
+   },
+   {
+    "address": "340/329.expression",
+    "name": "expression",
+    "type": "STRING",
+    "current_value": "a * b + 1",
+    "instance_id": "340/329",
+    "node_type": "ComfyMathExpression"
+   },
+   {
+    "address": "340/332.duration",
+    "name": "duration",
+    "type": "FLOAT",
+    "current_value": 60,
+    "instance_id": "340/332",
+    "node_type": "TrimAudioDuration",
+    "linked_from": 710
+   },
+   {
+    "address": "340/293.strength_model",
+    "name": "strength_model",
+    "type": "FLOAT",
+    "current_value": 0.5,
+    "instance_id": "340/293",
+    "node_type": "LoraLoaderModelOnly"
+   },
+   {
+    "address": "340/318.ckpt_name",
+    "name": "ckpt_name",
+    "type": "COMBO",
+    "current_value": "ltx-2.3-22b-dev-fp8.safetensors",
+    "instance_id": "340/318",
+    "node_type": "LTXAVTextEncoderLoader",
+    "enum": [
+     "ltx-2.3-22b-dev-fp8.safetensors",
+     "sam3.1_multiplex_fp16.safetensors"
+    ],
+    "linked_from": 736
+   },
+   {
+    "address": "340/318.device",
+    "name": "device",
+    "type": "COMBO",
+    "current_value": "default",
+    "instance_id": "340/318",
+    "node_type": "LTXAVTextEncoderLoader",
+    "enum": [
+     "default",
+     "cpu"
+    ]
+   },
+   {
+    "address": "340/297.resize_type",
+    "name": "resize_type",
+    "type": "COMFY_DYNAMICCOMBO_V3",
+    "current_value": "scale dimensions",
+    "instance_id": "340/297",
+    "node_type": "ResizeImageMaskNode",
+    "enum": [
+     "scale dimensions",
+     "scale by multiplier",
+     "scale longer dimension",
+     "scale shorter dimension",
+     "scale width",
+     "scale height",
+     "scale total pixels",
+     "match size",
+     "scale to multiple"
+    ]
+   },
+   {
+    "address": "340/297.resize_type.width",
+    "name": "resize_type.width",
+    "type": "INT",
+    "current_value": 1920,
+    "instance_id": "340/297",
+    "node_type": "ResizeImageMaskNode",
+    "linked_from": 668
+   },
+   {
+    "address": "340/297.resize_type.height",
+    "name": "resize_type.height",
+    "type": "INT",
+    "current_value": 1088,
+    "instance_id": "340/297",
+    "node_type": "ResizeImageMaskNode",
+    "linked_from": 669
+   },
+   {
+    "address": "340/297.resize_type.crop",
+    "name": "resize_type.crop",
+    "type": "COMBO",
+    "current_value": "center",
+    "instance_id": "340/297",
+    "node_type": "ResizeImageMaskNode",
+    "enum": [
+     "disabled",
+     "center"
+    ]
+   },
+   {
+    "address": "340/297.scale_method",
+    "name": "scale_method",
+    "type": "COMBO",
+    "current_value": "lanczos",
+    "instance_id": "340/297",
+    "node_type": "ResizeImageMaskNode",
+    "enum": [
+     "nearest-exact",
+     "bilinear",
+     "area",
+     "bicubic",
+     "lanczos"
+    ]
+   },
+   {
+    "address": "340/345.strength_model",
+    "name": "strength_model",
+    "type": "FLOAT",
+    "current_value": 1,
+    "instance_id": "340/345",
+    "node_type": "LoraLoader"
+   },
+   {
+    "address": "340/345.strength_clip",
+    "name": "strength_clip",
+    "type": "FLOAT",
+    "current_value": 1,
+    "instance_id": "340/345",
+    "node_type": "LoraLoader"
+   },
+   {
+    "address": "340/346.prompt",
+    "name": "prompt",
+    "type": "STRING",
+    "current_value": "",
+    "instance_id": "340/346",
+    "node_type": "TextGenerateLTX2Prompt",
+    "linked_from": 756
+   },
+   {
+    "address": "340/346.max_length",
+    "name": "max_length",
+    "type": "INT",
+    "current_value": 2048,
+    "instance_id": "340/346",
+    "node_type": "TextGenerateLTX2Prompt"
+   },
+   {
+    "address": "340/346.sampling_mode",
+    "name": "sampling_mode",
+    "type": "COMFY_DYNAMICCOMBO_V3",
+    "current_value": "on",
+    "instance_id": "340/346",
+    "node_type": "TextGenerateLTX2Prompt",
+    "enum": [
+     "on",
+     "off"
+    ]
+   },
+   {
+    "address": "340/346.sampling_mode.temperature",
+    "name": "sampling_mode.temperature",
+    "type": "FLOAT",
+    "current_value": 0.7,
+    "instance_id": "340/346",
+    "node_type": "TextGenerateLTX2Prompt"
+   },
+   {
+    "address": "340/346.sampling_mode.top_k",
+    "name": "sampling_mode.top_k",
+    "type": "INT",
+    "current_value": 64,
+    "instance_id": "340/346",
+    "node_type": "TextGenerateLTX2Prompt"
+   },
+   {
+    "address": "340/346.sampling_mode.top_p",
+    "name": "sampling_mode.top_p",
+    "type": "FLOAT",
+    "current_value": 0.95,
+    "instance_id": "340/346",
+    "node_type": "TextGenerateLTX2Prompt"
+   },
+   {
+    "address": "340/346.sampling_mode.min_p",
+    "name": "sampling_mode.min_p",
+    "type": "FLOAT",
+    "current_value": 0.05,
+    "instance_id": "340/346",
+    "node_type": "TextGenerateLTX2Prompt"
+   },
+   {
+    "address": "340/346.sampling_mode.repetition_penalty",
+    "name": "sampling_mode.repetition_penalty",
+    "type": "FLOAT",
+    "current_value": 1.05,
+    "instance_id": "340/346",
+    "node_type": "TextGenerateLTX2Prompt"
+   },
+   {
+    "address": "340/346.sampling_mode.seed",
+    "name": "sampling_mode.seed",
+    "type": "INT",
+    "current_value": 0,
+    "instance_id": "340/346",
+    "node_type": "TextGenerateLTX2Prompt"
+   },
+   {
+    "address": "340/346.sampling_mode.presence_penalty",
+    "name": "sampling_mode.presence_penalty",
+    "type": "FLOAT",
+    "current_value": 0,
+    "instance_id": "340/346",
+    "node_type": "TextGenerateLTX2Prompt"
+   },
+   {
+    "address": "340/346.thinking",
+    "name": "thinking",
+    "type": "BOOLEAN",
+    "current_value": false,
+    "instance_id": "340/346",
+    "node_type": "TextGenerateLTX2Prompt"
+   },
+   {
+    "address": "340/346.use_default_template",
+    "name": "use_default_template",
+    "type": "BOOLEAN",
+    "current_value": true,
+    "instance_id": "340/346",
+    "node_type": "TextGenerateLTX2Prompt"
+   },
+   {
+    "address": "340/346.mtp",
+    "name": "mtp",
+    "type": "COMBO",
+    "current_value": null,
+    "instance_id": "340/346",
+    "node_type": "TextGenerateLTX2Prompt",
+    "enum": [
+     "auto",
+     "off",
+     "2",
+     "3",
+     "4",
+     "5"
+    ]
+   },
+   {
+    "address": "340/348.switch",
+    "name": "switch",
+    "type": "BOOLEAN",
+    "current_value": false,
+    "instance_id": "340/348",
+    "node_type": "ComfySwitchNode",
+    "linked_from": 754
+   },
+   {
+    "address": "340/350.resize_type",
+    "name": "resize_type",
+    "type": "COMFY_DYNAMICCOMBO_V3",
+    "current_value": "scale longer dimension",
+    "instance_id": "340/350",
+    "node_type": "ResizeImageMaskNode",
+    "enum": [
+     "scale dimensions",
+     "scale by multiplier",
+     "scale longer dimension",
+     "scale shorter dimension",
+     "scale width",
+     "scale height",
+     "scale total pixels",
+     "match size",
+     "scale to multiple"
+    ]
+   },
+   {
+    "address": "340/350.resize_type.longer_size",
+    "name": "resize_type.longer_size",
+    "type": "INT",
+    "current_value": 1536,
+    "instance_id": "340/350",
+    "node_type": "ResizeImageMaskNode"
+   },
+   {
+    "address": "340/350.scale_method",
+    "name": "scale_method",
+    "type": "COMBO",
+    "current_value": "lanczos",
+    "instance_id": "340/350",
+    "node_type": "ResizeImageMaskNode",
+    "enum": [
+     "nearest-exact",
+     "bilinear",
+     "area",
+     "bicubic",
+     "lanczos"
+    ]
+   }
+  ]
+ }
+}

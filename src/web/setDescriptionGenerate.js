@@ -7,14 +7,13 @@
 // tool → write the result through the gateway so an open CollabField watches
 // the description replace itself live (y-doc), persisting to sets.description.
 
-import { config } from '../config.js';
 import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { getPlot } from '../mongo/plots.js';
 import { getSet } from '../mongo/sets.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { getAnthropic } from '../anthropic/client.js';
-import { findBeatsReferencingSet, clipField } from './storyboardGenerate.js';
+import { findBeatsReferencingSet, clipField } from './beatPlanShared.js';
 import { setEntityFieldMarkdown } from './gateway.js';
 
 // Bound the per-beat body text fed to the pass. Unlike clipField this keeps

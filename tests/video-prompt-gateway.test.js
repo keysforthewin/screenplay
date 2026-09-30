@@ -194,7 +194,7 @@ describe('video prompt gateway (fallback)', () => {
     await VP.updateVideoPrompt(projectId, a._id, { video_file_id: fileId });
     broadcasts.length = 0;
     const result = await Gateway.deleteAllVideoPromptsForBeatViaGateway({ projectId, beatId: beat._id });
-    expect(result).toEqual({ ok: true, removed_count: 2 });
+    expect(result).toEqual({ ok: true, removed_count: 2, scenes_removed: 0 });
     expect(await VP.listVideoPrompts({ beatId: beat._id })).toHaveLength(0);
     expect(deletedAttachments).toContain(fileId.toString());
     expect(broadcasts[0].payload.cleared).toBe(true);

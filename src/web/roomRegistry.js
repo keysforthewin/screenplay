@@ -7,7 +7,7 @@
 //   character:<character _id hex>
 //   set:<set _id hex>
 //   notes
-//   storyboards:<beat _id hex>   — one room per beat, multiple item fragments
+//   dialogs:<beat _id hex> / video_prompts:<beat _id hex> — one room per beat, item fragments
 //
 // Each entity exposes a list of *text fields* (each becomes a Yjs XmlFragment
 // inside the y-doc) plus knowledge of how to read/write each field to Mongo.
@@ -25,11 +25,6 @@ import { getCharacter, updateCharacter } from '../mongo/characters.js';
 import { getSet, updateSet } from '../mongo/sets.js';
 import { getDirectorNotes, writeDirectorNotesArray } from '../mongo/directorNotes.js';
 import {
-  listStoryboards,
-  updateStoryboard,
-  setFramePrompt,
-} from '../mongo/storyboards.js';
-import {
   listDialogs,
   updateDialog,
 } from '../mongo/dialogs.js';
@@ -37,6 +32,10 @@ import {
   listVideoPrompts,
   updateVideoPrompt,
 } from '../mongo/videoPrompts.js';
+import {
+  listVideoScenes,
+  updateVideoScene,
+} from '../mongo/videoScenes.js';
 import {
   listLibraryImages,
   setLibraryImageMeta,
@@ -82,7 +81,6 @@ export function parseRoomName(roomName) {
     type === 'beat' ||
     type === 'character' ||
     type === 'set' ||
-    type === 'storyboards' ||
     type === 'dialogs' ||
     type === 'video_prompts'
   ) {
@@ -117,7 +115,7 @@ export async function assertRoomProjectKnown(roomName) {
 
 // Owning project of any room, for permission checks (src/web/permissions.js).
 // Singleton rooms carry the project id in the name; entity rooms resolve it
-// from the entity doc (`storyboards:`/`dialogs:` rooms key on the beat _id, so
+// from the entity doc (`dialogs:`/`video_prompts:` rooms key on the beat _id, so
 // they resolve through the beat like `beat:` rooms). Null when unparseable or
 // the entity is unknown.
 export async function projectIdForRoom(roomName) {
@@ -568,94 +566,6 @@ async function describeNotesRoom(projectId) {
   };
 }
 
-// Storyboards ---------------------------------------------------------------
-//
-// One y-doc per beat (room: "storyboards:<beatId>"). Each storyboard exposes
-// scalar text fragments — "item:<storyboard _id>:text_prompt" and ":summary" —
-// plus one fragment per frame in its pool:
-// "item:<storyboard _id>:frame:<frameId>:prompt". When storyboards or frames are
-// added/removed the room composition changes; the seed reflects whatever exists
-// in Mongo at the time the room is loaded.
-
-const STORYBOARD_FIELD_NAMES = ['text_prompt', 'summary'];
-
-function storyboardFieldName(storyboardId, field) {
-  return `item:${storyboardId}:${field}`;
-}
-
-function frameFragmentName(storyboardId, frameId) {
-  return `item:${storyboardId}:frame:${frameId}:prompt`;
-}
-
-async function describeStoryboardsRoom(beatId) {
-  const projectId = await verifiedProjectIdForBeat(beatId);
-  if (!projectId) return null;
-  const sbs = await listStoryboards({ projectId, beatId });
-  const fields = [];
-  const seed = {};
-  const sbById = new Map();
-  for (const s of sbs) {
-    const id = s._id.toString();
-    sbById.set(id, s);
-    for (const f of STORYBOARD_FIELD_NAMES) {
-      const name = storyboardFieldName(id, f);
-      fields.push(name);
-      seed[name] = s[f] || '';
-    }
-    for (const frame of s.frames || []) {
-      const name = frameFragmentName(id, frame._id.toString());
-      fields.push(name);
-      seed[name] = frame.prompt || '';
-    }
-  }
-  return {
-    type: 'storyboards',
-    id: beatId,
-    fields,
-    seed,
-    persistFields: async (snapshot) => {
-      const changedFields = [];
-      for (const [field, value] of Object.entries(snapshot)) {
-        // Per-frame prompt fragment.
-        const fm = field.match(/^item:([a-f0-9]{24}):frame:([a-f0-9]{24}):prompt$/);
-        if (fm) {
-          const [, sbId, frameId] = fm;
-          const current = sbById.get(sbId);
-          const frame = current?.frames?.find((x) => x._id.toString() === frameId);
-          if (!frame) continue;
-          if (value === (frame.prompt || '')) continue;
-          try {
-            await setFramePrompt(projectId, sbId, frameId, value);
-            changedFields.push(field);
-          } catch (e) {
-            logger.warn(
-              `storyboards persist failed sb=${sbId} frame=${frameId}: ${e.message}`,
-            );
-          }
-          continue;
-        }
-        // Scalar text fragments.
-        const m = field.match(/^item:([a-f0-9]{24}):(text_prompt|summary)$/);
-        if (!m) continue;
-        const sbId = m[1];
-        const fieldName = m[2];
-        const current = sbById.get(sbId);
-        if (!current) continue;
-        if (value === (current[fieldName] || '')) continue;
-        try {
-          await updateStoryboard(projectId, sbId, { [fieldName]: value });
-          changedFields.push(field);
-        } catch (e) {
-          logger.warn(`storyboards persist failed sb=${sbId} field=${fieldName}: ${e.message}`);
-        }
-      }
-      return changedFields.length
-        ? { changed: true, fields: changedFields }
-        : { changed: false };
-    },
-  };
-}
-
 // Dialogs -------------------------------------------------------------------
 //
 // One y-doc per beat (room: "dialogs:<beatId>"). Each dialog item exposes three
@@ -731,34 +641,65 @@ async function describeDialogsRoom(beatId) {
   };
 }
 
-// Video prompts ---------------------------------------------------------------
+// Video prompts (cuts + scenes) ----------------------------------------------
 //
 // One y-doc per beat (room: "video_prompts:<beatId>") for the Prompts tab.
-// Each prompt row exposes two fragments: "item:<prompt _id>:title" and
-// "item:<prompt _id>:prompt". Reference images, duration and the rendered
-// video are scalar Mongo fields patched through the gateway (which pings the
+// Each cut row exposes three fragments: "item:<cut _id>:title",
+// "item:<cut _id>:prompt", "item:<cut _id>:start_frame_prompt" and
+// "item:<cut _id>:end_frame_prompt" (backing `start_frame.prompt` /
+// `end_frame.prompt`). Each scene of the beat exposes
+// "scene:<scene _id>:floor_plan". Reference images, the shot-table cells, the
+// start-frame image, the rendered video and the scene's read / scope / load
+// are scalar Mongo fields patched through the gateway (which pings the
 // room), not y-doc text.
 
-const VIDEO_PROMPT_FIELD_NAMES = ['title', 'prompt'];
+const VIDEO_PROMPT_FIELD_NAMES = ['title', 'prompt', 'start_frame_prompt', 'end_frame_prompt'];
+const VIDEO_SCENE_FIELD_NAMES = ['floor_plan'];
 
 function videoPromptFieldName(promptId, field) {
   return `item:${promptId}:${field}`;
 }
 
+function videoSceneFieldName(sceneId, field) {
+  return `scene:${sceneId}:${field}`;
+}
+
+function videoPromptFieldValue(row, field) {
+  if (field === 'start_frame_prompt') return row.start_frame?.prompt || '';
+  if (field === 'end_frame_prompt') return row.end_frame?.prompt || '';
+  return row[field] || '';
+}
+
+const VIDEO_PROMPT_ITEM_RE = /^item:([a-f0-9]{24}):(title|prompt|start_frame_prompt|end_frame_prompt)$/;
+const VIDEO_SCENE_RE = /^scene:([a-f0-9]{24}):(floor_plan)$/;
+
 async function describeVideoPromptsRoom(beatId) {
   const projectId = await verifiedProjectIdForBeat(beatId);
   if (!projectId) return null;
-  const rows = await listVideoPrompts({ projectId, beatId });
+  const [rows, scenes] = await Promise.all([
+    listVideoPrompts({ projectId, beatId }),
+    listVideoScenes({ projectId, beatId }),
+  ]);
   const fields = [];
   const seed = {};
   const rowById = new Map();
+  const sceneById = new Map();
+  for (const sc of scenes) {
+    const id = sc._id.toString();
+    sceneById.set(id, sc);
+    for (const f of VIDEO_SCENE_FIELD_NAMES) {
+      const fieldName = videoSceneFieldName(id, f);
+      fields.push(fieldName);
+      seed[fieldName] = sc[f] || '';
+    }
+  }
   for (const r of rows) {
     const id = r._id.toString();
     rowById.set(id, r);
     for (const f of VIDEO_PROMPT_FIELD_NAMES) {
       const fieldName = videoPromptFieldName(id, f);
       fields.push(fieldName);
-      seed[fieldName] = r[f] || '';
+      seed[fieldName] = videoPromptFieldValue(r, f);
     }
   }
   return {
@@ -769,13 +710,28 @@ async function describeVideoPromptsRoom(beatId) {
     persistFields: async (snapshot) => {
       const changedFields = [];
       for (const [field, value] of Object.entries(snapshot)) {
-        const m = field.match(/^item:([a-f0-9]{24}):(title|prompt)$/);
+        const sm = field.match(VIDEO_SCENE_RE);
+        if (sm) {
+          const sId = sm[1];
+          const fieldName = sm[2];
+          const current = sceneById.get(sId);
+          if (!current) continue;
+          if (value === (current[fieldName] || '')) continue;
+          try {
+            await updateVideoScene(projectId, sId, { [fieldName]: value });
+            changedFields.push(field);
+          } catch (e) {
+            logger.warn(`video_scenes persist failed scene=${sId} field=${fieldName}: ${e.message}`);
+          }
+          continue;
+        }
+        const m = field.match(VIDEO_PROMPT_ITEM_RE);
         if (!m) continue;
         const pId = m[1];
         const fieldName = m[2];
         const current = rowById.get(pId);
         if (!current) continue;
-        if (value === (current[fieldName] || '')) continue;
+        if (value === videoPromptFieldValue(current, fieldName)) continue;
         try {
           await updateVideoPrompt(projectId, pId, { [fieldName]: value });
           changedFields.push(field);
@@ -963,8 +919,6 @@ export async function resolveRoom(roomName) {
       return describePlotRoom(parsed.projectId);
     case 'library':
       return describeLibraryRoom(parsed.projectId);
-    case 'storyboards':
-      return describeStoryboardsRoom(parsed.id);
     case 'dialogs':
       return describeDialogsRoom(parsed.id);
     case 'video_prompts':

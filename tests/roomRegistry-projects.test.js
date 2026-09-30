@@ -48,7 +48,9 @@ describe('project-scoped room names', () => {
     const id = new ObjectId().toString();
     expect(buildRoomName('beat', id)).toBe(`beat:${id}`);
     expect(parseRoomName(`character:${id}`)).toEqual({ type: 'character', id });
-    expect(parseRoomName(`storyboards:${id}`)).toEqual({ type: 'storyboards', id });
+    expect(parseRoomName(`dialogs:${id}`)).toEqual({ type: 'dialogs', id });
+    // The retired storyboards room no longer parses.
+    expect(parseRoomName(`storyboards:${id}`)).toBeNull();
     expect(parseRoomName(`video_prompts:${id}`)).toEqual({ type: 'video_prompts', id });
     expect(buildRoomName('video_prompts', id)).toBe(`video_prompts:${id}`);
   });
@@ -85,7 +87,6 @@ describe('project-scoped room names', () => {
       expect(await projectIdForRoom(room)).toBe(pid);
     }
     expect(await projectIdForRoom(`beat:${beatId.toString()}`)).toBe(pid);
-    expect(await projectIdForRoom(`storyboards:${beatId.toString()}`)).toBe(pid);
     expect(await projectIdForRoom(`dialogs:${beatId.toString()}`)).toBe(pid);
     expect(await projectIdForRoom(`video_prompts:${beatId.toString()}`)).toBe(pid);
     expect(await projectIdForRoom(`character:${charId.toString()}`)).toBe(pid);
@@ -95,7 +96,7 @@ describe('project-scoped room names', () => {
     expect(await projectIdForRoom(`character:${new ObjectId().toString()}`)).toBeNull();
   });
 
-  it('video_prompts rooms expose item:<id>:title|prompt fragments and persist through updateVideoPrompt', async () => {
+  it('video_prompts rooms expose item:<id>:title|prompt|start_frame_prompt|end_frame_prompt fragments and persist through updateVideoPrompt', async () => {
     const p = await Projects.createProject('Western');
     const pid = p._id.toString();
     const Plots = await import('../src/mongo/plots.js');
@@ -105,8 +106,13 @@ describe('project-scoped room names', () => {
     const desc = await resolveRoom(`video_prompts:${beat._id.toString()}`);
     expect(desc.type).toBe('video_prompts');
     const id = row._id.toString();
-    expect(desc.fields).toEqual([`item:${id}:title`, `item:${id}:prompt`]);
-    expect(desc.seed).toEqual({ [`item:${id}:title`]: 'T', [`item:${id}:prompt`]: 'P' });
+    expect(desc.fields).toEqual([`item:${id}:title`, `item:${id}:prompt`, `item:${id}:start_frame_prompt`, `item:${id}:end_frame_prompt`]);
+    expect(desc.seed).toEqual({
+      [`item:${id}:title`]: 'T',
+      [`item:${id}:prompt`]: 'P',
+      [`item:${id}:start_frame_prompt`]: '',
+      [`item:${id}:end_frame_prompt`]: '',
+    });
     const result = await desc.persistFields({ [`item:${id}:title`]: 'T', [`item:${id}:prompt`]: 'P2' });
     expect(result).toEqual({ changed: true, fields: [`item:${id}:prompt`] });
     expect((await VP.getVideoPrompt(pid, id)).prompt).toBe('P2');

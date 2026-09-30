@@ -1906,45 +1906,64 @@ export const TOOLS = [
     },
   },
   {
-    name: 'plan_shots',
-    keywords: ['storyboard', 'plan', 'shots', 'shot list', 'prompts', 'video prompts', 'break down', 'scene', 'beat', 'generate storyboard', 'shotlist', 'coverage'],
+    name: 'plan_cuts',
+    keywords: ['cuts', 'scenes', 'prompts tab', 'plan cuts', 'block', 'blocks', 'shot table', 'directors read', 'floor plan', 'lock line', 'break into scenes', 'cut list', 'seedance', 'comfyui'],
     description:
-      'Plan a beat into shots: one self-contained video prompt per shot (opening composition + what the camera and cast do), reference images matched from the cast/sets, and every dialogue line assigned to the shot that covers it. REPLACES the beat\'s existing shots. Runs in the background — returns a job id and the storyboard page link; call get_beat_render_status with the job id to check progress. Dialogue words are never written into prompts.',
+      'Prompts tab: read the WHOLE beat (text, cast, sets, director\'s notes, dialogue for order only) and break it into scenes with a director\'s read and floor plan, then a shot table and ONE prose block per cut (one camera setup, one clip) with a lock line, plus a still prompt for every cut\'s start frame. REPLACES the beat\'s existing scenes and cuts (an empty result keeps them). Runs in the background — returns a job id and the Prompts page link; poll with get_cut_job_status. Dialogue words never enter a prompt.',
     input_schema: {
       type: 'object',
       properties: {
         beat: { type: 'string', description: 'Beat _id, order, or name. Defaults to the current beat.' },
-        count: { type: 'integer', minimum: 1, maximum: 40, description: 'Target number of shots (optional).' },
-        direction: { type: 'string', description: 'Optional creative direction for the planner (tone, pacing, what to emphasise).' },
+        direction: { type: 'string', description: 'Optional creative direction for the planner (scene count, which artwork to lean on, mood, pacing).' },
+        render_start_frames: { type: 'boolean', description: 'Also render every cut\'s start frame once the plan lands (default false).' },
       },
       additionalProperties: false,
     },
   },
   {
-    name: 'render_beat',
-    keywords: ['render', 'video', 'beat video', 'generate video', 'clips', 'lip sync', 'lipsync', 'assemble', 'mp4', 'movie', 'film the beat', 'shoot'],
+    name: 'render_cut_start_frames',
+    keywords: ['start frame', 'start frames', 'end frame', 'end frames', 'last frame', 'still', 'stills', 'keyframe', 'first frame', 'render frames', 'cut image', 'prompts tab', 'cuts'],
     description:
-      'Render a planned beat to video: each shot becomes a clip (lip-synced from the covered lines\' real recordings when every line is recorded; otherwise straight from the prompt + reference images, or from an auto-rendered still when the model needs a start frame), then the clips are joined into one beat MP4. Spends fal.ai credits. Skips shots that already have a clip unless skip_rendered is false. Returns a job id — poll with get_beat_render_status.',
+      'Prompts tab: render the start frame and/or end frame (still images) for every cut of a beat, or for ONE cut, from their still prompts and matched artwork. The end frame is the picture the clip lands on — first-last-frame video models travel between the two, which keeps a moving camera on the real set. Skips frames already rendered unless skip_rendered is false. Runs in the background — returns a job id; poll with get_cut_job_status.',
     input_schema: {
       type: 'object',
       properties: {
         beat: { type: 'string', description: 'Beat _id, order, or name. Defaults to the current beat.' },
-        skip_rendered: { type: 'boolean', description: 'Skip shots that already have a clip (default true). False re-renders everything.' },
-        lipsync_model: { type: 'string', description: 'Override the lip-sync model (fal endpoint or registry id).' },
-        direct_model: { type: 'string', description: 'Override the reference-to-video model used for shots without recorded dialogue.' },
-        start_only_model: { type: 'string', description: 'Override the image-to-video model used when no direct model is configured.' },
+        cut: { type: 'string', description: 'One cut instead of the whole beat: the "scene.cut" label shown on the Prompts page (e.g. "2.3") or the cut _id.' },
+        frames: { type: 'string', enum: ['start', 'end', 'both'], description: 'Which frames to render (default both; start renders before end).' },
+        skip_rendered: { type: 'boolean', description: 'Skip frames that are already rendered (default true).' },
+        image_model: { type: 'string', description: 'Override the image model (registry id).' },
       },
       additionalProperties: false,
     },
   },
   {
-    name: 'get_beat_render_status',
-    keywords: ['status', 'progress', 'job', 'render', 'video', 'plan', 'shots', 'done yet', 'check', 'poll'],
+    name: 'render_cut_video',
+    keywords: ['render cut', 'render cuts', 'render beat', 'cut video', 'clips', 'lip sync', 'lipsync', 'comfyui', 'comfy', 'ltx', 'fal', 'beat mp4', 'assemble', 'prompts tab', 'generate video', 'movie', 'film'],
     description:
-      'Check a plan_shots or render_beat job: status, per-shot progress, coverage warnings, and — once assembled — the beat video download link.',
+      'Prompts tab: render video. Without `cut`: every cut of the beat becomes a clip (lip-synced from the covered lines\' REAL recordings when every line is recorded, otherwise from the start frame — rendered first when missing — and the block), then the clips are joined into the beat MP4. With `cut`: render that one cut. Provider "comfy" (local ComfyUI GPU; disabled on servers without it) or "fal" (fal.ai credits); default is ComfyUI when available, else fal. ComfyUI API models spend Comfy credits and need confirm_spend. Returns a job id — poll with get_cut_job_status.',
     input_schema: {
       type: 'object',
-      properties: { job_id: { type: 'string', description: 'The job id returned by plan_shots or render_beat.' } },
+      properties: {
+        beat: { type: 'string', description: 'Beat _id, order, or name. Defaults to the current beat.' },
+        cut: { type: 'string', description: 'Render ONE cut: its "scene.cut" label (e.g. "2.3") or _id. Omit to render the whole beat and assemble the MP4.' },
+        provider: { type: 'string', enum: ['comfy', 'fal'], description: 'Video provider. Default: comfy when configured, else fal.' },
+        model: { type: 'string', description: 'Model for cuts WITHOUT fully recorded dialogue (ComfyUI registry id, or fal endpoint/registry id). Default: the project\'s saved default.' },
+        lipsync_model: { type: 'string', description: 'Model for cuts whose covered lines are all recorded (ComfyUI: ltx-2.3-ia2v; fal: the project lip-sync default).' },
+        skip_rendered: { type: 'boolean', description: 'Whole-beat only: skip cuts that already have a clip (default true).' },
+        confirm_spend: { type: 'boolean', description: 'Required when a ComfyUI API model (Comfy credits) is used; the user must have agreed.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'get_cut_job_status',
+    keywords: ['status', 'progress', 'job', 'cuts', 'scenes', 'start frames', 'render', 'assemble', 'prompts tab', 'done yet', 'check', 'poll', 'comfyui'],
+    description:
+      'Check any Prompts-tab job (plan_cuts, render_cut_start_frames, render_cut_video, a scene/beat assembly, or a single-cut ComfyUI/fal render): status, per-cut progress, warnings, and — once assembled — the beat video download link.',
+    input_schema: {
+      type: 'object',
+      properties: { job_id: { type: 'string', description: 'The job id returned by a Prompts-tab tool.' } },
       required: ['job_id'],
       additionalProperties: false,
     },

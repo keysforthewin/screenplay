@@ -13,7 +13,7 @@
 // and the SPA's default count is bounded by CHARACTER_SHEET_SHOTS.length.
 
 import { stripMarkdown } from '../util/markdown.js';
-import { clipField, NON_VISUAL_CASTING, formatDirectorNotes } from './storyboardGenerate.js';
+import { clipField, NON_VISUAL_CASTING, formatDirectorNotes } from './beatPlanShared.js';
 
 // Framing shared by every shot. CRITICAL: never call this a "character sheet" /
 // "reference sheet" / "model sheet" in the prompt — image models are trained to

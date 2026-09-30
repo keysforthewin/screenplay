@@ -34,6 +34,10 @@ export const MUTATING_PREFIXES = [
   // review mode must intercept it before the writer ever runs. (Plain `edit`
   // is deliberately NOT in this list — matching historical loop behavior.)
   'delegate_writing',
+  // Whole names: background jobs that replace rows or spend credits.
+  'plan_cuts',
+  'render_cut_start_frames',
+  'render_cut_video',
 ];
 
 export function isMutatingTool(name) {

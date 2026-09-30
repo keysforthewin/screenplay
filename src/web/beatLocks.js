@@ -1,7 +1,7 @@
-// In-process per-beat mutex for storyboard mutations.
+// In-process per-beat mutex for background jobs that rewrite a beat's rows.
 //
-// Storyboard generation (which deletes everything for a beat then recreates)
-// and the LLM-driven batch edit endpoint must never run against the same beat
+// The cut planner (which deletes a beat's scenes and cuts then recreates
+// them), the render jobs and the assemblers must never run against the same beat
 // concurrently — otherwise an edit applied against a stale snapshot would race
 // the deletion, and two concurrent generates would each delete-then-recreate
 // and stack the new items.

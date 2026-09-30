@@ -6,8 +6,6 @@ import { Beat } from './routes/Beat.jsx';
 import { Character } from './routes/Character.jsx';
 import { Set } from './routes/Set.jsx';
 import { Library } from './routes/Library.jsx';
-import { StoryboardIndex } from './routes/StoryboardIndex.jsx';
-import { StoryboardBeat } from './routes/StoryboardBeat.jsx';
 import { DialogIndex } from './routes/DialogIndex.jsx';
 import { DialogBeat } from './routes/DialogBeat.jsx';
 import { PromptsIndex } from './routes/PromptsIndex.jsx';
@@ -46,6 +44,12 @@ function ArtworkRedirect() {
   return <Navigate to={`/beat/${order}`} replace />;
 }
 
+// The Storyboard tab was retired in favour of Prompts; old links land there.
+function StoryboardRedirect() {
+  const { order } = useParams();
+  return <Navigate to={order ? `/prompts/${order}` : '/prompts'} replace />;
+}
+
 function ProjectShell({ session, onLogout }) {
   const [chatOpen, setChatOpen] = useState(() => loadChatOpen());
   // Mount the chat on first open, then keep it mounted (hidden via CSS) so an
@@ -71,10 +75,10 @@ function ProjectShell({ session, onLogout }) {
           <Route path="/character/:name" element={<Character session={session} />} />
           <Route path="/set/:name" element={<Set session={session} />} />
           <Route path="/library" element={<Library session={session} />} />
-          <Route path="/storyboard" element={<StoryboardIndex session={session} />} />
-          <Route path="/storyboard/:order" element={<StoryboardBeat session={session} />} />
           <Route path="/dialog" element={<DialogIndex session={session} />} />
           <Route path="/dialog/:order" element={<DialogBeat session={session} />} />
+          <Route path="/storyboard" element={<StoryboardRedirect />} />
+          <Route path="/storyboard/:order" element={<StoryboardRedirect />} />
           <Route path="/prompts" element={<PromptsIndex session={session} />} />
           <Route path="/prompts/:order" element={<PromptsBeat session={session} />} />
           <Route path="/about" element={<About session={session} />} />

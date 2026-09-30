@@ -1,19 +1,18 @@
-// Storyboard video generation pipeline against fal.ai. Triggered from
-// POST /api/storyboard/:id/video/generate. The request returns immediately
-// with a job id; the actual work runs in the background under the per-beat
-// lock so it can't race a storyboard regenerate / edit. The SPA opens an
-// EventSource on /api/storyboard/:id/video-job/:jobId/events and receives
-// pushed updates as fal's queue advances.
+// Cut video generation pipeline against fal.ai (the fal half of the Prompts
+// tab; src/web/comfyVideoGenerate.js is the ComfyUI half). Started from
+// POST /api/cut/:id/fal-video/generate, the beat render job
+// (src/web/cutBeatRender.js) or the render_cut_video agent tool. The request
+// returns immediately with a job id; the work runs in the background under
+// the per-beat lock. The SPA opens an EventSource on
+// /api/cut/:id/video-job/:jobId/events and receives pushed updates as fal's
+// queue advances.
 //
 // Pipeline:
 //   1. Validate the chosen model's required inputs are present on the row.
 //   2. Read each needed input from GridFS and upload to fal storage. fal
 //      bills for storage and accepts a lifecycle hint, so we expire inputs
-//      after config.fal.storageLifetimeDays (default 7). Only images
-//      explicitly attached to the storyboard row (start_frame_id,
-//      end_frame_id, character_sheet_image_id, reference_image_ids[]) are
-//      ever uploaded — we never auto-pull character sheets by name or
-//      reuse one slot's image as another slot's input.
+//      after config.fal.storageLifetimeDays (default 7). Only the cut's own
+//      start frame and its ordered reference images are ever uploaded.
 //   3. fal.queue.submit → request_id.
 //   4. fal.queue.subscribeToStatus emits IN_QUEUE / IN_PROGRESS / COMPLETED
 //      callbacks; each callback fans out to the SSE listeners for this job
@@ -23,7 +22,7 @@
 //   6. Download the MP4 bytes; persist into GridFS attachments bucket as a
 //      beat-owned attachment, tagged metadata.kind='video' and
 //      metadata.generated_by=<fal model id>.
-//   7. setStoryboardVideoViaGateway() — the gateway broadcasts a
+//   7. setVideoPromptVideoViaGateway() — the gateway broadcasts a
 //      fields_updated ping so the connected SPA renders the new video.
 
 import { ObjectId } from 'mongodb';
@@ -35,11 +34,10 @@ import {
   readAttachmentBuffer,
   uploadAttachmentBuffer,
 } from '../mongo/attachments.js';
-import { getStoryboard as mongoGetStoryboard } from '../mongo/storyboards.js';
 import { getVideoPrompt as mongoGetVideoPrompt } from '../mongo/videoPrompts.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import { stripMarkdown } from '../util/markdown.js';
-import { setStoryboardVideoViaGateway, setVideoPromptVideoViaGateway } from './gateway.js';
+import { setVideoPromptVideoViaGateway } from './gateway.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 import { fal, isConfigured as falIsConfigured } from '../fal/client.js';
 import { uploadFalAsset } from '../fal/upload.js';
@@ -119,9 +117,8 @@ export function serializeJob(job) {
   if (!job) return null;
   return {
     job_id: job.job_id,
-    storyboard_id: job.storyboard_id,
-    owner_type: job.owner_type || 'storyboard',
-    owner_id: job.owner_id || job.storyboard_id,
+    owner_type: job.owner_type,
+    owner_id: job.owner_id,
     beat_id: job.beat_id,
     model_id: job.model_id,
     fal_model: job.fal_model,
@@ -140,7 +137,7 @@ export function serializeJob(job) {
 
 export class VideoBeatBusyError extends Error {
   constructor(beatId) {
-    super(`Storyboard work already in progress for beat ${beatId}`);
+    super(`Work already in progress for beat ${beatId}`);
     this.code = 'BEAT_BUSY';
   }
 }
@@ -173,59 +170,77 @@ export class UnknownVideoModelError extends Error {
   }
 }
 
-// Owner hook: the pipeline renders for a storyboard row by default, or —
-// when `owner = { kind: 'video_prompt', id }` is passed — for a Prompts-tab
-// row. The prompt row is adapted into a storyboard-shaped shim so every step
-// below (assignment, prompt, duration, persistence) works unchanged: its
-// ordered reference_images become the frame pool AND the default `ref` list,
-// so a reference-to-video model receives the images in @Image1..N order and
-// an image-to-video model gets @Image1 as its start frame.
+// The pipeline renders for one owner: `{ kind: 'video_prompt', id }`, a
+// Prompts-tab cut. The cut is adapted into the row shape the steps below read
+// (frame pool, reference list, audio, prompt, duration): its ordered
+// reference_images become the default `ref` list, so a reference-to-video
+// model receives the images in @Image1..N order and an image-to-video model
+// gets the start frame.
 export const OWNER_VIDEO_PROMPT = 'video_prompt';
 
 function isPromptOwner(owner) {
   return owner && owner.kind === OWNER_VIDEO_PROMPT;
 }
 
+// A cut as the pipeline's row: its rendered START FRAME is frames[0]
+// (what image-to-video and lip-sync models get), its rendered END FRAME is
+// frames[1] when there is one (first-last-frame models land on it), its
+// ordered reference_images
+// are the `ref` list for reference-to-video models, its joined dialogue
+// recording (audio_file_id) feeds lip-sync models, and the prompt is the
+// block plus any exclusion the planner did not already write into it. The
+// reference binding rides along as __binding and is prepended at submit time
+// only for reference-taking models.
 export async function loadVideoPromptOwner(projectId, promptId) {
   const p = await mongoGetVideoPrompt(projectId, promptId);
   if (!p) return null;
   const refs = (p.reference_images || []).map((r) => r.image_id).filter(Boolean);
+  const startId = p.start_frame?.image_id || null;
+  const endId = p.end_frame?.image_id || null;
+  const body = String(p.prompt || '');
+  const exclusions = (Array.isArray(p.exclusions) ? p.exclusions : [])
+    .map((e) => String(e || '').trim())
+    .filter((e) => e && !body.includes(e));
   return {
     _id: p._id,
     beat_id: p.beat_id,
     order: p.order,
     title: p.title,
-    text_prompt: p.prompt,
+    text_prompt: exclusions.length ? `${body}\n\n${exclusions.join(' ')}` : body,
     duration_seconds: p.duration_seconds,
-    frames: refs.map((id) => ({ image_id: id, reference_ids: [] })),
+    // frames[0] is the start frame; its reference_ids are the stored
+    // references (no scores → stored order), which makes them resolvable as
+    // the explicit `ref` assignment prepareShotVideoJob builds.
+    frames: [
+      { image_id: startId, reference_ids: refs, reference_scores: {} },
+      ...(endId ? [{ image_id: endId, reference_ids: [], reference_scores: {} }] : []),
+    ],
+    __start_frame_id: startId,
+    __end_frame_id: endId,
     reference_image_ids: refs,
-    audio_file_id: null,
-    audio_duration_seconds: null,
+    audio_file_id: p.audio_file_id || null,
+    audio_duration_seconds: p.audio_duration_seconds || null,
     video_upload_file_id: null,
     video_file_id: p.video_file_id,
+    __binding: String(p.reference_binding || '').trim() || null,
     __owner: { kind: OWNER_VIDEO_PROMPT, id: p._id.toString() },
   };
 }
 
-async function loadOwnerRow({ projectId, storyboardId, owner }) {
-  if (isPromptOwner(owner)) {
-    const row = await loadVideoPromptOwner(projectId, owner.id);
-    if (!row) throw new Error(`Video prompt not found: ${owner.id}`);
-    return row;
-  }
-  const sb = await mongoGetStoryboard(projectId, storyboardId);
-  if (!sb) throw new Error(`Storyboard not found: ${storyboardId}`);
-  return sb;
+async function loadOwnerRow({ projectId, owner }) {
+  if (!isPromptOwner(owner)) throw new Error('fal video render requires a cut owner');
+  const row = await loadVideoPromptOwner(projectId, owner.id);
+  if (!row) throw new Error(`Video prompt not found: ${owner.id}`);
+  return row;
 }
 
 // Resolve everything a shot render needs WITHOUT side effects: the model (by
-// registry id, registered endpoint id, or catalog endpoint), the storyboard
+// registry id, registered endpoint id, or catalog endpoint), the cut
 // row, the frame/reference assignment, and the required-input check. Throws
 // the same typed errors the routes map to 4xx/5xx. Shared by the single-shot
 // start path, the payload preview, and the beat renderer.
 export async function prepareShotVideoJob({
   projectId = null,
-  storyboardId,
   modelId = null,
   frameAssignment = null,
   owner = null,
@@ -237,30 +252,31 @@ export async function prepareShotVideoJob({
   const model = await resolveVideoModelByAnyId(chosenId);
   if (!model) throw new UnknownVideoModelError(chosenId);
 
-  const sb = await loadOwnerRow({ projectId, storyboardId, owner });
+  const sb = await loadOwnerRow({ projectId, owner });
 
   // A prompt row's references are always shipped in stored order — the
   // prompt text's @ImageN handles depend on it — so the explicit `ref` list
-  // (never capped by resolveFrameAssignment) is the default assignment.
-  const effectiveAssignment =
-    isPromptOwner(owner) && !frameAssignment
-      ? { ref: sb.reference_image_ids || [] }
-      : frameAssignment;
+  // (never capped by resolveFrameAssignment) is the default assignment. The
+  // start and end frames are named explicitly so a cut with only an end frame
+  // never opens on it.
+  const effectiveAssignment = frameAssignment || {
+    ref: sb.reference_image_ids || [],
+    start_frame: sb.__start_frame_id || null,
+    end_frame: sb.__end_frame_id || null,
+  };
   const assignment = resolveFrameAssignment(model, sb, effectiveAssignment);
   const missing = validateAssignment(model, assignment, sb);
   if (missing.length) throw new MissingInputsError(missing, model.label);
-  return { model, storyboard: sb, assignment };
+  return { model, row: sb, assignment };
 }
 
-function createShotVideoJob({ model, storyboard }) {
+function createShotVideoJob({ model, row }) {
   const jobId = makeJobId();
-  const owner = storyboard.__owner || null;
   const job = {
     job_id: jobId,
-    storyboard_id: owner ? null : storyboard._id.toString(),
-    owner_type: owner ? owner.kind : 'storyboard',
-    owner_id: storyboard._id.toString(),
-    beat_id: storyboard.beat_id.toString(),
+    owner_type: row.__owner?.kind || OWNER_VIDEO_PROMPT,
+    owner_id: row._id.toString(),
+    beat_id: row.beat_id.toString(),
     model_id: model.id,
     fal_model: model.falModel,
     status: 'queued',
@@ -285,7 +301,6 @@ function createShotVideoJob({ model, storyboard }) {
 // (runVideoGenerationJob never throws; it records the error on the job).
 export async function runShotVideoInline({
   projectId = null,
-  storyboardId,
   modelId = null,
   prompt = null,
   durationSeconds = null,
@@ -298,14 +313,13 @@ export async function runShotVideoInline({
   onJobCreated = null,
   owner = null,
 } = {}) {
-  const { model, storyboard, assignment } = await prepareShotVideoJob({
+  const { model, row, assignment } = await prepareShotVideoJob({
     projectId,
-    storyboardId,
-    modelId,
+      modelId,
     frameAssignment,
     owner,
   });
-  const job = createShotVideoJob({ model, storyboard });
+  const job = createShotVideoJob({ model, row });
   try {
     onJobCreated?.(job);
   } catch {
@@ -315,7 +329,7 @@ export async function runShotVideoInline({
     await runVideoGenerationJob({
       projectId,
       job,
-      storyboard,
+      row,
       model,
       prompt,
       durationSeconds,
@@ -336,7 +350,6 @@ export async function runShotVideoInline({
 // can immediately open its SSE stream.
 export async function startVideoGenerationJob({
   projectId = null,
-  storyboardId,
   modelId = null,
   prompt = null,
   durationSeconds = null,
@@ -348,10 +361,9 @@ export async function startVideoGenerationJob({
   announceUsername = null,
   owner = null,
 } = {}) {
-  const { model, storyboard: sb, assignment } = await prepareShotVideoJob({
+  const { model, row: sb, assignment } = await prepareShotVideoJob({
     projectId,
-    storyboardId,
-    modelId,
+      modelId,
     frameAssignment,
     owner,
   });
@@ -360,14 +372,14 @@ export async function startVideoGenerationJob({
     throw new VideoBeatBusyError(sb.beat_id.toString());
   }
 
-  const job = createShotVideoJob({ model, storyboard: sb });
+  const job = createShotVideoJob({ model, row: sb });
   const jobId = job.job_id;
 
   withBeatLock(sb.beat_id, () =>
     runVideoGenerationJob({
       projectId,
       job,
-      storyboard: sb,
+      row: sb,
       model,
       prompt,
       durationSeconds,
@@ -414,7 +426,7 @@ async function loadAndUploadImage(imageId, name) {
   if (!read) throw new Error(`Failed to read image ${imageId} from storage.`);
   const ct =
     read.file?.contentType || read.file?.metadata?.content_type || 'image/png';
-  // Storyboard frames are often 4K PNGs (~14 MB). fal rejects inputs over
+  // Start frames are often 4K PNGs (~14 MB). fal rejects inputs over
   // 10 MB and bytedance/omnihuman refuses oversized images with a generic
   // file_download_error, so downscale/re-encode before upload. In-limit
   // images pass through untouched.
@@ -441,7 +453,7 @@ async function loadAndUploadAttachment(attachmentId, name) {
 // the bytes are trimmed (and re-encoded to MP3) before upload. The cap can be
 // resolution-dependent, so the selected output resolution is passed in.
 // Otherwise the stored bytes go up unchanged, matching the generic uploader.
-async function loadAndUploadAudio({ attachmentId, model, storyboard, resolution = null }) {
+async function loadAndUploadAudio({ attachmentId, model, row, resolution = null }) {
   if (!attachmentId) return null;
   const read = await readAttachmentBuffer(attachmentId);
   if (!read) throw new Error(`Failed to read attachment ${attachmentId} from storage.`);
@@ -449,7 +461,7 @@ async function loadAndUploadAudio({ attachmentId, model, storyboard, resolution 
     read.file?.contentType || read.file?.metadata?.content_type || 'application/octet-stream';
   const cap = getMaxAudioSeconds(model.falModel, resolution);
   if (cap) {
-    const dur = Number(storyboard.audio_duration_seconds);
+    const dur = Number(row.audio_duration_seconds);
     const overOrUnknown = !Number.isFinite(dur) || dur <= 0 || dur > cap;
     if (overOrUnknown) {
       const trimmed = await trimToSeconds(read.buffer, cap);
@@ -571,7 +583,6 @@ async function describeAttachmentInput({ slot, attachmentId, name }) {
 // matching status codes.
 export async function buildVideoPayloadPreview({
   projectId = null,
-  storyboardId,
   modelId = null,
   prompt = null,
   durationSeconds = null,
@@ -582,10 +593,9 @@ export async function buildVideoPayloadPreview({
   frameAssignment = null,
   owner = null,
 } = {}) {
-  const { model, storyboard: sb, assignment } = await prepareShotVideoJob({
+  const { model, row: sb, assignment } = await prepareShotVideoJob({
     projectId,
-    storyboardId,
-    modelId,
+      modelId,
     frameAssignment,
     owner,
   });
@@ -657,10 +667,15 @@ export async function buildVideoPayloadPreview({
   }
 
   const directorNotes = includeDirectorNotes ? await loadDirectorNotesForPrompt(projectId) : null;
-  const finalPrompt = buildPrompt({ override: prompt, storyboard: sb, directorNotes });
+  const finalPrompt = buildPrompt({
+    override: prompt,
+    row: sb,
+    directorNotes,
+    prefix: sb.__binding && wants('referenceImages') ? sb.__binding : null,
+  });
   const finalDuration = pickDurationSeconds({
     requested: durationSeconds,
-    storyboard: sb,
+    row: sb,
     model,
   });
   const finalGenerateAudio = model.supportsGenerateAudio
@@ -752,7 +767,7 @@ export async function buildVideoPayloadPreview({
 async function runVideoGenerationJob({
   projectId = null,
   job,
-  storyboard,
+  row,
   model,
   prompt,
   durationSeconds,
@@ -771,10 +786,10 @@ async function runVideoGenerationJob({
     const needs = model.inputs;
     const wants = (key) => needs[key] && needs[key] !== 'unused';
 
-    // The frame assignment maps the storyboard's frame-pool images onto the
+    // The frame assignment maps the cut's start frame and references onto the
     // model's start/end/reference slots (resolved + validated at job start).
     const frameAssignment =
-      assignment || resolveFrameAssignment(model, storyboard, null);
+      assignment || resolveFrameAssignment(model, row, null);
 
     setStep(job, 'uploading', 'Uploading inputs to fal storage');
     const [
@@ -787,14 +802,14 @@ async function runVideoGenerationJob({
       wants('endFrame') ? loadAndUploadImage(frameAssignment.endFrameId, 'end.png') : null,
       wants('audio')
         ? loadAndUploadAudio({
-            attachmentId: storyboard.audio_file_id,
+            attachmentId: row.audio_file_id,
             model,
-            storyboard,
+            row,
             resolution,
           })
         : null,
       wants('videoInput')
-        ? loadAndUploadAttachment(storyboard.video_upload_file_id, 'source.mp4')
+        ? loadAndUploadAttachment(row.video_upload_file_id, 'source.mp4')
         : null,
     ]);
     const characterSheetUrl = null;
@@ -806,22 +821,29 @@ async function runVideoGenerationJob({
     // 2. Build the model-specific input from the unified bundle.
     const directorNotes = includeDirectorNotes ? await loadDirectorNotesForPrompt(projectId) : null;
     const bundle = {
-      prompt: buildPrompt({ override: prompt, storyboard, directorNotes }),
+      prompt: buildPrompt({
+        override: prompt,
+        row,
+        directorNotes,
+        // A cut's reference binding only means something to a model that
+        // takes reference images; the start frame carries identity elsewhere.
+        prefix: row.__binding && wants('referenceImages') ? row.__binding : null,
+      }),
       startFrameUrl,
       endFrameUrl,
       characterSheetUrl,
       audioUrl,
       videoUrl,
       referenceImageUrls,
-      durationSeconds: pickDurationSeconds({ requested: durationSeconds, storyboard, model }),
+      durationSeconds: pickDurationSeconds({ requested: durationSeconds, row, model }),
       generateAudio: model.supportsGenerateAudio ? Boolean(generateAudio) : false,
       resolution: resolution || null,
       fps: Number.isFinite(Number(fps)) && Number(fps) > 0 ? Number(fps) : null,
       audioDurationSeconds:
-        typeof storyboard.audio_duration_seconds === 'number' &&
-        Number.isFinite(storyboard.audio_duration_seconds) &&
-        storyboard.audio_duration_seconds > 0
-          ? storyboard.audio_duration_seconds
+        typeof row.audio_duration_seconds === 'number' &&
+        Number.isFinite(row.audio_duration_seconds) &&
+        row.audio_duration_seconds > 0
+          ? row.audio_duration_seconds
           : null,
     };
     const input = model.buildInput(bundle);
@@ -884,13 +906,12 @@ async function runVideoGenerationJob({
 
     // 6. Persist into GridFS attachments as a beat-owned video.
     setStep(job, 'persisting', 'Saving video');
-    const promptOwner = isPromptOwner(storyboard.__owner);
     const file = await uploadAttachmentBuffer(projectId, {
       buffer,
-      filename: `${promptOwner ? 'video-prompt' : 'storyboard'}-${storyboard._id}-video-${Date.now()}.mp4`,
+      filename: `video-prompt-${row._id}-video-${Date.now()}.mp4`,
       contentType: contentType || 'video/mp4',
       ownerType: 'beat',
-      ownerId: storyboard.beat_id,
+      ownerId: row.beat_id,
     });
 
     const persistArgs = {
@@ -906,11 +927,11 @@ async function runVideoGenerationJob({
       parameters: persistedParameters,
       costUsd: cost?.totalUsd ?? null,
     };
-    if (promptOwner) {
+    {
       // Replace-on-render: a prompt row holds one video, so the previous
       // file is dropped once the new pointer is written.
-      const previousId = storyboard.video_file_id || null;
-      await setVideoPromptVideoViaGateway({ ...persistArgs, promptId: storyboard._id });
+      const previousId = row.video_file_id || null;
+      await setVideoPromptVideoViaGateway({ ...persistArgs, promptId: row._id });
       if (previousId && String(previousId) !== String(file._id)) {
         try {
           const { deleteAttachment } = await import('../mongo/attachments.js');
@@ -919,34 +940,28 @@ async function runVideoGenerationJob({
           logger.warn(`video prompt render: previous video ${previousId} cleanup failed: ${e?.message || e}`);
         }
       }
-    } else {
-      await setStoryboardVideoViaGateway({ ...persistArgs, storyboardId: storyboard._id });
     }
 
     job.video_file_id = file._id.toString();
     job.finished_at = new Date();
     setStep(job, 'done', 'Done');
     logger.info(
-      `fal video gen job ${job.job_id} done storyboard=${storyboard._id} request_id=${submission.request_id}`,
+      `fal video gen job ${job.job_id} done cut=${row._id} request_id=${submission.request_id}`,
     );
     if (announceUsername) {
       try {
         const { announceMediaEvent } = await import('../discord/announcer.js');
-        const { storyboardUrl, promptsUrl } = await import('./links.js');
+        const { promptsUrl } = await import('./links.js');
         const { stripMarkdown } = await import('../util/markdown.js');
         const { getBeat } = await import('../mongo/plots.js');
         const { getProjectById } = await import('../mongo/projects.js');
-        const beat = await getBeat(projectId, String(storyboard.beat_id));
+        const beat = await getBeat(projectId, String(row.beat_id));
         const project = projectId ? await getProjectById(projectId) : null;
         const name = beat ? stripMarkdown(beat.name || '').trim() : '';
         const order = beat && Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
         const beatLabel = name ? `${order}: ${name}` : order;
-        const entityLabel = promptOwner
-          ? `Prompt${Number.isFinite(storyboard.order) ? ` ${storyboard.order}` : ''} — ${beatLabel}`
-          : `Storyboard — ${beatLabel}${Number.isFinite(storyboard.order) ? ` (shot ${storyboard.order + 1})` : ''}`;
-        const entityUrl = beat
-          ? (promptOwner ? promptsUrl(project?.title ?? null, beat) : storyboardUrl(project?.title ?? null, beat))
-          : null;
+        const entityLabel = `Prompt${Number.isFinite(row.order) ? ` ${row.order}` : ''} — ${beatLabel}`;
+        const entityUrl = beat ? promptsUrl(project?.title ?? null, beat) : null;
         announceMediaEvent({
           username: announceUsername,
           verb: 'generated video for',
@@ -1019,13 +1034,14 @@ async function fetchVideoBytes(videoUrl) {
   return { buffer: Buffer.from(ab), contentType: ct };
 }
 
-function buildPrompt({ override, storyboard, directorNotes = null }) {
+function buildPrompt({ override, row, directorNotes = null, prefix = null }) {
   const raw =
     (typeof override === 'string' && override.trim()) ||
-    stripMarkdown(storyboard.text_prompt || '').trim() ||
+    stripMarkdown(row.text_prompt || '').trim() ||
     'Cinematic shot.';
+  const lead = typeof prefix === 'string' && prefix.trim() ? `${stripMarkdown(prefix).trim()}\n\n${raw}` : raw;
   const notesBlock = formatDirectorNotesBlock(directorNotes);
-  return notesBlock ? `${raw}\n\n${notesBlock}` : raw;
+  return notesBlock ? `${lead}\n\n${notesBlock}` : lead;
 }
 
 // Pull the project-wide director's notes once per submit. Returns the bare
@@ -1041,7 +1057,7 @@ async function loadDirectorNotesForPrompt(projectId) {
   }
 }
 
-// Same shape used by the storyboard planner — one bullet per note,
+// One bullet per note,
 // markdown stripped, blanks dropped. Returns null when there's nothing to
 // append so buildPrompt can skip the trailing newlines.
 function formatDirectorNotesBlock(notes) {
@@ -1057,7 +1073,7 @@ function formatDirectorNotesBlock(notes) {
   return `Director's notes (project-wide guidance — apply to this shot):\n${bullets}`;
 }
 
-// Build the `parameters` snapshot we persist on the storyboard. The
+// Build the `parameters` snapshot we persist on the cut. The
 // caller hands in the bundle (what we'd pass to model.buildInput) AND
 // the resulting payload (so resolution/aspect_ratio fields filled in by
 // buildInput are captured). URLs and sentinel strings are stripped; we
@@ -1128,14 +1144,14 @@ function parseDurationNumber(d) {
   return Number(String(d).replace(/s$/i, ''));
 }
 
-export function pickDurationSeconds({ requested, storyboard, model }) {
+export function pickDurationSeconds({ requested, row, model }) {
   const defaultDur = parseDurationNumber(model.defaultDuration);
   const candidate =
     Number.isFinite(Number(requested)) && Number(requested) > 0
       ? Number(requested)
-      : Number.isFinite(Number(storyboard.duration_seconds)) &&
-          Number(storyboard.duration_seconds) > 0
-        ? Number(storyboard.duration_seconds)
+      : Number.isFinite(Number(row.duration_seconds)) &&
+          Number(row.duration_seconds) > 0
+        ? Number(row.duration_seconds)
         : Number.isFinite(defaultDur) && defaultDur > 0
           ? defaultDur
           : 5;

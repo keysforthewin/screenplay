@@ -1,47 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
-import { apiGet, apiPostJson, apiPostMultipart } from '../api.js';
+import { apiPostMultipart } from '../api.js';
 import { baseContentType } from '../recordingMime.js';
-import { MediaReferenceTab } from './MediaReferenceTab.jsx';
 import { Modal } from './Modal.jsx';
 
 const BASE_TABS = [
   { key: 'upload', label: 'Upload' },
   { key: 'record', label: 'Record' },
 ];
-const REFERENCE_TAB = { key: 'reference', label: 'Reference' };
-const DIALOG_TAB = { key: 'dialog', label: 'From dialog' };
 
-function stripMd(s) {
-  return String(s || '')
-    .replace(/[*_`~]/g, '')
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/gm, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-// Modal that consolidates the ways to attach audio to a storyboard scene:
-// upload, record from the mic, pick an existing audio attachment from any
-// beat/character ("Reference"), or copy from a dialog item in the same beat
-// ("From dialog"). The Reference tab is shown when `storyboardId` is
-// provided; the From-dialog tab is shown when `dialogPicker` is provided.
-// The dialog widget (which reuses this modal but isn't tied to a storyboard)
-// passes neither and sees just upload/record.
+// Modal with the two ways to attach audio to a dialogue line: upload a file
+// or record from the mic.
 export function AudioPickerModal({
   open,
   onClose,
   uploadEndpoint,
   recordingPrefix = 'recording',
-  storyboardId = null,
-  dialogPicker = null,
   onAttached,
 }) {
-  const tabs = [
-    ...BASE_TABS,
-    ...(storyboardId ? [REFERENCE_TAB] : []),
-    ...(dialogPicker ? [DIALOG_TAB] : []),
-  ];
+  const tabs = BASE_TABS;
   const [tab, setTab] = useState('upload');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -61,42 +37,6 @@ export function AudioPickerModal({
       const fd = new FormData();
       fd.append('file', file);
       await apiPostMultipart(uploadEndpoint, fd);
-      await onAttached?.();
-      onClose?.();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function pickFromDialog(dialogId) {
-    if (!dialogPicker || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await apiPostJson(
-        `/storyboard/${dialogPicker.storyboardId}/audio/from-dialog`,
-        { dialog_id: dialogId },
-      );
-      await onAttached?.();
-      onClose?.();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function pickFromReference(attachmentId) {
-    if (!storyboardId || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await apiPostJson(
-        `/storyboard/${storyboardId}/audio/from-attachment`,
-        { attachment_id: attachmentId },
-      );
       await onAttached?.();
       onClose?.();
     } catch (e) {
@@ -145,21 +85,6 @@ export function AudioPickerModal({
               recordingPrefix={recordingPrefix}
               busy={busy}
               onError={setError}
-            />
-          )}
-          {tab === 'reference' && storyboardId && (
-            <MediaReferenceTab
-              storyboardId={storyboardId}
-              mediaType="audio"
-              busy={busy}
-              onPick={pickFromReference}
-            />
-          )}
-          {tab === 'dialog' && dialogPicker && (
-            <FromDialogTab
-              beatId={dialogPicker.beatId}
-              busy={busy}
-              onPick={pickFromDialog}
             />
           )}
         </div>
@@ -345,68 +270,6 @@ function RecordAudioTab({ onRecorded, recordingPrefix, busy, onError }) {
           </button>
         </>
       )}
-    </div>
-  );
-}
-
-function FromDialogTab({ beatId, busy, onPick }) {
-  const [items, setItems] = useState(null);
-  const [loadError, setLoadError] = useState(null);
-
-  useEffect(() => {
-    if (!beatId) return undefined;
-    let cancelled = false;
-    setLoadError(null);
-    (async () => {
-      try {
-        const r = await apiGet(`/dialogs?beat_id=${encodeURIComponent(beatId)}`);
-        if (!cancelled) setItems(r?.dialogs || []);
-      } catch (e) {
-        if (!cancelled) setLoadError(e.message);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [beatId]);
-
-  if (loadError) {
-    return <div className="error-banner small">{loadError}</div>;
-  }
-  if (items === null) {
-    return <p className="ref-picker-empty">Loading…</p>;
-  }
-  const withAudio = items.filter((d) => d.audio_file_id);
-  if (!withAudio.length) {
-    return (
-      <p className="ref-picker-empty">
-        No dialog items in this beat have audio yet.
-      </p>
-    );
-  }
-  return (
-    <div className="ref-picker-dialog-list">
-      {withAudio.map((d) => {
-        const id = d._id?.toString?.() || String(d._id);
-        const speaker = stripMd(d.character) || '(no speaker)';
-        const excerpt = stripMd(d.body).slice(0, 120) || '(empty)';
-        return (
-          <button
-            key={id}
-            type="button"
-            className="ref-picker-dialog-item"
-            disabled={busy}
-            onClick={() => onPick(id)}
-          >
-            <div style={{ fontWeight: 600 }}>
-              #{d.order} · {speaker}
-            </div>
-            <div style={{ color: 'var(--fg-muted)', fontSize: '0.9em' }}>
-              {excerpt}
-            </div>
-          </button>
-        );
-      })}
     </div>
   );
 }

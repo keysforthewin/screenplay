@@ -12,8 +12,7 @@
 //   Then a bounded-concurrency worker pool renders each prompt into a pending
 //   artwork via the shared generateArtworkImageInline() path.
 //
-// Status lives in an in-memory job map (same convention as storyboard
-// generation) which the SPA polls; the job shape mirrors the storyboard job so
+// Status lives in an in-memory job map which the SPA polls; the job shape is the one
 // the SPA's progress component renders it unchanged. In-memory jobs are lost on
 // process restart — accepted (already-created artwork docs persist; stuck
 // pending tiles can be regenerated/deleted per-artwork).
@@ -33,12 +32,10 @@ import {
   findBeatsReferencingSet,
   loadImageInput,
   clipField,
-} from './storyboardGenerate.js';
+} from './beatPlanShared.js';
 import { clipBlock, MAX_CONTEXT_BEATS } from './setDescriptionGenerate.js';
 import { buildCharacterSheetShots, selectSheetShots } from './characterSheetShots.js';
 import { planBeatSceneImages, MAX_SCENE_IMAGE_COUNT } from './beatSheetPlanner.js';
-import { listStoryboards } from '../mongo/storyboards.js';
-import { tuneStoryboardImageSheet } from './storyboardSheetTuner.js';
 
 // How many provider calls run at once. Bounded to avoid hammering provider rate
 // limits when a sheet has a dozen+ shots.
@@ -213,8 +210,8 @@ function normalizeBeatIds(beatIds) {
     .slice(0, 50);
 }
 
-// Ceiling on the unioned reference pool sent to the image provider. Storyboard
-// reference picking caps at 12; linked set galleries can be much bigger, so
+// Ceiling on the unioned reference pool sent to the image provider. A single
+// shot's list caps at 12; linked set galleries can be much bigger, so
 // clamp the union to keep provider payloads sane.
 export const MAX_SHEET_REFERENCE_IMAGES = 20;
 
@@ -257,7 +254,7 @@ async function resolveSheetReferenceIds({ projectId, explicitIds = [], reference
   return out;
 }
 
-// Ceiling on one shot's own reference list (mirrors the storyboard frame cap).
+// Ceiling on one shot's own reference list (the image models' practical edit cap).
 export const MAX_SHOT_REFERENCE_IMAGES = 12;
 
 // Trim/validate a client-supplied explicit shot list (beats/sets). Returns an
@@ -673,97 +670,6 @@ export async function startShotPlanJob({
         job.finished_at = new Date();
         logger.error(`shot-plan job ${jobId} crashed (outer): ${e.message}`);
       });
-  });
-
-  return { job_id: jobId };
-}
-
-// Run the storyboard-driven tune scan for a beat and park the proposed new
-// plates on the job for review. Renders NOTHING — the SPA polls
-// GET /image-sheet/:jobId until status === 'derived', shows job.shots for
-// review, then POSTs the reviewed list to /beat/:id/image-sheet (same as the
-// derive→review→generate flow). No busyHosts lock: scanning has no side effects.
-async function runTuneScanJob({ projectId, job, hostId }) {
-  try {
-    job.status = 'planning';
-    const beat = await getBeat(projectId, hostId);
-    if (!beat) throw new Error(`beat not found: ${hostId}`);
-    const storyboards = await listStoryboards({ beatId: beat._id });
-    if (!storyboards.length) {
-      job.shots = [];
-      job.planned = 0;
-      job.status = 'derived';
-      job.finished_at = new Date();
-      recordProgress(job, { phase: 'derived', step: 'tune_empty', message: 'No storyboard elements to scan.' });
-      return;
-    }
-    const existingPlates = (beat.artworks || [])
-      .filter((a) => a?.status === 'done' && a.result_image_id)
-      .map((a) => ({ name: (a.name || '').trim(), prompt: (a.prompt || '').trim() }));
-    const { images } = await tuneStoryboardImageSheet({
-      storyboards,
-      existingPlates,
-      onProgress: (e) => recordProgress(job, e),
-    });
-    job.shots = images;
-    job.planned = images.length;
-    job.status = 'derived';
-    job.finished_at = new Date();
-    recordProgress(job, {
-      phase: 'derived',
-      step: 'derive_done',
-      total: images.length,
-      message: `Proposed ${images.length} new plate${images.length === 1 ? '' : 's'} — review and generate.`,
-    });
-  } catch (e) {
-    job.status = 'error';
-    job.error = e.message;
-    job.finished_at = new Date();
-    recordProgress(job, { phase: 'error', step: 'tune_crashed', message: `Tune failed: ${e.message}` });
-    logger.error(`tune-scan job ${job.job_id} crashed: ${e.message}`);
-  }
-}
-
-// Start a background tune-scan job for a beat. Returns { job_id } immediately
-// (HTTP 202). Throws an error carrying `.status` for not-found / config issues.
-export async function startTuneScanJob({ projectId, hostId, referenceImageIds = [] }) {
-  if (!config.anthropic?.apiKey) {
-    throw httpError('ANTHROPIC_API_KEY is not configured (required to tune the image sheet).', 400);
-  }
-  const beat = await getBeat(projectId, String(hostId));
-  if (!beat) throw httpError(`beat not found: ${hostId}`, 404);
-  const resolvedHostId = beat._id.toString();
-
-  const jobId = makeJobId();
-  const job = {
-    job_id: jobId,
-    host_type: 'beat',
-    host_id: resolvedHostId,
-    project_id: projectId,
-    kind: 'beat_tune',
-    status: 'queued',
-    started_at: new Date(),
-    finished_at: null,
-    error: null,
-    planner_model: modelFor('storyboard'),
-    reference_image_ids: (referenceImageIds || []).map(String),
-    planned: 0,
-    completed: 0,
-    failed: 0,
-    progress: null,
-    events: [],
-    shots: null,
-  };
-  jobs.set(jobId, job);
-  recordProgress(job, { phase: 'queued', step: 'job_queued', message: 'Queued image-sheet tune…' });
-
-  setImmediate(() => {
-    runTuneScanJob({ projectId, job, hostId: resolvedHostId }).catch((e) => {
-      job.status = 'error';
-      job.error = e.message;
-      job.finished_at = new Date();
-      logger.error(`tune-scan job ${jobId} crashed (outer): ${e.message}`);
-    });
   });
 
   return { job_id: jobId };

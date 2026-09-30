@@ -19,9 +19,12 @@ throughout to label what is verified, what is practitioner-reported, and what is
 heuristic to test. That discipline is rarer than it should be, and it is what made the
 material trustworthy enough to build on.
 
-We do not use Seedance — this project renders through fal.ai (Kling and others) from a
-generated start frame — so none of the platform-specific material applies here. What we
-took was the craft reasoning underneath it, and we are grateful for it.
+This project renders through fal.ai and, since 2026-09-30, through a ComfyUI the user
+runs (LTX, Wan, and the Seedance/Kling API templates), always from a generated start
+frame — so most of the platform-specific material still does not apply here. What we
+took was the craft reasoning underneath it, and we are grateful for it. The Prompts tab's
+scene → cut → start frame → video pipeline (`src/web/cutPlanner.js`) is a direct
+adaptation of that method's directing engine and prompt compiler.
 
 ### What we adopted, and where it lives
 
@@ -40,14 +43,22 @@ took was the craft reasoning underneath it, and we are grateful for it.
 | The Director's Voice held across a whole project | `references/directing-engine.md` (Steps 6, 8) | `plots.directorial_voice`, inherited by scene bibles, storyboard prompts, and dialogue |
 | Known-fragile areas of generation | `references/failure-atlas.md`, `references/field-observed-tips.md`, `skills/seedance-troubleshoot` | `FRAGILITY_RULES`; the `fragility` critique lens in `src/web/storyboardCritique.js` |
 | Objective / obstacle / tactic; subtext through contradiction | `references/directing-engine.md` (Step 4) | the `plan` field and system prompt in `src/web/dialogGenerate.js`; the rubric in `src/web/dialogCritique.js` |
+| The full ten-field Director's Read per scene, and the scope firewall (already happened / this scene only / reserved / do not show yet) | `references/directing-engine.md` (Steps 1–3) | `directors_read` and `scope` on `video_scenes`; `DIRECTORS_READ_RULES`, `SCOPE_RULES` in `src/web/cutRules.js` |
+| The carrier table — a feeling is only directable as a visible carrier | `references/directing-engine.md` (Step 4), `references/carrier-table.md` | `CARRIER_TABLE_RULES`, `FEELING_RULES`; the `bare_feeling` lint |
+| Load score: seconds ÷ (beats + load) with safe / stretch / ambitious verdicts | `references/allocation-model.md`, `skills/seedance-sequence` | `sceneLoad` in `src/web/cutLoad.js`; `load` on each scene |
+| Floor plan before any cut; the axis and the landmarks | `references/cinematography-shot-language.md` | `floor_plan` on each scene; `FLOOR_PLAN_RULES` |
+| The shot table with column defaults (size, angle, height, lens, side, movement, in-frame, action-by, eyeline, last frame, sound) | `references/prompt-compiler.md`, `references/cinematography-shot-language.md` | `PLAN_CUTS_TOOL` and `SHOT_TABLE_RULES`; the shot-table fields on each cut |
+| Prose blocks: no brackets, no timestamps, one intention, ending on a lock line; two sanctioned negatives | `references/prompt-compiler.md`, `references/model-mechanics.md` | `BLOCK_FORM_RULES`, `LOCK_LINE_RULES`, `EIGHT_RULES`; `src/web/cutPromptLint.js` |
+| Trap phrases and the involuntary-endpoint failure | `references/anti-slop-lexicon.md`, `references/failure-atlas.md` | `CUT_ANTI_SLOP_RULES`; the `trap_phrase` and `involuntary_endpoint` lints |
+| Reference binding with roles and non-transfer ("controls identity only; ignore the room from it") | `skills/seedance-references` | `REFERENCE_BINDING_RULES`; `reference_binding` on each cut |
 
 ### What we deliberately did not take
 
 Noted so the divergence is a decision on record rather than an oversight:
 
-- **Everything Seedance-surface-specific** — `@Image1` reference-tag syntax, `Shot 1:/2:/3:`
-  multi-shot grammar, surface matrices, pricing, model IDs. We render one shot per row
-  through a different provider.
+- **Most Seedance-surface-specific material** — `Shot 1:/2:/3:` multi-shot grammar,
+  surface matrices, pricing, model IDs. We render one cut per row. (The `@ImageN`
+  reference syntax IS used on the fal Seedance path, because it is the model's own.)
 - **The entire audio and lip-sync branch.** That repo wants dialogue quoted inside the
   prompt so the model synthesizes voice and lip-sync. We record real voices and lip-sync
   in post, so words must never enter a prompt — the opposite rule. See `formatDialogLines`

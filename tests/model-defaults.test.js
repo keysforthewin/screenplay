@@ -55,7 +55,6 @@ const put = (body) =>
 const ALL_NULL = {
   image_with_refs: null,
   image_prompt_only: null,
-  video_start_end: null,
   video_start_only: null,
   video_direct: null,
   lipsync: null,
@@ -77,11 +76,11 @@ describe('projectSettings model defaults', () => {
   });
 
   it('clears a slot with null or empty string', async () => {
-    await Settings.setModelDefaults(projectId, { video_start_end: 'fal-ai/kling' });
-    expect((await Settings.setModelDefaults(projectId, { video_start_end: null })).video_start_end)
+    await Settings.setModelDefaults(projectId, { video_start_only: 'fal-ai/kling' });
+    expect((await Settings.setModelDefaults(projectId, { video_start_only: null })).video_start_only)
       .toBeNull();
-    await Settings.setModelDefaults(projectId, { video_start_end: 'fal-ai/kling' });
-    expect((await Settings.setModelDefaults(projectId, { video_start_end: '' })).video_start_end)
+    await Settings.setModelDefaults(projectId, { video_start_only: 'fal-ai/kling' });
+    expect((await Settings.setModelDefaults(projectId, { video_start_only: '' })).video_start_only)
       .toBeNull();
   });
 

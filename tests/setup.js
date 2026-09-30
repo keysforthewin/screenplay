@@ -11,3 +11,8 @@ process.env.WEB_PORT ||= '0';
 // empty pins the suite to legacy open mode (permissions disabled). Permission
 // tests set process.env.ADMIN_USERNAME explicitly per-case.
 process.env.ADMIN_USERNAME = '';
+// Same hard override for the optional providers: a developer's .env may carry
+// FAL_KEY / COMFYUI_URL, which would flip the fal and ComfyUI paths to
+// "configured" under test. Provider tests install their own fakes.
+process.env.FAL_KEY = '';
+process.env.COMFYUI_URL = '';

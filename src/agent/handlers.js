@@ -1018,7 +1018,7 @@ function formatPerEditSummary(applied) {
 // clobbers a human editing there. `dialogue_style` is the *global* dialogue
 // style (each beat also has its own `dialog_notes`, edited via the dialogs room).
 // `directorial_voice` is the project's single directing hand, inherited by scene
-// bibles, storyboard prompts, and dialogue.
+// bibles, cut prompts, and dialogue.
 const PLOT_EDIT_FIELDS = ['title', 'synopsis', 'dialogue_style', 'directorial_voice', 'notes'];
 
 async function editPlotEntity(context, { field, edits, isWholeReplace }) {
@@ -1951,7 +1951,7 @@ export const HANDLERS = {
 
   async delete_beat({ identifier }, context = null) {
     const res = await Gateway.deleteBeatViaGateway(context?.projectId, identifier);
-    return `Deleted beat "${res.name}" (${res.image_ids.length} image(s), ${res.storyboards_removed} storyboard(s), ${res.dialogs_removed} dialog item(s) removed with it).`;
+    return `Deleted beat "${res.name}" (${res.image_ids.length} image(s), ${res.dialogs_removed} dialog item(s), ${res.video_prompts_removed ?? 0} cut(s) removed with it).`;
   },
 
   async normalize_beat({ beat } = {}, context = null) {
@@ -3703,119 +3703,298 @@ export const HANDLERS = {
     return `Switched to project "${project.title}".${notPersisted}`;
   },
 
-  // ── Beat → shots → video (src/web/storyboardGenerate.js, src/web/beatRender.js) ──
-  async plan_shots({ beat, count, direction } = {}, context = null) {
+  // ── Prompts tab: beat → scenes → cuts → start frames → video ──
+  async plan_cuts({ beat, direction, render_start_frames } = {}, context = null) {
     const target = await resolveBeat(context?.projectId, beat);
-    const { startStoryboardGenerationJob, BeatBusyError } = await import('../web/storyboardGenerate.js');
-    const { storyboardUrl } = await import('../web/links.js');
+    const { startCutPlanJob } = await import('../web/cutPlanner.js');
+    const { promptsUrl } = await import('../web/links.js');
     let jobId;
     try {
-      jobId = await startStoryboardGenerationJob({
+      jobId = await startCutPlanJob({
         projectId: context?.projectId,
         beatId: target._id.toString(),
-        targetCount: Number.isFinite(Number(count)) && Number(count) > 0 ? Number(count) : undefined,
         direction: typeof direction === 'string' ? direction : '',
-        announceUsername: context?.discordUser?.username || null,
+        renderStartFrames: Boolean(render_start_frames),
       });
     } catch (e) {
-      if (e instanceof BeatBusyError) {
-        return `Beat "${target.name}" already has storyboard work running — wait for it to finish, then try again.`;
-      }
+      if (e?.code === 'BEAT_BUSY') return busyCutText(target);
       throw e;
     }
     return withSpaLink(
-      `Planning shots for beat "${target.name}" (job ${jobId}). This replaces its existing shots: one video prompt per shot, references matched, dialogue lines assigned. Check progress with get_beat_render_status({job_id: "${jobId}"}).`,
-      storyboardUrl(context?.projectTitle, target),
+      `Planning cuts for beat "${target.name}" (job ${jobId}). This replaces its scenes and cuts: scenes with a director's read and floor plan, a shot table, one block per cut with a lock line, and a still prompt per cut${render_start_frames ? ', then every start frame is rendered' : ''}. Check progress with get_cut_job_status({job_id: "${jobId}"}).`,
+      promptsUrl(context?.projectTitle, target),
     );
   },
 
-  async render_beat({ beat, skip_rendered, lipsync_model, direct_model, start_only_model } = {}, context = null) {
+  async render_cut_start_frames({ beat, cut, frames, skip_rendered, image_model } = {}, context = null) {
     const target = await resolveBeat(context?.projectId, beat);
-    const { startBeatRenderJob, BeatRenderBusyError, BeatRenderEmptyError } = await import('../web/beatRender.js');
-    const { storyboardUrl } = await import('../web/links.js');
-    const overrides = {};
-    if (typeof lipsync_model === 'string' && lipsync_model.trim()) overrides.lipsync = lipsync_model.trim();
-    if (typeof direct_model === 'string' && direct_model.trim()) overrides.video_direct = direct_model.trim();
-    if (typeof start_only_model === 'string' && start_only_model.trim()) overrides.video_start_only = start_only_model.trim();
-    let out;
+    const SF = await import('../web/cutStartFrames.js');
+    const { promptsUrl } = await import('../web/links.js');
+    const imageModel = typeof image_model === 'string' && image_model.trim() ? image_model.trim() : null;
+    const which = frames === 'start' ? ['start'] : frames === 'end' ? ['end'] : ['start', 'end'];
+    const what = which.length === 2 ? 'start and end frames' : `${which[0]} frame${cut != null && cut !== '' ? '' : 's'}`;
     try {
-      out = await startBeatRenderJob({
-        projectId: context?.projectId,
-        beatId: target._id.toString(),
-        overrides,
-        skipRendered: skip_rendered === undefined ? true : Boolean(skip_rendered),
-        announceUsername: context?.discordUser?.username || null,
-      });
-    } catch (e) {
-      if (e instanceof BeatRenderBusyError) {
-        return `Beat "${target.name}" already has storyboard work running — wait for it to finish, then try again.`;
-      }
-      if (e instanceof BeatRenderEmptyError) return `Cannot render beat "${target.name}": ${e.message}`;
-      if (e?.code === 'FAL_NOT_CONFIGURED') return e.message;
-      throw e;
-    }
-    return withSpaLink(
-      `Rendering beat "${target.name}": ${out.planned} shot${out.planned === 1 ? '' : 's'} to render` +
-        (out.skipped ? `, ${out.skipped} skipped (already rendered or no prompt)` : '') +
-        ` (job ${out.job_id}). Clips are joined into the beat video when every shot has one. Check progress with get_beat_render_status({job_id: "${out.job_id}"}).`,
-      storyboardUrl(context?.projectTitle, target),
-    );
-  },
-
-  async get_beat_render_status({ job_id } = {}, context = null) {
-    if (!job_id) throw new Error('job_id is required.');
-    const { getBeatRenderJob, serializeBeatJob } = await import('../web/beatRender.js');
-    const render = getBeatRenderJob(String(job_id));
-    if (render) {
-      const job = serializeBeatJob(render);
-      const lines = [
-        `Render job ${job.job_id}: ${job.status} (${job.phase})` +
-          (job.progress?.message ? ` — ${job.progress.message}` : ''),
-        `Shots: ${job.completed}/${job.planned} rendered` +
-          (job.failed ? `, ${job.failed} failed` : '') +
-          (job.skipped ? `, ${job.skipped} skipped` : ''),
-      ];
-      for (const s of job.shots) {
-        const bits = [`#${s.order + 1}`, s.skipped ? `skipped (${s.skip_reason})` : `${s.mode || '?'} · ${s.status}`];
-        if (s.model_label && !s.skipped) bits.push(s.model_label);
-        if (s.auto_keyframe) bits.push('auto still');
-        if (s.error) bits.push(`error: ${s.error}`);
-        lines.push(`- ${bits.join(' · ')}`);
-      }
-      if (job.coverage?.counts?.warnings) {
-        lines.push(`Coverage warnings: ${job.coverage.checks.filter((c) => c.severity === 'warn').map((c) => c.message).join(' · ')}`);
-      }
-      if (job.assembly_skipped_reason) lines.push(`Beat video not assembled: ${job.assembly_skipped_reason}`);
-      if (job.video_file_id) {
-        const { attachmentLink } = await import('../server/index.js');
-        lines.push(`Beat video: ${attachmentLink(job.video_file_id)}`);
-      }
-      return lines.join('\n');
-    }
-    const { getStoryboardGenerationJob } = await import('../web/storyboardGenerate.js');
-    const plan = getStoryboardGenerationJob(String(job_id));
-    if (plan) {
-      const lines = [
-        `Plan job ${plan.job_id}: ${plan.status}` + (plan.progress?.message ? ` — ${plan.progress.message}` : ''),
-        `Shots: ${plan.completed}/${plan.planned} created` + (plan.failed ? `, ${plan.failed} failed` : ''),
-      ];
-      if (plan.error) lines.push(`Error: ${plan.error}`);
-      if (plan.coverage) {
-        const warns = plan.coverage.checks.filter((c) => c.severity === 'warn');
-        lines.push(
-          warns.length
-            ? `Coverage warnings: ${warns.map((c) => c.message).join(' · ')}`
-            : 'Coverage: every dialogue line is covered by exactly one shot.',
+      if (cut != null && cut !== '') {
+        const row = await resolveCut(context?.projectId, target, cut);
+        const skip = skip_rendered === undefined ? true : Boolean(skip_rendered);
+        // One cut: a job per frame would race the beat lock, so the bulk job
+        // runs over just this cut (start before end).
+        const jobId = await SF.startCutStartFramesJob({
+          projectId: context?.projectId,
+          beatId: target._id.toString(),
+          cutIds: [String(row._id)],
+          frames: which,
+          skipRendered: skip,
+          imageModel,
+        });
+        return withSpaLink(
+          `Rendering the ${what} for cut ${await cutLabelFor(context?.projectId, row)} of beat "${target.name}"${skip ? ' (frames already rendered are skipped)' : ''} (job ${jobId}). Check progress with get_cut_job_status({job_id: "${jobId}"}).`,
+          promptsUrl(context?.projectTitle, target),
         );
       }
-      if (plan.status === 'done' || plan.status === 'partial') {
-        lines.push('Next: render_beat to turn the shots into clips and a beat video.');
+      const jobId = await SF.startCutStartFramesJob({
+        projectId: context?.projectId,
+        beatId: target._id.toString(),
+        frames: which,
+        skipRendered: skip_rendered === undefined ? true : Boolean(skip_rendered),
+        imageModel,
+      });
+      const job = SF.getCutStartFrameJob(jobId);
+      return withSpaLink(
+        `Rendering ${what} for beat "${target.name}": ${job?.planned ?? '?'} frame${job?.planned === 1 ? '' : 's'}${skip_rendered === false ? '' : ' (frames already rendered are skipped)'} (job ${jobId}). Check progress with get_cut_job_status({job_id: "${jobId}"}).`,
+        promptsUrl(context?.projectTitle, target),
+      );
+    } catch (e) {
+      if (e?.code === 'BEAT_BUSY') return busyCutText(target);
+      if (e?.code === 'CUT_NOT_FOUND') return e.message;
+      throw e;
+    }
+  },
+
+  async render_cut_video({ beat, cut, provider, model, lipsync_model, skip_rendered, confirm_spend } = {}, context = null) {
+    const target = await resolveBeat(context?.projectId, beat);
+    const Render = await import('../web/cutBeatRender.js');
+    const { promptsUrl } = await import('../web/links.js');
+    const { isComfyConfigured } = await import('../comfy/client.js');
+    const prov = typeof provider === 'string' && provider.trim() ? provider.trim().toLowerCase() : Render.defaultProvider();
+    if (prov === 'comfy' && !isComfyConfigured()) {
+      return `${Render.COMFY_DISABLED_MESSAGE} Use provider "fal" instead (fal.ai credits).`;
+    }
+    const chosenModel = typeof model === 'string' && model.trim() ? model.trim() : null;
+    const chosenLipsync = typeof lipsync_model === 'string' && lipsync_model.trim() ? lipsync_model.trim() : null;
+    const username = context?.discordUser?.username || null;
+    const link = promptsUrl(context?.projectTitle, target);
+
+    try {
+      if (cut != null && cut !== '') {
+        const row = await resolveCut(context?.projectId, target, cut);
+        const label = await cutLabelFor(context?.projectId, row);
+        if (prov === 'comfy') {
+          const Comfy = await import('../web/comfyVideoGenerate.js');
+          const { getComfyDefaults } = await import('../mongo/projectSettings.js');
+          const defaults = await getComfyDefaults(context?.projectId);
+          const modelId = chosenModel || defaults.model_id || Render.COMFY_DEFAULT_CLIP_MODEL_ID;
+          const { job_id } = await Comfy.startComfyCutVideoJob({
+            projectId: context?.projectId,
+            cutId: String(row._id),
+            modelId,
+            params: defaults.params_by_model?.[modelId] || {},
+            confirmSpend: Boolean(confirm_spend),
+            announceUsername: username,
+          });
+          return withSpaLink(
+            `Rendering cut ${label} of beat "${target.name}" on ComfyUI (${modelId}, job ${job_id}). Check progress with get_cut_job_status({job_id: "${job_id}"}).`,
+            link,
+          );
+        }
+        const Falgen = await import('../web/falVideoGenerate.js');
+        const { job_id } = await Falgen.startVideoGenerationJob({
+          projectId: context?.projectId,
+          owner: { kind: Falgen.OWNER_VIDEO_PROMPT, id: String(row._id) },
+          modelId: chosenModel,
+          generateAudio: false,
+          includeDirectorNotes: false,
+          announceUsername: username,
+        });
+        return withSpaLink(
+          `Rendering cut ${label} of beat "${target.name}" on fal.ai (job ${job_id}). Check progress with get_cut_job_status({job_id: "${job_id}"}).`,
+          link,
+        );
       }
+
+      const models = {};
+      if (chosenModel) models.clip = chosenModel;
+      if (chosenLipsync) models.lipsync = chosenLipsync;
+      const out = await Render.startCutBeatRenderJob({
+        projectId: context?.projectId,
+        beatId: target._id.toString(),
+        provider: prov,
+        models,
+        skipRendered: skip_rendered === undefined ? true : Boolean(skip_rendered),
+        confirmSpend: Boolean(confirm_spend),
+        announceUsername: username,
+      });
+      return withSpaLink(
+        `Rendering beat "${target.name}" on ${prov === 'comfy' ? 'ComfyUI' : 'fal.ai'}: ${out.planned} cut${out.planned === 1 ? '' : 's'} to render` +
+          (out.skipped ? `, ${out.skipped} skipped (already rendered or no block)` : '') +
+          ` (job ${out.job_id}). Clips are joined into the beat video when every cut has one. Check progress with get_cut_job_status({job_id: "${out.job_id}"}).`,
+        link,
+      );
+    } catch (e) {
+      if (e?.code === 'BEAT_BUSY') return busyCutText(target);
+      if (e?.code === 'CUT_NOT_FOUND') return e.message;
+      if (e?.code === 'SPEND_CONSENT_REQUIRED') {
+        return `${e.message} Ask the user to confirm the Comfy credit spend, then call render_cut_video again with confirm_spend: true.`;
+      }
+      if (
+        e?.code === 'CUT_RENDER_EMPTY' ||
+        e?.code === 'MISSING_DIALOGUE_AUDIO' ||
+        e?.code === 'MISSING_START_FRAME' ||
+        e?.code === 'MISSING_REFERENCE_IMAGES' ||
+        e?.code === 'MISSING_INPUTS' ||
+        e?.code === 'INVALID_COMFY_PARAMS' ||
+        e?.code === 'UNKNOWN_COMFY_MODEL' ||
+        e?.code === 'UNKNOWN_MODEL' ||
+        e?.code === 'UNKNOWN_PROVIDER'
+      ) {
+        return `Cannot render for beat "${target.name}": ${e.message}`;
+      }
+      if (e?.code === 'FAL_NOT_CONFIGURED' || e?.code === 'COMFY_NOT_CONFIGURED') return e.message;
+      throw e;
+    }
+  },
+
+  async get_cut_job_status({ job_id } = {}, context = null) {
+    if (!job_id) throw new Error('job_id is required.');
+    const id = String(job_id);
+    const { attachmentLink } = await import('../server/index.js');
+
+    const Render = await import('../web/cutBeatRender.js');
+    const render = Render.getCutBeatRenderJob(id);
+    if (render) {
+      const job = Render.serializeCutBeatJob(render);
+      const lines = [
+        `Cut render job ${job.job_id} (${job.provider === 'comfy' ? 'ComfyUI' : 'fal.ai'}): ${job.status} (${job.phase})` +
+          (job.progress?.message ? ` — ${job.progress.message}` : ''),
+        `Cuts: ${job.completed}/${job.planned} rendered` + (job.failed ? `, ${job.failed} failed` : '') + (job.skipped ? `, ${job.skipped} skipped` : ''),
+      ];
+      for (const c of job.cuts) {
+        const bits = [c.label, c.skipped ? `skipped (${c.skip_reason})` : `${c.mode || '?'} · ${c.status}`];
+        if (c.model_label && !c.skipped) bits.push(c.model_label);
+        if (c.auto_start_frame) bits.push('auto start frame');
+        if (c.error) bits.push(`error: ${c.error}`);
+        lines.push(`- ${bits.join(' · ')}`);
+      }
+      if (job.assembly_skipped_reason) lines.push(`Beat video not assembled: ${job.assembly_skipped_reason}`);
+      if (job.video_file_id) lines.push(`Beat video: ${attachmentLink(job.video_file_id)}`);
       return lines.join('\n');
     }
+
+    const { getCutPlanJob } = await import('../web/cutPlanner.js');
+    const plan = getCutPlanJob(id);
+    if (plan) {
+      const lines = [
+        `${plan.kind === 'replan' ? 'Scene replan' : 'Cut plan'} job ${plan.job_id}: ${plan.status} (${plan.phase})`,
+        `Scenes: ${plan.scenes_done}/${plan.scenes_total} · cuts: ${plan.cuts_done}/${plan.cuts_total}` + (plan.lint_count ? ` · ${plan.lint_count} lint note${plan.lint_count === 1 ? '' : 's'}` : ''),
+      ];
+      if (plan.start_frames) lines.push(`Start frames: ${plan.start_frames.rendered}/${plan.start_frames.planned} rendered` + (plan.start_frames.failed ? `, ${plan.start_frames.failed} failed` : ''));
+      if (plan.warnings?.length) lines.push(`Warnings: ${plan.warnings.slice(0, 8).join(' · ')}${plan.warnings.length > 8 ? ` (+${plan.warnings.length - 8} more)` : ''}`);
+      if (plan.error) lines.push(`Error: ${plan.error}`);
+      if (plan.status === 'done') lines.push('Next: review the blocks on the Prompts page, then render_cut_start_frames and render_cut_video.');
+      return lines.join('\n');
+    }
+
+    const SF = await import('../web/cutStartFrames.js');
+    const frames = SF.getCutStartFrameJob(id);
+    if (frames) {
+      const lines = [
+        `Frame job ${frames.job_id} (${(frames.frames || ['start']).join(' + ')}): ${frames.status}`,
+        `Frames: ${frames.rendered}/${frames.planned} rendered` + (frames.failed ? `, ${frames.failed} failed` : '') + (frames.skipped ? `, ${frames.skipped} skipped` : ''),
+      ];
+      for (const r of frames.results || []) if (r?.error) lines.push(`- ${r.cut_id || ''}${r.frame ? ` (${r.frame})` : ''}: ${r.error}`);
+      if (frames.warnings?.length) lines.push(`Warnings: ${frames.warnings.slice(0, 8).join(' · ')}`);
+      if (frames.error) lines.push(`Error: ${frames.error}`);
+      return lines.join('\n');
+    }
+
+    const { getCutAssembleJob } = await import('../web/cutAssemble.js');
+    const asm = getCutAssembleJob(id);
+    if (asm) {
+      const lines = [`${asm.scene_id ? 'Scene' : 'Beat'} assembly job ${asm.job_id}: ${asm.status}` + (asm.phase && asm.phase !== asm.status ? ` — ${asm.phase}` : '')];
+      if (asm.error) lines.push(`Error: ${asm.error}`);
+      if (asm.video_file_id) lines.push(`Video: ${attachmentLink(asm.video_file_id)}`);
+      return lines.join('\n');
+    }
+
+    const Comfy = await import('../web/comfyVideoGenerate.js');
+    const comfy = Comfy.getComfyVideoJob(id);
+    if (comfy) {
+      const job = Comfy.serializeComfyJob(comfy);
+      const lines = [`ComfyUI cut render ${job.job_id} (${job.model_id}): ${job.status}` + (job.step ? ` — ${job.step}` : '') + (job.queue_position != null ? ` (queue ${job.queue_position})` : '')];
+      if (job.error) lines.push(`Error: ${job.error}`);
+      if (job.video_file_id) lines.push(`Clip: ${attachmentLink(job.video_file_id)}`);
+      return lines.join('\n');
+    }
+
+    const Falgen = await import('../web/falVideoGenerate.js');
+    const fal = Falgen.getVideoGenerationJob(id);
+    if (fal) {
+      const job = Falgen.serializeJob(fal);
+      const lines = [`fal.ai cut render ${job.job_id} (${job.model_id || job.fal_model || '?'}): ${job.status}` + (job.step ? ` — ${job.step}` : '')];
+      if (job.error) lines.push(`Error: ${job.error}`);
+      if (job.video_file_id) lines.push(`Clip: ${attachmentLink(job.video_file_id)}`);
+      return lines.join('\n');
+    }
+
     return `No job found for id ${job_id} (jobs are kept in memory for a few minutes after they finish).`;
   },
 };
+
+function busyCutText(target) {
+  return `Beat "${target.name}" already has Prompts-tab work running — wait for it to finish, then try again.`;
+}
+
+// A cut by the "scene.cut" label the Prompts page shows ("2.3" = scene 2,
+// cut 3), by "#N" / N (beat-wide order of an unsorted row), or by _id.
+async function resolveCut(projectId, beat, ref) {
+  const VP = await import('../mongo/videoPrompts.js');
+  const raw = String(ref).trim();
+  const rows = await VP.listVideoPrompts({ projectId, beatId: beat._id });
+  const notFound = () => {
+    const e = new Error(`Cut not found: "${raw}" in beat "${beat.name}". Use the "scene.cut" label shown on the Prompts page (e.g. "2.3") or the cut id.`);
+    e.code = 'CUT_NOT_FOUND';
+    return e;
+  };
+  if (/^[a-f0-9]{24}$/i.test(raw)) {
+    const hit = rows.find((r) => String(r._id) === raw.toLowerCase());
+    if (!hit) throw notFound();
+    return hit;
+  }
+  const m = raw.match(/^(\d+)\.(\d+)$/);
+  if (m) {
+    const { listVideoScenes } = await import('../mongo/videoScenes.js');
+    const scenes = await listVideoScenes({ projectId, beatId: beat._id });
+    const scene = scenes.find((s) => Number(s.order) === Number(m[1]));
+    if (!scene) throw notFound();
+    const hit = rows.find((r) => String(r.scene_id) === String(scene._id) && Number(r.cut_index) === Number(m[2]));
+    if (!hit) throw notFound();
+    return hit;
+  }
+  const n = raw.match(/^#?(\d+)$/);
+  if (n) {
+    const hit = rows.find((r) => Number(r.order) === Number(n[1]));
+    if (!hit) throw notFound();
+    return hit;
+  }
+  throw notFound();
+}
+
+async function cutLabelFor(projectId, cut) {
+  const { cutLabel } = await import('../web/cutAssemble.js');
+  const { listVideoScenes } = await import('../mongo/videoScenes.js');
+  const scenes = await listVideoScenes({ projectId, beatId: cut.beat_id }).catch(() => []);
+  return cutLabel(cut, new Map(scenes.map((s) => [String(s._id), s.order])));
+}
 
 export async function dispatchTool(name, input, context = null) {
   const fn = HANDLERS[name];

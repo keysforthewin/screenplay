@@ -168,33 +168,6 @@ describe('set create/delete + character create', () => {
   });
 });
 
-describe('storyboard readiness routes', () => {
-  it('POST /storyboards/readiness 202s and the job becomes pollable', async () => {
-    const Readiness = await import('../src/web/storyboardReadiness.js');
-    Readiness._setGapReporterForTests(async () => ({ gaps: [], summary: '' }));
-    try {
-      const beat = await Plots.createBeat({ projectId: p1, desc: 'One' });
-      const r = await post('/storyboards/readiness', { beat_id: beat._id.toString() });
-      expect(r.status).toBe(202);
-      const { job_id } = await r.json();
-      let job;
-      for (let i = 0; i < 100; i++) {
-        const jr = await get(`/storyboards/readiness/${job_id}`);
-        expect(jr.status).toBe(200);
-        ({ job } = await jr.json());
-        if (['done', 'error'].includes(job.status)) break;
-        await new Promise((res) => setTimeout(res, 10));
-      }
-      expect(job.status).toBe('done');
-      expect(Array.isArray(job.report.checks)).toBe(true);
-      expect((await post('/storyboards/readiness', { beat_id: 'nope' })).status).toBe(400);
-      expect((await get('/storyboards/readiness/unknown-job')).status).toBe(404);
-    } finally {
-      Readiness._setGapReporterForTests(null);
-    }
-  });
-});
-
 describe('set media routes', () => {
   it('POST /set/:id/main-image switches main; image attach/remove round-trips', async () => {
     const s = await Sets.createSet({ projectId: p1, name: 'Kitchen' });

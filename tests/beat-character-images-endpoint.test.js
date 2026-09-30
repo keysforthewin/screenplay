@@ -25,7 +25,6 @@ vi.mock('../src/web/announceHelpers.js', () => ({
   announceBeatMedia: vi.fn(),
   announceCharacterMedia: vi.fn(),
   announceNoteMedia: vi.fn(),
-  announceStoryboardMedia: vi.fn(),
   announceLibraryMedia: vi.fn(),
   announceBatchSummary: vi.fn(),
 }));
@@ -49,7 +48,6 @@ const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const Characters = await import('../src/mongo/characters.js');
 const Artworks = await import('../src/mongo/artworks.js');
-const Storyboards = await import('../src/mongo/storyboards.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
 
 let server;
@@ -122,8 +120,7 @@ describe('GET /api/beat/:id/images', () => {
       size: 12,
       uploaded_at: gallery.uploadDate,
     });
-    // Orphan: owned by beat but not in beat.images[] — e.g. a storyboard frame
-    // or per-frame reference upload.
+    // Orphan: owned by beat but not in beat.images[] — e.g. a leftover generated still.
     const orphan = seedImage({ ownerType: 'beat', ownerId: beat._id, name: 'orphan' });
     // Thumbnail cache — must be filtered out.
     seedImage({ ownerType: 'beat', ownerId: beat._id, name: 'thumb', kind: 'thumbnail' });
@@ -207,30 +204,15 @@ describe('GET /api/character/:id/images', () => {
 });
 
 describe('DELETE /api/beat/:id/orphan-image/:imageId', () => {
-  it('deletes a beat-owned GridFS image that is not in beat.images[] and clears storyboard refs', async () => {
+  it('deletes a beat-owned GridFS image that is not in beat.images[] ', async () => {
     const beat = await Plots.createBeat({ projectId, name: 'Diner' });
     const orphan = seedImage({ ownerType: 'beat', ownerId: beat._id, name: 'orphan' });
-    // Storyboard with the orphan as a frame's current image, and also in
-    // another frame's reference list.
-    const sb = await Storyboards.createStoryboard({ projectId,
-      beatId: beat._id,
-      textPrompt: 'Wide shot',
-    });
-    const imgFrame = (await Storyboards.addFrame(sb._id, { imageId: orphan._id })).frameId;
-    const refFrame = (await Storyboards.addFrame(sb._id, {})).frameId;
-    await Storyboards.pushFrameReferenceImage(sb._id, refFrame, orphan._id);
-
     const { status, json } = await del(
       `/api/beat/${beat._id}/orphan-image/${orphan._id}`,
     );
     expect(status).toBe(200);
     expect(json.ok).toBe(true);
     expect(deletedImageIds).toContain(String(orphan._id));
-    const fresh = await Storyboards.getStoryboard(projectId, sb._id);
-    const img = fresh.frames.find((f) => f._id.toString() === String(imgFrame));
-    const ref = fresh.frames.find((f) => f._id.toString() === String(refFrame));
-    expect(img.image_id).toBe(null);
-    expect(ref.reference_ids.map(String)).not.toContain(String(orphan._id));
   });
 
   it('refuses to delete an image that lives in beat.images[]', async () => {

@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from 'react';
+import { useState } from 'react';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
 import { ConfirmDialog } from './Modal.jsx';
@@ -17,15 +17,13 @@ const BIBLE_FIELDS = [
   ['camera_language', 'Camera language'],
 ];
 
-export function SceneBiblePanel({ beatId, session, shotCount, onRefresh }) {
+// The beat's scene bible (intention, light, palette, blocking…). The cut
+// planner on the Prompts tab reads it as part of the whole-beat context.
+export function SceneBiblePanel({ beatId, session }) {
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [autofilling, setAutofilling] = useState(false);
   const [autofillConfirmOpen, setAutofillConfirmOpen] = useState(false);
-  const pollRef = useRef(null);
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
   // Auto-fill every scene bible field from the beat. Confirm first only when
   // the bible already has content, so an empty bible fills with zero friction.
@@ -55,51 +53,21 @@ export function SceneBiblePanel({ beatId, session, shotCount, onRefresh }) {
     }
   }
 
-  async function reexpandAll() {
-    setBusy(true); setError(null);
-    try {
-      const r = await apiPostJson(`/beat/${beatId}/reexpand-shots`, {});
-      pollRef.current = setInterval(async () => {
-        try {
-          const res = await apiGet(`/beat/reexpand/job/${r.job_id}`);
-          const job = res?.job;
-          if (job && ['done', 'partial', 'error'].includes(job.status)) {
-            clearInterval(pollRef.current); pollRef.current = null;
-            if (job.status === 'error') setError(job.error || 're-expand failed');
-            setBusy(false);
-            await onRefresh?.();
-          }
-        } catch { /* retry next tick */ }
-      }, 2000);
-    } catch (e) { setError(e.message); setBusy(false); }
-  }
-
   return (
     <div className="scene-bible">
       <div className="scene-bible-head" onClick={() => setOpen((o) => !o)}>
         <span className="caret">{open ? '▾' : '▸'}</span>
         <span className="title">Scene Bible</span>
-        <span className="sub">{shotCount} shot{shotCount === 1 ? '' : 's'} inherit this</span>
+        <span className="sub">read by Auto generate</span>
         <span className="spacer" />
-        <button disabled={autofilling || busy} onClick={onAutofillClick}>
+        <button disabled={autofilling} onClick={onAutofillClick}>
           {autofilling ? 'Auto-filling…' : 'Auto-fill'}
-        </button>
-        <button className="primary" disabled={busy || autofilling} onClick={(e) => { e.stopPropagation(); setConfirmOpen(true); }}>
-          {busy ? 'Re-expanding…' : 'Re-expand all shots'}
         </button>
       </div>
       <ConfirmDialog
-        open={confirmOpen}
-        title="Re-expand all shots?"
-        message={`Re-expand prompts for all ${shotCount} shot(s) from the scene bible? This rewrites their prompts.`}
-        confirmLabel="Re-expand all"
-        onConfirm={() => { setConfirmOpen(false); reexpandAll(); }}
-        onCancel={() => setConfirmOpen(false)}
-      />
-      <ConfirmDialog
         open={autofillConfirmOpen}
         title="Auto-fill the Scene Bible?"
-        message="Read the current beat and overwrite all 8 Scene Bible fields. This replaces any existing values."
+        message="Read the current beat and overwrite every Scene Bible field. This replaces any existing values."
         confirmLabel="Auto-fill"
         onConfirm={() => { setAutofillConfirmOpen(false); runAutofill(); }}
         onCancel={() => setAutofillConfirmOpen(false)}

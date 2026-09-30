@@ -1,0 +1,216 @@
+// stillImageDispatch.js
+//
+// Single decision point for storyboard frame image generation. Four logical
+// models (nano-banana-pro, flux-2-pro, flux-pro-kontext, openai) and two modes
+// (generate / edit). Fixes the size to true 16:9 for OpenAI and forwards
+// aspect_ratio='16:9' for the FAL helpers.
+
+import { config } from '../config.js';
+import { logger } from '../log.js';
+import {
+  generateCharacterSheetImage,
+  generateCharacterSheetImageEdit,
+  GPT_IMAGE_MODEL,
+} from '../openai/imageClient.js';
+import {
+  generateFluxKontextImage,
+  generateFlux2ProImage,
+  generateNanoBananaProImage,
+  generateGemini25FlashImage,
+  generateNanoBanana2Image,
+  generateFlux2KleinImage,
+  FLUX_KONTEXT_MODEL,
+  FLUX_2_PRO_MODEL,
+  NANO_BANANA_PRO_GENERATE_MODEL,
+  GEMINI_25_FLASH_GENERATE_MODEL,
+  NANO_BANANA_2_GENERATE_MODEL,
+  FLUX_2_KLEIN_GENERATE_MODEL,
+} from '../fal/imageClient.js';
+import { isConfigured as falConfigured } from '../fal/client.js';
+import { isComfyImageModelId } from '../comfy/imageModels.js';
+import { recordOpenAIImageUsage, recordFalImageUsage } from '../mongo/tokenUsage.js';
+
+// gpt-image-2's closest exact 16:9 size. Storyboard frames are framed for
+// 16:9 throughout the pipeline.
+const STORYBOARD_SIZE = '2048x1152';
+const ASPECT_RATIO = '16:9';
+
+export const ALLOWED_STILL_MODELS = ['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'openai', 'gemini-25-flash', 'nano-banana-2', 'flux-2-klein'];
+const FAL_MODELS = new Set(['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'gemini-25-flash', 'nano-banana-2', 'flux-2-klein']);
+
+export async function dispatchStillImage({
+  prompt,
+  model = 'nano-banana-pro',
+  inputImages = [],
+  mode = 'generate',
+  comfyParams = null,
+}) {
+  // Local ComfyUI models (`comfy:<id>`, src/comfy/imageModels.js) run on the
+  // user's own GPU: no provider key, no usage row, and edit mode may carry
+  // extra references after the frame being edited.
+  if (isComfyImageModelId(model)) {
+    if (!['generate', 'edit'].includes(mode)) {
+      const err = new Error(`Unknown storyboard image mode "${mode}".`);
+      err.status = 400;
+      throw err;
+    }
+    const { generateComfyStillImage } = await import('./comfyImageGenerate.js');
+    return generateComfyStillImage({ model, prompt, inputImages, mode, params: comfyParams || {} });
+  }
+  // Anything outside the wired seven may still be a fal catalog endpoint the
+  // picker offered (src/fal/imageModelCatalog.js). Those run generically; only
+  // ids in neither set are rejected.
+  let catalogModel = null;
+  if (!ALLOWED_STILL_MODELS.includes(model)) {
+    const { getImageModel } = await import('../fal/imageModelCatalog.js');
+    catalogModel = await getImageModel(model);
+    if (!catalogModel) {
+      const err = new Error(
+        `Unknown storyboard image model "${model}". Allowed: ${ALLOWED_STILL_MODELS.join('|')} or a fal catalog endpoint id.`,
+      );
+      err.status = 400;
+      throw err;
+    }
+  }
+  if (!['generate', 'edit'].includes(mode)) {
+    const err = new Error(`Unknown storyboard image mode "${mode}".`);
+    err.status = 400;
+    throw err;
+  }
+  if (model === 'openai' && !config.openai.apiKey) {
+    const err = new Error('OPENAI_API_KEY is not configured.');
+    err.status = 400;
+    throw err;
+  }
+  if ((catalogModel || FAL_MODELS.has(model)) && !falConfigured()) {
+    const err = new Error('FAL_KEY is not configured.');
+    err.status = 400;
+    throw err;
+  }
+
+  const refs = Array.isArray(inputImages) ? inputImages : [];
+  if (mode === 'edit' && refs.length !== 1) {
+    const err = new Error('Edit mode requires exactly one input image.');
+    err.status = 400;
+    throw err;
+  }
+
+  // Catalog endpoint: the generic runner reads the endpoint's own schema from
+  // the catalog row. Edit mode's single input image is simply the first (only)
+  // reference the runner anchors on.
+  if (catalogModel) {
+    const { generateCatalogImage } = await import('../fal/catalogImageGenerate.js');
+    const result = await generateCatalogImage({
+      endpointId: catalogModel.endpoint_id,
+      prompt,
+      referenceImages: refs,
+    });
+    try {
+      await recordFalImageUsage({
+        discordUser: null,
+        channelId: null,
+        model: result.model,
+        meta: { input_image_count: refs.length, mode, logical_model: model, catalog: true },
+      });
+    } catch (e) {
+      logger.warn(`fal token usage persist failed: ${e.message}`);
+    }
+    return result;
+  }
+
+  if (FAL_MODELS.has(model)) {
+    let result;
+    let fallbackModel;
+    if (model === 'nano-banana-pro') {
+      result = await generateNanoBananaProImage({
+        prompt,
+        inputImages: refs,
+        aspectRatio: ASPECT_RATIO,
+      });
+      fallbackModel = NANO_BANANA_PRO_GENERATE_MODEL;
+    } else if (model === 'flux-2-pro') {
+      result = await generateFlux2ProImage({
+        prompt,
+        inputImages: refs,
+        aspectRatio: ASPECT_RATIO,
+      });
+      fallbackModel = FLUX_2_PRO_MODEL;
+    } else if (model === 'gemini-25-flash') {
+      result = await generateGemini25FlashImage({
+        prompt,
+        inputImages: refs,
+        aspectRatio: ASPECT_RATIO,
+      });
+      fallbackModel = GEMINI_25_FLASH_GENERATE_MODEL;
+    } else if (model === 'nano-banana-2') {
+      result = await generateNanoBanana2Image({
+        prompt,
+        inputImages: refs,
+        aspectRatio: ASPECT_RATIO,
+      });
+      fallbackModel = NANO_BANANA_2_GENERATE_MODEL;
+    } else if (model === 'flux-2-klein') {
+      result = await generateFlux2KleinImage({
+        prompt,
+        inputImages: refs,
+        aspectRatio: ASPECT_RATIO,
+      });
+      fallbackModel = FLUX_2_KLEIN_GENERATE_MODEL;
+    } else {
+      result = await generateFluxKontextImage({
+        prompt,
+        inputImages: refs,
+        aspectRatio: ASPECT_RATIO,
+      });
+      fallbackModel = FLUX_KONTEXT_MODEL;
+    }
+    try {
+      await recordFalImageUsage({
+        discordUser: null,
+        channelId: null,
+        model: result.model || fallbackModel,
+        meta: { input_image_count: refs.length, mode, logical_model: model },
+      });
+    } catch (e) {
+      logger.warn(`fal token usage persist failed: ${e.message}`);
+    }
+    return {
+      buffer: result.buffer,
+      contentType: result.contentType,
+      model: result.model || fallbackModel,
+    };
+  }
+
+  // openai. images.edits when we have refs (or in edit mode), otherwise the
+  // pure text-to-image endpoint.
+  const useEdit = mode === 'edit' || refs.length > 0;
+  const r = useEdit
+    ? await generateCharacterSheetImageEdit({
+        prompt,
+        inputImages: refs,
+        size: STORYBOARD_SIZE,
+        quality: 'auto',
+      })
+    : await generateCharacterSheetImage({
+        prompt,
+        size: STORYBOARD_SIZE,
+        quality: 'auto',
+      });
+  if (r.usage) {
+    try {
+      await recordOpenAIImageUsage({
+        discordUser: null,
+        channelId: null,
+        model: r.model || GPT_IMAGE_MODEL,
+        usage: r.usage,
+      });
+    } catch (e) {
+      logger.warn(`openai token usage persist failed: ${e.message}`);
+    }
+  }
+  return {
+    buffer: r.buffer,
+    contentType: r.contentType,
+    model: r.model || GPT_IMAGE_MODEL,
+  };
+}

@@ -201,7 +201,7 @@ describe('permissions', () => {
 
       for (const room of [
         `beat:${beatId.toString()}`,
-        `storyboards:${beatId.toString()}`,
+        `video_prompts:${beatId.toString()}`,
         `dialogs:${beatId.toString()}`,
         `character:${charId.toString()}`,
       ]) {

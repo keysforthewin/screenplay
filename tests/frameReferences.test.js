@@ -29,12 +29,9 @@ vi.mock('../src/web/imageModelInfo.js', () => ({
   maxReferenceImagesFor: () => 6,
 }));
 
-const setRefs = vi.fn();
-vi.mock('../src/web/gateway.js', () => ({
-  setStoryboardFrameReferenceImagesViaGateway: setRefs,
-}));
+vi.mock('../src/web/gateway.js', () => ({}));
 
-const { buildFrameReferenceCandidates, autoFillFrameReferencesIfEmpty } =
+const { buildFrameReferenceCandidates } =
   await import('../src/web/frameReferences.js');
 
 // ---- Fixture helpers -------------------------------------------------------
@@ -56,7 +53,6 @@ beforeEach(() => {
   getCharacter.mockReset();
   getSet.mockReset();
   scoreFrameReferences.mockReset();
-  setRefs.mockReset();
 });
 
 // ============================================================================
@@ -321,130 +317,3 @@ describe('buildFrameReferenceCandidates', () => {
   });
 });
 
-// ============================================================================
-// autoFillFrameReferencesIfEmpty
-// ============================================================================
-
-describe('autoFillFrameReferencesIfEmpty', () => {
-  it('does nothing when autoReferences is false', async () => {
-    const frame = { _id: 'f1', reference_ids: [] };
-    const out = await autoFillFrameReferencesIfEmpty({
-      projectId: 'p',
-      sb: { _id: 's1' },
-      frame,
-      frameText: 'x',
-      autoReferences: false,
-    });
-    expect(out).toEqual([]);
-    expect(scoreFrameReferences).not.toHaveBeenCalled();
-    expect(setRefs).not.toHaveBeenCalled();
-  });
-
-  it('skips frames that already have references', async () => {
-    const frame = { _id: 'f1', reference_ids: ['existing'] };
-    const out = await autoFillFrameReferencesIfEmpty({
-      projectId: 'p',
-      sb: { _id: 's1' },
-      frame,
-      frameText: 'x',
-      autoReferences: true,
-    });
-    expect(out).toEqual([]);
-    expect(scoreFrameReferences).not.toHaveBeenCalled();
-    expect(setRefs).not.toHaveBeenCalled();
-    expect(frame.reference_ids).toEqual(['existing']);
-  });
-
-  it('persists scored picks via the gateway and mutates the frame', async () => {
-    const setArt = new ObjectId();
-    getSet.mockResolvedValueOnce({
-      _id: 's1',
-      name: 'Alley',
-      artworks: [artwork(setArt, 'Neon alley', 'rain')],
-    });
-    scoreFrameReferences.mockResolvedValueOnce(new Map([[1, 0.9]]));
-
-    const frame = { _id: 'f1', reference_ids: [] };
-    const sb = { _id: 's1', beat_id: 'beat1', characters_in_scene: [], sets_in_scene: ['Alley'] };
-    const out = await autoFillFrameReferencesIfEmpty({
-      projectId: 'p',
-      sb,
-      frame,
-      frameText: 'alley',
-      autoReferences: true,
-    });
-
-    expect(out).toEqual([String(setArt)]);
-    expect(setRefs).toHaveBeenCalledWith({
-      projectId: 'p',
-      storyboardId: 's1',
-      frameId: 'f1',
-      imageIds: [String(setArt)],
-      mode: 'replace',
-      scores: { [String(setArt)]: 0.9 },
-    });
-    expect(frame.reference_ids).toEqual([String(setArt)]);
-    expect(scoreFrameReferences).toHaveBeenCalledOnce();
-    expect(scoreFrameReferences.mock.calls[0][0].frameText).toBe('alley');
-  });
-
-  it('does not persist when there are no candidates', async () => {
-    getBeat.mockResolvedValueOnce({ _id: 'beat1', artworks: [], sets: [] });
-
-    const frame = { _id: 'f1', reference_ids: [] };
-    const out = await autoFillFrameReferencesIfEmpty({
-      projectId: 'p',
-      sb: { _id: 's1', beat_id: 'beat1', characters_in_scene: [] },
-      frame,
-      frameText: 'x',
-      autoReferences: true,
-    });
-    expect(out).toEqual([]);
-    expect(scoreFrameReferences).not.toHaveBeenCalled();
-    expect(setRefs).not.toHaveBeenCalled();
-  });
-
-  it('falls back to first-per-source when scorer returns empty scores', async () => {
-    const setArt = new ObjectId();
-    getSet.mockResolvedValueOnce({
-      _id: 's1',
-      name: 'Alley',
-      artworks: [artwork(setArt, 'Neon alley', 'rain')],
-    });
-    scoreFrameReferences.mockResolvedValueOnce(new Map());
-
-    const frame = { _id: 'f1', reference_ids: [] };
-    const out = await autoFillFrameReferencesIfEmpty({
-      projectId: 'p',
-      sb: { _id: 's1', beat_id: 'beat1', characters_in_scene: [], sets_in_scene: ['Alley'] },
-      frame,
-      frameText: 'x',
-      autoReferences: true,
-    });
-    expect(out).toEqual([String(setArt)]);
-    expect(setRefs).toHaveBeenCalled();
-    expect(frame.reference_ids).toEqual([String(setArt)]);
-  });
-
-  it('swallows gateway errors and returns []', async () => {
-    const setArt = new ObjectId();
-    getSet.mockResolvedValueOnce({
-      _id: 's1',
-      name: 'Alley',
-      artworks: [artwork(setArt, 'Neon alley', 'rain')],
-    });
-    scoreFrameReferences.mockResolvedValueOnce(new Map([[1, 0.9]]));
-    setRefs.mockRejectedValueOnce(new Error('gateway down'));
-
-    const frame = { _id: 'f1', reference_ids: [] };
-    const out = await autoFillFrameReferencesIfEmpty({
-      projectId: 'p',
-      sb: { _id: 's1', beat_id: 'beat1', characters_in_scene: [], sets_in_scene: ['Alley'] },
-      frame,
-      frameText: 'x',
-      autoReferences: true,
-    });
-    expect(out).toEqual([]);
-    expect(frame.reference_ids).toEqual([]);
-  });
-});

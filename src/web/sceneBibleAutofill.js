@@ -8,7 +8,6 @@
 // gateway so connected SPA clients watch the fields populate live (y-doc),
 // and the values persist to beats.$.scene_bible.
 
-import { config } from '../config.js';
 import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { getBeat, getPlot } from '../mongo/plots.js';
@@ -19,7 +18,7 @@ import { getAnthropic } from '../anthropic/client.js';
 import { loadCharacterDocs, formatCharacterBio } from './dialogContext.js';
 import { setEntityFieldMarkdown } from './gateway.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
-import { BeatBusyError } from './storyboardGenerate.js';
+import { BeatBusyError } from './beatPlanShared.js';
 
 // Per-field guidance shown to the model. Keyed by field; the example phrasing
 // mirrors the header comment in src/mongo/sceneBible.js so the model returns

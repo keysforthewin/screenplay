@@ -6,7 +6,6 @@ import { ImageModelSelect } from './ImageModelSelect.jsx';
 
 // Generic in-line image editor dialog. Drives:
 //   - Artwork edits (ArtworkEditDialog wraps this)
-//   - Storyboard frame edits (StoryboardFrameEditDialog wraps this)
 //
 // The wrapper supplies callbacks for the actual mutation; this component
 // owns the layout (thumbnail + prompt + model selector + Apply/Undo/Close)

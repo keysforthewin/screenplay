@@ -30,6 +30,7 @@
     "@hocuspocus/extension-database": "^2.15.0",
     "@hocuspocus/provider": "^2.15.0",
     "@hocuspocus/server": "^2.15.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "@resvg/resvg-js": "^2.6.2",
     "@tiptap/core": "^2.10.0",
     "@tiptap/extension-collaboration": "^2.10.0",

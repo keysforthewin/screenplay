@@ -1,0 +1,140 @@
+// The reference-image catalog the Prompts tab draws from: done artworks of
+// the beat's characters and sets only, numbered, formatted for the planner.
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { ObjectId } from 'mongodb';
+import { createFakeDb } from './_fakeMongo.js';
+
+const fakeDb = createFakeDb();
+
+vi.mock('../src/mongo/client.js', () => ({
+  getDb: () => fakeDb,
+  connectMongo: async () => fakeDb,
+}));
+
+vi.mock('../src/log.js', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock('../src/web/hocuspocus.js', () => ({
+  getRoomDocument: () => null,
+  withDirectDocument: vi.fn(),
+  broadcastRoomStateless: vi.fn(),
+  isHocuspocusRunning: () => false,
+}));
+
+// Image metadata for the catalog: name/description keyed by id.
+const imageMeta = new Map();
+vi.mock('../src/mongo/images.js', async (importOriginal) => {
+  const mod = await importOriginal();
+  return {
+    ...mod,
+    findImageFile: vi.fn(async (id) => {
+      const m = imageMeta.get(String(id));
+      if (!m) return null;
+      return { _id: new ObjectId(String(id)), filename: 'x.png', contentType: 'image/png', length: 1, metadata: m };
+    }),
+  };
+});
+
+const { createProject } = await import('../src/mongo/projects.js');
+const Plots = await import('../src/mongo/plots.js');
+const Gen = await import('../src/web/referenceCatalog.js');
+
+let projectId;
+beforeEach(async () => {
+  fakeDb.reset();
+  imageMeta.clear();
+  projectId = (await createProject('Test Project'))._id.toString();
+});
+
+function newImage(desc = '') {
+  const id = new ObjectId();
+  imageMeta.set(id.toString(), { description: desc, name: '' });
+  return id;
+}
+
+async function seedBeatWithRefs() {
+  // Only ARTWORK is catalogued: the uploaded sheet/portrait/main images below
+  // must never appear.
+  const uploadedSheet = newImage('Sarah full-body turnaround (uploaded sheet)');
+  const uploadedPortrait = newImage('Sarah close portrait (uploaded)');
+  const uploadedSetMain = newImage('Diner interior (uploaded main)');
+  const sheet = newImage('Sarah full-body turnaround, red coat');
+  const portrait = newImage('Sarah close portrait');
+  const setMain = newImage('Diner interior, chrome counter, neon');
+  const artworkId = newImage('Diner exterior at night');
+  await fakeDb.collection('characters').insertOne({
+    _id: new ObjectId(),
+    project_id: projectId,
+    name: 'Sarah',
+    name_lower: 'sarah',
+    character_sheet_image_ids: [uploadedSheet],
+    main_image_id: uploadedPortrait,
+    images: [{ _id: uploadedPortrait, caption: 'portrait' }],
+    artworks: [
+      { _id: new ObjectId(), status: 'done', result_image_id: sheet, name: 'Turnaround', description: '' },
+      { _id: new ObjectId(), status: 'done', result_image_id: portrait, name: 'Close', description: '' },
+      { _id: new ObjectId(), status: 'error', result_image_id: null },
+    ],
+    fields: {},
+    created_at: new Date(),
+    updated_at: new Date(),
+  });
+  await fakeDb.collection('sets').insertOne({
+    _id: new ObjectId(),
+    project_id: projectId,
+    name: 'Diner',
+    name_lower: 'diner',
+    description: 'A roadside diner.',
+    main_image_id: uploadedSetMain,
+    images: [{ _id: uploadedSetMain, caption: '' }],
+    artworks: [
+      { _id: new ObjectId(), status: 'done', result_image_id: setMain, name: 'Interior plate', description: '' },
+      { _id: new ObjectId(), status: 'done', result_image_id: artworkId, name: 'Night plate', description: 'Diner exterior at night' },
+      { _id: new ObjectId(), status: 'pending', result_image_id: null },
+    ],
+    created_at: new Date(),
+    updated_at: new Date(),
+  });
+  const beat = await Plots.createBeat({
+    projectId,
+    name: 'Arrival',
+    desc: 'Sarah walks into the diner.',
+    body: 'Sarah pushes the door open. The bell rings. Everyone looks up.',
+    characters: ['Sarah'],
+    sets: ['Diner'],
+  });
+  return { beat, sheet, portrait, setMain, artworkId };
+}
+
+describe('buildReferenceCatalog', () => {
+  it('numbers done artworks only (characters then sets), skipping uploaded sheets/portraits/gallery and non-done artworks', async () => {
+    const { beat, sheet, portrait, setMain, artworkId } = await seedBeatWithRefs();
+    const catalog = await Gen.buildReferenceCatalog(projectId, beat);
+    expect(catalog.map((e) => e.image_id)).toEqual([
+      sheet.toString(), portrait.toString(), setMain.toString(), artworkId.toString(),
+    ]);
+    expect(catalog.map((e) => e.index)).toEqual([1, 2, 3, 4]);
+    expect(catalog[0]).toMatchObject({ owner_type: 'character', owner_name: 'Sarah', label: 'Sarah — artwork: Turnaround' });
+    expect(catalog[0].description).toBe('Sarah full-body turnaround, red coat');
+    expect(catalog[2]).toMatchObject({ owner_type: 'set', owner_name: 'Diner', label: 'Diner — artwork: Interior plate' });
+    expect(catalog[3].label).toBe('Diner — artwork: Night plate');
+    const text = Gen.formatReferenceCatalog(catalog);
+    expect(text).toContain('1. [CHARACTER Sarah] Sarah — artwork: Turnaround — Sarah full-body turnaround, red coat');
+    expect(text).toContain('3. [SET Diner] Diner — artwork: Interior plate');
+    expect(text).not.toMatch(/uploaded/);
+  });
+
+  it('a beat whose hosts have no artwork yields an empty catalog even when they have uploads', async () => {
+    const portrait = newImage('uploaded portrait');
+    await fakeDb.collection('characters').insertOne({
+      _id: new ObjectId(), project_id: projectId, name: 'Tom', name_lower: 'tom',
+      character_sheet_image_ids: [newImage('sheet')], main_image_id: portrait, images: [{ _id: portrait }], artworks: [],
+      fields: {}, created_at: new Date(), updated_at: new Date(),
+    });
+    const beat = await Plots.createBeat({ projectId, name: 'B', characters: ['Tom'] });
+    expect(await Gen.buildReferenceCatalog(projectId, beat)).toEqual([]);
+    expect(Gen.formatReferenceCatalog([])).toMatch(/no artwork available/);
+  });
+});

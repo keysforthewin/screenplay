@@ -15,9 +15,8 @@ import { getDb } from './client.js';
 export const MODEL_DEFAULT_KEYS = Object.freeze([
   'image_with_refs', // image model for plates rendered WITH reference images
   'image_prompt_only', // image model for plates rendered from the prompt alone
-  'video_start_end', // video model when the scene provides a start AND end frame
-  'video_start_only', // video model when the scene provides only a start frame
-  'video_direct', // reference-to-video model: prompt + reference images, no start frame (beat render "direct" shots)
+  'video_start_only', // image-to-video model for a cut rendered from its start frame
+  'video_direct', // reference-to-video model: prompt + reference images, no start frame (the fal dialog's pre-select)
   'lipsync', // lip-sync (avatar) video model
 ]);
 
@@ -83,4 +82,100 @@ export async function setModelDefaults(projectId, patch = {}) {
     );
   }
   return getModelDefaults(pid);
+}
+
+// ── ComfyUI video defaults ───────────────────────────────────────────────────
+//
+// The Prompts tab's ComfyUI dialog remembers the last model the project
+// rendered with and the parameters used per model, under `comfy_video`
+// (separate from `model_defaults`, whose keys are fal endpoint ids):
+//   { model_id: string|null, params_by_model: { [model_id]: { ...params } } }
+
+const MAX_COMFY_PARAM_KEYS = 64;
+const MAX_COMFY_PARAM_STRING = 20_000;
+
+function emptyComfyDefaults() {
+  return { model_id: null, params_by_model: {} };
+}
+
+function sanitizeComfyParams(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('params must be an object');
+  const out = {};
+  let n = 0;
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof k !== 'string' || !k.trim() || k.length > 64) continue;
+    if (v === undefined) continue;
+    if (v !== null && !['string', 'number', 'boolean'].includes(typeof v)) {
+      throw new Error(`param ${k} must be a string, number, boolean or null`);
+    }
+    if (typeof v === 'string' && v.length > MAX_COMFY_PARAM_STRING) {
+      throw new Error(`param ${k} is too long`);
+    }
+    out[k] = v;
+    if (++n >= MAX_COMFY_PARAM_KEYS) break;
+  }
+  return out;
+}
+
+export async function getComfyDefaults(projectId) {
+  const pid = requireProjectId(projectId);
+  const db = getDb();
+  const doc = await db.collection('project_settings').findOne({ _id: pid });
+  const stored = doc?.comfy_video && typeof doc.comfy_video === 'object' ? doc.comfy_video : {};
+  const out = emptyComfyDefaults();
+  if (typeof stored.model_id === 'string' && stored.model_id.trim()) out.model_id = stored.model_id.trim();
+  if (stored.params_by_model && typeof stored.params_by_model === 'object' && !Array.isArray(stored.params_by_model)) {
+    for (const [k, v] of Object.entries(stored.params_by_model)) {
+      if (v && typeof v === 'object' && !Array.isArray(v)) out.params_by_model[k] = { ...v };
+    }
+  }
+  return out;
+}
+
+// Merge { model_id?, params_by_model? } into the stored defaults. model_id
+// null/'' clears; params_by_model entries are merged per model (null removes
+// that model's entry). Returns the full merged object.
+export async function setComfyDefaults(projectId, patch = {}) {
+  const pid = requireProjectId(projectId);
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+    throw new Error('patch must be an object');
+  }
+  const current = await getComfyDefaults(pid);
+  const next = { model_id: current.model_id, params_by_model: { ...current.params_by_model } };
+  let changed = false;
+  if (Object.prototype.hasOwnProperty.call(patch, 'model_id')) {
+    const raw = patch.model_id;
+    if (raw == null || raw === '') {
+      next.model_id = null;
+    } else if (typeof raw !== 'string' || !raw.trim() || raw.length > MAX_MODEL_ID_LENGTH) {
+      throw new Error('invalid comfy model id');
+    } else {
+      next.model_id = raw.trim();
+    }
+    changed = true;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'params_by_model')) {
+    const pbm = patch.params_by_model;
+    if (!pbm || typeof pbm !== 'object' || Array.isArray(pbm)) throw new Error('params_by_model must be an object');
+    for (const [modelId, params] of Object.entries(pbm)) {
+      if (typeof modelId !== 'string' || !modelId.trim() || modelId.length > MAX_MODEL_ID_LENGTH) {
+        throw new Error('invalid comfy model id in params_by_model');
+      }
+      if (params == null) {
+        delete next.params_by_model[modelId];
+      } else {
+        next.params_by_model[modelId] = sanitizeComfyParams(params);
+      }
+      changed = true;
+    }
+  }
+  if (changed) {
+    const db = getDb();
+    await db.collection('project_settings').updateOne(
+      { _id: pid },
+      { $set: { comfy_video: next } },
+      { upsert: true },
+    );
+  }
+  return getComfyDefaults(pid);
 }
