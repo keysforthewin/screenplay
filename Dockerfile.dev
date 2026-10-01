@@ -12,15 +12,26 @@ WORKDIR /app
 # It is DEV-ONLY — the production image has no ComfyUI provider; see
 # docker-compose.dev.yml for how the container reaches a ComfyUI on the host.
 RUN apk add --no-cache mongodb-tools curl ffmpeg git socat python3 uv
+# Tools live under /opt (not /root) because the container runs as the
+# unprivileged `node` user — see below.
+ENV UV_TOOL_DIR=/opt/uv/tools
 ENV UV_TOOL_BIN_DIR=/usr/local/bin
 # System interpreter (no managed Python download). comfy-cli is a separate
 # package (comfy-mcp only declares it loosely), and uv links only the top
 # package's entry points, so `comfy` is pointed at explicitly via COMFY_BIN.
 RUN uv tool install --python /usr/bin/python3 --with 'comfy-cli>=1.22.0' comfy-mcp==0.10.0
-ENV COMFY_BIN=/root/.local/share/uv/tools/comfy-mcp/bin/comfy
-COPY package.json package-lock.json* ./
+ENV COMFY_BIN=/opt/uv/tools/comfy-mcp/bin/comfy
+# Run as `node` (uid 1000 = the WSL host user) so the coding-agent providers
+# (Claude Code / Codex) write sessions and refreshed logins into the mounted
+# host ~/.claude and ~/.codex as the host user, not root. HOST_HOME is the
+# host's $HOME: the mounts land at the same absolute path because Claude
+# Code's plugin registry stores absolute install paths.
+ARG HOST_HOME=/home/node
+RUN mkdir -p /data/exports /data/backups "$HOST_HOME" \
+  && chown -R node:node /app /data "$HOST_HOME"
+USER node
+COPY --chown=node:node package.json package-lock.json* ./
 RUN npm ci
-RUN mkdir -p /data/exports /data/backups
 ENV PDF_EXPORT_DIR=/data/exports
 ENV BACKUP_DIR=/data/backups
 EXPOSE 3000 3010 5173

@@ -2,13 +2,12 @@
 // raw TTS text and weaves in Eleven v3 audio tags without touching the words
 // themselves. Uses the auxiliary enhancer model (same as promptEnhance.js).
 
-import Anthropic from '@anthropic-ai/sdk';
+import { getAnthropic } from '../anthropic/client.js';
 import { config } from '../config.js';
 import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { flattenAudioTags } from './tags.js';
 
-const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
 const TAG_LIST = flattenAudioTags().map((t) => `[${t}]`).join(' ');
 
@@ -30,7 +29,7 @@ export async function enhanceWithAudioTags(text) {
 
   let resp;
   try {
-    resp = await client.messages.create({
+    resp = await getAnthropic().messages.create({
       model: modelFor('enhancer'),
       max_tokens: config.anthropic.maxTokens,
       system: SYSTEM_PROMPT,

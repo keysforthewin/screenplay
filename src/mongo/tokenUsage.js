@@ -70,6 +70,8 @@ export async function recordAnthropicTextUsage({
     iteration_count: Number(totals?.iteration_count) || 0,
     tools,
   };
+  // Coding-agent harness runs (model `claude-code:…`) carry an estimated cost.
+  if (totals?.cost_usd != null && Number.isFinite(Number(totals.cost_usd))) meta.cost_usd = Number(totals.cost_usd);
   const normalizedSections = normalizeSectionTokens(sectionTokens);
   if (normalizedSections) meta.section_tokens = normalizedSections;
 

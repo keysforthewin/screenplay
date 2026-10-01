@@ -1,6 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { getAnthropic } from '../anthropic/client.js';
 import { config } from '../config.js';
-import { modelFor } from '../llm/modelSlots.js';
+import { isHarnessModelId, modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import {
   TOOLS,
@@ -40,7 +40,6 @@ import {
   recordAnthropicImageInputUsage,
 } from '../mongo/tokenUsage.js';
 
-const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
 const MAX_TOOL_ITERATIONS = 32;
 
@@ -90,6 +89,9 @@ export async function measureSectionTokens({
   tools,
   messages,
 }) {
+  // Coding-agent harnesses have no token-count endpoint.
+  if (isHarnessModelId(model)) return null;
+  const client = getAnthropic();
   if (!Array.isArray(messages) || messages.length === 0) return null;
   const lastUser = stripImageBlocks(messages[messages.length - 1]);
   const historyMsgs = messages.slice(0, -1);
@@ -480,6 +482,8 @@ export async function runAgent({
     anthropicTotals.cache_creation_input_tokens +=
       Number(usage.cache_creation_input_tokens) || 0;
     anthropicTotals.cache_read_input_tokens += Number(usage.cache_read_input_tokens) || 0;
+    // Coding-agent harness calls report an estimated USD cost instead of billing tokens.
+    if (usage.cost_usd != null) anthropicTotals.cost_usd = (anthropicTotals.cost_usd || 0) + Number(usage.cost_usd);
     anthropicTotals.iteration_count += 1;
   };
 
@@ -572,7 +576,7 @@ export async function runAgent({
       // minutes, which max_tokens=16000 trips on models with an 8192
       // non-streaming cap (the Opus 4 family). We don't consume token deltas —
       // finalMessage() returns the same Message shape create() would have.
-      const resp = await client.messages
+      const resp = await getAnthropic().messages
         .stream({
           model,
           max_tokens: config.anthropic.maxTokens,

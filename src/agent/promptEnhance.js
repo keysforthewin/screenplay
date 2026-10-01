@@ -1,10 +1,9 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { getAnthropic } from '../anthropic/client.js';
 import { config } from '../config.js';
 import { modelFor } from '../llm/modelSlots.js';
 import { logger } from '../log.js';
 import { stripMarkdown } from '../util/markdown.js';
 
-const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
 const SYSTEM_PROMPT = `You are a cinematic-reference disambiguator for a screenplay-writing Discord bot. Most user messages reference real-world actors, films, TV shows, characters, or iconic places. Your job is to surface concise disambiguation hints that the downstream screenplay agent can use as context.
 
@@ -96,7 +95,7 @@ export async function enhancePrompt({
 
   let resp;
   try {
-    resp = await client.messages.create({
+    resp = await getAnthropic().messages.create({
       model: modelFor('enhancer'),
       max_tokens: 3000,
       system: SYSTEM_PROMPT,

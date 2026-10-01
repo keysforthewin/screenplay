@@ -22,6 +22,17 @@
 #   the agent say "ComfyUI rendering is disabled on this server" and fal.ai
 #   stays available.
 #
+#   Coding-agent providers (Admin → Models → Claude Code / Codex): the bot
+#   runs as uid 1000 with HOME set to the host's $HOME, and the host's
+#   ~/.claude, ~/.claude.json and ~/.codex are mounted at the same paths, so
+#   the bundled Claude Code / Codex CLIs use the host login, skills, plugins,
+#   settings and session history. LLM_HARNESS_ENABLED turns the option on;
+#   production never sets it. After switching to this uid, a stack that ran
+#   as root needs its root-owned volumes/dirs handed over once:
+#     docker compose -f docker-compose.yml -f docker-compose.dev.yml down
+#     docker volume rm screenplay_bot-node-modules
+#     docker run --rm -v screenplay_exports:/x -v "$PWD/backups:/b" alpine chown -R 1000:1000 /x /b
+#
 #   Alternatives if the bridge misbehaves: `network_mode: host` for bot + web
 #   (then Mongo must publish a non-27017 port and VITE_API_TARGET changes), or
 #   start ComfyUI with `--listen 0.0.0.0` and open the Windows firewall, then
@@ -39,6 +50,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
+      args:
+        HOST_HOME: ${HOME}
     image: screenplay-bot-dev
     command:
       - sh
@@ -58,7 +71,14 @@ services:
       - bot-node-modules:/app/node_modules
       - exports:/data/exports
       - ./backups:/data/backups
+      # Host coding-agent state (login, skills, plugins, settings, sessions).
+      - ${HOME}/.claude:${HOME}/.claude
+      - ${HOME}/.claude.json:${HOME}/.claude.json
+      - ${HOME}/.codex:${HOME}/.codex
     environment:
+      HOME: ${HOME}
+      # Admin → Models may point slots at Claude Code / Codex (dev only).
+      LLM_HARNESS_ENABLED: "1"
       MONGO_URI: mongodb://mongo:27017
       CHROMA_URL: http://chroma:8000
       BACKUP_DIR: /data/backups
@@ -76,6 +96,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
+      args:
+        HOST_HOME: ${HOME}
     image: screenplay-bot-dev
     command:
       - npx

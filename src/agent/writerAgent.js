@@ -226,6 +226,7 @@ export async function runWriterAgent({
       totals.output_tokens += Number(u.output_tokens) || 0;
       totals.cache_creation_input_tokens += Number(u.cache_creation_input_tokens) || 0;
       totals.cache_read_input_tokens += Number(u.cache_read_input_tokens) || 0;
+      if (u.cost_usd != null) totals.cost_usd = (totals.cost_usd || 0) + Number(u.cost_usd);
       totals.iteration_count += 1;
 
       messages.push({ role: 'assistant', content: resp.content });

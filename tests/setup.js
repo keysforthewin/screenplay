@@ -16,3 +16,4 @@ process.env.ADMIN_USERNAME = '';
 // "configured" under test. Provider tests install their own fakes.
 process.env.FAL_KEY = '';
 process.env.COMFYUI_URL = '';
+process.env.LLM_HARNESS_ENABLED = '';

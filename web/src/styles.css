@@ -3603,6 +3603,14 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   margin: 16px 0;
 }
 .model-slot select { width: 100%; }
+.model-slot-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.model-slot-row > select:first-child { flex: 1 1 100%; }
+.model-slot-row > input { flex: 1 1 140px; min-width: 0; }
+.model-slot-row > input + datalist + select { flex: 0 1 130px; width: auto; }
 .model-slot .field-help {
   margin: 6px 0 0;
   color: var(--fg-muted);

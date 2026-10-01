@@ -1,15 +1,19 @@
 // Process-wide (not per-project) settings that are plain configuration.
 // One doc per settings key in `app_settings`:
-//   { _id: 'models', slots: { agent: 'claude-…', writer: null, … },
+//   { _id: 'models', slots: { agent: 'claude-…', writer: null,
+//                             dialog: { provider: 'claude-code', model: 'opus', effort: 'high' }, … },
 //     updated_at, updated_by }             — Admin → Models (src/llm/modelSlots.js)
 //   { _id: 'comfy_models', models: [registry entry…], updated_at, updated_by }
 //                                          — Admin → ComfyUI templates
 // Absent doc / null slot = use the env default.
 
 import { getDb } from './client.js';
+import { config } from '../config.js';
 import {
   MODEL_SLOT_KEYS,
   isValidModelId,
+  isValidOverride,
+  normalizeHarnessTarget,
   setModelOverrides,
 } from '../llm/modelSlots.js';
 import { registerComfyVideoModels } from '../comfy/videoModels.js';
@@ -29,6 +33,7 @@ function normalizeSlots(stored = {}) {
   for (const k of MODEL_SLOT_KEYS) {
     const v = stored?.[k];
     if (isValidModelId(v)) out[k] = v;
+    else if (isValidOverride(v)) out[k] = normalizeHarnessTarget(v);
   }
   return out;
 }
@@ -43,7 +48,9 @@ export async function getModelSettings() {
   };
 }
 
-// Merge a partial update: `{ writer: 'claude-fable-5-1', dialog: null }`.
+// Merge a partial update: `{ writer: 'claude-fable-5-1', dialog: null,
+// agent: { provider: 'codex', model: 'gpt-6-sol', effort: 'high' } }`.
+// Harness targets are refused unless LLM_HARNESS_ENABLED is set.
 // Unknown slots are rejected (a typo'd key would silently never take effect);
 // a value must be a plausible model id (set) or null/'' (revert to default).
 // Persists, then applies to the in-memory map so the very next Claude call
@@ -58,6 +65,17 @@ export async function setModelSettings(patch = {}, { updatedBy = null } = {}) {
     if (!MODEL_SLOT_KEYS.includes(key)) throw new Error(`unknown model slot: ${key}`);
     if (raw === null || raw === '' || raw === undefined) {
       next[key] = null;
+      continue;
+    }
+    if (typeof raw === 'object' && !Array.isArray(raw)) {
+      if (!config.llmHarness.enabled) {
+        throw new Error('Coding-agent providers (Claude Code / Codex) are disabled on this server');
+      }
+      try {
+        next[key] = normalizeHarnessTarget(raw);
+      } catch (e) {
+        throw new Error(`${key}: ${e.message}`);
+      }
       continue;
     }
     const v = typeof raw === 'string' ? raw.trim() : raw;

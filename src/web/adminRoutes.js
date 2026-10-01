@@ -21,6 +21,7 @@ import { ensureTemplateFile, templateFilePath, ComfyTemplateNotRunnableError } f
 import { slotAddressesFromListing } from '../comfy/paramMap.js';
 import { autoMapTemplate, summarizeGalleryRow } from '../comfy/templateMap.js';
 import { getAnthropic } from '../anthropic/client.js';
+import { describeHarnessProviders } from '../llm/harness/catalog.js';
 import { logger } from '../log.js';
 
 const HEX24 = /^[a-f0-9]{24}$/i;
@@ -83,6 +84,7 @@ export function buildAdminRouter() {
         slots: describeModelSlots(),
         catalog,
         live_catalog,
+        harness: await describeHarnessProviders(),
         updated_at: settings.updated_at,
         updated_by: settings.updated_by,
       });
@@ -91,9 +93,12 @@ export function buildAdminRouter() {
     }
   });
 
-  // PUT { slots: { writer: 'claude-fable-5-1', dialog: null, … } } — a partial
-  // merge; null reverts a slot to its env default. Applies in-process
-  // immediately (single writer process), so the next Claude call uses it.
+  // PUT { slots: { writer: 'claude-fable-5-1', dialog: null,
+  //               agent: { provider: 'claude-code', model: 'opus', effort: 'high' }, … } }
+  // — a partial merge; null reverts a slot to its env default; an object
+  // points the slot at a coding-agent harness (400 when not enabled here).
+  // Applies in-process immediately (single writer process), so the next
+  // Claude call uses it.
   router.put('/models', async (req, res, next) => {
     try {
       const patch = req.body?.slots;

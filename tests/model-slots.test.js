@@ -8,9 +8,16 @@ import {
   getModelOverrides,
   describeModelSlots,
   isValidModelId,
+  isHarnessModelId,
+  parseHarnessModel,
+  encodeHarnessModel,
+  normalizeHarnessTarget,
 } from '../src/llm/modelSlots.js';
 
-beforeEach(() => setModelOverrides({}));
+beforeEach(() => {
+  setModelOverrides({});
+  process.env.LLM_HARNESS_ENABLED = '';
+});
 
 describe('modelFor', () => {
   it('falls back to the family env default when no override is set', () => {
@@ -51,5 +58,40 @@ describe('modelFor', () => {
     expect(isValidModelId('')).toBe(false);
     expect(isValidModelId('has space')).toBe(false);
     expect(isValidModelId(null)).toBe(false);
+  });
+});
+
+describe('coding-agent harness targets', () => {
+  it('encodes and parses provider:model:effort ids', () => {
+    expect(encodeHarnessModel({ provider: 'codex', model: 'gpt-6-sol', effort: 'xhigh' })).toBe('codex:gpt-6-sol:xhigh');
+    expect(encodeHarnessModel({ provider: 'claude-code', model: null, effort: null })).toBe('claude-code:default:default');
+    expect(parseHarnessModel('claude-code:opus:default')).toEqual({ provider: 'claude-code', model: 'opus', effort: null });
+    expect(parseHarnessModel('claude-opus-5')).toBeNull();
+    expect(isHarnessModelId('codex:gpt-5.5:high')).toBe(true);
+    expect(isHarnessModelId('claude-fable-5-1')).toBe(false);
+    // Encoded ids still pass the generic id check other code relies on.
+    expect(isValidModelId('codex:gpt-5.5:high')).toBe(true);
+  });
+
+  it('normalizes targets and rejects bad ones', () => {
+    expect(normalizeHarnessTarget({ provider: 'claude-code', model: ' Opus ', effort: '' })).toEqual({
+      provider: 'claude-code',
+      model: 'opus',
+      effort: null,
+    });
+    expect(() => normalizeHarnessTarget({ provider: 'nope' })).toThrow(/unknown provider/);
+    expect(() => normalizeHarnessTarget({ provider: 'claude-code', effort: 'minimal' })).toThrow(/effort/);
+    expect(() => normalizeHarnessTarget({ provider: 'codex', model: 'default' })).toThrow(/model/);
+  });
+
+  it('modelFor encodes a harness override only while the harness is enabled', () => {
+    setModelOverrides({ writer: { provider: 'claude-code', model: 'opus', effort: 'max' } });
+    expect(modelFor('writer')).toBe(config.anthropic.model);
+    process.env.LLM_HARNESS_ENABLED = '1';
+    expect(modelFor('writer')).toBe('claude-code:opus:max');
+    const writer = describeModelSlots().find((s) => s.key === 'writer');
+    expect(writer.provider).toBe('claude-code');
+    expect(writer.effort).toBe('max');
+    expect(describeModelSlots().find((s) => s.key === 'dialog').provider).toBe('api');
   });
 });

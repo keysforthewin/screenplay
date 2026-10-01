@@ -32,6 +32,17 @@ export const config = {
     // reference selection, PDF filename inference.
     enhancerModel: process.env.ANTHROPIC_ENHANCER_MODEL || 'claude-fable-5-1',
   },
+  // Local coding-agent harnesses (Claude Code / Codex) as a per-slot provider
+  // instead of the API — dev only (docker-compose.dev.yml sets the flag and
+  // mounts the host's ~/.claude, ~/.claude.json and ~/.codex). Live getter so
+  // tests can flip it per case.
+  llmHarness: {
+    get enabled() {
+      return /^(1|true|yes)$/i.test(process.env.LLM_HARNESS_ENABLED || '');
+    },
+    concurrency: Number(process.env.LLM_HARNESS_CONCURRENCY) || 3,
+    cwd: process.env.LLM_HARNESS_CWD || process.cwd(),
+  },
   enhance: {
     enabled: !process.env.ENHANCE_PROMPTS_DISABLED,
     maxNotesChars: Number(process.env.ENHANCE_MAX_NOTES_CHARS) || 1500,
