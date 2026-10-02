@@ -3,7 +3,8 @@
 // the renderer may use (clip, lip-sync), shows the server's per-cut plan
 // (mode, model, auto start frame, length, cost, warnings) and submits. No
 // per-model parameter editing here: ComfyUI params come from what the
-// per-cut dialog last saved for each model.
+// per-cut dialog last saved for each model — except the length, which is
+// always each cut's own (plus a travelling camera's handles).
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiGet, apiPostJson } from '../api.js';
 import { Modal } from './Modal.jsx';
@@ -11,6 +12,12 @@ import { formatUsd } from '../videoCost.js';
 import { ComfyModelSelect, COMFY_DISABLED_MESSAGE } from './comfyControls.jsx';
 
 const MODE_LABEL = { lipsync: 'lip-sync', clip: 'clip' };
+
+// " (6 + handles)" when the clip is rendered longer than the cut.
+function lengthNote(c) {
+  if (!c.cut_seconds || c.cut_seconds === c.duration_seconds) return '';
+  return c.timing?.head || c.timing?.tail ? ` (${c.cut_seconds} + handles)` : ` (${c.cut_seconds}s cut)`;
+}
 
 function parseError(e) {
   let msg = e?.message || 'Request failed.';
@@ -159,7 +166,7 @@ export function RenderCutsDialog({ open, onClose, beatId, onSubmit }) {
                 filter={(m) => m.inputs?.audio !== 'required'}
                 placeholder={`Project default — ${preview?.models?.clip?.label || comfy?.defaults?.model_id || 'LTX-2.5'}`}
               />
-              <p style={{ color: 'var(--fg-muted)', fontSize: 12, margin: '4px 0 0' }}>Cuts without fully recorded dialogue: start frame + block → clip. Params are the ones last saved for the model in the per-cut dialog.</p>
+              <p style={{ color: 'var(--fg-muted)', fontSize: 12, margin: '4px 0 0' }}>Cuts without fully recorded dialogue: start frame + block → clip. Each cut renders at its own length; the other params are the ones last saved for the model in the per-cut dialog.</p>
             </div>
             <div className="field-block">
               <label className="field-label">Lip-sync model</label>
@@ -232,7 +239,9 @@ export function RenderCutsDialog({ open, onClose, beatId, onSubmit }) {
                     </td>
                     <td>{c.skipped ? '' : c.model_label || c.model_id || '—'}</td>
                     <td>{c.covered_lines ? `${c.recorded_lines}/${c.covered_lines} rec.` : '—'}</td>
-                    <td>{c.skipped ? '' : c.duration_seconds ? `${c.duration_seconds}s` : '—'}</td>
+                    <td title={c.timing?.head || c.timing?.tail ? 'Rendered with handles the assembly trims off, so the camera is already moving at the cut.' : undefined}>
+                      {c.skipped ? '' : c.duration_seconds ? `${c.duration_seconds}s${lengthNote(c)}` : '—'}
+                    </td>
                     {provider === 'fal' ? <td>{c.skipped ? '' : formatUsd(c.estimated_cost_usd) || '—'}</td> : null}
                     <td className="render-beat-notes">
                       {(c.warnings || []).map((w, i) => <div key={i}>{w}</div>)}

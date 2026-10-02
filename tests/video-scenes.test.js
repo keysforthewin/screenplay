@@ -84,6 +84,7 @@ describe('video_scenes collection', () => {
       textSpan: { starts_with: 'Sarah waits', ends_with: 'she leaves.' },
       directorsRead: { turn: 'waiting to leaving' },
       intention: 'Make the audience feel her certainty crack.',
+      tempo: ' Two long holds around a run of quick inserts. ',
       scope: { reserved_for_later: ['the phone call'] },
       floorPlan: 'A night diner, the door at the far end.',
       dialogIds: [dialogId, dialogId, 'nope'],
@@ -100,6 +101,9 @@ describe('video_scenes collection', () => {
     expect(a.scope.already_happened).toEqual([]);
     expect(a.dialog_ids.map(String)).toEqual([dialogId.toString()]);
     expect(a.load.verdict).toBe('stretch');
+    expect(a.tempo).toBe('Two long holds around a run of quick inserts.');
+    expect(b.tempo).toBe('');
+    expect((await VS.updateVideoScene(projectId, b._id, { tempo: 'Cut on the music.' })).tempo).toBe('Cut on the music.');
     expect(b.floor_plan).toBe('');
     expect(b.load).toEqual({ beats: null, load_points: null, total_seconds: null, s: null, verdict: null });
     const list = await VS.listVideoScenes({ projectId, beatId: beat._id });

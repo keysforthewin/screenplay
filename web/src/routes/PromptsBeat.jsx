@@ -15,6 +15,7 @@ import { RenderStartFramesDialog } from '../widgets/RenderStartFramesDialog.jsx'
 import { CutRenderProgress, cutRenderPhaseText } from '../widgets/CutRenderProgress.jsx';
 import { CutPlanProgress } from '../widgets/CutPlanProgress.jsx';
 import { SceneBiblePanel } from '../widgets/SceneBiblePanel.jsx';
+import { ComfyCutJobsProvider, comfyQueueSummary, useComfyCutJobStore } from '../widgets/comfyCutJobs.jsx';
 
 const TERMINAL = new Set(['done', 'partial', 'error']);
 const RENDER_TERMINAL = new Set(['done', 'partial', 'error']);
@@ -29,7 +30,7 @@ function readError(e) {
 }
 
 // A per-cut DnD list inside one scene.
-function SceneCuts({ scene, beatId, dialogs, disabled, onRefresh, onDeleteCut }) {
+function SceneCuts({ scene, beatId, dialogs, disabled, onRefresh, onDeleteCut, onRegenerateCut }) {
   const sceneId = scene._id?.toString?.() || String(scene._id);
   const ids = (scene.cuts || []).map((c) => c._id?.toString?.() || String(c._id));
   const [local, setLocal] = useState(ids);
@@ -62,7 +63,7 @@ function SceneCuts({ scene, beatId, dialogs, disabled, onRefresh, onDeleteCut })
           {local.map((id, i) => {
             const c = byId.get(id);
             if (!c) return null;
-            return <CutItem key={id} cut={c} index={i} sceneIndex={scene.order} beatId={beatId} dialogs={dialogs} disabled={disabled} onRefresh={onRefresh} onDelete={() => onDeleteCut(id)} />;
+            return <CutItem key={id} cut={c} index={i} sceneIndex={scene.order} beatId={beatId} dialogs={dialogs} disabled={disabled} onRefresh={onRefresh} onDelete={() => onDeleteCut(id)} onRegenerate={() => onRegenerateCut?.(c, `${scene.order}.${i + 1}`)} />;
           })}
         </div>
       </SortableContext>
@@ -90,6 +91,8 @@ export function PromptsBeat({ session }) {
   const [renderFrames, setRenderFrames] = useState(true);
   const [genOpen, setGenOpen] = useState(false);
   const [replanTarget, setReplanTarget] = useState(null);
+  const [recutTarget, setRecutTarget] = useState(null);
+  const [recutNote, setRecutNote] = useState('');
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
   const [confirmDeleteFrames, setConfirmDeleteFrames] = useState(false);
   const pollRef = useRef(null);
@@ -123,6 +126,9 @@ export function PromptsBeat({ session }) {
   }, [order, refreshKey]);
 
   const onRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
+  // Per-cut ComfyUI renders (queued / rendering / just finished), shared by
+  // every cut's button and dialog; reattached from /cuts/jobs below.
+  const comfyJobs = useComfyCutJobStore(data?.beat?._id ? String(data.beat._id) : null, onRefresh);
 
   useEffect(() => () => {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -265,6 +271,21 @@ export function PromptsBeat({ session }) {
     }
   }
 
+  async function regenerateCut() {
+    const target = recutTarget;
+    setRecutTarget(null);
+    if (!target) return;
+    setActionError(null);
+    setJob({ status: 'queued', phase: 'queued' });
+    try {
+      const r = await apiPostJson(`/cut/${target.id}/replan`, { note: recutNote, render_start_frames: renderFrames });
+      watchPlan(r.job_id);
+    } catch (e) {
+      setJob(null);
+      setActionError(readError(e));
+    }
+  }
+
   function watchStartFrames(jobId) {
     if (sfPollRef.current) clearInterval(sfPollRef.current);
     sfPollRef.current = setInterval(async () => {
@@ -366,6 +387,7 @@ export function PromptsBeat({ session }) {
           setAsmJob((cur) => cur || r.assemble);
           if (!TERMINAL.has(r.assemble.status) && !asmPollRef.current) watchAssemble(r.assemble.job_id);
         }
+        comfyJobs.hydrate(r.comfy_videos);
         if (r.render) {
           setRenderJob((cur) => cur || r.render);
           if (!RENDER_TERMINAL.has(r.render.status) && !renderEsRef.current) watchRender(r.render.job_id);
@@ -450,7 +472,9 @@ export function PromptsBeat({ session }) {
   const missingClips = allCuts.filter((c) => !c.video_file_id).length;
   const clipsDone = allCuts.length - missingClips;
   const hasContent = scenes.length > 0 || cutCount > 0;
+  const comfyQueue = comfyQueueSummary(comfyJobs.jobs);
   return (
+    <ComfyCutJobsProvider store={comfyJobs}>
     <main className="app">
       <p><a href="#" onClick={(e) => { e.preventDefault(); navigate('/prompts'); }}>← Back to all prompts</a></p>
       <BeatPager beats={tocBeats} currentId={data.beat?._id} basePath="/prompts" />
@@ -492,12 +516,24 @@ export function PromptsBeat({ session }) {
       <BeatTabs order={data.beat.order} active="prompts" />
 
       {actionError ? <div className="error-banner">{actionError}</div> : null}
+      {comfyQueue.running || comfyQueue.queued ? (
+        <div className="cut-job-panel is-running">
+          ComfyUI: {comfyQueue.running ? `${comfyQueue.running} rendering` : ''}
+          {comfyQueue.running && comfyQueue.queued ? ' · ' : ''}
+          {comfyQueue.queued ? `${comfyQueue.queued} queued` : ''} in this beat — renders run one at a time; open a cut's ComfyUI button to see its progress.
+        </div>
+      ) : null}
       {job ? <CutPlanProgress job={job} /> : null}
       {sfJob ? (
         <div className={`cut-job-panel is-${sfJob.status}`}>
-          {TERMINAL.has(sfJob.status)
-            ? `Frames: ${sfJob.rendered} rendered, ${sfJob.skipped} skipped, ${sfJob.failed} failed.`
-            : `Rendering frames… ${sfJob.rendered ?? 0}/${sfJob.planned ?? '?'}`}
+          {sfJob.kind === 'check' || sfJob.kind === 'repair'
+            ? (TERMINAL.has(sfJob.status) ? 'Frame check finished.' : sfJob.kind === 'repair' ? 'Checking and repairing frames…' : 'Checking frames…')
+            : TERMINAL.has(sfJob.status)
+              ? `Frames: ${sfJob.rendered} rendered, ${sfJob.skipped} skipped, ${sfJob.failed} failed.`
+              : `Rendering frames… ${sfJob.rendered ?? 0}/${sfJob.planned ?? '?'}`}
+          {sfJob.checks && sfJob.checks.passed + sfJob.checks.failed + sfJob.checks.unchecked > 0
+            ? ` Start ↔ end pairs: ${sfJob.checks.passed} match${sfJob.checks.repaired ? ` (${sfJob.checks.repaired} repaired)` : ''}${sfJob.checks.failed ? `, ${sfJob.checks.failed} still differ` : ''}${sfJob.checks.unchecked ? `, ${sfJob.checks.unchecked} not checked` : ''}.`
+            : ''}
           {!TERMINAL.has(sfJob.status) && sfJob.job_id ? (
             <button type="button" style={{ marginLeft: 10, fontSize: 12, padding: '2px 8px' }} disabled={sfJob.cancel_requested} onClick={cancelFrames}
               title="Stops before the next cut; frames already rendering finish and are kept">
@@ -545,7 +581,7 @@ export function PromptsBeat({ session }) {
           {scenes.map((s, i) => (
             <SceneCard key={String(s._id)} scene={s} index={i} count={scenes.length} beatId={data.beat._id} disabled={busy} onRefresh={onRefresh}
               onReplan={(scene) => setReplanTarget(scene)} onMove={(dir) => moveScene(i, dir)}>
-              <SceneCuts scene={s} beatId={data.beat._id} dialogs={data.dialogs || []} disabled={busy} onRefresh={onRefresh} onDeleteCut={deleteCut} />
+              <SceneCuts scene={s} beatId={data.beat._id} dialogs={data.dialogs || []} disabled={busy} onRefresh={onRefresh} onDeleteCut={deleteCut} onRegenerateCut={(c, label) => { setRecutNote(''); setRecutTarget({ id: String(c._id), title: c.title, label }); }} />
             </SceneCard>
           ))}
           {unsorted.length ? (
@@ -585,6 +621,22 @@ export function PromptsBeat({ session }) {
         message={`The cuts of "${replanTarget?.title || ''}" (with their start/end frames and videos) are replaced by a fresh shot table, blocks and still prompts. Other scenes are kept.${renderFrames ? ' Start and end frames are rendered afterwards.' : ''}`}
         confirmLabel="Replan" onConfirm={() => replan(replanTarget)} onCancel={() => setReplanTarget(null)} />
 
+      <Modal open={Boolean(recutTarget)} title={`Regenerate cut ${recutTarget?.label || ''}?`} onClose={() => setRecutTarget(null)}>
+        <p>"{recutTarget?.title || ''}" is planned again from scratch: its shot table row, video prompt, start and end still prompts. Its frames and video are deleted. The rest of the scene is kept, and the cut keeps its place and its dialogue lines.</p>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
+          <span className="field-label">What is wrong with it (optional, but it helps)</span>
+          <textarea rows={4} value={recutNote} onChange={(e) => setRecutNote(e.target.value)} placeholder="e.g. They should be hurrying TOWARD the theater doors, seen from behind, the kid a step ahead. Never his face from the front." />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+          <input type="checkbox" checked={renderFrames} onChange={(e) => setRenderFrames(e.target.checked)} />
+          Also render its start and end frames (uses the project's image model default)
+        </label>
+        <div className="video-prompt-actions" style={{ marginTop: 14 }}>
+          <button className="primary" onClick={regenerateCut}>Regenerate</button>
+          <button onClick={() => setRecutTarget(null)}>Cancel</button>
+        </div>
+      </Modal>
+
       <RenderStartFramesDialog
         open={framesOpen}
         onClose={() => setFramesOpen(false)}
@@ -605,5 +657,6 @@ export function PromptsBeat({ session }) {
 
       <BeatPager beats={tocBeats} currentId={data.beat?._id} basePath="/prompts" />
     </main>
+    </ComfyCutJobsProvider>
   );
 }

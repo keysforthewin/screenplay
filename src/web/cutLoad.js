@@ -105,6 +105,18 @@ export function cutLoadPoints(cut, { coveredDialogs = [] } = {}) {
   return { beats: cutBeats(cut), load, breakdown };
 }
 
+// The shortest a cut that covers these lines may run: the speech (recorded
+// lengths where they exist, estimates otherwise) plus the tail, rounded up to
+// half a second. 0 when the cut covers no line. The planner's chosen length is
+// raised to this — everything else about a cut's length is the model's call.
+export function speechFloorSeconds(coveredDialogs = []) {
+  const lines = Array.isArray(coveredDialogs) ? coveredDialogs.filter(Boolean) : [];
+  if (!lines.length) return 0;
+  const speech = Number(estimateSpeechSeconds(lines));
+  if (!Number.isFinite(speech) || speech <= 0) return 0;
+  return Math.ceil((speech + RECORDED_TAIL_SECONDS) * 2 - 1e-9) / 2;
+}
+
 // Integer seconds for one cut. Recorded audio wins; otherwise the load table.
 export function estimateCutDuration(
   cut,

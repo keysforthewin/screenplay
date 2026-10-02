@@ -89,6 +89,9 @@ describe('lintCut — block shape', () => {
     expect(codes(lintCut(withSentence('Tom leans in over the table for the first 8 seconds.')))).toContain('timestamp');
     expect(codes(lintCut(withSentence('Tom holds the look for 2 s and looks away.')))).toContain('timestamp');
     expect(codes(lintCut(withSentence('Tom leans in at 0:04 and looks away.')))).toContain('timestamp');
+    // A decade is not a length.
+    expect(codes(lintCut(withSentence('Tom leans on a boxy 1980s sedan beside an \'80s arcade cabinet from the 70s.')))).not.toContain('timestamp');
+    expect(codes(lintCut(withSentence('Tom leans on a boxy 1980s sedan for 80s.')))).toContain('timestamp');
     // A lens length is not a timestamp.
     expect(codes(lintCut(withSentence('Tom leans in over the table, 50mm, and looks away.')))).not.toContain('timestamp');
   });
@@ -182,6 +185,11 @@ describe('lintCut — ending', () => {
     expect(codes(earlier)).not.toContain('involuntary_endpoint');
   });
 
+  it('accepts an accident written in the accident form as the endpoint', () => {
+    const accident = lintCut(cleanCut({ prompt: CLEAN_PROMPT.replace('End with her hand flat on the table beside the cup.', 'End with the cup on its side where it spills by accident.') }));
+    expect(codes(accident)).not.toContain('involuntary_endpoint');
+  });
+
   it('accepts every ending form', () => {
     for (const ending of ['Stop when her hand settles.', 'Hold on this frame as the door swings.', 'End on the empty seat.']) {
       const r = lintCut(cleanCut({ prompt: CLEAN_PROMPT.replace('End with her hand flat on the table beside the cup.', ending) }));
@@ -229,5 +237,47 @@ describe('summarizeLint', () => {
     expect(s.codes.bare_feeling).toBe(1);
     expect(s.codes.trap_phrase).toBe(1);
     expect(summarizeLint([])).toEqual({ count: 0, codes: {} });
+  });
+});
+
+describe('lintCut — a travelling camera', () => {
+  const LOCK_PAN = 'Same light: warm amber sconces along the walls. Camera at the lobby doors.';
+  const pan = (move, extra = {}) =>
+    lintCut({
+      prompt: `Wide shot from the lobby doors at eye level, 24mm, ${move} A dozen people cross the red carpet in ones and twos, coats over their arms, while an attendant behind the glass counter fills a paper bucket at the popper. Sound: the popper rattling, low talk. ${LOCK_PAN} End with the counter filling the right half of the frame.`,
+      lock_line: LOCK_PAN,
+      exclusions: [],
+      in_frame: [],
+      camera: { movement: 'pan', travel_widths: 0.5 },
+      duration_seconds: 8,
+      ...extra,
+    });
+
+  it('is clean when the move has one even speed and keeps travelling', () => {
+    expect(codes(pan('the camera already panning right at one slow, even speed from the box office toward the counter:'))).toEqual([]);
+  });
+
+  it('flags a move that is told to settle, and one with no speed', () => {
+    const braked = pan('the camera pans right from the box office and settles on the counter:');
+    expect(codes(braked)).toEqual(expect.arrayContaining(['camera_settle', 'camera_speed_missing']));
+    expect(codes(pan('the camera pans slowly right and comes to rest on the counter:'))).toEqual(['camera_settle']);
+  });
+
+  it('flags a sweep too fast for its length', () => {
+    const fast = pan('the camera already panning right at one slow, even speed across the whole lobby:', { camera: { movement: 'pan', travel_widths: 3 }, duration_seconds: 4 });
+    expect(codes(fast)).toEqual(['camera_fast', 'pan_no_overlap']);
+    expect(fast[0].message).toMatch(/3 frame-widths in 4 s/);
+  });
+
+  it('flags a sliding move whose two stills would not overlap', () => {
+    const wide = pan('the camera already panning right at one slow, even speed from the box office toward the counter:', { camera: { movement: 'pan', travel_widths: 1 } });
+    expect(codes(wide)).toEqual(['pan_no_overlap']);
+    const push = pan('the camera already pushing in at one slow, even speed toward the counter:', { camera: { movement: 'push_in', travel_widths: 1 } });
+    expect(codes(push)).not.toContain('pan_no_overlap');
+  });
+
+  it('never applies to a held camera', () => {
+    const held = pan('the camera holding as a hand settles on the counter:', { camera: { movement: 'static' } });
+    expect(codes(held)).toEqual([]);
   });
 });

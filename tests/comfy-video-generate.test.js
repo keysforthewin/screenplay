@@ -307,6 +307,35 @@ describe('comfy cut render job', () => {
     expect(m['90.text']).toContain('Sarah pushes the cup');
   });
 
+  it("renders the cut's own length when no duration is given: handles for a travelling camera, snapped up to the model", async () => {
+    Client._setComfyClientForTests(fakeClient());
+    const { cut } = await seedCut();
+    const id = cut._id.toString();
+    // A held cut of 5 s: exactly 5.
+    let prep = await Gen.prepareCutRender({ projectId, cutId: id, modelId: 'ltx-2.5-i2v' });
+    expect(prep.params.duration_seconds).toBe(5);
+    expect(prep.timing).toMatchObject({ cut_seconds: 5, head: 0, tail: 0, seconds: 5, clamp: null });
+    // A pan: half a second of handle at each end, trimmed off at assembly.
+    await VP.updateVideoPrompt(projectId, id, { camera: { movement: 'pan' } });
+    prep = await Gen.prepareCutRender({ projectId, cutId: id, modelId: 'ltx-2.5-i2v' });
+    expect(prep.params.duration_seconds).toBe(6);
+    expect(prep.timing).toMatchObject({ head: 0.5, tail: 0.5, requested: 6 });
+    // A quick cut on a whole-second model renders 2 s; Wan takes 1.5 as is.
+    await VP.updateVideoPrompt(projectId, id, { camera: { movement: 'static' }, duration_seconds: 1.5 });
+    expect((await Gen.prepareCutRender({ projectId, cutId: id, modelId: 'ltx-2.5-i2v' })).params.duration_seconds).toBe(2);
+    expect((await Gen.prepareCutRender({ projectId, cutId: id, modelId: 'wan-2.2-14b-i2v' })).params.duration_seconds).toBe(1.5);
+    // An explicit length still wins, and carries no timing.
+    prep = await Gen.prepareCutRender({ projectId, cutId: id, modelId: 'ltx-2.5-i2v', params: { duration_seconds: 9 } });
+    expect(prep.params.duration_seconds).toBe(9);
+    expect(prep.timing).toBe(null);
+    // A model minimum above the cut is reported.
+    const preview = await Gen.buildComfyPayloadPreview({ projectId, cutId: id, modelId: 'seedance-2.0-r2v', confirmSpend: true }).catch((e) => e);
+    if (!(preview instanceof Error)) {
+      expect(preview.timing).toMatchObject({ seconds: 4, clamp: 'min' });
+      expect(preview.warnings[0]).toMatch(/minimum is 4 s/);
+    }
+  });
+
   it('surfaces the ComfyUI error detail when the job fails', async () => {
     Client._setComfyClientForTests(fakeClient({ statuses: ['running', 'failed'], errorDetail: { exception_message: 'CUDA out of memory', error_code: 'server_died' } }));
     const { cut } = await seedCut();
@@ -489,25 +518,82 @@ describe('comfy cut render job', () => {
     expect(client.calls.some((c) => c.name === 'run_workflow')).toBe(true);
   });
 
-  it('a queued single-cut job already holds its beat lock, so a second start for the beat is refused', async () => {
-    let releaseRun;
-    const gate = new Promise((r) => (releaseRun = r));
+  // A client whose run_workflow waits on a gate per call, so the test can
+  // hold the GPU queue while it inspects the waiting jobs.
+  function gatedClient() {
+    const gates = [];
     const client = fakeClient();
     const inner = client.callTool.bind(client);
     client.callTool = async (name, args) => {
-      if (name === 'run_workflow') await gate;
+      if (name === 'run_workflow') await new Promise((r) => gates.push(r));
       return inner(name, args);
     };
+    return { client, openNext: () => gates.shift()?.() };
+  }
+
+  async function secondCut(beat) {
+    const cut = await VP.createVideoPrompt({ projectId, beatId: beat._id, title: 'Cut 2', prompt: 'Close on the cup. Stop when it stops.', durationSeconds: 3 });
+    await fakeDb.collection('video_prompts').updateOne({ _id: cut._id }, { $set: { start_frame: { image_id: newImage(), prompt: 'still', reference_ids: [] } } });
+    return cut;
+  }
+
+  const tick = (ms = 10) => new Promise((r) => setTimeout(r, ms));
+
+  it('queues several cuts of one beat behind a shared beat hold and runs them one at a time', async () => {
+    const { client, openNext } = gatedClient();
     Client._setComfyClientForTests(client);
     const { beat, cut } = await seedCut();
-    const { job_id } = await Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v', params: { duration_seconds: 2 } });
-    await new Promise((r) => setTimeout(r, 10));
+    const cut2 = await secondCut(beat);
+    const a = await Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v', params: { duration_seconds: 2 } });
+    const b = await Gen.startComfyCutVideoJob({ projectId, cutId: cut2._id.toString(), modelId: 'ltx-2.5-i2v', params: { duration_seconds: 2 } });
+    await tick();
+    expect(Gen.getComfyVideoJob(a.job_id).status).toBe('running');
+    const queued = Gen.serializeComfyJob(Gen.getComfyVideoJob(b.job_id));
+    expect(queued.status).toBe('queued');
+    expect(queued.queue_position).toBe(1);
     expect(BeatLocks.isBeatLocked(beat._id)).toBe(true);
-    await expect(Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v' })).rejects.toBeInstanceOf(Gen.ComfyBusyError);
-    releaseRun();
-    const job = await waitForTerminal(job_id);
-    expect(job.status).toBe('done');
-    await new Promise((r) => setTimeout(r, 5));
+
+    // The same cut again is refused with its running job's id.
+    const dup = await Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v' }).catch((e) => e);
+    expect(dup).toBeInstanceOf(Gen.ComfyCutBusyError);
+    expect(dup.job_id).toBe(a.job_id);
+
+    const listed = Gen.listComfyCutJobsForBeat(beat._id.toString());
+    expect(listed.map((j) => j.job_id).sort()).toEqual([a.job_id, b.job_id].sort());
+
+    openNext();
+    expect((await waitForTerminal(a.job_id)).status).toBe('done');
+    await tick();
+    expect(Gen.getComfyVideoJob(b.job_id).status).toBe('running');
+    expect(Gen.getComfyVideoJob(b.job_id).queue_position).toBe(null);
+    expect(BeatLocks.isBeatLocked(beat._id)).toBe(true);
+    openNext();
+    expect((await waitForTerminal(b.job_id)).status).toBe('done');
+    await tick(5);
+    expect(BeatLocks.isBeatLocked(beat._id)).toBe(false);
+  });
+
+  it('removes a queued job from the queue without running it, and refuses to cancel a running one', async () => {
+    const { client, openNext } = gatedClient();
+    Client._setComfyClientForTests(client);
+    const { beat, cut } = await seedCut();
+    const cut2 = await secondCut(beat);
+    const a = await Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v', params: { duration_seconds: 2 } });
+    const b = await Gen.startComfyCutVideoJob({ projectId, cutId: cut2._id.toString(), modelId: 'ltx-2.5-i2v', params: { duration_seconds: 2 } });
+    await tick();
+    expect(() => Gen.cancelComfyCutVideoJob(a.job_id)).toThrow(Gen.ComfyJobNotCancellableError);
+    const snap = Gen.cancelComfyCutVideoJob(b.job_id);
+    expect(snap.status).toBe('error');
+    expect(snap.cancelled).toBe(true);
+    expect(snap.error).toBe('Removed from the queue');
+    // The cancelled cut can be queued again right away.
+    const c = await Gen.startComfyCutVideoJob({ projectId, cutId: cut2._id.toString(), modelId: 'ltx-2.5-i2v', params: { duration_seconds: 2 } });
+    expect(Gen.getComfyVideoJob(c.job_id).queue_position).toBe(1);
+    Gen.cancelComfyCutVideoJob(c.job_id);
+    openNext();
+    expect((await waitForTerminal(a.job_id)).status).toBe('done');
+    await tick();
+    expect(client.calls.filter((x) => x.name === 'run_workflow')).toHaveLength(1);
     expect(BeatLocks.isBeatLocked(beat._id)).toBe(false);
   });
 

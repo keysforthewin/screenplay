@@ -9,6 +9,7 @@ import {
   estimateCutDuration,
   sceneLoad,
   loadVerdict,
+  speechFloorSeconds,
 } from '../src/web/cutLoad.js';
 
 const sixWords = (character) => ({ character, body: 'One two three four five six.' });
@@ -188,5 +189,24 @@ describe('sceneLoad', () => {
     expect(loadVerdict(2)).toBe('stretch');
     expect(loadVerdict(1.99)).toBe('ambitious');
     expect(LOAD_VERDICTS).toEqual(['safe', 'stretch', 'ambitious']);
+  });
+});
+
+describe('speechFloorSeconds', () => {
+  it('is 0 for a cut that covers no line', () => {
+    expect(speechFloorSeconds([])).toBe(0);
+    expect(speechFloorSeconds(undefined)).toBe(0);
+  });
+
+  it('is the recorded speech plus the tail, rounded up to half a second', () => {
+    const recorded = { character: 'Sarah', body: 'Do not.', audio_file_id: 'a'.repeat(24), audio_duration_seconds: 2.1 };
+    const floor = speechFloorSeconds([recorded]);
+    expect(floor * 2).toBe(Math.round(floor * 2)); // a half-second step
+    expect(floor).toBeGreaterThanOrEqual(2.7);
+    expect(floor).toBeLessThanOrEqual(3.5);
+  });
+
+  it('estimates an unrecorded line', () => {
+    expect(speechFloorSeconds([sixWords('Tom')])).toBeGreaterThan(2);
   });
 });

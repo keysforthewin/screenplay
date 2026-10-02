@@ -327,6 +327,12 @@ describe('cuts', () => {
     expect(r.json.cut.title).toBe('c1');
     expect((await call('PATCH', `/api/cut/${c1._id}`, { dialog_ids: [String(new ObjectId())] })).status).toBe(400);
     expect((await call('PATCH', `/api/cut/${c1._id}`, { duration_seconds: 99 })).status).toBe(400);
+    // Half-second lengths and hand-set assembly trims (null = automatic).
+    r = await call('PATCH', `/api/cut/${c1._id}`, { duration_seconds: 1.5, trim_head_seconds: 0.75, trim_tail_seconds: 0 });
+    expect(r.json.cut).toMatchObject({ duration_seconds: 1.5, trim_head_seconds: 0.75, trim_tail_seconds: 0 });
+    r = await call('PATCH', `/api/cut/${c1._id}`, { trim_head_seconds: '', trim_tail_seconds: null });
+    expect(r.json.cut).toMatchObject({ trim_head_seconds: null, trim_tail_seconds: null });
+    expect((await call('PATCH', `/api/cut/${c1._id}`, { trim_head_seconds: -1 })).status).toBe(400);
     expect((await call('PATCH', `/api/cut/${c1._id}`, { reference_image_ids: [String(new ObjectId())] })).status).toBe(400);
     r = await call('PATCH', `/api/cut/${c1._id}`, { reference_image_ids: [String(sarahArt)] });
     expect(r.status).toBe(200);
@@ -422,6 +428,44 @@ describe('start frames', () => {
     expect((await call('GET', `/api/cuts/start-frames/job/${new ObjectId()}`)).status).toBe(404);
   });
 
+  it('POST /cut/:id/frames/check: 400 while switched off or without both frames, 202 check / repair, 409 while the beat is busy', async () => {
+    const FC = await import('../src/web/cutFrameCheck.js');
+    const { beat } = await seedBeat();
+    const cut = await VP.createVideoPrompt({ projectId, beatId: beat._id, title: 'c', startFrame: { prompt: 's', image_id: img('start') }, endFrame: { prompt: 'e', image_id: img('end') } });
+    const bare = await VP.createVideoPrompt({ projectId, beatId: beat._id, title: 'bare', startFrame: { prompt: 's', image_id: img('only start') } });
+    // tests/setup.js pins CUT_FRAME_CHECK=off.
+    let r = await call('POST', `/api/cut/${cut._id}/frames/check`, {});
+    expect(r.status).toBe(400);
+    expect(r.json.error).toMatch(/switched off/);
+    const issue = { kind: 'prop_added', frame_to_fix: 'end', note: 'A dispenser appears.', fix_instruction: 'Remove the dispenser.' };
+    let n = 0;
+    // Fails for the check-only job and for the repair job's first look, then passes.
+    FC._setFrameCheckerForTests(async () => ({ issues: n++ < 2 ? [issue] : [] }));
+    try {
+      expect((await call('POST', `/api/cut/${new ObjectId()}/frames/check`, {})).status).toBe(404);
+      r = await call('POST', `/api/cut/${bare._id}/frames/check`, {});
+      expect(r.status).toBe(400);
+      expect(r.json.error).toMatch(/Render both/);
+      r = await call('POST', `/api/cut/${cut._id}/frames/check`, {});
+      expect(r.status).toBe(202);
+      let job = await waitFrames(r.json.job_id);
+      expect(job).toMatchObject({ status: 'done', kind: 'check', checks: { failed: 1 } });
+      r = await call('GET', `/api/video-scenes?beat_id=${beat._id}`);
+      const row = [...r.json.unsorted, ...r.json.scenes.flatMap((s) => s.cuts)].find((c) => String(c._id) === String(cut._id));
+      expect(row.frame_check).toMatchObject({ status: 'fail', rounds: 0, issues: [issue] });
+      r = await call('POST', `/api/cut/${cut._id}/frames/check`, { repair: true });
+      expect(r.status).toBe(202);
+      job = await waitFrames(r.json.job_id);
+      expect(job).toMatchObject({ status: 'done', kind: 'repair', checks: { passed: 1, repaired: 1 } });
+      expect((await VP.getVideoPrompt(projectId, String(cut._id))).frame_check).toMatchObject({ status: 'pass', rounds: 1 });
+      await BeatLocks.withBeatLock(beat._id, async () => {
+        expect((await call('POST', `/api/cut/${cut._id}/frames/check`, {})).status).toBe(409);
+      });
+    } finally {
+      FC._setFrameCheckerForTests(null);
+    }
+  });
+
   it('end-frame twins: generate, PATCH references, undo, DELETE — the start frame untouched; bulk takes frames; DELETE ?frames=end', async () => {
     const { beat, sarahArt, dinerArt } = await seedBeat();
     const startImg = img('start');
@@ -440,6 +484,13 @@ describe('start frames', () => {
     r = await call('PATCH', `/api/cut/${cut._id}/end-frame`, { reference_ids: [String(sarahArt)] });
     expect(r.json.cut.end_frame.reference_ids).toEqual([String(sarahArt)]);
     expect(r.json.cut.start_frame.image_id).toBe(String(startImg));
+    // The derive switch (end frame only) patches on its own and keeps the list.
+    r = await call('PATCH', `/api/cut/${cut._id}/end-frame`, { derive: true });
+    expect(r.json.cut.end_frame).toMatchObject({ derive: true, reference_ids: [String(sarahArt)] });
+    r = await call('PATCH', `/api/cut/${cut._id}/end-frame`, { derive: false });
+    expect(r.json.cut.end_frame.derive).toBe(false);
+    expect((await call('PATCH', `/api/cut/${cut._id}/start-frame`, { derive: true })).status).toBe(400);
+    expect((await call('PATCH', `/api/cut/${cut._id}/end-frame`, {})).status).toBe(400);
 
     job = await waitFrames((await call('POST', `/api/cut/${cut._id}/end-frame/generate`, {})).json.job_id);
     r = await call('POST', `/api/cut/${cut._id}/end-frame/undo`);

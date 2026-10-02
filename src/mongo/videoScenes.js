@@ -18,6 +18,7 @@
 //   text_span: { starts_with, ends_with }   (verbatim anchors into the beat body)
 //   directors_read: { <DIRECTORS_READ_FIELDS> }
 //   intention: string
+//   tempo: string (how the scene cuts — the planner's one line on its rhythm)
 //   scope: { already_happened: [], this_scene_only: [], reserved_for_later: [],
 //            do_not_show_yet: [] }
 //   floor_plan: string (markdown; collab fragment)
@@ -150,6 +151,7 @@ function backfill(doc) {
     text_span: normalizeTextSpan(doc.text_span),
     directors_read: normalizeDirectorsRead(doc.directors_read),
     intention: str(doc.intention),
+    tempo: str(doc.tempo),
     scope: normalizeScope(doc.scope),
     floor_plan: typeof doc.floor_plan === 'string' ? doc.floor_plan : '',
     dialog_ids: normalizeDialogIds(doc.dialog_ids),
@@ -200,6 +202,7 @@ export async function createVideoScene({
   textSpan = null,
   directorsRead = null,
   intention = '',
+  tempo = '',
   scope = null,
   floorPlan = '',
   dialogIds = [],
@@ -228,6 +231,7 @@ export async function createVideoScene({
     text_span: normalizeTextSpan(textSpan),
     directors_read: normalizeDirectorsRead(directorsRead),
     intention: str(intention),
+    tempo: str(tempo),
     scope: normalizeScope(scope),
     floor_plan: typeof floorPlan === 'string' ? floorPlan : '',
     dialog_ids: normalizeDialogIds(dialogIds),
@@ -252,6 +256,7 @@ export async function updateVideoScene(projectId, id, patch) {
       case 'title':
       case 'slug':
       case 'intention':
+      case 'tempo':
         set[k] = str(v);
         break;
       case 'floor_plan':

@@ -4,6 +4,7 @@
 // AND requireAdmin() (entityRoutes.js); resolveProject skips /admin* paths so
 // a stale X-Project-Id can never 404 these calls.
 
+import fs from 'node:fs/promises';
 import express from 'express';
 import { listUsers, getUserById, setUserProjects } from '../mongo/users.js';
 import { listProjects } from '../mongo/projects.js';
@@ -12,6 +13,7 @@ import { describeModelSlots, KNOWN_MODELS } from '../llm/modelSlots.js';
 import { comfy, isComfyConfigured, ComfyNotConfiguredError } from '../comfy/client.js';
 import {
   getComfyVideoModel,
+  listComfyVideoModels,
   listRegisteredComfyVideoModels,
   describeComfyVideoModel,
   validateRegistryEntry,
@@ -19,7 +21,7 @@ import {
 } from '../comfy/videoModels.js';
 import { ensureTemplateFile, templateFilePath, ComfyTemplateNotRunnableError } from '../comfy/templates.js';
 import { slotAddressesFromListing } from '../comfy/paramMap.js';
-import { autoMapTemplate, summarizeGalleryRow } from '../comfy/templateMap.js';
+import { autoMapTemplate, inactiveNodeIds, summarizeGalleryRow } from '../comfy/templateMap.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { describeHarnessProviders } from '../llm/harness/catalog.js';
 import { logger } from '../log.js';
@@ -128,15 +130,26 @@ export function buildAdminRouter() {
   // Browse the ComfyUI gallery, auto-map a template's slots onto a registry
   // entry for confirmation, and store the confirmed entry (applied live).
   // Everything but the stored list needs a configured ComfyUI (503).
-  const galleryRows = (r) => (Array.isArray(r) ? r : r?.templates || r?.results || r?.items || r?.matches || []);
+  // comfy-mcp's search_templates answers {total, shown, offset, rows}.
+  const galleryRows = (r) => (Array.isArray(r) ? r : r?.rows || r?.templates || []);
+  // The models (built-in or registered) already rendering with a template —
+  // matched by template name, since a proposal's id need not match theirs.
+  const modelsUsingTemplate = (name) =>
+    listComfyVideoModels()
+      .filter((m) => m.template === name)
+      .map((m) => ({ id: m.id, label: m.label, builtin: !m.registered }));
 
   router.get('/comfy/templates', async (req, res, next) => {
     try {
       if (!isComfyConfigured()) return res.status(503).json({ error: new ComfyNotConfiguredError().message, code: 'COMFY_NOT_CONFIGURED' });
       const query = typeof req.query.query === 'string' ? req.query.query.trim().slice(0, 200) : '';
       const excludeApi = req.query.exclude_api === '1' || req.query.exclude_api === 'true';
-      const raw = await comfy.searchTemplates(query || 'video', { limit: 50 });
-      let templates = galleryRows(raw).map(summarizeGalleryRow).filter((t) => t.name);
+      // Filter API rows server-side too, so they cannot use up the page.
+      const raw = await comfy.searchTemplates(query || 'video', { limit: 50, exclude_api: excludeApi });
+      let templates = galleryRows(raw)
+        .map(summarizeGalleryRow)
+        .filter((t) => t.name)
+        .map((t) => ({ ...t, installed_as: modelsUsingTemplate(t.name) }));
       if (excludeApi) templates = templates.filter((t) => !t.api);
       res.json({ query, templates: templates.slice(0, 50) });
     } catch (e) {
@@ -183,7 +196,17 @@ export function buildAdminRouter() {
         logger.warn(`admin comfy: notes for ${name} unavailable: ${e.message}`);
       }
       const summary = summarizeGalleryRow({ ...(info || {}), name });
-      const { proposal, warnings } = autoMapTemplate({ name, info, slots, api: summary.api });
+      let inactiveNodes = null;
+      try {
+        inactiveNodes = inactiveNodeIds(JSON.parse(await fs.readFile(filePath, 'utf8')));
+      } catch (e) {
+        logger.warn(`admin comfy: could not read ${name} for bypassed nodes: ${e.message}`);
+      }
+      const { proposal, warnings } = autoMapTemplate({ name, info, slots, api: summary.api, inactiveNodes });
+      const installedAs = modelsUsingTemplate(name);
+      // Opening a template that is already registered edits that model
+      // instead of proposing a second one under the mapper's id.
+      const existingModel = getComfyVideoModel(installedAs.find((m) => !m.builtin)?.id || proposal.id);
       res.json({
         template: { ...summary, local_check: localCheck, runnable: localCheck && localCheck.checked ? localCheck.runnable !== false : null },
         local_check: localCheck,
@@ -191,7 +214,8 @@ export function buildAdminRouter() {
         notes,
         proposal,
         warnings,
-        existing: getComfyVideoModel(proposal.id) ? describeComfyVideoModel(getComfyVideoModel(proposal.id)) : null,
+        installed_as: installedAs,
+        existing: existingModel ? describeComfyVideoModel(existingModel) : null,
       });
     } catch (e) {
       next(e);
@@ -225,6 +249,13 @@ export function buildAdminRouter() {
       if (!isComfyConfigured()) return res.status(503).json({ error: new ComfyNotConfiguredError().message, code: 'COMFY_NOT_CONFIGURED' });
       const template = String(draft.template || '').trim();
       if (!template) return res.status(400).json({ error: 'template is required' });
+      const duplicate = modelsUsingTemplate(template).find((m) => m.id !== id);
+      if (duplicate) {
+        return res.status(409).json({
+          error: `template ${template} is already installed as "${duplicate.label}" (${duplicate.id}${duplicate.builtin ? ', built in' : ''})`,
+          installed_as: duplicate,
+        });
+      }
       let addresses = null;
       try {
         let filePath;

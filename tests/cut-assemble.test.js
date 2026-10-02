@@ -148,6 +148,29 @@ describe('assembleSceneVideo', () => {
     void c2;
   });
 
+  it("trims each clip to its cut: the middle of a travelling move, the end of a held cut, a dialogue cut whole", async () => {
+    const { beat, s1, c1, c2 } = await seed();
+    // The fake ffprobe reports every clip as 9.5 s long.
+    await VP.updateVideoPrompt(projectId, c1._id, { camera: { movement: 'pan' }, duration_seconds: 6 });
+    await VP.updateVideoPrompt(projectId, c2._id, { duration_seconds: 1.5 });
+    let cuts = await VP.listVideoPrompts({ projectId, beatId: beat._id, sceneId: s1._id });
+    await CutAssemble.assembleSceneVideo({ projectId, scene: s1, cuts });
+    const window = (args) => (args.includes('-t') ? [args.includes('-ss') ? args[args.indexOf('-ss') + 1] : null, args[args.indexOf('-t') + 1]] : null);
+    let ffmpegs = spawnCalls.filter((c) => c.bin === 'ffmpeg');
+    expect(window(ffmpegs[0].args)).toEqual(['1.750', '6.000']);
+    expect(window(ffmpegs[1].args)).toEqual(['8.000', '1.500']);
+
+    // Hand-set trims win; a cut that covers dialogue is never trimmed automatically.
+    spawnCalls.length = 0;
+    await VP.updateVideoPrompt(projectId, c1._id, { trim_head_seconds: 1, trim_tail_seconds: 0.5 });
+    await VP.updateVideoPrompt(projectId, c2._id, { dialog_ids: [new ObjectId()] });
+    cuts = await VP.listVideoPrompts({ projectId, beatId: beat._id, sceneId: s1._id });
+    await CutAssemble.assembleSceneVideo({ projectId, scene: s1, cuts });
+    ffmpegs = spawnCalls.filter((c) => c.bin === 'ffmpeg');
+    expect(window(ffmpegs[0].args)).toEqual(['1.000', '8.000']);
+    expect(window(ffmpegs[1].args)).toBe(null);
+  });
+
   it('refuses when a cut has no clip and names it by scene.cut', async () => {
     const { beat, s1 } = await seed({ clips: ['c1', 'c3'] });
     const cuts = await VP.listVideoPrompts({ projectId, beatId: beat._id, sceneId: s1._id });

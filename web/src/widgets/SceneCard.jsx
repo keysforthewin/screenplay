@@ -142,6 +142,10 @@ export function SceneCard({ scene, index, count, beatId, disabled, onRefresh, on
             <span className="field-label">Intention</span>
             <PatchText value={scene.intention} disabled={busy || disabled} placeholder="What this scene must do to the audience, in one sentence" onCommit={(v) => patch({ intention: v })} />
           </div>
+          <div className="scene-read-row" title="How this scene cuts: the rhythm of long and short cuts. The planner writes it before the shot table and every cut's length follows it.">
+            <span className="field-label">Tempo</span>
+            <PatchText value={scene.tempo} disabled={busy || disabled} placeholder="How it cuts — quick inserts between two slow wides…" onCommit={(v) => patch({ tempo: v })} />
+          </div>
           <div className="scene-read-grid">
             {DIRECTORS_READ_FIELDS.map((f) => (
               <label key={f} className="scene-read-cell">

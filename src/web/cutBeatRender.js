@@ -59,6 +59,7 @@ import {
   SpendConsentRequiredError,
 } from './comfyVideoGenerate.js';
 import { cutLabel } from './cutAssemble.js';
+import { renderSecondsForCut, describeTiming } from './cutTiming.js';
 
 export const MODES = Object.freeze({ LIPSYNC: 'lipsync', CLIP: 'clip' });
 export const PROVIDERS = Object.freeze({ COMFY: 'comfy', FAL: 'fal' });
@@ -418,15 +419,38 @@ export async function buildCutRenderPlan({
 
     if (prov === PROVIDERS.COMFY) {
       const params = effectiveComfyParams(model, effectiveParams);
-      if (mode === MODES.LIPSYNC) params.duration_seconds = Math.max(1, Math.ceil(entry.speech_seconds || 1));
-      else if (params.duration_seconds == null && Number.isFinite(cut.duration_seconds)) params.duration_seconds = cut.duration_seconds;
+      if (mode === MODES.LIPSYNC) {
+        params.duration_seconds = Math.max(1, Math.ceil(entry.speech_seconds || 1));
+      } else {
+        // The cut's own length (plus a travelling camera's handles), never a
+        // remembered one — cutTiming.js.
+        const timing = renderSecondsForCut(cut, model.params?.duration_seconds);
+        if (timing) {
+          params.duration_seconds = timing.seconds;
+          entry.cut_seconds = timing.cut_seconds;
+          entry.timing = timing;
+          const note = describeTiming(timing, model.label);
+          if (note) warnings.push(note);
+        }
+      }
       entry.params = params;
       entry.duration_seconds = params.duration_seconds ?? model.params?.duration_seconds?.default ?? null;
+    } else if (mode === MODES.LIPSYNC) {
+      entry.duration_seconds = Math.ceil(entry.speech_seconds + 0.8);
     } else {
-      entry.duration_seconds =
-        mode === MODES.LIPSYNC
-          ? Math.ceil(entry.speech_seconds + 0.8)
-          : pickDurationSeconds({ requested: null, row: { duration_seconds: cut.duration_seconds }, model });
+      // fal: the same request, snapped UP to the model's allowed lengths so
+      // the handles survive (nearest would round them away).
+      const timing = renderSecondsForCut(cut, null);
+      entry.duration_seconds = pickDurationSeconds({
+        requested: timing?.requested ?? null,
+        row: { duration_seconds: cut.duration_seconds },
+        model,
+        roundUp: Boolean(timing),
+      });
+      if (timing) {
+        entry.cut_seconds = timing.cut_seconds;
+        entry.timing = { ...timing, seconds: entry.duration_seconds };
+      }
     }
 
     planned.push(entry);
@@ -622,9 +646,26 @@ async function ensureEndFrame({ projectId, job, beat, entry, cut, imageModel }) 
   recordProgress(job, { phase: 'rendering', step: 'end_frame', message: `Cut ${entry.label}: rendering end frame…` });
   const { renderCutStartFrame } = await import('./cutStartFrames.js');
   const result = await renderCutStartFrame({ projectId, cut, beat, frame: 'end', imageModel });
-  const fresh = result?.cut || (await getVideoPrompt(projectId, sid(cut._id)));
+  let fresh = result?.cut || (await getVideoPrompt(projectId, sid(cut._id)));
   entry.has_end_frame = Boolean(fresh?.end_frame?.image_id);
   if (!entry.has_end_frame) throw new Error('End frame render produced no image.');
+  // The model is about to animate every difference between the two stills:
+  // check the pair and repair what disagrees. A pair that still differs
+  // renders anyway, with a warning on the cut.
+  if (fresh.start_frame?.image_id) {
+    entry.step = 'Checking frames';
+    recordProgress(job, { phase: 'rendering', step: 'frame_check', message: `Cut ${entry.label}: checking the start and end frames…` });
+    try {
+      const { reconcileCutFrames } = await import('./cutFrameCheck.js');
+      const r = await reconcileCutFrames({ projectId, beat, cut: fresh, imageModel });
+      if (r.cut) fresh = r.cut;
+      if (r.frame_check?.status === 'fail') {
+        entry.warnings.push(`The start and end frames still disagree: ${r.frame_check.issues.map((i) => i.note).join(' ')}`);
+      }
+    } catch (e) {
+      logger.warn(`cut beat render: frame check failed for cut ${entry.cut_id}: ${e?.message || e}`);
+    }
+  }
   return fresh;
 }
 

@@ -70,7 +70,12 @@ describe('video_prompts collection', () => {
       video_file_id: null,
     });
     expect(updated.title).toBe('T');
-    expect(updated.duration_seconds).toBe(12);
+    expect(updated.duration_seconds).toBe(12.5); // half-second steps
+    expect(updated.trim_head_seconds).toBe(null);
+    const trimmed = await VP.updateVideoPrompt(projectId, p._id, { duration_seconds: 1.5, trim_head_seconds: 0.75, trim_tail_seconds: 0 });
+    expect(trimmed).toMatchObject({ duration_seconds: 1.5, trim_head_seconds: 0.75, trim_tail_seconds: 0 });
+    expect((await VP.updateVideoPrompt(projectId, p._id, { trim_head_seconds: null })).trim_head_seconds).toBe(null);
+    await expect(VP.updateVideoPrompt(projectId, p._id, { trim_tail_seconds: -1 })).rejects.toThrow(/trim_tail_seconds must be/);
     expect(updated.reference_images[0].image_id.toString()).toBe(imageId.toString());
     await expect(VP.updateVideoPrompt(projectId, p._id, { bogus: 1 })).rejects.toThrow(/unknown field/);
     await expect(VP.updateVideoPrompt(projectId, p._id, { duration_seconds: -3 })).rejects.toThrow(/positive/);
@@ -138,9 +143,17 @@ describe('video_prompts rows as cuts', () => {
       side: 'from the counter side',
       movement: 'push_in',
       motivation: 'follows her reach',
+      travel: '',
+      travel_widths: null,
+      travel_direction: null,
       depth_of_field: 'shallow',
       lighting: 'one warm tungsten lamp overhead',
     });
+    expect(VP.normalizeCamera({ movement: 'pan', travel: ' from the box office to the counter ', travel_widths: '1.5' })).toMatchObject({
+      travel: 'from the box office to the counter',
+      travel_widths: 1.5,
+    });
+    expect(VP.normalizeCamera({ travel_widths: -2 }).travel_widths).toBeNull();
     const odd = VP.normalizeCamera({ size: 'gigantic', angle: 'sideways', lens_mm: -3, movement: 'zoom' });
     expect(odd.size).toBeNull();
     expect(odd.angle).toBeNull();
@@ -184,6 +197,20 @@ describe('video_prompts rows as cuts', () => {
     expect(sf.reference_scores).toEqual({ [ref.toString()]: 0.8 });
     expect(sf.generated_at).toBeInstanceOf(Date);
     expect(sf.previous_image_id).toBeNull();
+    // Only the END frame's planner flag and the start image it was built on.
+    expect(sf.derive).toBe(false);
+    expect(sf.continuity_image_id).toBeNull();
+    expect(VP.normalizeStartFrame({ derive: true, continuity_image_id: img.toString() })).toMatchObject({ derive: true, continuity_image_id: img });
+    // The pair verdict: null stays null; junk statuses and note-less issues are dropped.
+    expect(VP.normalizeFrameCheck(null)).toBeNull();
+    const fc = VP.normalizeFrameCheck({ status: 'maybe', rounds: '2', start_image_id: img.toString(), end_image_id: 'x', checked_at: '2026-10-01T00:00:00Z', issues: [{ kind: 'wardrobe', frame_to_fix: 'start', note: 'Jacket differs.', fix_instruction: 'Match it.' }, { kind: 'layout' }, { note: 'Seats differ.' }] });
+    expect(fc).toMatchObject({ status: 'unchecked', rounds: 2, end_image_id: null });
+    expect(String(fc.start_image_id)).toBe(img.toString());
+    expect(fc.checked_at).toBeInstanceOf(Date);
+    expect(fc.issues).toEqual([
+      { kind: 'wardrobe', frame_to_fix: 'start', note: 'Jacket differs.', fix_instruction: 'Match it.' },
+      { kind: 'other', frame_to_fix: 'end', note: 'Seats differ.', fix_instruction: '' },
+    ]);
     expect(VP.normalizeLint([{ code: 'trap_phrase', message: 'x' }, { message: 'y', severity: 'error' }, {}])).toEqual([
       { code: 'trap_phrase', severity: 'warn', message: 'x' },
       { code: 'lint', severity: 'error', message: 'y' },

@@ -89,6 +89,24 @@ describe('normalizeArgs / concatArgs', () => {
     expect(args[args.indexOf('-map', args.indexOf('-map') + 1) + 1]).toBe('1:a:0');
     expect(args).toContain('-shortest');
   });
+  it('trims to a window with output-side -ss/-t, after the stream maps', () => {
+    const vf =
+      'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,format=yuv420p';
+    const encode = ['-vf', vf, '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-b:a', '192k'];
+    expect(Assemble.normalizeArgs({ inputPath: 'in.mp4', outputPath: 'out.mp4', hasAudio: false, trim: { start: 0.5, duration: 6 } })).toEqual([
+      '-i', 'in.mp4', '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+      '-map', '0:v:0', '-map', '1:a:0', '-ss', '0.500', '-t', '6.000',
+      ...encode, '-shortest', '-movflags', '+faststart', '-y', 'out.mp4',
+    ]);
+    expect(Assemble.normalizeArgs({ inputPath: 'in.mp4', outputPath: 'out.mp4', hasAudio: true, trim: { start: 0.5, duration: 6 } })).toEqual([
+      '-i', 'in.mp4', '-map', '0:v:0', '-map', '0:a:0', '-ss', '0.500', '-t', '6.000',
+      ...encode, '-movflags', '+faststart', '-y', 'out.mp4',
+    ]);
+    // A window that starts at 0 needs no seek.
+    const head = Assemble.normalizeArgs({ inputPath: 'in.mp4', outputPath: 'out.mp4', hasAudio: true, trim: { start: 0, duration: 1.5 } });
+    expect(head).not.toContain('-ss');
+    expect(head.slice(head.indexOf('-t'), head.indexOf('-t') + 2)).toEqual(['-t', '1.500']);
+  });
   it('concat uses the demuxer with stream copy', () => {
     const args = Assemble.concatArgs({ listPath: 'list.txt', outputPath: 'beat.mp4' });
     expect(args.slice(0, 6)).toEqual(['-f', 'concat', '-safe', '0', '-i', 'list.txt']);
@@ -134,6 +152,39 @@ describe('assembleClips', () => {
     });
     const { durationSeconds } = await assemble({ projectId: 'p', beat, shots });
     expect(durationSeconds).toBe(10);
+  });
+
+  it('probes each clip that carries a trim policy and keeps only the resolved window', async () => {
+    const shots = [
+      shot(0, { trim: { want_seconds: 6, anchor: 'centre' } }), // 7 s clip → the middle 6
+      shot(1, { trim: { want_seconds: 1.5, anchor: 'tail' } }), // 7 s clip → the last 1.5
+      shot(2, { trim: { want_seconds: 9, anchor: 'tail' } }), // shorter than the cut: whole
+      shot(3),
+    ];
+    Assemble.__setAssembleSpawnImplForTests(fakeSpawn({ duration: '7.0' }));
+    await assemble({ projectId: 'p', beat, shots });
+    const normalizes = calls.filter((c) => c.bin === 'ffmpeg').slice(0, 4).map((c) => c.args);
+    const window = (args) => (args.includes('-t') ? [args.includes('-ss') ? args[args.indexOf('-ss') + 1] : null, args[args.indexOf('-t') + 1]] : null);
+    expect(normalizes.map(window)).toEqual([['0.500', '6.000'], ['5.500', '1.500'], null, null]);
+    // One duration probe per clip with a policy, plus the output's.
+    expect(calls.filter((c) => c.bin === 'ffprobe' && c.args.includes('format=duration'))).toHaveLength(4);
+  });
+
+  it('leaves a clip whole when its length cannot be probed, and sums the kept lengths', async () => {
+    const shots = [
+      shot(0, { video_duration_seconds: 7, trim: { want_seconds: 6, anchor: 'centre' } }),
+      shot(1, { video_duration_seconds: 4 }),
+    ];
+    Assemble.__setAssembleSpawnImplForTests(async ({ bin, args }) => {
+      calls.push({ bin, args });
+      if (bin === 'ffprobe' && args.includes('format=duration')) throw new Error('boom');
+      if (bin === 'ffprobe') return { stdout: 'audio' };
+      fs.writeFileSync(args[args.length - 1], Buffer.from('x'));
+      return { stdout: '' };
+    });
+    const { durationSeconds } = await assemble({ projectId: 'p', beat, shots });
+    expect(calls.filter((c) => c.bin === 'ffmpeg')[0].args).not.toContain('-t');
+    expect(durationSeconds).toBe(11);
   });
 
   it('refuses when a shot has no clip', async () => {

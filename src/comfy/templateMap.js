@@ -13,7 +13,8 @@
 
 import { CANONICAL_PARAM_ORDER, INPUT_NEEDS } from './videoModels.js';
 
-const NEGATIVE_RE = /\b(ugly|blurry|worst quality|low quality|watermark|cartoon|deformed|lowres|jpeg artifacts)\b/i;
+// The second alternation is Wan's stock Chinese negative ("worst quality, low quality").
+const NEGATIVE_RE = /\b(ugly|blurry|worst quality|low quality|watermark|cartoon|deformed|lowres|jpeg artifacts)\b|最差质量|低质量/i;
 const FPS_VALUES = new Set([12, 15, 16, 24, 25, 30, 48, 50, 60]);
 const SIZE_VALUES = new Set([256, 320, 384, 448, 480, 512, 576, 640, 704, 720, 768, 832, 896, 960, 1024, 1088, 1152, 1216, 1280, 1344, 1408, 1472, 1536, 1920, 2048]);
 
@@ -44,9 +45,26 @@ export function summarizeGalleryRow(row) {
   };
 }
 
-export function autoMapTemplate({ name, info = null, slots = [], api = false } = {}) {
+// Top-level node ids a UI-format workflow has switched off (mode 2 = muted,
+// 4 = bypassed). Gallery templates ship alternative pipelines this way —
+// Wan 2.2 FLF2V carries a bypassed 4-step Lightning copy beside the live one.
+export function inactiveNodeIds(workflow) {
+  const nodes = Array.isArray(workflow?.nodes) ? workflow.nodes : [];
+  return new Set(nodes.filter((n) => n && (n.mode === 2 || n.mode === 4)).map((n) => String(n.id)));
+}
+
+// Seconds of a frame-count length, rounded to the half second.
+function framesToSeconds(frames, fps) {
+  if (frames == null || !fps) return 5;
+  return Math.max(1, Math.round(((frames - 1) / fps) * 2) / 2);
+}
+
+export function autoMapTemplate({ name, info = null, slots = [], api = false, inactiveNodes = null } = {}) {
   const warnings = [];
-  const list = (Array.isArray(slots) ? slots : []).filter((s) => s && s.address);
+  const inactive = inactiveNodes instanceof Set ? inactiveNodes : new Set(inactiveNodes || []);
+  const list = (Array.isArray(slots) ? slots : [])
+    .filter((s) => s && s.address)
+    .filter((s) => !inactive.has(String(s.instance_id || String(s.address).split('.')[0]).split('/')[0]));
   const byAddress = new Map(list.map((s) => [s.address, s]));
   const claimed = new Set();
   const claim = (s) => {
@@ -142,7 +160,30 @@ export function autoMapTemplate({ name, info = null, slots = [], api = false } =
   if (duration) {
     params.duration_seconds = { address: claim(duration), type: duration.type === 'INT' ? 'int' : 'float', default: num(duration.current_value) ?? 5, min: 1, max: 60, step: duration.type === 'INT' ? 1 : 0.5 };
   } else {
-    warnings.push('no duration slot found — add one (a top-level number in seconds) before saving');
+    // No seconds anywhere: a frame-count length (Wan's WanFirstLastFrameToVideo
+    // .length, an LTX latent's length) is the duration, converted at render
+    // time from seconds × fps into the count the model wants.
+    const FRAMES_RE = /^(length|num_frames|frames|frame_count|frames_number|video_length)$/;
+    const frames = list.find((s) => s.type === 'INT' && FRAMES_RE.test(nameOf(s)) && free(s) && /video|latent/i.test(String(s.node_type || ''))) || null;
+    if (frames) {
+      const nodeType = String(frames.node_type || '');
+      const rule = /^wan|hunyuan/i.test(nodeType) ? '4n+1' : /ltx/i.test(nodeType) ? '8n+1' : null;
+      const rate = params.fps?.default ?? 16;
+      params.duration_seconds = {
+        address: claim(frames),
+        type: 'float',
+        unit: 'frames',
+        frame_rule: rule,
+        fps: rate,
+        default: framesToSeconds(num(frames.current_value), rate),
+        min: 1,
+        max: 10,
+        step: 0.5,
+        help: `The template counts frames: seconds × fps${rule ? ` rounded to ${rule}` : ''}.`,
+      };
+    } else {
+      warnings.push('no duration slot found — add one (a number in seconds, or a frame-count length) before saving');
+    }
   }
 
   let width = named(/^width$/);

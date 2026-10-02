@@ -333,6 +333,19 @@ describe('buildCutRenderPlan', () => {
     expect(plan.cuts[0].auto_start_frame).toBe(true);
     expect(plan.cuts[1].mode).toBe('clip');
     expect(plan.cuts[1].params).toMatchObject({ steps: 6, duration_seconds: 4 });
+    expect(plan.cuts[1]).toMatchObject({ cut_seconds: 4, duration_seconds: 4 });
+    // A length in the params never overrides the cut's own; a travelling
+    // camera renders its handles on top (cutTiming.js).
+    await VP.updateVideoPrompt(projectId, cuts[1]._id.toString(), { camera: { movement: 'pan' }, duration_seconds: 6 });
+    const fresh = await VP.listVideoPrompts({ projectId, beatId: beat._id });
+    const forced = await Render.buildCutRenderPlan({
+      beat, cuts: fresh, scenes: [scene], dialogs, provider: 'comfy',
+      comfyDefaults: { model_id: 'wan-2.2-14b-i2v', params_by_model: {} },
+      paramsByModel: { 'wan-2.2-14b-i2v': { steps: 6, duration_seconds: 5 } },
+    });
+    expect(forced.cuts[1].params).toMatchObject({ steps: 6, duration_seconds: 7 });
+    expect(forced.cuts[1]).toMatchObject({ cut_seconds: 6, duration_seconds: 7 });
+    expect(forced.cuts[1].timing).toMatchObject({ head: 0.5, tail: 0.5 });
     expect(plan.cuts[2].status).toBe('blocked');
     expect(plan.cuts[2].missing).toEqual(['start frame']);
     // No end-frame input on these models → never an end frame.
@@ -472,6 +485,36 @@ describe('startCutBeatRenderJob (ComfyUI)', () => {
     const set = Object.fromEntries(client.calls.find((c) => c.name === 'set_workflow_slot').args.overrides.map((o) => [o.address, o.value]));
     expect(set['80.image']).toMatch(/-start\.png$/);
     expect(set['89.image']).toMatch(/-end\.png$/);
+  });
+
+  it('a first-last-frame model: the fresh end frame is checked against the start frame and repaired before the clip renders; a pair that still differs renders with a warning', async () => {
+    const FC = await import('../src/web/cutFrameCheck.js');
+    const issue = { kind: 'wardrobe', frame_to_fix: 'end', note: 'The jacket became a T-shirt.', fix_instruction: 'Put the jacket back.' };
+    try {
+      enableComfy();
+      let seen = 0;
+      FC._setFrameCheckerForTests(async () => ({ issues: seen++ === 0 ? [issue] : [] }));
+      let made = await seedBeat({ cuts: [{ prompt: 'P-flf', still: true, efPrompt: 'The marquee at night.' }] });
+      let job = await waitForJob((await Render.startCutBeatRenderJob({ projectId, beatId: made.beat._id, provider: 'comfy', models: { clip: 'wan-2.2-14b-flf2v' } })).job_id);
+      expect(job.status).toBe('done');
+      // The end frame render plus one repair edit of it.
+      expect(uploadedImages).toHaveLength(2);
+      let cut = (await VP.listVideoPrompts({ projectId, beatId: made.beat._id }))[0];
+      expect(cut.frame_check).toMatchObject({ status: 'pass', rounds: 1 });
+      expect(job.cuts[0].warnings.join(' ')).not.toMatch(/still disagree/);
+      expect(cut.video_file_id).toBeTruthy();
+
+      FC._setFrameCheckerForTests(async () => ({ issues: [issue] }));
+      made = await seedBeat({ cuts: [{ prompt: 'P-flf', still: true, efPrompt: 'The marquee at night.' }] });
+      job = await waitForJob((await Render.startCutBeatRenderJob({ projectId, beatId: made.beat._id, provider: 'comfy', models: { clip: 'wan-2.2-14b-flf2v' } })).job_id);
+      expect(job.status).toBe('done');
+      cut = (await VP.listVideoPrompts({ projectId, beatId: made.beat._id }))[0];
+      expect(cut.frame_check).toMatchObject({ status: 'fail', rounds: 2 });
+      expect(job.cuts[0].warnings.join(' ')).toMatch(/The start and end frames still disagree: The jacket became a T-shirt\./);
+      expect(cut.video_file_id).toBeTruthy();
+    } finally {
+      FC._setFrameCheckerForTests(null);
+    }
   });
 
   it('requires spend consent for API models (402) and passes it through when given', async () => {

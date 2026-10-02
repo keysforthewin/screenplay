@@ -13,6 +13,7 @@ const PASS_VERB = {
   cuts: 'cut',
   prose: 'block',
   start_frames: 'still prompt',
+  review: 'cut reviewed',
 };
 
 function secondsSince(iso) {

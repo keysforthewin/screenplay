@@ -126,4 +126,16 @@ describe('dispatchStillImage — catalog models', () => {
       expect.objectContaining({ referenceImages: [existing] }),
     );
   });
+
+  it('edit mode carries references after the image being edited, and refuses no image at all', async () => {
+    nano2Mock.mockResolvedValue(okOut);
+    const base = { buffer: Buffer.from('frame'), contentType: 'image/png' };
+    const other = { buffer: Buffer.from('other frame'), contentType: 'image/png' };
+    await dispatchStillImage({ prompt: 'add the dispenser', model: 'nano-banana-2', mode: 'edit', inputImages: [base, other] });
+    expect(nano2Mock).toHaveBeenCalledWith(expect.objectContaining({ inputImages: [base, other] }));
+    await expect(dispatchStillImage({ prompt: 'p', model: 'nano-banana-2', mode: 'edit', inputImages: [] })).rejects.toMatchObject({
+      status: 400,
+      message: 'Edit mode requires an input image.',
+    });
+  });
 });

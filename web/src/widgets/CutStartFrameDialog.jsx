@@ -11,8 +11,11 @@ const MAX_REFS = 9;
 // row's collaborative `<frame>_frame_prompt` field (edited in place on the
 // row); this dialog owns the image model, the reference artwork list and the
 // edit-mode prompt, and runs the job. The model comes from one of two
-// providers, chosen in StartFrameModelChooser. An end frame also gets the
-// rendered start frame as its last, continuity reference (server side).
+// providers, chosen in StartFrameModelChooser. An end frame is built from the
+// rendered start frame (server side): a held camera's is an EDIT of it
+// ("Derive from the start frame" — the still prompt is then the change list),
+// a moving camera's gets it as the continuity reference that owns clothing,
+// props and layout.
 export function CutStartFrameDialog({ open, onClose, cut, beatId, onRefresh, frame = 'start' }) {
   const id = cut?._id?.toString?.() || String(cut?._id || '');
   const isEnd = frame === 'end';
@@ -30,6 +33,9 @@ export function CutStartFrameDialog({ open, onClose, cut, beatId, onRefresh, fra
   const pollRef = useRef(null);
 
   const refIds = (sf?.reference_ids || []).map((x) => x?.toString?.() || String(x));
+  const derive = isEnd && sf?.derive === true;
+  // A derived end frame edits the start frame: no artwork is sent.
+  const derivedRender = derive && Boolean(continuityId) && mode !== 'edit';
 
   useEffect(() => {
     if (!open) return;
@@ -47,6 +53,19 @@ export function CutStartFrameDialog({ open, onClose, cut, beatId, onRefresh, fra
     setError(null);
     try {
       await apiPatchJson(`/cut/${id}/${frame}-frame`, { reference_ids: next });
+      onRefresh?.();
+    } catch (e) {
+      setError(readError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setDerive(next) {
+    setBusy(true);
+    setError(null);
+    try {
+      await apiPatchJson(`/cut/${id}/end-frame`, { derive: next });
       onRefresh?.();
     } catch (e) {
       setError(readError(e));
@@ -119,16 +138,27 @@ export function CutStartFrameDialog({ open, onClose, cut, beatId, onRefresh, fra
               + Add artwork
             </button>
             {continuityId ? (
-              <div className="video-prompt-ref-chip" title="The rendered start frame rides along last: light, palette and wardrobe carry over; its framing does not.">
+              <div className="video-prompt-ref-chip" title={derive ? 'This end frame is made by editing the start frame: the set, the props and the clothing are its own.' : 'The rendered start frame always rides along: it owns the clothing, the props and the furniture layout; its framing does not carry over.'}>
                 <img src={thumbUrl(continuityId)} alt="Start frame (continuity)" loading="lazy" />
-                <span className="video-prompt-ref-owner">start frame · continuity</span>
+                <span className="video-prompt-ref-owner">{derive ? 'start frame · edited' : 'start frame · continuity'}</span>
               </div>
             ) : null}
           </div>
           {isEnd && !continuityId ? (
             <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '4px 0 0' }}>
-              Render the start frame first and it is added here as a continuity reference.
+              Render the start frame first: the end frame is built from it so the two stills are the same place and the same clothes.
             </p>
+          ) : null}
+          {isEnd ? (
+            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, marginTop: 10 }}>
+              <input type="checkbox" checked={derive} disabled={busy} onChange={(e) => setDerive(e.target.checked)} />
+              <span>
+                Derive from the start frame (held camera)
+                <span style={{ display: 'block', fontSize: 12, color: 'var(--fg-muted)' }}>
+                  The end frame is the start frame edited, so seats, props and clothing cannot change. The still prompt is then the list of what changes: “Same frame. The bucket lies on its side on the carpet…”. Turn it off for a camera that moves.
+                </span>
+              </span>
+            </label>
           ) : null}
           {!refIds.length ? (
             <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '4px 0 0' }}>
@@ -146,7 +176,7 @@ export function CutStartFrameDialog({ open, onClose, cut, beatId, onRefresh, fra
             <textarea rows={3} value={editPrompt} disabled={busy} onChange={(e) => setEditPrompt(e.target.value)} placeholder="e.g. Move the lamp out of frame; keep everything else." />
           ) : null}
 
-          <StartFrameModelChooser state={model} disabled={busy} referenceCount={refIds.length + (continuityId && mode !== 'edit' ? 1 : 0)} mode={mode} requireReferences={mode === 'edit'} />
+          <StartFrameModelChooser state={model} disabled={busy} referenceCount={derivedRender ? 1 : refIds.length + (continuityId && mode !== 'edit' ? 1 : 0)} mode={mode} requireReferences={mode === 'edit' || derivedRender} />
 
           <div className="cut-sf-footer">
             {error ? <div className="error-banner small">{error}</div> : null}

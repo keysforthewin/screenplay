@@ -219,14 +219,15 @@ describe('/comfy/defaults', () => {
     expect((await call('GET', '/api/comfy/defaults')).json).toEqual({ model_id: null, params_by_model: {} });
     const put = await call('PUT', '/api/comfy/defaults', {
       model_id: 'ltx-2.5-i2v',
-      params_by_model: { 'ltx-2.5-i2v': { duration_seconds: 6, megapixels: 0.5 } },
+      // The length and the seed belong to one render: never remembered.
+      params_by_model: { 'ltx-2.5-i2v': { duration_seconds: 6, seed: 7, megapixels: 0.5 } },
     });
     expect(put.status).toBe(200);
     expect(put.json.model_id).toBe('ltx-2.5-i2v');
     const again = await call('PUT', '/api/comfy/defaults', { params_by_model: { 'wan-2.2-14b-i2v': { steps: 6 } } });
-    expect(again.json.params_by_model).toEqual({ 'ltx-2.5-i2v': { duration_seconds: 6, megapixels: 0.5 }, 'wan-2.2-14b-i2v': { steps: 6 } });
+    expect(again.json.params_by_model).toEqual({ 'ltx-2.5-i2v': { megapixels: 0.5 }, 'wan-2.2-14b-i2v': { steps: 6 } });
     const cleared = await call('PUT', '/api/comfy/defaults', { model_id: null, params_by_model: { 'wan-2.2-14b-i2v': null } });
-    expect(cleared.json).toEqual({ model_id: null, params_by_model: { 'ltx-2.5-i2v': { duration_seconds: 6, megapixels: 0.5 } } });
+    expect(cleared.json).toEqual({ model_id: null, params_by_model: { 'ltx-2.5-i2v': { megapixels: 0.5 } } });
     expect((await call('PUT', '/api/comfy/defaults', {})).status).toBe(400);
     expect((await call('PUT', '/api/comfy/defaults', { params_by_model: { x: { nested: {} } } })).status).toBe(400);
   });
@@ -296,5 +297,37 @@ describe('cut render routes', () => {
     expect(snap.status).toBe('done');
     expect(snap.video_file_id).toMatch(/^[a-f0-9]{24}$/);
     expect((await call('GET', `/api/cut/${cut._id}/video-job/${new ObjectId()}`)).status).toBe(404);
+  });
+  it('queues a second cut of the same beat, refuses a duplicate for one cut (409 + job id), and cancels only queued jobs', async () => {
+    let open;
+    const client = fakeClient();
+    const inner = client.callTool.bind(client);
+    client.callTool = async (name, args) => {
+      if (name === 'run_workflow') await new Promise((r) => (open = r));
+      return inner(name, args);
+    };
+    Client._setComfyClientForTests(client);
+    const cut = await seedCut();
+    const cut2 = await VP.createVideoPrompt({ projectId, beatId: cut.beat_id, title: 'd', prompt: 'Close on the cup. Stop when it stops.' });
+    const img = new ObjectId();
+    fakeImageStore.set(img.toString(), Buffer.from('png'));
+    await fakeDb.collection('video_prompts').updateOne({ _id: cut2._id }, { $set: { start_frame: { image_id: img, prompt: '', reference_ids: [] } } });
+
+    const a = await call('POST', `/api/cut/${cut._id}/video/generate`, { model_id: 'ltx-2.5-i2v', params: { duration_seconds: 3 } });
+    expect(a.status).toBe(202);
+    const dup = await call('POST', `/api/cut/${cut._id}/video/generate`, { model_id: 'ltx-2.5-i2v', params: { duration_seconds: 3 } });
+    expect(dup.status).toBe(409);
+    expect(dup.json).toMatchObject({ code: 'CUT_BUSY', job_id: a.json.job_id });
+    const b = await call('POST', `/api/cut/${cut2._id}/video/generate`, { model_id: 'ltx-2.5-i2v', params: { duration_seconds: 3 } });
+    expect(b.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect((await call('POST', `/api/cut/${cut2._id}/video/job/${new ObjectId()}/cancel`)).status).toBe(404);
+    expect((await call('POST', `/api/cut/${cut._id}/video/job/${b.json.job_id}/cancel`)).status).toBe(404); // wrong cut
+    expect((await call('POST', `/api/cut/${cut._id}/video/job/${a.json.job_id}/cancel`)).status).toBe(409); // running
+    const cancelled = await call('POST', `/api/cut/${cut2._id}/video/job/${b.json.job_id}/cancel`);
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.json.job).toMatchObject({ status: 'error', cancelled: true });
+    open();
   });
 });

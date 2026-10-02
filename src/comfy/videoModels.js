@@ -483,6 +483,7 @@ export function listComfyVideoModels() {
 
 const ID_RE = /^[a-z0-9][a-z0-9.-]*$/;
 const PARAM_TYPES = new Set(['string', 'int', 'float', 'bool', 'enum']);
+const FRAME_RULES = ['4n+1', '8n+1'];
 
 // Check a registry entry the Admin page wants to store. `slotAddresses` is
 // the template's slot listing (every address comfy-cli reported); when given,
@@ -523,6 +524,11 @@ export function validateRegistryEntry(raw, slotAddresses = null) {
     const type = PARAM_TYPES.has(spec.type) ? spec.type : key === 'prompt' || key === 'negative_prompt' ? 'string' : 'float';
     const out = { ...spec, address, type };
     if (type === 'enum' && !Array.isArray(out.options)) out.options = [];
+    if (key === 'duration_seconds' && out.unit && out.unit !== 'seconds') {
+      // A frame-count length slot: renders write seconds × fps as frames.
+      if (out.unit !== 'frames') errors.push(`param duration_seconds: unit must be "seconds" or "frames"`);
+      if (out.frame_rule != null && !FRAME_RULES.includes(out.frame_rule)) errors.push(`param duration_seconds: frame_rule must be one of ${FRAME_RULES.join(', ')}`);
+    }
     params[key] = out;
   }
   if (!params.prompt) errors.push('a prompt param is required');

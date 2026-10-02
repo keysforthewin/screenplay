@@ -62,7 +62,7 @@ export const SHOT_TABLE_RULES = [
   '- camera (blank → "the head of the table facing the lens"): which side of the room, relative to a named landmark, the size, the angle, the height, the lens and at most ONE move with its motivation. A cut is free; a move within a cut costs load.',
   '- in_frame (blank → "people placed where the model last saw them"): each principal, where they stand or sit relative to a landmark, which way they face.',
   '- eyeline (blank → "eyes to the lens, at nothing"): for a reaction, the camera stands where the thing reacted to is, so the eyes go past the lens toward it. Reactions are reverse angles; write the eyeline.',
-  '- action (blank → "the first verb understood; the rest dropped"): the ONE action. A reaction = a plain feeling word + one physical anchor. A prop = which hand holds what, by which part, the tilt, where the material goes, where the object ends. A covered line = the speaker + voice + eyes + what the face does after the last word (never the words).',
+  '- action (blank → "the first verb understood; the rest dropped"): the ONE action. A reaction = a plain feeling word + one physical anchor. A prop = which hand holds what, by which part, the tilt, where the material goes, where the object ends. A covered line = the speaker + voice + eyes + what the face does after the last word (never the words). An accident = where the attention is + the grip going slack + the object leaving on its own + where it lands (see the accident rules).',
   '- others (blank → "a freeze, or invention"): one line of idle business for everyone else in frame. Only objects are still.',
   '- light (blank → "drift, warm to blue"): the source and its colour, in the same words as the floor plan.',
   '- last_frame (blank → "an ending the shot cannot see"): what the frame holds when the cut ends; it must be visible from the camera cell. A two-shot cannot end on an insert of a cup.',
@@ -73,15 +73,15 @@ export const SHOT_TABLE_RULES = [
 
 export const BLOCK_FORM_RULES = [
   'Block form — bare present-tense prose. No brackets, no timestamps, no JSON, no style tags, no shot numbers inside the block. Each cut is compiled from its table row in this order:',
-  '1. The camera IN WORDS with the side of the room: size, side relative to a landmark, height, lens, and the one move with its motivation — or that the camera holds. ("Medium shot from the aisle at deck height, 50mm, the camera holding:")',
+  '1. The camera IN WORDS with the side of the room: size, side relative to a landmark, height, lens, and the one move with its motivation, its travel and its one even speed — or that the camera holds. ("Medium shot from the aisle at deck height, 50mm, the camera holding:" / "Wide shot from the lobby doors at eye level, 24mm, the camera already panning right at one slow, even speed from the box office toward the concession counter:")',
   '2. ONE action by ONE person, expression written as feeling + anchor; props as hand mechanics; a covered line as speaker + voice + eyes + the face after the last word.',
   '3. The position or space change, then the idle business of everyone else in frame.',
   '4. Sound: the cues that must land in this cut, as a "Sound:" clause; "no music during the line" whenever a line is covered.',
   '5. The lock line (see the lock line rules), in the same words every cut of the scene.',
-  '6. The ending, always inside the frame the camera can see: "End with …", "Stop when …", "Hold on this frame as …". Never "fade out". Never an involuntary outcome (a coat caught in a door, a slip, a spill) — the model stages it as a deliberate act. The ending is the picture the cut\'s END FRAME will show: when the camera moves, say where it stops ("the tilt settles on the marquee"), so the block reads as the path from the opening picture to that one.',
+  '6. The ending, always inside the frame the camera can see: "End with …", "Stop when …", "Hold on this frame as …". Never "fade out". The ending is the picture the cut\'s END FRAME will show, so the block reads as the path from the opening picture to that one. When the camera moves, name the framing the move has REACHED at the last frame and keep it travelling ("End with the marquee filling the frame, the tilt still moving at the same slow speed") — never "settles on", "comes to rest", "stops on": the model slows the whole move to obey them. An involuntary outcome (a drop, a slip, a spill, a coat caught in a door) is written only as an ACCIDENT by the accident rules, with its result in the last frame; as a bare verb the model stages it as a deliberate act.',
   'No seconds inside a block: felt length is written as behaviour ("hold on the settled fan for one beat"), never "hold 2 s". Duration is a parameter. One camera move per cut; a locked camera is written in prose.',
   'Negatives, exactly two kinds and nowhere else: a reference non-transfer clause immediately after a binding (kept in reference_binding, not in the block), and a clip-scope exclusion at the very end ("Do not show the vehicle departing yet."), plus the three standing ones (no subtitles, no logo, no watermark). Everything else is stated as the positive state that IS there. Never a generic negative dump.',
-  'Length: 60–140 words per cut. Compression removes duplicate style adjectives, generic quality words, background detail the references already show, secondary camera moves, secondary actions and speculative emotional labels. It never removes a lock line, a stated position, or a feeling word.',
+  'Length: 60–140 words per cut; a cut of 2 s or less is ONE motion already under way in the first frame and finished by the last, one clause of idle business at most, 40–80 words. Compression removes duplicate style adjectives, generic quality words, background detail the references already show, secondary camera moves, secondary actions and speculative emotional labels. It never removes a lock line, a stated position, or a feeling word.',
 ].join('\n');
 
 export const LOCK_LINE_RULES = [
@@ -131,24 +131,96 @@ export const CUT_ANTI_SLOP_RULES = [
   'Weak → strong: "make it move naturally" → "shoulders rise once with breathing, hand releases the cup, final pose holds for one beat". "She feels nervous" → "she inhales, grips the cup tighter, then sets it down without looking away".',
 ].join('\n');
 
+// How long a cut runs. The planner model chooses it (plan_cuts returns
+// duration_seconds per row); cutLoad.js only supplies the speech floor and the
+// fallback. Written after a 4-second popcorn handover and a 4-second pan
+// across a whole lobby rendered in the same montage.
+export const TEMPO_RULES = [
+  'Tempo — the length of a cut is the editor\'s choice, not arithmetic: how long the audience needs to READ what the cut is for, and not a frame longer. Every row carries duration_seconds (half-second steps), and the scene carries one tempo line saying how it cuts ("an opening montage on music: quick inserts between two slow wides; no cut holds after its action lands").',
+  '- Connective actions are quick: a handover, a door, a ticket torn, a glance — 1 to 2 s. Lingering on filler is the fault: a bucket passed across a counter at 4 s plays as a ceremony.',
+  '- A quick cut must be a LOW-LOAD cut or it cannot render at that length: an insert of the hands and the object, ONE motion already under way in the first frame, locked camera, nobody else acting. A two-shot handover with a camera move is not a 1.5 s cut — reframe it as the insert.',
+  '- A reaction is 1.5 to 3 s: the look arrives, registers, and the cut leaves.',
+  '- A cut that covers a line runs the line: never shorter than the speech (the recorded length when marked), plus a breath.',
+  '- A moving camera takes travel ÷ speed (see the camera travel rules). Its length comes from how far the frame moves, never from a default: a 4 s pan across a whole lobby is a whip.',
+  '- A hold is earned: only when the audience must read a face deciding, an object, or the picture the scene turns on — then 3 to 5 s.',
+  '- A montage on music with no dialogue cuts on rhythm: a run of short cuts (1.5, 1.5, 2), then one longer cut to breathe. Equal lengths read as a slideshow. Read the lengths of the earlier scenes\' cuts when they are given and continue that rhythm.',
+  '- No cut longer than 12 s. What needs longer is two cuts from two camera positions.',
+].join('\n');
+
+export const CAMERA_TRAVEL_RULES = [
+  'Camera travel — a pan, tilt, truck, track or crane has a TRAVEL: how far the frame moves between the cut\'s first frame and its last. Write it in the camera cell from → to in landmarks ("from the box office at the left edge to the concession counter") and as a number of frame-widths (frame-heights for a tilt or crane). Speed = travel ÷ duration.',
+  '- The directorial voice sets the speed. In a slow, patient voice a pan covers about ONE frame-width in 6 to 8 s; in a neutral voice, one in 4 to 5 s; faster than one in 3 s only when the voice asks for a whip.',
+  '- A pan, tilt, sideways truck/track or crane SLIDES the picture, and its two stills must overlap: travel_widths is at most 0.5, so at least half of the first frame is still in view in the last. The end still is made by sliding the start still and painting only what comes into view; two stills that share nothing give the image model no anchor (it rebuilds the place from another side) and the video model nothing to travel through. Half a frame-width is a full, slow move: 4 s at the slow voice\'s speed, 8 s for a drift. A reveal that needs more than half a frame is two cuts from two camera positions. Give such a move its travel_direction — the way the CAMERA goes (left, right, up, down); a move with no slide (a track forward, a push, a pull, a held camera) is "none".',
+  '- When the sweep does not fit the cut, narrow the travel — the last frame sits closer to the first ("the pan covers the counter, not the whole lobby") — or cover the rest in another cut from another camera position. Never a fast sweep, and never one sweep chopped into two cuts: the join shows.',
+  '- A moving camera moves at ONE even speed for the whole cut: already moving in the first frame, the same unhurried speed throughout, still moving in the last frame. It never eases in, slows, settles or comes to rest — the editor cuts while the camera is in motion.',
+  '- The two stills are the two ends of the travel: the start frame is the framing at the first frame, the end frame is the framing the move has reached at the last. The space between them is simple and continuous.',
+  '- static and handheld HOLD their framing: the frame does not travel. A handheld camera breathes in place — it never drifts to a new framing, follows a walker across the set or turns to find someone. If the frame must end somewhere other than where it began, the movement is a pan, truck or track with its travel, not handheld. (A held cut\'s end still is made by editing its start still, so a framing change on a held camera cannot be rendered.)',
+  '- push_in and pull_out: the travel is the change of size ("from the wide of the row to a medium of the boy"), one size step in 5 to 8 s in a slow voice; travel_widths is 0.',
+].join('\n');
+
+// What the cut is FOR, and how an accident is staged. Written after "he
+// forgets the popcorn in his hand and it falls" rendered as a boy picking the
+// bucket up and shaking it empty: the block listed movements and lost the point.
+export const INTENT_RULES = [
+  'The point of the cut — every block states, in one plain clause the model can stage, what this cut is FOR: the row\'s felt intent turned into what the camera sees ("he has forgotten the bucket in his hand"). This is not naming the subtext: it is the visible fact the action proves, and its anchor follows it exactly as a feeling\'s does. A block that lists movements without their point is staged as choreography: "he lowers his hand and the popcorn pours out" renders as a boy emptying a bucket on purpose.',
+  'Accidents — an accident is INATTENTION + PHYSICS, written in this order:',
+  '- where the attention is, and that it stays there: "his eyes are fixed on the screen, mouth slightly open";',
+  '- the grip going slack, small and unwatched: "his fingers loosen around the bucket";',
+  '- the object leaving on its own — the object is the subject of the verb, never the person: "the bucket tips out of his hand and falls" (never "he drops the bucket", never "he tips it out");',
+  '- where it lands, inside the frame: "it lands on its side on the carpet by his left shoe, popcorn spilling across the floor";',
+  '- the attention unchanged afterwards: "his eyes stay on the screen; his empty hand hangs where the bucket was."',
+  'The plain words "by accident", "forgotten" and "unnoticed" are allowed and wanted — they tell the model what kind of event this is. State everything positively: "his eyes stay on the screen", never a sentence about what he fails to do. The landing place is in frame from the first frame, and the END FRAME shows the object lying where it fell. An accident is the cut\'s one action.',
+].join('\n');
+
+// Both stills of a cut must already BE the cut: the image model never reads
+// the block, so whatever the block means has to be in the still as bodies and
+// geometry. (A "kid in a hurry pulling his parents toward the doors" came back
+// as three people strolling past the building, his face to the lens.)
+export const STILL_INTENT_RULES = [
+  '- The still carries the cut\'s point. Read the block\'s point clause, the felt intent and the action, and write them into the bodies as mechanics a camera can see — never as feeling words. A hurry is a long stride with the rear heel off the ground, the torso pitched forward, the arms swinging, a jacket hem lifted by the pace; someone pulling the others along is a full step ahead with an adult\'s arm stretched forward to keep hold; an ordinary walk is none of these. If a stranger could not tell the point from the still alone, the still is wrong.',
+  '- A person going TO a place is drawn going to it: say where the destination sits in the frame and that their feet, hips and chest point at it ("striding away from the lens toward the glass doors at centre-left, the canopy ahead of them"). Never a walker crossing the frame with the destination as a backdrop parallel to their path, unless the table row says they pass it.',
+  '- The eyeline cell and every "Do not show …" sentence of the block bind the stills. State them as what the camera DOES see: "strict left profile, one eye, the far cheek hidden", "from behind, the back of his head and his shoulders, no face". A face the cut withholds is withheld in both stills, and nobody looks at the lens unless the row says so.',
+  '- Everyone the others cell names is in the still, in the same state of hurry or idleness the cell gives them, placed relative to the principal.',
+].join('\n');
+
 export const START_FRAME_RULES = [
   'Start frame — the still an image model renders as the FIRST frame of this cut, at t=0, before anything in the block has happened. Derive it from the cut, not from the scene: the camera named first (size, side relative to a landmark, angle, height, lens, depth of field), every principal in frame as a FROZEN MOMENT of the action about to begin (pose, orientation, heading, hands and prop as the block will need them), each placed exactly where the table row puts them with one positive anchoring cue that fixes the sub-location, the light source and its colour as the lock line states it, and the continuity state the story has left them in.',
-  '- Refer to people by a short VISUAL HANDLE (actor likeness, or the described look), never by a proper name; the reference artwork carries faces and wardrobe, so do not re-describe them — spend the words on placement, pose, lens and light.',
+  '- Refer to people by a short VISUAL HANDLE that names their wardrobe in a few words from the lock line ("the boy in the red windbreaker"), never by a proper name, and use the same handle in both stills of the cut; the reference artwork carries the face — spend the other words on placement, pose, lens and light.',
   '- Describe only what THIS camera can see from its stated side. A back to the camera has no face.',
+  '- When the camera is about to travel, this still is the framing at the first frame of the travel. When the cut is 2 s or shorter, catch the action already under way (the bucket half across the counter), not about to begin.',
   '- The frame is the whole composition: no camera arriving, no motion trails, no cut-to. Idle business is caught mid-gesture, not described as movement.',
   '- Text is composited in post: every sign, screen, page and label is a blank, unlettered surface.',
   '- When the set is in view, name its construction in a clause or two taken from the set description — massing, materials, colours, the signature features this camera sees ("the curved tan stucco front, gray-blue pylon towers, a glass entrance bay under a bulb-edged marquee"). The set artwork is only a look reference that the image model rebuilds from THIS camera, so the words carry the building from angle to angle; use the same words in every cut that sees the same part of the set.',
   '- 80–140 words. Plain present tense. No feeling words at all — the still shows a body, not a mood.',
+  STILL_INTENT_RULES,
 ].join('\n');
 
 export const END_FRAME_RULES = [
   'End frame — the still an image model renders as the LAST frame of this cut, the picture the clip must land on. A first-last-frame video model interpolates between the start frame and this one, so the end frame is what keeps a moving camera anchored to the real place: without it a tilt down from the sky invents whatever building it finds.',
-  '- The camera named first, WHERE IT STOPS: after a pan, tilt, push or crane, describe the final heading, height and size, never the starting one. When the camera holds, the framing is exactly the start frame\'s and only the subjects have changed.',
+  '- The camera named first, as the framing the move has REACHED at the last frame: after a pan, tilt, truck, push or crane, the heading, height and size at that frame, never the starting one — the camera is still travelling and the still is one frame of it. When the camera holds, the framing is exactly the start frame\'s and the end prompt is a change list (see the pair rules).',
   '- Every principal frozen in the state the cut\'s last_frame cell and the block\'s ending describe — pose, orientation, hands and prop as they are when the action has finished — each placed relative to a landmark. Nothing mid-move, no motion trails.',
   '- The same light, the same visual handles and the same construction clause for the set as the start frame, word for word where they still apply: the two stills must read as the same place and the same people a few seconds apart.',
+  '- The cut\'s point, the eyeline and the block\'s "Do not show …" sentences hold in the end still exactly as in the start still (see the start-frame rules): the same hurry in the bodies, the same withheld face, the same heading toward the destination.',
   '- Describe only what this camera sees at the end. A part of the set that only comes into view during the move is described here, from the set description.',
+  '- After a pan, tilt, sideways truck/track or crane the end still IS the start still displaced by the travel (at most half a frame): say where each thing that is still in view has slid to ("the entrance canopy, at the left edge in the first frame, now right of centre"), keep every person who is still in view the same person in the same spot doing the same thing unless the block moves them, and describe what the move has brought in along the leading edge. Never restage: five teenagers at the kerb do not become two other teenagers; the three the slide keeps are those three, where they stood.',
   '- Text is composited in post: every sign, screen, page and label is a blank, unlettered surface.',
-  '- 80–140 words. Plain present tense. No feeling words at all.',
+  '- 80–140 words for a moving camera, 20–60 for a held camera\'s change list. Plain present tense. No feeling words at all.',
+].join('\n');
+
+// The two stills of one cut. Every rule here is a fault that rendered: a
+// jacket that became the reference photo's T-shirt, a butter dispenser that
+// grew out of a counter, a man who popped into a seat, seat rows that slid
+// across the floor, a popcorn bucket that simply ceased to exist.
+export const FRAME_PAIR_RULES = [
+  'The pair — the two stills of a cut are ONE place a few seconds apart. A first-last-frame model animates every difference between them: an object in one still and not the other grows out of the counter, a person in one and not the other pops into the seat, seats drawn in a different arrangement slide across the floor. Write the pair so the only differences are the ones the block performs.',
+  '- Same people. Everyone in the end still is in the start still unless the block shows them enter, and everyone in the start still is in the end still unless the block shows them leave. Background people count: the same number, in the same seats.',
+  '- Same things. Every prop, fixture and piece of set dressing the end camera sees that the start camera also sees is in the start prompt, in the same words, in the same place ("a steel butter dispenser at the left end of the counter" in both, or in neither).',
+  '- Same layout. Furniture is counted and placed once and repeated word for word: "two rows of six red seats, the aisle on the right". Never "rows of seats" in one still and "a bank of seats" in the other.',
+  '- Same clothes. Each person\'s handle names their wardrobe in the lock line\'s words, the same words in both stills, and the SAME artwork is picked for that person in both.',
+  '- Every object that leaves a hand has a destination in the end still: where it lies, on what, which way up ("the bucket on its side on the carpet by his left shoe, popcorn spilled around it"). An object that is simply absent has vanished, and the model invents how.',
+  '- When the camera MOVES, whatever part of the start still is still in view is described in the start prompt\'s words; what the move reveals is new and comes from the set description. A sliding move (pan, tilt, sideways truck/track, crane) keeps at least half of the start still in view, from the same angle at the same size.',
+  '- When the camera HOLDS (static or handheld), the end still is made by editing the start still, so the end prompt is not a second description. It is the CHANGE LIST for the same picture: begin "Same frame." and state only what is different at the end, each as the finished state with its place — 20 to 60 words. Everything it does not mention stays exactly as the start still has it; anything it mentions is painted in, so never mention what has not changed.',
+  'Check per cut before returning: count the people in each still; list the props in each; read the two furniture clauses side by side. A difference the block does not perform is a fault — fix it, usually by adding the thing to the START still.',
 ].join('\n');
 
 // Emily's diner conversion (notes §9), rewritten to this project's form: the
@@ -173,4 +245,8 @@ export const EXEMPLAR_SCENE = [
   'Cut 5. Wide shot from the counter end, the same framing as cut one, the camera holding: Sarah slides out of the booth, pulls her coat closed, and walks down the aisle to the door without turning her head; the door swings shut behind her. Tom stays in the booth with the full cup in front of him. The waitress goes back to wiping. Sound: her steps on the tile, the door bell, rain. Same light: warm ceiling tubes inside, orange sodium light through the window. Tom: black raincoat, seated in the window booth, facing the empty seat. Camera at the counter end. Hold on the cup and the empty seat as the waitress wipes. Do not show the street outside yet.',
   '',
   'Load: 5 beats, one line (1), one held second person in cuts 2 and 3 (1), no moves; 15 s ÷ 7 ≈ 2.1, Stretch. The safe version drops cut 4 and holds Tom\'s reaction inside cut 3\'s framing.',
+  '',
+  'Worked example, a moving camera (8 s; travel: from the box office at the left edge to the concession counter, about one frame-width). Wide shot from the lobby doors at eye level, 24mm, the camera already panning right at one slow, even speed from the box office toward the concession counter: a dozen people cross the red carpet in ones and twos, coats over their arms; behind the glass counter an attendant in a striped vest fills a paper bucket at the popper. Sound: the popper rattling, low talk, a ticket machine. Same light: warm amber sconces along the walls, a bright white glow over the counter. Camera at the lobby doors. End with the counter filling the right half of the frame, the pan still moving at the same slow speed.',
+  '',
+  'Worked example, an accident (3 s). Medium shot from the aisle at seated eye level, 50mm, the camera holding: the boy has forgotten the bucket in his hand — his eyes are fixed on the screen, mouth slightly open, blue light on his face. His fingers loosen around the bucket; it tips out of his hand and falls by accident, landing on its side on the carpet by his left shoe, popcorn spilling across the floor. His eyes stay on the screen, his empty hand hanging where the bucket was. The row behind him keeps watching, one man lifting a cup to his mouth. Sound: the soft thud of the bucket, popcorn scattering, the film\'s music. Same light: blue flicker from the screen, dim amber aisle lamps. The boy: ten, short brown hair, red windbreaker, third seat from the aisle, facing the screen. Camera in the aisle. End with the bucket on its side at his shoe and his eyes on the screen.',
 ].join('\n');

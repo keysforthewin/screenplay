@@ -158,7 +158,7 @@ describe('render_cut_video', () => {
     expect(whole).toMatch(/on ComfyUI/);
     const one = await HANDLERS.render_cut_video({ beat: '1', cut: '2.1', confirm_spend: true }, ctx);
     expect(calls.comfy[0]).toMatchObject({ projectId, cutId: cut21._id.toString(), modelId: 'wan-2.2-14b-i2v', params: { steps: 6 }, confirmSpend: true, announceUsername: 'steve' });
-    expect(one).toMatch(/Rendering cut 2\.1 of beat "Diner" on ComfyUI \(wan-2\.2-14b-i2v, job comfy-job-1\)/);
+    expect(one).toMatch(/Queued cut 2\.1 of beat "Diner" on ComfyUI \(wan-2\.2-14b-i2v, job comfy-job-1;/);
   });
 
   it('a single cut on fal uses the video_prompt owner; consent and input errors come back as text', async () => {
@@ -204,6 +204,11 @@ describe('get_cut_job_status', () => {
 
     registries.frames.set('f1', { job_id: 'f1', status: 'partial', planned: 3, rendered: 2, failed: 1, skipped: 0, results: [{ cut_id: 'x', error: 'no prompt' }], warnings: [] });
     expect(await HANDLERS.get_cut_job_status({ job_id: 'f1' }, ctx)).toMatch(/Frames: 2\/3 rendered, 1 failed[\s\S]*- x: no prompt/);
+    // The start/end pair check rides on the same job.
+    registries.frames.set('f2', { job_id: 'f2', status: 'done', frames: ['start', 'end'], planned: 6, rendered: 6, failed: 0, skipped: 0, results: [], warnings: [], checks: { passed: 2, failed: 1, repaired: 1, unchecked: 0 } });
+    expect(await HANDLERS.get_cut_job_status({ job_id: 'f2' }, ctx)).toMatch(/Frame job f2 \(start \+ end\): done\nFrames: 6\/6 rendered\nStart\/end pairs: 2 match \(1 after repair\), 1 still differ/);
+    registries.frames.set('f3', { job_id: 'f3', kind: 'repair', status: 'done', frames: [], planned: 0, rendered: 0, failed: 0, skipped: 0, results: [], warnings: [], checks: { passed: 1, failed: 0, repaired: 1, unchecked: 0 } });
+    expect(await HANDLERS.get_cut_job_status({ job_id: 'f3' }, ctx)).toBe('Frame job f3 (frame check + repair): done\nStart/end pairs: 1 match (1 after repair)');
 
     registries.asm.set('a1', { job_id: 'a1', scene_id: null, status: 'done', phase: 'done', video_file_id: 'vid', error: null });
     expect(await HANDLERS.get_cut_job_status({ job_id: 'a1' }, ctx)).toMatch(/Beat assembly job a1: done[\s\S]*attachment\/vid/);

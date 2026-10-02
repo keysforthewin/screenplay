@@ -18,6 +18,7 @@ const FRAMES = ['start', 'end'];
 export function RenderStartFramesDialog({ open, onClose, cuts = [], onStart }) {
   const model = useStartFrameModel();
   const [redo, setRedo] = useState(false);
+  const [check, setCheck] = useState(true);
   const [which, setWhich] = useState({ start: true, end: true });
   const [starting, setStarting] = useState(false);
 
@@ -45,7 +46,7 @@ export function RenderStartFramesDialog({ open, onClose, cuts = [], onStart }) {
     setStarting(true);
     model.remember();
     try {
-      await onStart?.({ skip_rendered: !redo, frames, ...model.requestFields() });
+      await onStart?.({ skip_rendered: !redo, frames, check, ...model.requestFields() });
     } finally {
       setStarting(false);
     }
@@ -65,8 +66,17 @@ export function RenderStartFramesDialog({ open, onClose, cuts = [], onStart }) {
               : missing.length
                 ? `${missing.length} of ${all.length} ${noun}${all.length === 1 ? '' : 's'} not rendered yet.`
                 : `All ${all.length} ${noun}s are already rendered.`}{' '}
-            Each frame is rendered from its still prompt and its reference artwork; an end frame also gets the cut's start frame as a continuity reference.
+            Each frame is rendered from its still prompt and its reference artwork. An end frame is built from the cut's start frame: a held camera's is the start frame edited, a moving camera's takes it as the reference for clothing, props and layout.
           </p>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, marginBottom: 6 }}>
+            <input type="checkbox" checked={check} disabled={starting} onChange={(e) => setCheck(e.target.checked)} />
+            <span>
+              Check &amp; repair continuity
+              <span style={{ display: 'block', fontSize: 12, color: 'var(--fg-muted)' }}>
+                Once a cut has both frames they are compared — people, clothing, props, furniture layout — and what the cut does not perform is fixed in the frame that is wrong (up to two rounds). Cuts whose frames exist but were never checked are checked too.
+              </span>
+            </span>
+          </label>
           <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
             <input type="checkbox" checked={redo} disabled={starting || !rendered.length} onChange={(e) => setRedo(e.target.checked)} />
             Also re-render the {rendered.length} {noun}{rendered.length === 1 ? '' : 's'} already rendered

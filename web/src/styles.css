@@ -3988,6 +3988,15 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .cut-lint-badge.is-clean { color: #7ee2a8; border-color: rgba(126,226,168,0.5); background: rgba(126,226,168,0.06); }
 .cut-lock { display: flex; flex-direction: column; gap: 6px; }
+.cut-sf-flags { display: flex; flex-wrap: wrap; gap: 4px; }
+.cut-pair-check { display: flex; flex-direction: column; gap: 6px; }
+.cut-pair-check button { font-size: 12px; padding: 2px 8px; }
+.cut-lint-badge.is-fail { color: #f0a3a3; border-color: rgba(240,163,163,0.5); background: rgba(240,163,163,0.06); }
+.cut-pair-issues { margin: 0; padding-left: 18px; font-size: 12.5px; display: flex; flex-direction: column; gap: 3px; }
+.cut-trim { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+.cut-trim label { display: flex; align-items: center; gap: 6px; color: var(--fg-muted); font-size: 12px; }
+.cut-trim input { font-size: 13px; }
+.cut-trim-note { color: var(--fg-muted); font-size: 12px; }
 .cut-lock-row { display: flex; gap: 8px; align-items: flex-start; }
 .cut-lock-row > .field-label { min-width: 80px; margin-top: 6px; }
 .cut-lock-row input, .cut-lock-row textarea { flex: 1; font-size: 13px; color: var(--fg-muted); }

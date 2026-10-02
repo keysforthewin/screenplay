@@ -15,6 +15,7 @@ import fsp from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { streamAttachmentToTmp, uploadAttachmentBuffer } from '../mongo/attachments.js';
+import { resolveTrim } from './cutTiming.js';
 
 export const ASSEMBLE_WIDTH = 1920;
 export const ASSEMBLE_HEIGHT = 1080;
@@ -98,8 +99,10 @@ export async function probeDurationSeconds(inputPath) {
 
 // Scale to fit inside 1920x1080 (letter/pillar-box, never crop), 24 fps,
 // yuv420p H.264, AAC stereo 48k. Silent inputs get anullsrc mixed in,
-// trimmed to the video with -shortest.
-export function normalizeArgs({ inputPath, outputPath, hasAudio }) {
+// trimmed to the video with -shortest. `trim` ({ start, duration } seconds)
+// keeps only that window: output-side -ss/-t, so both streams are cut at the
+// same times after decoding and the segment starts at 0.
+export function normalizeArgs({ inputPath, outputPath, hasAudio, trim = null }) {
   const vf =
     `scale=${ASSEMBLE_WIDTH}:${ASSEMBLE_HEIGHT}:force_original_aspect_ratio=decrease,` +
     `pad=${ASSEMBLE_WIDTH}:${ASSEMBLE_HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${ASSEMBLE_FPS},format=yuv420p`;
@@ -110,6 +113,12 @@ export function normalizeArgs({ inputPath, outputPath, hasAudio }) {
   args.push(
     '-map', '0:v:0',
     '-map', hasAudio ? '0:a:0' : '1:a:0',
+  );
+  if (trim && Number(trim.duration) > 0) {
+    if (Number(trim.start) > 0) args.push('-ss', Number(trim.start).toFixed(3));
+    args.push('-t', Number(trim.duration).toFixed(3));
+  }
+  args.push(
     '-vf', vf,
     '-c:v', 'libx264', '-preset', 'medium', '-crf', String(ASSEMBLE_CRF),
     '-c:a', 'aac', '-ar', String(ASSEMBLE_AUDIO_RATE), '-ac', '2', '-b:a', '192k',
@@ -133,7 +142,10 @@ async function safeRm(p) {
 }
 
 // clips: rows in order ({ order, video_file_id, video_duration_seconds,
-// label? }), each with video_file_id set. Normalizes every clip, joins them,
+// label?, trim? }), each with video_file_id set. `trim` is a cutTiming.js
+// policy: the clip is probed for its real length (the stored one is what was
+// asked for, not what came back) and only the resolved window is kept.
+// Normalizes every clip, joins them,
 // uploads the MP4 as an attachment owned by `ownerId` (a beat) and returns
 // { file, durationSeconds, clipCount }. Persisting the pointer is the caller's
 // job (src/web/cutAssemble.js: the scene and beat MP4s). `label`
@@ -170,6 +182,7 @@ export async function assembleClips({
   const downloaded = [];
   try {
     const segmentPaths = [];
+    const keptSeconds = [];
     for (let i = 0; i < ordered.length; i++) {
       const sb = ordered[i];
       progress(`Normalizing clip ${i + 1}/${ordered.length}`);
@@ -177,7 +190,10 @@ export async function assembleClips({
       downloaded.push(inputPath);
       const hasAudio = await probeHasAudio(inputPath);
       const outputPath = path.join(workDir, `seg-${String(i).padStart(3, '0')}.mp4`);
-      await spawnImpl({ bin: 'ffmpeg', args: normalizeArgs({ inputPath, outputPath, hasAudio }) });
+      // A failed probe means no trim: the whole clip is better than a guess.
+      const trim = sb.trim ? resolveTrim(await probeDurationSeconds(inputPath), sb.trim) : null;
+      keptSeconds.push(trim ? trim.duration : Number(sb.video_duration_seconds) || 0);
+      await spawnImpl({ bin: 'ffmpeg', args: normalizeArgs({ inputPath, outputPath, hasAudio, trim }) });
       segmentPaths.push(outputPath);
     }
 
@@ -202,7 +218,7 @@ export async function assembleClips({
     if (!buffer.length) throw new BeatAssembleError('output file is empty');
 
     const probed = await probeDurationSeconds(outputPath);
-    const summed = ordered.reduce((sum, s) => sum + (Number(s.video_duration_seconds) || 0), 0);
+    const summed = keptSeconds.reduce((sum, s) => sum + s, 0);
     const durationSeconds = probed || (summed > 0 ? summed : null);
 
     progress('Saving video');

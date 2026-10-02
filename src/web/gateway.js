@@ -1960,7 +1960,7 @@ const VIDEO_SCENE_TEXT_FIELDS = new Set(['floor_plan']);
 function startFrameImageIds(row) {
   return [row?.start_frame, row?.end_frame]
     .filter(Boolean)
-    .flatMap((f) => [f.image_id, f.previous_image_id])
+    .flatMap((f) => [f.image_id, f.previous_image_id, f.master_image_id])
     .filter(Boolean)
     .map((id) => String(id));
 }
@@ -2296,7 +2296,10 @@ export async function setVideoPromptAudioViaGateway({ projectId, promptId, audio
 // `startFrame: null` clears the slot and deletes both files. A missing
 // `prompt` keeps the current prompt (it is a collab fragment the caller may
 // not have in hand).
-export async function setVideoPromptStartFrameViaGateway({ projectId, promptId, startFrame, frame = 'start' }) {
+// `keepUndo`: the image being replaced is an intermediate (a repair of a
+// repair) — it is deleted and the existing undo target is kept, so Undo
+// still returns the frame as it was before the repairs began.
+export async function setVideoPromptStartFrameViaGateway({ projectId, promptId, startFrame, frame = 'start', keepUndo = false }) {
   const key = cutFrameKey(frame);
   const p = await mongoGetVideoPrompt(projectId, promptId);
   if (!p) throw new Error(`Video prompt not found: ${promptId}`);
@@ -2314,7 +2317,15 @@ export async function setVideoPromptStartFrameViaGateway({ projectId, promptId, 
   if (startFrame.prompt === undefined && prev) next.prompt = prev.prompt || '';
   const prevImage = prev?.image_id ? String(prev.image_id) : null;
   const nextImage = next.image_id ? String(next.image_id) : null;
-  if (prevImage && prevImage !== nextImage) {
+  const undoTarget = prev?.previous_image_id ? String(prev.previous_image_id) : null;
+  if (keepUndo && prevImage && prevImage !== nextImage && undoTarget && undoTarget !== prevImage && undoTarget !== nextImage) {
+    try {
+      await deleteImages([prevImage]);
+    } catch (e) {
+      logger.warn(`gateway: delete intermediate ${frame} frame ${prevImage} failed: ${e.message}`);
+    }
+    next.previous_image_id = new ObjectId(undoTarget);
+  } else if (prevImage && prevImage !== nextImage) {
     const older = prev.previous_image_id ? String(prev.previous_image_id) : null;
     if (older && older !== prevImage && older !== nextImage) {
       try {
@@ -2326,6 +2337,15 @@ export async function setVideoPromptStartFrameViaGateway({ projectId, promptId, 
     next.previous_image_id = new ObjectId(prevImage);
   } else if (!next.previous_image_id && prev?.previous_image_id) {
     next.previous_image_id = prev.previous_image_id;
+  }
+  // A master plate that is no longer this frame's is dropped.
+  const prevMaster = prev?.master_image_id ? String(prev.master_image_id) : null;
+  if (prevMaster && prevMaster !== (next.master_image_id ? String(next.master_image_id) : null)) {
+    try {
+      await deleteImages([prevMaster]);
+    } catch (e) {
+      logger.warn(`gateway: delete ${frame} frame master ${prevMaster} failed: ${e.message}`);
+    }
   }
   const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), { [key]: next });
   broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
@@ -2379,6 +2399,7 @@ export async function createVideoSceneViaGateway({
   textSpan = null,
   directorsRead = null,
   intention = '',
+  tempo = '',
   scope = null,
   floorPlan = '',
   dialogIds = [],
@@ -2406,6 +2427,7 @@ export async function createVideoSceneViaGateway({
     textSpan,
     directorsRead,
     intention,
+    tempo,
     scope,
     floorPlan: seeded.floor_plan ?? floorPlan,
     dialogIds,

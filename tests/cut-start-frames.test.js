@@ -170,6 +170,21 @@ describe('renderCutStartFrame', () => {
     expect(deleted).toEqual([first.image_id]);
   });
 
+  it('tells the image model what the cut means: felt intent, eyeline and the block\'s limits ride under the still prompt', async () => {
+    const { beat } = await seed();
+    const cut = await VP.createVideoPrompt({
+      projectId, beatId: beat._id, title: 'Hurry', feltIntent: 'A kid in a hurry.', eyeline: 'On the doors, never the lens.', exclusions: ['Do not show his face from the front.'],
+      startFrame: { prompt: 'Wide on the lot.', reference_ids: [], references_planned: true },
+    });
+    await SF.renderCutStartFrame({ projectId, cut, beat });
+    expect(dispatched[0].prompt).toContain('Wide on the lot.');
+    expect(dispatched[0].prompt).toContain('What it must read as at a glance: A kid in a hurry.');
+    expect(dispatched[0].prompt).toContain('Eyes: On the doors, never the lens.');
+    expect(dispatched[0].prompt).toContain('Hard limits: Do not show his face from the front.');
+    // The stored still prompt stays the still prompt.
+    expect((await VP.getVideoPrompt(projectId, String(cut._id))).start_frame.prompt).toBe('Wide on the lot.');
+  });
+
   it('respects a planned empty reference list instead of auto-filling it', async () => {
     const { beat } = await seed();
     Sel._setFrameReferenceScorerForTests(async () => { throw new Error('auto-selection must not run'); });
@@ -358,6 +373,130 @@ describe('clearBeatStartFrames', () => {
   });
 });
 
+describe('end frames of a camera that slides the picture', () => {
+  const PAN = { size: 'wide', movement: 'pan', travel: 'right to left, from the marquee to the lot', travel_widths: 1 };
+  // A real picture the canvas can be cut from; `split` paints a hard line at x.
+  async function picture(split = null) {
+    const sharp = (await import('sharp')).default;
+    const base = sharp({ create: { width: 200, height: 100, channels: 3, background: { r: 90, g: 80, b: 70 } } });
+    if (split == null) return base.png().toBuffer();
+    const side = await sharp({ create: { width: split, height: 100, channels: 3, background: { r: 230, g: 230, b: 240 } } }).png().toBuffer();
+    return base.composite([{ input: side, left: 0, top: 0 }]).png().toBuffer();
+  }
+  async function panCut(beat, dinerArt) {
+    const cut = await VP.createVideoPrompt({
+      projectId, beatId: beat._id, title: 'Pan', camera: PAN,
+      startFrame: { prompt: 'The marquee at the right, the doors at the left.', reference_ids: [], references_planned: true },
+      endFrame: { prompt: 'The lot fills the frame, the doors at the right edge.', reference_ids: [dinerArt], references_planned: true },
+    });
+    await SF.renderCutStartFrame({ projectId, cut, beat });
+    return VP.getVideoPrompt(projectId, String(cut._id));
+  }
+
+  it('builds a wider master plate from the start frame and crops BOTH frames from it; the plate is reused while the start frame is its crop', async () => {
+    const { beat, dinerArt } = await seed();
+    const plain = await picture();
+    SF._setStartFrameDispatcherForTests(async (args) => {
+      dispatched.push(args);
+      return { buffer: plain, contentType: 'image/png', model: args.model };
+    });
+    const cut = await panCut(beat, dinerArt);
+    const firstStart = String(cut.start_frame.image_id);
+    await SF.renderCutStartFrame({ projectId, cut, beat, frame: 'end' });
+    // One edit: the start frame extended to 21:9 at 2K. No artwork.
+    expect(dispatched).toHaveLength(2);
+    expect(dispatched[1]).toMatchObject({ mode: 'edit', aspectRatio: '21:9', resolution: '2K' });
+    expect(dispatched[1].inputImages).toHaveLength(1);
+    expect(dispatched[1].prompt).toContain('Extend this photograph into a wider frame');
+    expect(dispatched[1].prompt).toContain('The picture you are given is the RIGHT part');
+    expect(dispatched[1].prompt).toContain('The lot fills the frame');
+    const after = await VP.getVideoPrompt(projectId, String(cut._id));
+    // The start frame is now the plate's crop; Undo holds the one it replaced.
+    expect(String(after.start_frame.image_id)).not.toBe(firstStart);
+    expect(String(after.start_frame.previous_image_id)).toBe(firstStart);
+    expect(after.start_frame.prompt).toBe('The marquee at the right, the doors at the left.');
+    expect(after.end_frame.master_image_id).toBeTruthy();
+    expect(String(after.end_frame.continuity_image_id)).toBe(String(after.start_frame.image_id));
+    expect(after.end_frame.prompt).toBe('The lot fills the frame, the doors at the right edge.');
+    expect(after.end_frame.reference_ids.map(String)).toEqual([String(dinerArt)]);
+    // The two frames are the two ends of the plate (200x100 → 178 wide crops).
+    const sharp = (await import('sharp')).default;
+    expect((await sharp(store.get(String(after.end_frame.image_id)).buffer).metadata()).width).toBe(178);
+    // Again: the plate is reused, the start frame is left alone, nothing is asked of the model.
+    await SF.renderCutStartFrame({ projectId, cut: after, beat, frame: 'end' });
+    expect(dispatched).toHaveLength(2);
+    const again = await VP.getVideoPrompt(projectId, String(cut._id));
+    expect(String(again.start_frame.image_id)).toBe(String(after.start_frame.image_id));
+    expect(String(again.end_frame.master_image_id)).toBe(String(after.end_frame.master_image_id));
+    // A new start frame makes the plate stale: a new one is built.
+    await SF.renderCutStartFrame({ projectId, cut: again, beat, frame: 'start' });
+    await SF.renderCutStartFrame({ projectId, cut: await VP.getVideoPrompt(projectId, String(cut._id)), beat, frame: 'end' });
+    expect(dispatched).toHaveLength(4);
+    expect(dispatched[3].aspectRatio).toBe('21:9');
+  });
+
+  it('people who travel with the camera are moved inside the plate before the end frame is cropped', async () => {
+    const { beat, dinerArt } = await seed();
+    const plain = await picture();
+    SF._setStartFrameDispatcherForTests(async (args) => {
+      dispatched.push(args);
+      return { buffer: plain, contentType: 'image/png', model: args.model };
+    });
+    const made = await VP.createVideoPrompt({
+      projectId, beatId: beat._id, title: 'Follow', camera: PAN, inFrame: [{ character: 'Sarah', position: 'crossing the lot', facing: 'the doors', acts: true }],
+      startFrame: { prompt: 'She strides left.', reference_ids: [], references_planned: true },
+      endFrame: { prompt: 'She is one step from the doors.', reference_ids: [dinerArt], references_planned: true },
+    });
+    await SF.renderCutStartFrame({ projectId, cut: made, beat });
+    await SF.renderCutStartFrame({ projectId, cut: await VP.getVideoPrompt(projectId, String(made._id)), beat, frame: 'end' });
+    expect(dispatched).toHaveLength(3);
+    expect(dispatched[2]).toMatchObject({ mode: 'edit', aspectRatio: '21:9' });
+    expect(dispatched[2].inputImages).toHaveLength(1);
+    expect(dispatched[2].prompt).toContain('master plate of a film shot');
+    expect(dispatched[2].prompt).toContain('a QUARTER of the plate\'s width toward the left');
+    expect(dispatched[2].prompt).toContain('She is one step from the doors.');
+  });
+
+  it('a model that cannot widen the picture slides the start frame instead: band fill, then a plain edit when it seams', async () => {
+    const { beat, dinerArt } = await seed();
+    const plain = await picture();
+    const seamed = await picture(100);
+    SF._setStartFrameDispatcherForTests(async (args) => {
+      dispatched.push(args);
+      return { buffer: dispatched.length === 2 ? seamed : plain, contentType: 'image/png', model: args.model };
+    });
+    const cut = await panCut(beat, dinerArt);
+    await SF.renderCutStartFrame({ projectId, cut, beat, frame: 'end', imageModel: 'flux-2-pro' });
+    expect(dispatched).toHaveLength(3);
+    expect(dispatched[1].prompt).toContain('flat grey band along the left (about 50% of the image)');
+    expect(dispatched[1].aspectRatio).toBeUndefined();
+    expect(dispatched[2].prompt).toContain('turned on its spot — panned left, by about 50% of the frame\'s width');
+    expect(dispatched[2].inputImages[0].buffer.equals(plain)).toBe(true);
+    const after = await VP.getVideoPrompt(projectId, String(cut._id));
+    expect(after.end_frame.master_image_id).toBeNull();
+    expect(String(after.start_frame.image_id)).toBe(String(cut.start_frame.image_id));
+    await SF.renderCutStartFrame({ projectId, cut: after, beat, frame: 'end', imageModel: 'flux-2-pro', slideMethod: 'edit' });
+    expect(dispatched).toHaveLength(4);
+    expect(dispatched[3].prompt).toContain('turned on its spot — panned left');
+  });
+
+  it('a track forward keeps the reference path, and its continuity frame is told the move', async () => {
+    const { beat, dinerArt } = await seed();
+    const cut = await VP.createVideoPrompt({
+      projectId, beatId: beat._id, title: 'Track', camera: { size: 'medium', movement: 'track', travel: 'forward to the open door', travel_widths: 1 },
+      startFrame: { prompt: 'Behind his shoulder at the canopy.', reference_ids: [], references_planned: true },
+      endFrame: { prompt: 'At the threshold of the open door.', reference_ids: [dinerArt], references_planned: true },
+    });
+    await SF.renderCutStartFrame({ projectId, cut, beat });
+    const fresh = await VP.getVideoPrompt(projectId, String(cut._id));
+    await SF.renderCutStartFrame({ projectId, cut: fresh, beat, frame: 'end' });
+    expect(dispatched[1].mode).toBe('generate');
+    expect(dispatched[1].inputImages).toHaveLength(2);
+    expect(dispatched[1].prompt).toContain('It is the SAME camera, which has only done this since that frame: track — forward to the open door.');
+    expect(Object.keys(dispatched[1].inputImages[0]).sort()).toEqual(['buffer', 'contentType']);
+  });
+});
+
 describe('end frames', () => {
   it('renders the end frame from end_frame refs plus the rendered start frame as a last continuity reference', async () => {
     const { beat, sarahArt, dinerArt } = await seed();
@@ -374,11 +513,89 @@ describe('end frames', () => {
     expect(refs).toEqual(['Sarah, grey coat', 'Diner interior, night', 'render-1']);
     expect(dispatched[1].prompt).toContain('Image 3 is the opening frame of this same shot');
     expect(dispatched[1].prompt).toContain('Wide on the diner front');
+    // The opening frame owns the clothing, the props and the layout; the
+    // character artwork gives only the face.
+    expect(dispatched[1].prompt).toContain('Image 1 is Sarah: take only the face, hair and build from it. The clothing is exactly what this person wears in Image 3');
+    expect(dispatched[1].prompt).toContain('the same furniture in the same arrangement and count');
+    expect(dispatched[1].prompt).toContain('Add nothing that is not in it and remove nothing from it');
+    expect(dispatched[1].mode).toBe('generate');
     expect(uploads[1].filename).toMatch(/^cut-.*-end-frame-/);
     const after = await VP.getVideoPrompt(projectId, String(cut._id));
     expect(String(after.end_frame.image_id)).toBe(e.image_id);
     expect(String(after.start_frame.image_id)).toBe(s.image_id);
     expect(after.end_frame.prompt).toBe('Wide on the diner front, the woman at the door.');
+    // Which opening frame this end frame was built against (the stale check).
+    expect(String(after.end_frame.continuity_image_id)).toBe(s.image_id);
+  });
+
+  it('always attaches the opening frame: one slot of the cap is reserved for it', async () => {
+    const { beat, sarahArt, sarahAlt, dinerArt } = await seed();
+    const extras = [img('extra 1'), img('extra 2'), img('extra 3')];
+    const cut = await VP.createVideoPrompt({
+      projectId, beatId: beat._id, title: 'c',
+      startFrame: { prompt: 'Start.', reference_ids: [], references_planned: true },
+      endFrame: { prompt: 'End.', reference_ids: [sarahArt, sarahAlt, dinerArt, ...extras], references_planned: true },
+    });
+    await SF.renderCutStartFrame({ projectId, cut, beat, imageModel: 'flux-2-klein' }); // cap 4
+    const fresh = await VP.getVideoPrompt(projectId, String(cut._id));
+    await SF.renderCutStartFrame({ projectId, cut: fresh, beat, frame: 'end', imageModel: 'flux-2-klein' });
+    const sent = dispatched[1].inputImages.map((i) => i.buffer.toString());
+    expect(sent).toHaveLength(4);
+    expect(sent[3]).toBe('render-1');
+    expect(dispatched[1].prompt).toContain('Image 4 is the opening frame of this same shot');
+  });
+
+  it('a held camera derives the end frame by editing the start frame: only that image, the change list, no artwork', async () => {
+    const { beat, sarahArt, dinerArt } = await seed();
+    const cut = await VP.createVideoPrompt({
+      projectId, beatId: beat._id, title: 'c',
+      startFrame: { prompt: 'Medium from the aisle: the boy in the red windbreaker holds the bucket.', reference_ids: [sarahArt, dinerArt], references_planned: true },
+      endFrame: { prompt: 'Same frame. The bucket lies on its side on the carpet by his left shoe; his empty hand hangs open.', reference_ids: [sarahArt, dinerArt], references_planned: true, derive: true },
+    });
+    const s = await SF.renderCutStartFrame({ projectId, cut, beat });
+    const fresh = await VP.getVideoPrompt(projectId, String(cut._id));
+    expect(fresh.end_frame.derive).toBe(true);
+    await SF.renderCutStartFrame({ projectId, cut: fresh, beat, frame: 'end' });
+    expect(dispatched[1].mode).toBe('edit');
+    expect(dispatched[1].inputImages.map((i) => i.buffer.toString())).toEqual(['render-1']);
+    expect(dispatched[1].prompt).toContain('This image is the opening frame of a film shot. Produce the closing frame of the same shot');
+    expect(dispatched[1].prompt).toContain('Add nothing and remove nothing.');
+    expect(dispatched[1].prompt).toMatch(/Change only this:\n\nThe bucket lies on its side/);
+    expect(dispatched[1].prompt).not.toContain('Generate a new cinematic');
+    const after = await VP.getVideoPrompt(projectId, String(cut._id));
+    // The stored prompt stays the change list; the flag and the opening frame it was built on persist.
+    expect(after.end_frame.prompt).toBe('Same frame. The bucket lies on its side on the carpet by his left shoe; his empty hand hangs open.');
+    expect(after.end_frame.derive).toBe(true);
+    expect(String(after.end_frame.continuity_image_id)).toBe(s.image_id);
+    expect(after.end_frame.reference_ids.map(String)).toEqual([String(sarahArt), String(dinerArt)]);
+  });
+
+  it('a derived end frame with no start frame yet renders from the start prompt plus the change list', async () => {
+    const { beat, dinerArt } = await seed();
+    const cut = await VP.createVideoPrompt({
+      projectId, beatId: beat._id, title: 'c',
+      startFrame: { prompt: 'Medium from the aisle, the bucket in his hand.' },
+      endFrame: { prompt: 'Same frame. The bucket lies on the carpet.', reference_ids: [dinerArt], references_planned: true, derive: true },
+    });
+    await SF.renderCutStartFrame({ projectId, cut, beat, frame: 'end' });
+    expect(dispatched[0].mode).toBe('generate');
+    expect(dispatched[0].inputImages.map((i) => i.buffer.toString())).toEqual(['Diner interior, night']);
+    expect(dispatched[0].prompt).toContain('Medium from the aisle, the bucket in his hand.\n\nThe same frame a few seconds later, everything else unchanged: The bucket lies on the carpet.');
+    const after = await VP.getVideoPrompt(projectId, String(cut._id));
+    expect(after.end_frame.continuity_image_id).toBeNull();
+    expect(after.end_frame.prompt).toBe('Same frame. The bucket lies on the carpet.');
+  });
+
+  it('re-renders an existing end frame when its start frame was rendered in the same run', async () => {
+    const { beat } = await seed();
+    const cut = await VP.createVideoPrompt({ projectId, beatId: beat._id, title: 'a', startFrame: { prompt: 'A start.', references_planned: true }, endFrame: { prompt: 'A end.', references_planned: true } });
+    // Only the end frame exists (rendered before any start frame).
+    await SF.renderCutStartFrame({ projectId, cut, beat, frame: 'end' });
+    dispatched.length = 0;
+    const job = await waitJob(await SF.startCutStartFramesJob({ projectId, beatId: String(beat._id), cutIds: [String(cut._id)], frames: ['start', 'end'] }));
+    expect(job.rendered).toBe(2);
+    expect(job.skipped).toBe(0);
+    expect(dispatched[1].prompt).toContain('is the opening frame of this same shot');
   });
 
   it('omits the continuity reference when the cut has no start frame yet, and refuses a cut with no end prompt', async () => {

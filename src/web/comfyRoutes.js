@@ -1,8 +1,9 @@
 // ComfyUI video routes. Two seams are mounted from entityRoutes.js:
 //   - buildComfyRouter(): mounted at /comfy after requireSession() — the model
 //     registry, a template's raw slot list, and per-project defaults
-//   - registerCutVideoRoutes(router): POST /cut/:id/video/preview|generate on
-//     the main router (after auth)
+//   - registerCutVideoRoutes(router): POST /cut/:id/video/preview|generate and
+//     POST /cut/:id/video/job/:jobId/cancel (remove a job still waiting for
+//     the GPU) on the main router (after auth)
 // The job snapshot (GET /cut/:id/video-job/:jobId) and its pre-auth SSE are
 // shared with the fal path in src/web/cutVideoRoutes.js.
 //
@@ -21,6 +22,8 @@ import { comfyImageCatalog, comfyImageScanState, startComfyImageScan } from '../
 import {
   startComfyCutVideoJob,
   buildComfyPayloadPreview,
+  cancelComfyCutVideoJob,
+  getComfyVideoJob,
 } from './comfyVideoGenerate.js';
 
 const HEX24 = /^[a-f0-9]{24}$/i;
@@ -30,6 +33,7 @@ function sendComfyError(e, res) {
   if (status && status >= 400 && status < 600) {
     const body = { error: e.message };
     if (e.code) body.code = e.code;
+    if (e.job_id) body.job_id = e.job_id;
     if (Array.isArray(e.errors)) body.errors = e.errors;
     if (e.local_check) body.local_check = e.local_check;
     res.status(status).json(body);
@@ -250,6 +254,23 @@ export function registerCutVideoRoutes(router) {
           announceUsername: req?.session?.username || null,
         });
         res.status(202).json({ job_id });
+      } catch (e) {
+        if (sendComfyError(e, res)) return;
+        throw e;
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.post('/cut/:id/video/job/:jobId/cancel', async (req, res, next) => {
+    try {
+      const cutId = await resolveCutId(req);
+      if (!cutId) return res.status(404).json({ error: 'cut not found' });
+      const job = getComfyVideoJob(req.params.jobId);
+      if (!job || job.owner_id !== cutId) return res.status(404).json({ error: 'job not found' });
+      try {
+        res.json({ job: cancelComfyCutVideoJob(job.job_id) });
       } catch (e) {
         if (sendComfyError(e, res)) return;
         throw e;

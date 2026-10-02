@@ -6,13 +6,16 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { autoMapTemplate, summarizeGalleryRow } from '../src/comfy/templateMap.js';
+import { autoMapTemplate, inactiveNodeIds, summarizeGalleryRow } from '../src/comfy/templateMap.js';
 import { getComfyVideoModel, validateRegistryEntry, registerComfyVideoModels, listComfyVideoModels, listRegisteredComfyVideoModels } from '../src/comfy/videoModels.js';
-import { slotAddressesFromListing } from '../src/comfy/paramMap.js';
+import { slotAddressesFromListing, buildSlotOverrides, validateComfyParams, secondsToFrames } from '../src/comfy/paramMap.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FULL = JSON.parse(readFileSync(path.join(here, 'fixtures/comfy/slots-full.json'), 'utf8'));
 const SLOTS = JSON.parse(readFileSync(path.join(here, 'fixtures/comfy/slots.json'), 'utf8'));
+// Live listings (2026-09-30) of two Wan first-last-frame templates whose length
+// slot counts frames; video_wan2_2_14B_flf2v also carries a bypassed copy.
+const FLF = JSON.parse(readFileSync(path.join(here, 'fixtures/comfy/slots-flf.json'), 'utf8'));
 
 describe('autoMapTemplate', () => {
   it('maps the LTX-2.3 ia2v template onto the same addresses as the built-in entry', () => {
@@ -94,6 +97,46 @@ describe('autoMapTemplate', () => {
     const entry = { ...proposal, id: 'my-flf', params: { ...proposal.params, duration_seconds: { address: '81.length', type: 'float' } } };
     expect(validateRegistryEntry(entry, known).entry.inputs.endFrame).toBe('required');
     expect(validateRegistryEntry({ ...entry, imageSlots: [{ address: '62.image', role: 'start_frame' }] }, known).errors.join(' ')).toMatch(/inputs.endFrame is set but no end_frame image slot/);
+  });
+
+  it('takes a Wan frame-count length as the duration and renders seconds × fps as 4n+1 frames', () => {
+    const { info, slots } = FLF['wan2.1_flf2v_720_f16'];
+    const { proposal, warnings } = autoMapTemplate({ name: 'wan2.1_flf2v_720_f16', info, slots });
+    expect(warnings).toEqual([]);
+    expect(proposal.imageSlots).toEqual([{ address: '52.image', role: 'start_frame' }, { address: '72.image', role: 'end_frame' }]);
+    expect(proposal.params.fps).toMatchObject({ address: '91.fps', default: 16 });
+    // 33 frames at 16 fps → 2 s.
+    expect(proposal.params.duration_seconds).toMatchObject({ address: '83.length', unit: 'frames', frame_rule: '4n+1', fps: 16, default: 2 });
+    const { ok, errors, entry } = validateRegistryEntry({ ...proposal, id: 'wan21-flf' }, slotAddressesFromListing({ slots }));
+    expect(errors).toEqual([]);
+    expect(ok).toBe(true);
+    const { params } = validateComfyParams(entry, { duration_seconds: 5, prompt: 'p' });
+    const length = (ov) => ov.find((o) => o.address === '83.length')?.value;
+    expect(length(buildSlotOverrides(entry, { params }).overrides)).toBe(81);
+  });
+
+  it('skips nodes the workflow bypasses, so a two-pipeline template maps its live copy', () => {
+    const { info, slots, inactive } = FLF.video_wan2_2_14B_flf2v;
+    const builtin = getComfyVideoModel('wan-2.2-14b-flf2v');
+    const live = autoMapTemplate({ name: 'video_wan2_2_14B_flf2v', info, slots, inactiveNodes: new Set(inactive) });
+    expect(live.warnings).toEqual([]);
+    expect(live.proposal.imageSlots).toEqual(builtin.imageSlots);
+    for (const key of ['prompt', 'negative_prompt', 'duration_seconds', 'width', 'height', 'fps', 'seed']) {
+      expect(live.proposal.params[key]?.address, key).toBe(builtin.params[key].address);
+    }
+    // Without the bypass list the mapper lands on the switched-off Lightning copy.
+    const blind = autoMapTemplate({ name: 'video_wan2_2_14B_flf2v', info, slots });
+    expect(blind.proposal.imageSlots[0].address).toBe('62.image');
+  });
+
+  it('inactiveNodeIds reads muted and bypassed nodes; secondsToFrames honours the frame rules', () => {
+    expect([...inactiveNodeIds({ nodes: [{ id: 1, mode: 0 }, { id: 2, mode: 4 }, { id: 3, mode: 2 }, { id: 4 }] })]).toEqual(['2', '3']);
+    expect(inactiveNodeIds(null).size).toBe(0);
+    expect(secondsToFrames(5, 16, '4n+1')).toBe(81);
+    expect(secondsToFrames(3, 16, '4n+1')).toBe(49);
+    expect(secondsToFrames(4, 24, '8n+1')).toBe(97);
+    expect(secondsToFrames(2, 24, null)).toBe(48);
+    expect(secondsToFrames(0, 16, '4n+1')).toBe(5);
   });
 
   it('summarizeGalleryRow normalizes the search rows', () => {

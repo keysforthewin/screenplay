@@ -1144,7 +1144,10 @@ function parseDurationNumber(d) {
   return Number(String(d).replace(/s$/i, ''));
 }
 
-export function pickDurationSeconds({ requested, row, model }) {
+// `roundUp`: take the smallest allowed length that still holds the request
+// (the largest when none does) instead of the nearest — a cut rendered with
+// handles must not lose them to rounding.
+export function pickDurationSeconds({ requested, row, model, roundUp = false }) {
   const defaultDur = parseDurationNumber(model.defaultDuration);
   const candidate =
     Number.isFinite(Number(requested)) && Number(requested) > 0
@@ -1160,6 +1163,10 @@ export function pickDurationSeconds({ requested, row, model }) {
   // an integer in JS and let buildInput stringify per its conventions.
   if (Array.isArray(model.durations) && model.durations.length) {
     const allowed = model.durations.map(parseDurationNumber).filter(Number.isFinite);
+    if (allowed.length && roundUp) {
+      const sorted = [...allowed].sort((a, b) => a - b);
+      return sorted.find((a) => a >= candidate - 1e-9) ?? sorted[sorted.length - 1];
+    }
     if (allowed.length) {
       let closest = allowed[0];
       let bestDelta = Math.abs(candidate - closest);
@@ -1173,7 +1180,7 @@ export function pickDurationSeconds({ requested, row, model }) {
       return closest;
     }
   }
-  return Math.round(candidate);
+  return roundUp ? Math.ceil(candidate - 1e-9) : Math.round(candidate);
 }
 
 // Exposed for tests that want to clear state between runs without

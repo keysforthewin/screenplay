@@ -13,17 +13,31 @@
 //              materials, colours, signage style) rebuilt from THIS camera.
 //   framing  — a set whose viewpoint this cut reproduces: stay close to it.
 //   continuity — the cut's own rendered start frame, handed to its END frame:
-//              match light, palette and wardrobe; never its framing.
+//              the same place and people a few seconds earlier. It — not the
+//              character artwork — owns the clothing, the props, the set
+//              dressing and the furniture layout; never its framing. (A jacket
+//              became the artwork's T-shirt, a butter dispenser grew out of a
+//              counter and seat rows rearranged themselves before this said so.)
+//              `cameraMove` (the cut's movement + travel) tells it the camera
+//              is the same one, a few seconds along its move.
+//
+// A HELD camera does not use references at all for its end frame: the end
+// frame is an edit of the start frame (composeDerivedEndPrompt).
 
 export const REFERENCE_ROLES = ['identity', 'look', 'framing', 'continuity'];
 
-function bindingLine(handle, { label, role }) {
+// `continuityHandle`: the handle of the opening frame when one rides along —
+// it then owns the clothing, so an identity reference gives only the face.
+function bindingLine(handle, { label, role, cameraMove }, continuityHandle = null) {
   const name = String(label || '').trim() || 'this subject';
   if (role === 'identity') {
+    if (continuityHandle) {
+      return `${handle} is ${name}: take only the face, hair and build from it. The clothing is exactly what this person wears in ${continuityHandle}; only if they are not in ${continuityHandle}, the clothing shown here.`;
+    }
     return `${handle} is ${name}: take only the face, hair, build and wardrobe from it.`;
   }
   if (role === 'continuity') {
-    return `${handle} is the opening frame of this same shot, a few seconds earlier: match its light, colour palette, wardrobe and the look of the place, but do not copy its framing — the camera and everyone in shot are where the description below puts them now.`;
+    return `${handle} is the opening frame of this same shot, a few seconds earlier. It is the same place and the same people: the same clothing on each person, the same objects and set dressing in the same places, the same furniture in the same arrangement and count, the same light and colour. Add nothing that is not in it and remove nothing from it, except what the description below says has changed or come into view. Do not copy its framing — the camera and everyone's pose are where the description below puts them now.${cameraMove ? ` It is the SAME camera, which has only done this since that frame: ${String(cameraMove).trim()}. It has not crossed to another side of the place or turned to face it from a new direction: what both frames can see is seen from nearly the same angle.` : ''}`;
   }
   if (role === 'framing') {
     return `${handle} shows ${name} from almost this camera: keep its architecture, layout and palette, and stay close to its viewpoint.`;
@@ -38,12 +52,52 @@ export function composeStartFramePrompt(prompt, refs = [], { token = 'Image {n}'
   const list = Array.isArray(refs) ? refs : [];
   if (!list.length) return text;
   const handle = (n) => String(token).replace('{n}', String(n));
+  const continuityAt = list.findIndex((r) => r.role === 'continuity');
+  const continuityHandle = continuityAt >= 0 ? handle(continuityAt + 1) : null;
   return [
     'Generate a new cinematic 16:9 film still. This is not an edit of any input image — the inputs are references only, and the frame, camera position and everything in shot come from the description below.',
-    list.map((r, i) => bindingLine(handle(i + 1), r)).join('\n'),
+    list.map((r, i) => bindingLine(handle(i + 1), r, continuityHandle)).join('\n'),
     'The shot:',
     text,
   ].join('\n\n');
+}
+
+// What the still must read as, from the cut it belongs to: the image model
+// never sees the block, so the cut's felt intent, eyeline and "Do not show …"
+// sentences ride along under the still prompt. Empty when the cut has none.
+export function composeIntentNote(cut) {
+  const clean = (v) => String(v || '').replace(/\s+/g, ' ').trim();
+  const lines = [];
+  if (clean(cut?.felt_intent)) lines.push(`What it must read as at a glance: ${clean(cut.felt_intent)}`);
+  if (clean(cut?.eyeline)) lines.push(`Eyes: ${clean(cut.eyeline)}`);
+  const never = (Array.isArray(cut?.exclusions) ? cut.exclusions : []).map(clean).filter(Boolean);
+  if (never.length) lines.push(`Hard limits: ${never.join(' ')}`);
+  if (!lines.length) return '';
+  return ['The shot this frame belongs to — the picture must show this in the bodies and the staging, not as a caption:', ...lines].join('\n');
+}
+
+// A held camera's END frame: an edit of the rendered start frame. `changes` is
+// the end-frame prompt, which for a held camera is a change list ("Same frame.
+// The bucket lies on its side on the carpet by his left shoe…"). The picture
+// is the input; only what the list names may differ, so the set, the props,
+// the seats and every stitch of clothing are the start frame's own pixels.
+export function composeDerivedEndPrompt(changes, { handle = 'This image' } = {}) {
+  const text = String(changes || '').trim().replace(/^same frame[.:,;]?\s*/i, '');
+  return [
+    `${handle} is the opening frame of a film shot. Produce the closing frame of the same shot, a few seconds later, from the identical camera: same position, lens and framing.`,
+    'Keep everything exactly as it is — the set, every piece of furniture and every prop in its place, every person\'s face, hair and clothing, the light and the colour. Add nothing and remove nothing.',
+    'Change only this:',
+    text,
+  ].join('\n\n');
+}
+
+// The same end frame when the start frame is not rendered yet: a fresh still
+// from the start prompt with the change list applied in words.
+export function composeUnderivedEndPrompt(startPrompt, changes) {
+  const start = String(startPrompt || '').trim();
+  const text = String(changes || '').trim().replace(/^same frame[.:,;]?\s*/i, '');
+  if (!start) return text;
+  return `${start}\n\nThe same frame a few seconds later, everything else unchanged: ${text}`;
 }
 
 // Edit-style models anchor hardest on image 1. A framing reference wants

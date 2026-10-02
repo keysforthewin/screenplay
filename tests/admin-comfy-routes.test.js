@@ -51,7 +51,10 @@ function fakeClient() {
       switch (name) {
         case 'search_templates':
           return {
-            templates: [
+            total: 2,
+            shown: 2,
+            offset: 0,
+            rows: [
               { name: 'video_ltx2_3_ia2v', title: 'LTX-2.3 image+audio to video', tags: ['video'], local_check: { checked: true, runnable: true } },
               { name: 'api_kling_3', title: 'Kling 3 (API)', tags: ['API', 'video'] },
             ],
@@ -141,7 +144,9 @@ describe('/api/admin/comfy', () => {
   it('PUT validates against the live slot listing, stores, applies live; DELETE removes registered models only', async () => {
     Client._setComfyClientForTests(fakeClient());
     const detail = await json(await req('GET', '/admin/comfy/templates/video_ltx2_3_ia2v'));
-    const proposal = { ...detail.body.proposal, id: 'my-ltx-lipsync', label: 'My LTX lip-sync' };
+    // video_ltx2_3_ia2v is the built-in ltx-2.3-ia2v's template; register the
+    // same slots under a template name nothing uses yet.
+    const proposal = { ...detail.body.proposal, id: 'my-ltx-lipsync', label: 'My LTX lip-sync', template: 'video_ltx2_3_ia2v_copy' };
 
     const bad = await json(await req('PUT', '/admin/comfy/models/my-ltx-lipsync', { ...proposal, params: { ...proposal.params, prompt: { address: '1.nope', type: 'string' } } }));
     expect(bad.status).toBe(400);
@@ -151,7 +156,7 @@ describe('/api/admin/comfy', () => {
 
     const ok = await json(await req('PUT', '/admin/comfy/models/my-ltx-lipsync', proposal));
     expect(ok.status).toBe(200);
-    expect(ok.body.model).toMatchObject({ id: 'my-ltx-lipsync', registered: true, template: 'video_ltx2_3_ia2v' });
+    expect(ok.body.model).toMatchObject({ id: 'my-ltx-lipsync', registered: true, template: 'video_ltx2_3_ia2v_copy' });
     expect(ok.body.model.inputs.audio).toBe('required');
     expect(Models.getComfyVideoModel('my-ltx-lipsync')?.params.prompt.address).toBe('340.value');
     expect((await Settings.getComfyModelSettings()).models.map((m) => m.id)).toEqual(['my-ltx-lipsync']);
@@ -171,5 +176,28 @@ describe('/api/admin/comfy', () => {
     expect(del.status).toBe(200);
     expect(del.body.registered).toEqual([]);
     expect(Models.getComfyVideoModel('my-ltx-lipsync')).toBeNull();
+  });
+
+  it('marks templates already installed and refuses a second model on the same template', async () => {
+    Client._setComfyClientForTests(fakeClient());
+    const search = await json(await req('GET', '/admin/comfy/templates?query=ltx'));
+    expect(search.body.templates[0].installed_as).toEqual([{ id: 'ltx-2.3-ia2v', label: expect.any(String), builtin: true }]);
+    expect(search.body.templates[1].installed_as).toEqual([]);
+
+    const detail = await json(await req('GET', '/admin/comfy/templates/video_ltx2_3_ia2v'));
+    expect(detail.body.installed_as.map((m) => m.id)).toEqual(['ltx-2.3-ia2v']);
+    const proposal = { ...detail.body.proposal, id: 'dup-ltx' };
+    const dup = await json(await req('PUT', '/admin/comfy/models/dup-ltx', proposal));
+    expect(dup.status).toBe(409);
+    expect(dup.body.error).toMatch(/already installed as .*ltx-2\.3-ia2v, built in/);
+
+    // A registered model: re-opening its template edits it (same id saves),
+    // another id is refused.
+    const copy = { ...proposal, id: 'my-copy', template: 'video_ltx2_3_ia2v_copy' };
+    expect((await req('PUT', '/admin/comfy/models/my-copy', copy)).status).toBe(200);
+    const reopened = await json(await req('GET', '/admin/comfy/templates/video_ltx2_3_ia2v_copy'));
+    expect(reopened.body.existing).toMatchObject({ id: 'my-copy', registered: true });
+    expect((await req('PUT', '/admin/comfy/models/my-copy', { ...copy, label: 'Renamed' })).status).toBe(200);
+    expect((await req('PUT', '/admin/comfy/models/other-copy', { ...copy, id: 'other-copy' })).status).toBe(409);
   });
 });

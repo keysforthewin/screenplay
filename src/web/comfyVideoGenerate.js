@@ -37,6 +37,8 @@ import { listDialogs, ensureDialogAudioDurations } from '../mongo/dialogs.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { setVideoPromptVideoViaGateway, setVideoPromptAudioViaGateway } from './gateway.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
+import { isTerminalJobStatus, RECENT_JOB_MS } from './jobLookup.js';
+import { renderSecondsForCut, describeTiming } from './cutTiming.js';
 import {
   coveredDialogsFor,
   speechSecondsFor,
@@ -139,6 +141,23 @@ export class ComfyBusyError extends Error {
   }
 }
 
+export class ComfyCutBusyError extends Error {
+  constructor(cutId, jobId) {
+    super(`Cut ${cutId} already has a ComfyUI render queued or running`);
+    this.code = 'CUT_BUSY';
+    this.status = 409;
+    this.job_id = jobId;
+  }
+}
+
+export class ComfyJobNotCancellableError extends Error {
+  constructor(status) {
+    super(`Only a job still waiting in the queue can be removed (this one is ${status})`);
+    this.code = 'NOT_QUEUED';
+    this.status = 409;
+  }
+}
+
 // ─── Job registry (same snapshot shape as the fal registry) ─────────────────
 
 const jobs = new Map();
@@ -159,6 +178,9 @@ export function _resetComfyJobsForTests() {
   jobs.clear();
   listeners.clear();
   queueTail = Promise.resolve();
+  waiting.length = 0;
+  for (const hold of beatHolds.values()) hold.release?.();
+  beatHolds.clear();
 }
 
 export function getComfyVideoJob(jobId) {
@@ -195,6 +217,7 @@ export function serializeComfyJob(job) {
     fal_model: null,
     status: job.status,
     step: job.step,
+    cancelled: !!job.cancelled,
     queue_position: job.queue_position ?? null,
     started_at: job.started_at,
     finished_at: job.finished_at,
@@ -248,6 +271,102 @@ export function enqueue(fn) {
   const next = queueTail.then(fn, fn);
   queueTail = next.catch(() => {});
   return next;
+}
+
+// Video jobs waiting for the GPU, in queue order — the source of each job's
+// queue_position. (Still-image renders share the GPU queue but are not
+// listed, so a position can be optimistic while frames render.)
+const waiting = [];
+
+function refreshQueuePositions() {
+  waiting.forEach((id, i) => {
+    const job = jobs.get(id);
+    if (!job) return;
+    const position = i + 1;
+    if (job.queue_position === position) return;
+    job.queue_position = position;
+    job.step = i === 0 ? 'Next in the ComfyUI queue' : `Waiting for the ComfyUI queue (${i} ahead)`;
+    publish(job);
+  });
+}
+
+function leaveQueue(job) {
+  const i = waiting.indexOf(job.job_id);
+  if (i !== -1) waiting.splice(i, 1);
+  job.queue_position = null;
+  refreshQueuePositions();
+}
+
+// Standalone cut jobs of one beat share a single hold on its beat lock: the
+// first job takes the lock (held until the last queued job of that beat
+// finishes), later ones join it. A planner / bulk render / start-frame job
+// for the beat is still refused (409) while any of them is queued, so no
+// one wipes the cuts out from under a waiting render.
+const beatHolds = new Map(); // beatId → { pending, release }
+
+function joinBeatHold(beatId) {
+  let hold = beatHolds.get(beatId);
+  if (hold) {
+    hold.pending += 1;
+    return hold;
+  }
+  if (isBeatLocked(beatId)) throw new ComfyBusyError(beatId);
+  hold = { pending: 1, release: null };
+  beatHolds.set(beatId, hold);
+  withBeatLock(beatId, () => new Promise((resolve) => (hold.release = resolve))).catch(() => {});
+  return hold;
+}
+
+function leaveBeatHold(beatId, hold) {
+  hold.pending -= 1;
+  if (hold.pending > 0) return;
+  if (beatHolds.get(beatId) === hold) beatHolds.delete(beatId);
+  hold.release?.();
+}
+
+function activeJobForCut(cutId) {
+  for (const job of jobs.values()) {
+    if (job.owner_id === cutId && !isTerminalJobStatus(job.status)) return job;
+  }
+  return null;
+}
+
+// Every ComfyUI cut job of a beat a reopened page should show: the active
+// ones plus those that finished recently, newest per cut.
+export function listComfyCutJobsForBeat(beatId, { recentMs = RECENT_JOB_MS } = {}) {
+  const id = String(beatId || '');
+  const cutoff = Date.now() - recentMs;
+  const ts = (d) => (d ? new Date(d).getTime() : 0);
+  const byCut = new Map();
+  for (const job of jobs.values()) {
+    if (job.beat_id !== id) continue;
+    const terminal = isTerminalJobStatus(job.status);
+    if (terminal && ts(job.finished_at) < cutoff) continue;
+    const prev = byCut.get(job.owner_id);
+    const rank = (j) => (isTerminalJobStatus(j.status) ? 0 : 1);
+    if (!prev || rank(job) > rank(prev) || (rank(job) === rank(prev) && ts(job.started_at) > ts(prev.started_at))) {
+      byCut.set(job.owner_id, job);
+    }
+  }
+  return [...byCut.values()].map(serializeComfyJob);
+}
+
+// Remove a job that is still waiting for the GPU. Its queue slot runs as a
+// no-op when reached; a job already running is not interrupted.
+export function cancelComfyCutVideoJob(jobId) {
+  const job = jobs.get(jobId);
+  if (!job) return null;
+  if (job.status !== 'queued') throw new ComfyJobNotCancellableError(job.status);
+  job.cancelled = true;
+  job.status = 'error';
+  job.error = 'Removed from the queue';
+  job.step = 'Removed from the queue';
+  job.finished_at = new Date();
+  pushLog(job, job.step);
+  leaveQueue(job);
+  publish(job);
+  scheduleForget(job.job_id);
+  return serializeComfyJob(job);
 }
 
 function sleep(ms) {
@@ -309,9 +428,18 @@ export async function prepareCutRender({
       effectiveParams.duration_seconds = Math.max(1, Math.ceil(speech || 1));
     }
   }
+  // No length from the caller: the cut's own (plus a travelling camera's
+  // handles), snapped up to what this model renders. cutTiming.js; the
+  // assembly trims the surplus.
+  let timing = null;
+  if (model.params?.duration_seconds && (effectiveParams.duration_seconds == null || effectiveParams.duration_seconds === '')) {
+    timing = renderSecondsForCut(cut, model.params.duration_seconds);
+    if (timing) effectiveParams.duration_seconds = timing.seconds;
+  }
 
   const validated = validateComfyParams(model, effectiveParams);
   if (validated.errors.length) throw new InvalidComfyParamsError(validated.errors);
+  const timingNote = describeTiming(timing, model.label);
   // One seed for preview, run and the persisted parameters, so a render can
   // be reproduced (or varied deliberately) later.
   if (validated.params.seed == null && model.params?.seed) validated.params.seed = randomSeed();
@@ -361,7 +489,8 @@ export async function prepareCutRender({
     audio,
     advanced: advancedList,
     overrides: built.overrides,
-    warnings: [...validated.warnings, ...built.warnings],
+    timing,
+    warnings: [...(timingNote ? [timingNote] : []), ...validated.warnings, ...built.warnings],
   };
 }
 
@@ -372,6 +501,7 @@ export async function buildComfyPayloadPreview(args) {
     params: prep.params,
     prompt: prep.prompt,
     overrides: prep.overrides,
+    timing: prep.timing,
     warnings: prep.warnings,
     spends_credits: !!prep.model.spends_credits,
     start_frame_image_id: prep.startFrameImageId,
@@ -407,11 +537,14 @@ function createJob(prep) {
   };
   jobs.set(jobId, job);
   pushLog(job, job.step);
+  waiting.push(jobId);
+  refreshQueuePositions();
   return job;
 }
 
 function failPlumbing(job, e) {
   // runJob handles its own errors; this only catches lock/queue plumbing.
+  leaveQueue(job);
   if (job.status !== 'error' && job.status !== 'done') {
     job.status = 'error';
     job.error = e?.message || String(e);
@@ -420,10 +553,11 @@ function failPlumbing(job, e) {
   }
 }
 
-// Single-cut render from the SPA or the agent. The beat lock is taken FIRST
-// and held while the job waits its turn on the GPU queue: a queued job then
+// Single-cut render from the SPA or the agent. The beat hold is taken FIRST
+// and kept while the job waits its turn on the GPU queue: a queued job then
 // already owns its beat, so a bulk render for the same beat is refused (409)
 // instead of taking the lock and waiting behind a job that waits on it.
+// Other cuts of the same beat join the hold and queue behind it.
 export async function startComfyCutVideoJob({
   projectId,
   cutId,
@@ -436,11 +570,14 @@ export async function startComfyCutVideoJob({
 }) {
   const prep = await prepareCutRender({ projectId, cutId, modelId, params, advanced, confirmSpend, promptOverride });
   const beatId = idString(prep.cut.beat_id);
-  if (isBeatLocked(beatId)) throw new ComfyBusyError(beatId);
+  const cutKey = idString(prep.cut._id);
+  const existing = activeJobForCut(cutKey);
+  if (existing) throw new ComfyCutBusyError(cutKey, existing.job_id);
+  const hold = joinBeatHold(beatId);
   const job = createJob(prep);
-  withBeatLock(beatId, () =>
-    enqueue(() => runJob({ job, prep, projectId, confirmSpend, announceUsername })),
-  ).catch((e) => failPlumbing(job, e));
+  enqueue(() => runJob({ job, prep, projectId, confirmSpend, announceUsername }))
+    .catch((e) => failPlumbing(job, e))
+    .finally(() => leaveBeatHold(beatId, hold));
   return { job_id: job.job_id };
 }
 
@@ -601,6 +738,8 @@ export async function waitForComfyPrompt(promptId, { onStatus = null } = {}) {
 }
 
 async function runJob({ job, prep, projectId, confirmSpend, announceUsername }) {
+  if (job.cancelled) return;
+  leaveQueue(job);
   const { cut, model } = prep;
   const jobDir = path.join(config.comfy.workDir, job.job_id);
   const outDir = path.join(jobDir, 'out');

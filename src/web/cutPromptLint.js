@@ -9,6 +9,7 @@
 // cut's dialog_ids so the words-never-in-a-prompt rule can be checked.
 
 import { stripMarkdown } from '../util/markdown.js';
+import { cameraTravels } from './cutTiming.js';
 
 export const TRAP_PHRASES = Object.freeze([
   'his face fell',
@@ -159,7 +160,20 @@ const TIMESTAMP_RES = [
   /\b\d+:\d\d\b/,
   /\bfor the (?:first|last|next) \d+ seconds\b/i,
 ];
+// A decade is not a length: "boxy 1980s sedans", "an '80s arcade cabinet".
+const DECADE_RE = /\b(?:1[89]|20)\d0s\b|['’]\d0s\b|\bthe \d0s\b/gi;
 const BRACKET_RE = /\[[^\]]*\]|[[\]]/;
+// A travelling camera (cutTiming.js): the sentence that carries the move, the
+// words that make a model brake it, and the words that give it a speed.
+const CAMERA_MOVE_RE = /\b(camera|pan|pans|panning|tilt|tilts|tilting|truck|trucks|trucking|track|tracks|tracking|crane|cranes|craning|push|pushes|pushing|pull|pulls|pulling|dolly|dollies)\b/i;
+const CAMERA_SETTLE_RE = /\b(settles?|settling|comes? to (?:a )?rest|coming to rest|comes? to a (?:stop|halt)|eases? (?:in|out|to|into)|easing|slows?(?: down)? to a (?:stop|halt)|slows down|slowing|decelerat\w*|stops? on)\b/i;
+const CAMERA_SPEED_RE = /\b(slow|slowly|even|evenly|steady|steadily|unhurried|constant|brisk|briskly|fast|quick|quickly|gentle|gently|speed|pace)\b/i;
+// Faster than one frame-width in this many seconds reads as a whip.
+const MIN_SECONDS_PER_FRAME_WIDTH = 3;
+const SLIDING_MOVES = ['pan', 'tilt', 'truck', 'track', 'crane'];
+const MAX_SLIDE_WIDTHS = 0.5;
+// An accident written by the accident rules says that it is one.
+const ACCIDENT_FORM_RE = /\b(by accident|accidentally|unnoticed|forgotten|on its own)\b/i;
 
 const MAX_WORDS = 220;
 const MIN_WORDS = 35;
@@ -271,7 +285,8 @@ export function lintCut(cut, { coveredDialogs = [] } = {}) {
       ),
     );
   }
-  if (TIMESTAMP_RES.some((re) => re.test(prompt))) {
+  const undated = prompt.replace(DECADE_RE, '');
+  if (TIMESTAMP_RES.some((re) => re.test(undated))) {
     out.push(
       finding(
         'timestamp',
@@ -356,7 +371,7 @@ export function lintCut(cut, { coveredDialogs = [] } = {}) {
         );
       }
     }
-    if (!/\bfacing\b/i.test(lockLine)) {
+    if (inFrame.length && !/\bfacing\b/i.test(lockLine)) {
       out.push(
         finding(
           'lock_line_facing',
@@ -393,13 +408,61 @@ export function lintCut(cut, { coveredDialogs = [] } = {}) {
   }
   const sentences = splitSentences(prompt);
   const last = sentences.length ? sentences[sentences.length - 1] : '';
-  if (last && INVOLUNTARY_RE.test(last)) {
+  if (last && INVOLUNTARY_RE.test(last) && !ACCIDENT_FORM_RE.test(prompt)) {
     out.push(
       finding(
         'involuntary_endpoint',
-        'An involuntary outcome as the endpoint (a slip, a spill, a coat caught in a door) is staged as a deliberate act. End on a held state and let the next cut show the consequence.',
+        'An involuntary outcome as the endpoint (a slip, a spill, a coat caught in a door) is staged as a deliberate act. Write it as an accident — where the attention stays, the grip going slack, the object leaving on its own, where it lands — and end on the result.',
       ),
     );
+  }
+
+  // A travelling camera: one even speed, no braking, and a length that fits
+  // how far the frame moves (cutRules.js CAMERA_TRAVEL_RULES).
+  if (cameraTravels(cut)) {
+    const moveSentences = sentences.filter((sentence) => CAMERA_MOVE_RE.test(sentence));
+    const braked = moveSentences.find((sentence) => CAMERA_SETTLE_RE.test(sentence));
+    if (braked) {
+      const shown = braked.length > 120 ? `${braked.slice(0, 117)}…` : braked;
+      out.push(
+        finding(
+          'camera_settle',
+          `"${shown}" tells the model to brake the move, and it eases the whole cut to obey. Name the framing the move has reached and keep it travelling: "End with the marquee filling the frame, the tilt still moving at the same slow speed."`,
+        ),
+      );
+    }
+    if (!moveSentences.some((sentence) => CAMERA_SPEED_RE.test(sentence))) {
+      out.push(
+        finding(
+          'camera_speed_missing',
+          'The camera moves but the block gives it no speed. Say it: "already panning right at one slow, even speed".',
+        ),
+      );
+    }
+    const widths = Number(cut?.camera?.travel_widths);
+    const seconds = Number(cut?.duration_seconds);
+    if (Number.isFinite(widths) && widths > 0 && Number.isFinite(seconds) && seconds > 0 && seconds / widths < MIN_SECONDS_PER_FRAME_WIDTH) {
+      out.push(
+        finding(
+          'camera_fast',
+          `The frame travels ${widths} frame-width${widths === 1 ? '' : 's'} in ${seconds} s — faster than one in ${MIN_SECONDS_PER_FRAME_WIDTH} s reads as a whip. Lengthen the cut or narrow the travel.`,
+        ),
+      );
+    }
+  }
+
+  // A sliding move's two stills must overlap: the end still is the start still
+  // slid by the travel, and more than half a frame leaves too little to anchor.
+  if (SLIDING_MOVES.includes(cut?.camera?.movement)) {
+    const widths = Number(cut?.camera?.travel_widths);
+    if (Number.isFinite(widths) && widths > MAX_SLIDE_WIDTHS) {
+      out.push(
+        finding(
+          'pan_no_overlap',
+          `The frame travels ${widths} frame-width${widths === 1 ? '' : 's'}: the two stills share too little, so the end frame is rendered as only half a frame of travel. Narrow the travel to ${MAX_SLIDE_WIDTHS} or cover the rest in another cut.`,
+        ),
+      );
+    }
   }
 
   // Words never enter a prompt: real voices are recorded and lip-synced.

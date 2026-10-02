@@ -167,7 +167,183 @@ describe('normalizeCuts', () => {
   });
 });
 
+describe('planned durations (the model chooses; the code only bounds)', () => {
+  const row = (over = {}) => ({
+    camera: camera(), in_frame: [{ character: 'Sarah', position: 'booth', facing: 'door', acts: true }], action_by: 'Sarah', reaction: false,
+    eyeline: '', action: 'waits', others: '', last_frame: 'her hands on the cup', sound: '', sound_on_action: false, crossing: false, contact: false,
+    dialog_lines: [], sets_in_scene: ['Diner'], primary_spend: 'world', felt_intent: 'f', ...over,
+  });
+  const scene = { order: 1, title: 'A', character_names: ['Sarah', 'Tom'], set_names: ['Diner'], dialog_lines: [1] };
+  const dialogs = [{ _id: new ObjectId(), character: 'Sarah', body: 'I waited for you for an hour and you did not even call me once' }];
+
+  it('keeps the model\'s length in half-second steps, bounds it, and falls back to the estimate when there is none', () => {
+    expect(P.clampPlannedDuration(1.5)).toBe(1.5);
+    expect(P.clampPlannedDuration(1.7)).toBe(1.5);
+    expect(P.clampPlannedDuration(0.2)).toBe(1);
+    expect(P.clampPlannedDuration(40)).toBe(15);
+    expect(P.clampPlannedDuration(undefined, { fallback: 5 })).toBe(5);
+    expect(P.clampPlannedDuration(2, { floor: 4.2 })).toBe(4.5);
+    const { cuts } = P.normalizeCuts([
+      row({ camera: camera({ size: 'insert' }), duration_seconds: 1.5 }),
+      row({ camera: camera({ movement: 'pan', travel: 'from the door to the booth', travel_widths: 1 }), duration_seconds: 9 }),
+      row(),
+    ], { scene: { ...scene, dialog_lines: [] }, dialogs });
+    expect(cuts.map((c) => c.duration_seconds)).toEqual([1.5, 9, 3]);
+    expect(cuts[1].camera).toMatchObject({ travel: 'from the door to the booth', travel_widths: 1 });
+  });
+
+  it('raises a cut to the speech it covers and warns', () => {
+    const { cuts, warnings } = P.normalizeCuts([row({ dialog_lines: [1], duration_seconds: 2 })], { scene, dialogs });
+    expect(cuts[0].duration_seconds).toBeGreaterThan(5);
+    expect(warnings).toEqual(expect.arrayContaining([expect.stringMatching(/shorter than the .* of speech it covers/)]));
+  });
+
+  it('warns when a quick cut carries more action than its length can render', () => {
+    const overloaded = row({
+      in_frame: [{ character: 'Sarah', position: 'booth', facing: 'door', acts: true }, { character: 'Tom', position: 'aisle', facing: 'her', acts: false }],
+      camera: camera({ movement: 'truck' }), contact: true, crossing: true, duration_seconds: 1.5,
+    });
+    const { warnings } = P.normalizeCuts([overloaded, row({ camera: camera({ size: 'insert' }), duration_seconds: 1.5 })], { scene: { ...scene, dialog_lines: [] }, dialogs });
+    expect(warnings.filter((w) => /too much to render at that length/.test(w))).toHaveLength(1);
+  });
+
+  it('plan_cuts asks for the tempo, each length and the travel; the prompts carry the new rules', () => {
+    const schema = P.PLAN_CUTS_TOOL.input_schema;
+    expect(schema.required).toEqual(['tempo', 'cuts']);
+    expect(Object.keys(schema.properties)[0]).toBe('tempo');
+    expect(schema.properties.cuts.items.required).toContain('duration_seconds');
+    expect(schema.properties.cuts.items.properties.camera.required).toEqual(expect.arrayContaining(['travel', 'travel_widths']));
+    expect(JSON.stringify(P.PLAN_CUTS_TOOL)).not.toMatch(/"minimum"|"maximum"|load_notes/);
+    expect(P.CUTS_SYSTEM_PROMPT).toMatch(/Tempo — the length of a cut is the editor's choice/);
+    expect(P.CUTS_SYSTEM_PROMPT).toMatch(/Camera travel —/);
+    expect(P.PROSE_SYSTEM_PROMPT).toMatch(/INATTENTION \+ PHYSICS/);
+    expect(P.PROSE_SYSTEM_PROMPT).not.toMatch(/settles on the marquee"\)/);
+    expect(P.START_FRAMES_SYSTEM_PROMPT).toMatch(/The pair — the two stills of a cut are ONE place/);
+  });
+
+  it('shows the tempo and the travel to the later passes, and the earlier scenes\' lengths to the next one', () => {
+    const brief = P.formatSceneBrief({ order: 2, title: 'Lobby', tempo: 'quick inserts between two slow wides', directors_read: {}, scope: {} }, []);
+    expect(brief).toContain('Tempo: quick inserts between two slow wides');
+    const text = P.formatCutRow({ camera: camera({ movement: 'pan', motivation: 'finds the counter', travel: 'from the box office to the counter', travel_widths: 1 }), duration_seconds: 8 }, 0, []);
+    expect(text).toContain('pan (finds the counter); travel: from the box office to the counter — 1 frame-width');
+    expect(text).toContain('duration: 8 s');
+    const user = P.buildCutsUserText({ scene: { order: 2, title: 'Lobby', directors_read: {}, scope: {} }, sceneIndex: 1, sceneCount: 2, priorDurations: [{ order: 1, title: 'Street', durations: [8, 1.5, 1.5, 2] }] });
+    expect(user).toContain('Cut lengths so far in this beat');
+    expect(user).toContain('- Scene 1 (Street): 8, 1.5, 1.5, 2 s');
+    expect(P.buildCutsUserText({ scene: { order: 1, title: 'Street', directors_read: {}, scope: {} }, sceneIndex: 0, sceneCount: 2 })).not.toContain('Cut lengths so far');
+  });
+});
+
+describe('applyReview (the editor + script supervisor pass)', () => {
+  const LOCK = 'Same light: blue flicker from the screen. The boy: ten, red windbreaker, third seat from the aisle, facing the screen. Camera in the aisle.';
+  const block = (action) => `Medium shot from the aisle at seated eye level, 50mm, the camera holding: ${action} ${LOCK} End with the bucket on its side at his shoe.`;
+  const planned = () => [
+    {
+      cut_index: 1, duration_seconds: 4, camera: camera(), in_frame: [{ character: 'Kid', position: 'third seat', facing: 'the screen', acts: true }],
+      dialog_lines: [], prompt: block('he lowers his hand and the popcorn pours out.'), lock_line: LOCK, exclusions: [],
+      start_frame: { prompt: 'The boy in the red windbreaker holds the bucket.' }, end_frame: { prompt: 'Same frame. His hand is empty.', derive: true },
+    },
+    {
+      cut_index: 2, duration_seconds: 4, camera: camera({ size: 'insert' }), in_frame: [], dialog_lines: [],
+      prompt: 'Insert of two hands and a paper bucket crossing the counter.', lock_line: '', exclusions: [],
+      start_frame: { prompt: 'The bucket half across the counter.' }, end_frame: { prompt: 'Same frame. The bucket in the far hands.', derive: true },
+    },
+  ];
+
+  it('is a no-op when the model returned nothing', () => {
+    const cuts = planned();
+    const before = JSON.parse(JSON.stringify(cuts));
+    expect(P.applyReview(null, cuts)).toEqual({ notes: [], warnings: [], changed: 0 });
+    expect(P.applyReview([], cuts).changed).toBe(0);
+    expect(cuts).toEqual(before);
+  });
+
+  it('applies new lengths and rewritten texts, keeps an empty string as "keep", and reports the issues', () => {
+    const cuts = planned();
+    const rewrite = block('the boy has forgotten the bucket in his hand — his eyes are fixed on the screen; his fingers loosen and the bucket tips out of his hand by accident, landing on its side on the carpet by his left shoe.');
+    const { notes, warnings, changed } = P.applyReview([
+      {
+        cut_index: 1, duration_seconds: 3,
+        issues: [{ kind: 'intent', note: 'The pour read as deliberate; rewritten as an accident.' }, { kind: 'frame_pair', note: 'The bucket vanished; the end still now shows it on the carpet.' }],
+        prompt: rewrite, start_frame_prompt: '', end_frame_prompt: 'Same frame. The bucket lies on its side on the carpet by his left shoe; his empty hand hangs open.',
+      },
+      { cut_index: 2, duration_seconds: 1.5, issues: [{ kind: 'tempo', note: 'A handover is connective: quick.' }], prompt: '', start_frame_prompt: '', end_frame_prompt: '' },
+    ], cuts, { sceneLabel: 'Scene 3' });
+    expect(changed).toBe(2);
+    expect(warnings).toEqual([]);
+    expect(cuts[0].duration_seconds).toBe(3);
+    expect(cuts[0].prompt).toBe(rewrite);
+    expect(cuts[0].start_frame.prompt).toBe('The boy in the red windbreaker holds the bucket.');
+    expect(cuts[0].end_frame.prompt).toMatch(/lies on its side on the carpet/);
+    expect(cuts[0].end_frame.derive).toBe(true);
+    expect(Array.isArray(cuts[0].lint)).toBe(true); // re-linted
+    expect(cuts[1].duration_seconds).toBe(1.5);
+    expect(cuts[1].prompt).toBe('Insert of two hands and a paper bucket crossing the counter.');
+    expect(notes).toEqual([
+      'Scene 3 cut 1: length 4 s → 3 s.',
+      'Scene 3 cut 1 (intent): The pour read as deliberate; rewritten as an accident.',
+      'Scene 3 cut 1 (frame pair): The bucket vanished; the end still now shows it on the carpet.',
+      'Scene 3 cut 2: length 4 s → 1.5 s.',
+      'Scene 3 cut 2 (tempo): A handover is connective: quick.',
+    ]);
+  });
+
+  it('refuses a block rewrite that lost the lock line, and never shortens a cut below its speech', () => {
+    const cuts = planned();
+    const original = cuts[0].prompt;
+    cuts[0].dialog_lines = [1];
+    const dialogs = [{ _id: new ObjectId(), character: 'Kid', body: 'I waited for you for an hour and you did not even call me once' }];
+    const { warnings } = P.applyReview([
+      { cut_index: 1, duration_seconds: 1, issues: [], prompt: 'Medium shot: the bucket falls. End with the bucket on the floor.', start_frame_prompt: '', end_frame_prompt: '' },
+    ], cuts, { dialogs });
+    expect(cuts[0].prompt).toBe(original);
+    expect(warnings).toEqual([expect.stringMatching(/rewrote the block without its lock line/)]);
+    expect(cuts[0].duration_seconds).toBeGreaterThan(4);
+  });
+
+  it('the review tool is strict with no nullable or bounded fields, and the user text shows both stills', () => {
+    expect(P.REVIEW_CUTS_TOOL.strict).toBe(true);
+    expect(JSON.stringify(P.REVIEW_CUTS_TOOL)).not.toMatch(/"minimum"|"maximum"|"null"/);
+    expect(P.REVIEW_CUTS_TOOL.input_schema.properties.cuts.items.required).toEqual(['cut_index', 'duration_seconds', 'issues', 'prompt', 'start_frame_prompt', 'end_frame_prompt']);
+    expect(P.REVIEW_SYSTEM_PROMPT).toMatch(/# 4\. The pair/);
+    const text = P.buildReviewUserText({ scene: { order: 3, title: 'Seats', tempo: 'quick', directors_read: {}, scope: {} }, cuts: planned(), priorDurations: [{ order: 1, title: 'Lobby', durations: [8, 1.5] }] });
+    expect(text).toContain("This scene's cut lengths as planned: 4, 4 s");
+    expect(text).toContain('- Scene 1 (Lobby): 8, 1.5 s');
+    expect(text).toContain('start still: The boy in the red windbreaker holds the bucket.');
+    expect(text).toContain('end still (held camera — a change list applied to the start still): Same frame. His hand is empty.');
+  });
+});
+
 describe('applyProse / applyStartFrames', () => {
+  it('binds a character in both stills to the start still\'s artwork', () => {
+    const jacket = 'a'.repeat(24);
+    const tshirt = 'b'.repeat(24);
+    const d = 'd'.repeat(24);
+    const groups = P.groupCatalogBySubject([
+      { image_id: jacket, owner_type: 'character', owner_name: 'Kid', label: 'Kid — jacket', description: '' },
+      { image_id: tshirt, owner_type: 'character', owner_name: 'Kid', label: 'Kid — t-shirt photo', description: '' },
+      { image_id: d, owner_type: 'set', owner_name: 'Theatre', label: 'Theatre — interior', description: '' },
+    ]);
+    const cuts = [{ cut_index: 1, prompt: 'x', last_frame: 'y' }];
+    const { warnings } = P.applyStartFrames([{
+      cut_index: 1,
+      start_frame_prompt: 'start', reference_picks: [{ subject: 'Kid', artwork_index: 1, use: 'look' }, { subject: 'Theatre', artwork_index: 1, use: 'look' }],
+      end_frame_prompt: 'end', end_reference_picks: [{ subject: 'Kid', artwork_index: 2, use: 'look' }, { subject: 'Theatre', artwork_index: 1, use: 'look' }],
+    }], cuts, { catalogGroups: groups });
+    expect(cuts[0].start_frame.reference_ids).toEqual([jacket, d]);
+    expect(cuts[0].end_frame.reference_ids).toEqual([jacket, d]);
+    // No camera move on this row: the end frame is derived from the start frame.
+    expect(cuts[0].end_frame.derive).toBe(true);
+    expect(cuts[0].start_frame.derive).toBeUndefined();
+    const moving = [{ cut_index: 1, prompt: 'x', last_frame: 'y', camera: camera({ movement: 'pan' }) }, { cut_index: 2, prompt: 'x', last_frame: 'y', camera: camera({ movement: 'handheld' }) }];
+    P.applyStartFrames([
+      { cut_index: 1, start_frame_prompt: 's', reference_picks: [], end_frame_prompt: 'e', end_reference_picks: [] },
+      { cut_index: 2, start_frame_prompt: 's', reference_picks: [], end_frame_prompt: 'Same frame. Her hand is flat on the table.', end_reference_picks: [] },
+    ], moving, { catalogGroups: groups });
+    expect(moving.map((c) => c.end_frame.derive)).toEqual([false, true]);
+    expect(warnings).toEqual([expect.stringMatching(/different artwork of Kid than the start frame/)]);
+  });
+
   it('strips "Cut N." labels, falls back for missing blocks, lints, and maps artwork picks', () => {
     const cuts = [
       { cut_index: 1, camera: camera(), in_frame: [{ character: 'Sarah', position: 'booth', facing: 'door', acts: true }], action_by: 'Sarah', action: 'waits', others: '', last_frame: 'x', sound: '', dialog_lines: [], characters_in_scene: ['Sarah'], sets_in_scene: ['Diner'] },
@@ -325,7 +501,7 @@ describe('startCutPlanJob', () => {
     const job = await waitJob(jobId);
     expect(job.status).toBe('done');
     expect(job.error).toBeNull();
-    expect(calls).toEqual(['scenes', 'cuts', 'prose', 'start_frames', 'cuts', 'prose', 'start_frames']);
+    expect(calls).toEqual(['scenes', 'cuts', 'prose', 'start_frames', 'review', 'cuts', 'prose', 'start_frames', 'review']);
     expect(job.scenes_done).toBe(2);
     expect(job.cuts_done).toBe(3);
     expect(job.lint_count).toBeGreaterThan(0);
@@ -404,6 +580,62 @@ describe('startCutPlanJob', () => {
   });
 });
 
+describe('startCutReplanJob (regenerate one cut)', () => {
+  it('replans the one row with the scene as context, replaces it in place and leaves its neighbours alone', async () => {
+    const { beat } = await seed();
+    const s1 = await VS.createVideoScene({ projectId, beatId: beat._id, title: 'One', setNames: ['Diner'], characterNames: ['Sarah'], floorPlan: 'plan' });
+    const a = await VP.createVideoPrompt({ projectId, beatId: beat._id, sceneId: s1._id, cutIndex: 1, title: 'first', order: 1, prompt: 'Block one.' });
+    const b = await VP.createVideoPrompt({ projectId, beatId: beat._id, sceneId: s1._id, cutIndex: 2, title: 'old middle', order: 2, durationSeconds: 5 });
+    const c = await VP.createVideoPrompt({ projectId, beatId: beat._id, sceneId: s1._id, cutIndex: 3, title: 'last', order: 3 });
+    const texts = {};
+    P._setCutPlannerCallsForTests(async ({ pass, userText, cuts }) => {
+      texts[pass] = userText;
+      if (pass === 'cuts') return { cuts: [{ camera: camera(), in_frame: [{ character: 'Sarah', position: 'booth', facing: 'door', acts: true }], action_by: 'Sarah', reaction: false, eyeline: 'on the door', action: 'hurries', others: '', last_frame: 'x', sound: '', sound_on_action: false, crossing: false, contact: false, dialog_lines: [], sets_in_scene: ['Diner'], primary_spend: 'world', felt_intent: 'in a hurry', duration_seconds: 4 }] };
+      expect(cuts).toHaveLength(1);
+      expect(cuts[0].cut_index).toBe(2);
+      if (pass === 'prose') return { cuts: [{ cut_index: 2, title: 'new middle', prompt: 'Wide shot. Same light: tubes. Sarah: coat, booth, facing the door. Camera at the counter end. End with her hands.', lock_line: 'Same light: tubes. Sarah: coat, booth, facing the door. Camera at the counter end.', reference_binding: '', exclusions: ['Do not show her face.'] }] };
+      if (pass === 'start_frames') return { cuts: [{ cut_index: 2, start_frame_prompt: 'new still', end_frame_prompt: 'Same frame. Her hands open.', reference_picks: [] }] };
+      return null;
+    });
+    const job = await waitJob(await P.startCutReplanJob({ projectId, cutId: String(b._id), note: 'She should be hurrying toward the door.' }));
+    expect(job.status).toBe('done');
+    expect(job.kind).toBe('recut');
+    // The first pass sees the whole table, which row to replace, and the note.
+    expect(texts.cuts).toContain('Replan ONE row');
+    expect(texts.cuts).toContain('# The row to replace: cut 2');
+    expect(texts.cuts).toContain('She should be hurrying toward the door.');
+    expect(texts.cuts).toContain('Return exactly ONE row');
+    // The later passes see the neighbours as fixed context.
+    expect(texts.prose).toContain('cut 2 (return it with cut_index 2)');
+    expect(texts.prose).toContain('block: Block one.');
+    expect(texts.start_frames).toContain('The cuts around it (fixed');
+    const rows = await VP.listVideoPrompts({ projectId, beatId: beat._id });
+    expect(rows.map((r) => r.title)).toEqual(['first', 'new middle', 'last']);
+    expect(rows.map((r) => r.order)).toEqual([1, 2, 3]);
+    expect(rows.map((r) => r.cut_index)).toEqual([1, 2, 3]);
+    expect(String(rows[0]._id)).toBe(String(a._id));
+    expect(String(rows[2]._id)).toBe(String(c._id));
+    expect(String(rows[1]._id)).not.toBe(String(b._id));
+    expect(String(job.cut_id)).toBe(String(rows[1]._id));
+    expect(rows[1]).toMatchObject({ duration_seconds: 4, felt_intent: 'in a hurry', exclusions: ['Do not show her face.'] });
+    expect(rows[1].start_frame.prompt).toBe('new still');
+    expect(rows[1].end_frame.prompt).toBe('Same frame. Her hands open.');
+  });
+
+  it('keeps the cut when the model returns no row, and refuses an unsorted cut or a busy beat', async () => {
+    const { beat } = await seed();
+    const s1 = await VS.createVideoScene({ projectId, beatId: beat._id, title: 'One', setNames: ['Diner'], characterNames: ['Sarah'], floorPlan: 'plan' });
+    const b = await VP.createVideoPrompt({ projectId, beatId: beat._id, sceneId: s1._id, cutIndex: 1, title: 'kept', order: 1 });
+    const loose = await VP.createVideoPrompt({ projectId, beatId: beat._id, title: 'loose', order: 2 });
+    P._setCutPlannerCallsForTests(async () => ({ cuts: [] }));
+    const job = await waitJob(await P.startCutReplanJob({ projectId, cutId: String(b._id) }));
+    expect(job.status).toBe('done');
+    expect(job.warnings.join(' ')).toMatch(/kept as it was/);
+    expect((await VP.listVideoPrompts({ projectId, beatId: beat._id })).map((r) => String(r._id))).toContain(String(b._id));
+    await expect(P.startCutReplanJob({ projectId, cutId: String(loose._id) })).rejects.toThrow(/no scene/);
+  });
+});
+
 describe('live progress', () => {
   it('records steps, an activity log, and notifies subscribers through to the terminal snapshot', async () => {
     const { beat } = await seed();
@@ -417,10 +649,12 @@ describe('live progress', () => {
     const keys = job.steps.map((s) => s.key);
     expect(keys).toEqual([
       'context', 'scenes',
-      'cuts:1/2', 'prose:1/2', 'start_frame_prompts:1/2',
-      'cuts:2/2', 'prose:2/2', 'start_frame_prompts:2/2',
+      'cuts:1/2', 'prose:1/2', 'start_frame_prompts:1/2', 'review:1/2',
+      'cuts:2/2', 'prose:2/2', 'start_frame_prompts:2/2', 'review:2/2',
       'writing',
     ]);
+    // The seam returned no review: the plan is kept as written.
+    expect(job.steps.find((s) => s.key === 'review:1/2').detail).toMatch(/no review returned/);
     expect(job.steps.every((s) => s.status === 'done')).toBe(true);
     expect(job.steps.find((s) => s.key === 'scenes').detail).toMatch(/2 scene/);
     expect(job.events.some((e) => /Shot table · scene 1\/2 — 2 cut/.test(e.text))).toBe(true);
@@ -429,7 +663,7 @@ describe('live progress', () => {
     const last = snaps.at(-1);
     expect(last.status).toBe('done');
     expect(last).not.toHaveProperty('_notify');
-    expect(JSON.parse(JSON.stringify(P.serializeCutPlanJob(job))).steps.length).toBe(9);
+    expect(JSON.parse(JSON.stringify(P.serializeCutPlanJob(job))).steps.length).toBe(11);
   });
 
   it('warnings also land in the activity log', async () => {

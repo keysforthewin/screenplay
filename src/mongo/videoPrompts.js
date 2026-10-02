@@ -18,10 +18,16 @@
 //   title: string (markdown — short label, e.g. "Sarah enters the diner")
 //   prompt: string (markdown — the compiled prose block; y-doc fragment
 //                   `item:<id>:prompt`)
-//   duration_seconds: number | null (the planner's target length; the video
-//                                    dialog snaps it to the chosen model)
+//   duration_seconds: number | null (the length the cut has in the assembled
+//                                    film, half-second steps; a render snaps
+//                                    it up to the model and the assembly
+//                                    trims the surplus — src/web/cutTiming.js)
+//   trim_head_seconds, trim_tail_seconds: number | null (hand-set trims the
+//                                    assembly cuts off each end of the clip;
+//                                    null = automatic)
 //   camera: { size, angle, height, lens_mm, side, movement, motivation,
-//             depth_of_field, lighting }
+//             travel (from → to in landmarks), travel_widths (frame-widths
+//             the frame moves; 0 when it holds), depth_of_field, lighting }
 //   in_frame: [{ character, position, facing, acts }]
 //   action_by, eyeline, action, others, last_frame, sound: string
 //   reaction, crossing, contact, sound_on_action: boolean
@@ -36,10 +42,21 @@
 //                  previous_image_id,
 //                  reference_uses: { imageId: 'framing' } (set refs; default 'look'),
 //                  references_planned: bool (the planner/user chose the list —
-//                  an empty one is NOT auto-filled) } | null
+//                  an empty one is NOT auto-filled),
+//                  derive: bool (END frame of a held camera: rendered by
+//                  editing the start frame; its prompt is a change list),
+//                  continuity_image_id (the start-frame image this end frame
+//                  was built against — differs from start_frame.image_id
+//                  once the start frame is re-rendered) } | null
 //   end_frame: the same shape for the cut's LAST frame (y-doc fragment
 //              `item:<id>:end_frame_prompt`) — what a first-last-frame video
 //              model lands on | null
+//   frame_check: { status: 'pass'|'fail'|'unchecked', issues: [{ kind,
+//                  frame_to_fix: 'start'|'end', note, fix_instruction }],
+//                  rounds (repair rounds run), checked_at, start_image_id,
+//                  end_image_id } | null — the vision check of the two
+//                  rendered stills (src/web/cutFrameCheck.js); it describes
+//                  exactly those two images and is stale for any others
 //   reference_images: [{ image_id: ObjectId, owner_type: 'character'|'set',
 //                        owner_name: string, label: string }]
 //                     ordered — index i is @Image(i+1) in the prompt and the
@@ -169,12 +186,18 @@ export function normalizeReferenceImages(list) {
   return out;
 }
 
+export const TRAVEL_DIRECTIONS = Object.freeze(['left', 'right', 'up', 'down']);
+
 // The planner's output is best-effort: unknown enum values become null,
 // never a throw. Always returns the full camera shape.
 export function normalizeCamera(raw) {
   const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const lensNum = Number(src.lens_mm);
   const lens = Number.isFinite(lensNum) && lensNum > 0 ? Math.round(lensNum) : null;
+  const widthsNum = Number(src.travel_widths);
+  const widths = src.travel_widths != null && src.travel_widths !== '' && Number.isFinite(widthsNum) && widthsNum >= 0
+    ? Math.round(widthsNum * 100) / 100
+    : null;
   return {
     size: enumOrNull(src.size, CUT_SIZES),
     angle: enumOrNull(src.angle, CUT_ANGLES),
@@ -183,6 +206,10 @@ export function normalizeCamera(raw) {
     side: str(src.side),
     movement: enumOrNull(src.movement, CUT_MOVEMENTS),
     motivation: str(src.motivation),
+    travel: str(src.travel),
+    travel_widths: widths,
+    // The way the camera goes when its move slides the picture; null = none / unknown.
+    travel_direction: enumOrNull(src.travel_direction, TRAVEL_DIRECTIONS),
     depth_of_field: enumOrNull(src.depth_of_field, DEPTHS_OF_FIELD),
     lighting: str(src.lighting),
   };
@@ -242,6 +269,34 @@ export function normalizeLint(raw) {
   return out;
 }
 
+export const FRAME_CHECK_STATUSES = Object.freeze(['pass', 'fail', 'unchecked']);
+
+// null stays null; anything else becomes the full frame_check shape.
+export function normalizeFrameCheck(raw) {
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const issues = [];
+  for (const e of Array.isArray(raw.issues) ? raw.issues : []) {
+    if (!e || typeof e !== 'object') continue;
+    const note = str(e.note);
+    if (!note) continue;
+    issues.push({
+      kind: str(e.kind) || 'other',
+      frame_to_fix: e.frame_to_fix === 'start' ? 'start' : 'end',
+      note,
+      fix_instruction: str(e.fix_instruction),
+    });
+  }
+  const rounds = Number(raw.rounds);
+  return {
+    status: FRAME_CHECK_STATUSES.includes(raw.status) ? raw.status : 'unchecked',
+    issues,
+    rounds: Number.isFinite(rounds) && rounds > 0 ? Math.round(rounds) : 0,
+    checked_at: dateOrNull(raw.checked_at),
+    start_image_id: maybeOid(raw.start_image_id),
+    end_image_id: maybeOid(raw.end_image_id),
+  };
+}
+
 function normalizeScores(raw) {
   const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const out = {};
@@ -285,6 +340,11 @@ export function normalizeStartFrame(raw) {
     reference_scores: normalizeScores(src.reference_scores),
     reference_uses: normalizeUses(src.reference_uses),
     references_planned: src.references_planned === true,
+    derive: src.derive === true,
+    continuity_image_id: maybeOid(src.continuity_image_id),
+    // End frame of a sliding camera: the wide master plate both frames were
+    // cropped from (panEndFrame.js); reused while the start frame is its crop.
+    master_image_id: maybeOid(src.master_image_id),
     model: str(src.model) || null,
     generated_at: dateOrNull(src.generated_at),
     previous_image_id: maybeOid(src.previous_image_id),
@@ -301,7 +361,23 @@ function normalizeDuration(v) {
   if (!Number.isFinite(n) || n <= 0) {
     throw new Error(`duration_seconds must be a positive number or null, got ${v}`);
   }
-  return Math.round(n);
+  // Half-second steps: a quick cut is 1.5 s, not 1 or 2.
+  return Math.max(0.5, Math.round(n * 2) / 2);
+}
+
+// trim_head_seconds / trim_tail_seconds: null = automatic, otherwise seconds
+// (0 switches the automatic trim off at that end).
+function normalizeTrim(v, field = 'trim') {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > 60) {
+    throw new Error(`${field} must be a number of seconds from 0 to 60 or null, got ${v}`);
+  }
+  return Math.round(n * 100) / 100;
+}
+
+function trimOrNull(v) {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
 }
 
 function intOrNull(v) {
@@ -322,6 +398,8 @@ function backfill(doc) {
       typeof doc.duration_seconds === 'number' && Number.isFinite(doc.duration_seconds) && doc.duration_seconds > 0
         ? doc.duration_seconds
         : null,
+    trim_head_seconds: trimOrNull(doc.trim_head_seconds),
+    trim_tail_seconds: trimOrNull(doc.trim_tail_seconds),
     camera: normalizeCamera(doc.camera),
     in_frame: normalizeInFrame(doc.in_frame),
     action_by: str(doc.action_by),
@@ -345,6 +423,7 @@ function backfill(doc) {
     lint: normalizeLint(doc.lint),
     start_frame: normalizeStartFrame(doc.start_frame),
     end_frame: normalizeStartFrame(doc.end_frame),
+    frame_check: normalizeFrameCheck(doc.frame_check),
     reference_images: Array.isArray(doc.reference_images)
       ? doc.reference_images
           .filter((r) => r && r.image_id)
@@ -512,6 +591,8 @@ export async function createVideoPrompt({
     title: String(title || ''),
     prompt: String(prompt || ''),
     duration_seconds: normalizeDuration(durationSeconds),
+    trim_head_seconds: null,
+    trim_tail_seconds: null,
     camera: normalizeCamera(camera),
     in_frame: normalizeInFrame(inFrame),
     action_by: str(actionBy),
@@ -535,6 +616,7 @@ export async function createVideoPrompt({
     lint: normalizeLint(lint),
     start_frame: normalizeStartFrame(startFrame),
     end_frame: normalizeStartFrame(endFrame),
+    frame_check: null,
     reference_images: normalizeReferenceImages(referenceImages),
     audio_file_id: null,
     audio_duration_seconds: null,
@@ -603,6 +685,8 @@ export async function updateVideoPrompt(projectId, id, patch) {
       set[k] = dateOrNull(v);
     } else if (k === 'duration_seconds') {
       set[k] = normalizeDuration(v);
+    } else if (k === 'trim_head_seconds' || k === 'trim_tail_seconds') {
+      set[k] = normalizeTrim(v, k);
     } else if (k === 'reference_images') {
       set[k] = normalizeReferenceImages(v);
     } else if (k === 'video_duration_seconds' || k === 'video_cost_usd' || k === 'audio_duration_seconds') {
@@ -652,6 +736,8 @@ export async function updateVideoPrompt(projectId, id, patch) {
       set[k] = normalizeLint(v);
     } else if (k === 'start_frame' || k === 'end_frame') {
       set[k] = normalizeStartFrame(v);
+    } else if (k === 'frame_check') {
+      set[k] = normalizeFrameCheck(v);
     } else if (k === 'start_frame_prompt' || k === 'end_frame_prompt') {
       framePrompts[k.replace(/_prompt$/, '')] = typeof v === 'string' ? v : String(v ?? '');
     } else {

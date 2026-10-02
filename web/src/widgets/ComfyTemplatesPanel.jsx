@@ -178,6 +178,7 @@ export function ComfyTemplatesPanel() {
   }
 
   const slots = detail?.slots || [];
+  const builtinInstall = (detail?.installed_as || []).find((m) => m.builtin) || null;
   const stringSlots = (s) => s.type === 'STRING';
   const numberSlots = (s) => s.type === 'INT' || s.type === 'FLOAT';
   const boolSlots = (s) => s.type === 'BOOLEAN';
@@ -239,6 +240,9 @@ export function ComfyTemplatesPanel() {
                 <span style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--fg-muted)' }}>{t.name}</span>
                 {t.api ? <Badge>API · credits</Badge> : <Badge ok>Local</Badge>}
                 {t.runnable === false ? <Badge>not runnable here</Badge> : t.runnable === true ? <Badge ok>runnable</Badge> : null}
+                {(t.installed_as || []).map((m) => (
+                  <Badge key={m.id} ok>already installed: {m.label}{m.builtin ? ' (built in)' : ''}</Badge>
+                ))}
                 <button type="button" disabled={loadingDetail === t.name} onClick={() => open(t.name)}>{loadingDetail === t.name ? 'Loading…' : 'Map…'}</button>
               </li>
             ))}
@@ -259,6 +263,15 @@ export function ComfyTemplatesPanel() {
             )}
           </div>
           {detail.template.description ? <p style={{ margin: 0, color: 'var(--fg-muted)' }}>{detail.template.description}</p> : null}
+          {builtinInstall ? (
+            <p style={{ margin: 0, color: '#ffb86b' }}>
+              Already installed as the built-in model "{builtinInstall.label}" ({builtinInstall.id}) — it is in the render dialogs already, so there is nothing to save.
+            </p>
+          ) : detail.existing ? (
+            <p style={{ margin: 0, color: 'var(--fg-muted)' }}>
+              Already installed as "{detail.existing.label}" ({detail.existing.id}). Saving updates that model.
+            </p>
+          ) : null}
           {(detail.warnings || []).length ? (
             <ul style={{ margin: 0, paddingLeft: 18, color: '#ffb86b' }}>{detail.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
           ) : null}
@@ -305,6 +318,21 @@ export function ComfyTemplatesPanel() {
                     <input type="number" value={spec.default ?? ''} placeholder="default" style={{ marginTop: 4 }}
                       onChange={(e) => setParam(key, { default: e.target.value === '' ? null : Number(e.target.value) })} />
                   ) : null}
+                  {spec && key === 'duration_seconds' ? (
+                    <select value={spec.unit === 'frames' ? `frames:${spec.frame_rule || ''}` : 'seconds'} style={{ marginTop: 4 }}
+                      title="What the slot counts. Frame slots get seconds × fps at render time."
+                      onChange={(e) => {
+                        const [unit, rule] = e.target.value.split(':');
+                        setParam(key, unit === 'frames'
+                          ? { unit: 'frames', frame_rule: rule || null, fps: draft.params?.fps?.default ?? spec.fps ?? 16 }
+                          : { unit: undefined, frame_rule: undefined, fps: undefined });
+                      }}>
+                      <option value="seconds">slot counts seconds</option>
+                      <option value="frames:4n+1">slot counts frames (Wan: 4n+1)</option>
+                      <option value="frames:8n+1">slot counts frames (LTX: 8n+1)</option>
+                      <option value="frames:">slot counts frames (any count)</option>
+                    </select>
+                  ) : null}
                 </div>
               );
             })}
@@ -332,7 +360,7 @@ export function ComfyTemplatesPanel() {
           ) : null}
 
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button type="button" className="primary" disabled={saving || !configured} onClick={save}>{saving ? 'Saving…' : 'Save model'}</button>
+            <button type="button" className="primary" disabled={saving || !configured || !!builtinInstall} onClick={save}>{saving ? 'Saving…' : detail.existing ? 'Update model' : 'Save model'}</button>
             <button type="button" onClick={() => { setDetail(null); setDraft(null); setSaved(null); }}>Close</button>
             {saved ? <span style={{ color: 'var(--ok)' }}>Saved — "{saved}" is now available in the render dialogs.</span> : null}
           </div>

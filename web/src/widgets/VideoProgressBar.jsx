@@ -35,7 +35,7 @@ export function VideoProgressBar({ job }) {
   } else if (job.status === 'error') {
     pct = 0;
     label = `Error: ${job.error || 'Generation failed.'}`;
-  } else if (job.status === 'IN_QUEUE') {
+  } else if (job.status === 'IN_QUEUE' || job.status === 'queued') {
     pct = 12;
     stripeAnim = true;
     label =

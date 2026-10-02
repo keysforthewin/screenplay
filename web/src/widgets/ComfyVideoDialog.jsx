@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Modal } from './Modal.jsx';
-import { apiGet, apiPostJson, apiPutJson, apiSseUrl, thumbUrl } from '../api.js';
+import { apiGet, apiPostJson, apiPutJson, thumbUrl } from '../api.js';
 import { VideoProgressBar } from './VideoProgressBar.jsx';
 import { ModelGroup, COMFY_DISABLED_MESSAGE } from './comfyControls.jsx';
+import { isComfyJobActive, useComfyCutJobs } from './comfyCutJobs.jsx';
+import { renderSecondsForCut } from './cutTiming.js';
 
 // ComfyUI render dialog for one cut (Prompts tab). The server's model
 // registry (/api/comfy/models) lists the templates it can drive; each carries
@@ -10,6 +12,11 @@ import { ModelGroup, COMFY_DISABLED_MESSAGE } from './comfyControls.jsx';
 // opens the template's raw slot list so any parameter can be set. The prompt
 // shown is the server's assembly of the cut (binding + block + exclusions)
 // and can be overridden for this render only.
+//
+// The render itself is a background job: its live snapshot lives in the
+// page's ComfyUI job store (comfyCutJobs.jsx), not here, so the dialog can be
+// closed at any time and reopening it shows the progress. Other cuts can be
+// queued meanwhile; they run one after another on the GPU.
 
 const PARAM_ORDER = [
   'negative_prompt',
@@ -27,14 +34,6 @@ const PARAM_ORDER = [
   'prompt_enhance',
 ];
 
-function safeParse(s) {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
-  }
-}
-
 function parseError(e) {
   let msg = e?.message || 'Request failed.';
   try {
@@ -44,18 +43,45 @@ function parseError(e) {
   return msg;
 }
 
+function parseErrorBody(e) {
+  try {
+    return JSON.parse(e?.message || '');
+  } catch {
+    return null;
+  }
+}
+
 function idOf(v) {
   return v ? v.toString?.() || String(v) : null;
 }
+
+// The length and the seed belong to one render, never to the remembered
+// defaults: a blank length means "this cut's own" (the server adds a
+// travelling camera's handles and snaps to the model), a blank seed is random.
+const PER_RENDER_PARAMS = ['duration_seconds', 'seed'];
 
 function defaultParamsFor(model, remembered) {
   const out = {};
   for (const [key, spec] of Object.entries(model?.params || {})) {
     if (key === 'prompt') continue;
+    if (PER_RENDER_PARAMS.includes(key)) {
+      out[key] = null;
+      continue;
+    }
     const r = remembered?.[key];
     out[key] = r !== undefined ? r : spec.default ?? null;
   }
   return out;
+}
+
+// What a blank length renders, for the hint under the field.
+function autoLengthHint(model, cut) {
+  if (model?.inputs?.audio === 'required') return 'auto: the length of the recorded lines';
+  const t = renderSecondsForCut(cut, model?.params?.duration_seconds);
+  if (!t) return `auto: the model default (${model?.params?.duration_seconds?.default ?? '?'} s)`;
+  const parts = [`${t.cut_seconds} s cut`];
+  if (t.handles) parts.push(`${t.handles} s handles`);
+  return t.seconds === t.cut_seconds && !t.handles ? `auto: ${t.seconds} s (this cut)` : `auto: ${parts.join(' + ')} → ${t.seconds} s`;
 }
 
 // Client-side twin of the server's assembly so the textarea is populated
@@ -107,9 +133,11 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
   const [preview, setPreview] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [job, setJob] = useState(null);
-  const [generating, setGenerating] = useState(false);
-  const esRef = useRef(null);
+  const [submitting, setSubmitting] = useState(false);
+  const store = useComfyCutJobs();
+  const job = cutId ? store?.jobs?.[cutId] || null : null;
+  // While this cut's job is queued or rendering, the form is read-only.
+  const generating = submitting || isComfyJobActive(job);
 
   const models = registry?.models || [];
   const model = useMemo(() => models.find((m) => m.id === modelId) || null, [models, modelId]);
@@ -124,21 +152,12 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
   const missingEnd = model?.inputs?.endFrame === 'required' && !endFrameId;
   const missingRefs = needsRefs && refCount === 0;
 
-  function closeStream() {
-    if (esRef.current) {
-      esRef.current.close();
-      esRef.current = null;
-    }
-  }
-
   // Load registry + defaults on open.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setError(null);
     setPreview(null);
-    setJob(null);
-    setGenerating(false);
     setConsent(false);
     setPromptTouched(false);
     setAdvanced({});
@@ -160,7 +179,6 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
     })();
     return () => {
       cancelled = true;
-      closeStream();
     };
   }, [open]);
 
@@ -217,40 +235,32 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
   }
 
   async function submit() {
-    if (!model || !cutId) return;
+    if (!model || !cutId || !store) return;
     setError(null);
-    setJob({ status: 'queued', step: 'Queued', started_at: new Date().toISOString() });
-    setGenerating(true);
+    setSubmitting(true);
     try {
       const r = await apiPostJson(`/cut/${cutId}/video/generate`, buildBody());
-      const jobId = r?.job_id;
-      if (!jobId) {
-        setGenerating(false);
+      if (!r?.job_id) {
         setError('Server did not return a job id.');
         return;
       }
+      store.track(cutId, r.job_id);
       apiPutJson('/comfy/defaults', { model_id: model.id, params_by_model: { [model.id]: params } }).catch(() => {});
-      const es = new EventSource(apiSseUrl(`/cut/${cutId}/video-job/${jobId}/events`));
-      esRef.current = es;
-      es.addEventListener('snapshot', (ev) => setJob(safeParse(ev.data)));
-      es.addEventListener('update', (ev) => setJob(safeParse(ev.data)));
-      es.addEventListener('done', (ev) => {
-        setJob(safeParse(ev.data));
-        setGenerating(false);
-        closeStream();
-        onRefresh?.();
-      });
-      es.addEventListener('error', (ev) => {
-        const snap = ev?.data ? safeParse(ev.data) : null;
-        if (snap) setJob(snap);
-        else setJob((j) => (j && j.status !== 'done' ? { ...j, status: 'error', error: j.error || 'Connection lost.' } : j));
-        setGenerating(false);
-        closeStream();
-        onRefresh?.();
-      });
     } catch (e) {
-      setGenerating(false);
-      setJob(null);
+      // Already queued or rendering (e.g. from another tab): follow that job.
+      const body = parseErrorBody(e);
+      if (body?.code === 'CUT_BUSY' && body.job_id) store.track(cutId, body.job_id);
+      else setError(parseError(e));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function removeFromQueue() {
+    setError(null);
+    try {
+      await store?.cancel(cutId);
+    } catch (e) {
       setError(parseError(e));
     }
   }
@@ -264,10 +274,21 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
       <button type="button" onClick={loadPreview} disabled={!model || previewLoading || generating || !configured}>
         {previewLoading ? 'Previewing…' : 'Preview payload'}
       </button>
+      {job?.status === 'queued' ? (
+        <button type="button" className="danger" onClick={removeFromQueue}>
+          Remove from queue
+        </button>
+      ) : null}
       <button type="button" className="primary" onClick={submit} disabled={!canGenerate}>
-        {generating ? 'Rendering…' : model?.spends_credits ? 'Generate (spends credits)' : 'Generate video'}
+        {job?.status === 'queued'
+          ? `Queued${job.queue_position ? ` #${job.queue_position}` : ''}…`
+          : generating
+            ? 'Rendering…'
+            : model?.spends_credits
+              ? 'Generate (spends credits)'
+              : 'Generate video'}
       </button>
-      <button type="button" onClick={onClose} disabled={generating}>
+      <button type="button" onClick={onClose}>
         Close
       </button>
     </>
@@ -277,7 +298,19 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
   const api = models.filter((m) => m.kind !== 'local');
 
   return (
-    <Modal open={open} title="Generate video with ComfyUI" onClose={onClose} dismissible={!generating} footer={footer} size="xl">
+    <Modal open={open} title="Generate video with ComfyUI" onClose={onClose} footer={footer} size="xl">
+      {job ? (
+        <div style={{ marginBottom: 12 }}>
+          <VideoProgressBar job={job} />
+          {isComfyJobActive(job) ? (
+            <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 4 }}>
+              Runs in the background — close this and queue other cuts; reopen it to check on this one.
+            </div>
+          ) : job.status === 'done' ? (
+            <div style={{ fontSize: 13, color: 'var(--ok)', marginTop: 4 }}>Clip saved to the cut.</div>
+          ) : null}
+        </div>
+      ) : null}
       {registryError ? <div className="error-banner">{registryError}</div> : null}
       {registry && !configured ? (
         <div className="error-banner">
@@ -348,6 +381,8 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
                   spec={model.params[key]}
                   value={params[key]}
                   disabled={generating}
+                  placeholder={key === 'duration_seconds' ? 'auto' : undefined}
+                  hint={key === 'duration_seconds' && params[key] == null ? autoLengthHint(model, cut) : null}
                   onChange={(v) => setParam(key, v)}
                 />
               ))}
@@ -389,10 +424,6 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
 
           {preview ? <PreviewPanel preview={preview} /> : null}
           {error ? <div className="error-banner">{error}</div> : null}
-          {job ? <VideoProgressBar job={job} /> : null}
-          {job?.status === 'done' ? (
-            <div style={{ fontSize: 13, color: 'var(--ok)' }}>Clip saved to the cut. Close to see it.</div>
-          ) : null}
         </div>
       </div>
     </Modal>
@@ -480,9 +511,9 @@ function InputsStrip({ model, cut, startFrameId, endFrameId, refCount, missingSt
   );
 }
 
-function ParamField({ name, spec, value, disabled, onChange }) {
+function ParamField({ name, spec, value, disabled, onChange, placeholder, hint = null }) {
   const label = spec.label || name;
-  const help = spec.help || '';
+  const help = hint || spec.help || '';
   if (spec.type === 'bool') {
     return (
       <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }} title={help}>
@@ -520,7 +551,7 @@ function ParamField({ name, spec, value, disabled, onChange }) {
           min={spec.min}
           max={spec.max}
           step={spec.step ?? (spec.type === 'int' ? 1 : 'any')}
-          placeholder={name === 'seed' ? 'random' : ''}
+          placeholder={placeholder ?? (name === 'seed' ? 'random' : '')}
           disabled={disabled}
           onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
         />

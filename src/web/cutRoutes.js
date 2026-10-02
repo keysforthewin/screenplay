@@ -4,10 +4,12 @@
 //
 //   GET    /video-scenes?beat_id=            scenes with their cuts (+ unsorted legacy rows)
 //   POST   /video-scenes/generate            run the planner (202 job)        {beat_id, direction?, render_start_frames?, image_model?}
-//   GET    /cuts/jobs?beat_id=               reattach: running / just-finished {plan, start_frames, assemble, render}
+//   GET    /cuts/jobs?beat_id=               reattach: running / just-finished {plan, start_frames, assemble, render,
+//                                           comfy_videos: [per-cut ComfyUI render jobs, queued/running/recent]}
 //   GET    /video-scenes/generate/:jobId     planner / replan job snapshot (steps, events, live)
 //          (pre-auth SSE twin: /video-scenes/generate/:jobId/events?session_id= in entityRoutes.js)
 //   POST   /video-scene/:id/replan           re-plan ONE scene's cuts (202)   {direction?, render_start_frames?, image_model?}
+//   POST   /cut/:id/replan                   regenerate ONE cut in place (202) {note?, render_start_frames?, image_model?}
 //   PATCH  /video-scene/:id                  scalar scene fields
 //   DELETE /video-scene/:id                  scene + its cuts
 //   POST   /video-scenes/reorder             {beat_id, ordered_ids}
@@ -20,7 +22,10 @@
 //   POST   /cut/:id/start-frame/generate     202 job {image_model?, prompt?, mode?, edit_prompt?, edit_reference_image_ids?, comfy_params?}
 //          (every /cut/:id/start-frame… route has an /cut/:id/end-frame… twin for the cut's end frame)
 //          (image_model `comfy:<id>` renders on the local ComfyUI; comfy_params are its width/height/steps/seed…)
-//   POST   /cuts/start-frames/generate       202 job {beat_id, cut_ids?, frames?: ['start'|'end'], skip_rendered?, image_model?}
+//   POST   /cuts/start-frames/generate       202 job {beat_id, cut_ids?, frames?: ['start'|'end'], skip_rendered?, image_model?,
+//                                            check?: bool — check + repair each finished pair (default: on when end frames are asked for)}
+//   POST   /cut/:id/frames/check             202 job {repair?: bool, image_model?} — vision check of the cut's two stills;
+//                                            with repair, fix what disagrees (≤ 2 rounds). 400 unless both frames are rendered.
 //   GET    /cuts/start-frames/job/:jobId
 //   POST   /cuts/start-frames/job/:jobId/cancel   stop after the renders in flight
 //   PATCH  /cut/:id/start-frame            {reference_ids} — ordered artwork ids for the still
@@ -53,8 +58,9 @@ const PATCHABLE = new Set([
   'camera', 'in_frame', 'action_by', 'reaction', 'eyeline', 'action', 'others', 'last_frame', 'sound',
   'sound_on_action', 'crossing', 'contact', 'dialog_ids', 'sets_in_scene', 'characters_in_scene',
   'primary_spend', 'felt_intent', 'duration_seconds', 'lock_line', 'exclusions', 'reference_binding',
+  'trim_head_seconds', 'trim_tail_seconds',
 ]);
-const SCENE_PATCHABLE = new Set(['title', 'slug', 'intention', 'directors_read', 'scope', 'set_names', 'character_names', 'text_span']);
+const SCENE_PATCHABLE = new Set(['title', 'slug', 'intention', 'tempo', 'directors_read', 'scope', 'set_names', 'character_names', 'text_span']);
 
 function sendBusyOr(e, res) {
   if (e?.code === 'BEAT_BUSY') return res.status(409).json({ error: e.message });
@@ -192,11 +198,12 @@ export function registerCutRoutes(router) {
       const beat = await resolveBeat(req, req.query.beat_id);
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const beatId = beat._id.toString();
-      const [planner, frames, assemble, render] = await Promise.all([
+      const [planner, frames, assemble, render, comfyVideo] = await Promise.all([
         import('./cutPlanner.js'),
         import('./cutStartFrames.js'),
         import('./cutAssemble.js'),
         import('./cutBeatRender.js'),
+        import('./comfyVideoGenerate.js'),
       ]);
       const renderJob = await render.findCutBeatRenderJobForBeat(beatId);
       res.json({
@@ -205,6 +212,7 @@ export function registerCutRoutes(router) {
         start_frames: (await frames.findCutStartFrameJobForBeat(beatId)) || null,
         assemble: (await assemble.findCutAssembleJobForBeat(beatId)) || null,
         render: renderJob ? render.serializeCutBeatJob(renderJob) : null,
+        comfy_videos: comfyVideo.listComfyCutJobsForBeat(beatId),
       });
     } catch (e) {
       next(e);
@@ -236,6 +244,31 @@ export function registerCutRoutes(router) {
           imageModel: cleanImageModel(req.body?.image_model),
         });
         res.status(202).json({ job_id: jobId, scene_id: scene._id, beat_id: scene.beat_id });
+      } catch (e) {
+        return sendBusyOr(e, res);
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Regenerate ONE cut: table row, block, both still prompts, review. The
+  // row is replaced in place; its frames and clip go with it.
+  router.post('/cut/:id/replan', async (req, res, next) => {
+    try {
+      const cut = await resolveCut(req);
+      if (!cut) return res.status(404).json({ error: 'cut not found' });
+      if (!cut.scene_id) return res.status(400).json({ error: 'This cut belongs to no scene; replan a scene or auto generate instead.' });
+      const { startCutReplanJob } = await import('./cutPlanner.js');
+      try {
+        const jobId = await startCutReplanJob({
+          projectId: req.projectId,
+          cutId: String(cut._id),
+          note: cleanDirection(req.body?.note),
+          renderStartFrames: Boolean(req.body?.render_start_frames),
+          imageModel: cleanImageModel(req.body?.image_model),
+        });
+        res.status(202).json({ job_id: jobId, cut_id: cut._id, scene_id: cut.scene_id, beat_id: cut.beat_id });
       } catch (e) {
         return sendBusyOr(e, res);
       }
@@ -367,7 +400,18 @@ export function registerCutRoutes(router) {
         else {
           const n = Number(v);
           if (!Number.isFinite(n) || n < 1 || n > 60) return res.status(400).json({ error: 'duration_seconds must be a number between 1 and 60, or null' });
-          patch.duration_seconds = Math.round(n);
+          patch.duration_seconds = Math.round(n * 2) / 2;
+        }
+      }
+      // Hand-set trims for the assembly; null (or '') = automatic.
+      for (const k of ['trim_head_seconds', 'trim_tail_seconds']) {
+        if (!Object.prototype.hasOwnProperty.call(patch, k)) continue;
+        const v = patch[k];
+        if (v == null || v === '') patch[k] = null;
+        else {
+          const n = Number(v);
+          if (!Number.isFinite(n) || n < 0 || n > 60) return res.status(400).json({ error: `${k} must be a number between 0 and 60, or null` });
+          patch[k] = Math.round(n * 100) / 100;
         }
       }
       if (Object.prototype.hasOwnProperty.call(patch, 'dialog_ids')) {
@@ -497,25 +541,35 @@ export function registerCutRoutes(router) {
       try {
         const cut = await resolveCut(req);
         if (!cut) return res.status(404).json({ error: 'cut not found' });
-        const ids = req.body?.reference_ids;
-        if (!Array.isArray(ids) || ids.some((x) => !isOidHex(String(x)))) {
+        const body = req.body || {};
+        const hasIds = Object.prototype.hasOwnProperty.call(body, 'reference_ids');
+        // `derive` (end frame only): render it by editing the start frame.
+        const hasDerive = frame === 'end' && typeof body.derive === 'boolean';
+        if (!hasIds && !hasDerive) return res.status(400).json({ error: 'reference_ids must be an array of image ids' });
+        const ids = hasIds ? body.reference_ids : null;
+        if (hasIds && (!Array.isArray(ids) || ids.some((x) => !isOidHex(String(x))))) {
           return res.status(400).json({ error: 'reference_ids must be an array of image ids' });
         }
         const { setVideoPromptStartFrameViaGateway } = await import('./gateway.js');
         const base = cut[key] || { image_id: null, prompt: '', reference_ids: [], reference_scores: {}, model: null, generated_at: null, previous_image_id: null };
-        const uniq = [...new Set(ids.map(String))].slice(0, MAX_REFERENCE_IMAGES);
-        const scores = {};
-        const uses = {};
-        for (const id of uniq) {
-          if (base.reference_scores?.[id] != null) scores[id] = base.reference_scores[id];
-          if (base.reference_uses?.[id]) uses[id] = base.reference_uses[id];
+        const next = { ...base };
+        if (hasIds) {
+          const uniq = [...new Set(ids.map(String))].slice(0, MAX_REFERENCE_IMAGES);
+          const scores = {};
+          const uses = {};
+          for (const id of uniq) {
+            if (base.reference_scores?.[id] != null) scores[id] = base.reference_scores[id];
+            if (base.reference_uses?.[id]) uses[id] = base.reference_uses[id];
+          }
+          // A hand-edited list is a choice: an emptied one stays empty at render.
+          Object.assign(next, { reference_ids: uniq, reference_scores: scores, reference_uses: uses, references_planned: true });
         }
-        // A hand-edited list is a choice: an emptied one stays empty at render.
+        if (hasDerive) next.derive = body.derive;
         const updated = await setVideoPromptStartFrameViaGateway({
           projectId: req.projectId,
           promptId: String(cut._id),
           frame,
-          startFrame: { ...base, reference_ids: uniq, reference_scores: scores, reference_uses: uses, references_planned: true },
+          startFrame: next,
         });
         res.json({ cut: updated });
       } catch (e) {
@@ -564,9 +618,35 @@ export function registerCutRoutes(router) {
           skipRendered: req.body?.skip_rendered !== false,
           imageModel: cleanImageModel(req.body?.image_model),
           comfyParams: cleanComfyParams(req.body?.comfy_params),
+          check: typeof req.body?.check === 'boolean' ? req.body.check : null,
         });
         res.status(202).json({ job_id: jobId, beat_id: beat._id });
       } catch (e) {
+        return sendBusyOr(e, res);
+      }
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // The pair check: does the end frame hold the same people, clothes, props
+  // and layout as the start frame? `repair` also fixes what disagrees.
+  router.post('/cut/:id/frames/check', async (req, res, next) => {
+    try {
+      const cut = await resolveCut(req);
+      if (!cut) return res.status(404).json({ error: 'cut not found' });
+      const { startCutFrameCheckJob, StartFrameInputError } = await import('./cutStartFrames.js');
+      try {
+        const jobId = await startCutFrameCheckJob({
+          projectId: req.projectId,
+          cutId: String(cut._id),
+          repair: req.body?.repair === true,
+          imageModel: cleanImageModel(req.body?.image_model),
+          comfyParams: cleanComfyParams(req.body?.comfy_params),
+        });
+        res.status(202).json({ job_id: jobId, cut_id: String(cut._id) });
+      } catch (e) {
+        if (e instanceof StartFrameInputError) return res.status(400).json({ error: e.message });
         return sendBusyOr(e, res);
       }
     } catch (e) {

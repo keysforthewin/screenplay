@@ -92,6 +92,10 @@ export async function setModelDefaults(projectId, patch = {}) {
 //   { model_id: string|null, params_by_model: { [model_id]: { ...params } } }
 
 const MAX_COMFY_PARAM_KEYS = 64;
+// Never remembered: they belong to ONE render. A saved length used to
+// override every cut's own (every clip of a beat came out the same length),
+// and a saved seed made every cut share one.
+export const PER_RENDER_COMFY_PARAM_KEYS = Object.freeze(['duration_seconds', 'seed', 'prompt']);
 const MAX_COMFY_PARAM_STRING = 20_000;
 
 function emptyComfyDefaults() {
@@ -104,6 +108,7 @@ function sanitizeComfyParams(raw) {
   let n = 0;
   for (const [k, v] of Object.entries(raw)) {
     if (typeof k !== 'string' || !k.trim() || k.length > 64) continue;
+    if (PER_RENDER_COMFY_PARAM_KEYS.includes(k)) continue;
     if (v === undefined) continue;
     if (v !== null && !['string', 'number', 'boolean'].includes(typeof v)) {
       throw new Error(`param ${k} must be a string, number, boolean or null`);
@@ -126,7 +131,11 @@ export async function getComfyDefaults(projectId) {
   if (typeof stored.model_id === 'string' && stored.model_id.trim()) out.model_id = stored.model_id.trim();
   if (stored.params_by_model && typeof stored.params_by_model === 'object' && !Array.isArray(stored.params_by_model)) {
     for (const [k, v] of Object.entries(stored.params_by_model)) {
-      if (v && typeof v === 'object' && !Array.isArray(v)) out.params_by_model[k] = { ...v };
+      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+      // Stripped on read too: docs written before the keys were dropped.
+      const params = { ...v };
+      for (const key of PER_RENDER_COMFY_PARAM_KEYS) delete params[key];
+      out.params_by_model[k] = params;
     }
   }
   return out;

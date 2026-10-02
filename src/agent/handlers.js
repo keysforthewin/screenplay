@@ -3803,7 +3803,7 @@ export const HANDLERS = {
             announceUsername: username,
           });
           return withSpaLink(
-            `Rendering cut ${label} of beat "${target.name}" on ComfyUI (${modelId}, job ${job_id}). Check progress with get_cut_job_status({job_id: "${job_id}"}).`,
+            `Queued cut ${label} of beat "${target.name}" on ComfyUI (${modelId}, job ${job_id}; renders run one at a time, after any already queued). Check progress with get_cut_job_status({job_id: "${job_id}"}).`,
             link,
           );
         }
@@ -3842,6 +3842,9 @@ export const HANDLERS = {
       );
     } catch (e) {
       if (e?.code === 'BEAT_BUSY') return busyCutText(target);
+      if (e?.code === 'CUT_BUSY') {
+        return `That cut already has a ComfyUI render queued or running (job ${e.job_id}). Check it with get_cut_job_status({job_id: "${e.job_id}"}).`;
+      }
       if (e?.code === 'CUT_NOT_FOUND') return e.message;
       if (e?.code === 'SPEND_CONSENT_REQUIRED') {
         return `${e.message} Ask the user to confirm the Comfy credit spend, then call render_cut_video again with confirm_spend: true.`;
@@ -3907,10 +3910,14 @@ export const HANDLERS = {
     const SF = await import('../web/cutStartFrames.js');
     const frames = SF.getCutStartFrameJob(id);
     if (frames) {
-      const lines = [
-        `Frame job ${frames.job_id} (${(frames.frames || ['start']).join(' + ')}): ${frames.status}`,
-        `Frames: ${frames.rendered}/${frames.planned} rendered` + (frames.failed ? `, ${frames.failed} failed` : '') + (frames.skipped ? `, ${frames.skipped} skipped` : ''),
-      ];
+      const kind = frames.kind === 'check' ? 'frame check' : frames.kind === 'repair' ? 'frame check + repair' : (frames.frames || ['start']).join(' + ');
+      const lines = [`Frame job ${frames.job_id} (${kind}): ${frames.status}`];
+      if (frames.planned) lines.push(`Frames: ${frames.rendered}/${frames.planned} rendered` + (frames.failed ? `, ${frames.failed} failed` : '') + (frames.skipped ? `, ${frames.skipped} skipped` : ''));
+      // The pair check: does each cut's end frame hold the same people, clothes, props and layout as its start frame?
+      const ck = frames.checks;
+      if (ck && ck.passed + ck.failed + ck.unchecked > 0) {
+        lines.push(`Start/end pairs: ${ck.passed} match` + (ck.repaired ? ` (${ck.repaired} after repair)` : '') + (ck.failed ? `, ${ck.failed} still differ` : '') + (ck.unchecked ? `, ${ck.unchecked} not checked` : ''));
+      }
       for (const r of frames.results || []) if (r?.error) lines.push(`- ${r.cut_id || ''}${r.frame ? ` (${r.frame})` : ''}: ${r.error}`);
       if (frames.warnings?.length) lines.push(`Warnings: ${frames.warnings.slice(0, 8).join(' · ')}`);
       if (frames.error) lines.push(`Error: ${frames.error}`);

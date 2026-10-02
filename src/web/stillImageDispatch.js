@@ -35,6 +35,9 @@ import { recordOpenAIImageUsage, recordFalImageUsage } from '../mongo/tokenUsage
 const STORYBOARD_SIZE = '2048x1152';
 const ASPECT_RATIO = '16:9';
 
+// Models that can render another aspect ratio from an input image.
+export const WIDE_MASTER_MODELS = Object.freeze(['nano-banana-pro', 'nano-banana-2']);
+
 export const ALLOWED_STILL_MODELS = ['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'openai', 'gemini-25-flash', 'nano-banana-2', 'flux-2-klein'];
 const FAL_MODELS = new Set(['nano-banana-pro', 'flux-2-pro', 'flux-pro-kontext', 'gemini-25-flash', 'nano-banana-2', 'flux-2-klein']);
 
@@ -44,6 +47,10 @@ export async function dispatchStillImage({
   inputImages = [],
   mode = 'generate',
   comfyParams = null,
+  // Only the Nano Banana models honour these (the wide master plate of a
+  // sliding camera, panEndFrame.js); every other model renders 16:9.
+  aspectRatio = ASPECT_RATIO,
+  resolution = null,
 }) {
   // Local ComfyUI models (`comfy:<id>`, src/comfy/imageModels.js) run on the
   // user's own GPU: no provider key, no usage row, and edit mode may carry
@@ -89,8 +96,10 @@ export async function dispatchStillImage({
   }
 
   const refs = Array.isArray(inputImages) ? inputImages : [];
-  if (mode === 'edit' && refs.length !== 1) {
-    const err = new Error('Edit mode requires exactly one input image.');
+  // The first image is the one being edited; any others are references for
+  // the edit (every provider's edit endpoint is its multi-image endpoint).
+  if (mode === 'edit' && refs.length < 1) {
+    const err = new Error('Edit mode requires an input image.');
     err.status = 400;
     throw err;
   }
@@ -125,7 +134,8 @@ export async function dispatchStillImage({
       result = await generateNanoBananaProImage({
         prompt,
         inputImages: refs,
-        aspectRatio: ASPECT_RATIO,
+        aspectRatio,
+        resolution,
       });
       fallbackModel = NANO_BANANA_PRO_GENERATE_MODEL;
     } else if (model === 'flux-2-pro') {
@@ -146,7 +156,8 @@ export async function dispatchStillImage({
       result = await generateNanoBanana2Image({
         prompt,
         inputImages: refs,
-        aspectRatio: ASPECT_RATIO,
+        aspectRatio,
+        resolution,
       });
       fallbackModel = NANO_BANANA_2_GENERATE_MODEL;
     } else if (model === 'flux-2-klein') {

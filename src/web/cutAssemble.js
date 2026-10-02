@@ -17,6 +17,7 @@ import { listVideoPrompts } from '../mongo/videoPrompts.js';
 import { listVideoScenes } from '../mongo/videoScenes.js';
 import { assembleClips } from './beatAssemble.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
+import { trimPolicyForCut } from './cutTiming.js';
 import { setBeatPromptsVideoViaGateway, setVideoSceneVideoViaGateway } from './gateway.js';
 
 export class CutAssembleError extends Error {
@@ -88,6 +89,7 @@ export async function assembleSceneVideo({ projectId, scene, cuts, onProgress = 
     video_file_id: c.video_file_id,
     video_duration_seconds: c.video_duration_seconds,
     label: labelFor(c),
+    trim: trimPolicyForCut(c),
   }));
   const { file, durationSeconds, clipCount } = await assembleClips({
     projectId,
@@ -115,6 +117,7 @@ export async function assemblePromptsBeatVideo({ projectId, beat, cuts, scenes =
     video_file_id: c.video_file_id,
     video_duration_seconds: c.video_duration_seconds,
     label: labelFor(c),
+    trim: trimPolicyForCut(c),
   }));
   const { file, durationSeconds, clipCount } = await assembleClips({
     projectId,

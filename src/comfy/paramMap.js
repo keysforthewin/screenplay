@@ -92,6 +92,16 @@ export function validateComfyParams(model, raw = {}) {
   return { params, warnings, errors };
 }
 
+// Seconds → a frame count for templates whose length slot counts frames
+// (Wan's `length`, LTX's latent length). `rule` is the count the model
+// wants: '4n+1' (Wan), '8n+1' (LTX) or null for any count.
+export function secondsToFrames(seconds, fps, rule = null) {
+  const raw = Math.max(1, Number(fps) || 16) * Math.max(0, Number(seconds) || 0);
+  const step = rule === '4n+1' ? 4 : rule === '8n+1' ? 8 : 0;
+  if (!step) return Math.max(1, Math.round(raw));
+  return Math.max(step + 1, Math.round(raw / step) * step + 1);
+}
+
 export function randomSeed() {
   // 48-bit: comfortably inside every sampler's INT range and JS's safe ints.
   return Math.floor(Math.random() * 2 ** 48);
@@ -117,6 +127,9 @@ export function buildSlotOverrides(
     let value = params[key];
     if (key === 'seed' && (value === null || value === undefined)) value = randomSeed();
     if (value === null || value === undefined) continue;
+    if (key === 'duration_seconds' && spec.unit === 'frames') {
+      value = secondsToFrames(value, params.fps ?? specs.fps?.default ?? spec.fps, spec.frame_rule);
+    }
     ordered.push({ address: spec.address, value });
   }
   if (typeof model?.derived === 'function') {

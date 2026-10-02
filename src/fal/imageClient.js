@@ -124,6 +124,7 @@ async function falGenerateEdit({
   prompt,
   inputImages = [],
   aspectRatio = '16:9',
+  resolution = null,
   generateModel,
   editModel,
   maxEditInputs,
@@ -138,6 +139,8 @@ async function falGenerateEdit({
     num_images: 1,
     output_format: 'png',
   };
+  // '1K' | '2K' | '4K' on the Nano Banana endpoints; omitted = the model's default.
+  if (resolution) payload.resolution = resolution;
   let modelId;
   let sent = 0;
   if (refs.length === 0) {
@@ -202,11 +205,13 @@ export async function generateNanoBananaProImage({
   prompt,
   inputImages = [],
   aspectRatio = '16:9',
+  resolution = null,
 }) {
   return falGenerateEdit({
     prompt,
     inputImages,
     aspectRatio,
+    resolution,
     generateModel: NANO_BANANA_PRO_GENERATE_MODEL,
     editModel: NANO_BANANA_PRO_EDIT_MODEL,
     maxEditInputs: NANO_BANANA_PRO_EDIT_MAX_INPUTS,
@@ -263,11 +268,13 @@ export async function generateNanoBanana2Image({
   prompt,
   inputImages = [],
   aspectRatio = '16:9',
+  resolution = null,
 }) {
   return falGenerateEdit({
     prompt,
     inputImages,
     aspectRatio,
+    resolution,
     generateModel: NANO_BANANA_2_GENERATE_MODEL,
     editModel: NANO_BANANA_2_EDIT_MODEL,
     maxEditInputs: NANO_BANANA_2_EDIT_MAX_INPUTS,
