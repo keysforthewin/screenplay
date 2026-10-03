@@ -3044,6 +3044,111 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   color: var(--fg-muted);
   font: inherit;
 }
+
+/* ── Critique tab: Writing / Artwork sections ─────────────────────────── */
+.critique-section { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; background: var(--bg-subtle, rgba(255,255,255,0.03)); }
+.critique-section > summary { display: flex; align-items: center; gap: 12px; padding: 10px 12px; cursor: pointer; list-style: none; }
+.critique-section > summary::-webkit-details-marker { display: none; }
+.critique-section > summary::before { content: '▸'; color: var(--fg-muted); font-size: 12px; }
+.critique-section[open] > summary::before { content: '▾'; }
+.critique-section-title { font-weight: 700; font-size: 14px; color: var(--fg); }
+.critique-section-meta { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.critique-section-meta .critique-overall { font-size: 18px; }
+.critique-counts { font-size: 11px; color: var(--fg-muted); }
+.critique-section-body { padding: 4px 12px 12px; }
+
+/* v2 facet rows: criteria, evidence, ranked issues */
+.critique-lens-detail > summary.critique-lens { cursor: pointer; list-style: none; }
+.critique-lens-detail > summary.critique-lens::-webkit-details-marker { display: none; }
+.critique-lens-detail > summary.critique-lens::after { content: '▸'; color: var(--fg-muted); font-size: 11px; }
+.critique-lens-detail[open] > summary.critique-lens::after { content: '▾'; }
+.lens-detail { padding: 4px 0 10px 16px; }
+.lens-criterion { display: grid; grid-template-columns: 150px 24px 60px 1fr; gap: 8px; align-items: start; padding: 4px 0; font-size: 12px; }
+.lens-criterion-name { color: #aeb4be; }
+.lens-criterion-na { color: var(--fg-muted); font-size: 11px; grid-column: 2 / span 2; }
+.lens-criterion .lens-bar { margin-top: 5px; width: 60px; }
+.lens-criterion-body { display: flex; flex-direction: column; gap: 4px; color: #9aa1ac; }
+.lens-rationale { line-height: 1.35; }
+.lens-quote { margin: 2px 0 0; padding: 2px 0 2px 8px; border-left: 2px solid var(--border); font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
+.lens-quote-text { font-style: italic; color: #c9ccd2; white-space: pre-wrap; }
+.lens-quote-note { color: var(--fg-muted); font-size: 11px; }
+.lens-issues { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.lens-issues li { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: baseline; font-size: 12px; padding: 6px 8px; border-radius: 6px; background: rgba(255,255,255,0.02); border-left: 3px solid var(--border); }
+.lens-issues li.sev-must_fix { border-left-color: var(--danger, #f1736e); }
+.lens-issues li.sev-should_fix { border-left-color: var(--warning, #e7c14b); }
+.issue-chip { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--fg-muted); }
+.issue-chip.sev-must_fix { color: var(--danger, #f1736e); border-color: var(--danger, #f1736e); }
+.issue-chip.sev-should_fix { color: var(--warning, #e7c14b); border-color: var(--warning, #e7c14b); }
+.issue-criterion { color: #aeb4be; }
+.issue-quote { font-style: italic; color: #c9ccd2; flex-basis: 100%; }
+.issue-problem { color: #d7dbe2; flex-basis: 100%; }
+.issue-fix { color: #9aa1ac; flex-basis: 100%; }
+.issue-fix b { color: var(--fg); }
+.lens-strengths { margin-top: 8px; font-size: 12px; color: #9aa1ac; }
+.lens-strengths b { color: var(--ok, #5fd07e); }
+
+/* Artwork critique */
+.artwork-critique-progress { font-size: 12px; color: var(--fg-muted); }
+.artwork-critique-muted { font-size: 12px; color: var(--fg-muted); }
+.artwork-critique-empty { font-size: 12px; color: var(--fg-muted); padding: 4px 0; }
+.artwork-critique-warnings { margin: 6px 0; padding-left: 18px; font-size: 12px; color: var(--warning, #e7c14b); }
+.artwork-critique-subject { border-top: 1px solid #23262d; padding: 10px 0; }
+.artwork-critique-subject-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.artwork-critique-subject-name { font-weight: 700; font-size: 13px; color: var(--fg); }
+.artwork-critique-summary { font-size: 12px; color: #9aa1ac; margin: 6px 0; line-height: 1.35; }
+.artwork-critique-strip { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.artwork-critique-thumb { position: relative; width: 72px; height: 72px; padding: 0; border: 2px solid transparent; border-radius: 6px; overflow: hidden; background: #0f1115; cursor: pointer; }
+.artwork-critique-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.artwork-critique-thumb.has-issues { border-color: var(--warning, #e7c14b); }
+.artwork-critique-thumb.is-open { border-color: var(--accent); }
+.artwork-critique-thumb .issue-badge { position: absolute; top: 2px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--danger, #f1736e); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; }
+.artwork-critique-issues { margin: 4px 0 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+.artwork-critique-issues-title { font-weight: 600; margin-bottom: 4px; }
+.artwork-critique-issues ul { margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.artwork-critique-thumb.is-fixed { border-color: var(--success, #6ccf7a); }
+.artwork-critique-thumb .fix-badge { position: absolute; left: 0; right: 0; bottom: 0; padding: 1px 0; background: rgba(15, 17, 21, 0.85); color: var(--success, #6ccf7a); font-size: 10px; font-weight: 700; text-align: center; }
+.artwork-critique-fix { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.artwork-critique-fix-prompt { width: 100%; min-height: 48px; resize: vertical; font-size: 12px; padding: 6px 8px; background: #0f1115; border: 1px solid var(--border); border-radius: 4px; color: var(--fg); }
+.artwork-critique-fix-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.artwork-critique-fix-done { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.artwork-critique-fix-done img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); }
+.artwork-critique-reqs { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.req-row { display: grid; grid-template-columns: 18px 1fr; gap: 6px; font-size: 12px; }
+.req-glyph { font-weight: 700; text-align: center; }
+.req-covered .req-glyph { color: var(--ok, #5fd07e); }
+.req-partial .req-glyph { color: var(--warning, #e7c14b); }
+.req-missing .req-glyph { color: var(--danger, #f1736e); }
+.req-body { display: flex; flex-direction: column; gap: 3px; }
+.req-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.req-head .critique-scope { margin-left: 0; }
+.req-summary { font-weight: 600; color: var(--fg); }
+.req-thumb { width: 24px; height: 24px; object-fit: cover; border-radius: 3px; }
+.req-detail { color: #9aa1ac; line-height: 1.35; }
+.req-note { color: var(--fg-muted); font-size: 11px; }
+.artwork-critique-proposals { border-top: 1px solid #23262d; margin-top: 10px; padding-top: 10px; }
+.artwork-critique-proposals-head { display: flex; align-items: center; gap: 10px; font-size: 13px; margin-bottom: 8px; }
+.artwork-critique-proposals-head .spacer { flex: 1; }
+.artwork-critique-proposals-tools { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.artwork-critique-proposals-tools > :first-child { flex: 1; min-width: 240px; }
+.artwork-critique-proposal { display: grid; grid-template-columns: 24px 1fr 150px; gap: 8px; padding: 8px 0; border-top: 1px solid #1e2127; font-size: 12px; }
+.artwork-critique-proposal.is-dismissed { opacity: .55; }
+.artwork-critique-proposal.is-done { border-left: 3px solid var(--ok, #5fd07e); padding-left: 6px; }
+.artwork-critique-proposal.is-error { border-left: 3px solid var(--danger, #f1736e); padding-left: 6px; }
+.proposal-check { padding-top: 2px; }
+.proposal-main { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.proposal-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.proposal-head .critique-scope { margin-left: 0; }
+.proposal-name { color: var(--fg); }
+.proposal-covers { color: #9aa1ac; }
+.proposal-prompt { width: 100%; min-height: 72px; resize: vertical; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: #0f1115; color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; box-sizing: border-box; }
+.proposal-prompt-static { white-space: pre-wrap; color: #9aa1ac; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.proposal-refs { display: flex; flex-wrap: wrap; gap: 4px; }
+.proposal-ref { position: relative; width: 44px; height: 44px; }
+.proposal-ref img { width: 100%; height: 100%; object-fit: cover; border-radius: 4px; display: block; }
+.proposal-ref-x { position: absolute; top: -6px; right: -6px; width: 16px; height: 16px; padding: 0; border-radius: 8px; border: none; background: var(--danger, #f1736e); color: #fff; font-size: 11px; line-height: 16px; cursor: pointer; }
+.proposal-status { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.proposal-done { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 11px; }
+.proposal-done img { width: 72px; height: 72px; object-fit: cover; border-radius: 4px; }
 .toc-sortable-list { list-style: none; padding-left: 0; }
 .toc-sortable-row { display: flex; align-items: center; gap: 8px; }
 .toc-drag-handle {
@@ -3992,6 +4097,13 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .cut-pair-check { display: flex; flex-direction: column; gap: 6px; }
 .cut-pair-check button { font-size: 12px; padding: 2px 8px; }
 .cut-lint-badge.is-fail { color: #f0a3a3; border-color: rgba(240,163,163,0.5); background: rgba(240,163,163,0.06); }
+/* A difference the clip would visibly show, which the repairs could not clear. */
+.cut-lint-badge.is-blocking { color: #fff; border-color: #ff4d4d; background: #c62828; font-weight: 600; }
+.cut-pair-issues li.is-blocking { color: #ff6b6b; }
+.cut-pair-issues li.is-blocking .cut-chip { color: #ff6b6b; border-color: rgba(255,77,77,0.7); }
+.cut-item.has-blocking { border-left: 3px solid #ff4d4d; }
+.cut-job-panel .is-blocking, .cut-plan-progress .is-blocking, .render-beat-notes .is-blocking { color: #ff6b6b; font-weight: 600; }
+tr.has-frame-blocking > td:first-child { box-shadow: inset 3px 0 0 #ff4d4d; }
 .cut-pair-issues { margin: 0; padding-left: 18px; font-size: 12.5px; display: flex; flex-direction: column; gap: 3px; }
 .cut-trim { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
 .cut-trim label { display: flex; align-items: center; gap: 6px; color: var(--fg-muted); font-size: 12px; }
@@ -4166,3 +4278,19 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
   direction: rtl;
   text-align: left;
 }
+
+/* Wardrobe lock (src/web/wardrobe.js): the strip on the artwork critique and
+   the plate badge on artwork / gallery cards. */
+.wardrobe-strip { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0 14px; display: flex; flex-direction: column; gap: 8px; }
+.wardrobe-strip-head { display: flex; align-items: baseline; gap: 10px; font-size: 13px; flex-wrap: wrap; }
+.wardrobe-row { display: flex; gap: 10px; align-items: flex-start; }
+.wardrobe-plate { width: 56px; height: 56px; flex: 0 0 56px; border-radius: 6px; overflow: hidden; background: var(--bg-muted, rgba(127,127,127,0.12)); display: flex; align-items: center; justify-content: center; }
+.wardrobe-plate img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.wardrobe-plate-none { font-size: 10px; color: var(--fg-muted); text-align: center; padding: 4px; }
+.wardrobe-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.wardrobe-name { display: flex; align-items: center; gap: 8px; font-size: 13px; flex-wrap: wrap; }
+.wardrobe-default { font-size: 13px; }
+.wardrobe-override { width: 100%; font-size: 13px; }
+.wardrobe-chip { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--accent); color: var(--bg); white-space: nowrap; }
+.wardrobe-chip.is-missing { background: transparent; color: var(--fg-muted); border: 1px dashed var(--border); }
+.is-wardrobe-badge { color: var(--accent); font-size: 12px; background: transparent; border-color: transparent; }

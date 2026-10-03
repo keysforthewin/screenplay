@@ -34,6 +34,11 @@
 //   characters_in_scene: [string], sets_in_scene: [string]
 //   primary_spend: 'identity' | 'motion' | 'world' | null
 //   felt_intent: string
+//   hook: string (what the eye goes to in this cut — the reason the shot is
+//                 in the film; never blank in a montage)
+//   continues_previous: boolean (the same camera setup as the cut before it,
+//                 continuous in time — a deliberate jump cut; its start frame
+//                 is the previous cut's end frame, see cutStartFrames.js)
 //   dialog_ids: [ObjectId]          (the dialogue lines this cut covers)
 //   lock_line, reference_binding: string; exclusions: [string]
 //   lint: [{ code, severity, message }]
@@ -52,8 +57,9 @@
 //              `item:<id>:end_frame_prompt`) — what a first-last-frame video
 //              model lands on | null
 //   frame_check: { status: 'pass'|'fail'|'unchecked', issues: [{ kind,
-//                  frame_to_fix: 'start'|'end', note, fix_instruction }],
-//                  rounds (repair rounds run), checked_at, start_image_id,
+//                  severity: 'blocking'|'minor', frame_to_fix: 'start'|'end',
+//                  note, fix_instruction }], blocking (how many issues are
+//                  blocking), rounds (repair rounds run), checked_at, start_image_id,
 //                  end_image_id } | null — the vision check of the two
 //                  rendered stills (src/web/cutFrameCheck.js); it describes
 //                  exactly those two images and is stale for any others
@@ -281,6 +287,7 @@ export function normalizeFrameCheck(raw) {
     if (!note) continue;
     issues.push({
       kind: str(e.kind) || 'other',
+      severity: e.severity === 'blocking' ? 'blocking' : 'minor',
       frame_to_fix: e.frame_to_fix === 'start' ? 'start' : 'end',
       note,
       fix_instruction: str(e.fix_instruction),
@@ -290,6 +297,7 @@ export function normalizeFrameCheck(raw) {
   return {
     status: FRAME_CHECK_STATUSES.includes(raw.status) ? raw.status : 'unchecked',
     issues,
+    blocking: issues.filter((i) => i.severity === 'blocking').length,
     rounds: Number.isFinite(rounds) && rounds > 0 ? Math.round(rounds) : 0,
     checked_at: dateOrNull(raw.checked_at),
     start_image_id: maybeOid(raw.start_image_id),
@@ -416,6 +424,8 @@ function backfill(doc) {
     sets_in_scene: normalizeStringList(doc.sets_in_scene),
     primary_spend: enumOrNull(doc.primary_spend, PRIMARY_SPENDS),
     felt_intent: str(doc.felt_intent),
+    hook: str(doc.hook),
+    continues_previous: bool(doc.continues_previous),
     dialog_ids: normalizeDialogIds(doc.dialog_ids),
     lock_line: str(doc.lock_line),
     reference_binding: str(doc.reference_binding),
@@ -554,6 +564,8 @@ export async function createVideoPrompt({
   setsInScene = [],
   primarySpend = null,
   feltIntent = '',
+  hook = '',
+  continuesPrevious = false,
   dialogIds = [],
   lockLine = '',
   referenceBinding = '',
@@ -609,6 +621,8 @@ export async function createVideoPrompt({
     sets_in_scene: normalizeStringList(setsInScene),
     primary_spend: enumOrNull(primarySpend, PRIMARY_SPENDS),
     felt_intent: str(feltIntent),
+    hook: str(hook),
+    continues_previous: bool(continuesPrevious),
     dialog_ids: normalizeDialogIds(dialogIds),
     lock_line: str(lockLine),
     reference_binding: str(referenceBinding),
@@ -660,10 +674,11 @@ const CUT_STRING_FIELDS = new Set([
   'last_frame',
   'sound',
   'felt_intent',
+  'hook',
   'lock_line',
   'reference_binding',
 ]);
-const CUT_BOOL_FIELDS = new Set(['reaction', 'crossing', 'contact', 'sound_on_action']);
+const CUT_BOOL_FIELDS = new Set(['reaction', 'crossing', 'contact', 'sound_on_action', 'continues_previous']);
 const CUT_LIST_FIELDS = new Set(['characters_in_scene', 'sets_in_scene', 'exclusions']);
 
 export async function updateVideoPrompt(projectId, id, patch) {

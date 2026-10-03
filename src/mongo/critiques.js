@@ -29,6 +29,7 @@ export async function setCritiquePending(projectId, beatId, { model, facets } = 
   if (!oid) throw new Error(`Beat not found: ${beatId}`);
   const now = new Date();
   const critique = {
+    version: 2, // anchored criteria + ranked issues; pre-v2 docs have no version
     generated_at: now,
     model: String(model || ''),
     status: 'pending',
@@ -50,7 +51,7 @@ export async function updateCritiqueFacet(projectId, beatId, facetKey, patch = {
   if (!oid) throw new Error(`Beat not found: ${beatId}`);
   const now = new Date();
   const $set = { 'beats.$[b].updated_at': now, updated_at: now };
-  for (const k of ['score', 'comments', 'status', 'error_message']) {
+  for (const k of ['score', 'comments', 'summary', 'strengths', 'criteria', 'issues', 'status', 'error_message']) {
     if (patch[k] !== undefined) $set[`beats.$[b].critique.facets.$[f].${k}`] = patch[k];
   }
   await col().updateOne(

@@ -75,6 +75,10 @@ async function ensureBeatIds(plot) {
       next.critique = null;
       changed = true;
     }
+    if (next.artwork_critique === undefined) {
+      next.artwork_critique = null;
+      changed = true;
+    }
     // The assembled beat video (src/web/cutAssemble.js): GridFS attachment
     // id, its length, and when it was built.
     if (next.prompts_video_file_id === undefined) {
@@ -367,6 +371,8 @@ export async function createBeat({ projectId, name, desc = '', body = '', charac
     images: [],
     main_image_id: null,
     scene_bible: null,
+    critique: null,
+    artwork_critique: null,
     attachments: [],
     artworks: [],
     created_at: now,
@@ -397,11 +403,28 @@ export async function updateBeat(projectId, identifier, patch) {
     k === 'characters' ||
     k === 'sets' ||
     k === 'dialog_notes' ||
-    k === 'scene_sheet_image_id';
+    k === 'scene_sheet_image_id' ||
+    k === 'wardrobe_overrides';
   if (!Object.keys(patch).some((k) => isRecognizedKey(k) && patch[k] !== undefined)) {
     throw new Error(
-      `update_beat: \`patch\` has no recognized fields. Expected one of: name, desc, body, order, characters, sets, dialog_notes, scene_sheet_image_id. Got keys: [${Object.keys(patch).join(', ')}].`,
+      `update_beat: \`patch\` has no recognized fields. Expected one of: name, desc, body, order, characters, sets, dialog_notes, scene_sheet_image_id, wardrobe_overrides. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
+  }
+
+  // Per-beat wardrobe overrides (src/web/wardrobe.js): { <character _id hex>:
+  // text }. Merged into the stored map; a blank value deletes the key.
+  let wardrobeOverrides;
+  if (patch.wardrobe_overrides !== undefined) {
+    const v = patch.wardrobe_overrides;
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+      throw new Error('update_beat: wardrobe_overrides must be an object of { characterId: text }.');
+    }
+    wardrobeOverrides = {};
+    for (const [k, text] of Object.entries(v)) {
+      if (!/^[a-f0-9]{24}$/i.test(k)) throw new Error(`update_beat: wardrobe_overrides key ${k} is not a character id.`);
+      if (text !== null && typeof text !== 'string') throw new Error(`update_beat: wardrobe_overrides.${k} must be a string or null.`);
+      wardrobeOverrides[k.toLowerCase()] = text == null ? '' : text.trim();
+    }
   }
 
   let sheetImageId;
@@ -440,6 +463,14 @@ export async function updateBeat(projectId, identifier, patch) {
     set['beats.$.sets'] = dedupeNames(patch.sets);
   }
   if (sheetImageIdProvided) set['beats.$.scene_sheet_image_id'] = sheetImageId;
+  if (wardrobeOverrides) {
+    const merged = { ...(beat.wardrobe_overrides && typeof beat.wardrobe_overrides === 'object' ? beat.wardrobe_overrides : {}) };
+    for (const [k, text] of Object.entries(wardrobeOverrides)) {
+      if (text) merged[k] = text;
+      else delete merged[k];
+    }
+    set['beats.$.wardrobe_overrides'] = merged;
+  }
 
   const orderChanging = patch.order !== undefined && patch.order !== null;
   if (orderChanging) {

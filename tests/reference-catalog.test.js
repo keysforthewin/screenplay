@@ -126,6 +126,26 @@ describe('buildReferenceCatalog', () => {
     expect(text).not.toMatch(/uploaded/);
   });
 
+  it('carries owner_id, and offers a character\'s wardrobe plate even when it is a gallery upload', async () => {
+    const { beat, sheet, artworkId } = await seedBeatWithRefs();
+    const base = await Gen.buildReferenceCatalog(projectId, beat);
+    expect(base.every((e) => /^[a-f0-9]{24}$/.test(e.owner_id))).toBe(true);
+    expect(base.some((e) => e.wardrobe)).toBe(false);
+    const plate = newImage('wardrobe upload');
+    await fakeDb.collection('characters').updateOne({ project_id: projectId, name_lower: 'sarah' }, { $set: { wardrobe_image_id: plate }, $push: { images: { _id: plate } } });
+    const withUpload = await Gen.buildReferenceCatalog(projectId, beat);
+    const entry = withUpload.find((e) => e.image_id === plate.toString());
+    expect(entry).toMatchObject({ owner_type: 'character', owner_name: 'Sarah', wardrobe: true, label: 'Sarah — wardrobe plate' });
+    expect(Gen.formatReferenceCatalog(withUpload)).toContain('Sarah — wardrobe plate');
+    // A plate that is already an artwork keeps one entry, relabelled.
+    await fakeDb.collection('characters').updateOne({ project_id: projectId, name_lower: 'sarah' }, { $set: { wardrobe_image_id: sheet } });
+    const asArt = await Gen.buildReferenceCatalog(projectId, beat);
+    expect(asArt.filter((e) => e.image_id === sheet.toString())).toHaveLength(1);
+    expect(asArt.find((e) => e.image_id === sheet.toString())).toMatchObject({ wardrobe: true, label: 'Sarah — wardrobe plate (artwork: Turnaround)' });
+    expect(asArt.some((e) => e.image_id === plate.toString())).toBe(false);
+    expect(String(artworkId)).toBeTruthy();
+  });
+
   it('a beat whose hosts have no artwork yields an empty catalog even when they have uploads', async () => {
     const portrait = newImage('uploaded portrait');
     await fakeDb.collection('characters').insertOne({

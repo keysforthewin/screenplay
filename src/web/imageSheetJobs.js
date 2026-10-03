@@ -35,6 +35,7 @@ import {
 } from './beatPlanShared.js';
 import { clipBlock, MAX_CONTEXT_BEATS } from './setDescriptionGenerate.js';
 import { buildCharacterSheetShots, selectSheetShots } from './characterSheetShots.js';
+import { wardrobeImageId } from './wardrobe.js';
 import { planBeatSceneImages, MAX_SCENE_IMAGE_COUNT } from './beatSheetPlanner.js';
 
 // How many provider calls run at once. Bounded to avoid hammering provider rate
@@ -63,7 +64,7 @@ function httpError(message, status) {
   return e;
 }
 
-function recordProgress(job, { phase, step, frame = null, total = null, message }) {
+export function recordProgress(job, { phase, step, frame = null, total = null, message }) {
   if (!job) return;
   const ts = new Date();
   job.progress = { ts, phase, step, frame, total, message, started_at: ts };
@@ -190,7 +191,7 @@ async function planShots({ projectId, hostId, shotNames, shotCount, hasReference
 }
 
 // Run `items` through `worker` with at most `limit` in flight at once.
-async function runPool(items, limit, worker) {
+export async function runPool(items, limit, worker) {
   let cursor = 0;
   const runNext = async () => {
     while (cursor < items.length) {
@@ -310,7 +311,7 @@ async function pruneStaleShotReferences(shots) {
 // would be silently ignored and the user shown a prompt-only render they
 // believed was reference-anchored). Wired shortcut models all generate
 // prompt-only AND accept references, so only catalog rows constrain.
-async function assertShotsSatisfyModelReferences({ model, explicitShots, poolIds }) {
+export async function assertShotsSatisfyModelReferences({ model, explicitShots, poolIds }) {
   const { getImageModel } = await import('../fal/imageModelCatalog.js');
   // Cache catalog lookups per distinct model — split sheets carry a per-shot
   // model, so the guard checks each shot against ITS effective model.
@@ -704,6 +705,12 @@ export async function startImageSheetJob({
       explicitIds: refIds,
       referenceSetIds: cleanRefSetIds,
     });
+  }
+  // A character's wardrobe plate (src/web/wardrobe.js) always rides along so
+  // every sheet shot copies the same clothes.
+  if (hostType === 'character') {
+    const plate = wardrobeImageId(await getCharacter(projectId, String(resolvedHostId)));
+    if (plate && !refIds.includes(plate)) refIds = [...refIds, plate];
   }
 
   // Beats and sets render an explicit, pre-derived shot list (the

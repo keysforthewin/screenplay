@@ -306,6 +306,18 @@ describe('cuts', () => {
     expect(listed.unsorted.map((c) => c.title)).toEqual(['legacy', 'loose2']);
   });
 
+  it('PATCH takes the hook, the continuation flag, the scene kind and the montage subjects', async () => {
+    const { beat } = await seedBeat();
+    const { s1, c1 } = await seedScenes(beat);
+    let r = await call('PATCH', `/api/cut/${c1._id}`, { hook: ' the dog takes the hot dog ', continues_previous: true });
+    expect(r.status).toBe(200);
+    expect(r.json.cut).toMatchObject({ hook: 'the dog takes the hot dog', continues_previous: true });
+    r = await call('PATCH', `/api/video-scene/${s1._id}`, { kind: 'montage', montage_subjects: ['three boys, one skateboard', ''] });
+    expect(r.status).toBe(200);
+    expect(r.json.scene).toMatchObject({ kind: 'montage', montage_subjects: ['three boys, one skateboard'] });
+    expect((await call('PATCH', `/api/video-scene/${s1._id}`, { kind: 'nonsense' })).json.scene.kind).toBe('scene');
+  });
+
   it('PATCH /cut/:id accepts structured fields, verifies dialog ids and references, rejects the rest', async () => {
     const { beat, sarahArt, d1, d2 } = await seedBeat();
     const { c1 } = await seedScenes(beat);

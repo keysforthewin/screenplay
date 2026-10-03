@@ -17,6 +17,7 @@ import { buildAdminRouter } from './adminRoutes.js';
 import { buildElevenRouter } from './elevenRoutes.js';
 import { buildComfyRouter, registerCutVideoRoutes } from './comfyRoutes.js';
 import { registerCutRoutes } from './cutRoutes.js';
+import { registerArtworkCritiqueRoutes } from './artworkCritiqueRoutes.js';
 import { registerCutFalVideoRoutes, cutVideoJobEventsHandler } from './cutVideoRoutes.js';
 import {
   countProjects,
@@ -93,6 +94,7 @@ import {
   deleteBeatViaGateway,
   setBeatMainImageViaGateway,
   setCharacterMainImageViaGateway,
+  setCharacterWardrobeImageViaGateway,
   setDirectorNoteMainImageViaGateway,
   setDialogAudioViaGateway,
   setEntityFieldMarkdown,
@@ -538,6 +540,53 @@ export function buildApiRouter() {
     } catch (e) { next(e); }
   });
 
+  // SSE stream of a beat ARTWORK critique run — the twin of the route above
+  // (same pre-auth capability model keyed on the server-minted job id).
+  router.get('/beat/:id/artwork-critique/:jobId/events', async (req, res, next) => {
+    try {
+      const sid = String(req.query?.session_id || '');
+      if (!sid) { res.status(401).json({ error: 'missing session' }); return; }
+      const session = await getSession(sid);
+      if (!session) { res.status(401).json({ error: 'invalid session' }); return; }
+      touchSession(sid).catch(() => {});
+      req.session = session;
+
+      const {
+        getArtworkCritiqueJob, subscribeToArtworkCritiqueJob, unsubscribeFromArtworkCritiqueJob, serializeArtworkCritiqueJob,
+      } = await import('./artworkCritique.js');
+      const job = getArtworkCritiqueJob(req.params.jobId);
+      if (!job) { res.status(404).json({ error: 'job not found' }); return; }
+
+      res.set({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      res.flushHeaders?.();
+      res.write(`event: snapshot\ndata: ${JSON.stringify(serializeArtworkCritiqueJob(job))}\n\n`);
+
+      const isTerminal = (s) => s === 'done' || s === 'partial' || s === 'error';
+      const listener = (snap) => {
+        const terminal = isTerminal(snap.status);
+        const eventName = terminal ? (snap.status === 'error' ? 'error' : 'done') : 'update';
+        res.write(`event: ${eventName}\ndata: ${JSON.stringify(snap)}\n\n`);
+        if (terminal) { unsubscribeFromArtworkCritiqueJob(snap.job_id, listener); res.end(); }
+      };
+      subscribeToArtworkCritiqueJob(req.params.jobId, listener);
+
+      if (isTerminal(job.status)) {
+        unsubscribeFromArtworkCritiqueJob(req.params.jobId, listener);
+        res.end();
+        return;
+      }
+
+      const keepalive = setInterval(() => { res.write(`: keepalive ${Date.now()}\n\n`); }, 20_000);
+      keepalive.unref?.();
+      req.on('close', () => { clearInterval(keepalive); unsubscribeFromArtworkCritiqueJob(req.params.jobId, listener); });
+    } catch (e) { next(e); }
+  });
+
   // Server-Sent Events stream of a playground generation job. Registered
   // BEFORE requireSession() for the same EventSource-can't-set-headers
   // reason as the video-job stream above.
@@ -627,6 +676,10 @@ export function buildApiRouter() {
   // and cut CRUD, and start-frame rendering.
   registerCutRoutes(router);
   registerCutFalVideoRoutes(router);
+
+  // Beat artwork critique (src/web/artworkCritiqueRoutes.js): the lower half
+  // of the Critique tab — requirements, vision audit, generation proposals.
+  registerArtworkCritiqueRoutes(router);
 
   // Attribute every gateway text/cast edit made during an authenticated request
   // to the logged-in user, so AI-assist features (beat rewrite, restore, dialog
@@ -974,13 +1027,17 @@ export function buildApiRouter() {
           _id: c._id.toString(),
           name: stripMarkdown(c.name || ''),
           main_image_id: c.main_image_id ? c.main_image_id.toString() : null,
+          wardrobe_image_id: c.wardrobe_image_id ? c.wardrobe_image_id.toString() : null,
           sheets,
           hollywood_actor:
             typeof c.hollywood_actor === 'string' ? c.hollywood_actor : null,
           fields: c.fields && typeof c.fields === 'object' ? c.fields : {},
         });
       }
-      res.json({ characters: out });
+      // The beat's wardrobe overrides (src/web/wardrobe.js) ride along so the
+      // SPA can show each character's locked outfit for THIS beat.
+      const wardrobe_overrides = beat?.wardrobe_overrides && typeof beat.wardrobe_overrides === 'object' ? beat.wardrobe_overrides : {};
+      res.json({ characters: out, wardrobe_overrides });
     } catch (e) {
       next(e);
     }
@@ -1929,11 +1986,14 @@ export function buildApiRouter() {
     try {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
-      const { characters, sets, order } = req.body || {};
+      const { characters, sets, order, wardrobe_overrides } = req.body || {};
       const patch = {};
       if (Array.isArray(characters)) patch.characters = characters;
       if (Array.isArray(sets)) patch.sets = sets;
       if (typeof order === 'number') patch.order = order;
+      if (wardrobe_overrides && typeof wardrobe_overrides === 'object' && !Array.isArray(wardrobe_overrides)) {
+        patch.wardrobe_overrides = wardrobe_overrides;
+      }
       if (!Object.keys(patch).length) return res.status(400).json({ error: 'no patch fields' });
 
       const result = await updateBeatViaGateway(req.projectId, beatId, patch);
@@ -2400,6 +2460,21 @@ export function buildApiRouter() {
       const imageId = req.body?.image_id;
       if (!isOidHex(String(imageId))) return res.status(400).json({ error: 'image_id required' });
       const result = await setCharacterMainImageViaGateway({ projectId: req.projectId, character: cid, imageId });
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // The wardrobe plate (src/web/wardrobe.js): { image_id } or { image_id: null } to clear.
+  router.post('/character/:id/wardrobe-image', async (req, res, next) => {
+    try {
+      const cid = await resolveCharacterId(req);
+      if (!cid) return res.status(404).json({ error: 'character not found' });
+      const imageId = req.body?.image_id;
+      const clearing = imageId === null || imageId === '' || imageId === undefined;
+      if (!clearing && !isOidHex(String(imageId))) return res.status(400).json({ error: 'image_id must be an id or null' });
+      const result = await setCharacterWardrobeImageViaGateway({ projectId: req.projectId, character: cid, imageId: clearing ? null : imageId });
       res.json(result);
     } catch (e) {
       next(e);

@@ -101,13 +101,21 @@ export function Character({ session }) {
           <CollabField label="Hollywood actor" field="hollywood_actor" />
 
           {customFields.map((f) => (
-            <CollabField
-              key={f.name}
-              label={f.name.replace(/_/g, ' ')}
-              field={`fields.${f.name}`}
-              multiline
-              placeholder={f.description}
-            />
+            <div key={f.name}>
+              <CollabField
+                label={f.name.replace(/_/g, ' ')}
+                field={`fields.${f.name}`}
+                multiline
+                placeholder={f.description}
+              />
+              {f.name === 'wardrobe' && (
+                <div className="muted" style={{ fontSize: 12, marginTop: -6, marginBottom: 10 }}>
+                  {character.wardrobe_image_id
+                    ? '👔 Wardrobe plate set — every render of this character copies its clothes (see the Artwork / Attachments tabs).'
+                    : 'No wardrobe plate yet — mark one on the Artwork or Attachments tab, or the first costume render from a beat critique becomes it.'}
+                </div>
+              )}
+            </div>
           ))}
         </div>
 
@@ -135,6 +143,8 @@ export function Character({ session }) {
           <ImageGallery
             images={character.images || []}
             mainImageId={character.main_image_id}
+            wardrobeImageId={character.wardrobe_image_id}
+            wardrobePath={`/character/${character._id}/wardrobe-image`}
             onChange={onRefresh}
             uploadPath={`/character/${character._id}/image`}
             deletePath={(imageId) => `/character/${character._id}/image/${imageId}`}
@@ -183,6 +193,8 @@ export function Character({ session }) {
             hostArtworks={character.artworks || []}
             mainImageId={character.main_image_id}
             mainPath={`/character/${character._id}/main-image`}
+            wardrobeImageId={character.wardrobe_image_id}
+            wardrobePath={`/character/${character._id}/wardrobe-image`}
             onChange={onRefresh}
           />
         </div>

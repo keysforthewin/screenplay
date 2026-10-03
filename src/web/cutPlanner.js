@@ -46,11 +46,12 @@ import {
   normalizeCamera,
   recomputeCutOrderForBeat,
 } from '../mongo/videoPrompts.js';
-import { DIRECTORS_READ_FIELDS, SCOPE_BUCKETS, getVideoScene } from '../mongo/videoScenes.js';
+import { DIRECTORS_READ_FIELDS, SCENE_KINDS, SCOPE_BUCKETS, getVideoScene, normalizeSceneKind } from '../mongo/videoScenes.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { loadFullBeatContext } from './beatContext.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
 import { latestJobForBeat } from './jobLookup.js';
+import { findRepeatedSetups, sameSetup } from './cutCoverage.js';
 import { cutBeats, cutLoadPoints, estimateCutDuration, sceneLoad, speechFloorSeconds } from './cutLoad.js';
 import { lintCut } from './cutPromptLint.js';
 import { cameraTravels } from './cutTiming.js';
@@ -58,6 +59,7 @@ import {
   BLOCK_FORM_RULES,
   CAMERA_TRAVEL_RULES,
   CARRIER_TABLE_RULES,
+  COVERAGE_RULES,
   CUT_ANTI_SLOP_RULES,
   CUT_DIALOGUE_RULES,
   DIRECTORS_READ_RULES,
@@ -68,6 +70,8 @@ import {
   FRAME_PAIR_RULES,
   INTENT_RULES,
   LOCK_LINE_RULES,
+  MONTAGE_CUT_RULES,
+  MONTAGE_SCENE_RULES,
   REFERENCE_BINDING_RULES,
   SCOPE_RULES,
   SHOT_TABLE_RULES,
@@ -149,7 +153,9 @@ export const BREAK_SCENES_TOOL = {
               required: [...DIRECTORS_READ_FIELDS],
               additionalProperties: false,
             },
-            intention: { type: 'string', description: 'ONE sentence: what this scene must do to the audience.' },
+            kind: { type: 'string', enum: [...SCENE_KINDS], description: '"montage" for a run of separate pictures with no continuous action (an opening that sets the time and place, a passage of time); "scene" for everything else.' },
+            montage_subjects: { type: 'array', items: { type: 'string' }, description: 'Montage only: the six to twelve concrete, filmable things that must be shown for the montage to do its job, each specific to this story, place and time. Empty for a scene.' },
+            intention: { type: 'string', description: 'ONE sentence: what this scene must do to the audience. For a montage, its job: what the audience knows or feels when it ends.' },
             scope: {
               type: 'object',
               description: 'The scope firewall: what has already happened, what this scene shows, what is reserved for later, what must not be shown yet.',
@@ -160,7 +166,7 @@ export const BREAK_SCENES_TOOL = {
             floor_plan: { type: 'string', description: 'Three or four sentences a stranger could draw from: landmarks, who is where at the start and facing what, the light source and its colour, the axis.' },
             dialog_lines: { type: 'array', items: { type: 'integer' }, description: 'The NUMBERS of the dialogue lines that fall inside this scene, in order (contiguous). Empty when the scene has no lines.' },
           },
-          required: ['title', 'slug', 'set_names', 'character_names', 'text_span', 'directors_read', 'intention', 'scope', 'floor_plan', 'dialog_lines'],
+          required: ['title', 'slug', 'set_names', 'character_names', 'text_span', 'directors_read', 'kind', 'montage_subjects', 'intention', 'scope', 'floor_plan', 'dialog_lines'],
           additionalProperties: false,
         },
       },
@@ -233,9 +239,11 @@ export const PLAN_CUTS_TOOL = {
             sets_in_scene: { type: 'array', items: { type: 'string' }, description: 'The set(s) this cut plays in, copied exactly. Usually one.' },
             primary_spend: { type: 'string', enum: PRIMARY_SPENDS, description: 'What this cut spends its fidelity budget on.' },
             felt_intent: { type: 'string', description: 'What the viewer should feel or notice here — the scene\'s intention narrowed to this cut. An accident says so ("he has forgotten the bucket; it falls unnoticed").' },
+            hook: { type: 'string', description: 'The ONE thing the eye goes to in this cut, as what the camera sees: something that happens (with its payoff), light on a material, something funny, cute or curious. In a montage, also which montage subject it shows. Never blank in a montage.' },
+            continues_previous: { type: 'boolean', description: 'true ONLY for a deliberate jump cut: the same camera setup as the cut before it, continuous in time, opening on exactly the frame that cut ended on. false for every ordinary cut — consecutive cuts change setup.' },
             duration_seconds: { type: 'number', description: 'How long this cut runs, in seconds, half-second steps — the editor\'s choice under the tempo rules: 1–2 for a connective insert, travel ÷ speed for a moving camera, the speech plus a breath for a covered line.' },
           },
-          required: ['camera', 'in_frame', 'action_by', 'reaction', 'eyeline', 'action', 'others', 'last_frame', 'sound', 'sound_on_action', 'crossing', 'contact', 'dialog_lines', 'sets_in_scene', 'primary_spend', 'felt_intent', 'duration_seconds'],
+          required: ['camera', 'in_frame', 'action_by', 'reaction', 'eyeline', 'action', 'others', 'last_frame', 'sound', 'sound_on_action', 'crossing', 'contact', 'dialog_lines', 'sets_in_scene', 'primary_spend', 'felt_intent', 'hook', 'continues_previous', 'duration_seconds'],
           additionalProperties: false,
         },
       },
@@ -328,7 +336,7 @@ export const DERIVE_START_FRAMES_TOOL = {
   },
 };
 
-export const REVIEW_ISSUE_KINDS = Object.freeze(['tempo', 'camera_speed', 'intent', 'frame_pair', 'other']);
+export const REVIEW_ISSUE_KINDS = Object.freeze(['tempo', 'camera_speed', 'intent', 'frame_pair', 'coverage', 'continuity', 'hook', 'other']);
 
 // Strict, so no nullable fields: an empty string means "keep what is there".
 export const REVIEW_CUTS_TOOL = {
@@ -390,6 +398,9 @@ export const SCENES_SYSTEM_PROMPT = [
   '# What the read becomes (so you write carriers, not moods)',
   CARRIER_TABLE_RULES,
   '',
+  '# Montages',
+  MONTAGE_SCENE_RULES,
+  '',
   '# Scope',
   SCOPE_RULES,
   '',
@@ -417,6 +428,12 @@ export const CUTS_SYSTEM_PROMPT = [
   '- One cut carries ONE visible beat with a changed endpoint (before state → action → changed state). Story beats are one cut each; a reaction or an insert is half a beat and gets its own row when the audience must be told how to feel. A crossing between landmarks is its own row.',
   '- Each cut becomes ONE generation with its own start frame, so a row must be a single camera setup a still could open on. A shot that needs a big action AND a readable face is two cuts.',
   '- As many cuts as the scene\'s beats need and no more; do not pad with coverage. Keep it under twelve.',
+  '',
+  '# From cut to cut',
+  COVERAGE_RULES,
+  '',
+  '# Why anyone watches this cut',
+  MONTAGE_CUT_RULES,
   '',
   '# Dialogue coverage',
   CUT_DIALOGUE_RULES,
@@ -456,6 +473,7 @@ export const CUTS_SYSTEM_PROMPT = [
   '- last_frame must be visible from this camera. others is never blank when anyone else is in frame. An object that leaves a hand is in the last_frame cell with where it lies.',
   '- sets_in_scene copies the scene\'s set names exactly.',
   '- Write tempo first, then give every row its duration_seconds; a moving camera also gets travel and travel_widths.',
+  '- Every row has its hook. continues_previous is false unless the row is a deliberate jump cut on the previous row\'s setup; before returning, read the camera cells down the table — two rows in a row with the same subject, size and side are a fault.',
 ].join('\n');
 
 export const PROSE_SYSTEM_PROMPT = [
@@ -472,6 +490,9 @@ export const PROSE_SYSTEM_PROMPT = [
   '',
   '# What each cut is for',
   INTENT_RULES,
+  '',
+  '# Why anyone watches this cut',
+  MONTAGE_CUT_RULES,
   '',
   '# A camera that moves',
   CAMERA_TRAVEL_RULES,
@@ -501,6 +522,8 @@ export const PROSE_SYSTEM_PROMPT = [
   '- Compile each row from the table exactly: the same camera, the same people in the same places facing the same way, the same one action, the same last frame. The table is the truth; the block is its rendering.',
   '- Each row gives its length and the scene gives its tempo. The seconds never appear in the block; they decide how much it holds: a 1.5 s cut is one motion already under way, a 9 s pan is one slow, even move across its stated travel.',
   '- The row\'s felt intent is the point of the cut: it appears in the block as one plain clause the model can stage.',
+  '- The row\'s hook is staged in the block as the cut\'s one action or its one picture, with its payoff before the ending — in the mechanics a camera can see, never as an evaluating word.',
+  '- A row marked "continues previous cut" opens exactly where the previous block ended: the same camera sentence, and its first clause is the previous block\'s ending state.',
   '- Do NOT begin a block with "Cut N." or any number — the labels in the exemplar are for reading only. Each block stands alone.',
   '- Write the lock line into the block AND copy it into lock_line verbatim. Write any exclusion at the very end of the block AND list it in exclusions verbatim.',
   '- Physical identity in the lock line (age band, hair, wardrobe, distinguishing object) comes from the character context; keep it to a phrase per person and use the same words in every cut of the scene.',
@@ -516,6 +539,13 @@ export const START_FRAMES_SYSTEM_PROMPT = [
   '',
   '# The two stills are one place',
   FRAME_PAIR_RULES,
+  '',
+  '# From cut to cut',
+  COVERAGE_RULES,
+  'For the stills: each cut\'s START still shows the state the previous cut\'s end still left — the same hands, props, mouthfuls and clothing. A cut marked "continues previous cut" has a start still that IS the previous cut\'s end still: write it as that picture in full (the previous start still with the previous cut\'s changes applied), never as a new composition.',
+  '',
+  '# The hook',
+  'Each row names its hook — the one thing the eye goes to. Both stills are composed around it: it is placed where the eye lands first, large enough to read, lit by the stated source; the start still shows it about to happen or under way, the end still shows its payoff. In a montage the still must also say the time and place in what people wear, hold and do.',
   '',
   '# A camera that moves',
   CAMERA_TRAVEL_RULES,
@@ -563,6 +593,14 @@ export const REVIEW_SYSTEM_PROMPT = [
   '# 4. The pair — are the two stills the same place, the same people, the same things?',
   FRAME_PAIR_RULES,
   'Count the people in each still. List the props in each. Compare the furniture clauses and each person\'s wardrobe words. Anything in one still and not the other that the block does not perform is a fault: rewrite the still that is wrong — usually by adding the thing to the START still, or by taking out of the end still what nothing brought in.',
+  '',
+  '# 5. From cut to cut — coverage and the hand-off',
+  COVERAGE_RULES,
+  'Read the camera cells down the table. Two rows in a row on the same subject, size and side, the second not marked "continues previous cut", is a coverage fault: you cannot move a camera here, so report it in an issue (kind coverage) naming both cuts. Then read each cut\'s start still against the previous cut\'s last-frame cell and end still: a hand, prop, mouthful, garment or position that differs with nothing in between to change it is a continuity fault — rewrite the START still of the later cut (and its block\'s opening clause) to the state the earlier cut left.',
+  '',
+  '# 6. The hook — would a stranger know why this shot is in the film?',
+  MONTAGE_CUT_RULES,
+  'Read each block and its stills for the hook the row names. A block or still that shows the subject but not the hook (people standing about, a street with nothing happening in it), or a montage cut that could open any film, is rewritten so the hook is the picture: what happens, where in the frame, and its result in the end still.',
   '',
   '# The forms a rewrite must keep',
   BLOCK_FORM_RULES,
@@ -646,10 +684,13 @@ export function formatSceneBrief(scene, dialogs) {
     `Sets: ${(scene.set_names || []).join(', ') || '(none)'}`,
     `Characters present: ${(scene.character_names || []).join(', ') || '(none)'}`,
     `Text span: starts "${scene.text_span?.starts_with || ''}" … ends "${scene.text_span?.ends_with || ''}"`,
+    ...(scene.kind === 'montage'
+      ? [`Kind: MONTAGE — every cut is a separate picture with a hook, taken from these subjects: ${(scene.montage_subjects || []).join('; ') || '(none listed — draw them from the beat and the period)'}`]
+      : []),
     '',
     "Director's read:",
     formatRead(scene.directors_read),
-    `Intention: ${scene.intention || '(blank)'}`,
+    `Intention${scene.kind === 'montage' ? ' (the montage\'s job)' : ''}: ${scene.intention || '(blank)'}`,
     ...(scene.tempo ? [`Tempo: ${scene.tempo}`] : []),
     '',
     'Scope:',
@@ -677,7 +718,7 @@ export function formatCutRow(cut, i, dialogs) {
       }).join(', ')
     : 'none';
   return [
-    `Cut ${i + 1}${cut.reaction ? ' (reaction, half a beat)' : ''}${cut.crossing ? ' (crossing)' : ''} — covers lines: ${lines}`,
+    `Cut ${i + 1}${cut.reaction ? ' (reaction, half a beat)' : ''}${cut.crossing ? ' (crossing)' : ''}${cut.continues_previous ? ' (continues previous cut: same setup, opens on its last frame)' : ''} — covers lines: ${lines}`,
     `  camera: ${c.size || '?'}, ${c.angle || '?'}, ${c.height || '?'}, ${c.lens_mm ? `${c.lens_mm}mm` : '?'}, ${c.side || '?'}, ${move}, ${c.depth_of_field || '?'} focus`,
     `  light: ${c.lighting || '?'}`,
     `  in frame: ${inFrame}`,
@@ -687,6 +728,7 @@ export function formatCutRow(cut, i, dialogs) {
     `  last frame: ${cut.last_frame || '—'}`,
     `  sound: ${cut.sound || '—'}${cut.sound_on_action ? ' (lands on the action)' : ''}${cut.contact ? '; contact must land' : ''}`,
     `  sets: ${(cut.sets_in_scene || []).join(', ') || '—'}; spend: ${cut.primary_spend || '?'}; felt intent: ${cut.felt_intent || '—'}`,
+    `  hook: ${cut.hook || '—'}`,
     `  duration: ${cut.duration_seconds ?? '?'} s`,
   ].join('\n');
 }
@@ -742,12 +784,22 @@ export function buildProseUserText({ scene, cuts, dialogs = [] }) {
   ].join('\n');
 }
 
+// What the still pass needs of the scene: where things are, and what the
+// scene (or the montage) is for.
+export function sceneStillBrief(scene) {
+  return [
+    `Floor plan: ${scene.floor_plan || '(blank)'}`,
+    `Intention: ${scene.intention || '(blank)'}`,
+    ...(scene.kind === 'montage' ? [`Kind: MONTAGE — subjects: ${(scene.montage_subjects || []).join('; ') || '(none listed)'}`] : []),
+  ].join('\n');
+}
+
 export function buildStartFramesUserText({ scene, cuts, dialogs = [], catalogGroups = [] }) {
   const blocks = cuts.map((c, i) => [formatCutRow(c, i, dialogs), `  block: ${c.prompt || '(none)'}`].join('\n'));
   return [
     `Derive the start frame and the end frame for every cut of this scene with the derive_start_frames tool (${cuts.length} cut${cuts.length === 1 ? '' : 's'}).`,
     '',
-    `Floor plan: ${scene.floor_plan || '(blank)'}`,
+    sceneStillBrief(scene),
     '',
     '# Cuts (table row, then the compiled block)',
     blocks.join('\n\n'),
@@ -866,6 +918,9 @@ export function normalizeScenes(raw, { characters = [], sets = [], dialogs = [] 
     }
     const floorPlan = str(s?.floor_plan);
     if (!floorPlan) warnings.push(`Scene ${i + 1}: floor plan is blank.`);
+    const kind = normalizeSceneKind(s?.kind);
+    const subjects = kind === 'montage' ? (Array.isArray(s?.montage_subjects) ? s.montage_subjects : []).map(str).filter(Boolean) : [];
+    if (kind === 'montage' && !subjects.length) warnings.push(`Scene ${i + 1}: a montage with no subjects listed — its cuts have nothing to be about.`);
     scenes.push({
       order: i + 1,
       title,
@@ -874,6 +929,8 @@ export function normalizeScenes(raw, { characters = [], sets = [], dialogs = [] 
       character_names: charPicks,
       text_span: { starts_with: str(s?.text_span?.starts_with), ends_with: str(s?.text_span?.ends_with) },
       directors_read: read,
+      kind,
+      montage_subjects: subjects,
       intention: str(s?.intention),
       scope,
       floor_plan: floorPlan,
@@ -890,7 +947,10 @@ export function normalizeScenes(raw, { characters = [], sets = [], dialogs = [] 
   return { scenes, warnings };
 }
 
-export function normalizeCuts(raw, { scene, dialogs = [] } = {}) {
+// `previous`: the row before the first of these (a single-cut replan), so a
+// continuation on the first row can be judged; without it the first row of a
+// scene never continues anything.
+export function normalizeCuts(raw, { scene, dialogs = [], previous = null } = {}) {
   const warnings = [];
   const sceneLabel = `Scene ${scene?.order ?? ''}`.trim();
   const roster = scene?.character_names || [];
@@ -943,7 +1003,20 @@ export function normalizeCuts(raw, { scene, dialogs = [] } = {}) {
       characters_in_scene: inFrame.map((p) => p.character),
       primary_spend: PRIMARY_SPENDS.includes(c?.primary_spend) ? c.primary_spend : null,
       felt_intent: str(c?.felt_intent),
+      hook: str(c?.hook),
+      continues_previous: Boolean(c?.continues_previous),
     });
+    const row = cuts[cuts.length - 1];
+    const before = i === 0 ? previous : cuts[i - 1];
+    // A continuation is the previous setup held; on any other setup it means nothing.
+    if (row.continues_previous && !(before && sameSetup(before, row))) {
+      if (before) warnings.push(`${label}: marked as continuing the previous cut but it is a different camera setup; treated as an ordinary cut.`);
+      row.continues_previous = false;
+    }
+    if (scene?.kind === 'montage') {
+      if (!row.hook) warnings.push(`${label}: a montage cut with no hook — nothing in it to look at.`);
+      else if (cuts.slice(0, -1).some((x) => x.hook && nameKey(x.hook) === nameKey(row.hook))) warnings.push(`${label}: repeats an earlier cut's hook.`);
+    }
   });
   const holders = cuts.map((c) => ({ lines: c.dialog_lines }));
   repairLinePartition(holders, scene?.dialog_lines || [], warnings, `${sceneLabel} cut`);
@@ -1036,7 +1109,24 @@ export function applyProse(raw, cuts, { dialogs = [] } = {}) {
   return { warnings };
 }
 
-export function applyStartFrames(raw, cuts, { catalogGroups = [] } = {}) {
+// A cut that continues the previous one opens on that cut's end still: its
+// start prompt and artwork picks are the previous end frame's. A held previous
+// cut's end prompt is only a change list ("Same frame. …"), which describes
+// nothing on its own — then the model's own start prompt is kept (the still
+// rules ask for the previous picture written out in full).
+export function chainContinuationPrompts(cuts, { previous = null } = {}) {
+  cuts.forEach((cut, i) => {
+    if (!cut.continues_previous || !cut.start_frame) return;
+    const before = i === 0 ? previous : cuts[i - 1];
+    const end = before?.end_frame;
+    if (!end?.prompt || end.derive) return;
+    cut.start_frame.prompt = end.prompt;
+    cut.start_frame.reference_ids = [...(end.reference_ids || [])].map(String);
+    cut.start_frame.reference_uses = { ...(end.reference_uses || {}) };
+  });
+}
+
+export function applyStartFrames(raw, cuts, { catalogGroups = [], previous = null } = {}) {
   const warnings = [];
   const byIndex = new Map();
   for (const e of Array.isArray(raw) ? raw : []) {
@@ -1110,6 +1200,7 @@ export function applyStartFrames(raw, cuts, { catalogGroups = [] } = {}) {
     // change list); a moving camera's is a new still.
     cut.end_frame = endPrompt ? { ...plannedFrame(endPrompt, endPicks), derive: !cameraTravels(cut) } : null;
   }
+  chainContinuationPrompts(cuts, { previous });
   return { warnings };
 }
 
@@ -1270,23 +1361,61 @@ async function recordUsage(usage) {
 
 // ─── Pipeline (in memory) ───────────────────────────────────────────────────
 
+function describeRepeats(repeats) {
+  return repeats.map((r) => `cuts ${r.index} and ${r.index + 1} are the same camera setup`).join('; ');
+}
+
+function repeatCorrection(repeats) {
+  return [
+    `Fault: ${describeRepeats(repeats)}. Each cut is rendered on its own, so two cuts in a row from one setup jump.`,
+    'Return the WHOLE table again with that fixed, by one of: moving the camera for one of the two (the profile, from behind, what they are looking at, an insert of the hands and the object, the wide); merging the two rows into one cut; or — only when the director asked for a jump cut — setting continues_previous: true on the second. Keep every other row as it was.',
+  ].join('\n');
+}
+
 // Runs passes 2–4 for one scene. Returns the fully populated cuts.
 async function planSceneCuts({ ctx, scene, sceneIndex, sceneCount, previousCut, priorDurations = [], catalogGroups, contextText, job, usage }) {
   const dialogs = ctx.dialogs;
   setPhase(job, `cuts:${sceneIndex + 1}/${sceneCount}`);
+  const userText = buildCutsUserText({ scene, sceneIndex, sceneCount, previousCut, dialogs, priorDurations });
   const cutsRaw = await callPass({
     pass: 'cuts',
     system: CUTS_SYSTEM_PROMPT,
     tool: PLAN_CUTS_TOOL,
     contextText,
-    userText: buildCutsUserText({ scene, sceneIndex, sceneCount, previousCut, dialogs, priorDurations }),
+    userText,
     extra: { scene },
     usage,
     job,
   });
-  const { cuts, warnings: w1 } = normalizeCuts(cutsRaw?.cuts, { scene, dialogs });
+  let { cuts, warnings: w1 } = normalizeCuts(cutsRaw?.cuts, { scene, dialogs });
+  let tempo = str(cutsRaw?.tempo);
+  // Two rows in a row on one camera setup are a jump cut nobody asked for:
+  // the table is asked for once more with the pairs named.
+  let repeats = findRepeatedSetups(cuts);
+  if (repeats.length) {
+    logEvent(job, `Scene ${scene.order}: ${describeRepeats(repeats)} — asking for the table again.`);
+    const againRaw = await callPass({
+      pass: 'cuts',
+      system: CUTS_SYSTEM_PROMPT,
+      tool: PLAN_CUTS_TOOL,
+      contextText,
+      userText: [userText, '', '# Your first table was refused', cuts.map((c, i) => formatCutRow(c, i, dialogs)).join('\n\n'), '', repeatCorrection(repeats)].join('\n'),
+      extra: { scene, retry: true },
+      usage,
+      job,
+    });
+    const again = normalizeCuts(againRaw?.cuts, { scene, dialogs });
+    const againRepeats = findRepeatedSetups(again.cuts);
+    if (again.cuts.length && againRepeats.length < repeats.length) {
+      cuts = again.cuts;
+      w1 = again.warnings;
+      tempo = str(againRaw?.tempo) || tempo;
+      repeats = againRepeats;
+    }
+  }
   w1.forEach((w) => warn(job, w));
-  scene.tempo = str(cutsRaw?.tempo);
+  repeats.forEach((r) => warn(job, `Scene ${scene.order} cut ${r.index + 1}: the same camera setup as cut ${r.index} — the two will jump when cut together. Regenerate one of them from another angle.`));
+  scene.tempo = tempo;
   endStep(job, `cuts:${sceneIndex + 1}/${sceneCount}`, { detail: `${cuts.length} cut(s)${cuts.length ? `: ${cuts.map((c) => `${c.duration_seconds}s`).join(' · ')}` : ''}` });
   if (!cuts.length) return [];
   setPhase(job, `prose:${sceneIndex + 1}/${sceneCount}`);
@@ -1336,6 +1465,8 @@ async function planSceneCuts({ ctx, scene, sceneIndex, sceneCount, previousCut, 
   });
   {
     const review = applyReview(reviewRaw?.cuts, cuts, { dialogs, sceneLabel: `Scene ${scene.order}` });
+    // A rewritten end still is the next cut's start still when that cut continues it.
+    chainContinuationPrompts(cuts);
     review.notes.forEach((n) => logEvent(job, `✎ ${n}`));
     review.warnings.forEach((w) => warn(job, w));
     endStep(job, `review:${sceneIndex + 1}/${sceneCount}`, {
@@ -1379,6 +1510,8 @@ async function persistCut({ projectId, beatId, sceneId, cut, order, job }) {
     setsInScene: cut.sets_in_scene,
     primarySpend: cut.primary_spend,
     feltIntent: cut.felt_intent,
+    hook: cut.hook,
+    continuesPrevious: cut.continues_previous,
     dialogIds: cut.dialog_ids,
     lockLine: cut.lock_line,
     referenceBinding: cut.reference_binding,
@@ -1408,6 +1541,8 @@ async function persistScene({ projectId, beatId, scene, job }) {
     characterNames: scene.character_names,
     textSpan: scene.text_span,
     directorsRead: scene.directors_read,
+    kind: scene.kind,
+    montageSubjects: scene.montage_subjects,
     intention: scene.intention,
     tempo: scene.tempo || '',
     scope: scene.scope,
@@ -1692,7 +1827,7 @@ async function maybeRenderStartFrames({ projectId, beat, cuts, imageModel, job }
     status: job.start_frames?.failed ? 'error' : 'done',
     detail:
       `${job.start_frames?.rendered || 0}/${job.start_frames?.planned || 0} rendered${job.start_frames?.failed ? `, ${job.start_frames.failed} failed` : ''}` +
-      (checks ? ` — pairs: ${checks.passed} match${checks.repaired ? ` (${checks.repaired} repaired)` : ''}${checks.failed ? `, ${checks.failed} still differ` : ''}${checks.unchecked ? `, ${checks.unchecked} unchecked` : ''}` : ''),
+      (checks ? ` — pairs: ${checks.passed} match${checks.repaired ? ` (${checks.repaired} repaired)` : ''}${checks.failed ? `, ${checks.failed} still differ` : ''}${checks.blocked ? ` (${checks.blocked} BLOCKED)` : ''}${checks.unchecked ? `, ${checks.unchecked} unchecked` : ''}` : ''),
   });
 }
 
@@ -1832,7 +1967,9 @@ async function sceneReplanInputs({ projectId, beat, scene, ctx }) {
 // prompts and the review — and return it. Nothing is saved and nothing is
 // rendered: it is how the planner's prompts are tried against a real scene
 // without replacing its cuts (scripts/cut-plan-dry-run.js).
-export async function planSceneDryRun({ projectId, sceneId, direction = '' }) {
+// `sceneOverrides` are laid over the stored scene (e.g. { kind: 'montage' } to
+// try a scene planned before scenes had a kind as a montage).
+export async function planSceneDryRun({ projectId, sceneId, direction = '', sceneOverrides = {} }) {
   const scene = await getVideoScene(projectId, sceneId);
   if (!scene) throw new Error(`Scene not found: ${sceneId}`);
   const beat = await getBeat(projectId, String(scene.beat_id));
@@ -1844,6 +1981,7 @@ export async function planSceneDryRun({ projectId, sceneId, direction = '' }) {
     const ctx = await loadFullBeatContext({ projectId, beat, direction });
     const catalogGroups = groupCatalogBySubject(await buildReferenceCatalog(projectId, beat));
     const { allScenes, memScene, previousCut, priorDurations } = await sceneReplanInputs({ projectId, beat, scene, ctx });
+    Object.assign(memScene, sceneOverrides || {});
     const cuts = await planSceneCuts({ ctx, scene: memScene, sceneIndex: memScene.order - 1, sceneCount: allScenes.length || 1, previousCut, priorDurations, catalogGroups, contextText: ctx.text, job, usage });
     return { scene: memScene, cuts, events: job.events.map((e) => e.text), warnings: job.warnings.slice(), usage };
   } finally {
@@ -1956,9 +2094,14 @@ async function planOneCut({ ctx, scene, sceneCount, rows, at, note, catalogGroup
   });
   // The row's dialogue lines are not up for negotiation: the partition repair
   // sees a "scene" holding only this cut's lines.
-  const { cuts: planned, warnings: w1 } = normalizeCuts((cutsRaw?.cuts || []).slice(0, 1), { scene: { ...scene, dialog_lines: old.dialog_lines || [] }, dialogs });
+  const { cuts: planned, warnings: w1 } = normalizeCuts((cutsRaw?.cuts || []).slice(0, 1), { scene: { ...scene, dialog_lines: old.dialog_lines || [] }, dialogs, previous: rows[at - 1] || null });
   w1.forEach((w) => warn(job, w));
   const cut = planned[0];
+  if (cut) {
+    if (rows[at - 1] && !cut.continues_previous && sameSetup(rows[at - 1], cut)) warn(job, `Cut ${n} is the same camera setup as cut ${n - 1} — the two will jump when cut together.`);
+    if (rows[at + 1] && !rows[at + 1].continues_previous && sameSetup(cut, rows[at + 1])) warn(job, `Cut ${n} is the same camera setup as cut ${n + 1} — the two will jump when cut together.`);
+    if (rows[at + 1]?.continues_previous && !sameSetup(cut, rows[at + 1])) warn(job, `Cut ${n + 1} is marked as continuing cut ${n}, which is now a different camera setup — untick it or regenerate it.`);
+  }
   endStep(job, key('cuts'), { detail: cut ? `cut ${n}: ${cut.duration_seconds}s, ${cut.camera?.movement || 'static'}` : 'no row returned' });
   if (!cut) return null;
   cut.cut_index = n;
@@ -1989,14 +2132,14 @@ async function planOneCut({ ctx, scene, sceneCount, rows, at, note, catalogGroup
     contextText,
     userText: [
       `Derive the start frame and the end frame for ONE cut of this scene with the derive_start_frames tool: cut ${n} (return it with cut_index ${n}).`,
-      '', `Floor plan: ${scene.floor_plan || '(blank)'}`, '', '# The cut (table row, then the compiled block)', rowText(), `  block: ${cut.prompt || '(none)'}`, '', around, '',
+      '', sceneStillBrief(scene), '', '# The cut (table row, then the compiled block)', rowText(), `  block: ${cut.prompt || '(none)'}`, '', around, '',
       '# Artwork catalog, per subject (pick by number)', formatCatalogBySubject(catalogGroups),
     ].join('\n'),
     extra: { scene, cuts: [cut] },
     usage,
     job,
   });
-  applyStartFrames(sfRaw?.cuts, [cut], { catalogGroups }).warnings.forEach((w) => warn(job, w));
+  applyStartFrames(sfRaw?.cuts, [cut], { catalogGroups, previous: rows[at - 1] || null }).warnings.forEach((w) => warn(job, w));
   endStep(job, key('start_frame_prompts'), { detail: `${cut.start_frame?.prompt ? 'start' : 'no start'} + ${cut.end_frame?.prompt ? 'end' : 'no end'} still prompt` });
   setPhase(job, key('review'));
   const reviewRaw = await callPass({
@@ -2018,6 +2161,7 @@ async function planOneCut({ ctx, scene, sceneCount, rows, at, note, catalogGroup
   });
   {
     const review = applyReview(reviewRaw?.cuts, [cut], { dialogs, sceneLabel: `Scene ${scene.order}` });
+    chainContinuationPrompts([cut], { previous: rows[at - 1] || null });
     review.notes.forEach((x) => logEvent(job, `✎ ${x}`));
     review.warnings.forEach((w) => warn(job, w));
     endStep(job, key('review'), { detail: reviewRaw?.cuts ? `${review.changed ? 'changed' : 'kept'}, ${review.notes.length} note(s) — ${cut.duration_seconds}s` : 'no review returned; the cut was kept as written' });

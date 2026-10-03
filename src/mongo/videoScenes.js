@@ -17,6 +17,9 @@
 //   character_names: [string]
 //   text_span: { starts_with, ends_with }   (verbatim anchors into the beat body)
 //   directors_read: { <DIRECTORS_READ_FIELDS> }
+//   kind: 'scene' | 'montage'          (a montage is a run of cuts with a job —
+//                                      see MONTAGE_RULES in src/web/cutRules.js)
+//   montage_subjects: [string]         (what a montage must show to do its job)
 //   intention: string
 //   tempo: string (how the scene cuts — the planner's one line on its rhythm)
 //   scope: { already_happened: [], this_scene_only: [], reserved_for_later: [],
@@ -56,6 +59,12 @@ export const SCOPE_BUCKETS = Object.freeze([
   'reserved_for_later',
   'do_not_show_yet',
 ]);
+
+export const SCENE_KINDS = Object.freeze(['scene', 'montage']);
+
+export function normalizeSceneKind(v) {
+  return str(v).toLowerCase() === 'montage' ? 'montage' : 'scene';
+}
 
 export const LOAD_VERDICTS = Object.freeze(['safe', 'stretch', 'ambitious']);
 
@@ -150,6 +159,8 @@ function backfill(doc) {
     character_names: stringList(doc.character_names),
     text_span: normalizeTextSpan(doc.text_span),
     directors_read: normalizeDirectorsRead(doc.directors_read),
+    kind: normalizeSceneKind(doc.kind),
+    montage_subjects: stringList(doc.montage_subjects),
     intention: str(doc.intention),
     tempo: str(doc.tempo),
     scope: normalizeScope(doc.scope),
@@ -201,6 +212,8 @@ export async function createVideoScene({
   characterNames = [],
   textSpan = null,
   directorsRead = null,
+  kind = 'scene',
+  montageSubjects = [],
   intention = '',
   tempo = '',
   scope = null,
@@ -230,6 +243,8 @@ export async function createVideoScene({
     character_names: stringList(characterNames),
     text_span: normalizeTextSpan(textSpan),
     directors_read: normalizeDirectorsRead(directorsRead),
+    kind: normalizeSceneKind(kind),
+    montage_subjects: stringList(montageSubjects),
     intention: str(intention),
     tempo: str(tempo),
     scope: normalizeScope(scope),
@@ -264,7 +279,11 @@ export async function updateVideoScene(projectId, id, patch) {
         break;
       case 'set_names':
       case 'character_names':
+      case 'montage_subjects':
         set[k] = stringList(v);
+        break;
+      case 'kind':
+        set[k] = normalizeSceneKind(v);
         break;
       case 'text_span':
         set[k] = normalizeTextSpan(v);

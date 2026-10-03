@@ -11,6 +11,7 @@ import { logger } from '../log.js';
 import { listBeats } from '../mongo/plots.js';
 import { renderSceneBibleBlock } from '../mongo/sceneBible.js';
 import { stripMarkdown } from '../util/markdown.js';
+import { WARDROBE_FIELD, wardrobeText } from './wardrobe.js';
 import {
   findCharactersInBeat,
   findSetsInBeat,
@@ -65,7 +66,7 @@ export function cleanDirection(raw) {
 // Every character field the template holds, not a curated subset. The actor
 // likeness leads because it is the strongest visual handle; voice-only /
 // mocap casting is surfaced as a voice, never as a face.
-export function formatCharacterFull(c) {
+export function formatCharacterFull(c, { beat = null } = {}) {
   const name = stripMarkdown(c?.name || '').trim() || 'Unnamed';
   const actorClean = stripMarkdown(typeof c?.hollywood_actor === 'string' ? c.hollywood_actor : '')
     .replace(/\s+/g, ' ')
@@ -79,9 +80,15 @@ export function formatCharacterFull(c) {
     lines.push(`- ${name}`);
   }
   if (c?.plays_self) lines.push('    plays themself (a real person; keep their actual look)');
+  // The wardrobe lock (src/web/wardrobe.js) leads the fields: the beat's
+  // override when it has one, else the character's default — the exact words
+  // every lock line, visual handle and still prompt must reuse.
+  const lock = wardrobeText(c, beat);
+  if (lock) lines.push(`    wardrobe (LOCKED — use these exact words in every lock line, handle and still): ${lock}`);
   const fields = c?.fields && typeof c.fields === 'object' ? c.fields : {};
   for (const [key, value] of Object.entries(fields)) {
     if (typeof value !== 'string') continue;
+    if (key === WARDROBE_FIELD) continue;
     const v = clip(value, FIELD_CAP);
     if (!v) continue;
     const label = key.replace(/_/g, ' ');
@@ -156,7 +163,7 @@ export function buildFullBeatContextText({
   }
   lines.push(
     '# Characters in this beat (every field the cast template holds)',
-    characters.length ? characters.map(formatCharacterFull).join('\n') : '(no named characters in this beat)',
+    characters.length ? characters.map((c) => formatCharacterFull(c, { beat })).join('\n') : '(no named characters in this beat)',
     '',
     '# Sets in this beat (the settings/locations; their artwork is the reference pool)',
     sets.length ? sets.map(formatSetFull).join('\n') : '(no sets linked to this beat)',

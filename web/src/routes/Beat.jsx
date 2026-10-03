@@ -12,9 +12,9 @@ import { PlayBeatButton } from '../widgets/PlayBeatButton.jsx';
 import { VoiceSelect } from '../widgets/VoiceSelect.jsx';
 import { readFragmentText } from '../editor/fragmentRead.js';
 
-// The beat editor's writing section (/beat/:order), reached via <BeatTabs>,
+// The beat editor's "Story" section (/beat/:order), reached via <BeatTabs>,
 // renders this component over the beat:<id> y-doc room. The `background` tab
-// is labelled "Story". Beat artwork is retired — sets own artwork now (see
+// is labelled "Writing". Beat artwork is retired — sets own artwork now (see
 // routes/Set.jsx); the old /artwork/:order route redirects to /beat/:order.
 const SECTION_TABS = {
   writing: ['background', 'sets', 'characters', 'critique'],
@@ -211,7 +211,7 @@ export function Beat({ session, section = 'writing' }) {
 
 function tabLabel(tab) {
   switch (tab) {
-    case 'background': return 'Story';
+    case 'background': return 'Writing';
     case 'sets': return 'Sets';
     case 'characters': return 'Characters';
     case 'critique': return 'Critique';

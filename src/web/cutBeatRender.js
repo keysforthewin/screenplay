@@ -60,6 +60,7 @@ import {
 } from './comfyVideoGenerate.js';
 import { cutLabel } from './cutAssemble.js';
 import { renderSecondsForCut, describeTiming } from './cutTiming.js';
+import { frameCheckIsCurrent } from './cutFrameCheck.js';
 
 export const MODES = Object.freeze({ LIPSYNC: 'lipsync', CLIP: 'clip' });
 export const PROVIDERS = Object.freeze({ COMFY: 'comfy', FAL: 'fal' });
@@ -401,6 +402,13 @@ export async function buildCutRenderPlan({
       entry.status = 'blocked';
       warnings.push(`Missing for ${model.label}: ${entry.missing.join(', ')}.`);
     }
+    // A pair the frame check could not get past a blocking fault on still
+    // renders (a failed pair is a warning) — but the plan says so, in red.
+    if (accepts(model, 'endFrame') && frameCheckIsCurrent(cut) && cut.frame_check?.blocking) {
+      entry.frame_blocking = true;
+      const notes = cut.frame_check.issues.filter((i) => i.severity === 'blocking').map((i) => i.note).join(' ');
+      warnings.push(`${cut.frame_check.blocking} blocking problem${cut.frame_check.blocking === 1 ? '' : 's'} between the start and end frames — the clip will show it: ${notes}`);
+    }
 
     if (mode === MODES.LIPSYNC) {
       if (cut.audio_file_id) warnings.push('The previous joined recording will be replaced.');
@@ -660,7 +668,8 @@ async function ensureEndFrame({ projectId, job, beat, entry, cut, imageModel }) 
       const r = await reconcileCutFrames({ projectId, beat, cut: fresh, imageModel });
       if (r.cut) fresh = r.cut;
       if (r.frame_check?.status === 'fail') {
-        entry.warnings.push(`The start and end frames still disagree: ${r.frame_check.issues.map((i) => i.note).join(' ')}`);
+        if (r.frame_check.blocking) entry.frame_blocking = true;
+        entry.warnings.push(`${r.frame_check.blocking ? 'BLOCKING — ' : ''}The start and end frames still disagree: ${r.frame_check.issues.map((i) => i.note).join(' ')}`);
       }
     } catch (e) {
       logger.warn(`cut beat render: frame check failed for cut ${entry.cut_id}: ${e?.message || e}`);

@@ -13,6 +13,7 @@ const RETIRED_CORE_FIELDS = ['plays_self', 'own_voice'];
 const DEFAULT_CHARACTER_FIELDS = [
   { name: 'name', description: "The character's name.", required: true, core: true },
   { name: 'hollywood_actor', description: "Name of the actor playing this character. Leave empty when the character is a real person playing themselves.", required: false, core: true },
+  { name: 'wardrobe', description: 'The locked default outfit: garments, colours, fit, footwear and any distinguishing object, in plain words (e.g. "navy flannel shirt, tan canvas work jacket, black jeans, brown boots"). Every picture of this character — artwork, start frames, image sheets — must match these exact words; a beat can override it for one scene.', required: false, core: false },
   { name: 'background_story', description: 'Backstory before the events of the movie.', required: false, core: false },
   { name: 'origin_story', description: 'How the character came to be who they are at the start.', required: false, core: false },
   { name: 'arc', description: 'How the character develops throughout the movie.', required: false, core: false },

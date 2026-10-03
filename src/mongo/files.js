@@ -142,6 +142,29 @@ export async function setMainCharacterImage({ projectId, character, imageId }) {
   return { character: c.name, main_image_id: oid };
 }
 
+// The wardrobe plate (src/web/wardrobe.js): the one image every picture of
+// this character copies its clothes from. Same acceptance as the main image;
+// `imageId: null` clears it.
+export async function setCharacterWardrobeImage({ projectId, character, imageId }) {
+  const c = await getCharacter(projectId, character);
+  if (!c) throw new Error(`Character not found: ${character}`);
+  let oid = null;
+  if (imageId !== null && imageId !== undefined && imageId !== '') {
+    oid = toObjectId(imageId);
+    const inImages = (c.images || []).some((img) => img._id.equals(oid));
+    const inArtworks = (c.artworks || []).some(
+      (a) => a?.status === 'done' && a?.result_image_id && oid.equals(a.result_image_id),
+    );
+    if (!inImages && !inArtworks) {
+      throw new Error(`Image ${imageId} is not attached to ${c.name}`);
+    }
+  }
+  await getDb()
+    .collection('characters')
+    .updateOne({ _id: c._id }, { $set: { wardrobe_image_id: oid, updated_at: new Date() } });
+  return { character: c.name, _id: c._id, wardrobe_image_id: oid };
+}
+
 export async function readCharacterImageBuffer(imageId) {
   return readImageBuffer(imageId);
 }
@@ -281,6 +304,7 @@ export async function removeCharacterImage({ projectId, character, imageId }) {
   const remaining = images.filter((img) => !img._id.equals(oid));
   const wasMain = c.main_image_id && c.main_image_id.equals(oid);
   const newMain = wasMain ? remaining[0]?._id || null : c.main_image_id || null;
+  const wasWardrobe = c.wardrobe_image_id && c.wardrobe_image_id.equals(oid);
 
   await getDb()
     .collection('characters')
@@ -288,7 +312,11 @@ export async function removeCharacterImage({ projectId, character, imageId }) {
       { _id: c._id },
       {
         $pull: { images: { _id: oid } },
-        $set: { main_image_id: newMain, updated_at: new Date() },
+        $set: {
+          main_image_id: newMain,
+          ...(wasWardrobe ? { wardrobe_image_id: null } : {}),
+          updated_at: new Date(),
+        },
       },
     );
   return { character: c.name, removed: oid, main_image_id: newMain };

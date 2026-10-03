@@ -1,0 +1,889 @@
+// Beat ARTWORK critique: does the art library hold the pictures this beat's
+// writing needs? Three passes on the scene-planning (vision) model slot —
+// A: the visual requirements the beat imposes on each linked set and
+//    character (text only, one call);
+// B: a vision audit of each subject's existing artwork against those
+//    requirements (one call per subject; coverage + accuracy issues + a
+//    suggested edit per image);
+// C: a generation proposal for every missing / partial requirement (one call
+//    per subject with gaps) — prompt, owning host, reference picks.
+// Persisted latest-only on the beat (src/mongo/artworkCritiques.js). A second
+// job renders the proposals the user ticks onto the OWNING set / character
+// through the same pending-artwork + inline-render pair the image sheets use.
+// Both registries mirror critiqueGenerate.js (jobs/listeners Maps, a busy set,
+// full snapshots to SSE subscribers, five-minute retention).
+
+import { ObjectId } from 'mongodb';
+import sharp from 'sharp';
+import { logger } from '../log.js';
+import { modelFor } from '../llm/modelSlots.js';
+import { getAnthropic } from '../anthropic/client.js';
+import { resolveProjectId } from '../mongo/projects.js';
+import { getBeat } from '../mongo/plots.js';
+import { findImageFile } from '../mongo/images.js';
+import { computeAnthropicImageTokens } from '../agent/imageTokens.js';
+import { recordAnthropicTextUsage, recordAnthropicImageInputUsage } from '../mongo/tokenUsage.js';
+import {
+  getBeatArtworkCritique,
+  setArtworkCritiquePending,
+  updateArtworkCritiqueSubject,
+  appendArtworkCritiqueProposals,
+  finalizeArtworkCritique,
+  setArtworkCritiqueCoverage,
+  updateArtworkCritiqueProposal,
+  updateArtworkCritiqueArtwork,
+  findArtworkCritiqueArtwork,
+} from '../mongo/artworkCritiques.js';
+import { getArtwork } from '../mongo/artworks.js';
+import { loadFullBeatContext, formatCharacterFull, formatSetFull } from './beatContext.js';
+import { loadImageInput } from './beatPlanShared.js';
+import { buildReferenceCatalog, formatReferenceCatalog } from './referenceCatalog.js';
+import { isValidImageModel, IMAGE_MODEL_ERROR, assertImageModelConfigured, normalizeImageModel } from './imageModelValidate.js';
+import { runPool, recordProgress, assertShotsSatisfyModelReferences } from './imageSheetJobs.js';
+import { createPendingArtworkViaGateway, setArtworkStatusViaGateway, setCharacterWardrobeImageViaGateway } from './gateway.js';
+import { wardrobeImageId, wardrobeLine } from './wardrobe.js';
+import { generateArtworkImageInline, startEditArtworkJob, undoArtworkEdit } from './artworkJobs.js';
+import {
+  MAX_SUBJECTS,
+  MAX_ARTWORKS_PER_SUBJECT,
+  REQUIREMENTS_SYSTEM_PROMPT,
+  REQUIREMENTS_SCHEMA,
+  AUDIT_SYSTEM_PROMPT,
+  AUDIT_SCHEMA,
+  PROPOSALS_SYSTEM_PROMPT,
+  PROPOSALS_SCHEMA,
+  buildSubjectRoster,
+  buildAuditText,
+  buildProposalsText,
+  normalizeRequirements,
+  normalizeAudit,
+  normalizeProposals,
+  computeCoverage,
+  subjectKey,
+  characterPortraitId,
+  orderCharacterReferences,
+  rebindCharacterPrompt,
+} from './artworkCritiqueRules.js';
+import { getCharacter } from '../mongo/characters.js';
+
+const TERMINAL_RETENTION_MS = 5 * 60 * 1000;
+const SUBJECT_CONCURRENCY = 2;
+const RENDER_CONCURRENCY = 3;
+const VISION_WIDTH = 1024;
+const MAX_OVERRIDE_PROMPT = 2000;
+
+function httpError(message, status) {
+  const e = new Error(message);
+  e.status = status;
+  return e;
+}
+
+function makeJobId() {
+  return new ObjectId().toString();
+}
+
+// ───────────────────────────── Model calls ─────────────────────────────
+
+// Test seam: { requirements({text}), audit({text, images, subject}), proposals({text, subject}) }.
+// Any missing function throws so a test can never reach the network by accident.
+let analyzerOverride = null;
+export function _setArtworkCritiqueAnalyzerForTests(fns) {
+  analyzerOverride = fns || null;
+}
+
+async function recordUsage({ model, resp, imageBuffers = [] }) {
+  try {
+    const imageTokens = imageBuffers.length ? computeAnthropicImageTokens(imageBuffers) : { total: 0, perImageTokens: [] };
+    const input = Number(resp?.usage?.input_tokens) || 0;
+    await recordAnthropicTextUsage({
+      discordUser: null,
+      channelId: null,
+      model,
+      totals: { input_tokens: Math.max(0, input - imageTokens.total), output_tokens: Number(resp?.usage?.output_tokens) || 0 },
+    });
+    if (imageBuffers.length) {
+      await recordAnthropicImageInputUsage({ discordUser: null, channelId: null, model, perImageTokens: imageTokens.perImageTokens });
+    }
+  } catch (e) {
+    logger.warn(`artwork critique: usage record failed: ${e?.message || e}`);
+  }
+}
+
+// One structured-output call. `content` is the user content array (text and
+// image blocks). An empty / unparsable answer is asked once more.
+async function callStructured({ system, schema, content, imageBuffers = [], label }) {
+  const model = modelFor('storyboard');
+  const ask = () => getAnthropic().messages.create({
+    model,
+    max_tokens: 16000,
+    system,
+    output_config: { format: { type: 'json_schema', schema } },
+    messages: [{ role: 'user', content }],
+  });
+  const textOf = (r) => (r?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+  const parse = (r) => { try { return JSON.parse(textOf(r)); } catch { return null; } };
+  let resp = await ask();
+  let parsed = parse(resp);
+  if (!parsed) {
+    logger.warn(`artwork critique: ${label} returned no JSON (stop_reason ${resp?.stop_reason || '?'}); asking again`);
+    resp = await ask();
+    parsed = parse(resp);
+  }
+  await recordUsage({ model, resp, imageBuffers });
+  if (!parsed) throw new Error(`${label}: model did not return JSON`);
+  return parsed;
+}
+
+// An artwork as the auditor sees it: a JPEG no wider than VISION_WIDTH.
+async function visionImage(imageId) {
+  const ref = await loadImageInput(imageId);
+  if (!ref) return null;
+  try {
+    const buffer = await sharp(ref.buffer).rotate().resize({ width: VISION_WIDTH, withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
+    return { buffer, contentType: 'image/jpeg' };
+  } catch (e) {
+    logger.warn(`artwork critique: could not resize image ${imageId}: ${e?.message || e}`);
+    return { buffer: ref.buffer, contentType: ref.contentType };
+  }
+}
+
+async function deriveRequirements({ text, subjects, beat = null }) {
+  const userText = `${text}\n\n${buildSubjectRoster(subjects, { beat })}`;
+  if (analyzerOverride) {
+    if (typeof analyzerOverride.requirements !== 'function') throw new Error('test analyzer has no requirements()');
+    return analyzerOverride.requirements({ text: userText, subjects });
+  }
+  return callStructured({
+    system: REQUIREMENTS_SYSTEM_PROMPT,
+    schema: REQUIREMENTS_SCHEMA,
+    content: [{ type: 'text', text: userText }],
+    label: 'requirements',
+  });
+}
+
+async function auditSubject({ beat, subject, requirements, artworks }) {
+  const text = buildAuditText({ beat, subject, subjectCard: subject.card, requirements, artworks });
+  if (analyzerOverride) {
+    if (typeof analyzerOverride.audit !== 'function') throw new Error('test analyzer has no audit()');
+    return analyzerOverride.audit({ text, subject, artworks });
+  }
+  const images = [];
+  const content = [];
+  for (let i = 0; i < artworks.length; i++) {
+    const img = await visionImage(artworks[i].result_image_id);
+    if (!img) continue;
+    images.push(img.buffer);
+    content.push({ type: 'text', text: `Artwork ${i + 1} — "${artworks[i].name || 'untitled'}":` });
+    content.push({ type: 'image', source: { type: 'base64', media_type: img.contentType, data: img.buffer.toString('base64') } });
+  }
+  content.push({ type: 'text', text });
+  return callStructured({ system: AUDIT_SYSTEM_PROMPT, schema: AUDIT_SCHEMA, content, imageBuffers: images, label: `audit ${subject.name}` });
+}
+
+async function proposeForSubject({ beat, subject, requirements, audit, catalogText }) {
+  const text = buildProposalsText({ beat, subject, subjectCard: subject.card, requirements, audit, catalogText });
+  if (analyzerOverride) {
+    if (typeof analyzerOverride.proposals !== 'function') throw new Error('test analyzer has no proposals()');
+    return analyzerOverride.proposals({ text, subject, requirements });
+  }
+  return callStructured({ system: PROPOSALS_SYSTEM_PROMPT, schema: PROPOSALS_SCHEMA, content: [{ type: 'text', text }], label: `proposals ${subject.name}` });
+}
+
+// ───────────────────────────── Analysis job ─────────────────────────────
+
+const jobs = new Map();
+const listeners = new Map();
+const busyBeats = new Set();
+
+export function getArtworkCritiqueJob(jobId) {
+  return jobs.get(jobId) || null;
+}
+
+export function subscribeToArtworkCritiqueJob(jobId, cb) {
+  let set = listeners.get(jobId);
+  if (!set) { set = new Set(); listeners.set(jobId, set); }
+  set.add(cb);
+}
+
+export function unsubscribeFromArtworkCritiqueJob(jobId, cb) {
+  const set = listeners.get(jobId);
+  if (!set) return;
+  set.delete(cb);
+  if (!set.size) listeners.delete(jobId);
+}
+
+export function serializeArtworkCritiqueJob(job) {
+  if (!job) return null;
+  return {
+    job_id: job.job_id,
+    beat_id: job.beat_id,
+    status: job.status,
+    phase: job.phase,
+    started_at: job.started_at,
+    finished_at: job.finished_at,
+    error: job.error,
+    warnings: [...job.warnings],
+    subjects: job.subjects.map((s) => ({ ...s })),
+  };
+}
+
+function publish(job) {
+  const set = listeners.get(job.job_id);
+  if (!set || !set.size) return;
+  const snap = serializeArtworkCritiqueJob(job);
+  for (const cb of set) {
+    try { cb(snap); } catch (e) { logger.warn(`artwork critique: listener threw: ${e.message}`); }
+  }
+}
+
+function retire(job) {
+  const id = job.job_id;
+  setTimeout(() => { jobs.delete(id); listeners.delete(id); }, TERMINAL_RETENTION_MS).unref?.();
+}
+
+export function createArtworkCritiqueJob(beatId) {
+  const job = {
+    job_id: makeJobId(),
+    beat_id: String(beatId),
+    status: 'queued',
+    phase: 'queued',
+    error: null,
+    warnings: [],
+    subjects: [],
+    started_at: new Date(),
+    finished_at: null,
+  };
+  jobs.set(job.job_id, job);
+  return job;
+}
+
+// The subjects a beat audits: its linked sets first, then its characters,
+// each with the artwork vision will see and a text card for the prompts.
+function collectSubjects(ctx, warnings, beat = null) {
+  const all = [
+    ...(ctx.sets || []).map((doc) => ({ kind: 'set', doc })),
+    ...(ctx.characters || []).map((doc) => ({ kind: 'character', doc })),
+  ];
+  if (all.length > MAX_SUBJECTS) {
+    warnings.push(`${all.length} linked subjects; only the first ${MAX_SUBJECTS} were audited (sets first).`);
+  }
+  return all.slice(0, MAX_SUBJECTS).map(({ kind, doc }) => {
+    // Library order (oldest first, as the Artwork tab shows it); over the cap
+    // the oldest are the ones left out.
+    const done = (doc.artworks || []).filter((a) => a?.status === 'done' && a.result_image_id);
+    const artworks = done.slice(-MAX_ARTWORKS_PER_SUBJECT).map((a) => ({
+      _id: a._id,
+      result_image_id: a.result_image_id,
+      name: String(a.name || ''),
+      description: String(a.description || a.prompt || ''),
+    }));
+    if (done.length > MAX_ARTWORKS_PER_SUBJECT) {
+      warnings.push(`${doc.name}: ${done.length} artworks on file; only the newest ${MAX_ARTWORKS_PER_SUBJECT} were looked at.`);
+    }
+    return {
+      kind,
+      id: doc._id,
+      name: String(doc.name || ''),
+      doc,
+      card: kind === 'set' ? formatSetFull(doc) : formatCharacterFull(doc, { beat }),
+      artworks,
+    };
+  });
+}
+
+function jobSubject(job, subject) {
+  return job.subjects.find((s) => s.kind === subject.kind && s.id === String(subject.id));
+}
+
+export async function runArtworkCritique({ projectId, job }) {
+  projectId = await resolveProjectId(projectId);
+  try {
+    const beat = await getBeat(projectId, job.beat_id);
+    if (!beat) throw new Error(`beat not found: ${job.beat_id}`);
+    const ctx = await loadFullBeatContext({ projectId, beat });
+    job.warnings.push(...(ctx.warnings || []));
+    const subjects = collectSubjects(ctx, job.warnings, beat);
+    job.subjects = subjects.map((s) => ({ kind: s.kind, id: String(s.id), name: s.name, status: 'pending', requirement_count: 0, covered: 0, partial: 0, missing: 0 }));
+    await setArtworkCritiquePending(projectId, beat._id, { model: modelFor('storyboard'), subjects });
+    job.status = 'running';
+    job.phase = 'requirements';
+    publish(job);
+
+    if (!subjects.length) {
+      job.warnings.push('This beat has no linked sets or characters — link them on the Sets and Characters tabs, then run again.');
+      job.status = 'done';
+      job.phase = 'done';
+      job.finished_at = new Date();
+      await finalizeArtworkCritique(projectId, beat._id, { status: 'done', coverage: computeCoverage([]), warnings: job.warnings, unlinked_mentions: [] });
+      publish(job);
+      return job;
+    }
+
+    // Pass A — the requirements, then persist them per subject.
+    const reqRaw = await deriveRequirements({ text: ctx.text, subjects, beat });
+    const { requirements, unlinked_mentions, warnings: reqWarnings } = normalizeRequirements(reqRaw, subjects);
+    job.warnings.push(...reqWarnings);
+    for (const s of subjects) {
+      s.requirements = requirements.filter((r) => r.subject_key === subjectKey(s.kind, s.id));
+      jobSubject(job, s).requirement_count = s.requirements.length;
+      await updateArtworkCritiqueSubject(projectId, beat._id, s.id, { requirements: s.requirements });
+    }
+    job.phase = 'auditing';
+    publish(job);
+
+    // Passes B + C per subject.
+    const catalog = await buildReferenceCatalog(projectId, beat);
+    const catalogText = formatReferenceCatalog(catalog);
+    const results = [];
+    await runPool(subjects, SUBJECT_CONCURRENCY, async (s) => {
+      const js = jobSubject(job, s);
+      js.status = 'auditing';
+      publish(job);
+      try {
+        let audit;
+        if (!s.artworks.length) {
+          job.warnings.push(`${s.name} has no artwork on file — every requirement is missing and its proposals carry no references.`);
+          audit = { requirements: s.requirements.map((r) => ({ ...r, status: 'missing', covered_by: [], note: '' })), artworks: [], accuracy_score: null, summary: '' };
+        } else if (!s.requirements.length) {
+          audit = { requirements: [], artworks: s.artworks.map((a) => ({ artwork_id: a._id, result_image_id: a.result_image_id, name: a.name, issues: [], suggested_edit: '' })), accuracy_score: null, summary: 'The beat imposes no requirement on this subject.' };
+        } else {
+          audit = normalizeAudit(await auditSubject({ beat, subject: s, requirements: s.requirements, artworks: s.artworks }), { requirements: s.requirements, artworks: s.artworks });
+        }
+        s.requirements = audit.requirements;
+        js.covered = audit.requirements.filter((r) => r.status === 'covered').length;
+        js.partial = audit.requirements.filter((r) => r.status === 'partial').length;
+        js.missing = audit.requirements.filter((r) => r.status === 'missing').length;
+        await updateArtworkCritiqueSubject(projectId, beat._id, s.id, {
+          requirements: audit.requirements,
+          artworks: audit.artworks,
+          accuracy_score: audit.accuracy_score,
+          summary: audit.summary,
+        });
+        const gaps = audit.requirements.filter((r) => r.status !== 'covered');
+        if (gaps.length) {
+          js.status = 'proposing';
+          publish(job);
+          const propRaw = await proposeForSubject({ beat, subject: s, requirements: gaps, audit, catalogText });
+          const { proposals, warnings: propWarnings } = normalizeProposals(propRaw, { subject: s, requirements: gaps, catalog, beat });
+          job.warnings.push(...propWarnings);
+          if (!proposals.length) job.warnings.push(`${s.name}: ${gaps.length} requirement(s) uncovered but the planner proposed nothing.`);
+          await appendArtworkCritiqueProposals(projectId, beat._id, proposals);
+        }
+        js.status = 'done';
+        await updateArtworkCritiqueSubject(projectId, beat._id, s.id, { status: 'done', error_message: null });
+        results.push({ ok: true, subject: s });
+      } catch (e) {
+        js.status = 'error';
+        js.error_message = e.message;
+        await updateArtworkCritiqueSubject(projectId, beat._id, s.id, { status: 'error', error_message: e.message })
+          .catch((err) => logger.warn(`artwork critique: persist subject error failed: ${err.message}`));
+        logger.warn(`artwork critique: subject ${s.kind} ${s.name} failed: ${e.message}`);
+        results.push({ ok: false, subject: s });
+      } finally {
+        publish(job);
+      }
+    });
+
+    const errored = results.filter((r) => !r.ok).length;
+    job.status = errored === 0 ? 'done' : errored === results.length ? 'error' : 'partial';
+    job.phase = 'done';
+    job.finished_at = new Date();
+    await finalizeArtworkCritique(projectId, beat._id, {
+      status: job.status,
+      coverage: computeCoverage(subjects),
+      warnings: job.warnings,
+      unlinked_mentions,
+    });
+    publish(job);
+    logger.info(`artwork critique: beat=${beat._id} status=${job.status} subjects=${subjects.length}`);
+  } catch (e) {
+    job.status = 'error';
+    job.phase = 'done';
+    job.error = e.message;
+    job.finished_at = new Date();
+    publish(job);
+    logger.error(`artwork critique: run crashed: ${e.message}`);
+  } finally {
+    retire(job);
+  }
+  return job;
+}
+
+export async function startArtworkCritiqueJob({ projectId, beatId }) {
+  projectId = await resolveProjectId(projectId);
+  const beat = await getBeat(projectId, String(beatId));
+  if (!beat) throw httpError(`beat not found: ${beatId}`, 404);
+  const busyKey = beat._id.toString();
+  // No await between the has-check and the add: the first caller wins.
+  if (busyBeats.has(busyKey)) throw httpError('An artwork critique is already running for this beat.', 409);
+  if (generatingBeats.has(busyKey)) throw httpError('Artwork is being generated for this beat; wait for it to finish.', 409);
+  busyBeats.add(busyKey);
+  const job = createArtworkCritiqueJob(busyKey);
+  setImmediate(() => {
+    runArtworkCritique({ projectId, job })
+      .catch((e) => logger.error(`artwork critique: background run failed: ${e.message}`))
+      .finally(() => busyBeats.delete(busyKey));
+  });
+  return job.job_id;
+}
+
+// ───────────────────────────── Generation job ─────────────────────────────
+
+const genJobs = new Map();
+const generatingBeats = new Set();
+
+export function getArtworkGenerateJob(jobId) {
+  return genJobs.get(jobId) || null;
+}
+
+export function serializeArtworkGenerateJob(job) {
+  if (!job) return null;
+  return {
+    job_id: job.job_id,
+    beat_id: job.beat_id,
+    project_id: job.project_id,
+    status: job.status,
+    model: job.model,
+    planned: job.planned,
+    completed: job.completed,
+    failed: job.failed,
+    progress: job.progress,
+    events: [...(job.events || [])],
+    items: job.items.map((i) => ({ ...i })),
+    started_at: job.started_at,
+    finished_at: job.finished_at,
+    error: job.error,
+  };
+}
+
+function isHex(s) {
+  return /^[a-f0-9]{24}$/i.test(String(s || ''));
+}
+
+async function validateOverrides(overrides) {
+  const out = {};
+  for (const [pid, o] of Object.entries(overrides || {})) {
+    if (!o || typeof o !== 'object') continue;
+    const clean = {};
+    if (o.prompt !== undefined) {
+      const p = String(o.prompt || '').trim();
+      if (!p) throw httpError('A proposal prompt cannot be blank.', 400);
+      if (p.length > MAX_OVERRIDE_PROMPT) throw httpError(`A proposal prompt is limited to ${MAX_OVERRIDE_PROMPT} characters.`, 400);
+      clean.prompt = p;
+    }
+    if (o.reference_image_ids !== undefined) {
+      if (!Array.isArray(o.reference_image_ids) || o.reference_image_ids.some((id) => !isHex(id))) {
+        throw httpError('reference_image_ids must be a list of image ids.', 400);
+      }
+      // Drop references whose files are gone (a deleted artwork).
+      const kept = [];
+      for (const id of [...new Set(o.reference_image_ids.map(String))]) {
+        if (await findImageFile(id)) kept.push(id);
+      }
+      clean.reference_image_ids = kept;
+    }
+    out[pid] = clean;
+  }
+  return out;
+}
+
+// Every character render — first run, retry of a failed one, regenerate —
+// leaves with the character's portrait as reference image 1, the character's
+// own artwork next and set plates last, and a prompt binding that names what
+// is attached. Done here, at generate time, because the job reuses the
+// proposal AS STORED: one planned before the portrait rule, or whose
+// references an override trimmed, must not go out with only a set plate (a
+// brand-new face every time). Roles come from GridFS owner_type; a missing
+// file counts as artwork and fails later in loadImageBuffers as before.
+// The wardrobe lock (src/web/wardrobe.js) rides the same path: the plate at
+// reference 2 and the current locked words re-quoted — so a proposal planned
+// before the lock was set, or before the plate was auto-promoted by an
+// earlier render of this very job, still goes out locked.
+async function anchorCharacterItems({ projectId, beat = null, items }) {
+  const anchors = new Map();
+  for (const item of items) {
+    if (item.host_type !== 'character') continue;
+    if (!anchors.has(item.host_id)) {
+      const character = await getCharacter(projectId, item.host_id);
+      const portraitId = characterPortraitId(character);
+      const plateId = wardrobeImageId(character);
+      anchors.set(item.host_id, {
+        portraitId: portraitId && (await findImageFile(portraitId)) ? portraitId : '',
+        wardrobeId: plateId && (await findImageFile(plateId)) ? plateId : '',
+        wardrobe: wardrobeLine(character, beat),
+      });
+    }
+    const anchor = anchors.get(item.host_id);
+    const picks = [];
+    for (const id of item.reference_image_ids) {
+      if (id === anchor.portraitId || id === anchor.wardrobeId) continue;
+      const file = await findImageFile(id);
+      picks.push({ image_id: id, owner_type: file?.metadata?.owner_type === 'set' ? 'set' : 'character' });
+    }
+    const ordered = orderCharacterReferences({ portraitId: anchor.portraitId, wardrobeId: anchor.wardrobeId, picks });
+    item.reference_image_ids = ordered.map((r) => r.image_id);
+    item.prompt = rebindCharacterPrompt(item.prompt, ordered, { wardrobe: anchor.wardrobe });
+    item.has_wardrobe_plate = !!anchor.wardrobeId;
+  }
+}
+
+// Auto-promote: the first finished costume render of a character with no
+// wardrobe plate becomes the plate, so the next render (this job or the next
+// run) copies its clothes. Re-reads the character so a sibling render that
+// promoted first wins.
+async function maybePromoteWardrobePlate({ projectId, item, fileId }) {
+  if (item.host_type !== 'character' || !fileId) return false;
+  if (!(item.requirement_categories || []).includes('costume')) return false;
+  const character = await getCharacter(projectId, item.host_id);
+  if (!character || wardrobeImageId(character)) return false;
+  await setCharacterWardrobeImageViaGateway({ projectId, character: item.host_id, imageId: String(fileId) });
+  return true;
+}
+
+// The categories of a proposal's requirements (costume / expression / …) —
+// what decides whether a finished render may become the wardrobe plate.
+function requirementCategories(critique, proposal) {
+  const subject = (critique?.subjects || []).find((s) => s.kind === proposal.host_type && String(s.id) === String(proposal.host_id));
+  const wanted = new Set((proposal.requirement_ids || []).map(String));
+  return [...new Set((subject?.requirements || []).filter((r) => wanted.has(String(r.id))).map((r) => r.category))];
+}
+
+async function renderProposal({ projectId, beatId, job, item, discordUser }) {
+  const order = job.items.indexOf(item) + 1;
+  recordProgress(job, { phase: 'rendering', step: 'shot_start', frame: order, total: job.planned, message: `Rendering ${order}/${job.planned}: ${item.name}…` });
+  item.status = 'generating';
+  let artworkId = null;
+  try {
+    // Re-anchor on the character as it is NOW: an earlier render of this job
+    // may have promoted a wardrobe plate this item was planned without.
+    if (item.host_type === 'character') {
+      await anchorCharacterItems({ projectId, beat: job.beat, items: [item] });
+      await updateArtworkCritiqueProposal(projectId, beatId, item.proposal_id, {
+        prompt: item.prompt,
+        reference_image_ids: item.reference_image_ids.map((id) => new ObjectId(id)),
+      });
+    }
+    const { artwork } = await createPendingArtworkViaGateway({
+      projectId,
+      hostType: item.host_type,
+      hostId: item.host_id,
+      prompt: item.prompt,
+      name: item.name,
+      model: job.model,
+      referenceImageIds: item.reference_image_ids,
+      jobId: job.job_id,
+    });
+    artworkId = artwork._id;
+    const { fileId } = await generateArtworkImageInline({
+      projectId,
+      hostType: item.host_type,
+      hostId: item.host_id,
+      artworkId,
+      prompt: item.prompt,
+      model: job.model,
+      referenceImageIds: item.reference_image_ids,
+      discordUser,
+    });
+    item.status = 'done';
+    item.artwork_id = String(artworkId);
+    item.result_image_id = fileId ? String(fileId) : null;
+    job.completed += 1;
+    const promoted = await maybePromoteWardrobePlate({ projectId, item, fileId })
+      .catch((err) => { logger.warn(`artwork critique: wardrobe promotion failed: ${err.message}`); return false; });
+    item.promoted_wardrobe = promoted;
+    await updateArtworkCritiqueProposal(projectId, beatId, item.proposal_id, {
+      status: 'done', artwork_id: artworkId, result_image_id: fileId || null, generated_at: new Date(), error_message: null,
+      promoted_wardrobe: promoted,
+    });
+    await markRequirementsCovered({ projectId, beatId, item, artworkId });
+    recordProgress(job, { phase: 'rendering', step: 'shot_done', frame: order, total: job.planned, message: `Rendered ${order}/${job.planned}: ${item.name}${promoted ? ' — promoted to the wardrobe plate' : ''}` });
+  } catch (e) {
+    item.status = 'error';
+    item.error = e.message;
+    job.failed += 1;
+    if (artworkId) {
+      await setArtworkStatusViaGateway({ projectId, hostType: item.host_type, hostId: item.host_id, artworkId, status: 'error', errorMessage: e.message })
+        .catch((err) => logger.warn(`artwork critique: persist artwork error failed: ${err.message}`));
+    }
+    await updateArtworkCritiqueProposal(projectId, beatId, item.proposal_id, { status: 'error', error_message: e.message })
+      .catch((err) => logger.warn(`artwork critique: persist proposal error failed: ${err.message}`));
+    recordProgress(job, { phase: 'rendering', step: 'shot_failed', frame: order, total: job.planned, message: `Failed ${order}/${job.planned}: ${item.name} — ${e.message}` });
+    logger.warn(`artwork critique generate ${job.job_id}: ${item.name} failed: ${e.message}`);
+  }
+}
+
+// A rendered proposal covers its requirements. Read-modify-write of the
+// subject's requirements array — only this job writes it while it runs.
+async function markRequirementsCovered({ projectId, beatId, item, artworkId }) {
+  const critique = await getBeatArtworkCritique(projectId, beatId);
+  const subject = (critique?.subjects || []).find((s) => s.kind === item.host_type && String(s.id) === String(item.host_id));
+  if (!subject) return;
+  const ids = new Set(item.requirement_ids);
+  const requirements = (subject.requirements || []).map((r) => (ids.has(r.id)
+    ? { ...r, status: 'covered', covered_by: [...(r.covered_by || []), artworkId], note: r.note || 'Generated from the critique proposal.' }
+    : r));
+  await updateArtworkCritiqueSubject(projectId, beatId, subject.id, { requirements });
+  const fresh = await getBeatArtworkCritique(projectId, beatId);
+  await setArtworkCritiqueCoverage(projectId, beatId, computeCoverage(fresh?.subjects || []));
+}
+
+async function runArtworkGenerateJob({ projectId, beatId, job, discordUser }) {
+  try {
+    job.status = 'rendering';
+    await runPool(job.items, RENDER_CONCURRENCY, (item) => renderProposal({ projectId, beatId, job, item, discordUser }));
+    job.status = job.failed === 0 ? 'done' : job.completed ? 'partial' : 'error';
+    recordProgress(job, { phase: 'done', step: 'job_done', message: `Generated ${job.completed}/${job.planned}${job.failed ? ` (${job.failed} failed)` : ''}` });
+  } catch (e) {
+    job.status = 'error';
+    job.error = e.message;
+    logger.error(`artwork critique generate ${job.job_id} crashed: ${e.message}`);
+  } finally {
+    job.finished_at = new Date();
+    const id = job.job_id;
+    setTimeout(() => genJobs.delete(id), TERMINAL_RETENTION_MS).unref?.();
+  }
+}
+
+export async function startArtworkGenerateJob({ projectId, beatId, proposalIds, model, overrides = {}, discordUser = null }) {
+  projectId = await resolveProjectId(projectId);
+  const beat = await getBeat(projectId, String(beatId));
+  if (!beat) throw httpError(`beat not found: ${beatId}`, 404);
+  const critique = beat.artwork_critique;
+  if (!critique) throw httpError('Run the artwork critique first.', 404);
+  const wanted = [...new Set((Array.isArray(proposalIds) ? proposalIds : []).map(String).filter(isHex))];
+  if (!wanted.length) throw httpError('proposal_ids is required.', 400);
+  const byId = new Map((critique.proposals || []).map((p) => [String(p._id), p]));
+  const unknown = wanted.filter((id) => !byId.has(id));
+  if (unknown.length) throw httpError(`Unknown proposal id: ${unknown[0]}`, 400);
+  if (!(await isValidImageModel(model))) throw httpError(IMAGE_MODEL_ERROR, 400);
+  assertImageModelConfigured(model);
+  const cleanOverrides = await validateOverrides(overrides);
+
+  const busyKey = beat._id.toString();
+  if (busyBeats.has(busyKey)) throw httpError('An artwork critique is running for this beat; wait for it to finish.', 409);
+  if (generatingBeats.has(busyKey)) throw httpError('Artwork is already being generated for this beat.', 409);
+
+  // Proposals stuck in `generating` from a lost job (restart) are reset so
+  // they can be picked again.
+  for (const p of critique.proposals || []) {
+    if (p.status === 'generating' && ![...genJobs.values()].some((j) => j.beat_id === busyKey && j.status === 'rendering')) {
+      await updateArtworkCritiqueProposal(projectId, beat._id, p._id, { status: 'error', error_message: 'The previous generation did not finish.' });
+      p.status = 'error';
+    }
+  }
+  const items = [];
+  for (const id of wanted) {
+    const p = byId.get(id);
+    if (!['proposed', 'error'].includes(p.status)) continue;
+    const o = cleanOverrides[id] || {};
+    items.push({
+      proposal_id: id,
+      host_type: p.host_type,
+      host_id: String(p.host_id),
+      host_name: p.host_name,
+      name: p.name,
+      prompt: o.prompt ?? p.prompt,
+      reference_image_ids: (o.reference_image_ids ?? (p.reference_image_ids || [])).map(String),
+      requirement_ids: p.requirement_ids || [],
+      requirement_categories: requirementCategories(critique, p),
+      status: 'queued',
+      artwork_id: null,
+      error: null,
+    });
+  }
+  if (!items.length) throw httpError('None of the selected proposals can be generated (already done or dismissed).', 400);
+  await anchorCharacterItems({ projectId, beat, items });
+  await assertShotsSatisfyModelReferences({
+    model,
+    explicitShots: items.map((i) => ({ name: i.name, model, reference_image_ids: i.reference_image_ids })),
+    poolIds: [],
+  });
+
+  generatingBeats.add(busyKey);
+  // Persist what will run onto each proposal before rendering so the doc
+  // shows the prompt and references that produced the artwork.
+  for (const item of items) {
+    await updateArtworkCritiqueProposal(projectId, beat._id, item.proposal_id, {
+      status: 'generating',
+      model,
+      prompt: item.prompt,
+      reference_image_ids: item.reference_image_ids.map((id) => new ObjectId(id)),
+      error_message: null,
+    });
+  }
+  const job = {
+    job_id: makeJobId(),
+    beat_id: busyKey,
+    project_id: projectId,
+    status: 'queued',
+    model,
+    beat,
+    planned: items.length,
+    completed: 0,
+    failed: 0,
+    progress: null,
+    events: [],
+    items,
+    error: null,
+    started_at: new Date(),
+    finished_at: null,
+  };
+  genJobs.set(job.job_id, job);
+  recordProgress(job, { phase: 'queued', step: 'job_queued', message: `Queued ${items.length} artwork render${items.length === 1 ? '' : 's'}…` });
+  setImmediate(() => {
+    runArtworkGenerateJob({ projectId, beatId: beat._id, job, discordUser })
+      .catch((e) => logger.error(`artwork critique generate: background run failed: ${e.message}`))
+      .finally(() => generatingBeats.delete(busyKey));
+  });
+  return { job_id: job.job_id, planned: items.length };
+}
+
+export async function setProposalStatus({ projectId, beatId, proposalId, status }) {
+  projectId = await resolveProjectId(projectId);
+  const beat = await getBeat(projectId, String(beatId));
+  if (!beat) throw httpError(`beat not found: ${beatId}`, 404);
+  const current = (beat.artwork_critique?.proposals || []).find((p) => String(p._id) === String(proposalId));
+  if (!current) throw httpError('proposal not found', 404);
+  if (current.status === 'generating') throw httpError('This proposal is being generated.', 409);
+  if (status === 'dismissed' && current.status === 'done') throw httpError('A generated proposal cannot be dismissed.', 409);
+  await updateArtworkCritiqueProposal(projectId, beat._id, proposalId, { status });
+  return { ...current, status };
+}
+
+// ── Fixing an audited artwork ────────────────────────────────────────────
+// The audit's `suggested_edit` is one imperative sentence an image-edit model
+// can apply to THAT image alone. A fix applies it (or the user's rewrite of
+// it) as an in-line EDIT of the artwork's current image on its owning set /
+// character — the same job the Artwork tab's Edit dialog starts
+// (startEditArtworkJob: old result → previous_result_image_id, one-step
+// undo) — and records the attempt on the audited entry as
+//   fix: {status: generating|done|error|undone, prompt, model, started_at,
+//         source_image_id, result_image_id, error_message}
+// The edit job finishes in the background and broadcasts to the host's room,
+// not the beat's, so `syncArtworkFix` reads the host artwork on demand (the
+// SPA polls it; the critique GET sweeps every in-flight fix) and copies the
+// outcome onto the entry — `result_image_id` follows the new image so the
+// strip shows what is on file now. The audit's issues are left as found:
+// they describe the picture that was critiqued, and only a re-run can clear
+// them.
+
+const MAX_FIX_PROMPT = 4096;
+
+function serializeFixEntry(subject, artwork) {
+  return {
+    subject_id: String(subject.id),
+    host_type: subject.kind,
+    artwork: { ...artwork, artwork_id: String(artwork.artwork_id), result_image_id: artwork.result_image_id ? String(artwork.result_image_id) : null },
+  };
+}
+
+async function locateAuditedArtwork(projectId, beatId, artworkId) {
+  const beat = await getBeat(projectId, String(beatId));
+  if (!beat) throw httpError(`beat not found: ${beatId}`, 404);
+  if (!beat.artwork_critique) throw httpError('Run the artwork critique first.', 404);
+  const found = await findArtworkCritiqueArtwork(projectId, beat._id, artworkId);
+  if (!found) throw httpError('artwork not found on this critique', 404);
+  return { beat, ...found };
+}
+
+export async function startArtworkFix({ projectId, beatId, artworkId, prompt, model, discordUser = null, announceUsername = null }) {
+  projectId = await resolveProjectId(projectId);
+  const { beat, subject, artwork: entry } = await locateAuditedArtwork(projectId, beatId, artworkId);
+  const text = String(prompt ?? entry.suggested_edit ?? '').trim();
+  if (!text) throw httpError('A fix needs an edit instruction.', 400);
+  if (text.length > MAX_FIX_PROMPT) throw httpError(`The edit instruction is limited to ${MAX_FIX_PROMPT} characters.`, 400);
+  model = normalizeImageModel(model);
+  if (!(await isValidImageModel(model))) throw httpError(IMAGE_MODEL_ERROR, 400);
+  assertImageModelConfigured(model);
+
+  const hostId = String(subject.id);
+  const live = await getArtwork({ projectId, hostType: subject.kind, hostId, artworkId: String(artworkId) });
+  if (!live?.artwork) throw httpError('The artwork is no longer on its set / character. Re-run the critique.', 404);
+  if (live.artwork.status === 'pending') throw httpError('This artwork is already being generated or edited.', 409);
+  if (!live.artwork.result_image_id) throw httpError('This artwork has no image to edit.', 409);
+  if (entry.fix?.status === 'generating') throw httpError('A fix is already running for this artwork.', 409);
+
+  await startEditArtworkJob({
+    projectId,
+    hostType: subject.kind,
+    hostId,
+    artworkId: String(artworkId),
+    prompt: text,
+    model,
+    referenceImageIds: [],
+    discordUser,
+    announceUsername,
+  });
+  const fix = {
+    status: 'generating',
+    prompt: text,
+    model,
+    started_at: new Date(),
+    source_image_id: String(live.artwork.result_image_id),
+    result_image_id: null,
+    error_message: null,
+  };
+  await updateArtworkCritiqueArtwork(projectId, beat._id, subject.id, artworkId, { fix });
+  logger.info(`artwork critique: fix started beat=${beat._id} ${subject.kind}=${hostId} artwork=${artworkId} model=${model}`);
+  return serializeFixEntry(subject, { ...entry, fix });
+}
+
+// Copy the outcome of a running fix from the host artwork onto the audited
+// entry. Idempotent; a no-op unless the entry's fix is `generating`.
+async function settleFix({ projectId, beatId, subject, entry }) {
+  const fix = entry.fix;
+  if (fix?.status !== 'generating') return entry;
+  const live = await getArtwork({ projectId, hostType: subject.kind, hostId: String(subject.id), artworkId: String(entry.artwork_id) });
+  let next = null;
+  if (!live?.artwork) {
+    next = { fix: { ...fix, status: 'error', error_message: 'The artwork was deleted while the fix ran.' } };
+  } else if (live.artwork.status === 'error') {
+    next = { fix: { ...fix, status: 'error', error_message: live.artwork.error_message || 'The edit failed.' } };
+  } else if (live.artwork.status === 'done') {
+    const resultId = live.artwork.result_image_id ? String(live.artwork.result_image_id) : null;
+    next = resultId && resultId !== fix.source_image_id
+      ? { fix: { ...fix, status: 'done', result_image_id: resultId }, result_image_id: live.artwork.result_image_id }
+      : { fix: { ...fix, status: 'error', error_message: 'The edit finished without a new image.' } };
+  }
+  if (!next) return entry;
+  await updateArtworkCritiqueArtwork(projectId, beatId, subject.id, entry.artwork_id, next);
+  return { ...entry, ...next };
+}
+
+export async function syncArtworkFix({ projectId, beatId, artworkId }) {
+  projectId = await resolveProjectId(projectId);
+  const { beat, subject, artwork: entry } = await locateAuditedArtwork(projectId, beatId, artworkId);
+  const settled = await settleFix({ projectId, beatId: beat._id, subject, entry });
+  return serializeFixEntry(subject, settled);
+}
+
+// Sweep every in-flight fix on a critique (the GET route calls this so a
+// reload shows finished edits). Returns the critique as stored afterwards.
+export async function syncArtworkFixes({ projectId, beatId }) {
+  projectId = await resolveProjectId(projectId);
+  const critique = await getBeatArtworkCritique(projectId, beatId);
+  if (!critique) return null;
+  let touched = false;
+  for (const subject of critique.subjects || []) {
+    for (const entry of subject.artworks || []) {
+      if (entry?.fix?.status !== 'generating') continue;
+      await settleFix({ projectId, beatId, subject, entry }).catch((e) => logger.warn(`artwork critique: fix sync failed: ${e.message}`));
+      touched = true;
+    }
+  }
+  return touched ? getBeatArtworkCritique(projectId, beatId) : critique;
+}
+
+export async function undoArtworkFix({ projectId, beatId, artworkId }) {
+  projectId = await resolveProjectId(projectId);
+  const { beat, subject, artwork: entry } = await locateAuditedArtwork(projectId, beatId, artworkId);
+  const settled = await settleFix({ projectId, beatId: beat._id, subject, entry });
+  if (settled.fix?.status !== 'done') throw httpError('There is no finished fix to undo.', 409);
+  const artwork = await undoArtworkEdit({ projectId, hostType: subject.kind, hostId: String(subject.id), artworkId: String(artworkId) });
+  const next = {
+    fix: { ...settled.fix, status: 'undone' },
+    result_image_id: artwork?.result_image_id || null,
+  };
+  await updateArtworkCritiqueArtwork(projectId, beat._id, subject.id, artworkId, next);
+  return serializeFixEntry(subject, { ...settled, ...next });
+}

@@ -93,6 +93,19 @@ describe('buildCharacterShotPrompt', () => {
     expect(prompt).toContain('left eyebrow');
   });
 
+  it('states the locked wardrobe on its own line and keeps it authoritative when references are attached', () => {
+    const character = { name: 'X', hollywood_actor: 'Zendaya', fields: { wardrobe: 'red leather jacket', scar: 'left eyebrow' } };
+    const bare = buildCharacterShotPrompt({ character, shot });
+    expect(bare).toContain('Wardrobe (locked — reproduce exactly): red leather jacket — these exact garments');
+    // The field scan no longer repeats it.
+    expect(bare.match(/red leather jacket/g)).toHaveLength(1);
+    expect(bare).toContain('scar: left eyebrow');
+    const withRefs = buildCharacterShotPrompt({ character, shot, hasReferences: true });
+    expect(withRefs).toContain('Wardrobe (locked — reproduce exactly): red leather jacket');
+    expect(withRefs.indexOf('Wardrobe (locked')).toBeLessThan(withRefs.indexOf('authority on appearance'));
+    expect(buildCharacterShotPrompt({ character: { name: 'Y', fields: {} }, shot })).not.toContain('Wardrobe (locked');
+  });
+
   it('forbids overlay/caption text but preserves text on clothing', () => {
     const character = { name: 'X', hollywood_actor: 'Zendaya', fields: {} };
     const prompt = buildCharacterShotPrompt({ character, shot });

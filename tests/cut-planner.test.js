@@ -676,3 +676,129 @@ describe('live progress', () => {
     expect(job.steps.map((s) => s.key)).toEqual(['context', 'scenes']);
   });
 });
+
+describe('coverage, continuation and montage', () => {
+  const dialogs = [];
+  const scene = { order: 1, title: 'Row', character_names: ['Sarah', 'Tom'], set_names: ['Diner'], dialog_lines: [] };
+  const row = (over = {}) => ({
+    camera: camera({ size: 'close_up', lens_mm: 85, side: 'from the aisle, on Sarah' }), in_frame: [{ character: 'Sarah', position: 'in the booth', facing: 'the door', acts: true }], action_by: 'Sarah',
+    reaction: false, eyeline: 'the door', action: 'lifts the cup', others: '', last_frame: 'the cup at her mouth', sound: 'rain', sound_on_action: false, crossing: false, contact: false,
+    dialog_lines: [], sets_in_scene: ['Diner'], primary_spend: 'identity', felt_intent: 'waiting', hook: 'her thumb whitens on the cup', continues_previous: false, duration_seconds: 3, ...over,
+  });
+  const reverse = () => row({ camera: camera({ size: 'wide', side: 'from her seat, looking at the door' }), in_frame: [{ character: 'Tom', position: 'in the doorway', facing: 'her', acts: true }], action_by: 'Tom', hook: 'rain runs off his sleeve onto the mat' });
+
+  it('the schemas ask for the hook, the continuation flag, the scene kind and the montage subjects; the prompts carry the rules', () => {
+    expect(P.PLAN_CUTS_TOOL.input_schema.properties.cuts.items.required).toEqual(expect.arrayContaining(['hook', 'continues_previous']));
+    expect(P.BREAK_SCENES_TOOL.input_schema.properties.scenes.items.required).toEqual(expect.arrayContaining(['kind', 'montage_subjects']));
+    expect(P.REVIEW_ISSUE_KINDS).toEqual(expect.arrayContaining(['coverage', 'continuity', 'hook']));
+    expect(P.CUTS_SYSTEM_PROMPT).toMatch(/Coverage — every cut is a NEW camera setup/);
+    expect(P.CUTS_SYSTEM_PROMPT).toMatch(/The hook — every cut has ONE thing the eye goes to/);
+    expect(P.SCENES_SYSTEM_PROMPT).toMatch(/A montage has a JOB/);
+    expect(P.REVIEW_SYSTEM_PROMPT).toMatch(/# 5\. From cut to cut/);
+    expect(P.REVIEW_SYSTEM_PROMPT).toMatch(/# 6\. The hook/);
+    expect(P.START_FRAMES_SYSTEM_PROMPT).toMatch(/IS the previous cut's end still/);
+  });
+
+  it('keeps the hook; a continuation is only kept on the same setup, never on the first row', () => {
+    const { cuts, warnings } = P.normalizeCuts([row({ continues_previous: true }), row({ continues_previous: true }), { ...reverse(), continues_previous: true }], { scene, dialogs });
+    expect(cuts.map((c) => c.continues_previous)).toEqual([false, true, false]);
+    expect(cuts[0].hook).toBe('her thumb whitens on the cup');
+    expect(warnings).toEqual(expect.arrayContaining([expect.stringMatching(/cut 3: marked as continuing the previous cut but it is a different camera setup/)]));
+    // A single-cut replan judges the row against the fixed row before it.
+    expect(P.normalizeCuts([row({ continues_previous: true })], { scene, dialogs, previous: cuts[0] }).cuts[0].continues_previous).toBe(true);
+    expect(P.formatCutRow(cuts[1], 1, dialogs)).toContain('continues previous cut');
+    expect(P.formatCutRow(cuts[1], 1, dialogs)).toContain('hook: her thumb whitens on the cup');
+  });
+
+  it('a montage: kind and subjects are kept and shown to the later passes; a blank or repeated hook is a warning', () => {
+    const { scenes, warnings } = P.normalizeScenes(
+      [
+        { title: 'Summer', slug: 'EXT. TOWN — DAY', set_names: [], character_names: [], text_span: {}, directors_read: read('nowhere → 1994'), kind: 'montage', montage_subjects: ['three boys sharing one skateboard', ' '], intention: 'we are in 1994', scope, floor_plan: 'Main street.', dialog_lines: [] },
+        { title: 'Empty', slug: '', set_names: [], character_names: [], text_span: {}, directors_read: read('x'), kind: 'montage', montage_subjects: [], intention: 'i', scope, floor_plan: 'f', dialog_lines: [] },
+        { title: 'Diner', slug: '', set_names: [], character_names: [], text_span: {}, directors_read: read('x'), kind: 'whatever', montage_subjects: ['ignored'], intention: 'i', scope, floor_plan: 'f', dialog_lines: [] },
+      ],
+      { characters: [], sets: [], dialogs: [] },
+    );
+    expect(scenes.map((s) => s.kind)).toEqual(['montage', 'montage', 'scene']);
+    expect(scenes[0].montage_subjects).toEqual(['three boys sharing one skateboard']);
+    expect(scenes[2].montage_subjects).toEqual([]);
+    expect(warnings).toEqual(expect.arrayContaining([expect.stringMatching(/Scene 2: a montage with no subjects listed/)]));
+    const brief = P.formatSceneBrief(scenes[0], []);
+    expect(brief).toContain('Kind: MONTAGE');
+    expect(brief).toContain('three boys sharing one skateboard');
+    expect(brief).toContain("Intention (the montage's job): we are in 1994");
+    expect(P.sceneStillBrief(scenes[0])).toContain('Kind: MONTAGE');
+    const m = P.normalizeCuts([row({ hook: '' }), { ...reverse(), hook: 'A dog takes the hot dog' }, row({ camera: camera({ size: 'insert', side: 'on the counter' }), hook: 'a dog takes the hot dog' })], { scene: { ...scene, kind: 'montage' }, dialogs });
+    expect(m.warnings).toEqual(expect.arrayContaining([expect.stringMatching(/cut 1: a montage cut with no hook/), expect.stringMatching(/cut 3: repeats an earlier cut's hook/)]));
+  });
+
+  it('a continuing cut takes the previous cut\'s end still as its start still (not a held camera\'s change list)', () => {
+    const cuts = [
+      { cut_index: 1, camera: camera({ movement: 'push_in' }), prompt: 'One.' },
+      { cut_index: 2, camera: camera({ movement: 'push_in' }), prompt: 'Two.', continues_previous: true },
+      { cut_index: 3, camera: camera(), prompt: 'Three.' },
+      { cut_index: 4, camera: camera(), prompt: 'Four.', continues_previous: true },
+    ];
+    P.applyStartFrames(
+      [1, 2, 3, 4].map((n) => ({ cut_index: n, start_frame_prompt: `Start ${n}.`, reference_picks: [], end_frame_prompt: n >= 3 ? `Same frame. Change ${n}.` : `End ${n}.`, end_reference_picks: [] })),
+      cuts,
+    );
+    expect(cuts[1].start_frame.prompt).toBe('End 1.');
+    expect(cuts[3].start_frame.prompt).toBe('Start 4.');
+    // The review rewrote cut 1's end still: the chain follows it.
+    cuts[0].end_frame.prompt = 'End 1, rewritten.';
+    P.chainContinuationPrompts(cuts);
+    expect(cuts[1].start_frame.prompt).toBe('End 1, rewritten.');
+  });
+
+  it('a table with two rows in a row on one setup is asked for once more, with the pair named; a table that still repeats is a warning', async () => {
+    const { beat } = await seed();
+    const sceneRaw = { title: 'Waiting', slug: 'INT. DINER — NIGHT', set_names: ['Diner'], character_names: ['Sarah', 'Tom'], text_span: { starts_with: 'Sarah waits', ends_with: 'dripping.' }, directors_read: read('waiting → leaving'), kind: 'scene', montage_subjects: [], intention: 'crack', scope, floor_plan: 'Booth left.', dialog_lines: [1, 2] };
+    const calls = [];
+    let fixed = true;
+    P._setCutPlannerCallsForTests(async (args) => {
+      calls.push(args);
+      if (args.pass === 'scenes') return { scenes: [sceneRaw] };
+      if (args.pass === 'cuts') return { tempo: 't', cuts: args.retry && fixed ? [row(), reverse()] : [row(), row({ action: 'drops the cup' })] };
+      if (args.pass === 'prose') return { cuts: [] };
+      if (args.pass === 'start_frames') return { cuts: [] };
+      return null;
+    });
+    let job = await waitJob(await P.startCutPlanJob({ projectId, beatId: beat._id.toString() }));
+    expect(job.status).toBe('done');
+    expect(calls.map((c) => c.pass)).toEqual(['scenes', 'cuts', 'cuts', 'prose', 'start_frames', 'review']);
+    expect(calls[2].userText).toContain('# Your first table was refused');
+    expect(calls[2].userText).toContain('cuts 1 and 2 are the same camera setup');
+    expect(job.warnings.filter((w) => /same camera setup/.test(w))).toEqual([]);
+    let rows = await VP.listVideoPrompts({ projectId, beatId: beat._id });
+    expect(rows.map((r) => r.action_by)).toEqual(['Sarah', 'Tom']);
+    expect(rows[1].hook).toBe('rain runs off his sleeve onto the mat');
+    // The retry did not fix it: the first table is kept and the job warns.
+    fixed = false;
+    calls.length = 0;
+    job = await waitJob(await P.startCutPlanJob({ projectId, beatId: beat._id.toString() }));
+    expect(calls.filter((c) => c.pass === 'cuts')).toHaveLength(2);
+    expect(job.warnings).toEqual(expect.arrayContaining([expect.stringMatching(/Scene 1 cut 2: the same camera setup as cut 1/)]));
+    rows = await VP.listVideoPrompts({ projectId, beatId: beat._id });
+    expect(rows).toHaveLength(2);
+  });
+
+  it('a deliberate continuation is saved on the cut and is not re-asked', async () => {
+    const { beat } = await seed();
+    const sceneRaw = { title: 'Waiting', slug: '', set_names: ['Diner'], character_names: ['Sarah', 'Tom'], text_span: {}, directors_read: read('x'), kind: 'montage', montage_subjects: ['the undrunk cup'], intention: 'crack', scope, floor_plan: 'Booth left.', dialog_lines: [1, 2] };
+    const passes = [];
+    P._setCutPlannerCallsForTests(async (args) => {
+      passes.push(args.pass);
+      if (args.pass === 'scenes') return { scenes: [sceneRaw] };
+      if (args.pass === 'cuts') return { tempo: 't', cuts: [row(), row({ continues_previous: true, hook: 'the cup tips' })] };
+      return args.pass === 'review' ? null : { cuts: [] };
+    });
+    const job = await waitJob(await P.startCutPlanJob({ projectId, beatId: beat._id.toString() }));
+    expect(job.status).toBe('done');
+    expect(passes.filter((p) => p === 'cuts')).toHaveLength(1);
+    const rows = await VP.listVideoPrompts({ projectId, beatId: beat._id });
+    expect(rows.map((r) => r.continues_previous)).toEqual([false, true]);
+    const [stored] = await VS.listVideoScenes({ projectId, beatId: beat._id });
+    expect(stored).toMatchObject({ kind: 'montage', montage_subjects: ['the undrunk cup'] });
+  });
+});

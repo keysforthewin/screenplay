@@ -286,6 +286,104 @@ describe('jobs', () => {
   });
 });
 
+describe('wardrobe lock', () => {
+  async function lockSarah({ plate = true, text = 'grey wool coat, black boots' } = {}) {
+    const plateId = plate ? img('Sarah, wardrobe plate') : null;
+    await fakeDb.collection('characters').updateOne(
+      { project_id: projectId, name_lower: 'sarah' },
+      { $set: { fields: { wardrobe: text }, ...(plateId ? { wardrobe_image_id: plateId } : {}) } },
+    );
+    return plateId;
+  }
+
+  it('attaches the in-frame character\'s plate as a wardrobe reference and appends the lock under the still prompt', async () => {
+    const { beat, sarahArt, dinerArt } = await seed();
+    const plateId = await lockSarah();
+    const cut = await VP.createVideoPrompt({
+      projectId, beatId: beat._id, title: 'c', charactersInScene: ['Sarah'], setsInScene: ['Diner'],
+      inFrame: [{ character: 'Sarah', position: 'booth', facing: 'camera' }],
+      startFrame: { prompt: 'Wide: the woman in the grey coat in the booth.', reference_ids: [dinerArt, sarahArt], references_planned: true },
+    });
+    await SF.renderCutStartFrame({ projectId, cut, beat, imageModel: 'comfy:qwen-image-2.1-edit' });
+    expect(dispatched[0].inputImages.map((i) => [i.label, i.role])).toEqual([['Sarah', 'identity'], ['Sarah', 'wardrobe'], ['the set "Diner"', 'look']]);
+    expect(dispatched[0].inputImages[1].buffer.toString()).toBe('Sarah, wardrobe plate');
+    expect(dispatched[0].prompt).toContain('Wardrobe lock — Sarah: grey wool coat, black boots');
+    expect(dispatched[0].prompt).toContain('Clothes are locked');
+    // The appendix is never stored in the prompt.
+    const after = await VP.getVideoPrompt(projectId, String(cut._id));
+    expect(after.start_frame.prompt).toBe('Wide: the woman in the grey coat in the booth.');
+    expect(String(plateId)).toBeTruthy();
+  });
+
+  it('hosted models get the wardrobe binding line', async () => {
+    const { beat, sarahArt } = await seed();
+    await lockSarah();
+    const cut = await VP.createVideoPrompt({
+      projectId, beatId: beat._id, title: 'c', charactersInScene: ['Sarah'],
+      inFrame: [{ character: 'Sarah' }],
+      startFrame: { prompt: 'Sarah.', reference_ids: [sarahArt], references_planned: true },
+    });
+    await SF.renderCutStartFrame({ projectId, cut, beat, imageModel: 'nano-banana-pro' });
+    expect(dispatched[0].prompt).toContain("Image 2 is Sarah's wardrobe plate: this person wears exactly these garments");
+    expect(dispatched[0].inputImages).toHaveLength(2);
+  });
+
+  it('a planner pick of the plate itself is bound as wardrobe, not identity, and is not attached twice', async () => {
+    const { beat } = await seed();
+    const plateId = await lockSarah();
+    const cut = await VP.createVideoPrompt({
+      projectId, beatId: beat._id, title: 'c', charactersInScene: ['Sarah'],
+      inFrame: [{ character: 'Sarah' }],
+      startFrame: { prompt: 'Sarah.', reference_ids: [plateId], references_planned: true },
+    });
+    await SF.renderCutStartFrame({ projectId, cut, beat, imageModel: 'comfy:qwen-image-2.1-edit' });
+    expect(dispatched[0].inputImages.map((i) => [i.label, i.role])).toEqual([['Sarah', 'wardrobe']]);
+  });
+
+  it('is dropped for an end frame that carries the continuity frame, and skipped for a person not in frame', async () => {
+    const { beat, sarahArt } = await seed();
+    await lockSarah();
+    const cut = await VP.createVideoPrompt({
+      projectId, beatId: beat._id, title: 'c', charactersInScene: ['Sarah'],
+      inFrame: [{ character: 'Sarah' }],
+      startFrame: { prompt: 'Sarah.', reference_ids: [sarahArt], references_planned: true },
+      endFrame: { prompt: 'Sarah, later.', reference_ids: [sarahArt], references_planned: true },
+    });
+    await SF.renderCutStartFrame({ projectId, cut, beat });
+    const fresh = await VP.getVideoPrompt(projectId, String(cut._id));
+    await SF.renderCutStartFrame({ projectId, cut: fresh, beat, frame: 'end' });
+    expect(dispatched[1].inputImages).toHaveLength(2);
+    expect(dispatched[1].prompt).toContain('Image 2 is the opening frame of this same shot');
+    expect(dispatched[1].prompt).not.toContain('wardrobe plate');
+    // The lock words still ride under the prompt.
+    expect(dispatched[1].prompt).toContain('Wardrobe lock — Sarah');
+
+    const other = await VP.createVideoPrompt({
+      projectId, beatId: beat._id, title: 'd', charactersInScene: ['Sarah'],
+      inFrame: [{ character: 'Tom' }],
+      startFrame: { prompt: 'Tom alone.', reference_ids: [], references_planned: true },
+    });
+    await SF.renderCutStartFrame({ projectId, cut: other, beat });
+    expect(dispatched[2].inputImages).toEqual([]);
+    expect(dispatched[2].prompt).not.toContain('Wardrobe lock');
+  });
+
+  it('a text-only lock (no plate) still reaches the prompt; an edit never gets it', async () => {
+    const { beat, sarahArt } = await seed();
+    await lockSarah({ plate: false });
+    const cut = await VP.createVideoPrompt({
+      projectId, beatId: beat._id, title: 'c', charactersInScene: ['Sarah'],
+      startFrame: { prompt: 'Sarah.', reference_ids: [sarahArt], references_planned: true },
+    });
+    await SF.renderCutStartFrame({ projectId, cut, beat });
+    expect(dispatched[0].inputImages).toHaveLength(1);
+    expect(dispatched[0].prompt).toContain('Wardrobe lock — Sarah: grey wool coat, black boots');
+    const fresh = await VP.getVideoPrompt(projectId, String(cut._id));
+    await SF.renderCutStartFrame({ projectId, cut: fresh, beat, mode: 'edit', editPrompt: 'Brighter.' });
+    expect(dispatched[1].prompt).toBe('Brighter.');
+  });
+});
+
 describe('local ComfyUI image models', () => {
   it('introduces each reference by subject and forwards the render parameters', async () => {
     const { beat, sarahArt, dinerArt } = await seed();

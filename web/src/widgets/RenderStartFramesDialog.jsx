@@ -73,7 +73,7 @@ export function RenderStartFramesDialog({ open, onClose, cuts = [], onStart }) {
             <span>
               Check &amp; repair continuity
               <span style={{ display: 'block', fontSize: 12, color: 'var(--fg-muted)' }}>
-                Once a cut has both frames they are compared — people, clothing, props, furniture layout — and what the cut does not perform is fixed in the frame that is wrong (up to two rounds). Cuts whose frames exist but were never checked are checked too.
+                Once a cut has both frames they are compared — people, clothing, props, furniture layout — and what the cut does not perform is fixed in the frame that is wrong (up to two rounds; up to six for a blocking problem — one the clip would visibly show — and a pair that still has one is marked in red). Cuts whose frames exist but were never checked are checked too.
               </span>
             </span>
           </label>

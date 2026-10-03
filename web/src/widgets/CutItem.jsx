@@ -13,6 +13,7 @@ import { DialogLineChips } from './DialogLineChips.jsx';
 import { CutStartFrameDialog } from './CutStartFrameDialog.jsx';
 import { ImageLightbox } from './ImageLightbox.jsx';
 import { trimWindow } from './cutTiming.js';
+import { sameSetup } from './cutCoverage.js';
 
 const MAX_REFS = 9;
 // The cut's two stills: the frame the clip opens on and the one it lands on
@@ -83,7 +84,9 @@ function CutTrim({ cut, disabled, onPatch }) {
 // The pair check (src/web/cutFrameCheck.js): a first-last-frame model animates
 // every difference between the two stills, so the server compares them and
 // lists what the cut does not perform. Check only looks; Repair edits the
-// frame each issue names (either one) and checks again, up to two rounds.
+// frame each issue names (either one) and checks again — up to two rounds, or
+// six while a BLOCKING difference (one the clip would visibly show) remains.
+// A pair left with a blocking difference is shown in red.
 function FramePairCheck({ cut, disabled, onRefresh }) {
   const id = cut._id?.toString?.() || String(cut._id);
   const [job, setJob] = useState(null); // { repair, status }
@@ -96,7 +99,9 @@ function FramePairCheck({ cut, disabled, onRefresh }) {
   if (!startImage || !endImage) return null;
   const fc = cut.frame_check || null;
   const current = Boolean(fc) && String(fc.start_image_id || '') === startImage && String(fc.end_image_id || '') === endImage;
-  const issues = Array.isArray(fc?.issues) ? fc.issues : [];
+  // Blocking differences first.
+  const issues = (Array.isArray(fc?.issues) ? fc.issues : []).slice().sort((a, b) => (b.severity === 'blocking') - (a.severity === 'blocking'));
+  const blocking = issues.filter((it) => it.severity === 'blocking').length;
   const running = Boolean(job);
 
   async function run(repair) {
@@ -134,6 +139,7 @@ function FramePairCheck({ cut, disabled, onRefresh }) {
   else if (!fc) badge = <span className="cut-lint-badge" title="The two stills have not been compared yet.">pair not checked</span>;
   else if (!current) badge = <span className="cut-lint-badge" title="A frame was re-rendered after the last check.">check out of date</span>;
   else if (fc.status === 'pass') badge = <span className="cut-lint-badge is-clean" title={fc.rounds ? `Matched after ${fc.rounds} repair round${fc.rounds === 1 ? '' : 's'}.` : 'The two stills hold the same people, clothes, props and layout.'}>frames match{fc.rounds ? ' (repaired)' : ''}</span>;
+  else if (fc.status === 'fail' && blocking) badge = <span className="cut-lint-badge is-blocking" title="The clip would visibly break: the video model animates these differences, and the repairs could not clear them. Re-render a frame, regenerate the cut, or repair again.">{blocking} blocking problem{blocking === 1 ? '' : 's'}{issues.length > blocking ? ` + ${issues.length - blocking} minor` : ''}{fc.rounds ? ` after ${fc.rounds} repair${fc.rounds === 1 ? '' : 's'}` : ''}</span>;
   else if (fc.status === 'fail') badge = <span className="cut-lint-badge is-fail" title="Differences between the two stills that the cut does not perform — the video model would animate them.">{issues.length} difference{issues.length === 1 ? '' : 's'}{fc.rounds ? ` after ${fc.rounds} repair${fc.rounds === 1 ? '' : 's'}` : ''}</span>;
   else badge = <span className="cut-lint-badge" title="The check could not run.">pair not checked</span>;
 
@@ -144,13 +150,13 @@ function FramePairCheck({ cut, disabled, onRefresh }) {
         {badge}
         <button type="button" disabled={disabled || running} onClick={() => run(false)} title="Compare the two stills: people, clothing, props, furniture layout, light.">Check frames</button>
         {current && fc.status === 'fail' ? (
-          <button type="button" className="primary" disabled={disabled || running} onClick={() => run(true)} title="Edit the frame each difference names so the pair matches, then check again (up to two rounds). Undo on a frame restores it as it was before the repair.">Repair</button>
+          <button type="button" className="primary" disabled={disabled || running} onClick={() => run(true)} title="Edit the frame each difference names so the pair matches, then check again (up to two rounds; up to six while a blocking problem remains, rebuilding the end frame from the start frame if patching does not clear it). Undo on a frame restores it as it was before the repair.">Repair</button>
         ) : null}
       </div>
       {current && fc.status === 'fail' && issues.length ? (
         <ul className="cut-pair-issues">
           {issues.map((it, i) => (
-            <li key={i} title={it.fix_instruction || ''}><span className="cut-chip">{words(it.kind)} · fix {it.frame_to_fix}</span> {it.note}</li>
+            <li key={i} className={it.severity === 'blocking' ? 'is-blocking' : ''} title={it.fix_instruction || ''}><span className="cut-chip">{it.severity === 'blocking' ? 'blocking · ' : ''}{words(it.kind)} · fix {it.frame_to_fix}</span> {it.note}</li>
           ))}
         </ul>
       ) : null}
@@ -159,7 +165,7 @@ function FramePairCheck({ cut, disabled, onRefresh }) {
   );
 }
 
-export function CutItem({ cut, index, sceneIndex = null, beatId, dialogs = [], disabled, onRefresh, onDelete, onRegenerate = null }) {
+export function CutItem({ cut, index, sceneIndex = null, beatId, dialogs = [], disabled, onRefresh, onDelete, onRegenerate = null, previousCut = null }) {
   const comfyAvail = useComfyAvailability();
   const comfyOff = comfyAvail ? !comfyAvail.configured : false;
   const id = cut._id?.toString?.() || String(cut._id);
@@ -174,6 +180,11 @@ export function CutItem({ cut, index, sceneIndex = null, beatId, dialogs = [], d
   const [durationDraft, setDurationDraft] = useState(null);
 
   const cam = cut.camera || {};
+  const fcNow = cut.frame_check;
+  const hasBlocking = Boolean(fcNow) && fcNow.status === 'fail'
+    && String(fcNow.start_image_id || '') === String(cut.start_frame?.image_id || '') && String(fcNow.end_image_id || '') === String(cut.end_frame?.image_id || '')
+    && (fcNow.issues || []).some((it) => it.severity === 'blocking');
+  const repeatsSetup = Boolean(previousCut) && !cut.continues_previous && sameSetup(previousCut, cut);
   const lint = Array.isArray(cut.lint) ? cut.lint : [];
   const refs = Array.isArray(cut.reference_images) ? cut.reference_images : [];
   const refIds = refs.map((r) => r.image_id?.toString?.() || String(r.image_id));
@@ -275,7 +286,7 @@ export function CutItem({ cut, index, sceneIndex = null, beatId, dialogs = [], d
   const inFrame = Array.isArray(cut.in_frame) ? cut.in_frame : [];
 
   return (
-    <div ref={setNodeRef} style={style} className="dialog-item video-prompt-item cut-item">
+    <div ref={setNodeRef} style={style} className={`dialog-item video-prompt-item cut-item${hasBlocking ? ' has-blocking' : ''}`}>
       <div className="dialog-item-header">
         <button type="button" className="dialog-drag-handle" aria-label="Drag to reorder" {...attributes} {...listeners}>⋮⋮</button>
         <span className="video-prompt-index">{label}</span>
@@ -307,6 +318,8 @@ export function CutItem({ cut, index, sceneIndex = null, beatId, dialogs = [], d
           {cut.primary_spend ? <span className="cut-chip cut-chip-spend" title="Primary spend">{cut.primary_spend}</span> : null}
           {cut.reaction ? <span className="cut-chip cut-chip-flag">reaction</span> : null}
           {cut.crossing ? <span className="cut-chip cut-chip-flag">crossing</span> : null}
+          {cut.continues_previous ? <span className="cut-chip" title="A deliberate jump cut: the same camera setup as the previous cut, opening on its end frame.">continues previous cut</span> : null}
+          {repeatsSetup ? <span className="cut-chip cut-chip-flag" title="The same subject, size, angle and side as the previous cut. The two clips are rendered separately and will jump when cut together: regenerate one from another angle, or tick 'Continues previous cut' in the shot table to open this cut on the previous cut's end frame.">same setup as previous cut</span> : null}
           <button type="button" className="cut-table-toggle" onClick={() => setTableOpen((v) => !v)}>
             {tableOpen ? 'Hide shot table' : 'Shot table…'}
           </button>
@@ -383,6 +396,17 @@ export function CutItem({ cut, index, sceneIndex = null, beatId, dialogs = [], d
             <div className="cut-table-row"><span>Felt intent</span>
               <PatchText value={cut.felt_intent} disabled={busy || disabled} onCommit={(v) => patch({ felt_intent: v })} />
             </div>
+            <div className="cut-table-row" title="The one thing the eye goes to in this cut: something that happens, light on a material, something funny, cute or curious. Rendered stills are told to put it where the eye lands first."><span>Hook</span>
+              <PatchText value={cut.hook} disabled={busy || disabled} placeholder="What catches the eye — as the camera sees it" onCommit={(v) => patch({ hook: v })} />
+            </div>
+            {previousCut ? (
+              <div className="cut-table-row">
+                <span>Continuity</span>
+                <label title="A deliberate jump cut: the same camera setup as the previous cut, continuous in time. Its start frame is then a copy of the previous cut's end frame instead of a new render.">
+                  <input type="checkbox" checked={Boolean(cut.continues_previous)} disabled={busy || disabled} onChange={(e) => patch({ continues_previous: e.target.checked })} /> Continues previous cut (opens on its end frame)
+                </label>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -432,6 +456,11 @@ export function CutItem({ cut, index, sceneIndex = null, beatId, dialogs = [], d
           const fc = cut.frame_check;
           const checkedOk = fc?.status === 'pass' && String(fc.start_image_id || '') === startImage && String(fc.end_image_id || '') === sfImage;
           const stale = frame === 'end' && sfImage && startImage && builtOn !== startImage && !checkedOk;
+          // A continuing cut's start frame is a copy of the previous cut's end frame.
+          const chained = frame === 'start' && cut.continues_previous && sfImage && sf?.model === 'chained';
+          const previousEnd = previousCut?.end_frame?.image_id ? String(previousCut.end_frame.image_id) : null;
+          const chainStale = chained && builtOn !== previousEnd;
+          const unchained = frame === 'start' && cut.continues_previous && sfImage && !chained;
           return (
             <div key={frame} className="cut-start-frame">
               <div className="cut-sf-thumb">
@@ -447,6 +476,13 @@ export function CutItem({ cut, index, sceneIndex = null, beatId, dialogs = [], d
                   {sf?.previous_image_id ? <button type="button" disabled={busy || disabled} onClick={() => undoFrame(frame)} title="Restore the previous frame">Undo</button> : null}
                   {sfImage ? <button type="button" className="danger" disabled={busy || disabled} onClick={() => removeFrame(frame)}>Remove</button> : null}
                 </div>
+                {chained || unchained ? (
+                  <div className="cut-sf-flags">
+                    {chained && !chainStale ? <span className="cut-chip" title="This cut continues the previous one: its start frame is a copy of that cut's end frame.">previous cut's end frame</span> : null}
+                    {chainStale ? <span className="cut-chip cut-chip-flag" title="The previous cut's end frame was re-rendered after this copy was made. Re-render this start frame to take the new one.">previous end frame changed</span> : null}
+                    {unchained ? <span className="cut-chip cut-chip-flag" title="This cut continues the previous one but its start frame is its own render, not that cut's end frame. Re-render it once the previous cut has an end frame.">not the previous end frame</span> : null}
+                  </div>
+                ) : null}
                 {frame === 'end' && (sf?.derive || stale) ? (
                   <div className="cut-sf-flags">
                     {sf?.derive ? <span className="cut-chip" title="Held camera: this frame is made by editing the start frame, so the set, the props and the clothing stay identical. Its prompt is the list of what changes.">derived from start frame</span> : null}

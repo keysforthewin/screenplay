@@ -35,6 +35,31 @@ describe('buildCritiqueContext', () => {
     expect(ctx.styleGuide.length).toBeGreaterThan(20);
   });
 
+  it('loads the steering documents: dialogue style, directorial voice, scene bible, sets, characters', async () => {
+    const { createSet } = await import('../src/mongo/sets.js');
+    const { createCharacter } = await import('../src/mongo/characters.js');
+    await Plots.updatePlot(projectId, { dialogue_style: 'Terse, Mamet.', directorial_voice: 'Long lenses, no coverage.' });
+    await createSet({ projectId, name: 'Kitchen', description: 'A galley kitchen with a window over the sink.' });
+    await createCharacter({ projectId, name: 'Alice', hollywood_actor: 'Jodie Comer', fields: { role: 'the thief' } });
+    const beat = await Plots.createBeat({ projectId, name: 'One', body: 'b1', order: 1, sets: ['Kitchen'], characters: ['Alice'] });
+    await Plots.setBeatSceneBible(projectId, beat._id.toString(), { intention: 'Alice steals the key.', location: 'Kitchen at dawn' });
+    const ctx = await buildCritiqueContext(projectId, await Plots.getBeat(projectId, beat._id.toString()));
+    expect(ctx.plot.dialogue_style).toBe('Terse, Mamet.');
+    expect(ctx.directorialVoice).toBe('Long lenses, no coverage.');
+    expect(ctx.sceneBible).toContain('Kitchen at dawn');
+    expect(ctx.sets.map((s) => s.name)).toEqual(['Kitchen']);
+    expect(ctx.characters[0].hollywood_actor).toBe('Jodie Comer');
+  });
+
+  it('leaves the optional documents empty when absent', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'One', body: 'b1', order: 1 });
+    const ctx = await buildCritiqueContext(projectId, await Plots.getBeat(projectId, beat._id.toString()));
+    expect(ctx.plot.dialogue_style).toBe('');
+    expect(ctx.directorialVoice).toBe('');
+    expect(ctx.sceneBible).toBeNull();
+    expect(ctx.sets).toEqual([]);
+  });
+
   it('returns null neighbors at the ends', async () => {
     const first = await Plots.createBeat({ projectId, name: 'One', body: 'b1', order: 1 });
     await Plots.createBeat({ projectId, name: 'Two', body: 'b2', order: 2 });

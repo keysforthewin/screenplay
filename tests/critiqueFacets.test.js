@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FACETS, getFacet, facetStubs } from '../src/web/critiqueFacets.js';
+import { FACETS, getFacet, facetStubs, criteriaKeys } from '../src/web/critiqueFacets.js';
 
 const MIN_CTX = {
   beat: { order: 2, name: 'Confrontation', desc: 'they clash', body: 'INT. ROOM — NIGHT\nThey clash.' },
@@ -60,8 +60,53 @@ describe('critique facet registry', () => {
       scope: 'focused',
       score: null,
       comments: '',
+      summary: '',
+      strengths: [],
+      criteria: [],
+      issues: [],
       status: 'pending',
       error_message: null,
     });
+  });
+
+  it('every facet has 3-4 criteria with unique keys and 3/6/9 anchors, and the prompt lists them', () => {
+    for (const f of FACETS) {
+      expect(f.criteria.length).toBeGreaterThanOrEqual(3);
+      expect(f.criteria.length).toBeLessThanOrEqual(4);
+      expect(new Set(criteriaKeys(f)).size).toBe(f.criteria.length);
+      for (const c of f.criteria) {
+        for (const a of [3, 6, 9]) expect(c.anchors[a].length).toBeGreaterThan(10);
+        expect(f.systemPrompt).toContain(`[${c.key}]`);
+        expect(f.systemPrompt).toContain(c.anchors[9]);
+      }
+      expect(f.systemPrompt).toContain('# Scoring rules');
+    }
+    expect(criteriaKeys(getFacet('format'))).toContain('geography');
+  });
+
+  it('required facets weigh 1.5, the rest 1', () => {
+    for (const f of FACETS) expect(f.weight).toBe(f.required ? 1.5 : 1);
+  });
+
+  it('feeds the steering documents and full profiles into the right facets', () => {
+    const ctx = {
+      ...MIN_CTX,
+      plot: { ...MIN_CTX.plot, dialogue_style: 'STYLE-SAMPLE-TEXT' },
+      directorialVoice: 'VOICE-TEXT',
+      sceneBible: 'Intention: BIBLE-TEXT',
+      characters: [{ name: 'Alice', hollywood_actor: 'Jodie Comer', fields: { backstory: 'BACKSTORY-TEXT' } }],
+      sets: [{ name: 'Kitchen', description: 'SET-DESC-TEXT' }],
+    };
+    const direction = getFacet('direction').buildContext(ctx);
+    expect(direction).toContain('VOICE-TEXT');
+    expect(direction).toContain('BIBLE-TEXT');
+    expect(getFacet('dialogue').buildContext(ctx)).toContain('STYLE-SAMPLE-TEXT');
+    const voice = getFacet('voice').buildContext(ctx);
+    expect(voice).toContain('Jodie Comer');
+    expect(voice).toContain('BACKSTORY-TEXT');
+    expect(getFacet('format').buildContext(ctx)).toContain('SET-DESC-TEXT');
+    expect(getFacet('cinematic').buildContext(ctx)).toContain('SET-DESC-TEXT');
+    // absent optional documents are flagged as not applicable, never invented
+    expect(getFacet('direction').buildContext(MIN_CTX)).toContain('not applicable');
   });
 });

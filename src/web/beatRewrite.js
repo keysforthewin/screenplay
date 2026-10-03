@@ -11,6 +11,8 @@ import { getBeatCritique, setCritiqueStrategy, stashPreviousBody, getPreviousBod
 import { setBeatBodyViaGateway } from './gateway.js';
 import { SCREENPLAY_STYLE_GUIDE } from '../agent/screenplayStyle.js';
 import { modelFor } from '../llm/modelSlots.js';
+import { FACETS } from './critiqueFacets.js';
+import { collectRankedIssues, SEVERITY_ORDER } from './critiqueScoring.js';
 
 function httpError(message, status) {
   const e = new Error(message);
@@ -29,9 +31,10 @@ const NORMALIZE_SYSTEM = [
 // Pass 1: reconcile every facet's notes into ONE concrete strategy that targets
 // a perfect score in EVERY facet without trading one facet off against another.
 const SYNTHESIZE_SYSTEM = [
-  'You are a script-editing strategist. You are given one screenplay beat and a set of per-facet critiques, each with a 1-10 score and concrete notes.',
+  'You are a script-editing strategist. You are given one screenplay beat and its critique: issues ranked by severity (each quoting the line, naming the problem and a fix), then per-facet criterion scores and notes.',
   'Produce ONE concrete, direct rewriting strategy a screenwriter will follow to rewrite the beat.',
-  '- Turn the facet notes into one numbered plan a screenwriter can follow. Keep the fixes that matter; where two facets pull against each other, say how to serve both, since a rewrite that improves one facet by weakening another is a net loss.',
+  '- Every MUST FIX issue gets its own numbered step that quotes the line it changes. SHOULD FIX issues are addressed unless doing so would re-break a must-fix; NITS only when free. Work from the lowest-scoring criteria up.',
+  '- Turn the notes into one numbered plan a screenwriter can follow. Keep the fixes that matter; where two facets pull against each other, say how to serve both, since a rewrite that improves one facet by weakening another is a net loss.',
   '- Be specific and directive — name the exact changes (lines to add/cut/reshape, sluglines, blocking, subtext), not vague advice.',
   "- Keep the story's intent and the characters intact.",
   'Output ONLY the numbered strategy. Do NOT write the rewritten beat.',
@@ -58,17 +61,47 @@ export async function normalizeBeatBody(body) {
   return out.trim();
 }
 
-function formatCritiqueForRewrite(critique) {
-  const lines = (critique?.facets || [])
-    .filter((f) => f.status === 'done' && (f.comments || '').trim())
-    .map((f) => `## ${f.label} (score ${f.score ?? '—'}/10)\n${f.comments.trim()}`);
-  return lines.length ? lines.join('\n\n') : '(no actionable critique comments)';
+const SEVERITY_HEADINGS = { must_fix: 'MUST FIX', should_fix: 'SHOULD FIX', nit: 'NITS' };
+
+// The critique as the strategist reads it: every issue ranked by severity
+// (quote → problem → fix), then each facet's criterion scores and summary.
+// Pre-v2 critiques (no issues anywhere) fall back to the score + comments list.
+export function formatCritiqueForRewrite(critique) {
+  const done = (critique?.facets || []).filter((f) => f.status === 'done');
+  const ranked = collectRankedIssues(critique, FACETS);
+  if (!ranked.length) {
+    const lines = done
+      .filter((f) => (f.comments || '').trim())
+      .map((f) => `## ${f.label} (score ${f.score ?? '—'}/10)\n${f.comments.trim()}`);
+    return lines.length ? lines.join('\n\n') : '(no actionable critique comments)';
+  }
+  const out = ['# Ranked issues (fix in this order)'];
+  for (const sev of SEVERITY_ORDER) {
+    const group = ranked.filter((i) => i.severity === sev);
+    if (!group.length) continue;
+    out.push('', `## ${SEVERITY_HEADINGS[sev]}`);
+    for (const i of group) {
+      const where = i.criterion ? `${i.facet_label} / ${i.criterion}` : i.facet_label;
+      const quote = i.quote ? ` "${i.quote}"` : '';
+      out.push(`- [${where}]${quote} — ${i.problem}${i.fix ? ` → FIX: ${i.fix}` : ''}`);
+    }
+  }
+  out.push('', '# Facet summaries');
+  for (const f of done) {
+    out.push('', `## ${f.label} (score ${f.score ?? '—'}/10)`);
+    for (const c of f.criteria || []) {
+      out.push(`- ${c.label || c.key}: ${c.applicable === false ? 'n/a' : `${c.score ?? '—'}/10`}`);
+    }
+    const summary = (f.summary || f.comments || '').trim();
+    if (summary) out.push(summary);
+  }
+  return out.join('\n');
 }
 
 // Pass 1 — synthesize all facet critiques into one concrete rewrite strategy.
 export async function synthesizeRewriteStrategy({ beat, critique }) {
   const user = [
-    '# Per-facet critique (each with its 1-10 score and notes)',
+    '# Critique (ranked issues, then per-facet scores and notes)',
     formatCritiqueForRewrite(critique),
     '',
     '# Current beat body',

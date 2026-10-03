@@ -36,6 +36,10 @@ export function ArtworkTab({
   hostArtworks = [],
   mainImageId = null,
   mainPath = null,
+  // The wardrobe plate (characters only): the image every picture of this
+  // person copies the clothes from.
+  wardrobeImageId = null,
+  wardrobePath = null,
   onChange,
 }) {
   const [creating, setCreating] = useState(false);
@@ -202,6 +206,18 @@ export function ArtworkTab({
 
   const mainIdStr = mainImageId?.toString?.()
     || (typeof mainImageId === 'string' ? mainImageId : null);
+  const wardrobeIdStr = wardrobeImageId?.toString?.()
+    || (typeof wardrobeImageId === 'string' ? wardrobeImageId : null);
+
+  async function setAsWardrobe(resultId) {
+    if (!wardrobePath) return;
+    try {
+      await apiPostJson(wardrobePath, { image_id: resultId || null });
+      await onChange?.();
+    } catch (e) {
+      setError(e?.message || 'Set wardrobe failed');
+    }
+  }
 
   async function commitRename() {
     if (!renameId) return;
@@ -477,6 +493,28 @@ export function ArtworkTab({
                           title="Use this artwork as the main thumbnail"
                         >
                           Set as main
+                        </button>
+                      )
+                    )}
+                    {resultId && status === 'done' && wardrobePath && (
+                      resultId === wardrobeIdStr ? (
+                        <button
+                          type="button"
+                          className="is-wardrobe-badge"
+                          onClick={() => setAsWardrobe(null)}
+                          disabled={isBusy}
+                          title="This is the wardrobe plate — every render of this character copies its clothes. Click to clear."
+                        >
+                          👔 wardrobe
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setAsWardrobe(resultId)}
+                          disabled={isBusy}
+                          title="Make this the wardrobe plate: every render of this character copies its clothes"
+                        >
+                          Set as wardrobe
                         </button>
                       )
                     )}

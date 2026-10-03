@@ -9,6 +9,7 @@
 import { logger } from '../log.js';
 import { findImageFile, imageFileToMeta } from '../mongo/images.js';
 import { stripMarkdown } from '../util/markdown.js';
+import { wardrobeImageId } from './wardrobe.js';
 import { findCharactersInBeat, findSetsInBeat } from './beatPlanShared.js';
 import { clipBlock } from './setDescriptionGenerate.js';
 
@@ -40,7 +41,10 @@ async function imageMeta(id) {
 // entry carries a human label ("Sarah — artwork: Rain plate") and the best
 // description we have (GridFS metadata description, then the artwork's own
 // description or prompt).
-function hostImageSlots(host) {
+// One exception: a character's WARDROBE PLATE (src/web/wardrobe.js) is
+// always offered, even when it is a gallery upload rather than artwork —
+// it is the picture every still copies the clothes from.
+function hostImageSlots(host, ownerType = 'set') {
   const slots = [];
   for (const a of host?.artworks || []) {
     if (a?.status !== 'done' || !a.result_image_id) continue;
@@ -50,12 +54,24 @@ function hostImageSlots(host) {
       caption: (String(a.description || '').trim() || String(a.prompt || '').trim()),
     });
   }
+  const plate = ownerType === 'character' ? wardrobeImageId(host) : '';
+  if (plate) {
+    const existing = slots.find((s) => s.id === plate);
+    if (existing) {
+      existing.kind = `wardrobe plate (${existing.kind})`;
+      existing.wardrobe = true;
+    } else {
+      const img = (host.images || []).find((i) => String(i?._id ?? i) === plate);
+      slots.push({ id: plate, kind: 'wardrobe plate', caption: String(img?.caption || '').trim(), wardrobe: true });
+    }
+  }
   return slots;
 }
 
 // Build the numbered reference catalog for a beat — artwork only. Returns
-// [{ index (1-based), image_id (string), owner_type, owner_name, label,
-//    description }] deduped by image id and capped at MAX_CATALOG_ENTRIES.
+// [{ index (1-based), image_id (string), owner_type, owner_id, owner_name,
+//    label, description, wardrobe? }] deduped by image id and capped at
+//    MAX_CATALOG_ENTRIES.
 // Exported for the /cuts/candidates route (the SPA's picker), the PATCH
 // /cut/:id route's id → entry resolution and the cut planner.
 export async function buildReferenceCatalog(projectId, beat) {
@@ -71,7 +87,7 @@ export async function buildReferenceCatalog(projectId, beat) {
   const seen = new Set();
   for (const { doc, ownerType } of hosts) {
     const ownerName = stripMarkdown(doc?.name || '').trim() || (ownerType === 'set' ? 'Set' : 'Character');
-    for (const slot of hostImageSlots(doc)) {
+    for (const slot of hostImageSlots(doc, ownerType)) {
       if (seen.has(slot.id)) continue;
       if (out.length >= MAX_CATALOG_ENTRIES) break;
       seen.add(slot.id);
@@ -82,9 +98,11 @@ export async function buildReferenceCatalog(projectId, beat) {
         index: out.length + 1,
         image_id: slot.id,
         owner_type: ownerType,
+        owner_id: doc?._id ? String(doc._id) : '',
         owner_name: ownerName,
         label: `${ownerName} — ${slot.kind}${nameBit}`,
         description,
+        ...(slot.wardrobe ? { wardrobe: true } : {}),
       });
     }
     if (out.length >= MAX_CATALOG_ENTRIES) break;

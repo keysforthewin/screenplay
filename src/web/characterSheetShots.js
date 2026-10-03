@@ -14,6 +14,7 @@
 
 import { stripMarkdown } from '../util/markdown.js';
 import { clipField, NON_VISUAL_CASTING, formatDirectorNotes } from './beatPlanShared.js';
+import { WARDROBE_FIELD, wardrobeLine } from './wardrobe.js';
 
 // Framing shared by every shot. CRITICAL: never call this a "character sheet" /
 // "reference sheet" / "model sheet" in the prompt — image models are trained to
@@ -134,8 +135,10 @@ export function scanCharacterFields(character, { maxPerField = 200, maxTotal = 1
 export function buildCharacterShotPrompt({ character, shot, directorNotes = [], hasReferences = false }) {
   const handle = buildSubjectHandle(character);
   // Keep the appearance context tight so it informs the look without reading as
-  // a caption block the model might render verbatim.
-  const details = scanCharacterFields(character, { maxPerField: 160, maxTotal: 700 });
+  // a caption block the model might render verbatim. The locked wardrobe
+  // (src/web/wardrobe.js) is stated on its own line and never demoted.
+  const lock = wardrobeLine(character);
+  const details = scanCharacterFields(character, { maxPerField: 160, maxTotal: 700, skipKeys: [WARDROBE_FIELD] });
   const notes = formatDirectorNotes(directorNotes);
   const subject = hasReferences
     ? `Subject: the exact person shown in the attached reference image(s) — reproduce their face, hairstyle, build, and complexion faithfully; their identity must remain intact and recognizable (${handle}).`
@@ -147,6 +150,9 @@ export function buildCharacterShotPrompt({ character, shot, directorNotes = [], 
     '',
     subject,
   ];
+  if (lock) {
+    lines.push('', `${lock} — these exact garments, colours, fit and footwear in every shot, whatever any reference image shows; never render the words as text.`);
+  }
   if (details) {
     // With references attached they are the authority on the look — competing
     // appearance text can pull an edit model away from the attached face, so

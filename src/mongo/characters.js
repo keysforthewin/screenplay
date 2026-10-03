@@ -277,12 +277,14 @@ export async function replaceCharacterImage(projectId, identifier, oldImageId, n
   const newImages = [...images];
   newImages[idx] = newImageMeta;
   const newMain = wasMain ? newImageMeta._id : c.main_image_id || null;
+  const wasWardrobe = c.wardrobe_image_id && c.wardrobe_image_id.equals(oldOid);
   await col().updateOne(
     { _id: c._id },
     {
       $set: {
         images: newImages,
         main_image_id: newMain,
+        ...(wasWardrobe ? { wardrobe_image_id: newImageMeta._id } : {}),
         updated_at: new Date(),
       },
     },
@@ -314,11 +316,16 @@ export async function pullCharacterImage(projectId, identifier, imageId) {
   const remaining = images.filter((i) => !i._id.equals(oid));
   const wasMain = c.main_image_id && c.main_image_id.equals(oid);
   const newMain = wasMain ? remaining[0]?._id || null : c.main_image_id || null;
+  const wasWardrobe = c.wardrobe_image_id && c.wardrobe_image_id.equals(oid);
   await col().updateOne(
     { _id: c._id },
     {
       $pull: { images: { _id: oid } },
-      $set: { main_image_id: newMain, updated_at: new Date() },
+      $set: {
+        main_image_id: newMain,
+        ...(wasWardrobe ? { wardrobe_image_id: null } : {}),
+        updated_at: new Date(),
+      },
     },
   );
   logger.info(`mongo: character image pull id=${c._id} image=${oid}`);

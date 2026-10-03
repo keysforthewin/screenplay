@@ -1,7 +1,8 @@
-// Beat-critique run engine. Runs all facets in parallel as single-tool Anthropic
-// calls returning {score, comments}, persists each as it lands, and streams full
-// job snapshots to SSE subscribers (registry + pub/sub replicated from
-// falVideoGenerate.js). Latest-only persistence via src/mongo/critiques.js.
+// Beat-critique run engine. Runs all facets in parallel as structured-output
+// Anthropic calls (criteria scored against anchors + ranked issues; the facet
+// score is derived in critiqueScoring.js), persists each as it lands, and
+// streams full job snapshots to SSE subscribers (registry + pub/sub replicated
+// from falVideoGenerate.js). Latest-only persistence via src/mongo/critiques.js.
 
 import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
@@ -10,8 +11,9 @@ import { logger } from '../log.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { resolveProjectId } from '../mongo/projects.js';
 import { getBeat } from '../mongo/plots.js';
-import { FACETS, facetStubs } from './critiqueFacets.js';
+import { FACETS, facetStubs, criteriaKeys } from './critiqueFacets.js';
 import { buildCritiqueContext } from './critiqueContext.js';
+import { normalizeFacetResult, deriveOverall } from './critiqueScoring.js';
 import {
   setCritiquePending,
   updateCritiqueFacet,
@@ -95,29 +97,66 @@ function updateJobFacet(job, key, patch) {
   if (f) Object.assign(f, patch);
 }
 
-// The CRITIQUE_FACET tool — one score + a prose critique. Mirrors dialogCritique.
-const CRITIQUE_FACET_TOOL = {
-  name: 'critique_facet',
-  strict: true,
-  description: 'Return a 1-10 score and a short prose critique for this one facet.',
-  input_schema: {
+// The structured answer for one facet. Per facet because the criterion keys
+// are an enum. Structured outputs strip minimum/maximum, so scores are
+// clamped in critiqueScoring.js instead.
+export function facetOutputSchema(facet) {
+  const keys = criteriaKeys(facet);
+  return {
     type: 'object',
-    properties: {
-      score: { type: 'integer', description: 'Integer 1-10. 10 = excellent on this facet; 1 = seriously deficient.' },
-      comments: { type: 'string', description: 'A few sentences: what works, what is weak, and the single most important concrete fix.' },
-    },
-    required: ['score', 'comments'],
     additionalProperties: false,
-  },
-};
-
-function clampScore(n) {
-  const v = Math.round(Number(n));
-  if (!Number.isFinite(v)) return null;
-  return Math.min(10, Math.max(1, v));
+    required: ['criteria', 'issues', 'strengths', 'summary'],
+    properties: {
+      criteria: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['key', 'applicable', 'score', 'evidence', 'rationale'],
+          properties: {
+            key: { type: 'string', enum: keys },
+            applicable: { type: 'boolean', description: 'false only when the context this criterion needs is absent' },
+            score: { type: 'integer', description: 'Integer 1-10 against the anchors; ignored when not applicable' },
+            evidence: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['quote', 'note'],
+                properties: {
+                  quote: { type: 'string', description: 'Verbatim from the beat, at most 200 characters' },
+                  note: { type: 'string', description: 'What this quote shows about the criterion' },
+                },
+              },
+            },
+            rationale: { type: 'string', description: 'One or two sentences: why this anchor' },
+          },
+        },
+      },
+      issues: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['severity', 'criterion', 'quote', 'problem', 'fix'],
+          properties: {
+            severity: { type: 'string', enum: ['must_fix', 'should_fix', 'nit'] },
+            criterion: { type: 'string', enum: keys },
+            quote: { type: 'string', description: 'The offending line(s), verbatim' },
+            problem: { type: 'string', description: 'One sentence' },
+            fix: { type: 'string', description: 'The concrete change: the rewritten line, the slug to add, the line to cut' },
+          },
+        },
+      },
+      strengths: { type: 'array', items: { type: 'string' } },
+      summary: { type: 'string', description: 'A few sentences a screenwriter can act on' },
+    },
+  };
 }
 
-// Default per-facet generator: one single-tool Anthropic call. Override in tests.
+// Default per-facet generator: one structured-output Anthropic call. Override
+// in tests — the override may return the rich shape or the legacy
+// {score, comments}; both go through normalizeFacetResult.
 let facetGeneratorOverride = null;
 export function _setFacetGeneratorForTests(fn) {
   facetGeneratorOverride = fn;
@@ -126,37 +165,42 @@ export function _setFacetGeneratorForTests(fn) {
 async function generateFacet(facet, ctx) {
   if (facetGeneratorOverride) return facetGeneratorOverride(facet, ctx);
   const client = getAnthropic();
-  const resp = await client.messages.create({
+  const ask = () => client.messages.create({
     model: modelFor('critique'),
-    max_tokens: 5000,
+    max_tokens: 8000,
     system: facet.systemPrompt,
-    tools: [CRITIQUE_FACET_TOOL],
-    tool_choice: { type: 'auto' },
+    output_config: { format: { type: 'json_schema', schema: facetOutputSchema(facet) } },
     messages: [
       {
         role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: `${facet.buildContext(ctx)}\n\nReturn your score and critique via the critique_facet tool.`,
-          },
-        ],
+        content: [{ type: 'text', text: `${facet.buildContext(ctx)}\n\nScore every criterion against its anchors and return the JSON object.` }],
       },
     ],
   });
-  const toolUse = (resp.content || []).find((b) => b.type === 'tool_use' && b.name === 'critique_facet');
-  if (!toolUse) throw new Error('model did not return a critique');
-  return {
-    score: clampScore(toolUse.input?.score),
-    comments: typeof toolUse.input?.comments === 'string' ? toolUse.input.comments : '',
-  };
+  const textOf = (r) => (r?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+  const parse = (r) => { try { return JSON.parse(textOf(r)); } catch { return null; } };
+  let resp = await ask();
+  if (resp?.stop_reason === 'max_tokens') throw new Error('critique answer was cut off (max_tokens)');
+  let parsed = parse(resp);
+  // An empty or unparsable answer (seen from the coding-agent providers) is
+  // asked once more rather than failing the facet outright.
+  if (!parsed) {
+    logger.warn(`critique gen: facet ${facet.key} returned no JSON (stop_reason ${resp?.stop_reason || '?'}); asking again`);
+    resp = await ask();
+    parsed = parse(resp);
+  }
+  if (!parsed) throw new Error('model did not return a critique');
+  return parsed;
 }
 
 async function runOneFacet(facet, ctx, job, projectId, beatId) {
   try {
-    const { score, comments } = await generateFacet(facet, ctx);
-    updateJobFacet(job, facet.key, { score, comments, status: 'done', error_message: null });
-    await updateCritiqueFacet(projectId, beatId, facet.key, { score, comments, status: 'done', error_message: null });
+    const raw = await generateFacet(facet, ctx);
+    const result = normalizeFacetResult(raw, facet);
+    if (result.score == null) throw new Error('model scored no applicable criterion');
+    const patch = { ...result, status: 'done', error_message: null };
+    updateJobFacet(job, facet.key, patch);
+    await updateCritiqueFacet(projectId, beatId, facet.key, patch);
   } catch (e) {
     updateJobFacet(job, facet.key, { score: null, comments: '', status: 'error', error_message: e.message });
     await updateCritiqueFacet(projectId, beatId, facet.key, { score: null, status: 'error', error_message: e.message })
@@ -183,9 +227,7 @@ export async function runCritique({ projectId, job }) {
 
     const done = job.facets.filter((f) => f.status === 'done');
     const errored = job.facets.filter((f) => f.status === 'error');
-    const overall = done.length
-      ? Math.round(done.reduce((s, f) => s + f.score, 0) / done.length)
-      : null;
+    const overall = deriveOverall(job.facets, FACETS);
     job.overall = overall;
     job.status = errored.length === 0 ? 'done' : done.length ? 'partial' : 'error';
     job.finished_at = new Date();

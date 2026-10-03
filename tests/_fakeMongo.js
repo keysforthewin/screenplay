@@ -336,7 +336,11 @@ function makeCollection() {
               setAtPath(target, parts, []);
               arr = getAtPath(target, parts);
             }
-            arr.push(deepClone(value));
+            if (value && typeof value === 'object' && Array.isArray(value.$each)) {
+              for (const v of value.$each) arr.push(deepClone(v));
+            } else {
+              arr.push(deepClone(value));
+            }
           }
         }
       }

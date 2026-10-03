@@ -47,6 +47,59 @@ describe('runCritique', () => {
     expect(c.facets.every((f) => f.status === 'done' && f.score === 8)).toBe(true);
   });
 
+  it('persists criteria, issues and a derived score from the rich shape; overall is weighted', async () => {
+    const beat = await seedBeat();
+    G._setFacetGeneratorForTests(async (facet) => {
+      if (facet.key !== 'format') {
+        return {
+          criteria: facet.criteria.map((c) => ({ key: c.key, applicable: true, score: 8, evidence: [], rationale: '' })),
+          issues: [],
+          strengths: ['tight'],
+          summary: `sum-${facet.key}`,
+        };
+      }
+      return {
+        criteria: [
+          { key: 'sluglines', applicable: true, score: 10, evidence: [{ quote: 'INT. ROOM — DAY', note: 'correct heading' }], rationale: 'ok' },
+          { key: 'action_lines', applicable: true, score: 10, evidence: [], rationale: '' },
+          { key: 'geography', applicable: true, score: 10, evidence: [], rationale: '' },
+          { key: 'dialogue_format', applicable: false, score: 1, evidence: [], rationale: 'no dialogue' },
+        ],
+        issues: [{ severity: 'must_fix', criterion: 'geography', quote: 'She waits.', problem: 'Where?', fix: 'Add AT THE WINDOW.' }],
+        strengths: [],
+        summary: 'Heading fine, geography missing.',
+      };
+    });
+    const job = G.createCritiqueJob(beat._id.toString());
+    const done = await G.runCritique({ projectId, job });
+    expect(done.status).toBe('done');
+    const c = await C.getBeatCritique(projectId, beat._id.toString());
+    expect(c.version).toBe(2);
+    const fmt = c.facets.find((f) => f.key === 'format');
+    expect(fmt.score).toBe(7); // (10+10+6)/3 = 8.7 → capped to 7 by the must_fix
+    expect(fmt.comments).toBe('Heading fine, geography missing.');
+    expect(fmt.summary).toBe(fmt.comments);
+    expect(fmt.criteria).toHaveLength(4);
+    expect(fmt.criteria[0].evidence[0].quote).toBe('INT. ROOM — DAY');
+    expect(fmt.criteria[3].applicable).toBe(false);
+    expect(fmt.issues[0]).toMatchObject({ severity: 'must_fix', criterion: 'geography', fix: 'Add AT THE WINDOW.' });
+    expect(c.facets.find((f) => f.key === 'pacing').score).toBe(8);
+    // (7*1.5 + 8*1.5 + 8*5) / 8 = 62.5 / 8 = 7.8
+    expect(c.overall).toBe(7.8);
+    expect(done.overall).toBe(7.8);
+  });
+
+  it('errors a facet whose answer scores no applicable criterion', async () => {
+    const beat = await seedBeat();
+    G._setFacetGeneratorForTests(async (facet) => (facet.key === 'voice'
+      ? { criteria: [{ key: 'distinctness', applicable: false, score: 5, evidence: [], rationale: '' }], issues: [], strengths: [], summary: '' }
+      : { score: 7, comments: 'ok' }));
+    const job = G.createCritiqueJob(beat._id.toString());
+    const done = await G.runCritique({ projectId, job });
+    expect(done.status).toBe('partial');
+    expect(done.facets.find((f) => f.key === 'voice').error_message).toMatch(/no applicable/);
+  });
+
   it('marks a single failing facet error and the run partial', async () => {
     const beat = await seedBeat();
     G._setFacetGeneratorForTests(async (facet) => {

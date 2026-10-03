@@ -26,6 +26,9 @@ describe('seedDefaults', () => {
     const names = tpl.fields.map((f) => f.name);
     expect(names).toContain('alternate_names');
     expect(names).toContain('name_changes');
+    const wardrobe = tpl.fields.find((f) => f.name === 'wardrobe');
+    expect(wardrobe.core).toBe(false);
+    expect(wardrobe.description).toMatch(/locked default outfit/i);
     const alt = tpl.fields.find((f) => f.name === 'alternate_names');
     expect(alt.core).toBe(false);
     expect(alt.required).toBe(false);
@@ -65,6 +68,9 @@ describe('seedDefaults', () => {
     const names = tpl.fields.map((f) => f.name);
     expect(names).toContain('alternate_names');
     expect(names).toContain('name_changes');
+    const wardrobe = tpl.fields.find((f) => f.name === 'wardrobe');
+    expect(wardrobe.core).toBe(false);
+    expect(wardrobe.description).toMatch(/locked default outfit/i);
     expect(names).toContain('background_story'); // existing field preserved
   });
 

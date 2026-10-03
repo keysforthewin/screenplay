@@ -370,6 +370,20 @@ describe('buildCutRenderPlan', () => {
     expect(plan.cuts[2].status).toBe('blocked');
     expect(plan.cuts[2].missing).toEqual(['end frame']);
   });
+
+  it('a pair the frame check left with a blocking problem is flagged in the plan (and still renders); a stale verdict is not', async () => {
+    enableComfy();
+    const { beat, cuts, dialogs, scene } = await seedBeat({ cuts: [{ still: true, endStill: true }, { still: true, endStill: true }] });
+    const issues = [{ kind: 'crowd', severity: 'blocking', frame_to_fix: 'end', note: 'The back row is different people.', fix_instruction: 'x' }];
+    const verdict = (c) => ({ status: 'fail', issues, rounds: 6, start_image_id: c.start_frame.image_id, end_image_id: c.end_frame.image_id });
+    const fresh = await VP.updateVideoPrompt(projectId, String(cuts[0]._id), { frame_check: verdict(cuts[0]) });
+    const stale = await VP.updateVideoPrompt(projectId, String(cuts[1]._id), { frame_check: { ...verdict(cuts[1]), end_image_id: newImage() } });
+    const plan = await Render.buildCutRenderPlan({ beat, cuts: [fresh, stale], scenes: [scene], dialogs, provider: 'comfy', models: { clip: 'wan-2.2-14b-flf2v' } });
+    expect(plan.cuts[0].frame_blocking).toBe(true);
+    expect(plan.cuts[0].status).not.toBe('blocked');
+    expect(plan.cuts[0].warnings.join(' ')).toMatch(/1 blocking problem between the start and end frames.*The back row is different people/);
+    expect(plan.cuts[1].frame_blocking).toBeUndefined();
+  });
 });
 
 describe('startCutBeatRenderJob (fal)', () => {

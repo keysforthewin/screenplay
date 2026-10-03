@@ -3916,7 +3916,7 @@ export const HANDLERS = {
       // The pair check: does each cut's end frame hold the same people, clothes, props and layout as its start frame?
       const ck = frames.checks;
       if (ck && ck.passed + ck.failed + ck.unchecked > 0) {
-        lines.push(`Start/end pairs: ${ck.passed} match` + (ck.repaired ? ` (${ck.repaired} after repair)` : '') + (ck.failed ? `, ${ck.failed} still differ` : '') + (ck.unchecked ? `, ${ck.unchecked} not checked` : ''));
+        lines.push(`Start/end pairs: ${ck.passed} match` + (ck.repaired ? ` (${ck.repaired} after repair)` : '') + (ck.failed ? `, ${ck.failed} still differ` : '') + (ck.blocked ? ` (${ck.blocked} with a BLOCKING problem — the clip would visibly break)` : '') + (ck.unchecked ? `, ${ck.unchecked} not checked` : ''));
       }
       for (const r of frames.results || []) if (r?.error) lines.push(`- ${r.cut_id || ''}${r.frame ? ` (${r.frame})` : ''}: ${r.error}`);
       if (frames.warnings?.length) lines.push(`Warnings: ${frames.warnings.slice(0, 8).join(' · ')}`);

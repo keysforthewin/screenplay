@@ -39,6 +39,18 @@ describe('formatCharacterFull', () => {
     expect(text).toContain('memes: never drinks her coffee');
     expect(text).not.toContain('empty:');
   });
+  it('leads the fields with the LOCKED wardrobe — the beat override when it has one — and never lists the raw field', () => {
+    const id = new ObjectId();
+    const c = { _id: id, name: 'Sarah', fields: { wardrobe: '**grey** wool coat', role: 'Waitress' } };
+    const text = Ctx.formatCharacterFull(c);
+    expect(text).toContain('wardrobe (LOCKED — use these exact words in every lock line, handle and still): grey wool coat');
+    expect(text).not.toContain('wardrobe: ');
+    expect(text.indexOf('LOCKED')).toBeLessThan(text.indexOf('role: Waitress'));
+    const over = Ctx.formatCharacterFull(c, { beat: { wardrobe_overrides: { [String(id)]: 'coat off, apron on' } } });
+    expect(over).toContain('LOCKED — use these exact words in every lock line, handle and still): coat off, apron on');
+    expect(over).not.toContain('grey wool coat');
+    expect(Ctx.formatCharacterFull({ name: 'Tom', fields: {} })).not.toContain('LOCKED');
+  });
   it('surfaces voice-only casting as a voice, not a face', () => {
     const text = Ctx.formatCharacterFull({ name: 'Fish', hollywood_actor: 'voice only: Jack Black', fields: {} });
     expect(text).toContain('voice casting');

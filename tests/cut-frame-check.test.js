@@ -121,7 +121,7 @@ describe('checkCutFramePair', () => {
     verdicts([{ kind: 'nonsense', frame_to_fix: 'middle', note: '  A man appears in **seat two**. ' }, { kind: 'layout', note: '' }]);
     const r = await FC.checkCutFramePair({ cut });
     expect(r.status).toBe('fail');
-    expect(r.issues).toEqual([{ kind: 'other', frame_to_fix: 'end', note: 'A man appears in seat two.', fix_instruction: 'A man appears in seat two.' }]);
+    expect(r.issues).toEqual([{ kind: 'other', severity: 'minor', frame_to_fix: 'end', note: 'A man appears in seat two.', fix_instruction: 'A man appears in seat two.' }]);
     verdicts(new Error('overloaded'));
     expect(await FC.checkCutFramePair({ cut })).toMatchObject({ status: 'unchecked', reason: 'overloaded' });
   });
@@ -139,6 +139,10 @@ describe('checkCutFramePair', () => {
     expect(text).toContain('Last-frame prompt (a change list applied to the first frame): Same frame. The bucket rests in front of the boy.');
     const pan = FC.buildFrameCheckText({ camera: { movement: 'pan', travel: 'from the box office to the counter' }, in_frame: [] });
     expect(pan).toContain('Camera: MOVING — pan, from the box office to the counter');
+    expect(pan).not.toContain('Wardrobe locks');
+    const locked = FC.buildFrameCheckText({ in_frame: [] }, { wardrobeLocks: 'Wardrobe lock — Sarah: grey wool coat' });
+    expect(locked).toContain('Wardrobe locks (each still must match these words):\nWardrobe lock — Sarah: grey wool coat');
+    expect(FC.FRAME_CHECK_SYSTEM_PROMPT).toMatch(/WARDROBE LOCK/);
     expect(FC.FRAME_CHECK_SYSTEM_PROMPT).toMatch(/Report every difference the cut does NOT perform/);
   });
 
@@ -366,7 +370,7 @@ describe('jobs', () => {
     const job = await waitJob(await SF.startCutStartFramesJob({ projectId, beatId: String(beat._id), frames: ['start', 'end'] }));
     expect(job.status).toBe('done');
     expect(job).toMatchObject({ planned: 4, rendered: 4, failed: 0 });
-    expect(job.checks).toEqual({ passed: 1, failed: 1, repaired: 1, unchecked: 0 });
+    expect(job.checks).toEqual({ passed: 1, failed: 1, repaired: 1, unchecked: 0, blocked: 0 });
     expect(job.warnings).toEqual([expect.stringMatching(/^Cut "B": the start and end frames still disagree after 2 repair rounds — The boy wears a grey T-shirt/)]);
     expect((await VP.getVideoPrompt(projectId, String(a._id))).frame_check).toMatchObject({ status: 'pass', rounds: 1 });
     expect((await VP.getVideoPrompt(projectId, String(b._id))).frame_check).toMatchObject({ status: 'fail', rounds: 2 });
@@ -383,12 +387,12 @@ describe('jobs', () => {
     // Both frames exist (skipped), no verdict yet → checked.
     job = await waitJob(await SF.startCutStartFramesJob({ projectId, beatId: String(beat._id), frames: ['start', 'end'] }));
     expect(job).toMatchObject({ rendered: 0, skipped: 2 });
-    expect(job.checks).toEqual({ passed: 1, failed: 0, repaired: 0, unchecked: 0 });
+    expect(job.checks).toEqual({ passed: 1, failed: 0, repaired: 0, unchecked: 0, blocked: 0 });
     expect(checks).toHaveLength(1);
     // Same two images, verdict on file → not checked again.
     job = await waitJob(await SF.startCutStartFramesJob({ projectId, beatId: String(beat._id), frames: ['start', 'end'] }));
     expect(checks).toHaveLength(1);
-    expect(job.checks).toEqual({ passed: 0, failed: 0, repaired: 0, unchecked: 0 });
+    expect(job.checks).toEqual({ passed: 0, failed: 0, repaired: 0, unchecked: 0, blocked: 0 });
     expect((await VP.getVideoPrompt(projectId, String(cut._id))).frame_check.status).toBe('pass');
   });
 
@@ -399,7 +403,7 @@ describe('jobs', () => {
     expect(job.status).toBe('done');
     expect(dispatched).toHaveLength(1); // the render itself; no repair edit
     expect(checks).toHaveLength(1);
-    expect(job.checks).toEqual({ passed: 0, failed: 1, repaired: 0, unchecked: 0 });
+    expect(job.checks).toEqual({ passed: 0, failed: 1, repaired: 0, unchecked: 0, blocked: 0 });
     expect(job.warnings[0]).toMatch(/still disagree — The boy wears a grey T-shirt/);
   });
 
@@ -420,6 +424,145 @@ describe('jobs', () => {
     await expect(SF.startCutFrameCheckJob({ projectId, cutId: String(cut._id) })).rejects.toThrow();
     job = await waitJob(id);
     expect(job).toMatchObject({ status: 'done', kind: 'repair', checks: { passed: 1, failed: 0, repaired: 1, unchecked: 0 } });
+    expect(dispatched).toHaveLength(1);
+  });
+});
+
+describe('blocking problems', () => {
+  const POPS_IN = { kind: 'person_added', severity: 'blocking', frame_to_fix: 'end', note: 'A man sits in the second seat only in the end frame.', fix_instruction: 'Remove the man in the second seat; show the empty red seat.' };
+  const CROWD = { kind: 'crowd', severity: 'blocking', frame_to_fix: 'end', note: 'Second row: the woman in the yellow cardigan is a man in a grey hoodie.', fix_instruction: 'Every seat holds the same person as in the first frame.' };
+
+  it('severity is kept, and defaults by kind when the checker gives none', () => {
+    const out = FC.normalizeFrameIssues([
+      { kind: 'crowd', frame_to_fix: 'end', note: 'different people' },
+      { kind: 'light', frame_to_fix: 'end', note: 'warmer' },
+      { kind: 'wardrobe', severity: 'blocking', frame_to_fix: 'end', note: 'jacket became a T-shirt' },
+      { kind: 'person_added', severity: 'minor', frame_to_fix: 'end', note: 'a far figure' },
+    ]);
+    expect(out.map((i) => i.severity)).toEqual(['blocking', 'minor', 'blocking', 'minor']);
+    expect(FC.FRAME_ISSUE_KINDS).toContain('crowd');
+    expect(FC.FRAME_CHECK_SYSTEM_PROMPT).toMatch(/# Severity/);
+    expect(FC.FRAME_CHECK_SYSTEM_PROMPT).toMatch(/seat by seat/);
+    expect(FC.FRAME_CHECK_SYSTEM_PROMPT).not.toMatch(/the exact pose of a background extra/);
+  });
+
+  it('a blocking problem is retried up to six rounds and saved as blocking; a minor one still stops at two', async () => {
+    const { beat, cut } = await seedCut();
+    verdicts([POPS_IN]);
+    const r = await FC.reconcileCutFrames({ projectId, beat, cut });
+    expect(r.frame_check).toMatchObject({ status: 'fail', rounds: FC.DEFAULT_BLOCKING_ROUNDS, blocking: 1 });
+    expect(dispatched).toHaveLength(6);
+    expect((await VP.getVideoPrompt(projectId, String(cut._id))).frame_check.issues[0].severity).toBe('blocking');
+    dispatched.length = 0;
+    checks.length = 0;
+    const minor = await seedCut();
+    verdicts([WARDROBE]);
+    const r2 = await FC.reconcileCutFrames({ projectId, beat: minor.beat, cut: minor.cut });
+    expect(r2.frame_check).toMatchObject({ status: 'fail', rounds: 2, blocking: 0 });
+  });
+
+  it('once only minor issues remain the extra rounds stop', async () => {
+    const { beat, cut } = await seedCut();
+    verdicts([POPS_IN], [POPS_IN], [POPS_IN], [WARDROBE]);
+    const r = await FC.reconcileCutFrames({ projectId, beat, cut });
+    expect(r.frame_check).toMatchObject({ status: 'fail', rounds: 3, blocking: 0 });
+  });
+
+  it('CUT_FRAME_BLOCKING_ROUNDS sets the cap, clamped to 2–10', () => {
+    const was = process.env.CUT_FRAME_BLOCKING_ROUNDS;
+    try {
+      delete process.env.CUT_FRAME_BLOCKING_ROUNDS;
+      expect(FC.blockingRepairRounds()).toBe(6);
+      process.env.CUT_FRAME_BLOCKING_ROUNDS = '9';
+      expect(FC.blockingRepairRounds()).toBe(9);
+      process.env.CUT_FRAME_BLOCKING_ROUNDS = '40';
+      expect(FC.blockingRepairRounds()).toBe(10);
+      process.env.CUT_FRAME_BLOCKING_ROUNDS = '1';
+      expect(FC.blockingRepairRounds()).toBe(2);
+    } finally {
+      if (was === undefined) delete process.env.CUT_FRAME_BLOCKING_ROUNDS;
+      else process.env.CUT_FRAME_BLOCKING_ROUNDS = was;
+    }
+  });
+
+  it('patch edits for two rounds, then the end frame is REBUILT from the start frame (a moving camera: one edit of the start frame)', async () => {
+    const { beat, cut, startImg } = await seedCut({ movement: 'push_in' });
+    verdicts([POPS_IN], [POPS_IN], [POPS_IN], []);
+    const r = await FC.reconcileCutFrames({ projectId, beat, cut });
+    expect(r.frame_check).toMatchObject({ status: 'pass', rounds: 3 });
+    expect(dispatched).toHaveLength(3);
+    expect(dispatched[0].prompt).toContain('Make only these corrections');
+    expect(dispatched[1].prompt).toContain('Make only these corrections');
+    // Round 3: the start frame alone, edited into the closing frame.
+    expect(dispatched[2].mode).toBe('edit');
+    expect(dispatched[2].inputImages).toHaveLength(1);
+    expect(dispatched[2].inputImages[0].buffer.toString()).toBe('start-original');
+    expect(dispatched[2].prompt).toContain('never a different crowd of the same size');
+    expect(dispatched[2].prompt).toContain('Remove the man in the second seat');
+    expect(String(r.cut.end_frame.continuity_image_id)).toBe(String(startImg));
+  });
+
+  it('a crowd of different people rebuilds the end frame at once', async () => {
+    const { beat, cut } = await seedCut({ movement: 'push_in' });
+    verdicts([CROWD], []);
+    const r = await FC.reconcileCutFrames({ projectId, beat, cut });
+    expect(r.frame_check).toMatchObject({ status: 'pass', rounds: 1 });
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0].inputImages[0].buffer.toString()).toBe('start-original');
+    expect(dispatched[0].prompt).toContain('Produce the closing frame of the same shot');
+  });
+
+  it('the bulk job counts blocked pairs and marks their warning', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'Lobby', body: 'x' });
+    await VP.createVideoPrompt({ projectId, beatId: beat._id, title: 'A', order: 1, startFrame: { prompt: 'A start.', references_planned: true }, endFrame: { prompt: 'A end.', references_planned: true } });
+    verdicts([POPS_IN]);
+    const job = await waitJob(await SF.startCutStartFramesJob({ projectId, beatId: String(beat._id), frames: ['start', 'end'] }));
+    expect(job.status).toBe('done');
+    expect(job.checks).toEqual({ passed: 0, failed: 1, repaired: 0, unchecked: 0, blocked: 1 });
+    expect(job.warnings[0]).toMatch(/^BLOCKING — Cut "A": the start and end frames still disagree after 6 repair rounds/);
+  });
+});
+
+describe('a cut that continues the previous one', () => {
+  async function seedChain() {
+    const beat = await Plots.createBeat({ projectId, name: 'Row', body: 'x' });
+    const sceneId = new ObjectId();
+    const frames = (n) => ({ startFrame: { prompt: `${n} start.`, references_planned: true }, endFrame: { prompt: `${n} end.`, references_planned: true } });
+    const a = await VP.createVideoPrompt({ projectId, beatId: beat._id, sceneId, title: 'A', order: 1, ...frames('A') });
+    const b = await VP.createVideoPrompt({ projectId, beatId: beat._id, sceneId, title: 'B', order: 2, continuesPrevious: true, ...frames('B') });
+    return { beat, a, b };
+  }
+
+  it('opens on a copy of the previous cut\'s end frame, rendered in order', async () => {
+    const { beat, a, b } = await seedChain();
+    const job = await waitJob(await SF.startCutStartFramesJob({ projectId, beatId: String(beat._id), frames: ['start', 'end'], check: false }));
+    expect(job).toMatchObject({ status: 'done', rendered: 4, failed: 0 });
+    // A start, A end, B end — B's start frame is never sent to the image model.
+    expect(dispatched.map((d) => d.prompt.includes('B start.'))).toEqual([false, false, false]);
+    expect(dispatched).toHaveLength(3);
+    const ra = await VP.getVideoPrompt(projectId, String(a._id));
+    const rb = await VP.getVideoPrompt(projectId, String(b._id));
+    expect(bytes(rb.start_frame.image_id)).toBe(bytes(ra.end_frame.image_id));
+    expect(String(rb.start_frame.image_id)).not.toBe(String(ra.end_frame.image_id));
+    expect(String(rb.start_frame.continuity_image_id)).toBe(String(ra.end_frame.image_id));
+    expect(rb.start_frame.model).toBe('chained');
+    expect(job.warnings).toEqual([]);
+  });
+
+  it('with no end frame before it, the start frame is rendered on its own and the job says so', async () => {
+    const { beat, b } = await seedChain();
+    const job = await waitJob(await SF.startCutStartFramesJob({ projectId, beatId: String(beat._id), cutIds: [String(b._id)], frames: ['start'] }));
+    expect(job).toMatchObject({ rendered: 1 });
+    expect(dispatched).toHaveLength(1);
+    expect(job.warnings[0]).toMatch(/continues the previous cut, which has no end frame yet/);
+  });
+
+  it('a one-off prompt is the user\'s own frame and is not chained', async () => {
+    const { beat, a, b } = await seedChain();
+    await waitJob(await SF.startCutStartFramesJob({ projectId, beatId: String(beat._id), cutIds: [String(a._id)], frames: ['start', 'end'], check: false }));
+    dispatched.length = 0;
+    const fresh = await VP.getVideoPrompt(projectId, String(b._id));
+    await SF.renderCutStartFrame({ projectId, cut: fresh, beat, frame: 'start', prompt: 'My own opening.' });
     expect(dispatched).toHaveLength(1);
   });
 });

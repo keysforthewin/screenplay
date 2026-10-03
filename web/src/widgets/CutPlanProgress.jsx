@@ -157,7 +157,7 @@ export function CutPlanProgress({ job }) {
       {terminal && warnings.length ? (
         <details style={{ marginTop: 6 }}>
           <summary>{warnings.length} warning{warnings.length === 1 ? '' : 's'}</summary>
-          <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+          <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>{warnings.map((w, i) => <li key={i} className={String(w).startsWith('BLOCKING') ? 'is-blocking' : ''}>{w}</li>)}</ul>
         </details>
       ) : null}
     </div>

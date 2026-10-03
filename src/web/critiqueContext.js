@@ -1,14 +1,16 @@
 // Assemble the shared context a critique run feeds to every facet.
 // Cheap: reuses plot synopsis + the ordered beat spine (name/desc already on the
-// plot doc) rather than re-summarizing every body. The director-notes and
-// characters-in-beat helpers are inlined (rather than imported from the heavy
-// storyboardGenerate.js) to keep this module light and easy to test.
+// plot doc) rather than re-summarizing every body. Steering documents
+// (director's notes, directorial voice, scene bible, dialogue style, sets)
+// are loaded best-effort: a failure returns an empty value, never a crash.
 
 import { getPlot, listBeats } from '../mongo/plots.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import { getCharacter } from '../mongo/characters.js';
+import { renderSceneBibleBlock } from '../mongo/sceneBible.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { SCREENPLAY_STYLE_GUIDE } from '../agent/screenplayStyle.js';
+import { findSetsInBeat, loadDirectorialVoice } from './beatPlanShared.js';
 
 async function loadDirectorNotes(projectId) {
   try {
@@ -34,6 +36,22 @@ async function charactersInBeat(projectId, beat) {
   return out;
 }
 
+async function setsInBeat(projectId, beat) {
+  try {
+    return await findSetsInBeat(projectId, beat);
+  } catch {
+    return [];
+  }
+}
+
+function sceneBibleText(beat) {
+  try {
+    return renderSceneBibleBlock(beat?.scene_bible) || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function buildCritiqueContext(projectId, beat) {
   const plot = await getPlot(projectId);
   const beats = await listBeats(projectId); // already sorted by order
@@ -46,14 +64,23 @@ export async function buildCritiqueContext(projectId, beat) {
   const spine = beats.map((b) => ({ order: b.order, name: b.name, desc: b.desc }));
   const directorNotes = await loadDirectorNotes(projectId);
   const characters = await charactersInBeat(projectId, beat);
+  const sets = await setsInBeat(projectId, beat);
+  const directorialVoice = await loadDirectorialVoice(projectId);
   return {
     beat,
     prevBeat,
     nextBeat,
-    plot: { title: plot.title || '', synopsis: plot.synopsis || '' },
+    plot: {
+      title: plot.title || '',
+      synopsis: plot.synopsis || '',
+      dialogue_style: typeof plot.dialogue_style === 'string' ? plot.dialogue_style : '',
+    },
     spine,
     directorNotes,
+    directorialVoice,
+    sceneBible: sceneBibleText(beat),
     characters,
+    sets,
     styleGuide: SCREENPLAY_STYLE_GUIDE,
   };
 }

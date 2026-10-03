@@ -48,6 +48,19 @@ describe('critiques mongo helpers', () => {
     expect(c.facets.find((f) => f.key === 'format').status).toBe('pending');
   });
 
+  it('persists the v2 facet fields and stamps version 2', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'B', body: 'b' });
+    await C.setCritiquePending(projectId, beat._id.toString(), { model: 'm', facets: STUBS });
+    const criteria = [{ key: 'entry', label: 'Entry', weight: 1, applicable: true, score: 6, evidence: [{ quote: 'q', note: 'n' }], rationale: 'r' }];
+    const issues = [{ severity: 'should_fix', criterion: 'entry', quote: 'q', problem: 'p', fix: 'f' }];
+    await C.updateCritiqueFacet(projectId, beat._id.toString(), 'pacing', { score: 6.5, summary: 's', strengths: ['x'], criteria, issues, status: 'done', bogus: 1 });
+    const c = await C.getBeatCritique(projectId, beat._id.toString());
+    expect(c.version).toBe(2);
+    const pacing = c.facets.find((f) => f.key === 'pacing');
+    expect(pacing).toMatchObject({ score: 6.5, summary: 's', strengths: ['x'], criteria, issues, status: 'done' });
+    expect(pacing.bogus).toBeUndefined();
+  });
+
   it('finalizes status + overall', async () => {
     const beat = await Plots.createBeat({ projectId, name: 'B', body: 'b' });
     await C.setCritiquePending(projectId, beat._id.toString(), { model: 'm', facets: STUBS });

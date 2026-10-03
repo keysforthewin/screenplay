@@ -229,7 +229,7 @@ export function RenderCutsDialog({ open, onClose, beatId, onSubmit }) {
               </thead>
               <tbody>
                 {cuts.map((c) => (
-                  <tr key={c.cut_id} className={c.skipped ? 'is-skipped' : c.status === 'blocked' ? 'is-blocked' : ''}>
+                  <tr key={c.cut_id} className={c.skipped ? 'is-skipped' : c.status === 'blocked' ? 'is-blocked' : c.frame_blocking ? 'has-frame-blocking' : ''}>
                     <td>{c.label}{c.title ? <span style={{ color: 'var(--fg-muted)' }}> · {c.title}</span> : null}</td>
                     <td>
                       {c.skipped ? `skipped (${c.skip_reason})` : MODE_LABEL[c.mode] || c.mode}
@@ -244,7 +244,8 @@ export function RenderCutsDialog({ open, onClose, beatId, onSubmit }) {
                     </td>
                     {provider === 'fal' ? <td>{c.skipped ? '' : formatUsd(c.estimated_cost_usd) || '—'}</td> : null}
                     <td className="render-beat-notes">
-                      {(c.warnings || []).map((w, i) => <div key={i}>{w}</div>)}
+                      {c.frame_blocking && !c.skipped ? <div className="is-blocking">⛔ frames have a blocking problem</div> : null}
+                      {(c.warnings || []).map((w, i) => <div key={i} className={/blocking problem|^BLOCKING/.test(String(w)) ? 'is-blocking' : ''}>{w}</div>)}
                     </td>
                   </tr>
                 ))}

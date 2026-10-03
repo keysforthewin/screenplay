@@ -208,8 +208,8 @@ describe('video_prompts rows as cuts', () => {
     expect(String(fc.start_image_id)).toBe(img.toString());
     expect(fc.checked_at).toBeInstanceOf(Date);
     expect(fc.issues).toEqual([
-      { kind: 'wardrobe', frame_to_fix: 'start', note: 'Jacket differs.', fix_instruction: 'Match it.' },
-      { kind: 'other', frame_to_fix: 'end', note: 'Seats differ.', fix_instruction: '' },
+      { kind: 'wardrobe', severity: 'minor', frame_to_fix: 'start', note: 'Jacket differs.', fix_instruction: 'Match it.' },
+      { kind: 'other', severity: 'minor', frame_to_fix: 'end', note: 'Seats differ.', fix_instruction: '' },
     ]);
     expect(VP.normalizeLint([{ code: 'trap_phrase', message: 'x' }, { message: 'y', severity: 'error' }, {}])).toEqual([
       { code: 'trap_phrase', severity: 'warn', message: 'x' },

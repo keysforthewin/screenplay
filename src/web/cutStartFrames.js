@@ -17,6 +17,11 @@
 //     which owns clothing, props and layout, and is told the camera's move.
 // Every function takes `frame: 'start' | 'end'`; the start frame is the default.
 //
+// A cut that CONTINUES the previous one (continues_previous: the same setup,
+// continuous in time) does not get a start frame of its own: it opens on a
+// copy of the previous cut's rendered end frame, so the two clips join without
+// a jump. A bulk run renders such a chain in order, one cut after the other.
+//
 // Once a cut has both stills they are CHECKED as a pair (cutFrameCheck.js): a
 // vision pass lists the differences the cut does not perform, and a bulk
 // render repairs them (either frame, up to two rounds) before moving on. A
@@ -48,11 +53,12 @@ import { cutFrameKey, setVideoPromptStartFrameViaGateway, setVideoPromptTextFiel
 import { maxReferenceImagesFor } from './imageModelInfo.js';
 import { isComfyImageModelId } from '../comfy/imageModels.js';
 import { WIDE_MASTER_MODELS, dispatchStillImage } from './stillImageDispatch.js';
-import { composeDerivedEndPrompt, composeIntentNote, composeStartFramePrompt, composeUnderivedEndPrompt, orderReferencesByRole } from './startFramePrompt.js';
-import { loadImageInput } from './beatPlanShared.js';
+import { composeDerivedEndPrompt, composeIntentNote, composeMovedEndPrompt, composeStartFramePrompt, composeUnderivedEndPrompt, orderReferencesByRole } from './startFramePrompt.js';
+import { findCharactersInBeat, loadImageInput } from './beatPlanShared.js';
+import { cutWardrobeLocks, formatLockRows } from './wardrobe.js';
 import { cameraTravels } from './cutTiming.js';
 import { MASTER_RESOLUTION, composeMasterMovePrompt, composeMasterPrompt, cropFromMaster, cutHasPeopleToPlace, masterAspectFor, buildShiftedCanvas, composePanEndPrompt, composePanFillPrompt, detectPanSeam, panDirectionForCut, panShiftFraction } from './panEndFrame.js';
-import { frameCheckEnabled, frameCheckIsCurrent, reconcileCutFrames } from './cutFrameCheck.js';
+import { blockingCount, frameCheckEnabled, frameCheckIsCurrent, reconcileCutFrames } from './cutFrameCheck.js';
 
 export const DEFAULT_START_FRAME_MODEL = 'nano-banana-pro';
 export const START_FRAME_CONCURRENCY = 2;
@@ -152,7 +158,7 @@ async function referenceRoster(projectId, beat) {
   try {
     const { buildReferenceCatalog } = await import('./referenceCatalog.js');
     for (const e of await buildReferenceCatalog(projectId, beat)) {
-      roster.set(String(e.image_id), { name: e.owner_name, ownerType: e.owner_type });
+      roster.set(String(e.image_id), { name: e.owner_name, ownerType: e.owner_type, wardrobe: !!e.wardrobe });
     }
   } catch (e) {
     logger.warn(`cut start frame: reference roster failed: ${e?.message || e}`);
@@ -160,11 +166,22 @@ async function referenceRoster(projectId, beat) {
   return roster;
 }
 
-// A character reference carries identity; a set reference is a look
-// reference unless the planner said this camera reproduces its framing.
+async function beatCharacters(projectId, beat) {
+  if (!beat) return [];
+  try {
+    return await findCharactersInBeat(projectId, beat);
+  } catch (e) {
+    logger.warn(`cut start frame: beat characters failed: ${e?.message || e}`);
+    return [];
+  }
+}
+
+// A character reference carries identity (a wardrobe plate the clothes); a
+// set reference is a look reference unless the planner said this camera
+// reproduces its framing.
 export function referenceRole(id, roster, uses = {}) {
   const who = roster.get(String(id));
-  if (who?.ownerType === 'character') return 'identity';
+  if (who?.ownerType === 'character') return who.wardrobe ? 'wardrobe' : 'identity';
   return uses?.[String(id)] === 'framing' ? 'framing' : 'look';
 }
 
@@ -179,9 +196,17 @@ function describeCameraMove(cut) {
 // `continuityId` (the end frame's own start frame) rides along last and ALWAYS:
 // one slot of the cap is reserved for it, because it is the reference that
 // keeps the two stills the same place and the same clothes.
-async function loadReferenceBuffers(ids, scores, imageModel, roster = new Map(), uses = {}, continuityId = null) {
+// `wardrobePlates` ([{ id, label }], src/web/wardrobe.js): the in-frame
+// people's wardrobe plates, attached with up to MAX_WARDROBE_PLATE_SLOTS
+// reserved — unless a continuity frame rides along, which already owns the
+// clothes.
+export const MAX_WARDROBE_PLATE_SLOTS = 2;
+async function loadReferenceBuffers(ids, scores, imageModel, roster = new Map(), uses = {}, continuityId = null, wardrobePlates = []) {
   const cap = Math.min(MAX_ATTACHED_REFERENCE_IMAGES, maxReferenceImagesFor(imageModel));
-  const ordered = orderReferenceIdsByScore({ referenceIds: ids, referenceScores: scores, maxTotal: continuityId ? Math.max(0, cap - 1) : cap });
+  const wanted = (ids || []).map(String);
+  const plates = continuityId ? [] : (wardrobePlates || []).filter((p) => p?.id && !wanted.includes(String(p.id))).slice(0, MAX_WARDROBE_PLATE_SLOTS);
+  const reserved = (continuityId ? 1 : 0) + Math.min(plates.length, Math.max(0, cap - (continuityId ? 1 : 0)));
+  const ordered = orderReferenceIdsByScore({ referenceIds: ids, referenceScores: scores, maxTotal: Math.max(0, cap - reserved) });
   const out = [];
   for (const id of ordered) {
     const ref = await loadImageInput(id);
@@ -193,6 +218,11 @@ async function loadReferenceBuffers(ids, scores, imageModel, roster = new Map(),
       label: who ? (who.ownerType === 'set' ? `the set "${who.name}"` : who.name) : '',
       role: referenceRole(id, roster, uses),
     });
+  }
+  for (const p of plates) {
+    if (out.length >= cap - (continuityId ? 1 : 0)) break;
+    const ref = await loadImageInput(p.id);
+    if (ref) out.push({ buffer: ref.buffer, contentType: ref.contentType, label: p.label || '', role: 'wardrobe' });
   }
   if (continuityId && cap > 0) {
     const ref = await loadImageInput(continuityId);
@@ -271,6 +301,54 @@ async function renderSlidEndFrame({ cut, startImage, direction, fraction, endPro
   return { ...result, method: 'edit' };
 }
 
+// The cut before this one in its scene, when this cut continues it.
+export async function previousCutInScene(projectId, cut) {
+  if (!cut?.scene_id) return null;
+  const rows = await listVideoPrompts({ projectId, sceneId: cut.scene_id });
+  const at = rows.findIndex((r) => String(r._id) === String(cut._id));
+  return at > 0 ? rows[at - 1] : null;
+}
+
+// The start frame of a cut that continues the previous one: a copy of that
+// cut's end frame (its own image, so each cut's undo and cleanup stay its own).
+// → { image_id, cut } or null when the previous cut has no end frame yet.
+async function chainStartFrame({ projectId, cut, beat, keepUndo }) {
+  const before = await previousCutInScene(projectId, cut);
+  const endId = before?.end_frame?.image_id ? String(before.end_frame.image_id) : null;
+  const source = endId ? await loadImageInput(endId) : null;
+  if (!source) return null;
+  const current = cut.start_frame || null;
+  const file = await uploadGeneratedImage(projectId, {
+    buffer: source.buffer,
+    contentType: source.contentType,
+    prompt: stripMarkdown(current?.prompt || before.end_frame?.prompt || ''),
+    generatedBy: 'chained',
+    ownerType: 'beat',
+    ownerId: beat?._id || cut.beat_id,
+    filename: `cut-${cut._id}-start-frame-${Date.now()}.png`,
+    description: '',
+  });
+  const updated = await setVideoPromptStartFrameViaGateway({
+    projectId,
+    promptId: String(cut._id),
+    frame: 'start',
+    keepUndo,
+    startFrame: {
+      ...(current || {}),
+      image_id: file._id,
+      prompt: current?.prompt || '',
+      // Which end frame this is a copy of: stale once that cut's end frame changes.
+      continuity_image_id: endId,
+      master_image_id: null,
+      model: 'chained',
+      generated_at: new Date(),
+      previous_image_id: current?.previous_image_id || null,
+    },
+  });
+  logger.info(`cut start frame: ${cut._id} opens on the end frame of ${before._id}`);
+  return { image_id: file._id.toString(), reference_ids: (current?.reference_ids || []).map(String), cut: updated, chained: true };
+}
+
 // Render ONE cut's start (or end) frame and persist it. Returns { image_id,
 // reference_ids, cut }. `mode: 'edit'` re-renders the existing frame with
 // editPrompt (+ optional one-shot extra references).
@@ -291,10 +369,23 @@ export async function renderCutStartFrame({
   slideMethod = 'auto',
   // Where the landmarks should end up, from the pair check (rebuilds only).
   slideGuidance = '',
+  // 'from_start': a non-sliding moving camera's end frame as ONE edit of the
+  // start frame instead of a fresh still (a rebuild after a blocking fault).
+  endMethod = 'auto',
 }) {
+  // A continuing cut opens on the previous cut's end frame. A one-off prompt
+  // or an edit is the user making their own frame, and is honoured.
+  if (frame === 'start' && mode !== 'edit' && cut.continues_previous && !(typeof prompt === 'string' && prompt.trim())) {
+    const chained = await chainStartFrame({ projectId, cut, beat, keepUndo });
+    if (chained) return chained;
+  }
   const key = cutFrameKey(frame);
   const current = cut[key] || null;
   const model = await resolveImageModel(projectId, imageModel);
+  // The wardrobe lock for the people in this frame (src/web/wardrobe.js).
+  const locks = mode === 'edit' ? [] : cutWardrobeLocks(cut, await beatCharacters(projectId, beat), beat);
+  const wardrobeLocks = formatLockRows(locks);
+  const wardrobePlates = locks.filter((r) => r.image_id).map((r) => ({ id: r.image_id, label: r.name }));
   let renderPrompt;
   let inputImages;
   let refIds = (current?.reference_ids || []).map(String);
@@ -333,7 +424,8 @@ export async function renderCutStartFrame({
     // A held camera: the end frame is the start frame, edited. Only the start
     // image goes in — character artwork would bring its own wardrobe back.
     const slideDirection = frame === 'end' && !derive ? panDirectionForCut(cut) : null;
-    const startImage = (derive || slideDirection) && startImageId && maxReferenceImagesFor(model) >= 1 ? await loadImageInput(startImageId) : null;
+    const fromStart = frame === 'end' && endMethod === 'from_start' && !derive && !slideDirection;
+    const startImage = (derive || slideDirection || fromStart) && startImageId && maxReferenceImagesFor(model) >= 1 ? await loadImageInput(startImageId) : null;
     if (startImage && slideDirection) {
       slide = { startImage, direction: slideDirection, fraction: panShiftFraction(cut) };
       // The stored master plate is still good while the start frame is the
@@ -345,14 +437,16 @@ export async function renderCutStartFrame({
       continuityImageId = startImageId;
     } else if (startImage) {
       inputImages = [{ buffer: startImage.buffer, contentType: startImage.contentType }];
-      composedPrompt = composeDerivedEndPrompt(renderPrompt);
+      composedPrompt = fromStart
+        ? composeMovedEndPrompt(renderPrompt, { cameraMove: describeCameraMove(cut), guidance: slideGuidance })
+        : composeDerivedEndPrompt(renderPrompt);
       dispatchMode = 'edit';
       continuityImageId = startImageId;
     } else {
       const refs = await resolveReferences({ projectId, cut, key, prompt: renderPrompt, imageModel: model });
       refIds = refs.ids;
       refScores = refs.scores;
-      inputImages = await loadReferenceBuffers(refIds, refScores, model, await referenceRoster(projectId, beat), current?.reference_uses || {}, startImageId);
+      inputImages = await loadReferenceBuffers(refIds, refScores, model, await referenceRoster(projectId, beat), current?.reference_uses || {}, startImageId, wardrobePlates);
       // The continuity frame is told how the camera got from it to this frame.
       if (frame === 'end' && cameraTravels(cut)) {
         inputImages = inputImages.map((r) => (r.role === 'continuity' ? { ...r, cameraMove: describeCameraMove(cut) } : r));
@@ -370,7 +464,7 @@ export async function renderCutStartFrame({
   const comfy = isComfyImageModelId(model);
   // A fresh still is told what the cut means; an edit (a held camera's change
   // list, a repair, a hand edit) keeps the picture it is given.
-  const intent = dispatchMode === 'generate' && mode !== 'edit' ? composeIntentNote(cut) : '';
+  const intent = dispatchMode === 'generate' && mode !== 'edit' ? composeIntentNote(cut, { wardrobeLocks }) : '';
   const body = [composedPrompt || renderPrompt, intent].filter(Boolean).join('\n\n');
   const dispatchPrompt = dispatchMode === 'edit' || comfy
     ? body
@@ -380,7 +474,7 @@ export async function renderCutStartFrame({
   const dispatchArgs = { prompt: dispatchPrompt, model, mode: dispatchMode, inputImages };
   if (comfyParams && isComfyImageModelId(model)) dispatchArgs.comfyParams = comfyParams;
   const result = slide
-    ? await renderSlidEndFrame({ cut, startImage: slide.startImage, direction: slide.direction, fraction: slide.fraction, endPrompt: [renderPrompt, composeIntentNote(cut)].filter(Boolean).join('\n\n'), model, comfyParams, method: slideMethod, guidance: slideGuidance, master: slide.master || null })
+    ? await renderSlidEndFrame({ cut, startImage: slide.startImage, direction: slide.direction, fraction: slide.fraction, endPrompt: [renderPrompt, composeIntentNote(cut, { wardrobeLocks })].filter(Boolean).join('\n\n'), model, comfyParams, method: slideMethod, guidance: slideGuidance, master: slide.master || null })
     : await dispatch(dispatchArgs);
   if (slide) logger.info(`cut end frame: ${cut._id} built from its start frame (${slide.direction}, ${result.method})`);
   const upload = (buffer, contentType, name, text) => uploadGeneratedImage(projectId, {
@@ -453,15 +547,23 @@ export async function renderCutStartFrame({
   return { image_id: file._id.toString(), reference_ids: refIds, cut: updated };
 }
 
+// A warning about a pair left with a blocking fault starts with this (the SPA
+// shows such lines in red).
+export const BLOCKING_WARNING_PREFIX = 'BLOCKING —';
+
 export function emptyChecks() {
-  return { passed: 0, failed: 0, repaired: 0, unchecked: 0 };
+  // `blocked`: failed pairs that still have a blocking issue (a subset of `failed`).
+  return { passed: 0, failed: 0, repaired: 0, unchecked: 0, blocked: 0 };
 }
 
 function tallyCheck(checks, r) {
   if (!checks || !r || r.reason === 'disabled') return;
   const status = r.frame_check?.status;
   if (status === 'pass') checks.passed += 1;
-  else if (status === 'fail') checks.failed += 1;
+  else if (status === 'fail') {
+    checks.failed += 1;
+    if (blockingCount(r.frame_check.issues)) checks.blocked += 1;
+  }
   else checks.unchecked += 1;
   if (r.repaired) checks.repaired += 1;
 }
@@ -476,8 +578,9 @@ async function checkPair({ projectId, beat, cut, imageModel, comfyParams, repair
     });
     const fc = r.frame_check;
     if (fc.status === 'fail') {
-      const notes = fc.issues.map((i) => i.note).join(' ');
-      onWarning?.(`Cut ${label}: the start and end frames still disagree${fc.rounds ? ` after ${fc.rounds} repair round${fc.rounds === 1 ? '' : 's'}` : ''} — ${notes}`);
+      const blocking = fc.issues.filter((i) => i.severity === 'blocking');
+      const notes = [...blocking, ...fc.issues.filter((i) => i.severity !== 'blocking')].map((i) => i.note).join(' ');
+      onWarning?.(`${blocking.length ? `${BLOCKING_WARNING_PREFIX} ` : ''}Cut ${label}: the start and end frames still disagree${fc.rounds ? ` after ${fc.rounds} repair round${fc.rounds === 1 ? '' : 's'}` : ''} — ${notes}`);
     } else if (fc.status === 'unchecked') {
       onEvent?.(`Cut ${label}: the frames could not be checked${r.reason ? ` (${r.reason})` : ''}.`);
     } else {
@@ -524,63 +627,93 @@ export async function renderStartFramesForCuts({
   check = Boolean(check) && frameCheckEnabled();
   if (check) progress.checks = emptyChecks();
   const report = () => onProgress?.({ ...progress });
+  // The unit of work is a CHAIN: a cut and the cuts after it that continue it
+  // (continues_previous). A chain renders in order on one worker, because each
+  // continuing cut opens on the end frame the cut before it has just made.
+  const chains = [];
+  {
+    const rows = beat?._id ? await listVideoPrompts({ projectId, beatId: beat._id }) : [];
+    const byId = new Map(rows.map((r, i) => [String(r._id), { row: r, before: rows[i - 1] || null }]));
+    ids.forEach((id, i) => {
+      const e = byId.get(id);
+      const continues = e?.row.continues_previous && e.before && String(e.before._id) === ids[i - 1] && String(e.before.scene_id || '') === String(e.row.scene_id || '');
+      if (continues && chains.length) chains[chains.length - 1].push(id);
+      else chains.push([id]);
+    });
+  }
   let next = 0;
-  const worker = async () => {
-    while (next < ids.length) {
-      // A cancel stops the job BETWEEN cuts: renders already at the provider
-      // finish and are kept (they are paid for), nothing new is started.
-      if (shouldStop?.()) return;
-      const id = ids[next++];
-      let cut = null;
-      // A start frame rendered in this run makes the cut's existing end frame
-      // a picture of a different opening: it is re-rendered, never skipped.
-      let startRendered = false;
-      let renderedAny = false;
-      for (const frame of which) {
-        const key = cutFrameKey(frame);
-        try {
-          if (!cut) cut = await getVideoPrompt(projectId, id);
-          if (!cut) throw new CutNotFoundError(id);
-          if (skipRendered && cut[key]?.image_id && !(frame === 'end' && startRendered)) {
-            progress.skipped += 1;
-            results.push({ cut_id: id, frame, image_id: String(cut[key].image_id), skipped: true });
-            report();
-            continue;
-          }
-          if (frame === 'end' && !String(cut.end_frame?.prompt || '').trim()) {
-            progress.skipped += 1;
-            const label = cut.title ? `"${stripMarkdown(cut.title)}"` : id;
-            onWarning?.(`Cut ${label} has no end-frame prompt — write one or re-plan the scene; end frame skipped.`);
-            results.push({ cut_id: id, frame, image_id: null, skipped: true });
-            report();
-            continue;
-          }
-          const r = await renderCutStartFrame({ projectId, cut, beat, frame, imageModel, comfyParams });
-          if (frame === 'start') startRendered = true;
-          renderedAny = true;
-          progress.rendered += 1;
-          results.push({ cut_id: id, frame, image_id: r.image_id });
-          if (r.cut) cut = r.cut;
-        } catch (e) {
-          progress.failed += 1;
-          const label = cut?.title ? `"${stripMarkdown(cut.title)}"` : id;
-          const msg = `${frame === 'end' ? 'End' : 'Start'} frame for cut ${label} failed: ${e?.message || e}`;
-          logger.warn(`cut frames: ${msg}`);
-          onWarning?.(msg);
-          results.push({ cut_id: id, frame, image_id: null, error: e?.message || String(e) });
+  const renderCut = async (id, previousEndRendered) => {
+    let cut = null;
+    // A start frame rendered in this run makes the cut's existing end frame
+    // a picture of a different opening: it is re-rendered, never skipped.
+    let startRendered = false;
+    let endRendered = false;
+    let renderedAny = false;
+    for (const frame of which) {
+      const key = cutFrameKey(frame);
+      try {
+        if (!cut) cut = await getVideoPrompt(projectId, id);
+        if (!cut) throw new CutNotFoundError(id);
+        // Likewise a continuing cut's start frame once the end frame it copies was redone.
+        const stale = (frame === 'end' && startRendered) || (frame === 'start' && previousEndRendered && cut.continues_previous);
+        if (skipRendered && cut[key]?.image_id && !stale) {
+          progress.skipped += 1;
+          results.push({ cut_id: id, frame, image_id: String(cut[key].image_id), skipped: true });
+          report();
+          continue;
         }
-        report();
+        if (frame === 'end' && !String(cut.end_frame?.prompt || '').trim()) {
+          progress.skipped += 1;
+          const label = cut.title ? `"${stripMarkdown(cut.title)}"` : id;
+          onWarning?.(`Cut ${label} has no end-frame prompt — write one or re-plan the scene; end frame skipped.`);
+          results.push({ cut_id: id, frame, image_id: null, skipped: true });
+          report();
+          continue;
+        }
+        const r = await renderCutStartFrame({ projectId, cut, beat, frame, imageModel, comfyParams });
+        if (frame === 'start') startRendered = true;
+        else endRendered = true;
+        if (frame === 'start' && cut.continues_previous && !r.chained) {
+          onWarning?.(`Cut ${cut.title ? `"${stripMarkdown(cut.title)}"` : id} continues the previous cut, which has no end frame yet — its start frame was rendered on its own and may not match.`);
+        }
+        renderedAny = true;
+        progress.rendered += 1;
+        results.push({ cut_id: id, frame, image_id: r.image_id });
+        if (r.cut) cut = r.cut;
+      } catch (e) {
+        progress.failed += 1;
+        const label = cut?.title ? `"${stripMarkdown(cut.title)}"` : id;
+        const msg = `${frame === 'end' ? 'End' : 'Start'} frame for cut ${label} failed: ${e?.message || e}`;
+        logger.warn(`cut frames: ${msg}`);
+        onWarning?.(msg);
+        results.push({ cut_id: id, frame, image_id: null, error: e?.message || String(e) });
       }
-      if (check && cut?.start_frame?.image_id && cut?.end_frame?.image_id && (renderedAny || !frameCheckIsCurrent(cut)) && !shouldStop?.()) {
-        const label = cut.title ? `"${stripMarkdown(cut.title)}"` : id;
-        const r = await checkPair({ projectId, beat, cut, imageModel, comfyParams, repair, shouldStop, label, onWarning, onEvent });
-        tallyCheck(progress.checks, r);
-        report();
+      report();
+    }
+    if (check && cut?.start_frame?.image_id && cut?.end_frame?.image_id && (renderedAny || !frameCheckIsCurrent(cut)) && !shouldStop?.()) {
+      const label = cut.title ? `"${stripMarkdown(cut.title)}"` : id;
+      const r = await checkPair({ projectId, beat, cut, imageModel, comfyParams, repair, shouldStop, label, onWarning, onEvent });
+      tallyCheck(progress.checks, r);
+      // A repair may have replaced the end frame the next cut copies.
+      if (r.frame_check?.rounds) endRendered = true;
+      report();
+    }
+    return endRendered;
+  };
+  const worker = async () => {
+    while (next < chains.length) {
+      const chain = chains[next++];
+      let previousEndRendered = false;
+      for (const id of chain) {
+        // A cancel stops the job BETWEEN cuts: renders already at the provider
+        // finish and are kept (they are paid for), nothing new is started.
+        if (shouldStop?.()) return;
+        previousEndRendered = await renderCut(id, previousEndRendered);
       }
     }
   };
   report();
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, ids.length || 1)) }, worker));
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, chains.length || 1)) }, worker));
   return { ...progress, results };
 }
 

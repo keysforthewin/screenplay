@@ -57,10 +57,10 @@ const isOidHex = (s) => typeof s === 'string' && HEX24.test(s);
 const PATCHABLE = new Set([
   'camera', 'in_frame', 'action_by', 'reaction', 'eyeline', 'action', 'others', 'last_frame', 'sound',
   'sound_on_action', 'crossing', 'contact', 'dialog_ids', 'sets_in_scene', 'characters_in_scene',
-  'primary_spend', 'felt_intent', 'duration_seconds', 'lock_line', 'exclusions', 'reference_binding',
+  'primary_spend', 'felt_intent', 'hook', 'continues_previous', 'duration_seconds', 'lock_line', 'exclusions', 'reference_binding',
   'trim_head_seconds', 'trim_tail_seconds',
 ]);
-const SCENE_PATCHABLE = new Set(['title', 'slug', 'intention', 'tempo', 'directors_read', 'scope', 'set_names', 'character_names', 'text_span']);
+const SCENE_PATCHABLE = new Set(['title', 'slug', 'kind', 'montage_subjects', 'intention', 'tempo', 'directors_read', 'scope', 'set_names', 'character_names', 'text_span']);
 
 function sendBusyOr(e, res) {
   if (e?.code === 'BEAT_BUSY') return res.status(409).json({ error: e.message });

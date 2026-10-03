@@ -126,6 +126,7 @@ import {
 } from '../mongo/videoScenes.js';
 import {
   setMainCharacterImage,
+  setCharacterWardrobeImage,
   removeCharacterImage,
   setMainSetImage,
   removeSetImage,
@@ -655,10 +656,11 @@ export async function updateBeatViaGateway(projectId, identifier, patch) {
     k === 'body' ||
     k === 'order' ||
     k === 'characters' ||
-    k === 'sets';
+    k === 'sets' ||
+    k === 'wardrobe_overrides';
   if (!Object.keys(patch).some((k) => isRecognizedKey(k) && patch[k] !== undefined)) {
     throw new Error(
-      `update_beat: \`patch\` has no recognized fields. Expected one of: name, body, order, characters, sets. Got keys: [${Object.keys(patch).join(', ')}].`,
+      `update_beat: \`patch\` has no recognized fields. Expected one of: name, body, order, characters, sets, wardrobe_overrides. Got keys: [${Object.keys(patch).join(', ')}].`,
     );
   }
   const beat = await getBeat(projectId, identifier);
@@ -687,6 +689,7 @@ export async function updateBeatViaGateway(projectId, identifier, patch) {
   if (patch.order !== undefined) onlyDiscrete.order = patch.order;
   if (Array.isArray(patch.characters)) onlyDiscrete.characters = patch.characters;
   if (Array.isArray(patch.sets)) onlyDiscrete.sets = patch.sets;
+  if (patch.wardrobe_overrides && typeof patch.wardrobe_overrides === 'object') onlyDiscrete.wardrobe_overrides = patch.wardrobe_overrides;
   if (Object.keys(onlyDiscrete).length) {
     const { updateBeat: mongoUpdateBeat } = await import('../mongo/plots.js');
     await mongoUpdateBeat(projectId, beatId, onlyDiscrete);
@@ -944,12 +947,23 @@ export async function setCharacterMainImageViaGateway({ projectId, character, im
   return result;
 }
 
+// The wardrobe plate (src/web/wardrobe.js). `imageId: null` clears it.
+export async function setCharacterWardrobeImageViaGateway({ projectId, character, imageId }) {
+  const c = await getCharacter(projectId, character);
+  if (!c) throw new Error(`Character not found: ${character}`);
+  const result = await setCharacterWardrobeImage({ projectId, character: c._id.toString(), imageId });
+  broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
+    changed: ['wardrobe_image_id'],
+  });
+  return result;
+}
+
 export async function removeCharacterImageViaGateway({ projectId, character, imageId }) {
   const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
   const result = await removeCharacterImage({ projectId, character: c._id.toString(), imageId });
   broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
-    changed: ['images', 'main_image_id'],
+    changed: ['images', 'main_image_id', 'wardrobe_image_id'],
   });
   return result;
 }
@@ -1144,9 +1158,10 @@ export async function setArtworkStatusViaGateway({
 }
 
 function artworkChangedFields(result) {
-  return result.mainImageIdChange?.changed
-    ? ['artworks', 'main_image_id']
-    : ['artworks'];
+  const out = ['artworks'];
+  if (result.mainImageIdChange?.changed) out.push('main_image_id');
+  if (result.wardrobeImageIdChange?.changed) out.push('wardrobe_image_id');
+  return out;
 }
 
 export async function setArtworkResultViaGateway({
@@ -2075,6 +2090,8 @@ export async function createVideoPromptViaGateway({
   setsInScene = [],
   primarySpend = null,
   feltIntent = '',
+  hook = '',
+  continuesPrevious = false,
   dialogIds = [],
   lockLine = '',
   referenceBinding = '',
@@ -2126,6 +2143,8 @@ export async function createVideoPromptViaGateway({
     setsInScene,
     primarySpend,
     feltIntent,
+    hook,
+    continuesPrevious,
     dialogIds,
     lockLine,
     referenceBinding,
@@ -2398,6 +2417,8 @@ export async function createVideoSceneViaGateway({
   characterNames = [],
   textSpan = null,
   directorsRead = null,
+  kind = 'scene',
+  montageSubjects = [],
   intention = '',
   tempo = '',
   scope = null,
@@ -2426,6 +2447,8 @@ export async function createVideoSceneViaGateway({
     characterNames,
     textSpan,
     directorsRead,
+    kind,
+    montageSubjects,
     intention,
     tempo,
     scope,

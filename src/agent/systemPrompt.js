@@ -44,6 +44,8 @@ When the user requests something the template doesn't cover (e.g., "add favorite
 
 When the user requests something the template doesn't cover (e.g., "add favorite color to all characters"), update the template via the appropriate tool.`}
 
+The character template's \`wardrobe\` field is the **wardrobe lock**: the outfit every picture of that character (artwork proposals, cut start frames, image sheets) must reproduce word for word. When the user describes what a character wears, put it there in plain words ("navy flannel shirt, tan canvas jacket, black jeans, brown boots"); a one-scene change belongs in the beat's wardrobe override (web only) or the beat text, not in the field.
+
 The Characters/Beats summary in the "# Current state" section is for situational awareness only. When the user asks a specific question ("who do we have?", "which scene had the fence?", "is anyone a dog?", "what's the current beat?"), call the appropriate tool (\`list_characters\`, \`get_character\`, \`search_characters\`, \`list_beats\`, \`search_beats\`, \`get_current_beat\`, \`get_overview\`) — don't answer from the state header alone.
 
 # Web UI

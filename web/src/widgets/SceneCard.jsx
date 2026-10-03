@@ -116,6 +116,7 @@ export function SceneCard({ scene, index, count, beatId, disabled, onRefresh, on
         <span className="scene-card-index">Scene {index + 1}</span>
         <PatchText className="scene-card-title" value={scene.title} disabled={busy || disabled} placeholder="Scene title" onCommit={(v) => patch({ title: v })} />
         <PatchText className="scene-card-slug" value={scene.slug} disabled={busy || disabled} placeholder="INT./EXT. LOCATION — TIME" onCommit={(v) => patch({ slug: v })} />
+        {scene.kind === 'montage' ? <span className="cut-chip" title="A montage: every cut is a separate picture with a hook.">montage</span> : null}
         <LoadBadge load={scene.load} />
         <div className="scene-card-actions">
           <button type="button" title="Move scene up" disabled={busy || disabled || index === 0} onClick={() => onMove?.(-1)}>▲</button>
@@ -138,8 +139,21 @@ export function SceneCard({ scene, index, count, beatId, disabled, onRefresh, on
 
       {open ? (
         <div className="scene-card-read">
+          <div className="scene-read-row" title="A montage is a run of separate pictures with a job: the planner gives every cut a hook and takes it from the subjects listed here.">
+            <span className="field-label">Kind</span>
+            <select value={scene.kind || 'scene'} disabled={busy || disabled} onChange={(e) => patch({ kind: e.target.value })}>
+              <option value="scene">Scene</option>
+              <option value="montage">Montage</option>
+            </select>
+          </div>
+          {scene.kind === 'montage' ? (
+            <div className="scene-read-row" title="What must be shown for the montage to do its job — the time's fashions, pastimes, objects, rituals. One per line; Replan cuts to use a changed list.">
+              <span className="field-label">Montage subjects</span>
+              <PatchText rows={Math.max(3, (scene.montage_subjects || []).length)} value={(scene.montage_subjects || []).join('\n')} disabled={busy || disabled} placeholder="one subject per line — three boys sharing one skateboard outside the arcade…" onCommit={(v) => patch({ montage_subjects: v.split('\n').map((s) => s.trim()).filter(Boolean) })} />
+            </div>
+          ) : null}
           <div className="scene-read-row">
-            <span className="field-label">Intention</span>
+            <span className="field-label">{scene.kind === 'montage' ? "Intention (the montage's job)" : 'Intention'}</span>
             <PatchText value={scene.intention} disabled={busy || disabled} placeholder="What this scene must do to the audience, in one sentence" onCommit={(v) => patch({ intention: v })} />
           </div>
           <div className="scene-read-row" title="How this scene cuts: the rhythm of long and short cuts. The planner writes it before the shot table and every cut's length follows it.">

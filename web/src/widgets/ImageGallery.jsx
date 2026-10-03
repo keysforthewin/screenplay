@@ -7,6 +7,8 @@ import { EntityImagePickerModal } from './EntityImagePickerModal.jsx';
 export function ImageGallery({
   images,
   mainImageId,
+  wardrobeImageId = null,
+  wardrobePath = null,
   onChange,
   uploadPath,
   deletePath,
@@ -36,6 +38,16 @@ export function ImageGallery({
     if (!mainPath) return;
     try {
       await apiPostJson(mainPath, { image_id: id });
+      await onChange?.();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function setWardrobe(id) {
+    if (!wardrobePath) return;
+    try {
+      await apiPostJson(wardrobePath, { image_id: id || null });
       await onChange?.();
     } catch (e) {
       setError(e.message);
@@ -87,6 +99,7 @@ export function ImageGallery({
   }
 
   const mainId = mainImageId?.toString?.() || (typeof mainImageId === 'string' ? mainImageId : null);
+  const wardrobeId = wardrobeImageId?.toString?.() || (typeof wardrobeImageId === 'string' ? wardrobeImageId : null);
 
   return (
     <div>
@@ -95,6 +108,7 @@ export function ImageGallery({
         {(images || []).map((img) => {
           const id = img._id.toString ? img._id.toString() : String(img._id);
           const isMain = mainId && id === mainId;
+          const isWardrobe = wardrobeId && id === wardrobeId;
           const regenBusy = regenBusyId === id;
           return (
             <div key={id} className={`gallery-row${isMain ? ' is-main' : ''}`}>
@@ -125,6 +139,11 @@ export function ImageGallery({
                 ) : (
                   mainPath && <button onClick={() => setMain(id)}>Set main</button>
                 )}
+                {wardrobePath && (isWardrobe ? (
+                  <button className="is-wardrobe-badge" onClick={() => setWardrobe(null)} title="This is the wardrobe plate — every render copies its clothes. Click to clear.">👔 wardrobe</button>
+                ) : (
+                  <button onClick={() => setWardrobe(id)} title="Make this the wardrobe plate: every render of this character copies its clothes">Set wardrobe</button>
+                ))}
                 <a
                   className="icon-link"
                   href={imageUrl(id)}

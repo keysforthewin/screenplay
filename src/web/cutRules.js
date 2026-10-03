@@ -90,6 +90,7 @@ export const LOCK_LINE_RULES = [
   '- for each principal on screen: age band, hair, wardrobe and any distinguishing object, then where they are relative to a fixed landmark and which way they face ("Tom: thirties, short beard, black raincoat, seated opposite her in the window booth, facing her.");',
   '- the camera\'s side ("Camera on the counter side.").',
   'Template: "Same light: <source + colour>. <Name>: <age band>, <hair>, <wardrobe>, <object>, <position relative to landmark>, facing <what>. Camera <side>."',
+  '- The <wardrobe> words are the character\'s LOCKED WARDROBE from the cast list, verbatim — never paraphrased, never a different garment, colour or fit; only a change the beat itself stages (jacket off, sleeve torn) is added to them. A character with no lock keeps whatever wardrobe the first cut of the scene gave them, in the same words thereafter.',
 ].join('\n');
 
 export const EIGHT_RULES = [
@@ -185,7 +186,7 @@ export const STILL_INTENT_RULES = [
 
 export const START_FRAME_RULES = [
   'Start frame — the still an image model renders as the FIRST frame of this cut, at t=0, before anything in the block has happened. Derive it from the cut, not from the scene: the camera named first (size, side relative to a landmark, angle, height, lens, depth of field), every principal in frame as a FROZEN MOMENT of the action about to begin (pose, orientation, heading, hands and prop as the block will need them), each placed exactly where the table row puts them with one positive anchoring cue that fixes the sub-location, the light source and its colour as the lock line states it, and the continuity state the story has left them in.',
-  '- Refer to people by a short VISUAL HANDLE that names their wardrobe in a few words from the lock line ("the boy in the red windbreaker"), never by a proper name, and use the same handle in both stills of the cut; the reference artwork carries the face — spend the other words on placement, pose, lens and light.',
+  '- Refer to people by a short VISUAL HANDLE that names their wardrobe in a few words from the lock line ("the boy in the red windbreaker") — the LOCKED WARDROBE words from the cast list when the character has one — never by a proper name, and use the same handle in both stills of the cut; the reference artwork carries the face — spend the other words on placement, pose, lens and light.',
   '- Describe only what THIS camera can see from its stated side. A back to the camera has no face.',
   '- When the camera is about to travel, this still is the framing at the first frame of the travel. When the cut is 2 s or shorter, catch the action already under way (the bucket half across the counter), not about to begin.',
   '- The frame is the whole composition: no camera arriving, no motion trails, no cut-to. Idle business is caught mid-gesture, not described as movement.',
@@ -216,12 +217,46 @@ export const FRAME_PAIR_RULES = [
   '- Same people. Everyone in the end still is in the start still unless the block shows them enter, and everyone in the start still is in the end still unless the block shows them leave. Background people count: the same number, in the same seats.',
   '- Same things. Every prop, fixture and piece of set dressing the end camera sees that the start camera also sees is in the start prompt, in the same words, in the same place ("a steel butter dispenser at the left end of the counter" in both, or in neither).',
   '- Same layout. Furniture is counted and placed once and repeated word for word: "two rows of six red seats, the aisle on the right". Never "rows of seats" in one still and "a bank of seats" in the other.',
-  '- Same clothes. Each person\'s handle names their wardrobe in the lock line\'s words, the same words in both stills, and the SAME artwork is picked for that person in both.',
+  '- Same clothes. Each person\'s handle names their wardrobe in the lock line\'s words (the LOCKED WARDROBE verbatim when the cast list states one), the same words in both stills, and the SAME artwork is picked for that person in both — a "wardrobe plate" catalog entry is the authority on their clothes and is always a good pick.',
   '- Every object that leaves a hand has a destination in the end still: where it lies, on what, which way up ("the bucket on its side on the carpet by his left shoe, popcorn spilled around it"). An object that is simply absent has vanished, and the model invents how.',
   '- When the camera MOVES, whatever part of the start still is still in view is described in the start prompt\'s words; what the move reveals is new and comes from the set description. A sliding move (pan, tilt, sideways truck/track, crane) keeps at least half of the start still in view, from the same angle at the same size.',
   '- When the camera HOLDS (static or handheld), the end still is made by editing the start still, so the end prompt is not a second description. It is the CHANGE LIST for the same picture: begin "Same frame." and state only what is different at the end, each as the finished state with its place — 20 to 60 words. Everything it does not mention stays exactly as the start still has it; anything it mentions is painted in, so never mention what has not changed.',
   'Check per cut before returning: count the people in each still; list the props in each; read the two furniture clauses side by side. A difference the block does not perform is a fault — fix it, usually by adding the thing to the START still.',
 ].join('\n');
+
+// Coverage between cuts. Written after two consecutive cuts held the same
+// camera on the same boy: in the first he slowly ate one piece of popcorn, the
+// second opened on a fist full of it. Each cut is its own generation, so two
+// cuts on one setup are two unrelated pictures of the same framing — a jump.
+export const COVERAGE_RULES = [
+  'Coverage — every cut is a NEW camera setup. Two consecutive cuts never share one: the audience reads the same framing twice in a row as a mistake, and because each cut is rendered on its own, whatever differs between the two (a hand, a prop, a mouthful) jumps.',
+  '- Between consecutive cuts change the SUBJECT, or keep the subject and change both the side (at least a third of the way round them) and the size. The setups to reach for: the profile; from behind or over the shoulder; what they are looking at (the screen, the door, the other person — the reverse); an insert of the hands and the object; the wide that shows where everyone is. Someone watching something is covered as watcher → the thing watched → watcher from another side, never watcher → watcher.',
+  '- An action too long for one cut is not continued from the same camera: the next cut finds it from somewhere else, or cuts away and comes back.',
+  '- The SAME setup twice in a row is allowed only when the director\'s commentary or the director\'s read asks for it (a jump cut, a held stare broken into beats). Then the second row sets continues_previous: true — time is continuous, nothing is restaged, and the cut opens on EXACTLY the frame the previous cut ended on (its start still is the previous cut\'s end still). Otherwise continues_previous is false.',
+  '- The hand-off, whatever the setup: a cut opens with every body, hand, prop, mouthful and piece of clothing in the state the previous cut\'s last_frame left it. A bucket that fell in cut 3 lies on the carpet in cut 4; a hand that was empty is empty.',
+].join('\n');
+
+// A montage has a job. Written after an opening montage came back as a run of
+// pleasant, interchangeable pictures: nothing in any of them to look at, and
+// nothing that said what year it was or why we were being shown it.
+export const MONTAGE_SCENE_RULES = [
+  'Montage — a scene with no continuous action: a run of separate pictures cut together (an opening that sets the time and place, a passage of time, a place waking up). Mark it kind: "montage"; every other scene is kind: "scene".',
+  '- A montage has a JOB, and the intention sentence states it: what the audience must know or feel when it ends that they did not before ("we are in a small Ontario town in the summer of 1994, before we have met anyone, and it is the last easy week of the holidays").',
+  '- montage_subjects lists what must be SHOWN to do that job — six to twelve concrete, filmable things drawn from the beat, the sets, the characters and the period: what people wear and how they wear it, what they do with a free afternoon, the games, the vehicles, the food, the objects in their hands, the machines of the time, the rituals of this place. Each subject is specific to THIS story and time: "teenagers" is a blank; "three boys taking turns on one skateboard outside the arcade, the others eating freezies" is a subject. A subject that would fit any other film is a blank.',
+  '- For a montage the director\'s read is filled from the audience\'s side: dramatic_function = what it sets up; turn = what the audience knows at the end that it did not at the start; pov = whose world this is; power_shift, hidden_want, obstacle_tactic, subtext, suppressed_behavior = what the place and its people are busy with and what that tells us, in filmable terms; never blank.',
+].join('\n');
+
+export const MONTAGE_CUT_RULES = [
+  'The hook — every cut has ONE thing the eye goes to, the reason this shot is in the film. Write it in the hook cell as what the camera sees. A cut with no hook is a stock shot: correct, and nobody watches it.',
+  '- A hook is one of these: SOMETHING HAPPENS (a small event with its payoff inside the cut — the skateboard clears the kerb, the freezie snaps in half, the dog takes the hot dog); GORGEOUS (light on a material, named — low sun through a sprinkler\'s fan, neon on wet asphalt — never an evaluating word); FUNNY (an incongruity or a small failure that reads without a caption); CUTE (the very small or very earnest, doing something with total seriousness); CURIOUS (a detail the viewer leans in to work out).',
+  '- The hook is concrete and inside the frame from the first frame; when something happens, it has finished by the last frame and the last_frame cell holds its result. It is the cut\'s one action — never a second thing happening behind it.',
+  '- In a dramatic scene the hook is usually the cut\'s point itself (the look that lands, the hand that withdraws). In a MONTAGE it is the whole cut, and these also hold:',
+  '- Each cut takes ONE of the scene\'s montage_subjects and shows it doing the montage\'s job: the picture must say the time, the place or the life the intention names, in what people wear, hold and do — never a picture that could open any film.',
+  '- No two consecutive cuts share a subject, a kind of hook or a size. Open on the cut that places us; end on the button — the cut that hands over to the story.',
+  '- Keep hooks where the model renders well (weather, light, cloth, water, one simple motion, crowds at a distance) and inside what the cut\'s length can hold: a quick cut\'s hook is one motion already under way.',
+].join('\n');
+
+export const MONTAGE_RULES = [MONTAGE_SCENE_RULES, MONTAGE_CUT_RULES].join('\n');
 
 // Emily's diner conversion (notes §9), rewritten to this project's form: the
 // spoken words are replaced by speaker + delivery, and each block carries a

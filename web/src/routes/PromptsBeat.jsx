@@ -63,7 +63,7 @@ function SceneCuts({ scene, beatId, dialogs, disabled, onRefresh, onDeleteCut, o
           {local.map((id, i) => {
             const c = byId.get(id);
             if (!c) return null;
-            return <CutItem key={id} cut={c} index={i} sceneIndex={scene.order} beatId={beatId} dialogs={dialogs} disabled={disabled} onRefresh={onRefresh} onDelete={() => onDeleteCut(id)} onRegenerate={() => onRegenerateCut?.(c, `${scene.order}.${i + 1}`)} />;
+            return <CutItem key={id} cut={c} index={i} previousCut={i > 0 ? byId.get(local[i - 1]) || null : null} sceneIndex={scene.order} beatId={beatId} dialogs={dialogs} disabled={disabled} onRefresh={onRefresh} onDelete={() => onDeleteCut(id)} onRegenerate={() => onRegenerateCut?.(c, `${scene.order}.${i + 1}`)} />;
           })}
         </div>
       </SortableContext>
@@ -534,6 +534,7 @@ export function PromptsBeat({ session }) {
           {sfJob.checks && sfJob.checks.passed + sfJob.checks.failed + sfJob.checks.unchecked > 0
             ? ` Start ↔ end pairs: ${sfJob.checks.passed} match${sfJob.checks.repaired ? ` (${sfJob.checks.repaired} repaired)` : ''}${sfJob.checks.failed ? `, ${sfJob.checks.failed} still differ` : ''}${sfJob.checks.unchecked ? `, ${sfJob.checks.unchecked} not checked` : ''}.`
             : ''}
+          {sfJob.checks?.blocked ? <strong className="is-blocking"> {sfJob.checks.blocked} blocked — the clip would visibly break.</strong> : null}
           {!TERMINAL.has(sfJob.status) && sfJob.job_id ? (
             <button type="button" style={{ marginLeft: 10, fontSize: 12, padding: '2px 8px' }} disabled={sfJob.cancel_requested} onClick={cancelFrames}
               title="Stops before the next cut; frames already rendering finish and are kept">
@@ -541,7 +542,7 @@ export function PromptsBeat({ session }) {
             </button>
           ) : null}
           {Array.isArray(sfJob.warnings) && sfJob.warnings.length ? (
-            <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>{sfJob.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+            <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>{sfJob.warnings.map((w, i) => <li key={i} className={String(w).startsWith('BLOCKING') ? 'is-blocking' : ''}>{w}</li>)}</ul>
           ) : null}
         </div>
       ) : null}

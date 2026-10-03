@@ -144,6 +144,9 @@ async function setArtworkFields(host, artworkId, fields, options = {}) {
     if (options.hostMainImageId !== undefined) {
       $set.main_image_id = options.hostMainImageId;
     }
+    if (options.hostWardrobeImageId !== undefined) {
+      $set.wardrobe_image_id = options.hostWardrobeImageId;
+    }
     const result = await getDb().collection(host.col).updateOne(
       { _id: host._id, 'artworks._id': aid },
       { $set },
@@ -182,6 +185,9 @@ async function pullArtwork(host, artworkId, options = {}) {
     if (options.hostMainImageId !== undefined) {
       update.$set.main_image_id = options.hostMainImageId;
     }
+    if (options.hostWardrobeImageId !== undefined) {
+      update.$set.wardrobe_image_id = options.hostWardrobeImageId;
+    }
     await getDb().collection(host.col).updateOne({ _id: host._id }, update);
     return;
   }
@@ -207,6 +213,13 @@ function readArtworks(host) {
 function readHostMainImageId(host) {
   if (host.col) return host.doc.main_image_id || null;
   return host.beat.main_image_id || null;
+}
+
+// Only characters carry a wardrobe plate (src/web/wardrobe.js); it follows
+// the artwork result exactly as main_image_id does.
+function readHostWardrobeImageId(host) {
+  if (host.kind !== 'character') return null;
+  return host.doc.wardrobe_image_id || null;
 }
 
 function findArtworkInList(artworks, artworkId) {
@@ -427,14 +440,18 @@ export async function setArtworkResult({
     ? { changed: true, value: newResult }
     : null;
   if (mainImageIdChange) opts.hostMainImageId = newResult;
+  const wardrobeImageIdChange = oidEquals(readHostWardrobeImageId(host), replacedId)
+    ? { changed: true, value: newResult }
+    : null;
+  if (wardrobeImageIdChange) opts.hostWardrobeImageId = newResult;
   await setArtworkFields(host, current._id, fields, opts);
   const updated = await fetchArtwork(host, current._id);
   logger.info(
     `mongo: ${host.kind} artwork result id=${host._id} artwork=${current._id} result=${newResult}${
       orphanedImageId ? ` orphan=${orphanedImageId}` : ''
-    }${mainImageIdChange ? ` main->${newResult}` : ''}`,
+    }${mainImageIdChange ? ` main->${newResult}` : ''}${wardrobeImageIdChange ? ` wardrobe->${newResult}` : ''}`,
   );
-  return { artwork: updated, host_id: host._id, orphanedImageId, mainImageIdChange };
+  return { artwork: updated, host_id: host._id, orphanedImageId, mainImageIdChange, wardrobeImageIdChange };
 }
 
 // Swap previous_result_image_id → result_image_id. The image that was
@@ -461,12 +478,16 @@ export async function undoArtworkEdit({ projectId, hostType, hostId, artworkId }
     ? { changed: true, value: restored }
     : null;
   if (mainImageIdChange) opts.hostMainImageId = restored;
+  const wardrobeImageIdChange = oidEquals(readHostWardrobeImageId(host), current.result_image_id)
+    ? { changed: true, value: restored }
+    : null;
+  if (wardrobeImageIdChange) opts.hostWardrobeImageId = restored;
   await setArtworkFields(host, current._id, fields, opts);
   const updated = await fetchArtwork(host, current._id);
   logger.info(
-    `mongo: ${host.kind} artwork undo id=${host._id} artwork=${current._id} orphan=${orphanedImageId}${mainImageIdChange ? ` main->${restored}` : ''}`,
+    `mongo: ${host.kind} artwork undo id=${host._id} artwork=${current._id} orphan=${orphanedImageId}${mainImageIdChange ? ` main->${restored}` : ''}${wardrobeImageIdChange ? ` wardrobe->${restored}` : ''}`,
   );
-  return { artwork: updated, host_id: host._id, orphanedImageId, mainImageIdChange };
+  return { artwork: updated, host_id: host._id, orphanedImageId, mainImageIdChange, wardrobeImageIdChange };
 }
 
 // Remove the artwork from the host. Returns the image ids that were
@@ -482,15 +503,22 @@ export async function removeArtwork({ projectId, hostType, hostId, artworkId }) 
       ? { changed: true, value: null }
       : null;
   const opts = mainImageIdChange ? { hostMainImageId: null } : {};
+  const hostWardrobe = readHostWardrobeImageId(host);
+  const wardrobeImageIdChange =
+    oidEquals(hostWardrobe, removed.result_image_id) ||
+    oidEquals(hostWardrobe, removed.previous_result_image_id)
+      ? { changed: true, value: null }
+      : null;
+  if (wardrobeImageIdChange) opts.hostWardrobeImageId = null;
   await pullArtwork(host, removed._id, opts);
   const removed_image_ids = [
     removed.result_image_id,
     removed.previous_result_image_id,
   ].filter(Boolean);
   logger.info(
-    `mongo: ${host.kind} artwork remove id=${host._id} artwork=${removed._id} images=[${removed_image_ids.join(',')}]${mainImageIdChange ? ' main->null' : ''}`,
+    `mongo: ${host.kind} artwork remove id=${host._id} artwork=${removed._id} images=[${removed_image_ids.join(',')}]${mainImageIdChange ? ' main->null' : ''}${wardrobeImageIdChange ? ' wardrobe->null' : ''}`,
   );
-  return { host_id: host._id, removed, removed_image_ids, mainImageIdChange };
+  return { host_id: host._id, removed, removed_image_ids, mainImageIdChange, wardrobeImageIdChange };
 }
 
 // Read a single artwork.
