@@ -129,7 +129,8 @@ export function saveClimb(projectId, beatId, state) {
 const WALL_REASONS = new Set(['stalled', 'max_attempts', 'nothing_to_improve']);
 
 // The loop. Callbacks:
-//   evaluate(n)  → {score, detail?, …}  run the critique and score it (n = 0 is the baseline)
+//   evaluate(n)  → {score, detail?, …}  run the critique and score it (n = 0 is the baseline,
+//                which may return a critique already on file for the current version)
 //   improve(n)   → false when there is nothing left to regenerate, anything else otherwise
 //   keep(result, n)    the attempt raised the best score (also called for the baseline)
 //   revert(result, n)  the attempt did not — put the best version back (also on cancel / error, with null)

@@ -1,6 +1,9 @@
 // The writing critique's Climb: critique → rewrite from the critique →
 // critique again, until the overall score reaches the target or stops rising
-// (climbCore.js owns the loop and the stop rules).
+// (climbCore.js owns the loop and the stop rules). One critique per rewrite:
+// the critique that scores an attempt is the one the next attempt works from,
+// and a beat that already carries a finished critique of its current body
+// starts from that one instead of being critiqued again.
 //
 // It is a hill-climb from the best version so far. A rewrite that scores
 // higher becomes the new best; one that does not is discarded — the best body
@@ -23,7 +26,7 @@ import { resolveProjectId } from '../mongo/projects.js';
 import { getBeat } from '../mongo/plots.js';
 import { setCritiqueStrategy, restoreBeatCritique, stashPreviousBody } from '../mongo/critiques.js';
 import { setBeatBodyViaGateway } from './gateway.js';
-import { createCritiqueJob, runCritique, holdCritiqueBeat, releaseCritiqueBeat } from './critiqueGenerate.js';
+import { createCritiqueJob, runCritique, holdCritiqueBeat, releaseCritiqueBeat, critiqueBodyHash } from './critiqueGenerate.js';
 import {
   synthesizeRewriteStrategy,
   regenerateBeatBody,
@@ -57,7 +60,7 @@ function httpError(message, status) {
 
 const WALL_SYSTEM = [
   'You explain to a screenwriter why an automatic rewrite loop stopped improving one beat of their screenplay.',
-  'The loop critiqued the beat against a fixed rubric, rewrote it from the critique, and critiqued it again, keeping a rewrite only when the overall score rose. It stopped short of the target score. You are given the target, every attempt with its facet scores and the strategy it followed, and the critique of the best version.',
+  'The loop critiqued the beat against a fixed rubric, rewrote it from the critique, and critiqued the result, keeping a rewrite only when the overall score rose. It stopped short of the target score. You are given the target, every attempt with its facet scores and the strategy it followed, and the critique of the best version.',
   'Write for the person who will type a direction for the next run. Plain text, at most 180 words, no markdown headings.',
   'First, two to four sentences on why it stalled. Name the facets or criteria that stayed low and say what kept them there: facets that trade off against each other (one rose whenever another fell), an issue every rewrite failed to fix, a direction that pulls against the rubric, or a problem a rewrite of this beat cannot fix because it lives in a neighbouring beat, the story spine, or a missing document such as the director\'s notes or dialogue style. Use the attempt scores as evidence; do not guess beyond them.',
   'Then a line reading "Try next:" followed by two to four short lines, each starting with "- ", each a concrete direction the writer could give or a change they could make by hand.',
@@ -116,7 +119,15 @@ async function runWritingClimb({ projectId, beatId, state }) {
     logger.warn(`critique climb: beat=${beatId} body did not reach Mongo within ${BODY_SETTLE_MS}ms`);
   }
 
-  async function evaluate() {
+  async function evaluate(n) {
+    if (n === 0) {
+      // The critique already on the beat is the baseline when it read this body.
+      const beat = await getBeat(projectId, beatId);
+      const c = beat?.critique;
+      if (c?.version === 2 && c.status === 'done' && typeof c.overall === 'number' && c.body_hash && c.body_hash === critiqueBodyHash(beat.body)) {
+        return { score: c.overall, detail: { facets: facetScores(c) }, body: String(beat.body || ''), critique: c };
+      }
+    }
     let job = null;
     // A run with an errored facet has a skewed overall; ask once more.
     for (let tries = 0; tries < 2; tries++) {

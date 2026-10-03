@@ -142,6 +142,42 @@ describe('writing climb', () => {
     expect((await get(`/api/beat/${beatId}/critique`)).json.climb.stop_reason).toBe('target');
   });
 
+  it('starts from the critique already on the beat instead of critiquing it again', async () => {
+    const critiqued = [];
+    G._setFacetGeneratorForTests(async (facet, ctx) => {
+      const m = /score:(\d+)/.exec(JSON.stringify(ctx));
+      critiqued.push(Number(m?.[1] ?? 1));
+      return { score: Number(m?.[1] ?? 1), comments: 'note' };
+    });
+    const perRun = (await import('../src/web/critiqueFacets.js')).FACETS.length;
+    await G.runCritique({ projectId, job: G.createCritiqueJob(beatId) });
+    expect(critiqued).toHaveLength(perRun);
+    nextScores = [9];
+    expect((await post(`/api/beat/${beatId}/critique/climb`, { target: 8 })).status).toBe(202);
+    const climb = await finished();
+    expect(climb).toMatchObject({ stop_reason: 'target', start_score: 5, best_score: 9 });
+    // One critique from before the climb, one for the rewrite — no baseline run.
+    expect(critiqued).toHaveLength(perRun * 2);
+    expect(critiqued.slice(perRun).every((s) => s === 9)).toBe(true);
+  });
+
+  it('critiques the baseline when the body changed since the stored critique', async () => {
+    let runs = 0;
+    G._setFacetGeneratorForTests(async (facet, ctx) => {
+      runs += 1;
+      const m = /score:(\d+)/.exec(JSON.stringify(ctx));
+      return { score: Number(m?.[1] ?? 1), comments: 'note' };
+    });
+    const perRun = (await import('../src/web/critiqueFacets.js')).FACETS.length;
+    await G.runCritique({ projectId, job: G.createCritiqueJob(beatId) });
+    await Plots.updateBeat(projectId, beatId, { body: 'EDITED score:6' });
+    nextScores = [9];
+    await post(`/api/beat/${beatId}/critique/climb`, { target: 8 });
+    const climb = await finished();
+    expect(climb).toMatchObject({ stop_reason: 'target', start_score: 6, best_score: 9 });
+    expect(runs).toBe(perRun * 3);
+  });
+
   it('stops after N attempts without an increase, restores the best version and says why', async () => {
     nextScores = [6, 6, 3, 9];
     await post(`/api/beat/${beatId}/critique/climb`, { target: 9, stop_after: 2 });

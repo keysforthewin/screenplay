@@ -94,8 +94,8 @@ const SYNTHESIZE_SYSTEM = [
   SCORE_MECHANICS,
   '- Work down the levers table: the facet worth the most comes first.',
   '- Every MUST FIX issue gets its own numbered step that quotes the line it changes and gives the replacement.',
-  '- In every facet holding three or more SHOULD FIX issues, resolve enough of them to leave two at most, and resolve the others wherever that costs nothing elsewhere. NITS only when free.',
-  '- Then raise the lowest criteria toward what their 9 looks like (given under "Targets").',
+  '- In every facet holding three or more SHOULD FIX issues, resolve enough of them to leave two at most, and resolve the others, and the NITS, wherever that costs nothing in another facet.',
+  '- Then EVERY facet gets a step, not only the capped or low ones: "Targets" lists each criterion short of a 9 with what its 9 looks like. For each facet listed there, name the concrete change that moves its criteria toward that 9 — a facet at 8 with no issue still has a step. Only a facet with nothing under "Targets" is left alone.',
   `- ${FIXED_FACTS_RULE}`,
   '- Where two facets pull against each other, say how to serve both: a detail one critic wants and another calls clutter is said in fewer words, or moved to where it does not stall the action. A rewrite that raises one facet by lowering another is a net loss.',
   '- End with a "Leave alone" list: the lines and choices the critics named as strengths, which the rewrite must keep word for word.',
@@ -111,7 +111,7 @@ const REGEN_SYSTEM = [
   'You are a screenwriter rewriting one beat of a screenplay from its critique.',
   'You are given the documents the beat must agree with, the critique (each issue quotes a line and gives a fix), a plan that orders the issues and settles the conflicts between them, and the current beat.',
   '- Resolve every MUST FIX and every SHOULD FIX issue. Where the plan and an issue\'s own fix differ, follow the plan.',
-  '- Change only what an issue or the plan calls for. A line the critique did not fault stays as written, word for word, and so does everything on the plan\'s "Leave alone" list and under "Keep".',
+  '- Change only what an issue or the plan calls for — the plan has a step for every facet short of a 9, and each of those steps is carried out, not only the fixes. A line neither an issue nor the plan names stays as written, word for word, and so does everything on the plan\'s "Leave alone" list and under "Keep".',
   `- ${FIXED_FACTS_RULE}`,
   '- Add nothing a fix does not need — no new props, wardrobe inventories, camera moves or lines of dialogue. Additions are where new faults come from, and the next critique will count them.',
   "- Preserve the story's intent and the characters present. The rewrite MUST conform to standard screenplay format per the guide below.",
@@ -123,21 +123,22 @@ const REGEN_SYSTEM = [
   RUBRIC,
 ].join('\n');
 
-// Edit mode: corrections to the passages at fault, nothing else.
+// Edit mode: corrections to the passages at fault or short of a 9, nothing else.
 const EDITS_SYSTEM = [
-  'You are a screenwriter making targeted corrections to one beat of a screenplay from its critique. The beat already scores well, and a full rewrite would put its strong lines at risk, so you change only the passages at fault.',
-  'You are given the documents the beat must agree with, the critique (a table of score levers, then each issue quoting a line with a fix), and the current beat body.',
+  'You are a screenwriter making targeted corrections to one beat of a screenplay from its critique. The beat already scores well, and a full rewrite would put its strong lines at risk, so you change only the passages that are at fault or that hold a facet short of a 9.',
+  'You are given the documents the beat must agree with, the critique (a table of score levers, each issue quoting a line with a fix, then "Targets": every criterion short of a 9 with what its 9 looks like), and the current beat body.',
   SCORE_MECHANICS,
   'Return a plan and a list of edits. Each edit replaces one passage of the body:',
   '- find: copied character for character from the current beat body exactly as shown, markdown marks included. Keep it within one line where you can; long enough to occur exactly once in the body; no longer than the correction needs.',
   '- replace: the corrected text. An empty string cuts the passage.',
   '- issue: the critique issue it resolves, in a few words.',
   'Rules:',
-  '- Resolve every MUST FIX. In every facet holding three or more SHOULD FIX issues, resolve enough to leave two at most; resolve the others where it costs nothing elsewhere. Work down the levers table.',
+  '- Resolve every MUST FIX. In every facet holding three or more SHOULD FIX issues, resolve enough to leave two at most; resolve the others, and the NITS, where it costs nothing in another facet. Work down the levers table.',
+  '- Then improve EVERY facet, not only the capped or low ones: for each facet with a criterion under "Targets", make the edits that move it toward its 9. A facet at 8 with no issue still gets an edit where one passage holds it back; say in the plan which facet each such edit serves.',
   `- ${FIXED_FACTS_RULE}`,
   '- Edits are applied in order and must not overlap. To move text, cut it with one edit and insert it with another (find the line it should follow; replace with that line plus the moved text).',
   '- To insert, find the line before the insertion point and replace it with itself plus the new text.',
-  '- Add nothing a fix does not need. A passage the critique did not fault is not edited.',
+  '- Add nothing a fix or a target does not need. Edit only a passage an issue names or a target calls for; everything under "Keep" stays word for word.',
   '- The corrected text follows standard screenplay format per the guide below.',
   `- ${LAYOUT_RULE} A cue, parenthetical or speech that shares a line with another is itself a fault to correct: replace the line with the same words on separate lines.`,
   '- An issue whose fix lies outside this beat gets no edit; name it in the plan as out of reach.',
@@ -255,22 +256,22 @@ export function formatScoreLevers(critique) {
   return out;
 }
 
-const TARGET_BELOW = 8;
 const KEEP_FROM = 9;
 
-// What a 9 looks like for every criterion that is short of it.
+// What a 9 looks like for every criterion that is short of it, in every
+// facet — a rewrite aims at all of them, not only the low ones.
 export function formatTargets(critique) {
   const out = [];
   for (const f of critique?.facets || []) {
     if (f.status !== 'done') continue;
     const def = getFacet(f.key);
     for (const c of f.criteria || []) {
-      if (c.applicable === false || c.score == null || c.score >= TARGET_BELOW) continue;
+      if (c.applicable === false || c.score == null || c.score >= KEEP_FROM) continue;
       const anchor = def?.criteria?.find((d) => d.key === c.key)?.anchors?.[9];
       if (anchor) out.push(`- ${f.label} / ${c.label || c.key} (now ${c.score}): a 9 is — ${anchor}`);
     }
   }
-  return out.length ? ['# Targets (what the critics score a 9)', ...out, ''] : [];
+  return out.length ? ['# Targets (every criterion short of a 9, and what the critics score a 9)', ...out, ''] : [];
 }
 
 // What the critics praised: strengths, and the lines quoted as evidence for a
@@ -385,7 +386,7 @@ export async function regenerateBeatBody({ beat, strategy, critique = null, ctx 
   const user = [
     ...formatRewriteContext(ctx),
     ...directionBlock(direction),
-    ...(critique ? ['# Critique (each issue quotes the line at fault and gives a fix)', formatCritiqueForRewrite(critique), '', ...formatKeepList(critique)] : []),
+    ...(critique ? ['# Critique (each issue quotes the line at fault and gives a fix)', formatCritiqueForRewrite(critique), '', ...formatTargets(critique), ...formatKeepList(critique)] : []),
     '# The plan (follow it; it orders the issues and settles the conflicts between them)',
     String(strategy || ''),
     '',

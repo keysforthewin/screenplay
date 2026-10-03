@@ -4,6 +4,7 @@
 // streams full job snapshots to SSE subscribers (registry + pub/sub replicated
 // from falVideoGenerate.js). Latest-only persistence via src/mongo/critiques.js.
 
+import { createHash } from 'node:crypto';
 import { ObjectId } from 'mongodb';
 import { config } from '../config.js';
 import { modelFor } from '../llm/modelSlots.js';
@@ -21,6 +22,11 @@ import {
 } from '../mongo/critiques.js';
 
 const TERMINAL_RETENTION_MS = 5 * 60 * 1000;
+
+// Fingerprint of the body a critique read, stored on it as `body_hash`.
+export function critiqueBodyHash(body) {
+  return createHash('sha1').update(String(body || '').trim()).digest('hex');
+}
 
 const jobs = new Map();
 const listeners = new Map();
@@ -268,7 +274,7 @@ export async function runCritique({ projectId, job }) {
   try {
     const beat = await getBeat(projectId, job.beat_id);
     if (!beat) throw new Error(`beat not found: ${job.beat_id}`);
-    await setCritiquePending(projectId, beat._id, { model: modelFor('critique'), facets: facetStubs() });
+    await setCritiquePending(projectId, beat._id, { model: modelFor('critique'), facets: facetStubs(), bodyHash: critiqueBodyHash(beat.body) });
     job.status = 'running';
     publish(job);
 

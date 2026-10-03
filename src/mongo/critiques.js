@@ -23,7 +23,7 @@ export async function getBeatCritique(projectId, beatId) {
   return beat?.critique || null;
 }
 
-export async function setCritiquePending(projectId, beatId, { model, facets } = {}) {
+export async function setCritiquePending(projectId, beatId, { model, facets, bodyHash } = {}) {
   projectId = await resolveProjectId(projectId);
   const oid = await resolveBeatOid(projectId, beatId);
   if (!oid) throw new Error(`Beat not found: ${beatId}`);
@@ -35,6 +35,9 @@ export async function setCritiquePending(projectId, beatId, { model, facets } = 
     status: 'pending',
     overall: null,
     strategy: null,
+    // Which body this critique read (critiqueBodyHash); a climb reuses a
+    // critique whose hash still matches the beat instead of running it again.
+    body_hash: bodyHash || null,
     facets: (facets || []).map((f) => ({ ...f })),
   };
   await col().updateOne(
