@@ -173,26 +173,29 @@ export function applyMarkdownEdits(text, edits, label = 'edit') {
     if (!e.find) {
       throw new Error(`${label}: edit ${i} has empty \`find\`. Use the dedicated append/set tool to add or replace whole content.`);
     }
-    const first = body.indexOf(e.find);
+    // `find_alt`: the caller's alternate spelling of the passage (the gateway
+    // adds one for beat bodies — the same text with hard-break marks).
+    const find = typeof e.find_alt === 'string' && e.find_alt && !body.includes(e.find) && body.includes(e.find_alt) ? e.find_alt : e.find;
+    const first = body.indexOf(find);
     if (first < 0) {
       throw new Error(
         `${label}: edit ${i} \`find\` text not found. Use verbatim text from the current value. Snippet: "${snippet(e.find)}".`,
       );
     }
     let count = 1;
-    let scan = first + e.find.length;
+    let scan = first + find.length;
     while (scan < body.length) {
-      const next = body.indexOf(e.find, scan);
+      const next = body.indexOf(find, scan);
       if (next < 0) break;
       count += 1;
-      scan = next + e.find.length;
+      scan = next + find.length;
     }
     if (count > 1) {
       throw new Error(
         `${label}: edit ${i} \`find\` matched ${count} places — must be unique. Add surrounding context to disambiguate. Snippet: "${snippet(e.find)}".`,
       );
     }
-    body = body.slice(0, first) + e.replace + body.slice(first + e.find.length);
+    body = body.slice(0, first) + e.replace + body.slice(first + find.length);
     applied.push({
       find_chars: e.find.length,
       replace_chars: e.replace.length,

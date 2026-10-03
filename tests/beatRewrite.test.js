@@ -153,3 +153,178 @@ describe('restoreBeatBody', () => {
     expect(res).toEqual({ restored: false });
   });
 });
+
+// A v2 critique with one capped facet, one strength and one criterion at 9.
+function richCritique() {
+  return {
+    status: 'done',
+    overall: 6,
+    facets: [
+      {
+        key: 'direction', label: "Director's notes", status: 'done', score: 5, summary: 'Two anchors broken.', strengths: [],
+        criteria: [
+          { key: 'notes_honored', label: 'Project notes honored', applicable: true, score: 8, evidence: [] },
+          { key: 'scene_bible', label: 'Scene bible fidelity', applicable: true, score: 5, evidence: [] },
+        ],
+        issues: [
+          { severity: 'must_fix', criterion: 'scene_bible', quote: 'KEYS (12)', problem: 'The bible makes him 10.', fix: 'KEYS (10)' },
+          { severity: 'must_fix', criterion: 'scene_bible', quote: 'a short-sleeved tee', problem: 'Breaks the wardrobe anchor.', fix: 'a striped long-sleeve under a windbreaker' },
+        ],
+      },
+      {
+        key: 'pacing', label: 'Pacing & momentum', status: 'done', score: 9, summary: '', strengths: ['Cuts on the button.'],
+        criteria: [{ key: 'exit', label: 'Exit', applicable: true, score: 9, evidence: [{ quote: 'The doors swing shut.', note: 'the button' }] }],
+        issues: [],
+      },
+    ],
+  };
+}
+
+const CTX = {
+  beat: { desc: 'A boy of ten goes to the movies.', dialog_notes: '' },
+  sceneBible: 'Young Keys is 10. Striped long-sleeve under a zip-up windbreaker.',
+  directorNotes: [{ text: 'Let drifts linger on empty space.' }],
+  directorialVoice: 'Patient, observational.',
+  plot: { dialogue_style: 'Clipped.' },
+  characters: [],
+  sets: [],
+  spine: [{ order: 1, name: 'Sky', desc: 'Stars' }],
+  prevBeat: { order: 1, name: 'Sky', body: 'A tilt down from the stars.' },
+  nextBeat: null,
+};
+
+describe('rewrite prompts', () => {
+  let calls;
+  beforeEach(() => {
+    calls = [];
+    _setAnthropicClientForTests({
+      messages: { create: async (req) => { calls.push(req); return { content: [{ type: 'text', text: 'OUT' }] }; } },
+    });
+  });
+  const beat = { body: 'KEYS (12) wears a short-sleeved tee. The doors swing shut.' };
+
+  it('the context block carries what the critics score against and skips what is absent', () => {
+    const text = R.formatRewriteContext(CTX).join('\n');
+    expect(text).toContain('What this beat must agree with');
+    expect(text).toContain('Young Keys is 10');
+    expect(text).toContain('Let drifts linger');
+    expect(text).toContain('A tilt down from the stars.');
+    expect(text).toContain('A boy of ten');
+    expect(text).not.toContain('Characters in this beat');
+    expect(text).not.toContain('The beat after this one');
+    expect(R.formatRewriteContext(null)).toEqual([]);
+  });
+
+  it('the strategist sees the context, the levers, the targets and the keep list', async () => {
+    await R.synthesizeRewriteStrategy({ beat, critique: richCritique(), ctx: CTX });
+    const user = calls[0].messages[0].content;
+    expect(user).toContain('Young Keys is 10');
+    expect(user).toMatch(/Director's notes: 5\/10 now, capped at 5 by two or more must-fix issues/);
+    expect(user).toContain('Scene bible fidelity (now 5): a 9 is');
+    expect(user).toContain('Cuts on the button.');
+    expect(user).toContain('"The doors swing shut."');
+    expect(calls[0].system).toContain('caps the facet at 7');
+  });
+
+  it('the writer sees the issues themselves, not only the plan', async () => {
+    await R.regenerateBeatBody({ beat, strategy: 'THE PLAN', critique: richCritique(), ctx: CTX });
+    const user = calls[0].messages[0].content;
+    expect(user).toContain('THE PLAN');
+    expect(user).toContain('"KEYS (12)" — The bible makes him 10. → FIX: KEYS (10)');
+    expect(user).toContain('Young Keys is 10');
+    expect(user).toContain('Keep (the critics praised these');
+    expect(calls[0].system).not.toContain('ticks each note off');
+    expect(calls[0].max_tokens).toBeGreaterThan(4000);
+  });
+
+  it('a rewrite cut off at the length limit fails instead of being used', async () => {
+    _setAnthropicClientForTests({ messages: { create: async () => ({ stop_reason: 'max_tokens', content: [{ type: 'text', text: 'HALF A BE' }] }) } });
+    await expect(R.regenerateBeatBody({ beat, strategy: 'p' })).rejects.toThrow(/cut off/);
+  });
+
+  it('history shows what the critics faulted in a discarded attempt', async () => {
+    const issues = R.summarizeIssuesForHistory(richCritique());
+    expect(issues[0]).toBe('[Director\'s notes, must fix] "KEYS (12)" — The bible makes him 10.');
+    await R.synthesizeRewriteStrategy({ beat, critique: richCritique(), history: [{ n: 2, score: 7.3, mode: 'edit', facets: { Pacing: 7 }, strategy: 'OLD PLAN', issues }] });
+    const user = calls[0].messages[0].content;
+    expect(user).toContain('Attempt 2 (targeted edits): overall 7.3/10 (Pacing 7)');
+    expect(user).toContain('What the critics then faulted:');
+    expect(user).toContain('The bible makes him 10.');
+  });
+
+  it('planBeatEdits parses the edit list and asks again on a non-JSON answer', async () => {
+    const answers = ['not json', JSON.stringify({ plan: 'P', edits: [{ find: 'KEYS (12)', replace: 'KEYS (10)', issue: 'age' }, { find: 3 }] })];
+    _setAnthropicClientForTests({ messages: { create: async (req) => { calls.push(req); return { content: [{ type: 'text', text: answers.shift() }] }; } } });
+    const out = await R.planBeatEdits({ beat, critique: richCritique(), ctx: CTX });
+    expect(out).toEqual({ plan: 'P', edits: [{ find: 'KEYS (12)', replace: 'KEYS (10)', issue: 'age' }] });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].output_config.format.type).toBe('json_schema');
+  });
+});
+
+describe('applyBeatEdits', () => {
+  const body = 'KEYS (12) runs.\n\nHe runs again. KEYS stops.';
+  it('applies edits in order and leaves the rest of the body untouched', () => {
+    const out = R.applyBeatEdits(body, [
+      { find: 'KEYS (12)', replace: 'KEYS (10)', issue: 'age' },
+      { find: 'He runs again. ', replace: '', issue: 'repeat' },
+    ]);
+    expect(out.body).toBe('KEYS (10) runs.\n\nKEYS stops.');
+    expect(out.applied).toHaveLength(2);
+    expect(out.skipped).toEqual([]);
+  });
+
+  it('skips an edit whose passage is missing, ambiguous, empty or unchanged', () => {
+    const out = R.applyBeatEdits(body, [
+      { find: 'not there', replace: 'x', issue: 'a' },
+      { find: 'runs', replace: 'walks', issue: 'b' },
+      { find: '  ', replace: 'x', issue: 'c' },
+      { find: 'stops', replace: 'stops', issue: 'd' },
+      { find: 'stops', replace: 'halts', issue: 'e' },
+    ]);
+    expect(out.skipped.map((e) => e.reason)).toEqual(['not_found', 'ambiguous', 'empty', 'no_change']);
+    expect(out.applied.map((e) => e.issue)).toEqual(['e']);
+    expect(out.body).toBe('KEYS (12) runs.\n\nHe runs again. KEYS halts.');
+    expect(R.describeEditPlan({ plan: 'P', ...out })).toMatch(/^Targeted edits \(1 applied, 4 could not be placed\)/);
+  });
+});
+
+describe('screenplay lines survive the trip to storage and back', () => {
+  const page = 'INT. LOBBY — NIGHT\n\nKEYS\n(flat)\nCompliance.\n\nHe turns.';
+  const stored = 'INT. LOBBY — NIGHT\n\nKEYS\\\n(flat)\\\nCompliance.\n\nHe turns.';
+
+  it('toStoredBody turns the lines of a dialogue block into hard breaks, and pageOf undoes it', () => {
+    expect(R.toStoredBody(page)).toBe(stored);
+    expect(R.toStoredBody(stored)).toBe(stored);
+    expect(R.pageOf(stored)).toBe(page);
+  });
+
+  it('leaves markdown structure alone', () => {
+    const md = '> crawl one\n>\n> crawl two\n\n- a\n- b\n\n# Heading\ntext';
+    expect(R.toStoredBody(md)).toBe(md);
+  });
+
+  it('a rewrite is saved with its cue, parenthetical and speech on separate lines', async () => {
+    _setAnthropicClientForTests({ messages: { create: async () => ({ content: [{ type: 'text', text: page }] }) } });
+    const out = await R.regenerateBeatBody({ beat: { body: 'old' }, strategy: 'p' });
+    expect(out).toBe(stored);
+  });
+
+  it('the writer is shown the page without hard-break marks, and the rubric it is scored on', async () => {
+    const calls = [];
+    _setAnthropicClientForTests({ messages: { create: async (req) => { calls.push(req); return { content: [{ type: 'text', text: 'x' }] }; } } });
+    await R.regenerateBeatBody({ beat: { body: stored }, strategy: 'p' });
+    expect(calls[0].messages[0].content).toContain('KEYS\n(flat)\nCompliance.');
+    expect(calls[0].messages[0].content).not.toContain('\\\n');
+    expect(calls[0].system).toContain('What the critics score');
+    expect(calls[0].system).toContain('Dialogue layout: CAPS cue on its own line');
+    expect(calls[0].system).toContain('Staging within a scene:');
+    expect(calls[0].system).toContain('character cue in CAPS on its own line');
+  });
+
+  it('edits are applied on the page and the result is stored with its lines', () => {
+    const out = R.applyBeatEdits(stored, [{ find: 'KEYS\n(flat)', replace: 'KEYS (O.S.)\n(flat)', issue: 'cue' }]);
+    expect(out.applied).toHaveLength(1);
+    expect(out.body).toBe('INT. LOBBY — NIGHT\n\nKEYS (O.S.)\\\n(flat)\\\nCompliance.\n\nHe turns.');
+  });
+});

@@ -26,6 +26,19 @@ const jobs = new Map();
 const listeners = new Map();
 const busyBeats = new Set();
 
+// A climb (critiqueClimb.js) holds the beat for its whole run and calls
+// runCritique itself, so a manual critique started meanwhile gets the 409.
+export function holdCritiqueBeat(beatId) {
+  const key = String(beatId);
+  if (busyBeats.has(key)) return false;
+  busyBeats.add(key);
+  return true;
+}
+
+export function releaseCritiqueBeat(beatId) {
+  busyBeats.delete(String(beatId));
+}
+
 function httpError(message, status) {
   const e = new Error(message);
   e.status = status;
@@ -193,12 +206,24 @@ async function generateFacet(facet, ctx) {
   return parsed;
 }
 
+// A facet's stored result from the model's answer. A critic that reports
+// EVERY criterion as not applicable has answered — a title crawl has no
+// character voices to judge — so the facet is `na`: no score, left out of the
+// overall, and not an error. An answer with no usable criteria at all still is.
+function settleFacet(raw, facet) {
+  const result = normalizeFacetResult(raw, facet);
+  if (result.score != null) return { ...result, status: 'done', error_message: null };
+  const stated = Array.isArray(raw?.criteria) ? raw.criteria.filter((c) => c && typeof c === 'object') : [];
+  if (stated.length && stated.every((c) => c.applicable === false)) {
+    return { ...result, score: null, status: 'na', error_message: null };
+  }
+  throw new Error('model scored no applicable criterion');
+}
+
 async function runOneFacet(facet, ctx, job, projectId, beatId) {
   try {
     const raw = await generateFacet(facet, ctx);
-    const result = normalizeFacetResult(raw, facet);
-    if (result.score == null) throw new Error('model scored no applicable criterion');
-    const patch = { ...result, status: 'done', error_message: null };
+    const patch = settleFacet(raw, facet);
     updateJobFacet(job, facet.key, patch);
     await updateCritiqueFacet(projectId, beatId, facet.key, patch);
   } catch (e) {
@@ -209,6 +234,31 @@ async function runOneFacet(facet, ctx, job, projectId, beatId) {
   } finally {
     publish(job);
   }
+}
+
+// Critique a beat as given — `beat.body` may be a candidate that is not the
+// stored body — and return the result without writing anything. Used by
+// scripts/climb-dry-run.js to score a rewrite before it replaces the beat.
+export async function critiqueBeatInMemory({ projectId, beat }) {
+  projectId = await resolveProjectId(projectId);
+  const ctx = await buildCritiqueContext(projectId, beat);
+  const facets = facetStubs();
+  await Promise.all(FACETS.map(async (facet) => {
+    const stub = facets.find((f) => f.key === facet.key);
+    try {
+      Object.assign(stub, settleFacet(await generateFacet(facet, ctx), facet));
+    } catch (e) {
+      Object.assign(stub, { score: null, status: 'error', error_message: e.message });
+    }
+  }));
+  const errored = facets.filter((f) => f.status === 'error').length;
+  return {
+    version: 2,
+    status: errored === 0 ? 'done' : errored === facets.length ? 'error' : 'partial',
+    overall: deriveOverall(facets, FACETS),
+    strategy: null,
+    facets,
+  };
 }
 
 // The awaitable worker. Assembles context, runs facets in parallel, persists,

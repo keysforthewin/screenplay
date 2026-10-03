@@ -121,7 +121,11 @@ export function editFragmentMarkdown(ydoc, field, edits) {
   const beforeLen = body.length;
   const applied = [];
   for (let i = 0; i < edits.length; i++) {
-    const { find, replace } = edits[i];
+    let { find } = edits[i];
+    const { replace, find_alt: findAlt } = edits[i];
+    // The caller's alternate spelling of the passage (gateway.js: the same
+    // text with hard-break marks), used only when the first is not there.
+    if (typeof find === 'string' && find && typeof findAlt === 'string' && findAlt && !body.includes(find) && body.includes(findAlt)) find = findAlt;
     if (typeof find !== 'string' || !find) {
       throw new Error(`edit ${i}: find must be a non-empty string.`);
     }

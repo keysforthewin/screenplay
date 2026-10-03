@@ -154,7 +154,7 @@ import {
 import { probeAudioDurationSeconds } from '../fal/videoPricing.js';
 import { enqueueReindex } from '../rag/queue.js';
 import { deleteEntity } from '../rag/indexer.js';
-import { stripMarkdown } from '../util/markdown.js';
+import { stripMarkdown, linesToHardBreaks } from '../util/markdown.js';
 import { currentEditor } from './editAttribution.js';
 import {
   maybeAnnounceCast,
@@ -539,8 +539,16 @@ async function fallbackTextWrite({ projectId, entityType, entityId, field, op, .
   throw new Error(`gateway fallback not implemented for ${entityType}/${field}`);
 }
 
+// A beat body is a screenplay page: a slugline, a character cue, a
+// parenthetical and the speech under it each sit on their own line. Markdown
+// joins a bare newline inside a paragraph into a space, so every write of a
+// beat body — the agent's tools, the SPA's REST calls, the rewrite passes —
+// turns those newlines into hard breaks here, at the one place they all pass.
+const isBeatBody = (entityType, field) => entityType === 'beat' && field === 'body';
+
 export async function setEntityFieldMarkdown({ projectId, entityType, entityId, field, markdown }) {
   projectId = await resolveProjectId(projectId);
+  if (isBeatBody(entityType, field)) markdown = linesToHardBreaks(markdown);
   if (!isHocuspocusRunning()) {
     await fallbackTextWrite({ projectId, entityType, entityId, field, op: 'set', markdown });
     enqueueRagAfterFallback({ entityType, entityId, field });
@@ -560,6 +568,13 @@ export async function setEntityFieldMarkdown({ projectId, entityType, entityId, 
 
 export async function editEntityFieldMarkdown({ projectId, entityType, entityId, field, edits }) {
   projectId = await resolveProjectId(projectId);
+  if (isBeatBody(entityType, field) && Array.isArray(edits)) {
+    // The stored body carries hard-break marks the caller may not have typed:
+    // `find_alt` is the same passage with them, tried when `find` misses.
+    edits = edits.map((e) => (e && typeof e.find === 'string' && typeof e.replace === 'string'
+      ? { ...e, find_alt: linesToHardBreaks(e.find, { trim: false }), replace: linesToHardBreaks(e.replace, { trim: false }) }
+      : e));
+  }
   if (!isHocuspocusRunning()) {
     const result = await fallbackTextWrite({ projectId, entityType, entityId, field, op: 'edit', edits });
     enqueueRagAfterFallback({ entityType, entityId, field });
@@ -590,6 +605,7 @@ export async function editEntityFieldMarkdown({ projectId, entityType, entityId,
 
 export async function appendEntityFieldMarkdown({ projectId, entityType, entityId, field, content }) {
   projectId = await resolveProjectId(projectId);
+  if (isBeatBody(entityType, field)) content = linesToHardBreaks(content);
   if (!isHocuspocusRunning()) {
     const result = await fallbackTextWrite({ projectId, entityType, entityId, field, op: 'append', content });
     enqueueRagAfterFallback({ entityType, entityId, field });
@@ -2571,6 +2587,7 @@ export async function reorderBeatsViaGateway({ projectId, orderedIds }) {
 
 export async function createBeatViaGateway(opts) {
   const { createBeat } = await import('../mongo/plots.js');
+  if (typeof opts?.body === 'string') opts = { ...opts, body: linesToHardBreaks(opts.body) };
   const beat = await createBeat(opts);
   await broadcastBeatsChanged(opts.projectId);
   // Attribute the create to the in-scope web user (SPA request or web chat

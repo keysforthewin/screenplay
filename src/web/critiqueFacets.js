@@ -11,7 +11,7 @@
 //           they weigh 1.5 in the overall, every other facet 1.
 // optional criteria: reported as applicable=false when their context is absent.
 
-import { stripMarkdown } from '../util/markdown.js';
+import { stripMarkdown, stripMarkdownLines } from '../util/markdown.js';
 import { formatCharacterFull, formatSetFull } from './beatContext.js';
 import { SCORING_RULES } from './critiqueScoring.js';
 
@@ -19,8 +19,22 @@ function txt(s) {
   return stripMarkdown(String(s || '')).trim();
 }
 
+// The formatters below are also what the rewrite passes (beatRewrite.js) use
+// to show a writer the documents the critics score against.
+export const plainText = txt;
+
 function clip(s, max) {
   const v = txt(s);
+  return v.length > max ? `${v.slice(0, max)}…` : v;
+}
+
+// A beat body as the critics read it: markdown marks stripped, LINES KEPT.
+// txt() flattens every newline to a space, which is right for a one-line
+// field and wrong for a page — a critic shown the body as one run of text
+// cannot see whether a slugline or a character cue has its own line, and
+// marks a correctly laid-out beat down for it.
+function pageText(s, max = Infinity) {
+  const v = stripMarkdownLines(s);
   return v.length > max ? `${v.slice(0, max)}…` : v;
 }
 
@@ -35,23 +49,23 @@ function beatBlock(beat) {
     'Description:',
     txt(beat?.desc) || '(none)',
     '',
-    'Body:',
-    txt(beat?.body) || '(none)',
+    'Body (line breaks exactly as on the page):',
+    pageText(beat?.body) || '(none)',
   ].join('\n');
 }
 
-function neighborBlock(label, beat) {
+export function neighborBlock(label, beat) {
   if (!beat) return `${label}: (none — this is an end beat)`;
-  return [`${label} — Beat #${beat.order}: ${txt(beat.name) || 'Untitled'}`, clip(beat.body, NEIGHBOUR_CAP) || '(no body)'].join('\n');
+  return [`${label} — Beat #${beat.order}: ${txt(beat.name) || 'Untitled'}`, pageText(beat.body, NEIGHBOUR_CAP) || '(no body)'].join('\n');
 }
 
-function spineText(spine) {
+export function spineText(spine) {
   const lines = (spine || [])
     .map((b) => `${b.order}. ${txt(b.name) || 'Untitled'} — ${txt(b.desc) || '(no description)'}`);
   return lines.length ? lines.join('\n') : '(no beats)';
 }
 
-function notesText(notes) {
+export function notesText(notes) {
   const items = (notes || []).map((n) => txt(n?.text)).filter(Boolean);
   return items.length ? items.map((t) => `- ${t}`).join('\n') : "(no director's notes recorded)";
 }
@@ -70,12 +84,14 @@ function charactersText(characters) {
   return items.length ? items.join('\n') : '(no named characters in this beat)';
 }
 
-function charactersFullText(characters) {
-  const items = (characters || []).filter((c) => txt(c?.name)).map(formatCharacterFull);
+// Profiles as the text critics and the rewrite passes read them: the wardrobe
+// is the character's usual outfit, not a lock (formatCharacterFull).
+export function charactersFullText(characters, beat = null) {
+  const items = (characters || []).filter((c) => txt(c?.name)).map((c) => formatCharacterFull(c, { beat, wardrobe: 'default' }));
   return items.length ? items.join('\n') : '(no named characters in this beat)';
 }
 
-function setsText(sets) {
+export function setsText(sets) {
   const items = (sets || []).filter((s) => txt(s?.name)).map(formatSetFull);
   return items.length ? items.join('\n') : '(no sets linked to this beat)';
 }
@@ -93,42 +109,45 @@ export const FACETS = [
     scope: 'focused',
     required: true,
     weight: 1.5,
-    focus: 'You are a screenplay format editor. Judge ONLY how well the beat body conforms to standard screenplay style — never its content quality. The style guide in the context is the standard to measure against.',
+    focus: 'You are a screenplay format editor. Judge LAYOUT ONLY: is what is on the page set out in standard screenplay form, per the style guide in the context. The body is shown with its line breaks exactly as on the page. You do not judge what is said or shown, how a scene is staged, where the story is set, how much camera direction there is, or whether a line is good — other critics own all of that, and a beat can be badly written and perfectly formatted. A beat reformatted by a competent typist should score 9 or 10 here.',
     criteria: [
       {
         key: 'sluglines',
-        label: 'Sluglines',
+        label: 'Sluglines & mini-slugs',
+        optional: true,
         anchors: {
-          3: 'No INT./EXT. headings, or headings written as prose.',
-          6: 'Headings exist but a location or time change goes unmarked, or the form drifts (missing time, lowercase, wrong dash).',
-          9: 'Every literal location/time change has a correct INT./EXT. LOCATION — TIME heading and nothing else does.',
+          3: 'A literal scene with no INT./EXT. heading, or headings written as prose.',
+          6: 'Headings exist but one is malformed (missing time, lowercase, wrong dash) or a change of place or time has no heading.',
+          9: 'Every scene opens with INT./EXT. LOCATION — TIME on its own line; a move within a scene is an ALL-CAPS mini-slug on its own line; nothing else is dressed as a heading. Report not applicable for a beat that is not a literal scene (a title crawl, a card, a montage of vistas).',
         },
       },
       {
         key: 'action_lines',
-        label: 'Action lines',
+        label: 'Action line form',
         anchors: {
-          3: 'Past tense, novel paragraphs, interior narration.',
-          6: 'Present tense, but paragraphs run over four lines or carry asides the camera cannot see.',
-          9: 'Present tense, one image per short paragraph, camera cues only where essential.',
-        },
-      },
-      {
-        key: 'geography',
-        label: 'Spatial geography & mini-slugs',
-        anchors: {
-          3: 'A reader cannot say where characters or key props are in the set; moves within the scene are unmarked.',
-          6: 'Positions are established on entry (blocking) but at least one move or prop placement a downstream image generator would have to guess — "in the minivan" when the beat means the back seat.',
-          9: 'Every character and key prop is placed on entry and every move within the scene is pinned by a blocking line or a mini-slug (BACK SEAT, AT THE WINDOW).',
+          3: 'Past tense, or novel-style paragraphs running on for many lines.',
+          6: 'Present tense, but a paragraph runs past four lines, or paragraphs are not separated by a blank line.',
+          9: 'Present tense, third person, short paragraphs of four lines or fewer with a blank line between them.',
         },
       },
       {
         key: 'dialogue_format',
-        label: 'Dialogue formatting',
+        label: 'Dialogue layout',
+        optional: true,
         anchors: {
-          3: 'Lines inline in prose or in quotation marks.',
-          6: 'CAPS cues present but parentheticals on most lines, inconsistent cue names, or V.O./O.S. missing where needed.',
-          9: 'CAPS cue, sparing parentheticals, consistent names, V.O./O.S./CONT\'D exactly where needed.',
+          3: 'Speech inline in prose or in quotation marks.',
+          6: 'CAPS cues present but a cue shares a line with its speech, a parenthetical is buried mid-line, cue names vary, or V.O./O.S. is missing where the speaker is off screen.',
+          9: 'CAPS cue on its own line, any parenthetical on its own line beneath it, then the speech; consistent cue names; V.O./O.S./CONT\'D where they apply. Report not applicable when nobody speaks.',
+        },
+      },
+      {
+        key: 'screen_text',
+        label: 'On-screen text & transitions',
+        optional: true,
+        anchors: {
+          3: 'Titles, supers or crawl text run into the action so a reader cannot tell what is printed on screen from what is described.',
+          6: 'Set apart, but inconsistently labelled or mixed into an action paragraph.',
+          9: 'Every title, super, card and crawl is set off on its own lines and labelled (SUPER:, TITLE:, CRAWL:, or a quoted block); transitions (CUT TO:, FADE OUT.) sit on their own line. Report not applicable when the beat has none.',
         },
       },
     ],
@@ -136,9 +155,6 @@ export const FACETS = [
       [
         '# Screenplay format guide (the standard to measure against)',
         ctx.styleGuide,
-        '',
-        '# Sets linked to this beat (check geography against them)',
-        setsText(ctx.sets),
         '',
         '# The beat to evaluate',
         beatBlock(ctx.beat),
@@ -271,15 +287,16 @@ export const FACETS = [
     scope: 'focused',
     required: false,
     weight: 1,
-    focus: 'You judge whether the characters in this beat are consistent with their profiles and distinct from one another in how they act and speak. Name any character whose voice slips.',
+    focus: 'You judge whether the characters in this beat are consistent with their profiles and distinct from one another in how they act and speak. Name any character whose voice slips. Clothing: a profile\'s usual wardrobe is a default. A character dressed for the scene\'s weather, season, place or period is consistent, and so is the text not listing the outfit at all; raise clothing only when it contradicts a wardrobe set for this beat, or when it departs from the usual wardrobe and nothing in the scene accounts for it.',
     criteria: [
       {
         key: 'distinctness',
         label: 'Distinct voices',
+        optional: true,
         anchors: {
           3: 'Swap the character cues and nothing changes.',
           6: 'Distinct in attitude but not in diction or rhythm.',
-          9: 'Each character is identifiable from the line alone.',
+          9: 'Each character is identifiable from the line alone. Report not applicable when fewer than two characters speak or act.',
         },
       },
       {
@@ -304,7 +321,7 @@ export const FACETS = [
     buildContext: (ctx) =>
       [
         '# Characters present in this beat (full profiles)',
-        charactersFullText(ctx.characters),
+        charactersFullText(ctx.characters, ctx.beat),
         '',
         '# The beat to evaluate',
         beatBlock(ctx.beat),
@@ -316,7 +333,7 @@ export const FACETS = [
     scope: 'focused',
     required: false,
     weight: 1,
-    focus: 'You judge show-don\'t-tell: is this beat written as photographable action a camera can capture, in particular images a production designer could build, or as interior prose it cannot? Point to the most un-filmable lines and how to externalize them.',
+    focus: 'You judge show-don\'t-tell: is this beat written as photographable action a camera can capture, in particular images a production designer could build, or as interior prose it cannot? Point to the most un-filmable lines and how to externalize them. Camera cues (CRANE DOWN, PUSH IN, HANDHELD) are the director\'s choice: how many there are is not a fault. Raise a cue only when it names a shot that cannot be made or that hides the action.',
     criteria: [
       {
         key: 'filmability',
@@ -345,6 +362,20 @@ export const FACETS = [
           9: 'The turn lands in image or behaviour; dialogue carries only what image cannot.',
         },
       },
+      {
+        // Was "Spatial geography" under Format. It is about following the
+        // action inside ONE scene — never about where in the world (or off
+        // it) the story goes — and it weighs half a criterion.
+        key: 'staging',
+        label: 'Staging within a scene',
+        optional: true,
+        weight: 0.5,
+        anchors: {
+          3: 'Within a scene, a reader cannot tell who is where, so the action cannot be followed.',
+          6: 'People are placed when they enter, but a move the action depends on is left to guess.',
+          9: 'Wherever the action depends on it, a reader can tell who and what is where, and follows every move. Judge only positions the action uses: do not ask for a side, a distance, a seat or a door the story does not turn on, and never raise more than a should_fix here unless the action is unreadable. Report not applicable for a beat with no staged scene (a title crawl, a card, vistas, open space).',
+        },
+      },
     ],
     buildContext: (ctx) =>
       [
@@ -366,11 +397,12 @@ export const FACETS = [
     scope: 'focused',
     required: false,
     weight: 1,
-    focus: 'You are a dialogue editor judging the lines in this beat. Flag the weakest lines and what subtext they should be playing.',
+    focus: 'You are a dialogue editor judging the SPOKEN lines in this beat. Flag the weakest lines and what subtext they should be playing. On-screen text — a title crawl, a super, a sign, a card — is not dialogue and is not judged here. The body carries only a few anchor lines (the full dialogue is written separately), so having few lines is not a fault. When nobody speaks, report every criterion as not applicable.',
     criteria: [
       {
         key: 'subtext',
         label: 'Subtext',
+        optional: true,
         anchors: {
           3: 'Characters say exactly what they mean and feel.',
           6: 'Some lines are indirect.',
@@ -380,6 +412,7 @@ export const FACETS = [
       {
         key: 'exposition',
         label: 'Exposition handling',
+        optional: true,
         anchors: {
           3: '"As you know" information dumps.',
           6: 'Exposition present but partly dramatized.',
@@ -399,6 +432,7 @@ export const FACETS = [
       {
         key: 'economy',
         label: 'Line economy',
+        optional: true,
         anchors: {
           3: 'Speeches, restatement, filler (names, "look", "well").',
           6: 'Some trimmable lines.',
@@ -450,9 +484,9 @@ export const FACETS = [
         key: 'continuity',
         label: 'Continuity',
         anchors: {
-          3: 'Contradicts the synopsis, the spine or the neighbours (facts, knowledge, geography).',
+          3: 'Contradicts the synopsis, the spine or the neighbours: an established fact, what a character knows, or where someone was last left.',
           6: 'A minor inconsistency.',
-          9: 'Consistent with everything around it.',
+          9: 'Consistent with everything around it. A jump to another place, planet or time between beats is how this story moves and is consistent.',
         },
       },
       {

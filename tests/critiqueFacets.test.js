@@ -43,11 +43,21 @@ describe('critique facet registry', () => {
     }
   });
 
-  it('the format facet weighs spatial geography / blocking and mini-slugs', () => {
-    const fmt = getFacet('format').systemPrompt.toLowerCase();
-    expect(fmt).toContain('geography');
-    expect(fmt).toContain('blocking');
-    expect(fmt).toContain('mini-slug');
+  it('the format facet judges layout only; staging lives in cinematic craft at half weight', () => {
+    const fmt = getFacet('format');
+    expect(criteriaKeys(fmt)).toEqual(['sluglines', 'action_lines', 'dialogue_format', 'screen_text']);
+    expect(fmt.systemPrompt).toContain('LAYOUT ONLY');
+    expect(fmt.systemPrompt.toLowerCase()).toContain('mini-slug');
+    expect(fmt.systemPrompt.toLowerCase()).not.toContain('geography');
+    const staging = getFacet('cinematic').criteria.find((c) => c.key === 'staging');
+    expect(staging).toMatchObject({ optional: true, weight: 0.5 });
+    expect(staging.anchors[9]).toContain('never raise more than a should_fix');
+  });
+
+  it('where the story goes is never a fault', () => {
+    for (const f of FACETS) expect(f.systemPrompt).toContain('out into space');
+    expect(getFacet('story_fit').systemPrompt).toContain('A jump to another place, planet or time between beats');
+    expect(getFacet('dialogue').systemPrompt).toContain('is not dialogue');
   });
 
   it('getFacet finds by key; facetStubs mirrors the registry', () => {
@@ -81,7 +91,7 @@ describe('critique facet registry', () => {
       }
       expect(f.systemPrompt).toContain('# Scoring rules');
     }
-    expect(criteriaKeys(getFacet('format'))).toContain('geography');
+    expect(criteriaKeys(getFacet('cinematic'))).toContain('staging');
   });
 
   it('required facets weigh 1.5, the rest 1', () => {
@@ -104,9 +114,43 @@ describe('critique facet registry', () => {
     const voice = getFacet('voice').buildContext(ctx);
     expect(voice).toContain('Jodie Comer');
     expect(voice).toContain('BACKSTORY-TEXT');
-    expect(getFacet('format').buildContext(ctx)).toContain('SET-DESC-TEXT');
+    expect(getFacet('format').buildContext(ctx)).not.toContain('SET-DESC-TEXT');
     expect(getFacet('cinematic').buildContext(ctx)).toContain('SET-DESC-TEXT');
     // absent optional documents are flagged as not applicable, never invented
     expect(getFacet('direction').buildContext(MIN_CTX)).toContain('not applicable');
+  });
+});
+
+describe('wardrobe in the text critique', () => {
+  const keys = { _id: '64b000000000000000000001', name: 'Young Keys', fields: { wardrobe: 'short-sleeved striped tee', role: 'the kid' } };
+
+  it('shows the character wardrobe to the voice critic as a default, not a lock', async () => {
+    const { formatCharacterFull } = await import('../src/web/beatContext.js');
+    const { charactersFullText, getFacet: facetOf } = await import('../src/web/critiqueFacets.js');
+    const text = charactersFullText([keys], { wardrobe_overrides: {} });
+    expect(text).toContain('usual wardrobe (a default, not a rule');
+    expect(text).toContain('short-sleeved striped tee');
+    expect(text).not.toContain('LOCKED');
+    expect(facetOf('voice').systemPrompt).toContain('dressed for the scene\'s weather');
+    // The picture pipeline still gets the lock.
+    expect(formatCharacterFull(keys)).toContain('wardrobe (LOCKED');
+  });
+
+  it('a wardrobe set for this beat is shown as binding', async () => {
+    const { charactersFullText } = await import('../src/web/critiqueFacets.js');
+    const text = charactersFullText([keys], { wardrobe_overrides: { [keys._id]: 'striped long-sleeve under a windbreaker' } });
+    expect(text).toContain('wardrobe in THIS beat');
+    expect(text).toContain('windbreaker');
+    expect(text).not.toContain('short-sleeved');
+  });
+});
+
+describe('the critics read the page with its line breaks', () => {
+  it('keeps sluglines, cues and speeches on their own lines and strips the markdown marks', () => {
+    const facet = getFacet('format');
+    const body = 'INT. LOBBY — **NIGHT**\n\nKEYS\\\n(flat)\\\nCompliance.\n\n> crawl line';
+    const text = facet.buildContext({ styleGuide: 'G', sets: [], beat: { order: 1, name: 'B', desc: 'd', body } });
+    expect(text).toContain('INT. LOBBY — NIGHT\n\nKEYS\n(flat)\nCompliance.\n\ncrawl line');
+    expect(text).not.toContain('KEYS (flat)');
   });
 });

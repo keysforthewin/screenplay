@@ -360,7 +360,7 @@ export const PROPOSALS_SCHEMA = {
   },
 };
 
-export function buildProposalsText({ beat, subject, subjectCard, requirements, audit, catalogText }) {
+export function buildProposalsText({ beat, subject, subjectCard, requirements, audit, catalogText, direction = '' }) {
   const lock = subject.kind === 'character' ? wardrobeText(subject.doc, beat) : '';
   return [
     `# Beat #${beat?.order ?? '?'}: ${plain(beat?.name) || 'Untitled'}`,
@@ -378,6 +378,9 @@ export function buildProposalsText({ beat, subject, subjectCard, requirements, a
     '',
     '# Artwork catalog (reference_indexes point here)',
     catalogText || '(empty)',
+    ...(String(direction || '').trim()
+      ? ['', "# The director's direction for these proposals", String(direction).trim(), 'Follow it in every prompt, as far as the locked wardrobe and the beat allow.']
+      : []),
   ].join('\n');
 }
 

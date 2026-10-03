@@ -13,6 +13,7 @@ import { ImageModelSelect } from './ImageModelSelect.jsx';
 import { GenerationProgress } from './GenerationProgress.jsx';
 import { CritiqueSection } from './CritiqueSection.jsx';
 import { scoreBand, formatScore, coverageBand } from './critiqueDisplay.js';
+import { ClimbDialog, ClimbPanel, ClimbChip, isClimbRunning } from './Climb.jsx';
 
 const MODEL_STORAGE_KEY = 'screenplay.artworkcritique.model';
 const POLL_MS = 2000;
@@ -322,16 +323,20 @@ export function ArtworkCritiqueSection({ beatId }) {
   const [model, setModel] = useState(() => readStoredCatalogModel(MODEL_STORAGE_KEY));
   const [showLog, setShowLog] = useState(false);
   const [error, setError] = useState(null);
+  const [climb, setClimb] = useState(null);
+  const [climbOpen, setClimbOpen] = useState(false);
   const esRef = useRef(null);
   const pollRef = useRef(null);
   const logRef = useRef(null);
 
-  const generating = Boolean(genJob && !TERMINAL.has(genJob.status));
+  const climbing = isClimbRunning(climb);
+  const generating = Boolean(genJob && !TERMINAL.has(genJob.status)) || climbing;
 
   async function load() {
     const r = await apiGet(`/beat/${beatId}/artwork-critique`);
     const c = r.artwork_critique || null;
     setCritique(c);
+    setClimb(r.climb || null);
     setSelected(new Set((c?.proposals || []).filter((p) => p.status === 'proposed' || p.status === 'error').map((p) => String(p._id))));
     setOverrides({});
     return c;
@@ -349,6 +354,30 @@ export function ArtworkCritiqueSection({ beatId }) {
   }, [beatId]);
 
   useEffect(() => { writeStoredImageModel(MODEL_STORAGE_KEY, model); }, [model]);
+
+  // A climb runs on the server (critique → generate → critique …) and writes
+  // the critique and its own state to the beat as it goes; follow both by
+  // polling until it stops. Also what reattaches a reopened tab.
+  useEffect(() => {
+    if (!climbing) return undefined;
+    let alive = true;
+    const timer = setInterval(() => { load().catch((e) => { if (alive) setError(e.message); }); }, POLL_MS);
+    return () => { alive = false; clearInterval(timer); };
+  }, [beatId, climbing]);
+
+  async function startClimb(params) {
+    setError(null);
+    const r = await apiPostJson(`/beat/${beatId}/artwork-critique/climb`, { ...params, model });
+    setGenJob(null);
+    setClimb(r.climb);
+  }
+
+  async function cancelClimb() {
+    try {
+      const r = await apiPostJson(`/beat/${beatId}/artwork-critique/climb/cancel`, {});
+      setClimb(r.climb);
+    } catch (e) { setError(e.message); }
+  }
 
   function closeStream() { if (esRef.current) { esRef.current.close(); esRef.current = null; } }
 
@@ -488,6 +517,7 @@ export function ArtworkCritiqueSection({ beatId }) {
         ? <span className={`critique-overall ${coverageBand(pct)}`}>{pct}<span className="max">% covered</span></span>
         : <span className="critique-overall none">{critique ? 'nothing to cover' : 'not critiqued'}</span>}
       {critique?.generated_at ? <span className="critique-counts">{new Date(critique.generated_at).toLocaleString()}</span> : null}
+      <ClimbChip climb={climb} />
     </>
   );
 
@@ -505,8 +535,30 @@ export function ArtworkCritiqueSection({ beatId }) {
         <button type="button" className="primary" disabled={running || generating} onClick={run}>
           {running ? 'Critiquing…' : critique ? 'Re-run artwork critique' : 'Run artwork critique'}
         </button>
+        <button
+          type="button"
+          disabled={running || generating}
+          title="Critique, generate every proposed artwork and critique again, until coverage reaches a target"
+          onClick={() => setClimbOpen(true)}
+        >
+          {climbing ? 'Climbing…' : 'Climb'}
+        </button>
       </div>
       {error && <div className="critique-error">{error}</div>}
+      <ClimbPanel climb={climb} onCancel={cancelClimb} />
+      <ClimbDialog
+        open={climbOpen}
+        kind="artwork"
+        last={climb}
+        intro="Runs the artwork critique, generates every proposal it drafts onto the owning set or character, and critiques again, over and over, until coverage reaches the target. Every round renders images with the model below, and the renders stay on file even when a round does not raise coverage. Dismissed proposals are skipped."
+        onStart={startClimb}
+        onClose={() => setClimbOpen(false)}
+      >
+        <div className="climb-field is-wide">
+          <span className="field-label">Image model</span>
+          <ImageModelSelect value={model} onChange={setModel} collapsible />
+        </div>
+      </ClimbDialog>
 
       {!critique && !running && (
         <div className="artwork-critique-muted">

@@ -82,6 +82,20 @@ export async function finalizeCritique(projectId, beatId, { status, overall } = 
   logger.info(`mongo: critique finalize beat=${oid} status=${status} overall=${overall ?? 'null'}`);
 }
 
+// Put a whole critique object back (the climb restores the critique of the
+// best-scoring body after an attempt that scored lower).
+export async function restoreBeatCritique(projectId, beatId, critique) {
+  projectId = await resolveProjectId(projectId);
+  const oid = await resolveBeatOid(projectId, beatId);
+  if (!oid) throw new Error(`Beat not found: ${beatId}`);
+  const now = new Date();
+  await col().updateOne(
+    { project_id: projectId },
+    { $set: { 'beats.$[b].critique': critique || null, 'beats.$[b].updated_at': now, updated_at: now } },
+    { arrayFilters: [{ 'b._id': oid }] },
+  );
+}
+
 // Persist the synthesized rewrite strategy onto the critique (so the UI can
 // show the concrete plan the regenerate followed). Reset to null on each fresh
 // critique run via setCritiquePending's `strategy: null`.

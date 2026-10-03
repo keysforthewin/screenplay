@@ -3057,6 +3057,35 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .critique-counts { font-size: 11px; color: var(--fg-muted); }
 .critique-section-body { padding: 4px 12px 12px; }
 
+/* Climb: the dialog form, the progress / outcome panel, the summary chip */
+.climb-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+.climb-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.climb-field.is-wide { grid-column: 1 / -1; }
+.climb-field input[type="number"] { width: 90px; }
+.climb-inline { display: flex; align-items: center; gap: 8px; }
+.climb-inline .modal-help { margin: 0; }
+.climb-panel { border: 1px solid var(--border); border-left-width: 3px; border-radius: 6px; padding: 8px 10px; margin: 0 0 10px; font-size: 12px; }
+.climb-panel.is-running { border-left-color: var(--accent); }
+.climb-panel.is-reached { border-left-color: var(--success, #5fbf7a); }
+.climb-panel.is-wall { border-left-color: var(--warning, #e7c14b); }
+.climb-panel.is-error { border-left-color: var(--danger, #f1736e); }
+.climb-panel-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.climb-panel-head .spacer { flex: 1; }
+.climb-panel-line { color: var(--fg); }
+.climb-trail { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 6px; font-variant-numeric: tabular-nums; color: var(--fg-muted); }
+.climb-step.is-kept { color: var(--success, #5fbf7a); font-weight: 600; }
+.climb-step.is-dropped { opacity: 0.75; }
+.climb-arrow { margin-right: 4px; color: var(--fg-muted); font-weight: 400; }
+.climb-target { margin-left: 8px; padding: 0 6px; border: 1px solid var(--border); border-radius: 999px; font-size: 11px; }
+.climb-direction { margin-top: 6px; color: var(--fg-muted); }
+.climb-direction .field-label { display: inline; margin-right: 4px; }
+.climb-wall { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.climb-wall-body { margin: 4px 0 6px; white-space: pre-wrap; line-height: 1.45; font-size: 13px; color: var(--fg); }
+.climb-chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--fg-muted); white-space: nowrap; }
+.climb-chip.is-running { color: var(--accent); border-color: var(--accent); }
+.climb-chip.is-reached { color: var(--success, #5fbf7a); border-color: var(--success, #5fbf7a); }
+.climb-chip.is-wall { color: var(--warning, #e7c14b); border-color: var(--warning, #e7c14b); }
+
 /* v2 facet rows: criteria, evidence, ranked issues */
 .critique-lens-detail > summary.critique-lens { cursor: pointer; list-style: none; }
 .critique-lens-detail > summary.critique-lens::-webkit-details-marker { display: none; }

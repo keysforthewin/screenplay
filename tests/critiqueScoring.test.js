@@ -6,6 +6,8 @@ import {
   collectRankedIssues,
   clampScore,
   SCORING_RULES,
+  explainFacetScore,
+  scoreLevers,
 } from '../src/web/critiqueScoring.js';
 import { FACETS, getFacet } from '../src/web/critiqueFacets.js';
 
@@ -73,7 +75,7 @@ describe('normalizeFacetResult', () => {
         criteria: [
           { key: 'sluglines', applicable: true, score: 11, evidence: [{ quote: 'x'.repeat(300), note: 'n' }], rationale: 'r' },
           { key: 'bogus', applicable: true, score: 5, evidence: [], rationale: '' },
-          { key: 'geography', applicable: true, score: 'NaN', evidence: [], rationale: '' },
+          { key: 'dialogue_format', applicable: true, score: 'NaN', evidence: [], rationale: '' },
         ],
         issues: [
           { severity: 'nit', criterion: 'sluglines', quote: 'q', problem: 'p', fix: 'f' },
@@ -86,7 +88,7 @@ describe('normalizeFacetResult', () => {
       },
       facet,
     );
-    expect(r.criteria.map((c) => c.key)).toEqual(['sluglines', 'action_lines', 'geography', 'dialogue_format']);
+    expect(r.criteria.map((c) => c.key)).toEqual(['sluglines', 'action_lines', 'dialogue_format', 'screen_text']);
     expect(r.criteria[0].score).toBe(10);
     expect(r.criteria[0].evidence[0].quote.length).toBeLessThanOrEqual(200);
     expect(r.criteria[1].applicable).toBe(false);
@@ -131,5 +133,46 @@ describe('misc', () => {
   it('SCORING_RULES names the must_fix caps the code enforces', () => {
     expect(SCORING_RULES).toMatch(/must_fix/);
     expect(SCORING_RULES).toMatch(/caps its criterion at 6/);
+  });
+});
+
+describe('explainFacetScore / scoreLevers', () => {
+  const stored = (key, scores, issues = []) => {
+    const def = getFacet(key);
+    const criteria = def.criteria.slice(0, scores.length).map((d, i) => ({ key: d.key, label: d.label, applicable: true, score: scores[i] }));
+    return { key, label: def.label, status: 'done', criteria, issues, score: deriveFacetScore(criteria, issues, def) };
+  };
+  const issue = (severity, criterion) => ({ severity, criterion, quote: 'q', problem: 'p', fix: 'f' });
+
+  it('names the binding cap and the score without it', () => {
+    const two = stored('direction', [8, 8], [issue('must_fix', 'notes_honored'), issue('must_fix', 'notes_honored')]);
+    expect(two.score).toBe(5);
+    expect(explainFacetScore(two, getFacet('direction'))).toMatchObject({ score: 5, uncapped: 8, binding: 'two_must_fix', must_fix: 2 });
+    const should = stored('pacing', [9, 9, 9, 9], [issue('should_fix', 'entry'), issue('should_fix', 'entry'), issue('should_fix', 'exit')]);
+    expect(explainFacetScore(should, getFacet('pacing'))).toMatchObject({ score: 8, uncapped: 9, binding: 'three_should_fix' });
+  });
+
+  it('reports no cap when the cap does not lower the score', () => {
+    const low = stored('pacing', [5, 6, 6, 6], [issue('should_fix', 'entry'), issue('should_fix', 'entry'), issue('should_fix', 'exit')]);
+    const why = explainFacetScore(low, getFacet('pacing'));
+    expect(why.binding).toBeNull();
+    expect(why.lowest[0]).toMatchObject({ key: 'entry', score: 5 });
+    expect(explainFacetScore({ key: 'pacing', status: 'done', score: 7, criteria: [] })).toBeNull();
+  });
+
+  it('ranks facets by what lifting the cap is worth to the overall', () => {
+    const critique = {
+      facets: [
+        stored('pacing', [9, 9, 9, 9], [issue('should_fix', 'entry'), issue('should_fix', 'entry'), issue('should_fix', 'exit')]),
+        stored('direction', [8, 8], [issue('must_fix', 'notes_honored'), issue('must_fix', 'notes_honored')]),
+        stored('voice', [7, 7, 7]),
+      ],
+    };
+    const levers = scoreLevers(critique, FACETS);
+    expect(levers.map((l) => l.facet_key)).toEqual(['direction', 'pacing', 'voice']);
+    // direction: +3 on a 1.5-weight facet out of 3.5 total weight.
+    expect(levers[0].gain).toBe(1.29);
+    expect(levers[1].gain).toBe(0.29);
+    expect(levers[2]).toMatchObject({ gain: 0, binding: null });
   });
 });

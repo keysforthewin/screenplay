@@ -62,10 +62,10 @@ describe('runCritique', () => {
         criteria: [
           { key: 'sluglines', applicable: true, score: 10, evidence: [{ quote: 'INT. ROOM — DAY', note: 'correct heading' }], rationale: 'ok' },
           { key: 'action_lines', applicable: true, score: 10, evidence: [], rationale: '' },
-          { key: 'geography', applicable: true, score: 10, evidence: [], rationale: '' },
+          { key: 'screen_text', applicable: true, score: 10, evidence: [], rationale: '' },
           { key: 'dialogue_format', applicable: false, score: 1, evidence: [], rationale: 'no dialogue' },
         ],
-        issues: [{ severity: 'must_fix', criterion: 'geography', quote: 'She waits.', problem: 'Where?', fix: 'Add AT THE WINDOW.' }],
+        issues: [{ severity: 'must_fix', criterion: 'screen_text', quote: 'She waits.', problem: 'Where?', fix: 'Add AT THE WINDOW.' }],
         strengths: [],
         summary: 'Heading fine, geography missing.',
       };
@@ -81,18 +81,33 @@ describe('runCritique', () => {
     expect(fmt.summary).toBe(fmt.comments);
     expect(fmt.criteria).toHaveLength(4);
     expect(fmt.criteria[0].evidence[0].quote).toBe('INT. ROOM — DAY');
-    expect(fmt.criteria[3].applicable).toBe(false);
-    expect(fmt.issues[0]).toMatchObject({ severity: 'must_fix', criterion: 'geography', fix: 'Add AT THE WINDOW.' });
+    expect(fmt.criteria.find((x) => x.key === 'dialogue_format').applicable).toBe(false);
+    expect(fmt.issues[0]).toMatchObject({ severity: 'must_fix', criterion: 'screen_text', fix: 'Add AT THE WINDOW.' });
     expect(c.facets.find((f) => f.key === 'pacing').score).toBe(8);
     // (7*1.5 + 8*1.5 + 8*5) / 8 = 62.5 / 8 = 7.8
     expect(c.overall).toBe(7.8);
     expect(done.overall).toBe(7.8);
   });
 
-  it('errors a facet whose answer scores no applicable criterion', async () => {
+  it('a facet whose critic reports every criterion not applicable is "na", not an error', async () => {
     const beat = await seedBeat();
     G._setFacetGeneratorForTests(async (facet) => (facet.key === 'voice'
-      ? { criteria: [{ key: 'distinctness', applicable: false, score: 5, evidence: [], rationale: '' }], issues: [], strengths: [], summary: '' }
+      ? { criteria: [{ key: 'distinctness', applicable: false, score: 5, evidence: [], rationale: '' }], issues: [], strengths: [], summary: 'A title crawl: no characters speak or act.' }
+      : { score: 7, comments: 'ok' }));
+    const job = G.createCritiqueJob(beat._id.toString());
+    const done = await G.runCritique({ projectId, job });
+    expect(done.status).toBe('done');
+    expect(done.overall).toBe(7);
+    const c = await C.getBeatCritique(projectId, beat._id.toString());
+    const voice = c.facets.find((f) => f.key === 'voice');
+    expect(voice).toMatchObject({ status: 'na', score: null, error_message: null, summary: 'A title crawl: no characters speak or act.' });
+    expect(c.status).toBe('done');
+  });
+
+  it('errors a facet whose answer has no usable criteria at all', async () => {
+    const beat = await seedBeat();
+    G._setFacetGeneratorForTests(async (facet) => (facet.key === 'voice'
+      ? { criteria: [{ key: 'distinctness', applicable: true, evidence: [], rationale: '' }], issues: [], strengths: [], summary: '' }
       : { score: 7, comments: 'ok' }));
     const job = G.createCritiqueJob(beat._id.toString());
     const done = await G.runCritique({ projectId, job });

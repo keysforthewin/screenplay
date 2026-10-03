@@ -3,6 +3,9 @@ import { apiGet, apiPostJson, apiSseUrl } from '../api.js';
 import { scoreBand, formatScore, sortIssues, issueCounts, hasCriteria, SEVERITY_LABELS } from './critiqueDisplay.js';
 import { CritiqueSection } from './CritiqueSection.jsx';
 import { ArtworkCritiqueSection } from './ArtworkCritiqueSection.jsx';
+import { ClimbDialog, ClimbPanel, ClimbChip, isClimbRunning } from './Climb.jsx';
+
+const CLIMB_POLL_MS = 2000;
 
 function safeParse(s) { try { return JSON.parse(s); } catch { return null; } }
 
@@ -23,6 +26,7 @@ function FacetHeader({ f }) {
       </span>
       {f.status === 'pending' && <span className="lens-comment">scoring…</span>}
       {f.status === 'error' && <span className="lens-comment">errored: {f.error_message}</span>}
+      {f.status === 'na' && <span className="lens-comment">not applicable to this beat{f.summary ? ` — ${f.summary}` : ''}</span>}
       {f.status === 'done' && (
         <>
           <span className={`lens-score ${scoreBand(f.score)}`}>{formatScore(f.score)}</span>
@@ -90,18 +94,52 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(null); // 'regen' | 'undo' | null
   const [error, setError] = useState(null);
+  const [climb, setClimb] = useState(null);
+  const [climbOpen, setClimbOpen] = useState(false);
   const esRef = useRef(null);
+  const climbing = isClimbRunning(climb);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const r = await apiGet(`/beat/${beatId}/critique`);
-        if (!cancelled) setCritique(r.critique || null);
+        if (!cancelled) { setCritique(r.critique || null); setClimb(r.climb || null); }
       } catch (e) { if (!cancelled) setError(e.message); }
     })();
     return () => { cancelled = true; if (esRef.current) { esRef.current.close(); esRef.current = null; } setRunning(false); };
   }, [beatId]);
+
+  // A climb runs on the server and writes the critique and its own state to
+  // the beat as it goes; follow both by polling until it stops, then reload
+  // the beat (new body, Undo slot). Also what reattaches a reopened tab.
+  useEffect(() => {
+    if (!climbing) return undefined;
+    let alive = true;
+    const timer = setInterval(async () => {
+      try {
+        const r = await apiGet(`/beat/${beatId}/critique`);
+        if (!alive) return;
+        setCritique(r.critique || null);
+        setClimb(r.climb || null);
+        if (!isClimbRunning(r.climb)) await onRefresh?.();
+      } catch (e) { if (alive) setError(e.message); }
+    }, CLIMB_POLL_MS);
+    return () => { alive = false; clearInterval(timer); };
+  }, [beatId, climbing]);
+
+  async function startClimb(params) {
+    setError(null);
+    const r = await apiPostJson(`/beat/${beatId}/critique/climb`, params);
+    setClimb(r.climb);
+  }
+
+  async function cancelClimb() {
+    try {
+      const r = await apiPostJson(`/beat/${beatId}/critique/climb/cancel`, {});
+      setClimb(r.climb);
+    } catch (e) { setError(e.message); }
+  }
 
   function closeStream() { if (esRef.current) { esRef.current.close(); esRef.current = null; } }
 
@@ -152,6 +190,7 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
         <span className={`critique-overall ${scoreBand(critique.overall)}`}>{formatScore(critique.overall)}<span className="max">/10</span></span>
       ) : <span className="critique-overall none">not critiqued</span>}
       {countsLabel ? <span className="critique-counts">{countsLabel}</span> : null}
+      <ClimbChip climb={climb} />
     </>
   );
 
@@ -167,17 +206,26 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
       <CritiqueSection title="Writing" meta={writingMeta}>
         <div className="tab-actions critique-head">
           <span className="spacer" />
-          <button type="button" className="primary" disabled={running} onClick={runCritique}>
+          <button type="button" className="primary" disabled={running || climbing} onClick={runCritique}>
             {running ? 'Critiquing…' : critique ? 'Re-run critique' : 'Run critique'}
           </button>
-          <button type="button" disabled={!!busy || running || !hasCritique} onClick={regenerate}>
+          <button type="button" disabled={!!busy || running || climbing || !hasCritique} onClick={regenerate}>
             {busy === 'regen' ? 'Regenerating…' : 'Regenerate beat from critique'}
           </button>
+          <button
+            type="button"
+            disabled={!!busy || running || climbing}
+            title="Critique, rewrite from the critique and critique again, until the score reaches a target"
+            onClick={() => setClimbOpen(true)}
+          >
+            {climbing ? 'Climbing…' : 'Climb'}
+          </button>
           {hasPreviousBody && (
-            <button type="button" disabled={!!busy} onClick={undo}>{busy === 'undo' ? 'Undoing…' : 'Undo rewrite'}</button>
+            <button type="button" disabled={!!busy || climbing} onClick={undo}>{busy === 'undo' ? 'Undoing…' : 'Undo rewrite'}</button>
           )}
         </div>
         {error && <div className="critique-error">{error}</div>}
+        <ClimbPanel climb={climb} onCancel={cancelClimb} />
         {facets.map((f) => (
           f.status === 'done' && hasCriteria(f) ? (
             <details className="critique-lens-detail" key={f.key}>
@@ -195,6 +243,15 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
           </details>
         )}
       </CritiqueSection>
+
+      <ClimbDialog
+        open={climbOpen}
+        kind="writing"
+        last={climb}
+        intro="Critiques the beat, rewrites it from the critique and critiques it again, over and over, until the overall score reaches the target. A rewrite is kept only when it scores higher than the best so far; otherwise the best version is put back and a different strategy is tried. Undo rewrite returns to the text as it is now."
+        onStart={startClimb}
+        onClose={() => setClimbOpen(false)}
+      />
 
       <ArtworkCritiqueSection beatId={beatId} />
     </div>

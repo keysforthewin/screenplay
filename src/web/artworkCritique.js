@@ -180,8 +180,8 @@ async function auditSubject({ beat, subject, requirements, artworks }) {
   return callStructured({ system: AUDIT_SYSTEM_PROMPT, schema: AUDIT_SCHEMA, content, imageBuffers: images, label: `audit ${subject.name}` });
 }
 
-async function proposeForSubject({ beat, subject, requirements, audit, catalogText }) {
-  const text = buildProposalsText({ beat, subject, subjectCard: subject.card, requirements, audit, catalogText });
+async function proposeForSubject({ beat, subject, requirements, audit, catalogText, direction = '' }) {
+  const text = buildProposalsText({ beat, subject, subjectCard: subject.card, requirements, audit, catalogText, direction });
   if (analyzerOverride) {
     if (typeof analyzerOverride.proposals !== 'function') throw new Error('test analyzer has no proposals()');
     return analyzerOverride.proposals({ text, subject, requirements });
@@ -194,6 +194,11 @@ async function proposeForSubject({ beat, subject, requirements, audit, catalogTe
 const jobs = new Map();
 const listeners = new Map();
 const busyBeats = new Set();
+// Beats an artwork climb (artworkClimb.js) holds for its whole run: the
+// manual critique and generate routes answer 409 while the climb drives the
+// same two jobs itself (`climb: true`).
+const climbHolds = new Set();
+const CLIMB_BUSY = 'A climb is running for this beat; wait for it to finish or cancel it.';
 
 export function getArtworkCritiqueJob(jobId) {
   return jobs.get(jobId) || null;
@@ -241,10 +246,11 @@ function retire(job) {
   setTimeout(() => { jobs.delete(id); listeners.delete(id); }, TERMINAL_RETENTION_MS).unref?.();
 }
 
-export function createArtworkCritiqueJob(beatId) {
+export function createArtworkCritiqueJob(beatId, { direction = '' } = {}) {
   const job = {
     job_id: makeJobId(),
     beat_id: String(beatId),
+    direction: String(direction || ''),
     status: 'queued',
     phase: 'queued',
     error: null,
@@ -363,7 +369,7 @@ export async function runArtworkCritique({ projectId, job }) {
         if (gaps.length) {
           js.status = 'proposing';
           publish(job);
-          const propRaw = await proposeForSubject({ beat, subject: s, requirements: gaps, audit, catalogText });
+          const propRaw = await proposeForSubject({ beat, subject: s, requirements: gaps, audit, catalogText, direction: job.direction });
           const { proposals, warnings: propWarnings } = normalizeProposals(propRaw, { subject: s, requirements: gaps, catalog, beat });
           job.warnings.push(...propWarnings);
           if (!proposals.length) job.warnings.push(`${s.name}: ${gaps.length} requirement(s) uncovered but the planner proposed nothing.`);
@@ -415,6 +421,7 @@ export async function startArtworkCritiqueJob({ projectId, beatId }) {
   if (!beat) throw httpError(`beat not found: ${beatId}`, 404);
   const busyKey = beat._id.toString();
   // No await between the has-check and the add: the first caller wins.
+  if (climbHolds.has(busyKey)) throw httpError(CLIMB_BUSY, 409);
   if (busyBeats.has(busyKey)) throw httpError('An artwork critique is already running for this beat.', 409);
   if (generatingBeats.has(busyKey)) throw httpError('Artwork is being generated for this beat; wait for it to finish.', 409);
   busyBeats.add(busyKey);
@@ -425,6 +432,40 @@ export async function startArtworkCritiqueJob({ projectId, beatId }) {
       .finally(() => busyBeats.delete(busyKey));
   });
   return job.job_id;
+}
+
+// ── Climb hooks (artworkClimb.js) ──
+
+// Take the beat for a climb. False when a critique, a generation or another
+// climb already has it. No await between the checks and the add.
+export function holdArtworkClimb(beatId) {
+  const key = String(beatId);
+  if (climbHolds.has(key) || busyBeats.has(key) || generatingBeats.has(key)) return false;
+  climbHolds.add(key);
+  return true;
+}
+
+export function releaseArtworkClimb(beatId) {
+  climbHolds.delete(String(beatId));
+}
+
+// One critique run, awaited. `direction` reaches the proposal pass.
+export async function runArtworkCritiqueForClimb({ projectId, beatId, direction = '' }) {
+  const key = String(beatId);
+  busyBeats.add(key);
+  try {
+    return await runArtworkCritique({ projectId, job: createArtworkCritiqueJob(key, { direction }) });
+  } finally {
+    busyBeats.delete(key);
+  }
+}
+
+// Resolves with the generation job once it has finished (null if unknown).
+export async function waitForArtworkGenerateJob(jobId) {
+  const job = genJobs.get(jobId);
+  if (!job) return null;
+  await job.done;
+  return job;
 }
 
 // ───────────────────────────── Generation job ─────────────────────────────
@@ -644,7 +685,7 @@ async function runArtworkGenerateJob({ projectId, beatId, job, discordUser }) {
   }
 }
 
-export async function startArtworkGenerateJob({ projectId, beatId, proposalIds, model, overrides = {}, discordUser = null }) {
+export async function startArtworkGenerateJob({ projectId, beatId, proposalIds, model, overrides = {}, discordUser = null, climb = false }) {
   projectId = await resolveProjectId(projectId);
   const beat = await getBeat(projectId, String(beatId));
   if (!beat) throw httpError(`beat not found: ${beatId}`, 404);
@@ -660,6 +701,7 @@ export async function startArtworkGenerateJob({ projectId, beatId, proposalIds, 
   const cleanOverrides = await validateOverrides(overrides);
 
   const busyKey = beat._id.toString();
+  if (climbHolds.has(busyKey) && !climb) throw httpError(CLIMB_BUSY, 409);
   if (busyBeats.has(busyKey)) throw httpError('An artwork critique is running for this beat; wait for it to finish.', 409);
   if (generatingBeats.has(busyKey)) throw httpError('Artwork is already being generated for this beat.', 409);
 
@@ -730,10 +772,12 @@ export async function startArtworkGenerateJob({ projectId, beatId, proposalIds, 
   };
   genJobs.set(job.job_id, job);
   recordProgress(job, { phase: 'queued', step: 'job_queued', message: `Queued ${items.length} artwork render${items.length === 1 ? '' : 's'}…` });
+  let finish;
+  job.done = new Promise((resolve) => { finish = resolve; });
   setImmediate(() => {
     runArtworkGenerateJob({ projectId, beatId: beat._id, job, discordUser })
       .catch((e) => logger.error(`artwork critique generate: background run failed: ${e.message}`))
-      .finally(() => generatingBeats.delete(busyKey));
+      .finally(() => { generatingBeats.delete(busyKey); finish(); });
   });
   return { job_id: job.job_id, planned: items.length };
 }

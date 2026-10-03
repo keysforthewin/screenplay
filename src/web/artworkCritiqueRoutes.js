@@ -6,6 +6,11 @@
 //   GET    /beat/:id/artwork-critique                       the stored critique (null before a run)
 //   POST   /beat/:id/artwork-critique                       run it (202 {job_id, beat_id}; 409 busy)
 //          (pre-auth SSE twin: /beat/:id/artwork-critique/:jobId/events?session_id= in entityRoutes.js)
+//   POST   /beat/:id/artwork-critique/climb                 critique → generate every proposal → critique, until
+//                                                           coverage reaches `target` % or stops rising
+//                                                           {target, model, direction?, stop_after?} → 202 {climb}
+//                                                           (followed by polling the GET above, which returns `climb`)
+//   POST   /beat/:id/artwork-critique/climb/cancel          stop after the step in flight
 //   POST   /beat/:id/artwork-critique/generate              render the ticked proposals onto their sets / characters
 //                                                           {proposal_ids, model, overrides?: {[pid]: {prompt?, reference_image_ids?}}}
 //                                                           → 202 {job_id, planned}
@@ -30,6 +35,9 @@ import {
   syncArtworkFixes,
   undoArtworkFix,
 } from './artworkCritique.js';
+
+import { startArtworkClimb } from './artworkClimb.js';
+import { getClimbView, requestClimbCancel } from './climbCore.js';
 
 const HEX24 = /^[a-f0-9]{24}$/i;
 
@@ -57,7 +65,25 @@ export function registerArtworkCritiqueRoutes(router) {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const critique = await syncArtworkFixes({ projectId: req.projectId, beatId });
-      res.json({ artwork_critique: critique || null });
+      res.json({ artwork_critique: critique || null, climb: (await getClimbView(req.projectId, beatId, 'artwork')) || null });
+    } catch (e) { next(e); }
+  });
+
+  router.post('/beat/:id/artwork-critique/climb', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const climb = await startArtworkClimb({ projectId: req.projectId, beatId, params: req.body || {}, discordUser: webDiscordUser(req) });
+      res.status(202).json({ climb });
+    } catch (e) { fail(res, next, e); }
+  });
+
+  router.post('/beat/:id/artwork-critique/climb/cancel', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      if (!requestClimbCancel('artwork', beatId)) return res.status(409).json({ error: 'No climb is running for this beat.' });
+      res.json({ climb: await getClimbView(req.projectId, beatId, 'artwork') });
     } catch (e) { next(e); }
   });
 

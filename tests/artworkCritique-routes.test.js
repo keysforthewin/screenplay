@@ -101,7 +101,7 @@ async function critiqued() {
 
 describe('artwork critique routes', () => {
   it('GET returns null before a run and 404 for an unknown beat', async () => {
-    expect((await get(`/api/beat/${beat._id}/artwork-critique`)).json).toEqual({ artwork_critique: null });
+    expect((await get(`/api/beat/${beat._id}/artwork-critique`)).json).toEqual({ artwork_critique: null, climb: null });
     expect((await get(`/api/beat/${new ObjectId()}/artwork-critique`)).status).toBe(404);
     expect((await get(`/api/beat/99/artwork-critique`)).status).toBe(404);
   });

@@ -18,6 +18,8 @@ export const SCORING_RULES = [
   '6. Any must_fix issue caps its criterion at 6 and the whole facet at 7 — the scorer enforces this, so score consistently with the issues you raise.',
   '7. Do not reward length or ambition; do not penalize anything this facet does not judge.',
   '8. Name at least one strength whenever a criterion scores 7 or higher.',
+  '9. This story ranges across the world and out into space. Where a beat is set, how far that is from the last beat, and that it is somewhere new are never faults in any facet; only a contradiction of something already established is.',
+  '10. A criterion marked optional that has nothing to judge in this beat (no dialogue, no staged scene, no on-screen text) is reported with applicable=false. That is a correct answer, not a low score.',
 ].join('\n');
 
 export function clampScore(n) {
@@ -75,6 +77,46 @@ export function deriveFacetScore(criteria, issues = [], facet = null) {
   else if (mustFix.length === 1) score = Math.min(score, 7);
   else if (shouldFix.length >= 3) score = Math.min(score, 8);
   return round1(score);
+}
+
+// Why a stored facet scores what it does: its criteria's plain mean
+// (`uncapped`), which of deriveFacetScore's caps is holding it below that
+// (`binding`: two_must_fix | one_must_fix | three_should_fix | null — a cap
+// that does not lower the score is not binding), and its lowest criteria.
+// Null for a facet with no scored criteria (errored, or a pre-v2 critique).
+export function explainFacetScore(facet, def = null) {
+  const criteria = (facet?.criteria || []).filter((c) => c && c.applicable !== false && c.score != null);
+  if (!criteria.length || typeof facet?.score !== 'number') return null;
+  const issues = facet.issues || [];
+  const mustFix = issues.filter((i) => i.severity === 'must_fix').length;
+  const shouldFix = issues.filter((i) => i.severity === 'should_fix').length;
+  const uncapped = deriveFacetScore(criteria, [], def);
+  let binding = null;
+  if (uncapped > facet.score) {
+    binding = mustFix >= 2 ? 'two_must_fix' : mustFix === 1 ? 'one_must_fix' : shouldFix >= 3 ? 'three_should_fix' : null;
+  }
+  const lowest = [...criteria].sort((a, b) => a.score - b.score).slice(0, 2).map((c) => ({ key: c.key, label: c.label || c.key, score: c.score }));
+  return { score: facet.score, uncapped, must_fix: mustFix, should_fix: shouldFix, binding, lowest };
+}
+
+// Every finished facet with what lifting its cap is worth to the OVERALL
+// score (`gain`, in overall points, two decimals), most valuable first; ties
+// go to the lower-scoring facet.
+export function scoreLevers(critique, registry = []) {
+  const weightOf = (key) => {
+    const def = registry.find((d) => d.key === key);
+    return Number(def?.weight ?? (def?.required ? 1.5 : 1)) || 1;
+  };
+  const done = (critique?.facets || []).filter((f) => f.status === 'done' && typeof f.score === 'number');
+  const wsum = done.reduce((sum, f) => sum + weightOf(f.key), 0);
+  const out = [];
+  for (const f of done) {
+    const why = explainFacetScore(f, registry.find((d) => d.key === f.key) || null);
+    if (!why) continue;
+    const gain = why.binding ? Math.round(((why.uncapped - why.score) * weightOf(f.key) / wsum) * 100) / 100 : 0;
+    out.push({ facet_key: f.key, facet_label: f.label, weight: weightOf(f.key), gain, ...why });
+  }
+  return out.sort((a, b) => b.gain - a.gain || a.score - b.score);
 }
 
 // Weighted mean over finished facets; weights come from the registry

@@ -1431,9 +1431,44 @@ export function buildApiRouter() {
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const { getBeatCritique } = await import('../mongo/critiques.js');
       const critique = await getBeatCritique(req.projectId, beatId);
-      res.json({ critique: critique || null });
+      const { getClimbView } = await import('./climbCore.js');
+      res.json({ critique: critique || null, climb: (await getClimbView(req.projectId, beatId, 'writing')) || null });
     } catch (e) { next(e); }
   });
+
+  // Climb: critique → rewrite → critique until the overall reaches `target`
+  // or `stop_after` attempts in a row fail to raise it (critiqueClimb.js).
+  // The SPA follows it by polling GET /beat/:id/critique.
+  router.post('/beat/:id/critique/climb', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const { startWritingClimb } = await import('./critiqueClimb.js');
+      const climb = await startWritingClimb({ projectId: req.projectId, beatId, params: req.body || {} });
+      res.status(202).json({ climb });
+    } catch (e) {
+      if (e?.status) return res.status(e.status).json({ error: e.message });
+      next(e);
+    }
+  });
+
+  router.post('/beat/:id/critique/climb/cancel', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const { requestClimbCancel, getClimbView } = await import('./climbCore.js');
+      if (!requestClimbCancel('writing', beatId)) return res.status(409).json({ error: 'No climb is running for this beat.' });
+      res.json({ climb: await getClimbView(req.projectId, beatId, 'writing') });
+    } catch (e) { next(e); }
+  });
+
+  // The body-rewriting routes below are refused while a climb owns the beat.
+  async function refuseDuringClimb(beatId, res) {
+    const { isClimbRunning } = await import('./climbCore.js');
+    if (!isClimbRunning('writing', beatId)) return false;
+    res.status(409).json({ error: 'A climb is running for this beat; wait for it to finish or cancel it.' });
+    return true;
+  }
 
   router.post('/beat/:id/critique', async (req, res, next) => {
     try {
@@ -1452,6 +1487,7 @@ export function buildApiRouter() {
     try {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      if (await refuseDuringClimb(beatId, res)) return;
       const { regenerateBeat } = await import('./beatRewrite.js');
       const result = await regenerateBeat(req.projectId, beatId);
       res.json(result);
@@ -1465,6 +1501,7 @@ export function buildApiRouter() {
     try {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      if (await refuseDuringClimb(beatId, res)) return;
       const { normalizeBeat } = await import('./beatRewrite.js');
       const result = await normalizeBeat(req.projectId, beatId);
       res.json(result);
@@ -1478,6 +1515,7 @@ export function buildApiRouter() {
     try {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      if (await refuseDuringClimb(beatId, res)) return;
       const { restoreBeatBody } = await import('./beatRewrite.js');
       const result = await restoreBeatBody(req.projectId, beatId);
       res.json(result);

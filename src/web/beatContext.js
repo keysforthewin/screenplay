@@ -11,7 +11,7 @@ import { logger } from '../log.js';
 import { listBeats } from '../mongo/plots.js';
 import { renderSceneBibleBlock } from '../mongo/sceneBible.js';
 import { stripMarkdown } from '../util/markdown.js';
-import { WARDROBE_FIELD, wardrobeText } from './wardrobe.js';
+import { WARDROBE_FIELD, wardrobeText, wardrobeOverride } from './wardrobe.js';
 import {
   findCharactersInBeat,
   findSetsInBeat,
@@ -66,7 +66,14 @@ export function cleanDirection(raw) {
 // Every character field the template holds, not a curated subset. The actor
 // likeness leads because it is the strongest visual handle; voice-only /
 // mocap casting is surfaced as a voice, never as a face.
-export function formatCharacterFull(c, { beat = null } = {}) {
+//
+// `wardrobe` says how the outfit line reads. 'locked' (the default) is for the
+// picture pipeline — cuts, stills, artwork — where the words must be repeated
+// exactly so every render matches. 'default' is for whoever judges or writes
+// the beat's TEXT: the character's wardrobe field is what they usually wear,
+// and a scene may dress them for its weather, place or period; only an outfit
+// set for this beat (a wardrobe override) is binding there.
+export function formatCharacterFull(c, { beat = null, wardrobe = 'locked' } = {}) {
   const name = stripMarkdown(c?.name || '').trim() || 'Unnamed';
   const actorClean = stripMarkdown(typeof c?.hollywood_actor === 'string' ? c.hollywood_actor : '')
     .replace(/\s+/g, ' ')
@@ -84,7 +91,13 @@ export function formatCharacterFull(c, { beat = null } = {}) {
   // override when it has one, else the character's default — the exact words
   // every lock line, visual handle and still prompt must reuse.
   const lock = wardrobeText(c, beat);
-  if (lock) lines.push(`    wardrobe (LOCKED — use these exact words in every lock line, handle and still): ${lock}`);
+  if (lock && wardrobe === 'default') {
+    lines.push(wardrobeOverride(c, beat)
+      ? `    wardrobe in THIS beat (set for this beat — the text should agree with it): ${lock}`
+      : `    usual wardrobe (a default, not a rule — the beat may dress them differently for its weather, season, place or period, or as its scene bible says; that is not an inconsistency): ${lock}`);
+  } else if (lock) {
+    lines.push(`    wardrobe (LOCKED — use these exact words in every lock line, handle and still): ${lock}`);
+  }
   const fields = c?.fields && typeof c.fields === 'object' ? c.fields : {};
   for (const [key, value] of Object.entries(fields)) {
     if (typeof value !== 'string') continue;
