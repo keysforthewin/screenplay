@@ -2,7 +2,6 @@ import { ObjectId } from 'mongodb';
 import { getDb } from './client.js';
 import { logger } from '../log.js';
 import { applyMarkdownEdits } from '../util/textWindow.js';
-import { normalizeSceneBible } from './sceneBible.js';
 import { resolveProjectId, getDefaultProject } from './projects.js';
 
 const col = () => getDb().collection('plots');
@@ -67,30 +66,12 @@ async function ensureBeatIds(plot) {
       next.sets = [];
       changed = true;
     }
-    if (next.scene_bible === undefined) {
-      next.scene_bible = null;
-      changed = true;
-    }
     if (next.critique === undefined) {
       next.critique = null;
       changed = true;
     }
     if (next.artwork_critique === undefined) {
       next.artwork_critique = null;
-      changed = true;
-    }
-    // The assembled beat video (src/web/cutAssemble.js): GridFS attachment
-    // id, its length, and when it was built.
-    if (next.prompts_video_file_id === undefined) {
-      next.prompts_video_file_id = null;
-      changed = true;
-    }
-    if (next.prompts_video_duration_seconds === undefined) {
-      next.prompts_video_duration_seconds = null;
-      changed = true;
-    }
-    if (next.prompts_video_generated_at === undefined) {
-      next.prompts_video_generated_at = null;
       changed = true;
     }
     if (next.previous_body === undefined) {
@@ -370,7 +351,6 @@ export async function createBeat({ projectId, name, desc = '', body = '', charac
     dialog_notes: '',
     images: [],
     main_image_id: null,
-    scene_bible: null,
     critique: null,
     artwork_critique: null,
     attachments: [],
@@ -507,39 +487,6 @@ export async function setBeatBody(projectId, identifier, body) {
   if (!beat) throw new Error(`Beat not found: ${identifier}`);
   await updateBeatFields(projectId, beat._id, { 'beats.$.body': body });
   logger.info(`mongo: beat set_body id=${beat._id} chars=${body.length}`);
-  return fetchBeat(projectId, beat._id);
-}
-
-// The assembled beat video (cut clips joined; src/web/cutAssemble.js).
-// Gateway wrapper: setBeatPromptsVideoViaGateway.
-export async function setBeatPromptsVideo(projectId, identifier, { fileId = null, durationSeconds = null } = {}) {
-  projectId = await resolveProjectId(projectId);
-  const plot = await getPlot(projectId);
-  const beat = findBeat(plot, identifier);
-  if (!beat) throw new Error(`Beat not found: ${identifier}`);
-  const dur = Number(durationSeconds);
-  await updateBeatFields(projectId, beat._id, {
-    'beats.$.prompts_video_file_id': fileId == null ? null : String(fileId),
-    'beats.$.prompts_video_duration_seconds': fileId != null && Number.isFinite(dur) && dur > 0 ? dur : null,
-    'beats.$.prompts_video_generated_at': fileId == null ? null : new Date(),
-  });
-  logger.info(`mongo: beat prompts video set id=${beat._id} cleared=${fileId == null}`);
-  return fetchBeat(projectId, beat._id);
-}
-
-// Persist a beat's scene bible (the per-beat "look book" the cut planner
-// reads). Stored as a normalized sub-doc under beats.$.scene_bible. Pass
-// null/empty to clear. Uses the atomic per-beat write path.
-export async function setBeatSceneBible(projectId, identifier, bible) {
-  projectId = await resolveProjectId(projectId);
-  const plot = await getPlot(projectId);
-  const beat = findBeat(plot, identifier);
-  if (!beat) throw new Error(`Beat not found: ${identifier}`);
-  // normalizeSceneBible returns only the text fields (it is a pure shape
-  // helper); the persistence layer stamps updated_at at write time.
-  const value = bible == null ? null : { ...normalizeSceneBible(bible), updated_at: new Date() };
-  await updateBeatFields(projectId, beat._id, { 'beats.$.scene_bible': value });
-  logger.info(`mongo: beat scene_bible set id=${beat._id} cleared=${value === null}`);
   return fetchBeat(projectId, beat._id);
 }
 

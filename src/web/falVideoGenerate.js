@@ -1,9 +1,8 @@
-// Cut video generation pipeline against fal.ai (the fal half of the Prompts
+// Cut video generation pipeline against fal.ai (the fal half of the Scenes
 // tab; src/web/comfyVideoGenerate.js is the ComfyUI half). Started from
-// POST /api/cut/:id/fal-video/generate, the beat render job
-// (src/web/cutBeatRender.js) or the render_cut_video agent tool. The request
-// returns immediately with a job id; the work runs in the background under
-// the per-beat lock. The SPA opens an EventSource on
+// POST /api/cut/:id/fal-video/generate. The request returns immediately with
+// a job id; the work runs in the background, one render per cut at a time.
+// The SPA opens an EventSource on
 // /api/cut/:id/video-job/:jobId/events and receives pushed updates as fal's
 // queue advances.
 //
@@ -38,7 +37,6 @@ import { getVideoPrompt as mongoGetVideoPrompt } from '../mongo/videoPrompts.js'
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { setVideoPromptVideoViaGateway } from './gateway.js';
-import { isBeatLocked, withBeatLock } from './beatLocks.js';
 import { fal, isConfigured as falIsConfigured } from '../fal/client.js';
 import { uploadFalAsset } from '../fal/upload.js';
 import { prepareImageForFal, renameForContentType } from '../fal/prepareImage.js';
@@ -135,10 +133,11 @@ export function serializeJob(job) {
   };
 }
 
-export class VideoBeatBusyError extends Error {
-  constructor(beatId) {
-    super(`Work already in progress for beat ${beatId}`);
-    this.code = 'BEAT_BUSY';
+export class VideoCutBusyError extends Error {
+  constructor(jobId) {
+    super('A video is already rendering for this cut.');
+    this.code = 'CUT_BUSY';
+    this.job_id = jobId;
   }
 }
 
@@ -171,58 +170,43 @@ export class UnknownVideoModelError extends Error {
 }
 
 // The pipeline renders for one owner: `{ kind: 'video_prompt', id }`, a
-// Prompts-tab cut. The cut is adapted into the row shape the steps below read
-// (frame pool, reference list, audio, prompt, duration): its ordered
-// reference_images become the default `ref` list, so a reference-to-video
-// model receives the images in @Image1..N order and an image-to-video model
-// gets the start frame.
+// Scenes-tab cut. The cut is adapted into the row shape the steps below read
+// (frame pool, prompt, duration): an image-to-video model gets the start
+// frame, a first-last-frame model both.
 export const OWNER_VIDEO_PROMPT = 'video_prompt';
 
 function isPromptOwner(owner) {
   return owner && owner.kind === OWNER_VIDEO_PROMPT;
 }
 
-// A cut as the pipeline's row: its rendered START FRAME is frames[0]
-// (what image-to-video and lip-sync models get), its rendered END FRAME is
-// frames[1] when there is one (first-last-frame models land on it), its
-// ordered reference_images
-// are the `ref` list for reference-to-video models, its joined dialogue
-// recording (audio_file_id) feeds lip-sync models, and the prompt is the
-// block plus any exclusion the planner did not already write into it. The
-// reference binding rides along as __binding and is prepended at submit time
-// only for reference-taking models.
+// A cut as the pipeline's row: its rendered START FRAME is frames[0] (what
+// image-to-video models get), its rendered END FRAME is frames[1] when there
+// is one (first-last-frame models land on it), and the prompt is the cut's
+// video prompt as written.
 export async function loadVideoPromptOwner(projectId, promptId) {
   const p = await mongoGetVideoPrompt(projectId, promptId);
   if (!p) return null;
-  const refs = (p.reference_images || []).map((r) => r.image_id).filter(Boolean);
   const startId = p.start_frame?.image_id || null;
   const endId = p.end_frame?.image_id || null;
-  const body = String(p.prompt || '');
-  const exclusions = (Array.isArray(p.exclusions) ? p.exclusions : [])
-    .map((e) => String(e || '').trim())
-    .filter((e) => e && !body.includes(e));
   return {
     _id: p._id,
     beat_id: p.beat_id,
     order: p.order,
     title: p.title,
-    text_prompt: exclusions.length ? `${body}\n\n${exclusions.join(' ')}` : body,
+    text_prompt: String(p.prompt || ''),
     duration_seconds: p.duration_seconds,
-    // frames[0] is the start frame; its reference_ids are the stored
-    // references (no scores → stored order), which makes them resolvable as
-    // the explicit `ref` assignment prepareShotVideoJob builds.
     frames: [
-      { image_id: startId, reference_ids: refs, reference_scores: {} },
+      { image_id: startId, reference_ids: [], reference_scores: {} },
       ...(endId ? [{ image_id: endId, reference_ids: [], reference_scores: {} }] : []),
     ],
     __start_frame_id: startId,
     __end_frame_id: endId,
-    reference_image_ids: refs,
-    audio_file_id: p.audio_file_id || null,
-    audio_duration_seconds: p.audio_duration_seconds || null,
+    reference_image_ids: [],
+    audio_file_id: null,
+    audio_duration_seconds: null,
     video_upload_file_id: null,
     video_file_id: p.video_file_id,
-    __binding: String(p.reference_binding || '').trim() || null,
+    __binding: null,
     __owner: { kind: OWNER_VIDEO_PROMPT, id: p._id.toString() },
   };
 }
@@ -294,58 +278,6 @@ function createShotVideoJob({ model, row }) {
   return job;
 }
 
-// Render one shot while the CALLER already holds the beat lock (the beat
-// renderer runs several of these under a single withBeatLock). Registers a
-// normal job (so the per-shot SSE stream and reconnect snapshot work), runs
-// it to completion, and returns the finished job — status 'done' or 'error'
-// (runVideoGenerationJob never throws; it records the error on the job).
-export async function runShotVideoInline({
-  projectId = null,
-  modelId = null,
-  prompt = null,
-  durationSeconds = null,
-  generateAudio = true,
-  resolution = null,
-  fps = null,
-  includeDirectorNotes = true,
-  frameAssignment = null,
-  announceUsername = null,
-  onJobCreated = null,
-  owner = null,
-} = {}) {
-  const { model, row, assignment } = await prepareShotVideoJob({
-    projectId,
-      modelId,
-    frameAssignment,
-    owner,
-  });
-  const job = createShotVideoJob({ model, row });
-  try {
-    onJobCreated?.(job);
-  } catch {
-    // observer errors never fail the render
-  }
-  try {
-    await runVideoGenerationJob({
-      projectId,
-      job,
-      row,
-      model,
-      prompt,
-      durationSeconds,
-      generateAudio,
-      resolution,
-      fps,
-      includeDirectorNotes,
-      assignment,
-      announceUsername,
-    });
-  } finally {
-    scheduleJobEviction(job.job_id);
-  }
-  return job;
-}
-
 // Validate inputs + start the background job. Returns { job_id } so the SPA
 // can immediately open its SSE stream.
 export async function startVideoGenerationJob({
@@ -368,29 +300,31 @@ export async function startVideoGenerationJob({
     owner,
   });
 
-  if (isBeatLocked(sb.beat_id)) {
-    throw new VideoBeatBusyError(sb.beat_id.toString());
+  // One render per cut at a time; other cuts render side by side.
+  const cutKey = sb._id.toString();
+  for (const other of jobs.values()) {
+    if (other.owner_id === cutKey && other.status !== 'done' && other.status !== 'error') {
+      throw new VideoCutBusyError(other.job_id);
+    }
   }
 
   const job = createShotVideoJob({ model, row: sb });
   const jobId = job.job_id;
 
-  withBeatLock(sb.beat_id, () =>
-    runVideoGenerationJob({
-      projectId,
-      job,
-      row: sb,
-      model,
-      prompt,
-      durationSeconds,
-      generateAudio,
-      resolution,
-      fps,
-      includeDirectorNotes,
-      assignment,
-      announceUsername,
-    }),
-  )
+  runVideoGenerationJob({
+    projectId,
+    job,
+    row: sb,
+    model,
+    prompt,
+    durationSeconds,
+    generateAudio,
+    resolution,
+    fps,
+    includeDirectorNotes,
+    assignment,
+    announceUsername,
+  })
     .catch((e) => {
       if (job.status !== 'done' && job.status !== 'error') {
         job.status = 'error';
@@ -951,7 +885,7 @@ async function runVideoGenerationJob({
     if (announceUsername) {
       try {
         const { announceMediaEvent } = await import('../discord/announcer.js');
-        const { promptsUrl } = await import('./links.js');
+        const { scenesUrl } = await import('./links.js');
         const { stripMarkdown } = await import('../util/markdown.js');
         const { getBeat } = await import('../mongo/plots.js');
         const { getProjectById } = await import('../mongo/projects.js');
@@ -961,7 +895,7 @@ async function runVideoGenerationJob({
         const order = beat && Number.isFinite(beat.order) ? `Beat ${beat.order}` : 'Beat';
         const beatLabel = name ? `${order}: ${name}` : order;
         const entityLabel = `Prompt${Number.isFinite(row.order) ? ` ${row.order}` : ''} — ${beatLabel}`;
-        const entityUrl = beat ? promptsUrl(project?.title ?? null, beat) : null;
+        const entityUrl = beat ? scenesUrl(project?.title ?? null, beat) : null;
         announceMediaEvent({
           username: announceUsername,
           verb: 'generated video for',

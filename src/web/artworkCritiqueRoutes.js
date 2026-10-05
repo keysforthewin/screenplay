@@ -4,10 +4,20 @@
 // requireProjectAccess) by entityRoutes.js:
 //
 //   GET    /beat/:id/artwork-critique                       the stored critique (null before a run)
-//   POST   /beat/:id/artwork-critique                       run it (202 {job_id, beat_id}; 409 busy)
+//   POST   /beat/:id/artwork-critique                       run it (202 {job_id, beat_id}; 409 busy). Incremental: only
+//                                                           artwork that changed since the last run is looked at again;
+//                                                           {force: true} forgets the last run and re-checks everything
+//                                                           {stage: 'coverage'}: start from nothing — requirements,
+//                                                           description matching and proposals for what is missing; no
+//                                                           image is looked at (the page empties and fills as it lands).
+//                                                           {stage: 'quality'}: review the matched pieces again, in
+//                                                           place (409 before a coverage check). Every manual run
+//                                                           clears the last climb's status
+//   DELETE /beat/:id/artwork-critique                       clear the critique and the climb status (409 busy)
 //          (pre-auth SSE twin: /beat/:id/artwork-critique/:jobId/events?session_id= in entityRoutes.js)
-//   POST   /beat/:id/artwork-critique/climb                 critique → generate every proposal → critique, until
-//                                                           coverage reaches `target` % or stops rising
+//   POST   /beat/:id/artwork-critique/climb                 edit the close / low-scoring artwork in place, render only
+//                                                           what nothing on file is near, re-audit what changed — until
+//                                                           the quality-weighted coverage reaches `target` % or stalls
 //                                                           {target, model, direction?, stop_after?} → 202 {climb}
 //                                                           (followed by polling the GET above, which returns `climb`)
 //   POST   /beat/:id/artwork-critique/climb/cancel          stop after the step in flight
@@ -26,6 +36,7 @@
 import { getBeat } from '../mongo/plots.js';
 import {
   startArtworkCritiqueJob,
+  clearArtworkCritique,
   startArtworkGenerateJob,
   getArtworkGenerateJob,
   serializeArtworkGenerateJob,
@@ -128,8 +139,19 @@ export function registerArtworkCritiqueRoutes(router) {
     try {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
-      const jobId = await startArtworkCritiqueJob({ projectId: req.projectId, beatId });
+      const stage = req.body?.stage;
+      if (stage != null && !['coverage', 'quality', 'all'].includes(stage)) return res.status(400).json({ error: 'stage must be coverage, quality or all' });
+      const jobId = await startArtworkCritiqueJob({ projectId: req.projectId, beatId, force: req.body?.force === true, stage: stage || 'all' });
       res.status(202).json({ job_id: jobId, beat_id: beatId });
+    } catch (e) { fail(res, next, e); }
+  });
+
+  router.delete('/beat/:id/artwork-critique', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      await clearArtworkCritique({ projectId: req.projectId, beatId });
+      res.json({ artwork_critique: null, climb: null });
     } catch (e) { fail(res, next, e); }
   });
 

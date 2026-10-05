@@ -166,7 +166,7 @@ export const FACETS = [
     scope: 'focused',
     required: true,
     weight: 1.5,
-    focus: "You check whether the project's steering documents — the director's notes, any beat-level direction, the directorial voice and the beat's scene bible — are visible as concrete choices in this text. Cite which notes are met and which are missing or contradicted.",
+    focus: "You check whether the project's steering documents — the director's notes, any beat-level direction and the directorial voice — are visible as concrete choices in this text. Cite which notes are met and which are missing or contradicted.",
     criteria: [
       {
         key: 'notes_honored',
@@ -197,16 +197,6 @@ export const FACETS = [
           9: 'Blocking, pace and performance choices on the page read as this director\'s hand.',
         },
       },
-      {
-        key: 'scene_bible',
-        label: 'Scene bible fidelity',
-        optional: true,
-        anchors: {
-          3: 'Location, time, blocking or continuity anchors in the bible are contradicted.',
-          6: 'Honored but not used — the bible\'s intention and turn are not what the text plays.',
-          9: 'The bible\'s intention and turn are exactly what the text plays.',
-        },
-      },
     ],
     buildContext: (ctx) =>
       [
@@ -216,8 +206,6 @@ export const FACETS = [
         ...optionalBlock('Beat-level direction (dialog_notes)', ctx.beat?.dialog_notes, ABSENT),
         '',
         ...optionalBlock('Directorial voice (project-wide)', clip(ctx.directorialVoice, VOICE_CAP), ABSENT),
-        '',
-        ...optionalBlock('Scene bible for this beat', ctx.sceneBible, ABSENT),
         '',
         '# The beat to evaluate',
         beatBlock(ctx.beat),
@@ -229,15 +217,21 @@ export const FACETS = [
     scope: 'focused',
     required: false,
     weight: 1,
-    focus: 'You are a script editor judging pacing and momentum within this beat and across its neighbours. Use the previous and next beats only to judge whether this beat enters and exits at the right tempo, and the spine to judge whether its length matches its weight.',
+    focus: [
+      'You are a script editor judging pacing and momentum within this beat and across its neighbours. Use the previous and next beats only to judge whether this beat enters and exits at the right tempo, and the spine to judge whether its length matches its weight.',
+      'Pacing is rhythm, not brevity. A beat stripped to its essentials — every turn arriving the moment the last one ends, no build, no room for a moment to land — is RUSHED, and that is as much a pacing fault as a beat that drags. Shorter is never better in itself, and you never raise an issue whose only point is that the beat could be shorter.',
+      'How to fix a stretch that feels slow: the default is to ADD, not to cut. Slow almost always means the time is not being used — nothing is wanted, resisted, discovered or changing. Give the time a job: a want with an obstacle in its way, a small complication or reversal, a piece of behaviour that reveals character, anticipation that tightens, a contrast of tempo against what comes next. Write the lines to add. An approach, an arrival or a set-up that builds anticipation for what follows IS pacing; do not recommend removing it to arrive sooner — recommend what would charge it.',
+      'Recommend a cut ONLY when the passage is weak in itself: awkward or badly written, a moment played twice, an explanation of what was just shown, or text the scene is plainly better without. When you do, the problem says which of those it is, and the cut is the smallest one that removes the fault — never a whole sequence. Every fix and every to_raise in this facet either adds or reshapes; one that only removes must name the weakness of the removed text itself.',
+      'When the beat is rushed or thin, say where it needs room and write what goes there.',
+    ].join(' '),
     criteria: [
       {
         key: 'entry',
         label: 'Entry',
         anchors: {
-          3: 'Opens on arrival, greeting, settling in.',
-          6: 'A few lines of throat-clearing before anything is at stake.',
-          9: 'The first line is already in motion and matches the previous beat\'s exit tempo.',
+          3: 'Opens inert: greeting, settling in, set-up with nothing wanted and nothing building.',
+          6: 'A few lines before anything is wanted or at stake, or it starts so abruptly that the turn has no set-up to land against.',
+          9: 'The opening is already charged — something is wanted, approaching or building from the first line, at any length — and it matches the previous beat\'s exit tempo.',
         },
       },
       {
@@ -245,8 +239,8 @@ export const FACETS = [
         label: 'Escalation',
         anchors: {
           3: 'Flat — the same pressure from first line to last, or one jump with no build.',
-          6: 'Rises, but with a slack middle or a moment played twice.',
-          9: 'Each unit raises the stakes or turns; nothing is said twice.',
+          6: 'Rises, but with a slack middle, a moment played twice, or turns that arrive with no build between them.',
+          9: 'Each unit raises the stakes or turns, each has the room to land before the next, and nothing is said twice.',
         },
       },
       {
@@ -254,7 +248,7 @@ export const FACETS = [
         label: 'Exit',
         anchors: {
           3: 'Lingers past the turn, wraps up, explains.',
-          6: 'Ends on the right moment plus a trailing line.',
+          6: 'Ends on the right moment plus a trailing line, or cuts away before the turn has landed.',
           9: 'Cuts on the turn or the button and hands off cleanly to the next beat.',
         },
       },
@@ -262,9 +256,9 @@ export const FACETS = [
         key: 'proportion',
         label: 'Length vs. weight',
         anchors: {
-          3: 'Length wildly out of proportion to the beat\'s importance in the spine.',
-          6: 'Somewhat long or short for what it carries.',
-          9: 'Length matches dramatic weight.',
+          3: 'Wildly out of proportion to the beat\'s importance in the spine — a major beat reduced to a summary of itself, or a minor one sprawling.',
+          6: 'Somewhat thin or somewhat padded for what it carries.',
+          9: 'The beat has the room its weight deserves: it builds, breathes and lands, with no stretch of unused time.',
         },
       },
     ],
@@ -540,7 +534,7 @@ export function buildFacetSystemPrompt(facet) {
     `# Criteria for "${facet.label}"`,
     ...table,
     '',
-    'Return only the JSON object the schema describes: one entry per criterion (quote the beat verbatim in every evidence.quote), the ranked issues (each quoting the beat), the strengths, and a short summary a screenwriter can act on.',
+    'Return only the JSON object the schema describes: one entry per criterion (quote the beat verbatim in every evidence.quote, and say in to_raise how to fix that criterion), the ranked issues (each quoting the beat), the strengths, and a short summary a screenwriter can act on.',
   ].join('\n');
 }
 

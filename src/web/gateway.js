@@ -109,10 +109,9 @@ import {
   deleteVideoPromptsForBeat as mongoDeleteVideoPromptsForBeat,
   deleteVideoPromptsForScene as mongoDeleteVideoPromptsForScene,
   getVideoPrompt as mongoGetVideoPrompt,
-  reorderVideoPromptsForBeat as mongoReorderVideoPrompts,
   recomputeCutOrderForBeat as mongoRecomputeCutOrder,
   reorderCutsInScene as mongoReorderCutsInScene,
-  normalizeStartFrame,
+  normalizeFrame,
 } from '../mongo/videoPrompts.js';
 import {
   createVideoScene as mongoCreateVideoScene,
@@ -121,7 +120,6 @@ import {
   deleteVideoScenesForBeat as mongoDeleteVideoScenesForBeat,
   getVideoScene as mongoGetVideoScene,
   reorderVideoScenesForBeat as mongoReorderVideoScenes,
-  setVideoSceneVideo as mongoSetVideoSceneVideo,
   listVideoScenes,
 } from '../mongo/videoScenes.js';
 import {
@@ -151,7 +149,6 @@ import {
   attachExistingAttachmentToDirectorNote,
   deleteAttachments,
 } from '../mongo/attachments.js';
-import { probeAudioDurationSeconds } from '../fal/videoPricing.js';
 import { enqueueReindex } from '../rag/queue.js';
 import { deleteEntity } from '../rag/indexer.js';
 import { stripMarkdown, linesToHardBreaks } from '../util/markdown.js';
@@ -382,11 +379,11 @@ async function readEntityField({ projectId, entityType, entityId, field }) {
     return String(d[m[2]] || '');
   }
   if (entityType === 'video_prompts') {
-    const sm = field.match(/^scene:([a-f0-9]{24}):floor_plan$/);
+    const sm = field.match(/^scene:([a-f0-9]{24}):title$/);
     if (sm) {
       const s = await mongoGetVideoScene(projectId, sm[1]);
       if (!s) throw new Error(`Video scene not found: ${sm[1]}`);
-      return String(s.floor_plan || '');
+      return String(s.title || '');
     }
     const m = field.match(/^item:([a-f0-9]{24}):(title|prompt|start_frame_prompt|end_frame_prompt)$/);
     if (!m) throw new Error(`gateway fallback: unknown video_prompts field "${field}"`);
@@ -458,17 +455,6 @@ async function fallbackTextWrite({ projectId, entityType, entityId, field, op, .
       const m = field.match(/^attachment:([a-f0-9]{24}):(name|description)$/);
       if (m) return setOwnedAttachmentMeta(m[1], { [m[2]]: args.markdown });
     }
-    // Scene bible: whole-object read-modify-write via the normalizing helper.
-    // Avoids a dotted `$set` through a null scene_bible — the same reason
-    // describeBeatRoom.persistFields reassembles the object (roomRegistry.js).
-    if (field.startsWith('scene_bible.')) {
-      const key = field.slice('scene_bible.'.length);
-      const beat = await Plots.getBeat(projectId, entityId);
-      return Plots.setBeatSceneBible(projectId, entityId, {
-        ...(beat?.scene_bible || {}),
-        [key]: args.markdown,
-      });
-    }
     return Plots.updateBeat(projectId, entityId, { [field]: args.markdown });
   }
   if (entityType === 'character') {
@@ -519,8 +505,8 @@ async function fallbackTextWrite({ projectId, entityType, entityId, field, op, .
     return mongoUpdateDialog(projectId, m[1], { [m[2]]: args.markdown });
   }
   if (entityType === 'video_prompts') {
-    const sm = field.match(/^scene:([a-f0-9]{24}):floor_plan$/);
-    if (sm) return mongoUpdateVideoScene(projectId, sm[1], { floor_plan: args.markdown });
+    const sm = field.match(/^scene:([a-f0-9]{24}):title$/);
+    if (sm) return mongoUpdateVideoScene(projectId, sm[1], { title: args.markdown });
     const m = field.match(/^item:([a-f0-9]{24}):(title|prompt|start_frame_prompt|end_frame_prompt)$/);
     if (!m) throw new Error(`gateway fallback: unknown video_prompts field "${field}"`);
     return mongoUpdateVideoPrompt(projectId, m[1], { [m[2]]: args.markdown });
@@ -1723,87 +1709,6 @@ export async function removeDirectorNoteAttachmentViaGateway({ projectId, noteId
   return result;
 }
 
-// The Prompts tab's assembled beat video (beats.$.prompts_video_*, joined cut
-// clips; src/web/cutAssemble.js). Stored apart from the legacy video_*
-// so neither tab overwrites the other's MP4. Same contract as
-// setBeatVideoViaGateway; pings the beat's video_prompts room instead.
-export async function setBeatPromptsVideoViaGateway({ projectId, beatId, fileId = null, durationSeconds = null }) {
-  const before = await Plots.getBeat(projectId, beatId);
-  if (!before) throw new Error(`Beat not found: ${beatId}`);
-  const oldId = before.prompts_video_file_id ? String(before.prompts_video_file_id) : null;
-  const beat = await Plots.setBeatPromptsVideo(projectId, before._id, { fileId, durationSeconds });
-  if (oldId && oldId !== (fileId == null ? null : String(fileId))) {
-    try {
-      await deleteAttachments([oldId]);
-    } catch (e) {
-      logger.warn(`gateway: previous prompts beat video ${oldId} cleanup failed: ${e.message}`);
-    }
-  }
-  broadcastFieldsUpdated(buildRoomName('video_prompts', String(before._id)), {
-    changed: ['beat_video'],
-    beat_id: String(before._id),
-  });
-  return beat;
-}
-
-// A scene's assembled MP4 (video_scenes.video_*). fileId=null discards; the
-// previous file is deleted best-effort and the beat's video_prompts room pinged.
-export async function setVideoSceneVideoViaGateway({ projectId, sceneId, fileId = null, durationSeconds = null }) {
-  const s = await mongoGetVideoScene(projectId, sceneId);
-  if (!s) throw new Error(`Video scene not found: ${sceneId}`);
-  const oldId = s.video_file_id ? String(s.video_file_id) : null;
-  const updated = await mongoSetVideoSceneVideo(s._id, { fileId, durationSeconds });
-  if (oldId && oldId !== (fileId == null ? null : String(fileId))) {
-    try {
-      await deleteAttachments([oldId]);
-    } catch (e) {
-      logger.warn(`gateway: previous scene video ${oldId} cleanup failed: ${e.message}`);
-    }
-  }
-  broadcastFieldsUpdated(buildRoomName('video_prompts', s.beat_id.toString()), {
-    changed: ['scene_video'],
-    video_scene_id: s._id.toString(),
-  });
-  return updated;
-}
-
-// Assembled MP4s go stale when the cut SET changes — a cut or scene deleted or
-// reordered, the beat wiped. Re-plan and delete
-// clear the beat video, a single re-render does not. Clears the beat's
-// Prompts-tab MP4 and, unless beatOnly, the given scene's MP4 (sceneId) or
-// every scene's. Best-effort: a cleanup failure never fails the caller.
-export async function clearAssembledVideosForBeat(projectId, beatId, { sceneId = null, beatOnly = false } = {}) {
-  const bid = String(beatId);
-  try {
-    const beat = await Plots.getBeat(projectId, bid);
-    if (beat?.prompts_video_file_id) {
-      await setBeatPromptsVideoViaGateway({ projectId, beatId: beat._id, fileId: null });
-    }
-  } catch (e) {
-    logger.warn(`gateway: clear prompts beat video for ${bid} failed: ${e.message}`);
-  }
-  if (beatOnly) return;
-  let targets = [];
-  try {
-    if (sceneId) {
-      const s = await mongoGetVideoScene(projectId, sceneId);
-      if (s) targets = [s];
-    } else {
-      targets = await listVideoScenes({ projectId, beatId: bid });
-    }
-  } catch (e) {
-    logger.warn(`gateway: list scenes for video clear failed: ${e.message}`);
-  }
-  for (const s of targets) {
-    if (!s?.video_file_id) continue;
-    try {
-      await setVideoSceneVideoViaGateway({ projectId, sceneId: s._id, fileId: null });
-    } catch (e) {
-      logger.warn(`gateway: clear scene video ${s._id} failed: ${e.message}`);
-    }
-  }
-}
-
 // ─── Dialogs ──────────────────────────────────────────────────────────────
 //
 // Dialogs live in their own top-level collection but share one y-doc per
@@ -1957,23 +1862,15 @@ export async function deleteAllDialogsForBeatViaGateway({ projectId, beatId }) {
   return { ok: true, removed_count: removed.length };
 }
 
-// ─── Video prompts (Prompts tab): cuts and scenes ───────────────────────────
+// ─── Scenes tab: scenes and cuts ────────────────────────────────────────────
 //
-// One y-doc per beat (room: "video_prompts:<beatId>") with three fragments
+// One y-doc per beat (room: "video_prompts:<beatId>") with four fragments
 // per cut — "item:<id>:title", "item:<id>:prompt", "item:<id>:start_frame_prompt",
-// "item:<id>:end_frame_prompt"
-// — and one per scene — "scene:<id>:floor_plan". Everything else (the
-// shot-table cells, duration, the ordered reference images, the start-frame
-// sub-doc, the rendered video, a scene's read / scope / load) lives in Mongo
-// and is patched here with a `fields_updated` ping so open Prompts pages
-// refetch. Rows of `video_prompts` are CUTS; `video_scenes` groups them.
-
-// A frame object whose prompt is the seeded text (a seed with no frame yet
-// starts one); no seed leaves the frame as given.
-function withSeededPrompt(frame, prompt) {
-  if (prompt === undefined) return frame;
-  return { ...(frame || {}), prompt };
-}
+// "item:<id>:end_frame_prompt" — and one per scene — "scene:<id>:title".
+// Everything else (duration, each frame's reference images and rendered
+// image, the rendered video) lives in Mongo and is patched here with a
+// `fields_updated` ping so open Scenes pages refetch. Rows of `video_prompts`
+// are CUTS; `video_scenes` groups them.
 
 function videoPromptItemField(promptId, field) {
   return `item:${promptId}:${field}`;
@@ -1984,14 +1881,13 @@ function videoSceneField(sceneId, field) {
 }
 
 const VIDEO_PROMPT_TEXT_FIELDS = new Set(['title', 'prompt', 'start_frame_prompt', 'end_frame_prompt']);
-const VIDEO_SCENE_TEXT_FIELDS = new Set(['floor_plan']);
 
 // The GridFS image ids a cut's start and end frames hold (current + one undo
-// step each).
-function startFrameImageIds(row) {
+// step each). Reference images are artwork owned elsewhere and never listed.
+function cutFrameImageIds(row) {
   return [row?.start_frame, row?.end_frame]
     .filter(Boolean)
-    .flatMap((f) => [f.image_id, f.previous_image_id, f.master_image_id])
+    .flatMap((f) => [f.image_id, f.previous_image_id])
     .filter(Boolean)
     .map((id) => String(id));
 }
@@ -2001,11 +1897,10 @@ export function cutFrameKey(frame) {
   return frame === 'end' ? 'end_frame' : 'start_frame';
 }
 
-// Best-effort media cleanup for a batch of cut rows: rendered clips and the
-// joined dialogue recording (attachments bucket) and start-frame images
-// (images bucket).
+// Best-effort media cleanup for a batch of cut rows: rendered clips
+// (attachments bucket) and frame images (images bucket).
 async function deleteCutMedia(rows) {
-  const fileIds = rows.flatMap((r) => [r.video_file_id, r.audio_file_id]).filter(Boolean);
+  const fileIds = rows.map((r) => r.video_file_id).filter(Boolean);
   if (fileIds.length) {
     try {
       await deleteAttachments(fileIds);
@@ -2013,24 +1908,13 @@ async function deleteCutMedia(rows) {
       logger.warn(`gateway: delete cut videos failed: ${e.message}`);
     }
   }
-  const imageIds = rows.flatMap(startFrameImageIds);
+  const imageIds = rows.flatMap(cutFrameImageIds);
   if (imageIds.length) {
     try {
       await deleteImages(imageIds);
     } catch (e) {
-      logger.warn(`gateway: delete cut start-frame images failed: ${e.message}`);
+      logger.warn(`gateway: delete cut frame images failed: ${e.message}`);
     }
-  }
-}
-
-// Best-effort cleanup of scenes' assembled MP4s (attachments bucket).
-async function deleteSceneVideos(scenes) {
-  const ids = (scenes || []).map((s) => s?.video_file_id).filter(Boolean).map(String);
-  if (!ids.length) return;
-  try {
-    await deleteAttachments(ids);
-  } catch (e) {
-    logger.warn(`gateway: delete scene videos failed: ${e.message}`);
   }
 }
 
@@ -2049,139 +1933,68 @@ export async function setVideoPromptTextFieldViaGateway({ projectId, promptId, f
   });
 }
 
-// Patch the non-text scalars of a cut and ping the room. The legacy
-// `durationSeconds` / `referenceImages` args still work; `patch` carries any
-// structured cut field (camera, in_frame, action, dialog_ids, lock_line,
-// scene_id, cut_index, …) and is validated by updateVideoPrompt.
-export async function updateVideoPromptScalarsViaGateway({
-  projectId,
-  promptId,
-  durationSeconds,
-  referenceImages,
-  patch,
-}) {
+// Set a cut's length and ping the room.
+export async function setVideoPromptDurationViaGateway({ projectId, promptId, durationSeconds }) {
   const p = await mongoGetVideoPrompt(projectId, promptId);
   if (!p) throw new Error(`Video prompt not found: ${promptId}`);
-  const merged = {};
-  if (durationSeconds !== undefined) merged.duration_seconds = durationSeconds;
-  if (referenceImages !== undefined) merged.reference_images = referenceImages;
-  if (patch && typeof patch === 'object' && !Array.isArray(patch)) {
-    for (const [k, v] of Object.entries(patch)) {
-      if (v === undefined) continue;
-      merged[k] = v;
-    }
-  }
-  if (!Object.keys(merged).length) return p;
-  const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), merged);
+  const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), { duration_seconds: durationSeconds });
   broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
-    changed: Object.keys(merged),
+    changed: ['duration_seconds'],
     video_prompt_id: p._id.toString(),
   });
   return updated;
 }
 
+// Append a cut to a scene. The four text fragments are seeded (empty unless
+// given) BEFORE the row is inserted — see seedNewRowFragments.
 export async function createVideoPromptViaGateway({
   projectId,
-  beatId,
+  sceneId,
   title = '',
   prompt = '',
   durationSeconds = null,
-  referenceImages = [],
-  order,
-  sceneId = null,
-  cutIndex = null,
-  camera = null,
-  inFrame = [],
-  actionBy = '',
-  reaction = false,
-  eyeline = '',
-  action = '',
-  others = '',
-  lastFrame = '',
-  sound = '',
-  crossing = false,
-  contact = false,
-  soundOnAction = false,
-  charactersInScene = [],
-  setsInScene = [],
-  primarySpend = null,
-  feltIntent = '',
-  hook = '',
-  continuesPrevious = false,
-  dialogIds = [],
-  lockLine = '',
-  referenceBinding = '',
-  exclusions = [],
-  lint = [],
-  startFrame = null,
-  endFrame = null,
-  seedFragments,
-  // true → recompute the beat's global cut order after insert so a cut added
-  // to a scene lands at the end of that scene rather than the end of the beat.
-  recompute = false,
+  startFramePrompt = '',
+  endFramePrompt = '',
 }) {
-  // Seed the y-doc fragments BEFORE the insert (see seedNewRowFragments) and
-  // so before the ping: the SPA's CollabFields for the new row mount against
-  // populated fragments instead of showing blank text.
+  const scene = await mongoGetVideoScene(projectId, sceneId);
+  if (!scene) throw new Error(`Video scene not found: ${sceneId}`);
+  const beatId = scene.beat_id.toString();
   const id = new ObjectId();
-  const seeded = textSeeds(seedFragments, VIDEO_PROMPT_TEXT_FIELDS);
+  const texts = {
+    title: String(title || ''),
+    prompt: String(prompt || ''),
+    start_frame_prompt: String(startFramePrompt || ''),
+    end_frame_prompt: String(endFramePrompt || ''),
+  };
   await seedNewRowFragments({
     projectId,
     entityType: 'video_prompts',
     beatId,
-    fragments: Object.entries(seeded).map(([field, text]) => [videoPromptItemField(id.toString(), field), text]),
+    fragments: Object.entries(texts).map(([field, text]) => [videoPromptItemField(id.toString(), field), text]),
     label: 'createVideoPrompt',
   });
-  let p = await mongoCreateVideoPrompt({
+  await mongoCreateVideoPrompt({
     id,
     projectId,
     beatId,
-    title: seeded.title ?? title,
-    prompt: seeded.prompt ?? prompt,
+    sceneId: scene._id,
+    title: texts.title,
+    prompt: texts.prompt,
     durationSeconds,
-    referenceImages,
-    order,
-    sceneId,
-    cutIndex,
-    camera,
-    inFrame,
-    actionBy,
-    reaction,
-    eyeline,
-    action,
-    others,
-    lastFrame,
-    sound,
-    crossing,
-    contact,
-    soundOnAction,
-    charactersInScene,
-    setsInScene,
-    primarySpend,
-    feltIntent,
-    hook,
-    continuesPrevious,
-    dialogIds,
-    lockLine,
-    referenceBinding,
-    exclusions,
-    lint,
-    startFrame: withSeededPrompt(startFrame, seeded.start_frame_prompt),
-    endFrame: withSeededPrompt(endFrame, seeded.end_frame_prompt),
+    startFrame: texts.start_frame_prompt ? { prompt: texts.start_frame_prompt } : null,
+    endFrame: texts.end_frame_prompt ? { prompt: texts.end_frame_prompt } : null,
   });
-  if (recompute) {
-    await mongoRecomputeCutOrder(beatId);
-    p = (await mongoGetVideoPrompt(projectId, p._id.toString())) || p;
-  }
-  broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
+  await mongoRecomputeCutOrder(beatId);
+  const p = await mongoGetVideoPrompt(projectId, id.toString());
+  broadcastFieldsUpdated(buildRoomName('video_prompts', beatId), {
     changed: ['video_prompts'],
-    added_video_prompt_id: p._id.toString(),
+    added_video_prompt_id: id.toString(),
   });
   return p;
 }
 
-// Delete one cut (its rendered video and start-frame images, best-effort),
-// then recompact the beat's order (and its scene's cut_index) to 1..N-1.
+// Delete one cut (its rendered video and frame images, best-effort),
+// renumber the rest and ping the room.
 export async function deleteVideoPromptViaGateway({ projectId, promptId }) {
   const p = await mongoGetVideoPrompt(projectId, promptId);
   if (!p) throw new Error(`Video prompt not found: ${promptId}`);
@@ -2189,7 +2002,6 @@ export async function deleteVideoPromptViaGateway({ projectId, promptId }) {
   await mongoDeleteVideoPrompt(p._id);
   await deleteCutMedia([p]);
   await mongoRecomputeCutOrder(beatId);
-  await clearAssembledVideosForBeat(projectId, beatId, p.scene_id ? { sceneId: String(p.scene_id) } : { beatOnly: true });
   broadcastFieldsUpdated(buildRoomName('video_prompts', beatId), {
     changed: ['video_prompts'],
     removed_video_prompt_id: p._id.toString(),
@@ -2197,35 +2009,9 @@ export async function deleteVideoPromptViaGateway({ projectId, promptId }) {
   return { ok: true, beat_id: beatId };
 }
 
-export async function reorderVideoPromptsViaGateway({ projectId, beatId, orderedIds }) {
-  const result = await mongoReorderVideoPrompts(beatId, orderedIds);
-  await clearAssembledVideosForBeat(projectId, beatId);
-  broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
-    changed: ['order'],
-  });
-  return result;
-}
-
-// Wipe every scene AND every cut of a beat, deleting rendered videos and
-// start-frame images (best-effort). The Prompts tab's "Delete all".
-export async function deleteAllVideoPromptsForBeatViaGateway({ projectId, beatId }) {
-  const removed = await mongoDeleteVideoPromptsForBeat(beatId);
-  const scenes = await mongoDeleteVideoScenesForBeat(beatId);
-  await deleteCutMedia(removed);
-  await deleteSceneVideos(scenes);
-  await clearAssembledVideosForBeat(projectId, beatId, { beatOnly: true });
-  broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
-    changed: ['video_prompts', 'video_scenes'],
-    cleared: true,
-  });
-  return { ok: true, removed_count: removed.length, scenes_removed: scenes.length };
-}
-
-export const deleteAllVideoScenesForBeatViaGateway = deleteAllVideoPromptsForBeatViaGateway;
-
 // Persist a rendered video onto a cut. videoFileId=null clears the slot. `provider`
-// ('fal' | 'comfy', default 'fal') and `comfy` ({ template, model_id, params,
-// prompt_id }) record which path rendered the clip.
+// is 'fal' (default) or 'comfy'; `comfy` carries the ComfyUI run details. The
+// previous file is NOT deleted here — the callers own that.
 export async function setVideoPromptVideoViaGateway({
   projectId,
   promptId,
@@ -2239,7 +2025,7 @@ export async function setVideoPromptVideoViaGateway({
   modelAddedAt = null,
   parameters = null,
   costUsd = null,
-  provider = null,
+  provider = 'fal',
   comfy = null,
 }) {
   const p = await mongoGetVideoPrompt(projectId, promptId);
@@ -2274,55 +2060,16 @@ export async function setVideoPromptVideoViaGateway({
     patch.video_parameters =
       parameters && typeof parameters === 'object' && !Array.isArray(parameters) ? parameters : null;
     patch.video_cost_usd =
-      typeof costUsd === 'number' && Number.isFinite(costUsd) && costUsd >= 0 ? costUsd : null;
+      costUsd != null && Number.isFinite(Number(costUsd)) && Number(costUsd) >= 0 ? Number(costUsd) : null;
     patch.video_provider = provider === 'comfy' ? 'comfy' : 'fal';
     patch.video_comfy = comfy && typeof comfy === 'object' && !Array.isArray(comfy) ? comfy : null;
   }
   await mongoUpdateVideoPrompt(projectId, p._id.toString(), patch);
   broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
-    changed: Object.keys(patch),
+    changed: ['video'],
     video_prompt_id: p._id.toString(),
   });
   return mongoGetVideoPrompt(projectId, p._id.toString());
-}
-
-// The joined dialogue recording a lip-sync render of a cut used : probes the duration, deletes the
-// previous concat file (best-effort) and pings the room. audioFileId=null clears.
-export async function setVideoPromptAudioViaGateway({ projectId, promptId, audioFileId }) {
-  const p = await mongoGetVideoPrompt(projectId, promptId);
-  if (!p) throw new Error(`Video prompt not found: ${promptId}`);
-  const patch = { audio_file_id: audioFileId == null ? null : String(audioFileId) };
-  if (audioFileId == null) {
-    patch.audio_duration_seconds = null;
-  } else {
-    try {
-      const read = await readAttachmentBuffer(audioFileId);
-      if (read?.buffer) {
-        const mime = read.file?.contentType || read.file?.metadata?.content_type || null;
-        const dur = await probeAudioDurationSeconds(read.buffer, mime);
-        patch.audio_duration_seconds = dur || null;
-      } else {
-        patch.audio_duration_seconds = null;
-      }
-    } catch (e) {
-      logger.warn(`gateway: cut audio duration probe failed for ${audioFileId}: ${e.message}`);
-      patch.audio_duration_seconds = null;
-    }
-  }
-  const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), patch);
-  const oldId = p.audio_file_id ? String(p.audio_file_id) : null;
-  if (oldId && oldId !== patch.audio_file_id) {
-    try {
-      await deleteAttachments([oldId]);
-    } catch (e) {
-      logger.warn(`gateway: previous cut audio ${oldId} cleanup failed: ${e.message}`);
-    }
-  }
-  broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
-    changed: Object.keys(patch),
-    video_prompt_id: p._id.toString(),
-  });
-  return updated;
 }
 
 // Replace a cut's start-frame (or, with `frame: 'end'`, end-frame) sub-doc.
@@ -2331,10 +2078,7 @@ export async function setVideoPromptAudioViaGateway({ projectId, promptId, audio
 // `startFrame: null` clears the slot and deletes both files. A missing
 // `prompt` keeps the current prompt (it is a collab fragment the caller may
 // not have in hand).
-// `keepUndo`: the image being replaced is an intermediate (a repair of a
-// repair) — it is deleted and the existing undo target is kept, so Undo
-// still returns the frame as it was before the repairs began.
-export async function setVideoPromptStartFrameViaGateway({ projectId, promptId, startFrame, frame = 'start', keepUndo = false }) {
+export async function setVideoPromptStartFrameViaGateway({ projectId, promptId, startFrame, frame = 'start' }) {
   const key = cutFrameKey(frame);
   const p = await mongoGetVideoPrompt(projectId, promptId);
   if (!p) throw new Error(`Video prompt not found: ${promptId}`);
@@ -2348,19 +2092,11 @@ export async function setVideoPromptStartFrameViaGateway({ projectId, promptId, 
     });
     return cleared;
   }
-  const next = normalizeStartFrame(startFrame);
+  const next = normalizeFrame(startFrame);
   if (startFrame.prompt === undefined && prev) next.prompt = prev.prompt || '';
   const prevImage = prev?.image_id ? String(prev.image_id) : null;
   const nextImage = next.image_id ? String(next.image_id) : null;
-  const undoTarget = prev?.previous_image_id ? String(prev.previous_image_id) : null;
-  if (keepUndo && prevImage && prevImage !== nextImage && undoTarget && undoTarget !== prevImage && undoTarget !== nextImage) {
-    try {
-      await deleteImages([prevImage]);
-    } catch (e) {
-      logger.warn(`gateway: delete intermediate ${frame} frame ${prevImage} failed: ${e.message}`);
-    }
-    next.previous_image_id = new ObjectId(undoTarget);
-  } else if (prevImage && prevImage !== nextImage) {
+  if (prevImage && prevImage !== nextImage) {
     const older = prev.previous_image_id ? String(prev.previous_image_id) : null;
     if (older && older !== prevImage && older !== nextImage) {
       try {
@@ -2372,15 +2108,6 @@ export async function setVideoPromptStartFrameViaGateway({ projectId, promptId, 
     next.previous_image_id = new ObjectId(prevImage);
   } else if (!next.previous_image_id && prev?.previous_image_id) {
     next.previous_image_id = prev.previous_image_id;
-  }
-  // A master plate that is no longer this frame's is dropped.
-  const prevMaster = prev?.master_image_id ? String(prev.master_image_id) : null;
-  if (prevMaster && prevMaster !== (next.master_image_id ? String(next.master_image_id) : null)) {
-    try {
-      await deleteImages([prevMaster]);
-    } catch (e) {
-      logger.warn(`gateway: delete ${frame} frame master ${prevMaster} failed: ${e.message}`);
-    }
   }
   const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), { [key]: next });
   broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
@@ -2423,55 +2150,18 @@ export async function undoVideoPromptStartFrameViaGateway({ projectId, promptId,
 
 // ── Scenes ──────────────────────────────────────────────────────────────────
 
-export async function createVideoSceneViaGateway({
-  projectId,
-  beatId,
-  order,
-  title = '',
-  slug = '',
-  setNames = [],
-  characterNames = [],
-  textSpan = null,
-  directorsRead = null,
-  kind = 'scene',
-  montageSubjects = [],
-  intention = '',
-  tempo = '',
-  scope = null,
-  floorPlan = '',
-  dialogIds = [],
-  load = null,
-  seedFragments,
-}) {
+// Append a scene to a beat. Its name fragment is seeded before the insert.
+export async function createVideoSceneViaGateway({ projectId, beatId, title = '' }) {
   const id = new ObjectId();
-  const seeded = textSeeds(seedFragments, VIDEO_SCENE_TEXT_FIELDS);
+  const text = String(title || '');
   await seedNewRowFragments({
     projectId,
     entityType: 'video_prompts',
     beatId,
-    fragments: Object.entries(seeded).map(([field, text]) => [videoSceneField(id.toString(), field), text]),
+    fragments: [[videoSceneField(id.toString(), 'title'), text]],
     label: 'createVideoScene',
   });
-  const s = await mongoCreateVideoScene({
-    id,
-    projectId,
-    beatId,
-    order,
-    title,
-    slug,
-    setNames,
-    characterNames,
-    textSpan,
-    directorsRead,
-    kind,
-    montageSubjects,
-    intention,
-    tempo,
-    scope,
-    floorPlan: seeded.floor_plan ?? floorPlan,
-    dialogIds,
-    load,
-  });
+  const s = await mongoCreateVideoScene({ id, projectId, beatId, title: text });
   broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
     changed: ['video_scenes'],
     added_video_scene_id: s._id.toString(),
@@ -2479,58 +2169,19 @@ export async function createVideoSceneViaGateway({
   return s;
 }
 
-export async function setVideoSceneTextFieldViaGateway({ projectId, sceneId, field, text }) {
-  if (!VIDEO_SCENE_TEXT_FIELDS.has(field)) {
-    throw new Error(`unknown video scene field: ${field}`);
-  }
-  const s = await mongoGetVideoScene(projectId, sceneId);
-  if (!s) throw new Error(`Video scene not found: ${sceneId}`);
-  await setEntityFieldMarkdown({
-    projectId,
-    entityType: 'video_prompts',
-    entityId: s.beat_id.toString(),
-    field: videoSceneField(s._id.toString(), field),
-    markdown: text,
-  });
-}
-
-// Patch a scene's scalars (title, slug, set/character names, text span,
-// director's read, intention, scope, dialog ids, load) and ping the room.
-export async function updateVideoSceneViaGateway({ projectId, sceneId, patch }) {
-  const s = await mongoGetVideoScene(projectId, sceneId);
-  if (!s) throw new Error(`Video scene not found: ${sceneId}`);
-  const merged = {};
-  if (patch && typeof patch === 'object' && !Array.isArray(patch)) {
-    for (const [k, v] of Object.entries(patch)) {
-      if (v === undefined) continue;
-      merged[k] = v;
-    }
-  }
-  if (!Object.keys(merged).length) return s;
-  const updated = await mongoUpdateVideoScene(projectId, s._id.toString(), merged);
-  broadcastFieldsUpdated(buildRoomName('video_prompts', s.beat_id.toString()), {
-    changed: Object.keys(merged),
-    video_scene_id: s._id.toString(),
-  });
-  return updated;
-}
-
-// Delete a scene and every cut in it (videos + start-frame images
-// best-effort), renumber the remaining scenes and recompute the beat's cut
-// order.
+// Delete a scene and every cut in it (videos + frame images best-effort),
+// renumber the remaining scenes and recompute the beat's cut order.
 export async function deleteVideoSceneViaGateway({ projectId, sceneId }) {
   const s = await mongoGetVideoScene(projectId, sceneId);
   if (!s) throw new Error(`Video scene not found: ${sceneId}`);
   const beatId = s.beat_id.toString();
   const cuts = await mongoDeleteVideoPromptsForScene(s._id);
   await deleteCutMedia(cuts);
-  await deleteSceneVideos([s]);
   await mongoDeleteVideoScene(s._id);
   const remaining = await listVideoScenes({ projectId, beatId });
   const remainingIds = remaining.map((x) => x._id.toString());
   await mongoReorderVideoScenes(beatId, remainingIds);
   await mongoRecomputeCutOrder(beatId, remainingIds);
-  await clearAssembledVideosForBeat(projectId, beatId, { beatOnly: true });
   broadcastFieldsUpdated(buildRoomName('video_prompts', beatId), {
     changed: ['video_scenes', 'video_prompts'],
     removed_video_scene_id: s._id.toString(),
@@ -2544,7 +2195,6 @@ export async function reorderVideoScenesViaGateway({ projectId, beatId, orderedI
     beatId,
     scenes.map((x) => x._id.toString()),
   );
-  await clearAssembledVideosForBeat(projectId, beatId, { beatOnly: true });
   broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
     changed: ['video_scenes', 'order'],
   });
@@ -2555,7 +2205,6 @@ export async function reorderCutsInSceneViaGateway({ projectId, sceneId, ordered
   const s = await mongoGetVideoScene(projectId, sceneId);
   if (!s) throw new Error(`Video scene not found: ${sceneId}`);
   const cuts = await mongoReorderCutsInScene(s._id, orderedIds);
-  await clearAssembledVideosForBeat(projectId, s.beat_id.toString(), { sceneId: s._id.toString() });
   broadcastFieldsUpdated(buildRoomName('video_prompts', s.beat_id.toString()), {
     changed: ['order'],
     video_scene_id: s._id.toString(),
@@ -2610,8 +2259,8 @@ export async function deleteBeatViaGateway(projectId, identifier) {
   const target = await getBeat(projectId, String(identifier));
   if (!target) throw new Error(`Beat not found: ${identifier}`);
   const beatId = target._id.toString();
-  // The assembled beat MP4 (plus a legacy storyboard-era one, if
-  // scripts/purge-storyboards.js has not been run on this database).
+  // Legacy assembled beat MP4s (storyboard-era `video_file_id`, the retired
+  // Prompts tab's `prompts_video_file_id`), if the purge scripts have not run.
   const beatVideoIds = [target.video_file_id, target.prompts_video_file_id].filter(Boolean).map(String);
   if (beatVideoIds.length) {
     try {
@@ -2624,10 +2273,8 @@ export async function deleteBeatViaGateway(projectId, identifier) {
   const dialogs = await mongoDeleteDialogsForBeat(beatId);
   const videoPrompts = await mongoDeleteVideoPromptsForBeat(beatId);
   const videoScenes = await mongoDeleteVideoScenesForBeat(beatId);
-  // Cut media: rendered clips + start-frame images (current and undo step);
-  // scene MP4s.
+  // Cut media: rendered clips + frame images (current and undo step).
   await deleteCutMedia(videoPrompts);
-  await deleteSceneVideos(videoScenes);
   if (res.image_ids.length) {
     await deleteImages(res.image_ids).catch((e) =>
       logger.warn(`gateway: delete beat images failed: ${e.message}`),

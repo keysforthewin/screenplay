@@ -136,6 +136,78 @@ describe('formatCritiqueForRewrite', () => {
   });
 });
 
+describe('scopeCritique', () => {
+  const critique = {
+    facets: [
+      {
+        key: 'pacing', label: 'Pacing & momentum', status: 'done', score: 7, summary: 'Slack middle.',
+        criteria: [
+          { key: 'entry', label: 'Entry', applicable: true, score: 9 },
+          { key: 'escalation', label: 'Escalation', applicable: true, score: 8 },
+        ],
+        issues: [
+          { severity: 'must_fix', criterion: 'escalation', quote: 'They talk.', problem: 'Flat.', fix: 'Cut it.' },
+          { severity: 'nit', criterion: 'entry', quote: 'FADE IN', problem: 'Late.', fix: 'Trim.' },
+        ],
+      },
+      { key: 'format', label: 'Screenplay format', status: 'done', score: 6, comments: 'No slug.' },
+      { key: 'voice', label: 'Character voice', status: 'na' },
+    ],
+  };
+
+  it('applies everything when no selection is given', () => {
+    const out = R.scopeCritique(critique, null);
+    expect(out.critique).toBe(critique);
+    expect(out.setAside).toEqual([]);
+  });
+
+  it('drops an unselected facet and names it as set aside', () => {
+    const out = R.scopeCritique(critique, { pacing: ['entry', 'escalation'] });
+    expect(out.critique.facets.map((f) => f.key)).toEqual(['pacing', 'voice']);
+    expect(out.critique.facets[0]).toBe(critique.facets[0]);
+    expect(out.setAside).toEqual(['Screenplay format (the whole facet)']);
+  });
+
+  it('keeps only the selected criteria, their issues, and a score derived from them', () => {
+    const out = R.scopeCritique(critique, { pacing: ['entry'], format: true });
+    const pacing = out.critique.facets[0];
+    expect(pacing.criteria.map((c) => c.key)).toEqual(['entry']);
+    expect(pacing.issues.map((i) => i.criterion)).toEqual(['entry']);
+    expect(pacing.score).toBe(9); // the must-fix cap went with its criterion
+    expect(pacing.summary).toBe('');
+    expect(out.critique.facets[1]).toBe(critique.facets[1]);
+    expect(out.setAside).toEqual(['Pacing & momentum / Escalation']);
+  });
+
+  it('keeps what was set aside out of the prompts, names it, and passes the direction', async () => {
+    const prompts = [];
+    _setAnthropicClientForTests({
+      messages: { create: async (req) => { prompts.push(req.messages[0].content); return { content: [{ type: 'text', text: 'X' }] }; } },
+    });
+    const beat = await Plots.createBeat({ projectId, name: 'B', body: 'old body' });
+    await C.setCritiquePending(projectId, beat._id.toString(), { model: 'm', facets: critique.facets });
+    await C.finalizeCritique(projectId, beat._id.toString(), { status: 'done', overall: 6 });
+    await R.regenerateBeat(projectId, beat._id.toString(), { apply: { pacing: ['entry'] }, direction: 'KEEP-IT-QUIET' });
+    expect(prompts).toHaveLength(2);
+    for (const p of prompts) {
+      expect(p).toContain('# Scope of this rewrite');
+      expect(p).toContain('- Pacing & momentum / Escalation');
+      expect(p).toContain('- Screenplay format (the whole facet)');
+      expect(p).toContain('KEEP-IT-QUIET');
+      expect(p).toContain('Late.');
+      expect(p).not.toContain('Flat.');
+      expect(p).not.toContain('No slug.');
+    }
+  });
+
+  it('rejects a selection that leaves nothing to apply', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'B', body: 'old body' });
+    await C.setCritiquePending(projectId, beat._id.toString(), { model: 'm', facets: critique.facets });
+    await C.finalizeCritique(projectId, beat._id.toString(), { status: 'done', overall: 6 });
+    await expect(R.regenerateBeat(projectId, beat._id.toString(), { apply: {} })).rejects.toMatchObject({ status: 400 });
+  });
+});
+
 describe('restoreBeatBody', () => {
   it('restores the stashed body and clears the slot', async () => {
     const beat = await Plots.createBeat({ projectId, name: 'B', body: 'orig' });
@@ -164,11 +236,11 @@ function richCritique() {
         key: 'direction', label: "Director's notes", status: 'done', score: 5, summary: 'Two anchors broken.', strengths: [],
         criteria: [
           { key: 'notes_honored', label: 'Project notes honored', applicable: true, score: 8, evidence: [] },
-          { key: 'scene_bible', label: 'Scene bible fidelity', applicable: true, score: 5, evidence: [] },
+          { key: 'directorial_voice', label: 'Directorial voice', applicable: true, score: 5, evidence: [], rationale: 'Age and wardrobe both break the notes.', to_raise: 'Make the cue KEYS (10) and dress him in the striped long-sleeve.' },
         ],
         issues: [
-          { severity: 'must_fix', criterion: 'scene_bible', quote: 'KEYS (12)', problem: 'The bible makes him 10.', fix: 'KEYS (10)' },
-          { severity: 'must_fix', criterion: 'scene_bible', quote: 'a short-sleeved tee', problem: 'Breaks the wardrobe anchor.', fix: 'a striped long-sleeve under a windbreaker' },
+          { severity: 'must_fix', criterion: 'directorial_voice', quote: 'KEYS (12)', problem: 'The notes make him 10.', fix: 'KEYS (10)' },
+          { severity: 'must_fix', criterion: 'directorial_voice', quote: 'a short-sleeved tee', problem: 'Breaks the wardrobe anchor.', fix: 'a striped long-sleeve under a windbreaker' },
         ],
       },
       {
@@ -182,8 +254,7 @@ function richCritique() {
 
 const CTX = {
   beat: { desc: 'A boy of ten goes to the movies.', dialog_notes: '' },
-  sceneBible: 'Young Keys is 10. Striped long-sleeve under a zip-up windbreaker.',
-  directorNotes: [{ text: 'Let drifts linger on empty space.' }],
+  directorNotes: [{ text: 'Let drifts linger on empty space.' }, { text: 'Young Keys is 10. Striped long-sleeve under a zip-up windbreaker.' }],
   directorialVoice: 'Patient, observational.',
   plot: { dialogue_style: 'Clipped.' },
   characters: [],
@@ -220,17 +291,55 @@ describe('rewrite prompts', () => {
     const user = calls[0].messages[0].content;
     expect(user).toContain('Young Keys is 10');
     expect(user).toMatch(/Director's notes: 5\/10 now, capped at 5 by two or more must-fix issues/);
-    expect(user).toContain('Scene bible fidelity (now 5): a 9 is');
+    expect(user).toContain('Directorial voice (now 5): a 9 is');
     expect(user).toContain('Cuts on the button.');
     expect(user).toContain('"The doors swing shut."');
     expect(calls[0].system).toContain('caps the facet at 7');
+  });
+
+  it('every rewrite call gets each criterion\'s reason and the critic\'s way to raise it', async () => {
+    const raise = '  To raise it: Make the cue KEYS (10) and dress him in the striped long-sleeve.';
+    await R.synthesizeRewriteStrategy({ beat, critique: richCritique(), ctx: CTX });
+    await R.regenerateBeatBody({ beat, strategy: 'P', critique: richCritique(), ctx: CTX });
+    await R.planBeatEdits({ beat, critique: richCritique(), ctx: CTX }).catch(() => {});
+    expect(calls).toHaveLength(4); // the edit planner asks twice: 'OUT' is not JSON
+    for (const c of calls) {
+      expect(c.messages[0].content).toContain(raise);
+      expect(c.messages[0].content).toContain('  Why 5: Age and wardrobe both break the notes.');
+      expect(c.system).toContain('"To raise it"');
+    }
+    // A criterion with neither (a critique saved before to_raise) keeps the anchor line alone.
+    const lines = R.formatTargets(richCritique());
+    const i = lines.findIndex((l) => l.includes('Project notes honored (now 8): a 9 is'));
+    expect(i).toBeGreaterThan(0);
+    expect(lines[i + 1]).toContain('Directorial voice (now 5)');
+  });
+
+  it('a praised line that an issue faults is not on the keep list, and a fix outranks it', async () => {
+    const c = richCritique();
+    c.facets[1].criteria[0].evidence.push({ quote: 'KEYS (12) wears', note: 'clean intro' });
+    const keep = R.formatKeepList(c).join('\n');
+    expect(keep).toContain('"The doors swing shut."');
+    expect(keep).not.toContain('KEYS (12)');
+    expect(keep).toContain('unless an issue or a target');
+    await R.synthesizeRewriteStrategy({ beat, critique: c, ctx: CTX });
+    await R.regenerateBeatBody({ beat, strategy: 'P', critique: c, ctx: CTX });
+    await R.planBeatEdits({ beat, critique: c, ctx: CTX }).catch(() => {});
+    for (const call of calls) expect(call.system).toContain('it never blocks a fix');
+    expect(calls.at(-1).system).toContain('one edit per paragraph');
+  });
+
+  it('cutting whole paragraphs leaves no run of blank lines behind', () => {
+    const out = R.applyBeatEdits('One.\n\nTwo.\n\nThree.\n\nFour.', [{ find: 'Two.', replace: 'New.' }, { find: 'Three.', replace: '' }, { find: 'Four.', replace: '' }]);
+    expect(out.body).toBe('One.\n\nNew.');
+    expect(out.applied).toHaveLength(3);
   });
 
   it('the writer sees the issues themselves, not only the plan', async () => {
     await R.regenerateBeatBody({ beat, strategy: 'THE PLAN', critique: richCritique(), ctx: CTX });
     const user = calls[0].messages[0].content;
     expect(user).toContain('THE PLAN');
-    expect(user).toContain('"KEYS (12)" — The bible makes him 10. → FIX: KEYS (10)');
+    expect(user).toContain('"KEYS (12)" — The notes make him 10. → FIX: KEYS (10)');
     expect(user).toContain('Young Keys is 10');
     expect(user).toContain('Keep (the critics praised these');
     expect(calls[0].system).not.toContain('ticks each note off');
@@ -244,12 +353,12 @@ describe('rewrite prompts', () => {
 
   it('history shows what the critics faulted in a discarded attempt', async () => {
     const issues = R.summarizeIssuesForHistory(richCritique());
-    expect(issues[0]).toBe('[Director\'s notes, must fix] "KEYS (12)" — The bible makes him 10.');
+    expect(issues[0]).toBe('[Director\'s notes, must fix] "KEYS (12)" — The notes make him 10.');
     await R.synthesizeRewriteStrategy({ beat, critique: richCritique(), history: [{ n: 2, score: 7.3, mode: 'edit', facets: { Pacing: 7 }, strategy: 'OLD PLAN', issues }] });
     const user = calls[0].messages[0].content;
     expect(user).toContain('Attempt 2 (targeted edits): overall 7.3/10 (Pacing 7)');
     expect(user).toContain('What the critics then faulted:');
-    expect(user).toContain('The bible makes him 10.');
+    expect(user).toContain('The notes make him 10.');
   });
 
   it('planBeatEdits parses the edit list and asks again on a non-JSON answer', async () => {

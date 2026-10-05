@@ -101,6 +101,24 @@ describe('normalizeFacetResult', () => {
     expect(r.score).toBe(6);
   });
 
+  it('keeps each criterion\'s to_raise, clipped, and blanks it at 10 or when not applicable', () => {
+    const r = normalizeFacetResult(
+      {
+        criteria: [
+          { key: 'sluglines', applicable: true, score: 6, evidence: [], rationale: 'r', to_raise: `  Add a mini-slug. ${'x'.repeat(900)}` },
+          { key: 'action_lines', applicable: true, score: 10, evidence: [], rationale: 'r', to_raise: 'nothing' },
+          { key: 'dialogue_format', applicable: false, score: 4, evidence: [], rationale: '', to_raise: 'n/a anyway' },
+        ],
+        issues: [], strengths: [], summary: '',
+      },
+      facet,
+    );
+    expect(r.criteria[0].to_raise.startsWith('Add a mini-slug.')).toBe(true);
+    expect(r.criteria[0].to_raise.length).toBeLessThanOrEqual(800);
+    expect(r.criteria.slice(1).map((c) => c.to_raise)).toEqual(['', '', '']);
+    expect(SCORING_RULES).toMatch(/to_raise/);
+  });
+
   it('returns a null score when nothing applies', () => {
     const r = normalizeFacetResult({ criteria: [{ key: 'sluglines', applicable: false, score: 1, evidence: [], rationale: '' }], issues: [], strengths: [], summary: '' }, facet);
     expect(r.score).toBeNull();

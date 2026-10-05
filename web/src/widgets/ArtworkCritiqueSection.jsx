@@ -7,7 +7,7 @@
 // beat room, so the generation job is polled.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { apiGet, apiPatchJson, apiPostJson, apiSseUrl, thumbUrl } from '../api.js';
+import { apiGet, apiPatchJson, apiPostJson, apiDelete, apiSseUrl, thumbUrl } from '../api.js';
 import { readStoredCatalogModel, writeStoredImageModel } from './imageModels.js';
 import { ImageModelSelect } from './ImageModelSelect.jsx';
 import { GenerationProgress } from './GenerationProgress.jsx';
@@ -69,7 +69,71 @@ function ArtworkFixPanel({ artwork, model, onModel, onFix, onUndo, busy }) {
   );
 }
 
-function ArtworkStrip({ artworks, model, onModel, onFix, onUndo, busy }) {
+// The review rubric's criteria, in the order the server scores them.
+const RUBRIC_LABEL = {
+  requirement: 'Does the job',
+  beat: 'Agrees with the beat',
+  subject: 'True to the subject',
+  reference: 'Usable as a reference',
+  technical: 'Technically clean',
+};
+const ACTION_LABEL = { keep: 'keep', edit: 'edit it', regenerate: 'make it again' };
+
+// The reviewer's verdict on one artwork: rubric rows + keep / edit / regenerate.
+function ReviewVerdict({ artwork }) {
+  if (!artwork.audited_image_id) {
+    return <div className="artwork-critique-muted">Matched to this beat by its description — not looked at by the reviewer yet.</div>;
+  }
+  const rows = artwork.criteria || [];
+  return (
+    <div className="artwork-critique-review">
+      {artwork.action ? (
+        <div className="artwork-critique-review-action">
+          <span className={`review-action is-${artwork.action}`}>Reviewer: {ACTION_LABEL[artwork.action] || artwork.action}</span>
+          {artwork.action === 'regenerate' && artwork.regenerate_reason ? <span className="artwork-critique-muted"> {artwork.regenerate_reason}</span> : null}
+        </div>
+      ) : null}
+      {rows.length ? (
+        <ul className="artwork-critique-rubric">
+          {rows.map((c) => (
+            <li key={c.key}>
+              <span className={`lens-score ${scoreBand(c.score)}`}>{c.score}</span>
+              <span className="rubric-label">{RUBRIC_LABEL[c.key] || c.key}</span>
+              {c.note ? <span className="artwork-critique-muted">{c.note}</span> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+// What a climb did (or is doing) to one artwork, as a thumbnail badge.
+const CLIMB_WORKING = new Set(['queued', 'editing', 'checking']);
+function climbBadge(act, live) {
+  if (!act) return null;
+  if (CLIMB_WORKING.has(act.status)) {
+    if (!live) return null;
+    return { tone: 'is-working', text: act.status === 'queued' ? 'edit queued' : act.status === 'editing' ? 'editing…' : 'checking…' };
+  }
+  if (act.status === 'kept') return { tone: 'is-kept', text: act.from != null && act.to != null ? `${act.from} → ${act.to}` : 'edit kept' };
+  if (act.status === 'undone') return { tone: 'is-undone', text: 'edit undone' };
+  if (act.status === 'failed') return { tone: 'is-failed', text: 'edit failed' };
+  return null;
+}
+
+function climbLine(act, live) {
+  if (!act) return null;
+  if (act.status === 'queued') return live ? 'Climb: waiting its turn to be edited in place.' : null;
+  if (act.status === 'editing') return live ? 'Climb: editing this picture in place now…' : null;
+  if (act.status === 'checking') return live ? 'Climb: edited — the new picture is being checked against the beat…' : null;
+  if (act.status === 'kept') return `Climb round ${act.round}: edit kept${act.from != null && act.to != null ? ` — score ${act.from} → ${act.to}` : ''}.`;
+  if (act.status === 'undone') return `Climb round ${act.round}: edit undone${act.to != null ? ` — the edited picture scored ${act.to} against ${act.from}` : ''}; the picture is back as it was.`;
+  if (act.status === 'failed') return `Climb round ${act.round}: the edit failed${act.error ? ` — ${act.error}` : ''}.`;
+  return null;
+}
+
+function ArtworkStrip({ artworks, model, onModel, onFix, onUndo, busy, activity, climbing }) {
   const [openId, setOpenId] = useState(null);
   if (!artworks?.length) return <div className="artwork-critique-empty">No artwork on file.</div>;
   const open = artworks.find((a) => String(a.artwork_id) === openId) || null;
@@ -80,29 +144,52 @@ function ArtworkStrip({ artworks, model, onModel, onFix, onUndo, busy }) {
           const id = String(a.artwork_id);
           const n = (a.issues || []).length;
           const fixState = a.fix?.status;
+          const act = activity?.[id];
+          const badge = climbBadge(act, climbing);
+          // While an edit waits for its re-check, show the edited picture.
+          const imageId = climbing && act?.status === 'checking' && act.image_id ? act.image_id : a.result_image_id;
           return (
             <button
               type="button"
               key={id}
-              className={`artwork-critique-thumb${openId === id ? ' is-open' : ''}${n ? ' has-issues' : ''}${fixState === 'done' ? ' is-fixed' : ''}`}
+              className={`artwork-critique-thumb${openId === id ? ' is-open' : ''}${n ? ' has-issues' : ''}${fixState === 'done' ? ' is-fixed' : ''}${badge ? ` climb-${badge.tone}` : ''}${a.audited_image_id ? '' : ' is-unreviewed'}`}
               title={a.name || 'artwork'}
               onClick={() => setOpenId(openId === id ? null : id)}
             >
-              <img src={thumbUrl(a.result_image_id)} alt={a.name || ''} />
+              <img src={thumbUrl(imageId)} alt={a.name || ''} />
               {n ? <span className="issue-badge">{n}</span> : null}
-              {fixState === 'generating' ? <span className="fix-badge">fixing…</span> : fixState === 'done' ? <span className="fix-badge">fixed</span> : null}
+              {typeof a.score === 'number'
+                ? <span className={`score-badge ${scoreBand(a.score)}`} title="The reviewer's rubric score for what this beat needs from it">{formatScore(a.score)}</span>
+                : <span className="score-badge is-unreviewed" title="Matched by its description; not reviewed yet">?</span>}
+              {!badge && a.action === 'regenerate' ? <span className="fix-badge climb-badge is-failed">remake</span> : null}
+              {badge ? <span className={`fix-badge climb-badge ${badge.tone}`}>{badge.text}</span>
+                : fixState === 'generating' ? <span className="fix-badge">fixing…</span> : fixState === 'done' ? <span className="fix-badge">fixed</span> : null}
             </button>
           );
         })}
       </div>
       {open && (
         <div className="artwork-critique-issues">
-          <div className="artwork-critique-issues-title">{open.name || 'Artwork'}</div>
+          <div className="artwork-critique-issues-title">
+            {open.name || 'Artwork'}
+            {typeof open.score === 'number' ? <span className="artwork-critique-muted"> · {formatScore(open.score)}/10</span> : null}
+            {open.edit_attempts ? <span className="artwork-critique-muted"> · {open.edit_attempts} climb edit{open.edit_attempts === 1 ? '' : 's'} undone</span> : null}
+          </div>
+          {climbLine(activity?.[String(open.artwork_id)], climbing) ? (
+            <div className="artwork-critique-climb-line">
+              {climbLine(activity?.[String(open.artwork_id)], climbing)}
+              {(activity[String(open.artwork_id)].why || []).length ? (
+                <div className="artwork-critique-muted">What needed to change: {activity[String(open.artwork_id)].why.join('; ')}</div>
+              ) : null}
+              {activity[String(open.artwork_id)].prompt ? <div className="artwork-critique-muted">Edit sent to the image model: {activity[String(open.artwork_id)].prompt}</div> : null}
+            </div>
+          ) : null}
+          <ReviewVerdict artwork={open} />
           {(open.issues || []).length ? (
             <ul>
               {open.issues.map((i, n) => <li key={n}><span className="issue-chip sev-should_fix">{i.kind.replace(/_/g, ' ')}</span> {i.note}</li>)}
             </ul>
-          ) : <div className="artwork-critique-muted">Matches the writing.</div>}
+          ) : open.audited_image_id ? <div className="artwork-critique-muted">Nothing in it disagrees with the writing.</div> : null}
           {open.suggested_edit || open.fix ? (
             <ArtworkFixPanel
               key={String(open.artwork_id)}
@@ -147,20 +234,50 @@ function RequirementList({ requirements, artworksById }) {
   );
 }
 
-function SubjectCard({ subject, fixProps }) {
+// Pieces of a large library whose descriptions say they are the same picture.
+// Shown only — nothing is deleted; open the set / character to remove one.
+function DuplicateGroups({ subject }) {
+  const groups = subject.inventory?.duplicates || [];
+  if (!groups.length) return null;
+  return (
+    <div className="artwork-critique-duplicates">
+      <span className="artwork-critique-muted">
+        {groups.length} possible duplicate group{groups.length === 1 ? '' : 's'} by description —{' '}
+        <Link to={hostPath(subject.kind, subject.id)}>review on the {subject.kind}</Link>
+      </span>
+    </div>
+  );
+}
+
+function SubjectCard({ subject, fixProps, activity, climbing, audit }) {
   const artworksById = useMemo(() => new Map((subject.artworks || []).map((a) => [String(a.artwork_id), a])), [subject.artworks]);
   const reqs = subject.requirements || [];
   const covered = reqs.filter((r) => r.status === 'covered').length;
+  // A run in progress keeps showing the last audit; only a subject that has
+  // never been audited has nothing to show yet.
+  const audited = reqs.length > 0 || (subject.artworks || []).length > 0;
+  const working = Object.entries(activity || {}).filter(([id, a]) => climbing && CLIMB_WORKING.has(a.status) && artworksById.has(id)).length;
   return (
     <div className="artwork-critique-subject">
       <div className="artwork-critique-subject-head">
         <span className={`critique-scope ${subject.kind === 'set' ? 'scope-story' : ''}`}>{subject.kind === 'set' ? 'Set' : 'Character'}</span>
         <Link to={hostPath(subject.kind, subject.id)} className="artwork-critique-subject-name">{subject.name}</Link>
-        {subject.status === 'pending' && <span className="artwork-critique-muted">waiting…</span>}
+        {subject.status === 'pending' && !audited && <span className="artwork-critique-muted">waiting…</span>}
         {subject.status === 'error' && <span className="critique-error">errored: {subject.error_message}</span>}
-        {subject.status === 'done' && (
+        {working > 0 && <span className="climb-chip is-running">{working} being edited</span>}
+        {working === 0 && audit ? (
+          <span className="climb-chip is-running">
+            {audit.status === 'matching' ? 'matching its artwork descriptions…'
+              : audit.status === 'auditing' ? `reviewing its artwork… ${audit.audited ? `${audit.audited} looked at` : ''}`
+              : audit.status === 'proposing' ? 'drafting what to render…'
+                : audit.status === 'done' ? 'checked ✓'
+                  : audit.status === 'error' ? 'check failed' : 'waiting to be checked'}
+          </span>
+        ) : null}
+        {working === 0 && !audit && subject.status === 'pending' && audited && <span className="climb-chip is-running">re-checking…</span>}
+        {(subject.status === 'done' || (subject.status === 'pending' && audited)) && (
           <>
-            <span className="artwork-critique-muted">{covered}/{reqs.length} covered</span>
+            <span className="artwork-critique-muted">{reqs.filter((r) => r.status !== 'missing').length}/{reqs.length} have a picture{covered < reqs.length ? ` (${covered} exact)` : ''}</span>
             {typeof subject.accuracy_score === 'number' && (
               <>
                 <span className="artwork-critique-muted">· accuracy</span>
@@ -172,7 +289,8 @@ function SubjectCard({ subject, fixProps }) {
         )}
       </div>
       {subject.summary ? <div className="artwork-critique-summary">{subject.summary}</div> : null}
-      <ArtworkStrip artworks={subject.artworks} {...fixProps} />
+      <ArtworkStrip artworks={subject.artworks} {...fixProps} activity={activity} climbing={climbing} />
+      <DuplicateGroups subject={subject} />
       <RequirementList requirements={reqs} artworksById={artworksById} />
     </div>
   );
@@ -199,6 +317,7 @@ function ProposalRow({ p, checked, onToggle, override, onOverride, requirementLa
           Covers: {(p.requirement_ids || []).map((id) => requirementLabel(id)).filter(Boolean).join(' · ') || '—'}
           {p.rationale ? <span className="artwork-critique-muted"> — {p.rationale}</span> : null}
         </div>
+        {p.review_brief ? <div className="proposal-review-brief"><b>Reviewer's findings this image has to put right:</b> {p.review_brief}</div> : null}
         {selectable ? (
           <textarea
             className="proposal-prompt"
@@ -325,6 +444,7 @@ export function ArtworkCritiqueSection({ beatId }) {
   const [error, setError] = useState(null);
   const [climb, setClimb] = useState(null);
   const [climbOpen, setClimbOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const esRef = useRef(null);
   const pollRef = useRef(null);
   const logRef = useRef(null);
@@ -332,13 +452,17 @@ export function ArtworkCritiqueSection({ beatId }) {
   const climbing = isClimbRunning(climb);
   const generating = Boolean(genJob && !TERMINAL.has(genJob.status)) || climbing;
 
-  async function load() {
+  // `quiet` (the climb's 2 s poll): refresh what is shown without touching
+  // the proposal ticks and prompt overrides.
+  async function load({ quiet = false } = {}) {
     const r = await apiGet(`/beat/${beatId}/artwork-critique`);
     const c = r.artwork_critique || null;
     setCritique(c);
     setClimb(r.climb || null);
-    setSelected(new Set((c?.proposals || []).filter((p) => p.status === 'proposed' || p.status === 'error').map((p) => String(p._id))));
-    setOverrides({});
+    if (!quiet) {
+      setSelected(new Set((c?.proposals || []).filter((p) => p.status === 'proposed' || p.status === 'error').map((p) => String(p._id))));
+      setOverrides({});
+    }
     return c;
   }
 
@@ -361,9 +485,19 @@ export function ArtworkCritiqueSection({ beatId }) {
   useEffect(() => {
     if (!climbing) return undefined;
     let alive = true;
-    const timer = setInterval(() => { load().catch((e) => { if (alive) setError(e.message); }); }, POLL_MS);
+    const timer = setInterval(() => { load({ quiet: true }).catch((e) => { if (alive) setError(e.message); }); }, POLL_MS);
     return () => { alive = false; clearInterval(timer); };
   }, [beatId, climbing]);
+
+  // When the climb stops, tick the proposals it left open.
+  const wasClimbing = useRef(false);
+  useEffect(() => {
+    if (wasClimbing.current && !climbing) {
+      setSelected(new Set((critique?.proposals || []).filter((p) => p.status === 'proposed' || p.status === 'error').map((p) => String(p._id))));
+      setOverrides({});
+    }
+    wasClimbing.current = climbing;
+  }, [climbing]);
 
   async function startClimb(params) {
     setError(null);
@@ -381,13 +515,28 @@ export function ArtworkCritiqueSection({ beatId }) {
 
   function closeStream() { if (esRef.current) { esRef.current.close(); esRef.current = null; } }
 
-  async function run() {
+  // The critique in two steps. 'coverage': start from nothing — what the
+  // beat needs, matched against the artwork on file by description, plus a
+  // draft for everything missing; the page empties and fills as it lands.
+  // 'quality': the matched pieces are looked at and scored, updated in place.
+  // Either one ends the last climb: its status is cleared.
+  async function run(stage) {
     setRunning(true); setError(null); setJob(null);
     try {
-      const r = await apiPostJson(`/beat/${beatId}/artwork-critique`, {});
+      const r = await apiPostJson(`/beat/${beatId}/artwork-critique`, { stage });
+      setClimb(null);
+      setGenJob(null);
+      if (stage === 'coverage') { setCritique(null); setSelected(new Set()); setOverrides({}); }
       const es = new EventSource(apiSseUrl(`/beat/${beatId}/artwork-critique/${r.job_id}/events`));
       esRef.current = es;
-      const apply = (ev) => { const snap = safeParse(ev.data); if (snap) setJob(snap); };
+      // The run writes each subject as it goes (after its match, after every
+      // review batch): refresh the page on every progress event.
+      const apply = (ev) => {
+        const snap = safeParse(ev.data);
+        if (!snap) return;
+        setJob(snap);
+        load({ quiet: true }).catch(() => {});
+      };
       const finish = async (ev, failed) => {
         apply(ev);
         closeStream();
@@ -499,7 +648,17 @@ export function ArtworkCritiqueSection({ beatId }) {
     } catch (e) { setError(e.message); } finally { setFixBusy(false); }
   }
 
-  const fixProps = { model, onModel: setModel, onFix: fixArtwork, onUndo: undoFix, busy: fixBusy || running };
+  async function clearCritique() {
+    if (!confirm('Clear the artwork critique? Its requirements, reviews, proposals and the climb status are removed. No artwork is deleted.')) return;
+    setError(null); setClearing(true);
+    try {
+      await apiDelete(`/beat/${beatId}/artwork-critique`);
+      setCritique(null); setClimb(null); setJob(null); setGenJob(null);
+      setSelected(new Set()); setOverrides({});
+    } catch (e) { setError(e.message); } finally { setClearing(false); }
+  }
+
+  const fixProps = { model, onModel: setModel, onFix: fixArtwork, onUndo: undoFix, busy: fixBusy || running || climbing };
 
   const proposals = critique?.proposals || [];
   const selectable = proposals.filter((p) => p.status === 'proposed' || p.status === 'error');
@@ -510,12 +669,28 @@ export function ArtworkCritiqueSection({ beatId }) {
   }, [critique]);
   const anySelectedRefless = selectable.some((p) => selected.has(String(p._id)) && ((overrides[String(p._id)]?.reference_image_ids ?? p.reference_image_ids) || []).length === 0);
 
+  const busy = running || generating || clearing;
+  const hasCoverage = (critique?.subjects || []).some((s) => (s.requirements || []).length > 0);
+  // Open proposals: for a requirement nothing answers (Create missing) or
+  // for a piece the reviewer wants made again.
+  const missingOpen = selectable.filter((p) => !p.replaces_artwork_id);
+  const selectedRemakes = selectable.filter((p) => p.replaces_artwork_id && selected.has(String(p._id))).length;
+
   const pct = critique?.coverage?.pct;
+  const quality = critique?.coverage?.quality_pct;
   const meta = (
     <>
       {typeof pct === 'number'
         ? <span className={`critique-overall ${coverageBand(pct)}`}>{pct}<span className="max">% covered</span></span>
         : <span className="critique-overall none">{critique ? 'nothing to cover' : 'not critiqued'}</span>}
+      {typeof quality === 'number'
+        ? (
+          <span className="critique-counts" title="Each requirement weighted by the reviewer's rubric score of the best piece answering it — what Climb raises. A requirement whose picture has not been reviewed counts 0.">
+            {critique?.coverage?.reviewed ? `${quality}% quality` : 'quality: not reviewed yet'}
+            {critique?.coverage?.reviewed != null && critique.coverage.total ? ` · ${critique.coverage.reviewed}/${critique.coverage.total} reviewed` : ''}
+          </span>
+        )
+        : null}
       {critique?.generated_at ? <span className="critique-counts">{new Date(critique.generated_at).toLocaleString()}</span> : null}
       <ClimbChip climb={climb} />
     </>
@@ -523,7 +698,9 @@ export function ArtworkCritiqueSection({ beatId }) {
 
   const progressLine = running && job ? (
     job.phase === 'requirements' ? 'Reading the beat for what it needs…'
-      : job.phase === 'auditing' ? `Auditing artwork… ${job.subjects.filter((s) => s.status === 'done' || s.status === 'error').length}/${job.subjects.length} subjects`
+      : job.phase === 'matching' ? 'Coverage — matching the requirements against the artwork descriptions…'
+        : job.phase === 'proposing' ? 'Coverage — drafting the missing artwork…'
+        : job.phase === 'auditing' ? `Quality — reviewing the matched artwork… ${job.subjects.filter((s) => s.status === 'done' || s.status === 'error').length}/${job.subjects.length} subjects · ${job.subjects.reduce((n, s) => n + (s.audited || 0), 0)} looked at, ${job.subjects.reduce((n, s) => n + (s.reused || 0), 0)} unchanged`
         : 'Starting…'
   ) : null;
 
@@ -532,17 +709,39 @@ export function ArtworkCritiqueSection({ beatId }) {
       <div className="tab-actions critique-head">
         {progressLine ? <span className="artwork-critique-progress">{progressLine}</span> : null}
         <span className="spacer" />
-        <button type="button" className="primary" disabled={running || generating} onClick={run}>
-          {running ? 'Critiquing…' : critique ? 'Re-run artwork critique' : 'Run artwork critique'}
+        <button
+          type="button"
+          className={hasCoverage ? undefined : 'primary'}
+          disabled={busy}
+          title="Step 1 — start fresh: list the artwork this beat needs and compare it with the artwork on file (by description; no image is looked at). What is missing is drafted for Create missing."
+          onClick={() => run('coverage')}
+        >
+          {running && job?.stage !== 'quality' ? 'Checking coverage…' : 'Check coverage'}
         </button>
         <button
           type="button"
-          disabled={running || generating}
-          title="Critique, generate every proposed artwork and critique again, until coverage reaches a target"
+          className={hasCoverage && !missingOpen.length ? 'primary' : undefined}
+          disabled={busy || !hasCoverage}
+          title={hasCoverage
+            ? 'Step 2 — look at the matched artwork and score each piece: keep, edit or make again. Open a thumbnail to fix it; pieces to remake are drafted below.'
+            : 'Check coverage first'}
+          onClick={() => run('quality')}
+        >
+          {running && job?.stage === 'quality' ? 'Checking quality…' : 'Check quality'}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          title="Phase 1: render a picture for every requirement nothing on file answers. Phase 2: the reviewer scores each matched piece; edit or remake until the quality score reaches a target"
           onClick={() => setClimbOpen(true)}
         >
           {climbing ? 'Climbing…' : 'Climb'}
         </button>
+        {(critique || climb) ? (
+          <button type="button" disabled={busy} title="Remove the critique and the climb status, to start fresh. No artwork is deleted." onClick={clearCritique}>
+            {clearing ? 'Clearing…' : 'Clear critique'}
+          </button>
+        ) : null}
       </div>
       {error && <div className="critique-error">{error}</div>}
       <ClimbPanel climb={climb} onCancel={cancelClimb} />
@@ -550,7 +749,7 @@ export function ArtworkCritiqueSection({ beatId }) {
         open={climbOpen}
         kind="artwork"
         last={climb}
-        intro="Runs the artwork critique, generates every proposal it drafts onto the owning set or character, and critiques again, over and over, until coverage reaches the target. Every round renders images with the model below, and the renders stay on file even when a round does not raise coverage. Dismissed proposals are skipped."
+        intro="Two phases. 1 — Coverage: the requirements are matched against the artwork descriptions (no image is looked at); a new picture is rendered for each requirement nothing on file answers. 2 — Quality: once every requirement has a picture, the reviewer (Admin → Models → Artwork reviewer) scores each matched piece on the rubric and says keep, edit or make again. Edits are applied in place with the model below and undone if the score does not rise; a piece that cannot be edited into shape is rendered again from a prompt and references. The target is the quality score. Dismissed proposals are skipped."
         onStart={startClimb}
         onClose={() => setClimbOpen(false)}
       >
@@ -562,8 +761,9 @@ export function ArtworkCritiqueSection({ beatId }) {
 
       {!critique && !running && (
         <div className="artwork-critique-muted">
-          Run the artwork critique to check the sets' and characters' artwork against this beat — which views, costumes,
-          expressions and poses the writing calls for, what is on file, and what should be generated.
+          <b>Check coverage</b> lists the views, costumes, expressions and poses this beat's writing calls for and compares
+          them with the sets' and characters' artwork on file; <b>Create missing</b> then renders what is not there.
+          <b> Check quality</b> looks at each matched piece, scores it, and lets you fix it or make it again.
         </div>
       )}
 
@@ -580,13 +780,15 @@ export function ArtworkCritiqueSection({ beatId }) {
         </ul>
       )}
 
-      {(critique?.subjects || []).map((s) => <SubjectCard key={`${s.kind}:${s.id}`} subject={s} fixProps={fixProps} />)}
+      {(critique?.subjects || []).map((s) => <SubjectCard key={`${s.kind}:${s.id}`} subject={s} fixProps={fixProps} activity={climb?.activity} climbing={climbing} audit={climbing ? (climb?.audit?.subjects || []).find((a) => a.id === String(s.id)) : running ? (job?.subjects || []).find((a) => a.id === String(s.id)) : null} />)}
 
       {proposals.length > 0 && (
         <div className="artwork-critique-proposals">
           <div className="artwork-critique-proposals-head">
-            <b>Proposed artwork</b>
-            <span className="artwork-critique-muted">{selectable.length} to generate · {proposals.filter((p) => p.status === 'done').length} done</span>
+            <b>Artwork to create</b>
+            <span className="artwork-critique-muted">
+              {missingOpen.length} missing{selectable.length > missingOpen.length ? ` · ${selectable.length - missingOpen.length} to make again` : ''} · {proposals.filter((p) => p.status === 'done').length} done
+            </span>
             <span className="spacer" />
             {selectable.length > 0 && (
               <>
@@ -599,7 +801,7 @@ export function ArtworkCritiqueSection({ beatId }) {
             <div className="artwork-critique-proposals-tools">
               <ImageModelSelect value={model} onChange={setModel} disabled={generating} collapsible promptOnly={anySelectedRefless} />
               <button type="button" className="primary" disabled={generating || running || selected.size === 0} onClick={generate}>
-                {generating ? 'Generating…' : `Generate selected (${selected.size})`}
+                {generating ? 'Generating…' : selectedRemakes ? `Create selected (${selected.size})` : `Create missing (${selected.size})`}
               </button>
             </div>
           )}

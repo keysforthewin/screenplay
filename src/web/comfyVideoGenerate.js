@@ -1,20 +1,15 @@
-// Cut → video through ComfyUI (comfy-mcp). The Prompts tab's second video
+// Cut → video through ComfyUI (comfy-mcp). The Scenes tab's second video
 // provider, beside fal (src/web/falVideoGenerate.js). Triggered from
 // POST /api/cut/:id/video/generate; returns a job id immediately, then runs
-// in the background under a GLOBAL queue of one (a single GPU) and the
-// per-beat lock. The SPA streams /api/cut/:id/video-job/:jobId/events.
+// in the background under a GLOBAL queue of one (a single GPU), one job per
+// cut. The SPA streams /api/cut/:id/video-job/:jobId/events.
 //
 // Pipeline per job:
-//   1. Resolve the cut, the registry model, validate + clamp the params,
-//      assemble the prompt (binding only for reference-taking models,
-//      exclusions appended), pick the images the model needs. A lip-sync
-//      model (inputs.audio required) also needs every covered dialogue line
-//      recorded; the duration defaults to the joined recordings' length.
+//   1. Resolve the cut, the registry model, validate + clamp the params, take
+//      the cut's video prompt and the frames the model needs.
 //   2. Ensure the template workflow JSON is fetched and runnable.
-//   3. Write the start frame / references as PNGs (and, for lip-sync, the
-//      joined recordings as an MP3 — persisted on the cut as audio_file_id)
-//      into the job dir and upload them into ComfyUI's input directory
-//      (comfy-mcp upload_file).
+//   3. Write the start / end frame as PNGs into the job dir and upload them
+//      into ComfyUI's input directory (comfy-mcp upload_file).
 //   4. Copy the template into the job dir and set every slot override
 //      (canonical params → addresses, fixed pins, derived values, image
 //      slots, advanced passthrough).
@@ -33,18 +28,9 @@ import { logger } from '../log.js';
 import { readImageBuffer } from '../mongo/images.js';
 import { uploadAttachmentBuffer } from '../mongo/attachments.js';
 import { getVideoPrompt } from '../mongo/videoPrompts.js';
-import { listDialogs, ensureDialogAudioDurations } from '../mongo/dialogs.js';
 import { stripMarkdown } from '../util/markdown.js';
-import { setVideoPromptVideoViaGateway, setVideoPromptAudioViaGateway } from './gateway.js';
-import { isBeatLocked, withBeatLock } from './beatLocks.js';
+import { setVideoPromptVideoViaGateway } from './gateway.js';
 import { isTerminalJobStatus, RECENT_JOB_MS } from './jobLookup.js';
-import { renderSecondsForCut, describeTiming } from './cutTiming.js';
-import {
-  coveredDialogsFor,
-  speechSecondsFor,
-  unrecordedLineNumbers,
-  buildCoveredDialogueAudio,
-} from './dialogueAudio.js';
 import {
   comfy,
   isComfyConfigured,
@@ -112,32 +98,11 @@ export class MissingReferenceImagesError extends Error {
   }
 }
 
-export class MissingDialogueAudioError extends Error {
-  constructor(modelLabel, lines = []) {
-    super(
-      lines.length
-        ? `${modelLabel} lip-syncs the covered lines' recordings — line${lines.length === 1 ? '' : 's'} ${lines.join(', ')} ${lines.length === 1 ? 'has' : 'have'} no recording yet.`
-        : `${modelLabel} lip-syncs recorded dialogue — this cut covers no dialogue lines.`,
-    );
-    this.code = 'MISSING_DIALOGUE_AUDIO';
-    this.status = 400;
-    this.lines = lines;
-  }
-}
-
 export class SpendConsentRequiredError extends Error {
   constructor(modelLabel) {
     super(`${modelLabel} spends Comfy credits — confirm the spend to render with it.`);
     this.code = 'SPEND_CONSENT_REQUIRED';
     this.status = 402;
-  }
-}
-
-export class ComfyBusyError extends Error {
-  constructor(beatId) {
-    super(`Work already in progress for beat ${beatId}`);
-    this.code = 'BEAT_BUSY';
-    this.status = 409;
   }
 }
 
@@ -179,8 +144,6 @@ export function _resetComfyJobsForTests() {
   listeners.clear();
   queueTail = Promise.resolve();
   waiting.length = 0;
-  for (const hold of beatHolds.values()) hold.release?.();
-  beatHolds.clear();
 }
 
 export function getComfyVideoJob(jobId) {
@@ -297,33 +260,6 @@ function leaveQueue(job) {
   refreshQueuePositions();
 }
 
-// Standalone cut jobs of one beat share a single hold on its beat lock: the
-// first job takes the lock (held until the last queued job of that beat
-// finishes), later ones join it. A planner / bulk render / start-frame job
-// for the beat is still refused (409) while any of them is queued, so no
-// one wipes the cuts out from under a waiting render.
-const beatHolds = new Map(); // beatId → { pending, release }
-
-function joinBeatHold(beatId) {
-  let hold = beatHolds.get(beatId);
-  if (hold) {
-    hold.pending += 1;
-    return hold;
-  }
-  if (isBeatLocked(beatId)) throw new ComfyBusyError(beatId);
-  hold = { pending: 1, release: null };
-  beatHolds.set(beatId, hold);
-  withBeatLock(beatId, () => new Promise((resolve) => (hold.release = resolve))).catch(() => {});
-  return hold;
-}
-
-function leaveBeatHold(beatId, hold) {
-  hold.pending -= 1;
-  if (hold.pending > 0) return;
-  if (beatHolds.get(beatId) === hold) beatHolds.delete(beatId);
-  hold.release?.();
-}
-
 function activeJobForCut(cutId) {
   for (const job of jobs.values()) {
     if (job.owner_id === cutId && !isTerminalJobStatus(job.status)) return job;
@@ -388,6 +324,22 @@ function idString(v) {
   return v.toString?.() || String(v);
 }
 
+// Snap a length UP to what the model can render: its step (whole seconds for
+// an int param), then its min/max. null when there is no length.
+export function snapDurationUp(seconds, spec = null) {
+  let n = Number(seconds);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const positive = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null);
+  const step = positive(spec?.step) || (spec?.type === 'int' ? 1 : null);
+  if (step) n = Math.ceil(n / step - 1e-9) * step;
+  if (spec?.type === 'int') n = Math.ceil(n - 1e-9);
+  const min = positive(spec?.min);
+  const max = positive(spec?.max);
+  if (min != null && n < min) n = min;
+  if (max != null && n > max) n = max;
+  return Math.round(n * 1000) / 1000;
+}
+
 // Resolve everything a render needs without side effects. Throws the typed
 // errors the routes map to 4xx/5xx.
 export async function prepareCutRender({
@@ -406,40 +358,20 @@ export async function prepareCutRender({
   if (!model || model.available === false) throw new UnknownComfyModelError(modelId);
   if (model.spends_credits && !confirmSpend) throw new SpendConsentRequiredError(model.label);
 
-  // Lip-sync models: every covered line must be recorded; the clip defaults to
-  // the joined recordings' length (the user may lengthen it).
-  let audio = null;
-  let effectiveParams = params && typeof params === 'object' ? { ...params } : {};
+  // The Scenes tab supplies a prompt and two frames — nothing else.
   if (needs(model, 'audio')) {
-    const rawDialogs = await listDialogs({ projectId, beatId: cut.beat_id });
-    const dialogs = await ensureDialogAudioDurations(projectId, rawDialogs).catch(() => rawDialogs);
-    const covered = coveredDialogsFor(cut, dialogs);
-    if (!covered.length) throw new MissingDialogueAudioError(model.label, []);
-    const unrecorded = unrecordedLineNumbers(covered, dialogs);
-    if (unrecorded.length) throw new MissingDialogueAudioError(model.label, unrecorded);
-    const speech = speechSecondsFor(covered);
-    audio = {
-      covered,
-      covered_dialog_ids: covered.map((d) => idString(d._id)),
-      lines: covered.length,
-      speech_seconds: speech,
-    };
-    if (effectiveParams.duration_seconds == null || effectiveParams.duration_seconds === '') {
-      effectiveParams.duration_seconds = Math.max(1, Math.ceil(speech || 1));
-    }
+    throw new InvalidComfyParamsError([`${model.label} needs a dialogue recording, which a cut does not carry`]);
   }
-  // No length from the caller: the cut's own (plus a travelling camera's
-  // handles), snapped up to what this model renders. cutTiming.js; the
-  // assembly trims the surplus.
-  let timing = null;
+  const effectiveParams = params && typeof params === 'object' ? { ...params } : {};
+  // No length from the caller: the cut's own, snapped up to what this model
+  // renders.
   if (model.params?.duration_seconds && (effectiveParams.duration_seconds == null || effectiveParams.duration_seconds === '')) {
-    timing = renderSecondsForCut(cut, model.params.duration_seconds);
-    if (timing) effectiveParams.duration_seconds = timing.seconds;
+    const seconds = snapDurationUp(cut.duration_seconds, model.params.duration_seconds);
+    if (seconds != null) effectiveParams.duration_seconds = seconds;
   }
 
   const validated = validateComfyParams(model, effectiveParams);
   if (validated.errors.length) throw new InvalidComfyParamsError(validated.errors);
-  const timingNote = describeTiming(timing, model.label);
   // One seed for preview, run and the persisted parameters, so a render can
   // be reproduced (or varied deliberately) later.
   if (validated.params.seed == null && model.params?.seed) validated.params.seed = randomSeed();
@@ -452,13 +384,10 @@ export async function prepareCutRender({
   if (needs(model, 'startFrame') && !startFrameImageId) throw new MissingStartFrameError(model.label);
   const endFrameImageId = idString(cut.end_frame?.image_id);
   if (needs(model, 'endFrame') && !endFrameImageId) throw new MissingEndFrameError(model.label);
-  const referenceImageIds = (Array.isArray(cut.reference_images) ? cut.reference_images : [])
-    .map((r) => idString(r?.image_id))
-    .filter(Boolean)
-    .slice(0, model.maxReferenceImages || 0);
-  if (needs(model, 'referenceImages') && !referenceImageIds.length) {
-    throw new MissingReferenceImagesError(model.label);
-  }
+  // A cut has no reference images of its own (each FRAME has); a
+  // reference-to-video model cannot be driven from here.
+  const referenceImageIds = [];
+  if (needs(model, 'referenceImages')) throw new MissingReferenceImagesError(model.label);
 
   const cutKey = idString(cut._id);
   const imageFilenames = {
@@ -467,9 +396,8 @@ export async function prepareCutRender({
     reference: accepts(model, 'referenceImages')
       ? referenceImageIds.map((_, i) => `cut-${cutKey}-ref-${i + 1}.png`)
       : [],
-    audio: audio ? `cut-${cutKey}-dialogue.mp3` : null,
+    audio: null,
   };
-  if (audio) audio.filename = imageFilenames.audio;
   const advancedList = Array.isArray(advanced) ? advanced : [];
   const built = buildSlotOverrides(model, {
     params: validated.params,
@@ -486,11 +414,9 @@ export async function prepareCutRender({
     endFrameImageId: accepts(model, 'endFrame') ? endFrameImageId : null,
     referenceImageIds: accepts(model, 'referenceImages') ? referenceImageIds : [],
     imageFilenames,
-    audio,
     advanced: advancedList,
     overrides: built.overrides,
-    timing,
-    warnings: [...(timingNote ? [timingNote] : []), ...validated.warnings, ...built.warnings],
+    warnings: [...validated.warnings, ...built.warnings],
   };
 }
 
@@ -501,15 +427,11 @@ export async function buildComfyPayloadPreview(args) {
     params: prep.params,
     prompt: prep.prompt,
     overrides: prep.overrides,
-    timing: prep.timing,
     warnings: prep.warnings,
     spends_credits: !!prep.model.spends_credits,
     start_frame_image_id: prep.startFrameImageId,
     end_frame_image_id: prep.endFrameImageId,
     reference_image_ids: prep.referenceImageIds,
-    audio: prep.audio
-      ? { lines: prep.audio.lines, speech_seconds: prep.audio.speech_seconds, covered_dialog_ids: prep.audio.covered_dialog_ids }
-      : null,
   };
 }
 
@@ -553,11 +475,8 @@ function failPlumbing(job, e) {
   }
 }
 
-// Single-cut render from the SPA or the agent. The beat hold is taken FIRST
-// and kept while the job waits its turn on the GPU queue: a queued job then
-// already owns its beat, so a bulk render for the same beat is refused (409)
-// instead of taking the lock and waiting behind a job that waits on it.
-// Other cuts of the same beat join the hold and queue behind it.
+// Single-cut render from the SPA. One job per cut; any number of cuts wait
+// FIFO on the one-GPU queue.
 export async function startComfyCutVideoJob({
   projectId,
   cutId,
@@ -569,36 +488,12 @@ export async function startComfyCutVideoJob({
   announceUsername = null,
 }) {
   const prep = await prepareCutRender({ projectId, cutId, modelId, params, advanced, confirmSpend, promptOverride });
-  const beatId = idString(prep.cut.beat_id);
   const cutKey = idString(prep.cut._id);
   const existing = activeJobForCut(cutKey);
   if (existing) throw new ComfyCutBusyError(cutKey, existing.job_id);
-  const hold = joinBeatHold(beatId);
   const job = createJob(prep);
-  enqueue(() => runJob({ job, prep, projectId, confirmSpend, announceUsername }))
-    .catch((e) => failPlumbing(job, e))
-    .finally(() => leaveBeatHold(beatId, hold));
+  enqueue(() => runJob({ job, prep, projectId, confirmSpend, announceUsername })).catch((e) => failPlumbing(job, e));
   return { job_id: job.job_id };
-}
-
-// Render one cut while the CALLER already holds the beat lock (the Prompts
-// tab's Render beat job runs its cuts through this). Registers a normal job
-// (so the per-cut SSE stream works), waits its turn on the GPU queue, runs it
-// to completion and returns the finished job — status 'done' or 'error'
-// (runJob never throws; it records the error on the job).
-export async function runComfyCutRenderInline({ prep, projectId, confirmSpend = false, announceUsername = null, onJobCreated = null }) {
-  const job = createJob(prep);
-  try {
-    onJobCreated?.(job);
-  } catch {
-    // observers never fail the render
-  }
-  try {
-    await enqueue(() => runJob({ job, prep, projectId, confirmSpend, announceUsername }));
-  } catch (e) {
-    failPlumbing(job, e);
-  }
-  return job;
 }
 
 // ─── Runner ─────────────────────────────────────────────────────────────────
@@ -750,7 +645,7 @@ async function runJob({ job, prep, projectId, confirmSpend, announceUsername }) 
     setStep(job, 'running', 'Preparing the workflow template');
     const tpl = await ensureTemplateFile(model);
 
-    // 2. Images (+ the joined dialogue recording for lip-sync models).
+    // 2. Images.
     const imageFilenames = { start_frame: null, end_frame: null, reference: [], audio: null };
     const toUpload = [];
     if (prep.startFrameImageId) {
@@ -765,19 +660,6 @@ async function runJob({ job, prep, projectId, confirmSpend, announceUsername }) 
     for (let i = 0; i < prep.referenceImageIds.length; i++) {
       const w = await writeImageToJobDir(prep.referenceImageIds[i], jobDir, prep.imageFilenames.reference[i]);
       toUpload.push({ role: 'reference', ...w });
-    }
-    if (prep.audio) {
-      setStep(job, 'running', `Joining ${prep.audio.lines} recording${prep.audio.lines === 1 ? '' : 's'}`);
-      const joined = await buildCoveredDialogueAudio({
-        projectId,
-        beatId: cut.beat_id,
-        covered: prep.audio.covered,
-        filename: `cut-${job.owner_id}-dialogue-${Date.now()}.mp3`,
-      });
-      await setVideoPromptAudioViaGateway({ projectId, promptId: idString(cut._id), audioFileId: joined.file._id });
-      const abs = path.join(jobDir, prep.imageFilenames.audio);
-      await fsp.writeFile(abs, joined.buffer);
-      toUpload.push({ role: 'audio', abs, name: prep.imageFilenames.audio });
     }
     if (toUpload.length) {
       setStep(job, 'running', `Uploading ${toUpload.length} file${toUpload.length === 1 ? '' : 's'} to ComfyUI`);
@@ -907,7 +789,7 @@ async function announce({ projectId, cut, model, file, prompt, announceUsername 
   if (!announceUsername) return;
   try {
     const { announceMediaEvent } = await import('../discord/announcer.js');
-    const { promptsUrl } = await import('./links.js');
+    const { scenesUrl } = await import('./links.js');
     const { getBeat } = await import('../mongo/plots.js');
     const { getProjectById } = await import('../mongo/projects.js');
     const beat = await getBeat(projectId, String(cut.beat_id));
@@ -920,7 +802,7 @@ async function announce({ projectId, cut, model, file, prompt, announceUsername 
       username: announceUsername,
       verb: 'generated video for',
       entityLabel,
-      entityUrl: beat ? promptsUrl(project?.title ?? null, beat) : null,
+      entityUrl: beat ? scenesUrl(project?.title ?? null, beat) : null,
       mediaFileId: file._id,
       mediaLabel: `video (${model.label} via ComfyUI)`,
       prompt,

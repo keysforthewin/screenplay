@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { apiGet, apiPostJson, apiSseUrl } from '../api.js';
+import { apiGet, apiPostJson, apiDelete, apiSseUrl } from '../api.js';
 import { scoreBand, formatScore, sortIssues, issueCounts, hasCriteria, SEVERITY_LABELS } from './critiqueDisplay.js';
 import { CritiqueSection } from './CritiqueSection.jsx';
 import { ArtworkCritiqueSection } from './ArtworkCritiqueSection.jsx';
 import { ClimbDialog, ClimbPanel, ClimbChip, isClimbRunning } from './Climb.jsx';
+import { RegenerateDialog } from './RegenerateDialog.jsx';
 
 const CLIMB_POLL_MS = 2000;
 
@@ -65,6 +66,7 @@ function FacetDetail({ f }) {
                   {e.note ? <span className="lens-quote-note">{e.note}</span> : null}
                 </blockquote>
               ))}
+              {c.to_raise ? <span className="lens-raise"><b>To fix:</b> {c.to_raise}</span> : null}
             </span>
           </div>
         ))}
@@ -96,6 +98,7 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
   const [error, setError] = useState(null);
   const [climb, setClimb] = useState(null);
   const [climbOpen, setClimbOpen] = useState(false);
+  const [regenOpen, setRegenOpen] = useState(false);
   const esRef = useRef(null);
   const climbing = isClimbRunning(climb);
 
@@ -149,6 +152,16 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
       const r = await apiPostJson(`/beat/${beatId}/critique`, {});
       const jobId = r?.job_id;
       if (!jobId) throw new Error('server did not return a job id');
+      // The run replaces the critique and ends the climb it came from: the
+      // old ratings and the climb status go now, and each facet's score is
+      // shown as it arrives.
+      setClimb(null);
+      setCritique((c) => (c ? {
+        ...c,
+        overall: null,
+        strategy: null,
+        facets: (c.facets || []).map((f) => ({ key: f.key, label: f.label, scope: f.scope, status: 'pending' })),
+      } : c));
       const es = new EventSource(apiSseUrl(`/beat/${beatId}/critique/${jobId}/events`));
       esRef.current = es;
       const apply = (ev) => { const snap = safeParse(ev.data); if (snap) setCritique(snap); };
@@ -163,11 +176,13 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
     } catch (e) { setRunning(false); setError(e.message); }
   }
 
-  async function regenerate() {
+  // params: {apply?, direction} from the Regenerate dialog.
+  async function regenerate(params = {}) {
     setBusy('regen'); setError(null);
     try {
-      const r = await apiPostJson(`/beat/${beatId}/regenerate`, {});
+      const r = await apiPostJson(`/beat/${beatId}/regenerate`, params);
       if (r?.strategy) setCritique((c) => (c ? { ...c, strategy: r.strategy } : c));
+      setClimb(null);
       await onRefresh?.();
     }
     catch (e) { setError(e.message); } finally { setBusy(null); }
@@ -177,6 +192,16 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
     setBusy('undo'); setError(null);
     try { await apiPostJson(`/beat/${beatId}/restore-body`, {}); await onRefresh?.(); }
     catch (e) { setError(e.message); } finally { setBusy(null); }
+  }
+
+  async function clearCritique() {
+    if (!confirm('Clear the writing critique? Its scores, issues and the climb status are removed. The beat text is not changed.')) return;
+    setBusy('clear'); setError(null);
+    try {
+      await apiDelete(`/beat/${beatId}/critique`);
+      setCritique(null);
+      setClimb(null);
+    } catch (e) { setError(e.message); } finally { setBusy(null); }
   }
 
   const facets = critique?.facets || [];
@@ -209,7 +234,7 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
           <button type="button" className="primary" disabled={running || climbing} onClick={runCritique}>
             {running ? 'Critiquing…' : critique ? 'Re-run critique' : 'Run critique'}
           </button>
-          <button type="button" disabled={!!busy || running || climbing || !hasCritique} onClick={regenerate}>
+          <button type="button" disabled={!!busy || running || climbing || !hasCritique} onClick={() => setRegenOpen(true)}>
             {busy === 'regen' ? 'Regenerating…' : 'Regenerate beat from critique'}
           </button>
           <button
@@ -222,6 +247,11 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
           </button>
           {hasPreviousBody && (
             <button type="button" disabled={!!busy || climbing} onClick={undo}>{busy === 'undo' ? 'Undoing…' : 'Undo rewrite'}</button>
+          )}
+          {(critique || climb) && (
+            <button type="button" disabled={!!busy || running || climbing} title="Remove the critique and the climb status, to start fresh" onClick={clearCritique}>
+              {busy === 'clear' ? 'Clearing…' : 'Clear critique'}
+            </button>
           )}
         </div>
         {error && <div className="critique-error">{error}</div>}
@@ -252,6 +282,8 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
         onStart={startClimb}
         onClose={() => setClimbOpen(false)}
       />
+
+      <RegenerateDialog open={regenOpen} facets={facets} onStart={regenerate} onClose={() => setRegenOpen(false)} />
 
       <ArtworkCritiqueSection beatId={beatId} />
     </div>

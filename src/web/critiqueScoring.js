@@ -5,6 +5,7 @@
 
 export const SEVERITY_ORDER = ['must_fix', 'should_fix', 'nit'];
 export const QUOTE_MAX = 200;
+const RAISE_MAX = 800;
 
 // Prepended to every facet's system prompt. The caps in rule 6 are also
 // enforced in deriveFacetScore — the prompt only asks the model to agree.
@@ -13,13 +14,14 @@ export const SCORING_RULES = [
   '1. Score the text on the page, not its intent, premise or ambition.',
   '2. For each criterion: first quote the lines you are judging (verbatim from the beat, at most 200 characters each), then pick the anchor the text most resembles. 3, 6 and 9 are anchors; use the full 1-10 range between and beyond them.',
   '3. A 10 means you cannot name a change that would improve it. 5 or below means a reader would notice the problem unaided.',
-  '4. A criterion whose context is absent (no scene bible, no dialogue style, no beat-level direction) is reported with applicable=false — never guess what the missing document would say.',
+  '4. A criterion whose context is absent (no dialogue style, no beat-level direction) is reported with applicable=false — never guess what the missing document would say.',
   '5. Every issue names exactly one criterion, quotes the offending line(s), states the problem in one sentence and gives a concrete fix: the rewritten line, the mini-slug to add, the line to cut. Severity: must_fix = a reader or a production would be misled or stalled; should_fix = clearly weaker than it could be; nit = taste.',
   '6. Any must_fix issue caps its criterion at 6 and the whole facet at 7 — the scorer enforces this, so score consistently with the issues you raise.',
   '7. Do not reward length or ambition; do not penalize anything this facet does not judge.',
   '8. Name at least one strength whenever a criterion scores 7 or higher.',
   '9. This story ranges across the world and out into space. Where a beat is set, how far that is from the last beat, and that it is somewhere new are never faults in any facet; only a contradiction of something already established is.',
   '10. A criterion marked optional that has nothing to judge in this beat (no dialogue, no staged scene, no on-screen text) is reported with applicable=false. That is a correct answer, not a low score.',
+  '11. Every applicable criterion scored below 10 carries to_raise: how to fix THIS criterion in THIS beat so it scores higher next time. Name or quote the line(s) and say what to write, cut or move — a change a writer can carry out, not advice like "tighten" or "add tension". It is about this criterion alone, not a copy of the facet summary or of another criterion\'s answer; it stays inside this beat and never contradicts the documents you were given. The rationale says why the score is what it is; to_raise says what to do about it.',
 ].join('\n');
 
 export function clampScore(n) {
@@ -158,12 +160,13 @@ export function normalizeFacetResult(raw, facet) {
         .filter((e) => e.quote || e.note)
         .slice(0, 6),
       rationale: str(c.rationale, 800),
+      to_raise: applicable && clampInt(c.score) !== 10 ? str(c.to_raise, RAISE_MAX) : '',
     });
   }
   const criteria = legacy
     ? []
     : defs.map((d) => byKey.get(d.key) || {
-      key: d.key, label: d.label, weight: Number(d.weight ?? 1) || 1, applicable: false, score: null, evidence: [], rationale: '',
+      key: d.key, label: d.label, weight: Number(d.weight ?? 1) || 1, applicable: false, score: null, evidence: [], rationale: '', to_raise: '',
     });
   // An applicable criterion without a usable score counts as not applicable.
   for (const c of criteria) if (c.applicable && c.score == null) c.applicable = false;

@@ -77,12 +77,6 @@ vi.mock('../src/mongo/attachments.js', async (importOriginal) => {
   };
 });
 
-// Duration probe for the joined dialogue MP3 a lip-sync render attaches.
-vi.mock('../src/fal/videoPricing.js', async () => {
-  const actual = await vi.importActual('../src/fal/videoPricing.js');
-  return { ...actual, probeAudioDurationSeconds: vi.fn(async () => 3.2) };
-});
-
 const TEMPLATE_PATH = path.join(WORK_DIR, 'template-stub.json');
 fs.writeFileSync(TEMPLATE_PATH, JSON.stringify({ nodes: [], stub: true }));
 vi.mock('../src/comfy/templates.js', () => ({
@@ -93,11 +87,10 @@ vi.mock('../src/comfy/templates.js', () => ({
 const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const VP = await import('../src/mongo/videoPrompts.js');
+const VS = await import('../src/mongo/videoScenes.js');
 const BeatLocks = await import('../src/web/beatLocks.js');
 const Client = await import('../src/comfy/client.js');
 const Gen = await import('../src/web/comfyVideoGenerate.js');
-const Dialogs = await import('../src/mongo/dialogs.js');
-const Audio = await import('../src/web/audioTranscode.js');
 
 let projectId;
 beforeEach(async () => {
@@ -110,9 +103,6 @@ beforeEach(async () => {
   Gen._setComfyRunnerOptionsForTests({ pollIntervalMs: 2, jobTimeoutMs: 5000 });
   Client._setComfyClientForTests(null);
   fakeAttachmentStore.clear();
-  Audio.__setAudioFfmpegImplForTests(async ({ outputPath }) => {
-    fs.writeFileSync(outputPath, Buffer.from('joined-mp3'));
-  });
   projectId = (await createProject('Comfy Gen'))._id.toString();
 });
 
@@ -126,40 +116,24 @@ function newImage(contentType = 'image/png') {
   return id;
 }
 
-async function seedCut({ withStartFrame = true, refs = 0, videoFileId = null } = {}) {
+const CUT_PROMPT = 'Medium shot from the aisle: **Sarah** pushes the cup one inch. Stop when her hand lets go.';
+const CUT_PROMPT_PLAIN = CUT_PROMPT.replace(/\*\*/g, '');
+
+async function seedCut({ withStartFrame = true, videoFileId = null, prompt = CUT_PROMPT } = {}) {
   const beat = await Plots.createBeat({ projectId, name: 'Diner', body: 'Sarah waits.', characters: ['Sarah'], sets: ['Diner'] });
+  const scene = await VS.createVideoScene({ projectId, beatId: beat._id, title: 'One' });
   const cut = await VP.createVideoPrompt({
     projectId,
     beatId: beat._id,
+    sceneId: scene._id,
     title: 'Cut 1',
-    prompt: 'Medium shot from the aisle: **Sarah** pushes the cup one inch. Same light: warm tubes. Camera in the aisle. Stop when her hand lets go.',
+    prompt,
     durationSeconds: 5,
-    referenceImages: Array.from({ length: refs }, (_, i) => ({ image_id: newImage(), owner_type: 'character', owner_name: 'Sarah', label: `ref ${i + 1}` })),
+    // The frame's own references are for the IMAGE model; a video render never sends them.
+    startFrame: withStartFrame ? { image_id: newImage('image/jpeg'), prompt: 'still', reference_ids: [newImage()] } : null,
   });
-  const extra = {
-    reference_binding: '@Image1 controls Sarah only; ignore the room from it.',
-    exclusions: ['Do not show the door yet.'],
-    start_frame: withStartFrame ? { image_id: newImage('image/jpeg'), prompt: 'still', reference_ids: [] } : null,
-  };
-  if (videoFileId) extra.video_file_id = videoFileId;
-  await fakeDb.collection('video_prompts').updateOne({ _id: cut._id }, { $set: extra });
-  return { beat, cut: await VP.getVideoPrompt(projectId, cut._id.toString()) };
-}
-
-// Dialogue lines for a cut: each entry { who, text, audio } → a dialog row,
-// recorded when `audio` is true. Returns the dialog ids in order.
-async function seedLines(beatId, lines) {
-  const ids = [];
-  for (const line of lines) {
-    const d = await Dialogs.createDialog({ projectId, beatId, character: line.who, body: line.text });
-    if (line.audio) {
-      const aid = new ObjectId();
-      fakeAttachmentStore.set(aid.toString(), { buffer: Buffer.from(`rec-${line.text}`), contentType: 'audio/webm' });
-      await fakeDb.collection('dialogs').updateOne({ _id: d._id }, { $set: { audio_file_id: aid.toString(), audio_duration_seconds: 1.5 } });
-    }
-    ids.push(d._id);
-  }
-  return ids;
+  if (videoFileId) await VP.updateVideoPrompt(projectId, cut._id, { video_file_id: videoFileId });
+  return { beat, scene, cut: await VP.getVideoPrompt(projectId, cut._id.toString()) };
 }
 
 // A scripted comfy-mcp: records every call, serves statuses in order, and
@@ -248,15 +222,16 @@ describe('comfy cut render job', () => {
 
     const upload = client.calls.find((c) => c.name === 'upload_file');
     expect(upload.args.overwrite).toBe(true);
+    // Only the start frame is uploaded — not the frame's reference images.
+    expect(upload.args.paths).toHaveLength(1);
     expect(upload.args.paths[0].endsWith(`cut-${cut._id}-start.jpg`)).toBe(true);
     expect(fs.existsSync(upload.args.paths[0])).toBe(false); // job dir cleaned up
 
     const set = client.calls.find((c) => c.name === 'set_workflow_slot');
     const m = Object.fromEntries(set.args.overrides.map((o) => [o.address, o.value]));
     expect(m['395.image']).toBe(`cut-${cut._id}-start.jpg`);
-    expect(m['398.value']).toContain('Sarah pushes the cup');
-    expect(m['398.value']).not.toContain('@Image1'); // i2v: no binding
-    expect(m['398.value'].endsWith('Do not show the door yet.')).toBe(true);
+    // The prompt is the cut's own video prompt, markdown stripped — nothing added.
+    expect(m['398.value']).toBe(CUT_PROMPT_PLAIN);
     expect(m['398.value_2']).toBe(4);
     expect(m['398.noise_seed']).toBe(11);
     expect(m['398/373.text']).toBe('blurry');
@@ -307,33 +282,46 @@ describe('comfy cut render job', () => {
     expect(m['90.text']).toContain('Sarah pushes the cup');
   });
 
-  it("renders the cut's own length when no duration is given: handles for a travelling camera, snapped up to the model", async () => {
+  it("renders the cut's own length when no duration is given, snapped up to what the model renders", async () => {
     Client._setComfyClientForTests(fakeClient());
     const { cut } = await seedCut();
     const id = cut._id.toString();
-    // A held cut of 5 s: exactly 5.
     let prep = await Gen.prepareCutRender({ projectId, cutId: id, modelId: 'ltx-2.5-i2v' });
     expect(prep.params.duration_seconds).toBe(5);
-    expect(prep.timing).toMatchObject({ cut_seconds: 5, head: 0, tail: 0, seconds: 5, clamp: null });
-    // A pan: half a second of handle at each end, trimmed off at assembly.
-    await VP.updateVideoPrompt(projectId, id, { camera: { movement: 'pan' } });
-    prep = await Gen.prepareCutRender({ projectId, cutId: id, modelId: 'ltx-2.5-i2v' });
-    expect(prep.params.duration_seconds).toBe(6);
-    expect(prep.timing).toMatchObject({ head: 0.5, tail: 0.5, requested: 6 });
+    // No handles, trims or timing report any more.
+    expect(prep).not.toHaveProperty('timing');
+    expect(prep).not.toHaveProperty('audio');
     // A quick cut on a whole-second model renders 2 s; Wan takes 1.5 as is.
-    await VP.updateVideoPrompt(projectId, id, { camera: { movement: 'static' }, duration_seconds: 1.5 });
+    await VP.updateVideoPrompt(projectId, id, { duration_seconds: 1.5 });
     expect((await Gen.prepareCutRender({ projectId, cutId: id, modelId: 'ltx-2.5-i2v' })).params.duration_seconds).toBe(2);
     expect((await Gen.prepareCutRender({ projectId, cutId: id, modelId: 'wan-2.2-14b-i2v' })).params.duration_seconds).toBe(1.5);
-    // An explicit length still wins, and carries no timing.
+    // An explicit length wins; an empty one falls back to the cut's.
     prep = await Gen.prepareCutRender({ projectId, cutId: id, modelId: 'ltx-2.5-i2v', params: { duration_seconds: 9 } });
     expect(prep.params.duration_seconds).toBe(9);
-    expect(prep.timing).toBe(null);
-    // A model minimum above the cut is reported.
-    const preview = await Gen.buildComfyPayloadPreview({ projectId, cutId: id, modelId: 'seedance-2.0-r2v', confirmSpend: true }).catch((e) => e);
-    if (!(preview instanceof Error)) {
-      expect(preview.timing).toMatchObject({ seconds: 4, clamp: 'min' });
-      expect(preview.warnings[0]).toMatch(/minimum is 4 s/);
-    }
+    prep = await Gen.prepareCutRender({ projectId, cutId: id, modelId: 'ltx-2.5-i2v', params: { duration_seconds: '' } });
+    expect(prep.params.duration_seconds).toBe(2);
+    // A cut with no length leaves the model's own default in place.
+    const spec = (await import('../src/comfy/videoModels.js')).getComfyVideoModel('ltx-2.5-i2v').params.duration_seconds;
+    await VP.updateVideoPrompt(projectId, id, { duration_seconds: null });
+    prep = await Gen.prepareCutRender({ projectId, cutId: id, modelId: 'ltx-2.5-i2v' });
+    expect(prep.params.duration_seconds).toBe(spec.default);
+    const preview = await Gen.buildComfyPayloadPreview({ projectId, cutId: id, modelId: 'ltx-2.5-i2v' });
+    expect(preview).not.toHaveProperty('timing');
+    expect(preview).not.toHaveProperty('audio');
+  });
+
+  it('snapDurationUp rounds a length up to the step, then into min/max; null without a length', () => {
+    expect(Gen.snapDurationUp(1.5, { type: 'int' })).toBe(2);
+    expect(Gen.snapDurationUp(2, { type: 'int' })).toBe(2);
+    expect(Gen.snapDurationUp(1.5, { type: 'float' })).toBe(1.5);
+    expect(Gen.snapDurationUp(1.2, { type: 'float', step: 0.5 })).toBe(1.5);
+    expect(Gen.snapDurationUp(1.5, { type: 'float', step: 0.5 })).toBe(1.5);
+    expect(Gen.snapDurationUp(2.1, { step: 2 })).toBe(4);
+    expect(Gen.snapDurationUp(1, { type: 'int', min: 4, max: 12 })).toBe(4);
+    expect(Gen.snapDurationUp(30, { type: 'int', min: 4, max: 12 })).toBe(12);
+    expect(Gen.snapDurationUp(3.3)).toBe(3.3);
+    expect(Gen.snapDurationUp(3.3, null)).toBe(3.3);
+    for (const none of [null, undefined, '', 0, -2, 'abc']) expect(Gen.snapDurationUp(none, { type: 'int' })).toBeNull();
   });
 
   it('surfaces the ComfyUI error detail when the job fails', async () => {
@@ -366,7 +354,7 @@ describe('comfy cut render job', () => {
     expect(job.error).toContain('spend_consent_required');
   });
 
-  it('validates inputs before queueing: start frame, references, consent, model, params', async () => {
+  it('validates inputs before queueing: start frame, reference / audio models, consent, model, params, prompt', async () => {
     Client._setComfyClientForTests(fakeClient());
     const { cut: noFrame } = await seedCut({ withStartFrame: false });
     await expect(Gen.startComfyCutVideoJob({ projectId, cutId: noFrame._id.toString(), modelId: 'ltx-2.5-i2v' })).rejects.toBeInstanceOf(
@@ -387,33 +375,58 @@ describe('comfy cut render job', () => {
     await expect(Gen.startComfyCutVideoJob({ projectId, cutId: new ObjectId().toString(), modelId: 'ltx-2.5-i2v' })).rejects.toBeInstanceOf(
       Gen.CutNotFoundError,
     );
+    // A cut has no reference images of its own, so a model that REQUIRES them
+    // cannot be driven from the Scenes tab — even when the frames list some.
+    const { cut: framed } = await seedCut();
+    expect(framed.start_frame.reference_ids).toHaveLength(1);
+    await expect(
+      Gen.prepareCutRender({ projectId, cutId: framed._id.toString(), modelId: 'seedance-2.0-r2v', confirmSpend: true }),
+    ).rejects.toMatchObject({ code: 'MISSING_REFERENCE_IMAGES', status: 400 });
+    // Lip-sync is gone from the cut path: an audio-required model is a 400.
+    const audio = await Gen.prepareCutRender({ projectId, cutId: framed._id.toString(), modelId: 'ltx-2.3-ia2v' }).catch((e) => e);
+    expect(audio).toBeInstanceOf(Gen.InvalidComfyParamsError);
+    expect(audio).toMatchObject({ code: 'INVALID_COMFY_PARAMS', status: 400 });
+    expect(audio.message).toMatch(/needs a dialogue recording/);
+    expect(Gen.MissingDialogueAudioError).toBeUndefined();
+    // No video prompt on the cut.
+    const { cut: silent } = await seedCut({ prompt: ' ** ** ' });
+    const empty = await Gen.prepareCutRender({ projectId, cutId: silent._id.toString(), modelId: 'ltx-2.5-i2v' }).catch((e) => e);
+    expect(empty).toMatchObject({ code: 'INVALID_COMFY_PARAMS' });
+    expect(empty.message).toMatch(/the cut has no prompt text/);
+    // …unless the caller supplies one.
+    const over = await Gen.prepareCutRender({ projectId, cutId: silent._id.toString(), modelId: 'ltx-2.5-i2v', promptOverride: '  A custom prompt. ' });
+    expect(over.prompt).toBe('A custom prompt.');
+    // Another project cannot render it.
+    const other = (await createProject('Other'))._id.toString();
+    await expect(Gen.prepareCutRender({ projectId: other, cutId: framed._id.toString(), modelId: 'ltx-2.5-i2v' })).rejects.toBeInstanceOf(
+      Gen.CutNotFoundError,
+    );
   });
 
-  it('reference-to-video: preview prepends the binding and sends the references, and the render passes consent through', async () => {
+  it('the preview is the cut prompt + the frames it will send; an API model passes consent through to the run', async () => {
     const client = fakeClient();
     Client._setComfyClientForTests(client);
-    const { cut } = await seedCut({ withStartFrame: false, refs: 2 });
-    const preview = await Gen.buildComfyPayloadPreview({
-      projectId,
-      cutId: cut._id.toString(),
-      modelId: 'seedance-2.0-r2v',
-      confirmSpend: true,
-    });
-    expect(preview.prompt.startsWith('@Image1 controls Sarah')).toBe(true);
+    const { cut } = await seedCut();
+    const endImage = newImage();
+    await VP.updateVideoPrompt(projectId, cut._id, { end_frame: { image_id: endImage, prompt: 'end' } });
+    const preview = await Gen.buildComfyPayloadPreview({ projectId, cutId: cut._id.toString(), modelId: 'kling-3.0', confirmSpend: true });
+    expect(Object.keys(preview).sort()).toEqual(
+      ['end_frame_image_id', 'model', 'overrides', 'params', 'prompt', 'reference_image_ids', 'spends_credits', 'start_frame_image_id', 'warnings'].sort(),
+    );
+    expect(preview.prompt).toBe(CUT_PROMPT_PLAIN);
     expect(preview.spends_credits).toBe(true);
-    expect(preview.reference_image_ids).toHaveLength(1); // template has one reference slot
-    expect(preview.start_frame_image_id).toBeNull();
-    const m = Object.fromEntries(preview.overrides.map((o) => [o.address, o.value]));
-    expect(m['356.image']).toBe(`cut-${cut._id}-ref-1.png`);
-    expect(m['361.model']).toBe('Seedance 2.0');
+    expect(preview.start_frame_image_id).toBe(String(cut.start_frame.image_id));
+    // Kling takes no end frame and no model takes cut-level references.
+    expect(preview.end_frame_image_id).toBeNull();
+    expect(preview.reference_image_ids).toEqual([]);
+    // A first-last-frame model reports both stills.
+    const flf = await Gen.buildComfyPayloadPreview({ projectId, cutId: cut._id.toString(), modelId: 'wan-2.2-14b-flf2v' });
+    expect(flf.end_frame_image_id).toBe(String(endImage));
+    expect(flf.spends_credits).toBe(false);
 
-    const { job_id } = await Gen.startComfyCutVideoJob({
-      projectId,
-      cutId: cut._id.toString(),
-      modelId: 'seedance-2.0-r2v',
-      confirmSpend: true,
-    });
+    const { job_id } = await Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'kling-3.0', confirmSpend: true });
     const job = await waitForTerminal(job_id);
+    expect(job.error).toBeNull();
     expect(job.status).toBe('done');
     const run = client.calls.find((c) => c.name === 'run_workflow');
     expect(run.args.confirm_spend).toBe(true);
@@ -423,13 +436,9 @@ describe('comfy cut render job', () => {
     expect(after.video_model_lab).toBe('ComfyUI (API)');
   });
 
-  it('persists provider comfy and the seed it actually used, and never repeats an exclusion already in the block', async () => {
+  it('persists provider comfy and the seed it actually used', async () => {
     Client._setComfyClientForTests(fakeClient());
     const { cut } = await seedCut();
-    await fakeDb.collection('video_prompts').updateOne(
-      { _id: cut._id },
-      { $set: { exclusions: ['Do not show the door yet.', 'Stop when her hand lets go.'] } },
-    );
     const preview = await Gen.buildComfyPayloadPreview({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v', params: { duration_seconds: 3 } });
     expect(Number.isInteger(preview.params.seed)).toBe(true);
     const { job_id } = await Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v', params: { duration_seconds: 3 } });
@@ -441,81 +450,14 @@ describe('comfy cut render job', () => {
     expect(after.video_comfy).toMatchObject({ model_id: 'ltx-2.5-i2v', template: 'video_ltx2_5_i2v', prompt_id: 'prompt-1' });
     expect(after.video_comfy.params.seed).toBe(job.params.seed);
     expect(after.video_parameters.params.seed).toBe(job.params.seed);
-    const sent = preview.prompt;
-    expect(sent.split('Stop when her hand lets go.').length).toBe(2); // once — already in the block
-    expect(sent.endsWith('Do not show the door yet.')).toBe(true);
+    expect(preview.prompt).toBe(CUT_PROMPT_PLAIN);
+    expect(after.video_comfy.params.prompt).toBe(CUT_PROMPT_PLAIN);
   });
 
-  describe('lip-sync (ltx-2.3-ia2v)', () => {
-    it('refuses a cut with no covered lines or with an unrecorded line (400 MISSING_DIALOGUE_AUDIO)', async () => {
-      Client._setComfyClientForTests(fakeClient());
-      const { beat, cut } = await seedCut();
-      await expect(Gen.prepareCutRender({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.3-ia2v' })).rejects.toMatchObject({
-        code: 'MISSING_DIALOGUE_AUDIO',
-        status: 400,
-        lines: [],
-      });
-      const ids = await seedLines(beat._id, [{ who: 'Sarah', text: 'Hi', audio: true }, { who: 'Tom', text: 'Hey' }]);
-      await VP.updateVideoPrompt(projectId, cut._id, { dialog_ids: ids });
-      const err = await Gen.prepareCutRender({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.3-ia2v' }).catch((e) => e);
-      expect(err.code).toBe('MISSING_DIALOGUE_AUDIO');
-      expect(err.lines).toEqual([2]);
-      expect(err.message).toMatch(/line 2 has no recording/);
-    });
-
-    it('joins the covered recordings, uploads the MP3 into the LoadAudio slot, defaults the duration to the speech, persists the cut audio', async () => {
-      const client = fakeClient();
-      Client._setComfyClientForTests(client);
-      const { beat, cut } = await seedCut();
-      const ids = await seedLines(beat._id, [{ who: 'Sarah', text: 'Hi', audio: true }, { who: 'Tom', text: 'Hey', audio: true }]);
-      await VP.updateVideoPrompt(projectId, cut._id, { dialog_ids: ids });
-
-      const preview = await Gen.buildComfyPayloadPreview({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.3-ia2v', params: {} });
-      expect(preview.audio).toMatchObject({ lines: 2 });
-      expect(preview.audio.speech_seconds).toBeCloseTo(3 + 0.25 + 0.3, 5);
-      expect(preview.params.duration_seconds).toBe(4); // ceil(3.55)
-      expect(preview.params.prompt_enhance).toBe(false);
-
-      const { job_id } = await Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.3-ia2v', params: {} });
-      const job = await waitForTerminal(job_id);
-      expect(job.error).toBeNull();
-      expect(job.status).toBe('done');
-
-      const upload = client.calls.find((c) => c.name === 'upload_file');
-      expect(upload.args.paths.some((p) => p.endsWith(`cut-${cut._id}-start.jpg`))).toBe(true);
-      expect(upload.args.paths.some((p) => p.endsWith(`cut-${cut._id}-dialogue.mp3`))).toBe(true);
-      const set = client.calls.find((c) => c.name === 'set_workflow_slot');
-      const m = Object.fromEntries(set.args.overrides.map((o) => [o.address, o.value]));
-      expect(m['269.image']).toBe(`cut-${cut._id}-start.jpg`);
-      expect(m['276.audio']).toBe(`cut-${cut._id}-dialogue.mp3`);
-      expect(m['340.value_4']).toBe(4);
-      expect(m['340.value_5']).toBe(false);
-      expect(m['340.value']).not.toMatch(/\bHi\b|\bHey\b/); // dialogue words never enter a prompt
-
-      const mp3 = uploadedAttachments.find((a) => a.metadata.generated_by === 'dialog-concat');
-      expect(mp3).toBeTruthy();
-      expect(mp3.metadata.owner_type).toBe('beat');
-      const after = await VP.getVideoPrompt(projectId, cut._id.toString());
-      expect(String(after.audio_file_id)).toBe(mp3._id.toString());
-      expect(after.audio_duration_seconds).toBe(3.2);
-      expect(after.video_provider).toBe('comfy');
-      expect(after.video_comfy.model_id).toBe('ltx-2.3-ia2v');
-    });
-  });
-
-  it('runComfyCutRenderInline renders while the caller holds the beat lock and returns the finished job', async () => {
-    const client = fakeClient();
-    Client._setComfyClientForTests(client);
-    const { beat, cut } = await seedCut();
-    const prep = await Gen.prepareCutRender({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v', params: { duration_seconds: 2 } });
-    let created = null;
-    const job = await BeatLocks.withBeatLock(beat._id, () =>
-      Gen.runComfyCutRenderInline({ prep, projectId, onJobCreated: (j) => (created = j.job_id) }),
-    );
-    expect(job.status).toBe('done');
-    expect(job.job_id).toBe(created);
-    expect(Gen.getComfyVideoJob(created).video_file_id).toBe(job.video_file_id);
-    expect(client.calls.some((c) => c.name === 'run_workflow')).toBe(true);
+  it('the bulk-render and lip-sync entry points are gone', () => {
+    expect(Gen.runComfyCutRenderInline).toBeUndefined();
+    expect(Gen.MissingDialogueAudioError).toBeUndefined();
+    expect(Gen.ComfyBusyError).toBeUndefined();
   });
 
   // A client whose run_workflow waits on a gate per call, so the test can
@@ -532,14 +474,21 @@ describe('comfy cut render job', () => {
   }
 
   async function secondCut(beat) {
-    const cut = await VP.createVideoPrompt({ projectId, beatId: beat._id, title: 'Cut 2', prompt: 'Close on the cup. Stop when it stops.', durationSeconds: 3 });
-    await fakeDb.collection('video_prompts').updateOne({ _id: cut._id }, { $set: { start_frame: { image_id: newImage(), prompt: 'still', reference_ids: [] } } });
-    return cut;
+    const scene = await VS.createVideoScene({ projectId, beatId: beat._id, title: 'Another' });
+    return VP.createVideoPrompt({
+      projectId,
+      beatId: beat._id,
+      sceneId: scene._id,
+      title: 'Cut 2',
+      prompt: 'Close on the cup. Stop when it stops.',
+      durationSeconds: 3,
+      startFrame: { image_id: newImage(), prompt: 'still' },
+    });
   }
 
   const tick = (ms = 10) => new Promise((r) => setTimeout(r, ms));
 
-  it('queues several cuts of one beat behind a shared beat hold and runs them one at a time', async () => {
+  it('queues several cuts on the one-GPU queue and runs them one at a time — without holding the beat lock', async () => {
     const { client, openNext } = gatedClient();
     Client._setComfyClientForTests(client);
     const { beat, cut } = await seedCut();
@@ -551,7 +500,7 @@ describe('comfy cut render job', () => {
     const queued = Gen.serializeComfyJob(Gen.getComfyVideoJob(b.job_id));
     expect(queued.status).toBe('queued');
     expect(queued.queue_position).toBe(1);
-    expect(BeatLocks.isBeatLocked(beat._id)).toBe(true);
+    expect(BeatLocks.isBeatLocked(beat._id)).toBe(false);
 
     // The same cut again is refused with its running job's id.
     const dup = await Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v' }).catch((e) => e);
@@ -566,11 +515,14 @@ describe('comfy cut render job', () => {
     await tick();
     expect(Gen.getComfyVideoJob(b.job_id).status).toBe('running');
     expect(Gen.getComfyVideoJob(b.job_id).queue_position).toBe(null);
-    expect(BeatLocks.isBeatLocked(beat._id)).toBe(true);
     openNext();
     expect((await waitForTerminal(b.job_id)).status).toBe('done');
-    await tick(5);
-    expect(BeatLocks.isBeatLocked(beat._id)).toBe(false);
+    // Finished: the cut is free for another render.
+    const again = await Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v', params: { duration_seconds: 2 } });
+    openNext();
+    await tick();
+    openNext();
+    expect((await waitForTerminal(again.job_id)).status).toBe('done');
   });
 
   it('removes a queued job from the queue without running it, and refuses to cancel a running one', async () => {
@@ -594,17 +546,17 @@ describe('comfy cut render job', () => {
     expect((await waitForTerminal(a.job_id)).status).toBe('done');
     await tick();
     expect(client.calls.filter((x) => x.name === 'run_workflow')).toHaveLength(1);
-    expect(BeatLocks.isBeatLocked(beat._id)).toBe(false);
   });
 
-  it('refuses to queue behind a held beat lock', async () => {
+  it('a held beat lock does not stop a cut from rendering', async () => {
     Client._setComfyClientForTests(fakeClient());
     const { beat, cut } = await seedCut();
     let release;
-    BeatLocks.withBeatLock(beat._id, () => new Promise((r) => (release = r)));
-    await expect(Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v' })).rejects.toBeInstanceOf(
-      Gen.ComfyBusyError,
-    );
+    const held = BeatLocks.withBeatLock(beat._id, () => new Promise((r) => (release = r)));
+    const { job_id } = await Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v' });
+    expect((await waitForTerminal(job_id)).status).toBe('done');
+    expect(BeatLocks.isBeatLocked(beat._id)).toBe(true);
     release();
+    await held;
   });
 });

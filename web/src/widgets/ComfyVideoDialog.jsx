@@ -4,21 +4,19 @@ import { apiGet, apiPostJson, apiPutJson, thumbUrl } from '../api.js';
 import { VideoProgressBar } from './VideoProgressBar.jsx';
 import { ModelGroup, COMFY_DISABLED_MESSAGE } from './comfyControls.jsx';
 import { isComfyJobActive, useComfyCutJobs } from './comfyCutJobs.jsx';
-import { renderSecondsForCut } from './cutTiming.js';
 
-// ComfyUI render dialog for one cut (Prompts tab). The server's model
+// ComfyUI render dialog for one cut (Scenes tab). The server's model
 // registry (/api/comfy/models) lists the templates it can drive; each carries
 // the canonical parameters it exposes with ranges and defaults. Advanced
 // opens the template's raw slot list so any parameter can be set. The prompt
-// shown is the server's assembly of the cut (binding + block + exclusions)
-// and can be overridden for this render only.
+// shown is the cut's video prompt and can be overridden for this render only.
 //
 // The render itself is a background job: its live snapshot lives in the
 // page's ComfyUI job store (comfyCutJobs.jsx), not here, so the dialog can be
 // closed at any time and reopening it shows the progress. Other cuts can be
 // queued meanwhile; they run one after another on the GPU.
 
-const PARAM_ORDER = [
+export const PARAM_ORDER = [
   'negative_prompt',
   'duration_seconds',
   'aspect_ratio',
@@ -60,7 +58,7 @@ function idOf(v) {
 // travelling camera's handles and snaps to the model), a blank seed is random.
 const PER_RENDER_PARAMS = ['duration_seconds', 'seed'];
 
-function defaultParamsFor(model, remembered) {
+export function defaultParamsFor(model, remembered) {
   const out = {};
   for (const [key, spec] of Object.entries(model?.params || {})) {
     if (key === 'prompt') continue;
@@ -76,26 +74,15 @@ function defaultParamsFor(model, remembered) {
 
 // What a blank length renders, for the hint under the field.
 function autoLengthHint(model, cut) {
-  if (model?.inputs?.audio === 'required') return 'auto: the length of the recorded lines';
-  const t = renderSecondsForCut(cut, model?.params?.duration_seconds);
-  if (!t) return `auto: the model default (${model?.params?.duration_seconds?.default ?? '?'} s)`;
-  const parts = [`${t.cut_seconds} s cut`];
-  if (t.handles) parts.push(`${t.handles} s handles`);
-  return t.seconds === t.cut_seconds && !t.handles ? `auto: ${t.seconds} s (this cut)` : `auto: ${parts.join(' + ')} → ${t.seconds} s`;
+  const d = Number(cut?.duration_seconds);
+  if (!(d > 0)) return `auto: the model default (${model?.params?.duration_seconds?.default ?? '?'} s)`;
+  return `auto: this cut's ${d} s, rounded up to what the model renders`;
 }
 
-// Client-side twin of the server's assembly so the textarea is populated
-// before the first preview round trip.
+// The prompt the server will send, so the textarea is populated before the
+// first preview round trip.
 function assemblePromptClient(model, cut) {
-  const takesRefs = model?.inputs?.referenceImages && model.inputs.referenceImages !== 'unused';
-  const parts = [];
-  const binding = String(cut?.reference_binding || '').trim();
-  if (takesRefs && binding) parts.push(binding);
-  const body = String(cut?.prompt || '').trim();
-  if (body) parts.push(body);
-  const ex = (Array.isArray(cut?.exclusions) ? cut.exclusions : []).map((x) => String(x || '').trim()).filter(Boolean);
-  if (ex.length) parts.push(ex.join(' '));
-  return parts.join('\n\n');
+  return String(cut?.prompt || '').trim();
 }
 
 function coerceSlotValue(slot, raw) {
@@ -146,7 +133,10 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
   const startFrameId = idOf(cut?.start_frame?.image_id);
   const needsStart = model?.inputs?.startFrame === 'required';
   const needsRefs = model?.inputs?.referenceImages === 'required';
-  const refCount = Array.isArray(cut?.reference_images) ? cut.reference_images.length : 0;
+  // A cut carries a prompt and two frames; models that need more (reference
+  // images, a dialogue recording) cannot be driven from here.
+  const refCount = 0;
+  const needsAudio = model?.inputs?.audio === 'required';
   const missingStart = needsStart && !startFrameId;
   const endFrameId = idOf(cut?.end_frame?.image_id);
   const missingEnd = model?.inputs?.endFrame === 'required' && !endFrameId;
@@ -266,7 +256,7 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
   }
 
   const canGenerate =
-    !!model && model.available && configured && serverRunning && !generating && !missingStart && !missingEnd && !missingRefs &&
+    !!model && model.available && configured && serverRunning && !generating && !missingStart && !missingEnd && !missingRefs && !needsAudio &&
     (!model.spends_credits || consent);
 
   const footer = (
@@ -345,15 +335,11 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <InputsStrip
             model={model}
-            cut={cut}
             startFrameId={startFrameId}
             endFrameId={endFrameId}
-            refCount={refCount}
             missingStart={missingStart}
             missingEnd={missingEnd}
             missingRefs={missingRefs}
-            audio={preview?.audio || null}
-            audioError={model?.inputs?.audio === 'required' && error && /recording|dialogue/i.test(error) ? error : null}
           />
 
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -430,32 +416,21 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
   );
 }
 
-function InputsStrip({ model, cut, startFrameId, endFrameId, refCount, missingStart, missingEnd, missingRefs, audio, audioError }) {
+function InputsStrip({ model, startFrameId, endFrameId, missingStart, missingEnd, missingRefs }) {
   if (!model) return null;
-  const refs = Array.isArray(cut?.reference_images) ? cut.reference_images : [];
   const usesStart = model.inputs?.startFrame && model.inputs.startFrame !== 'unused';
   const usesEnd = model.inputs?.endFrame && model.inputs.endFrame !== 'unused';
-  const usesRefs = model.inputs?.referenceImages && model.inputs.referenceImages !== 'unused';
   const usesAudio = model.inputs?.audio === 'required';
-  const coveredCount = Array.isArray(cut?.dialog_ids) ? cut.dialog_ids.length : 0;
   return (
     <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
       {usesAudio ? (
-        <div>
-          <span className="field-label">Dialogue (lip-sync)</span>
-          {audio ? (
-            <div style={{ fontSize: 12 }}>
-              {audio.lines} line{audio.lines === 1 ? '' : 's'} recorded · {Number(audio.speech_seconds || 0).toFixed(1)} s joined
-            </div>
-          ) : (
-            <div style={{ fontSize: 12, color: audioError || !coveredCount ? '#ffb86b' : 'var(--fg-muted)', maxWidth: 260 }}>
-              {audioError
-                ? audioError
-                : coveredCount
-                  ? `${coveredCount} covered line${coveredCount === 1 ? '' : 's'} — every one must be recorded; the recordings are joined and drive the mouth.`
-                  : 'This cut covers no dialogue lines — a lip-sync model has nothing to sync.'}
-            </div>
-          )}
+        <div style={{ fontSize: 12, color: '#ffb86b', maxWidth: 260 }}>
+          This model lip-syncs a dialogue recording, which a cut does not carry. Pick another model.
+        </div>
+      ) : null}
+      {missingRefs ? (
+        <div style={{ fontSize: 12, color: '#ffb86b', maxWidth: 260 }}>
+          This model is driven by reference images rather than a start and end frame. Pick another model.
         </div>
       ) : null}
       {usesStart ? (
@@ -482,36 +457,11 @@ function InputsStrip({ model, cut, startFrameId, endFrameId, refCount, missingSt
           )}
         </div>
       ) : null}
-      {usesRefs ? (
-        <div>
-          <span className="field-label">References (@Image order)</span>
-          {refs.length ? (
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {refs.slice(0, model.max_reference_images || refs.length).map((r, i) => (
-                <div key={idOf(r.image_id) || i} style={{ textAlign: 'center', fontSize: 10, color: 'var(--fg-muted)' }}>
-                  <img src={thumbUrl(idOf(r.image_id))} alt={r.label || ''} style={{ width: 72, borderRadius: 3, display: 'block' }} />
-                  @Image{i + 1}
-                </div>
-              ))}
-              {refs.length > (model.max_reference_images || refs.length) ? (
-                <div style={{ fontSize: 11, color: 'var(--fg-muted)', alignSelf: 'center' }}>
-                  +{refs.length - model.max_reference_images} not sent (template slots)
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <div style={{ fontSize: 12, color: missingRefs ? '#ffb86b' : 'var(--fg-muted)' }}>
-              {missingRefs ? 'This model needs at least one reference image on the cut.' : 'No references on this cut.'}
-            </div>
-          )}
-          {refCount === 0 ? null : null}
-        </div>
-      ) : null}
     </div>
   );
 }
 
-function ParamField({ name, spec, value, disabled, onChange, placeholder, hint = null }) {
+export function ParamField({ name, spec, value, disabled, onChange, placeholder, hint = null }) {
   const label = spec.label || name;
   const help = hint || spec.help || '';
   if (spec.type === 'bool') {

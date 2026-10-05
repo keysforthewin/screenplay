@@ -17,7 +17,3 @@ process.env.ADMIN_USERNAME = '';
 process.env.FAL_KEY = '';
 process.env.COMFYUI_URL = '';
 process.env.LLM_HARNESS_ENABLED = '';
-// The start/end frame pair check is a vision call per cut. Off for the suite
-// (it would reach the API with the test key); tests that exercise it install
-// _setFrameCheckerForTests, which switches it back on.
-process.env.CUT_FRAME_CHECK = 'off';

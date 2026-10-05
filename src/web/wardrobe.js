@@ -81,19 +81,3 @@ export function formatLockRows(rows) {
 export function formatWardrobeLocks(characters, beat = null) {
   return formatLockRows(lockedWardrobeFor(characters, beat));
 }
-
-// The lock for the people a CUT puts in frame (its in_frame roster and
-// action_by; a cut planned without a roster falls back to its
-// characters_in_scene): [{ id, name, text, image_id }] with text or a plate.
-// A cut that names nobody gets nothing — a plate attached to an empty
-// establishing shot would pull its wearer into the picture.
-export function cutWardrobeLocks(cut, characters, beat = null) {
-  const rows = lockedWardrobeFor(characters, beat).filter((r) => r.text || r.image_id);
-  const norm = (n) => stripMarkdown(String(n || '')).trim().toLowerCase();
-  let named = new Set(
-    [...(Array.isArray(cut?.in_frame) ? cut.in_frame.map((p) => p?.character) : []), cut?.action_by].map(norm).filter(Boolean),
-  );
-  if (!named.size) named = new Set((Array.isArray(cut?.characters_in_scene) ? cut.characters_in_scene : []).map(norm).filter(Boolean));
-  if (!named.size) return [];
-  return rows.filter((r) => named.has(r.name.toLowerCase()));
-}

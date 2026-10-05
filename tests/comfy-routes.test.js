@@ -63,6 +63,7 @@ vi.mock('../src/comfy/templates.js', () => ({
 const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const VP = await import('../src/mongo/videoPrompts.js');
+const VS = await import('../src/mongo/videoScenes.js');
 const BeatLocks = await import('../src/web/beatLocks.js');
 const Client = await import('../src/comfy/client.js');
 const Gen = await import('../src/web/comfyVideoGenerate.js');
@@ -144,15 +145,24 @@ function fakeClient() {
   };
 }
 
-async function seedCut({ withStartFrame = true } = {}) {
-  const beat = await Plots.createBeat({ projectId, name: 'B', body: 'x', characters: [], sets: [] });
-  const cut = await VP.createVideoPrompt({ projectId, beatId: beat._id, title: 'c', prompt: 'A held medium shot. Stop when she blinks.' });
-  if (withStartFrame) {
-    const img = new ObjectId();
-    fakeImageStore.set(img.toString(), Buffer.from('png'));
-    await fakeDb.collection('video_prompts').updateOne({ _id: cut._id }, { $set: { start_frame: { image_id: img, prompt: '', reference_ids: [] } } });
-  }
-  return cut;
+function newImage() {
+  const img = new ObjectId();
+  fakeImageStore.set(img.toString(), Buffer.from('png'));
+  return img;
+}
+
+// A cut in a new scene of `beatId` (or of a new beat).
+async function seedCut({ withStartFrame = true, beatId = null, prompt = 'A held medium shot. Stop when she blinks.' } = {}) {
+  const beat = beatId ? { _id: beatId } : await Plots.createBeat({ projectId, name: 'B', body: 'x', characters: [], sets: [] });
+  const scene = await VS.createVideoScene({ projectId, beatId: beat._id, title: 'S' });
+  return VP.createVideoPrompt({
+    projectId,
+    beatId: beat._id,
+    sceneId: scene._id,
+    title: 'c',
+    prompt,
+    startFrame: withStartFrame ? { image_id: newImage(), prompt: '' } : null,
+  });
 }
 
 describe('GET /comfy/models', () => {
@@ -251,6 +261,15 @@ describe('cut render routes', () => {
     const nf = await call('POST', `/api/cut/${noFrame._id}/video/preview`, { model_id: 'ltx-2.5-i2v' });
     expect(nf.status).toBe(400);
     expect(nf.json.code).toBe('MISSING_START_FRAME');
+    // A cut carries no dialogue recording and no reference images of its own:
+    // the lip-sync model and the reference-to-video model are both 400s.
+    const lip = await call('POST', `/api/cut/${cut._id}/video/preview`, { model_id: 'ltx-2.3-ia2v' });
+    expect(lip.status).toBe(400);
+    expect(lip.json.code).toBe('INVALID_COMFY_PARAMS');
+    expect(lip.json.error).toMatch(/dialogue recording/);
+    const r2v = await call('POST', `/api/cut/${cut._id}/video/generate`, { model_id: 'seedance-2.0-r2v', confirm_spend: true });
+    expect(r2v.status).toBe(400);
+    expect(r2v.json.code).toBe('MISSING_REFERENCE_IMAGES');
   });
 
   it('preview returns the assembled prompt and overrides without touching ComfyUI', async () => {
@@ -259,7 +278,9 @@ describe('cut render routes', () => {
     const cut = await seedCut();
     const r = await call('POST', `/api/cut/${cut._id}/video/preview`, { model_id: 'ltx-2.5-i2v', params: { duration_seconds: 3 } });
     expect(r.status).toBe(200);
-    expect(r.json.prompt).toContain('A held medium shot');
+    expect(r.json.prompt).toBe('A held medium shot. Stop when she blinks.');
+    expect(r.json).not.toHaveProperty('timing');
+    expect(r.json).not.toHaveProperty('audio');
     expect(r.json.overrides.find((o) => o.address === '398.value_2').value).toBe(3);
     expect(r.json.model.id).toBe('ltx-2.5-i2v');
     expect(client.calls).toHaveLength(0);
@@ -298,7 +319,7 @@ describe('cut render routes', () => {
     expect(snap.video_file_id).toMatch(/^[a-f0-9]{24}$/);
     expect((await call('GET', `/api/cut/${cut._id}/video-job/${new ObjectId()}`)).status).toBe(404);
   });
-  it('queues a second cut of the same beat, refuses a duplicate for one cut (409 + job id), and cancels only queued jobs', async () => {
+  it('queues a second cut of the same beat (no beat lock), refuses a duplicate for one cut (409 + job id), and cancels only queued jobs', async () => {
     let open;
     const client = fakeClient();
     const inner = client.callTool.bind(client);
@@ -308,10 +329,7 @@ describe('cut render routes', () => {
     };
     Client._setComfyClientForTests(client);
     const cut = await seedCut();
-    const cut2 = await VP.createVideoPrompt({ projectId, beatId: cut.beat_id, title: 'd', prompt: 'Close on the cup. Stop when it stops.' });
-    const img = new ObjectId();
-    fakeImageStore.set(img.toString(), Buffer.from('png'));
-    await fakeDb.collection('video_prompts').updateOne({ _id: cut2._id }, { $set: { start_frame: { image_id: img, prompt: '', reference_ids: [] } } });
+    const cut2 = await seedCut({ beatId: cut.beat_id, prompt: 'Close on the cup. Stop when it stops.' });
 
     const a = await call('POST', `/api/cut/${cut._id}/video/generate`, { model_id: 'ltx-2.5-i2v', params: { duration_seconds: 3 } });
     expect(a.status).toBe(202);
@@ -321,6 +339,7 @@ describe('cut render routes', () => {
     const b = await call('POST', `/api/cut/${cut2._id}/video/generate`, { model_id: 'ltx-2.5-i2v', params: { duration_seconds: 3 } });
     expect(b.status).toBe(202);
     await new Promise((r) => setTimeout(r, 20));
+    expect(BeatLocks.isBeatLocked(cut.beat_id)).toBe(false);
 
     expect((await call('POST', `/api/cut/${cut2._id}/video/job/${new ObjectId()}/cancel`)).status).toBe(404);
     expect((await call('POST', `/api/cut/${cut._id}/video/job/${b.json.job_id}/cancel`)).status).toBe(404); // wrong cut

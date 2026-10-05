@@ -9,6 +9,7 @@ import { startServer } from './server/index.js';
 import { installLifecycleHandlers } from './lifecycle.js';
 import { startBackupScheduler } from './backup/scheduler.js';
 import { startHocuspocus } from './web/hocuspocus.js';
+import { startMcpServer } from './mcp/server.js';
 import { bindDiscordClient } from './web/auth.js';
 import { getAnthropic } from './anthropic/client.js';
 import { logger } from './log.js';
@@ -28,6 +29,7 @@ async function main() {
   await startBackupScheduler();
   startServer();
   await startHocuspocus();
+  await startMcpServer();
   const bot = createDiscordClient();
   installInteractionHandlers(bot.client);
   bindDiscordClient(bot.client);

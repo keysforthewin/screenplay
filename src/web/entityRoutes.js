@@ -19,6 +19,7 @@ import { buildComfyRouter, registerCutVideoRoutes } from './comfyRoutes.js';
 import { registerCutRoutes } from './cutRoutes.js';
 import { registerArtworkCritiqueRoutes } from './artworkCritiqueRoutes.js';
 import { registerCutFalVideoRoutes, cutVideoJobEventsHandler } from './cutVideoRoutes.js';
+import { registerCutBatchRoutes } from './cutBatchRoutes.js';
 import {
   countProjects,
   createProject,
@@ -296,136 +297,6 @@ export function buildApiRouter() {
   // (src/web/cutVideoRoutes.js).
   router.get('/cut/:id/video-job/:jobId/events', cutVideoJobEventsHandler);
 
-  // Server-Sent Events stream of a Prompts-tab cut render job
-  // (src/web/cutBeatRender.js). Same pre-auth session_id handshake.
-  // Cut planner (Auto generate / Replan) live progress: steps, activity log
-  // and the model's streamed output counters. Same auth + framing as the
-  // render feed above.
-  router.get('/video-scenes/generate/:jobId/events', async (req, res, next) => {
-    try {
-      const sid = String(req.query?.session_id || '');
-      if (!sid) {
-        res.status(401).json({ error: 'missing session' });
-        return;
-      }
-      const session = await getSession(sid);
-      if (!session) {
-        res.status(401).json({ error: 'invalid session' });
-        return;
-      }
-      touchSession(sid).catch(() => {});
-      req.session = session;
-
-      const { getCutPlanJob, subscribeToCutPlanJob, unsubscribeFromCutPlanJob, serializeCutPlanJob } =
-        await import('./cutPlanner.js');
-      const job = getCutPlanJob(req.params.jobId);
-      if (!job) {
-        res.status(404).json({ error: 'job not found' });
-        return;
-      }
-      const isTerminal = (s) => s === 'done' || s === 'partial' || s === 'error';
-      res.set({
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-transform',
-        Connection: 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-      res.flushHeaders?.();
-      res.write(`event: snapshot\ndata: ${JSON.stringify(serializeCutPlanJob(job))}\n\n`);
-
-      const listener = (snap) => {
-        const terminal = isTerminal(snap.status);
-        res.write(`event: ${terminal ? snap.status : 'update'}\ndata: ${JSON.stringify(snap)}\n\n`);
-        if (terminal) {
-          unsubscribeFromCutPlanJob(snap.job_id, listener);
-          res.end();
-        }
-      };
-      subscribeToCutPlanJob(req.params.jobId, listener);
-
-      if (isTerminal(job.status)) {
-        unsubscribeFromCutPlanJob(req.params.jobId, listener);
-        res.end();
-        return;
-      }
-
-      const keepalive = setInterval(() => {
-        res.write(`: keepalive ${Date.now()}\n\n`);
-      }, 20_000);
-      keepalive.unref?.();
-
-      req.on('close', () => {
-        clearInterval(keepalive);
-        unsubscribeFromCutPlanJob(req.params.jobId, listener);
-      });
-    } catch (e) {
-      next(e);
-    }
-  });
-
-  router.get('/cuts/render/job/:jobId/events', async (req, res, next) => {
-    try {
-      const sid = String(req.query?.session_id || '');
-      if (!sid) {
-        res.status(401).json({ error: 'missing session' });
-        return;
-      }
-      const session = await getSession(sid);
-      if (!session) {
-        res.status(401).json({ error: 'invalid session' });
-        return;
-      }
-      touchSession(sid).catch(() => {});
-      req.session = session;
-
-      const { getCutBeatRenderJob, subscribeToCutBeatJob, unsubscribeFromCutBeatJob, serializeCutBeatJob } =
-        await import('./cutBeatRender.js');
-      const job = getCutBeatRenderJob(req.params.jobId);
-      if (!job) {
-        res.status(404).json({ error: 'job not found' });
-        return;
-      }
-      const isTerminal = (s) => s === 'done' || s === 'partial' || s === 'error';
-      res.set({
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-transform',
-        Connection: 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-      res.flushHeaders?.();
-      res.write(`event: snapshot\ndata: ${JSON.stringify(serializeCutBeatJob(job))}\n\n`);
-
-      const listener = (snap) => {
-        const terminal = isTerminal(snap.status);
-        const eventName = terminal ? snap.status : 'update';
-        res.write(`event: ${eventName}\ndata: ${JSON.stringify(snap)}\n\n`);
-        if (terminal) {
-          unsubscribeFromCutBeatJob(snap.job_id, listener);
-          res.end();
-        }
-      };
-      subscribeToCutBeatJob(req.params.jobId, listener);
-
-      if (isTerminal(job.status)) {
-        unsubscribeFromCutBeatJob(req.params.jobId, listener);
-        res.end();
-        return;
-      }
-
-      const keepalive = setInterval(() => {
-        res.write(`: keepalive ${Date.now()}\n\n`);
-      }, 20_000);
-      keepalive.unref?.();
-
-      req.on('close', () => {
-        clearInterval(keepalive);
-        unsubscribeFromCutBeatJob(req.params.jobId, listener);
-      });
-    } catch (e) {
-      next(e);
-    }
-  });
-
   // Server-Sent Events stream of a web chat agent run. Registered BEFORE
   // requireSession() for the same EventSource-can't-set-headers reason as
   // the video-job stream above.
@@ -672,10 +543,12 @@ export function buildApiRouter() {
   router.use('/comfy', buildComfyRouter());
   registerCutVideoRoutes(router);
 
-  // Scenes & cuts (src/web/cutRoutes.js): the Prompts tab's planner, scene
-  // and cut CRUD, and start-frame rendering.
+  // Scenes & cuts (src/web/cutRoutes.js): the Scenes tab's scene and cut
+  // CRUD and frame rendering.
   registerCutRoutes(router);
   registerCutFalVideoRoutes(router);
+  // Whole-beat batch render + joined download (src/web/cutBatchRoutes.js).
+  registerCutBatchRoutes(router);
 
   // Beat artwork critique (src/web/artworkCritiqueRoutes.js): the lower half
   // of the Critique tab — requirements, vision audit, generation proposals.
@@ -1483,13 +1356,37 @@ export function buildApiRouter() {
     }
   });
 
+  // Clear critique: the stored critique and the last climb's status go.
+  router.delete('/beat/:id/critique', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      const { clearCritique } = await import('./critiqueGenerate.js');
+      await clearCritique({ projectId: req.projectId, beatId });
+      res.json({ critique: null, climb: null });
+    } catch (e) {
+      if (e?.status) return res.status(e.status).json({ error: e.message });
+      next(e);
+    }
+  });
+
   router.post('/beat/:id/regenerate', async (req, res, next) => {
     try {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       if (await refuseDuringClimb(beatId, res)) return;
       const { regenerateBeat } = await import('./beatRewrite.js');
-      const result = await regenerateBeat(req.projectId, beatId);
+      const { apply, direction } = req.body || {};
+      if (apply != null && (typeof apply !== 'object' || Array.isArray(apply))) {
+        return res.status(400).json({ error: 'apply must be an object of facet key → criterion keys' });
+      }
+      const result = await regenerateBeat(req.projectId, beatId, {
+        apply: apply || null,
+        direction: typeof direction === 'string' ? direction : '',
+      });
+      // A manual rewrite is no longer the climb's result: its status goes.
+      const { setBeatClimb } = await import('../mongo/climbs.js');
+      await setBeatClimb(req.projectId, beatId, 'writing', null).catch(() => {});
       res.json(result);
     } catch (e) {
       if (e?.status) return res.status(e.status).json({ error: e.message });
@@ -3967,23 +3864,8 @@ export function buildApiRouter() {
     }
   });
 
-  // Auto-fill the scene bible from the beat. Synchronous (one LLM pass, a few
-  // seconds — like the dialogue critic).
-  router.post('/beat/:beatId/scene-bible/autofill', async (req, res, next) => {
-    try {
-      const beat = await getBeat(req.projectId, String(req.params.beatId));
-      if (!beat) return res.status(404).json({ error: 'beat not found' });
-      const { autofillSceneBible } = await import('./sceneBibleAutofill.js');
-      const result = await autofillSceneBible({ projectId: req.projectId, beatId: beat._id.toString() });
-      res.json(result);
-    } catch (e) {
-      if (e?.code === 'BEAT_BUSY') return res.status(409).json({ error: e.message });
-      next(e);
-    }
-  });
-
   // Auto-generate a set's description from the beats that stage in it.
-  // Synchronous like the scene-bible autofill above: the gateway write makes an
+  // Synchronous (one LLM pass): the gateway write makes an
   // open description editor fill in live before the response even lands.
   router.post('/set/:id/generate-description', async (req, res, next) => {
     try {

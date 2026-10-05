@@ -1,10 +1,9 @@
 // Vision pass for generated artwork: look at the rendered plate and write a
 // `description` onto the artwork doc (plus a `name`, when it has none yet).
 //
-// Artwork descriptions matter for more than browsing. The frame-reference
-// scorer reads them (src/web/frameReferences.js) when deciding which plates to
-// feed a storyboard frame, and the readiness report flags galleries that have
-// none. Generated artwork used to lean on its own `prompt` for that, which
+// Artwork descriptions matter for more than browsing: the artwork critique
+// matches a beat's requirements against them, and the reference picker shows
+// them. Generated artwork used to lean on its own `prompt` for that, which
 // says what was ASKED for rather than what came back — and imported artwork
 // has no prompt at all.
 //

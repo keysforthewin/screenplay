@@ -1,8 +1,7 @@
 // Set description auto-generation: one single-tool LLM pass over the beats
 // that reference a set, whose paragraphs replace the set's description via the
-// gateway (y-doc when Hocuspocus is up, Mongo fallback here). Mirrors
-// scene-bible-autofill.test.js: the Anthropic client is mocked to return a
-// canned write_set_description tool call.
+// gateway (y-doc when Hocuspocus is up, Mongo fallback here). The Anthropic
+// client is mocked to return a canned write_set_description tool call.
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import express from 'express';

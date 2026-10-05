@@ -3,7 +3,7 @@
 // direction, stop after N attempts without a gain) and the panel that shows a
 // running climb's progress or the last one's outcome — including, when it
 // stopped short of the target, why it hit the wall.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal.jsx';
 
 export const CLIMB_KINDS = {
@@ -60,7 +60,7 @@ export function ClimbDialog({ open, kind, last, intro, children, canStart = true
       <p className="modal-help">{intro}</p>
       <div className="climb-form">
         <label className="climb-field">
-          <span className="field-label">Score target ({kind === 'artwork' ? '% covered' : 'overall, out of 10'})</span>
+          <span className="field-label">Score target ({kind === 'artwork' ? '% quality — coverage weighted by artwork score' : 'overall, out of 10'})</span>
           <input type="number" min={scale.min} max={scale.max} step={scale.step} value={target} onChange={(e) => setTarget(e.target.value)} />
         </label>
         <label className="climb-field">
@@ -97,7 +97,12 @@ function runningLine(climb) {
   const noun = CLIMB_KINDS[kind].noun;
   if (climb.cancel_requested) return 'Stopping after the current step…';
   if (phase === 'baseline') return 'Scoring where it stands now…';
-  if (phase === 'improving') return kind === 'artwork' ? `Round ${attempt}: generating the proposed artwork…` : `Attempt ${attempt}: rewriting from the critique…`;
+  if (phase === 'improving') {
+    if (kind !== 'artwork') return `Attempt ${attempt}: rewriting from the critique…`;
+    return climb.stage === 'coverage'
+      ? `Round ${attempt} · phase 1, coverage: rendering a picture for each requirement that has none…`
+      : `Round ${attempt} · phase 2, quality: editing what the reviewer marked, remaking what it turned down…`;
+  }
   if (phase === 'scoring') return `${noun[0].toUpperCase()}${noun.slice(1)} ${attempt}: critiquing the result…`;
   if (phase === 'summarizing') return 'Working out why it stalled…';
   return 'Climbing…';
@@ -117,7 +122,9 @@ function outcomeLine(climb) {
     case 'max_attempts':
       return `Stopped at ${best} (target ${target}) after the limit of ${plural(climb.max_attempts, noun)}.`;
     case 'nothing_to_improve':
-      return `Stopped at ${best} (target ${target}): nothing was left to generate.`;
+      return kind === 'artwork'
+        ? `Stopped at ${best} (target ${target}): nothing was left to edit or render.`
+        : `Stopped at ${best} (target ${target}): nothing was left to generate.`;
     case 'cancelled':
       return `Cancelled at ${best} (target ${target}) after ${plural(n, noun)}.`;
     default:
@@ -132,6 +139,16 @@ function attemptMode(a) {
   const d = a.detail || {};
   if (d.mode === 'edit') return ` (${d.edits ?? 0} targeted edit${d.edits === 1 ? '' : 's'})`;
   if (d.mode === 'rewrite') return ' (full rewrite)';
+  // An artwork round: edits kept / undone, new renders.
+  if (d.edited != null || d.reverted != null) {
+    const parts = [];
+    if (d.stage) parts.push(d.stage === 'coverage' ? 'coverage' : 'quality');
+    if (d.edited) parts.push(`${d.edited} edited in place`);
+    if (d.reverted) parts.push(`${d.reverted} edit${d.reverted === 1 ? '' : 's'} undone`);
+    if (d.rendered) parts.push(`${d.rendered} new`);
+    if (d.failed) parts.push(`${d.failed} failed`);
+    return parts.length ? ` (${parts.join(', ')})` : '';
+  }
   return '';
 }
 
@@ -151,6 +168,46 @@ function Trail({ climb }) {
   );
 }
 
+// Every step the climb took, newest last: open while it runs (and scrolled to
+// the latest line), folded away once it is done.
+// The critique pass in flight: which subjects have been looked at.
+function auditLine(audit) {
+  const subjects = audit.subjects || [];
+  if (audit.phase === 'requirements' || !subjects.length) return 'Reading the beat for what it needs…';
+  if (audit.phase === 'matching') return `Matching requirements to artwork descriptions: ${subjects.filter((s) => s.status === 'matching').map((s) => s.name).join(', ') || '…'}`;
+  const now = subjects.filter((s) => s.status === 'auditing' || s.status === 'proposing').map((s) => s.name);
+  const done = subjects.filter((s) => s.status === 'done' || s.status === 'error').length;
+  const looked = subjects.reduce((n, s) => n + (s.audited || 0), 0);
+  const kept = subjects.reduce((n, s) => n + (s.reused || 0), 0);
+  return `Checking now: ${now.length ? now.join(', ') : '…'} — ${done}/${subjects.length} subjects done, ${looked} picture${looked === 1 ? '' : 's'} looked at, ${kept} unchanged.`;
+}
+
+function ClimbLog({ climb, running }) {
+  const events = climb.events || [];
+  const ref = useRef(null);
+  useEffect(() => { if (ref.current) ref.current.scrollTop = ref.current.scrollHeight; }, [events.length]);
+  if (!events.length) return null;
+  const rendering = running ? climb.rendering || [] : [];
+  const body = (
+    <div className="climb-log" ref={ref}>
+      {events.map((e, i) => (
+        <div key={i} className="climb-log-line">
+          <span className="climb-log-time">{new Date(e.at).toLocaleTimeString()}</span> {e.text}
+        </div>
+      ))}
+      {running && climb.audit ? <div className="climb-log-line is-now">{auditLine(climb.audit)}</div> : null}
+      {rendering.length ? <div className="climb-log-line is-now">Rendering now: {rendering.map((r) => `"${r.name}"${r.host_name ? ` (${r.host_name})` : ''}`).join(', ')}</div> : null}
+    </div>
+  );
+  if (running) return body;
+  return (
+    <details className="climb-log-details">
+      <summary>What the climb did ({events.length} steps)</summary>
+      {body}
+    </details>
+  );
+}
+
 export function ClimbPanel({ climb, onCancel }) {
   if (!climb) return null;
   const running = isClimbRunning(climb);
@@ -165,6 +222,7 @@ export function ClimbPanel({ climb, onCancel }) {
         {running && onCancel ? <button type="button" className="small" disabled={climb.cancel_requested} onClick={onCancel}>Cancel climb</button> : null}
       </div>
       <Trail climb={climb} />
+      <ClimbLog climb={climb} running={running} />
       {climb.direction ? <div className="climb-direction"><span className="field-label">Direction</span> {climb.direction}</div> : null}
       {!running && climb.wall_summary ? (
         <div className="climb-wall">

@@ -9,10 +9,10 @@ import {
 } from '../src/web/editAnnounce.js';
 
 describe('announceFieldsForDesc', () => {
-  it('returns name/body/desc for a beat, excluding scene_bible and captions', () => {
+  it('returns name/body/desc for a beat, excluding captions', () => {
     const desc = {
       type: 'beat',
-      fields: ['name', 'body', 'desc', 'scene_bible.location', 'image:aaa:name'],
+      fields: ['name', 'body', 'desc', 'image:aaa:name'],
     };
     expect(announceFieldsForDesc(desc).sort()).toEqual(['body', 'desc', 'name']);
   });

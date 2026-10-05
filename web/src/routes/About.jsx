@@ -112,7 +112,7 @@ export function About({ session }) {
               label="Directorial voice"
               field="directorial_voice"
               multiline
-              placeholder="The single directing hand for the whole film: how the camera tends to sit, how faces are lit, how it's cut, how performances are pitched. Steers every scene bible, storyboard prompt, and dialogue pass. A few concrete sentences beats a list of adjectives."
+              placeholder="The single directing hand for the whole film: how the camera tends to sit, how faces are lit, how it's cut, how performances are pitched. Steers the critiques and every dialogue pass. A few concrete sentences beats a list of adjectives."
             />
           </div>
           {canManageProjects(session) && <ProjectDangerZone project={project} />}

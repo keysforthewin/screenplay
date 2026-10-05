@@ -29,6 +29,31 @@ screenplay is a collaborative writers'-room and pre-vis workspace that lives in 
 - **ZIP downloads** per beat, character, library, or all-notes — bundles every image and attachment for the entity into a single file.
 - **Live activity feed in Discord.** When SPA users generate images, render video, or attach audio, the bot posts an embed in your channel so everyone can see what's happening — cross-surface visibility without leaving the writers'-room channel.
 
+## MCP server for coding agents
+
+The bot also listens on `MCP_PORT` (default `3002`) as an [MCP](https://modelcontextprotocol.io) server, so a command-line agent can plan a beat's **Scenes** tab itself: it reads the beats, dialogue, cast and artwork, then stores scenes, cuts, frame prompts, frame images and clips. It is storage only — the agent does the thinking and brings its own images. Edits show up live in open browsers.
+
+Connect an agent (the server starts with the bot; nothing else to install):
+
+```bash
+claude mcp add --transport http screenplay http://localhost:3002/mcp     # Claude Code (add --scope user for every folder)
+codex mcp add screenplay --url http://localhost:3002/mcp                 # Codex
+```
+
+| Tools | |
+|---|---|
+| Read | `list_projects`, `get_story`, `list_beats`, `get_beat`, `get_dialogue`, `get_cast`, `list_characters`, `list_sets`, `list_artwork`, `list_reference_images`, `get_scenes`, `view_image` |
+| Scenes & cuts | `create_scene` (with its `cuts` in one call), `update_scene`, `delete_scene`, `reorder_scenes`, `create_cut`, `update_cut`, `delete_cut`, `reorder_cuts` |
+| Media | `set_frame_image`, `clear_frame_image`, `undo_frame_image`, `set_cut_video`, `clear_cut_video` |
+
+Frame images and clips come in by URL through the tools, or as a local file over plain HTTP:
+
+```bash
+curl -T frame.png "http://localhost:3002/upload?cut_id=<cut id>&target=start_frame"   # or end_frame, video
+```
+
+There is **no authentication** and the server sees every project: `docker-compose.yml` publishes the port on `127.0.0.1` only, and requests whose `Host` header is not in `MCP_ALLOWED_HOSTS` (default: localhost) are refused. To use it against a remote server, tunnel the port (`ssh -L 3002:localhost:3002 <host>`). `MCP_PORT=0` turns it off.
+
 ## Quick start
 
 ```sh
@@ -86,6 +111,7 @@ The three keys at the top of the table are required. The rest are optional — l
 | `VOYAGE_API_KEY` | optional | Voyage key from [voyageai.com](https://www.voyageai.com). Chroma is brought up by docker-compose; no Chroma URL or key needed. | Semantic recall across the whole screenplay (`screenplay_search`). Without this the tool degrades to a friendly fallback. |
 | `WEB_PORT` | optional | Defaults to `3000`. The Express server hosts the SPA, the REST API, and the read endpoints (`/image`, `/attachment`, `/pdf`). | Where the SPA lives. |
 | `HOCUSPOCUS_PORT` | optional | Defaults to `3001` (or `3010` in WSL2 setups where Windows IP Helper claims 3001). | WebSocket port for real-time collaborative editing. |
+| `MCP_PORT` | optional | Defaults to `3002`; `0` disables. | Port of the unauthenticated MCP server for coding agents (see above). |
 | `HOCUSPOCUS_PUBLIC_URL` | optional | Browser-reachable `ws://` or `wss://` URL handed to the SPA via `/api/info`. Defaults to `ws://localhost:${HOCUSPOCUS_PORT}`. | What the browser connects to for live edits. Set this in production. |
 
 A handful of additional knobs (PDF download URL, log level, etc.) live in `.env.example` with sensible defaults — touch them only if you need to.

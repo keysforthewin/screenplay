@@ -2,6 +2,7 @@ import { config } from './config.js';
 import { logger } from './log.js';
 import { closeMongo } from './mongo/client.js';
 import { stopBackupScheduler } from './backup/scheduler.js';
+import { stopMcpServer } from './mcp/server.js';
 
 const ANNOUNCE_TIMEOUT_MS = 3000;
 
@@ -50,6 +51,12 @@ export function installLifecycleHandlers(client) {
       await stopBackupScheduler();
     } catch (e) {
       logger.warn(`backup scheduler stop failed during shutdown: ${e.message}`);
+    }
+
+    try {
+      await stopMcpServer();
+    } catch (e) {
+      logger.warn(`mcp server stop failed during shutdown: ${e.message}`);
     }
 
     try {

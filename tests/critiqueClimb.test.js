@@ -161,7 +161,7 @@ describe('writing climb', () => {
     expect(critiqued.slice(perRun).every((s) => s === 9)).toBe(true);
   });
 
-  it('critiques the baseline when the body changed since the stored critique', async () => {
+  it('starts from the stored critique even when the body was edited since', async () => {
     let runs = 0;
     G._setFacetGeneratorForTests(async (facet, ctx) => {
       runs += 1;
@@ -174,8 +174,9 @@ describe('writing climb', () => {
     nextScores = [9];
     await post(`/api/beat/${beatId}/critique/climb`, { target: 8 });
     const climb = await finished();
-    expect(climb).toMatchObject({ stop_reason: 'target', start_score: 6, best_score: 9 });
-    expect(runs).toBe(perRun * 3);
+    // The stored critique (5) is the baseline; the first thing the climb does is rewrite.
+    expect(climb).toMatchObject({ stop_reason: 'target', start_score: 5, best_score: 9 });
+    expect(runs).toBe(perRun * 2);
   });
 
   it('stops after N attempts without an increase, restores the best version and says why', async () => {
@@ -219,6 +220,19 @@ describe('writing climb', () => {
     const climb = await finished();
     expect(climb.stop_reason).toBe('target');
     expect(climb.attempts[0].detail).toMatchObject({ mode: 'edit', edits: 1 });
+    expect((await Plots.getBeat(projectId, beatId)).body).toBe('GOOD score:9');
+  });
+
+  it('keeps editing the best body after a discarded attempt once the beat scores 7 or higher', async () => {
+    await Plots.updateBeat(projectId, beatId, { body: 'GOOD score:8' });
+    nextScores = [6, 7, 9];
+    await post(`/api/beat/${beatId}/critique/climb`, { target: 9 });
+    const climb = await finished();
+    expect(climb).toMatchObject({ stop_reason: 'target', start_score: 8, best_score: 9 });
+    expect(climb.attempts.map((a) => a.detail.mode)).toEqual(['edit', 'edit', 'edit']);
+    // Every attempt started from the best body, not from a discarded one.
+    for (const input of plannerInputs) expect(input.text.slice(input.text.lastIndexOf('# Current beat body'))).toContain('GOOD score:8');
+    expect(plannerInputs[2].text).toContain('did NOT raise the score');
     expect((await Plots.getBeat(projectId, beatId)).body).toBe('GOOD score:9');
   });
 

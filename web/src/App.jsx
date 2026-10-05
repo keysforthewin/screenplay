@@ -8,8 +8,8 @@ import { Set } from './routes/Set.jsx';
 import { Library } from './routes/Library.jsx';
 import { DialogIndex } from './routes/DialogIndex.jsx';
 import { DialogBeat } from './routes/DialogBeat.jsx';
-import { PromptsIndex } from './routes/PromptsIndex.jsx';
-import { PromptsBeat } from './routes/PromptsBeat.jsx';
+import { ScenesIndex } from './routes/ScenesIndex.jsx';
+import { ScenesBeat } from './routes/ScenesBeat.jsx';
 import { About } from './routes/About.jsx';
 import { Playground } from './routes/Playground.jsx';
 import { Header } from './widgets/Header.jsx';
@@ -44,10 +44,11 @@ function ArtworkRedirect() {
   return <Navigate to={`/beat/${order}`} replace />;
 }
 
-// The Storyboard tab was retired in favour of Prompts; old links land there.
-function StoryboardRedirect() {
+// The Storyboard and Prompts tabs were retired in favour of Scenes; old links
+// land there.
+function ScenesRedirect() {
   const { order } = useParams();
-  return <Navigate to={order ? `/prompts/${order}` : '/prompts'} replace />;
+  return <Navigate to={order ? `/scenes/${order}` : '/scenes'} replace />;
 }
 
 function ProjectShell({ session, onLogout }) {
@@ -77,10 +78,12 @@ function ProjectShell({ session, onLogout }) {
           <Route path="/library" element={<Library session={session} />} />
           <Route path="/dialog" element={<DialogIndex session={session} />} />
           <Route path="/dialog/:order" element={<DialogBeat session={session} />} />
-          <Route path="/storyboard" element={<StoryboardRedirect />} />
-          <Route path="/storyboard/:order" element={<StoryboardRedirect />} />
-          <Route path="/prompts" element={<PromptsIndex session={session} />} />
-          <Route path="/prompts/:order" element={<PromptsBeat session={session} />} />
+          <Route path="/storyboard" element={<ScenesRedirect />} />
+          <Route path="/storyboard/:order" element={<ScenesRedirect />} />
+          <Route path="/prompts" element={<ScenesRedirect />} />
+          <Route path="/prompts/:order" element={<ScenesRedirect />} />
+          <Route path="/scenes" element={<ScenesIndex session={session} />} />
+          <Route path="/scenes/:order" element={<ScenesBeat session={session} />} />
           <Route path="/about" element={<About session={session} />} />
           <Route
             path="/admin"

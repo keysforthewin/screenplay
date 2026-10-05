@@ -16,8 +16,9 @@
 // An attempt changes the beat in one of two modes (beatRewrite.js): targeted
 // edits of the passages at fault once the best score is EDIT_MODE_FLOOR or
 // higher — a full rewrite re-rolls every facet, including the ones already
-// at 9 — and a full rewrite below it. A discarded attempt switches the next
-// one to the other mode.
+// at 9 — and a full rewrite below it. Below the floor a discarded attempt
+// switches the next one to the other mode; at or above it every attempt is
+// edits on the best body (a rewrite only if no edit can be placed).
 
 import { logger } from '../log.js';
 import { analyzeText } from '../llm/analyze.js';
@@ -26,7 +27,7 @@ import { resolveProjectId } from '../mongo/projects.js';
 import { getBeat } from '../mongo/plots.js';
 import { setCritiqueStrategy, restoreBeatCritique, stashPreviousBody } from '../mongo/critiques.js';
 import { setBeatBodyViaGateway } from './gateway.js';
-import { createCritiqueJob, runCritique, holdCritiqueBeat, releaseCritiqueBeat, critiqueBodyHash } from './critiqueGenerate.js';
+import { createCritiqueJob, runCritique, holdCritiqueBeat, releaseCritiqueBeat } from './critiqueGenerate.js';
 import {
   synthesizeRewriteStrategy,
   regenerateBeatBody,
@@ -121,10 +122,12 @@ async function runWritingClimb({ projectId, beatId, state }) {
 
   async function evaluate(n) {
     if (n === 0) {
-      // The critique already on the beat is the baseline when it read this body.
+      // A finished critique already on the beat is the baseline: the climb
+      // goes straight to its first rewrite. It is used as it stands, even if
+      // the body was edited since — only a beat with no critique is scored first.
       const beat = await getBeat(projectId, beatId);
       const c = beat?.critique;
-      if (c?.version === 2 && c.status === 'done' && typeof c.overall === 'number' && c.body_hash && c.body_hash === critiqueBodyHash(beat.body)) {
+      if (c?.status === 'done' && typeof c.overall === 'number' && (c.facets || []).some((f) => f.status === 'done')) {
         return { score: c.overall, detail: { facets: facetScores(c) }, body: String(beat.body || ''), critique: c };
       }
     }
@@ -152,7 +155,11 @@ async function runWritingClimb({ projectId, beatId, state }) {
     if (!ctx) ctx = await loadRewriteContext(projectId, beat);
     const args = { beat, critique: best.critique, ctx, direction: state.direction, history: failed };
     const lastFailed = failed.at(-1);
-    let mode = lastFailed ? otherMode(lastFailed.mode) : best.score >= EDIT_MODE_FLOOR ? 'edit' : 'rewrite';
+    // A beat at the floor or above is only ever edited: after a discarded
+    // attempt the next one edits the best body again (told what failed), and
+    // never rewrites it whole — a rewrite re-rolls every line already fixed.
+    // Below the floor a discarded attempt switches mode.
+    let mode = best.score >= EDIT_MODE_FLOOR ? 'edit' : lastFailed ? otherMode(lastFailed.mode) : 'rewrite';
     let body = null;
     pending = null;
     if (mode === 'edit') {

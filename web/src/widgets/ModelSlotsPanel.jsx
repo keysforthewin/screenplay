@@ -9,8 +9,9 @@ import { apiGet, apiPutJson } from '../api.js';
 // Saves send only the slots the admin changed (partial merge).
 //
 // Provider: the Anthropic API, or (dev only, LLM_HARNESS_ENABLED) a local
-// coding agent — Claude Code or Codex — with a free-text model (blank = the
-// host's configured default) and an effort level.
+// coding agent — Claude Code or Codex — with a model picked from that
+// provider's list ("host default model" = the host's configured default) and
+// an effort level.
 const DEFAULT = '';
 const API = 'api';
 
@@ -73,6 +74,23 @@ export function ModelSlotsPanel() {
   function change(key, patch) {
     setSaved(false);
     setDraft((d) => ({ ...d, [key]: { ...d[key], ...patch } }));
+  }
+
+  // Switching provider drops a model or effort the new provider does not have
+  // (a Codex model left on a Claude Code slot fails every call).
+  function changeProvider(key, provider) {
+    const p = providerDef(provider);
+    const cur = draft[key] || {};
+    const model = p?.models?.some((m) => m.id === cur.model) ? cur.model : '';
+    const efforts = p?.models?.find((m) => m.id === model)?.efforts || p?.efforts || [];
+    change(key, { provider, model, effort: efforts.includes(cur.effort) ? cur.effort : '' });
+  }
+
+  // The provider's models, plus the stored one when the list does not have it.
+  function harnessModelsFor(d) {
+    const list = [...(providerDef(d.provider)?.models || [])];
+    if (d.model && !list.some((m) => m.id === d.model)) list.push({ id: d.model, label: `${d.model} (not in list)` });
+    return list;
   }
 
   const providers = data?.harness?.providers || [];
@@ -152,7 +170,7 @@ export function ModelSlotsPanel() {
                     aria-label={`${slot.label} provider`}
                     value={draft[slot.key]?.provider || API}
                     disabled={busy}
-                    onChange={(e) => change(slot.key, { provider: e.target.value })}
+                    onChange={(e) => changeProvider(slot.key, e.target.value)}
                   >
                     <option value={API}>Anthropic API</option>
                     {providers.map((p) => (
@@ -179,20 +197,17 @@ export function ModelSlotsPanel() {
                     </select>
                   ) : (
                     <>
-                      <input
+                      <select
                         id={`model-slot-${slot.key}`}
-                        type="text"
-                        list={`model-slot-${slot.key}-models`}
-                        placeholder="host default model"
                         value={draft[slot.key].model}
                         disabled={busy}
                         onChange={(e) => change(slot.key, { model: e.target.value })}
-                      />
-                      <datalist id={`model-slot-${slot.key}-models`}>
-                        {(providerDef(draft[slot.key].provider)?.models || []).map((m) => (
-                          <option key={m.id} value={m.id}>{m.label}</option>
+                      >
+                        <option value="">host default model</option>
+                        {harnessModelsFor(draft[slot.key]).map((m) => (
+                          <option key={m.id} value={m.id}>{m.label || m.id}</option>
                         ))}
-                      </datalist>
+                      </select>
                       <select
                         aria-label={`${slot.label} effort`}
                         value={draft[slot.key].effort}

@@ -1,7 +1,7 @@
 // Admin page → ComfyUI templates: search the ComfyUI gallery, auto-map a
 // template's slots onto a registry entry, confirm every mapping in a form,
 // and save it — the model then appears in the per-cut ComfyUI dialog and the
-// Prompts-tab Render beat dialog at once. Registered models can be removed;
+// Scenes-tab ComfyUI dialog at once. Registered models can be removed;
 // built-in ones cannot. Needs a configured ComfyUI (dev only today).
 import { useEffect, useMemo, useState } from 'react';
 import { apiDelete, apiGet, apiPutJson } from '../api.js';
@@ -192,7 +192,7 @@ export function ComfyTemplatesPanel() {
     <section style={{ marginTop: 40 }}>
       <h2 style={{ marginTop: 0 }}>ComfyUI templates</h2>
       <p style={{ color: 'var(--fg-muted)' }}>
-        Register a video template from the ComfyUI gallery as a model the Prompts tab can render with. The
+        Register a video template from the ComfyUI gallery as a model the Scenes tab can render with. The
         mapper proposes which slot is the prompt, the duration, the start frame and so on; confirm each one
         and save. Built-in models cannot be changed here.
       </p>

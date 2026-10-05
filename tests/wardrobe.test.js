@@ -59,16 +59,6 @@ describe('wardrobe helpers (pure)', () => {
     expect(W.formatLockRows(rows)).toBe('Wardrobe lock — Sarah: navy flannel shirt, tan canvas jacket');
     expect(W.formatWardrobeLocks([c])).toBe('Wardrobe lock — Sarah: navy flannel shirt, tan canvas jacket');
   });
-
-  it('cutWardrobeLocks keeps the people the cut puts in frame, else characters_in_scene, else nobody', () => {
-    const tom = { _id: new ObjectId(), name: 'Tom', fields: { wardrobe: 'black raincoat' } };
-    const nobody = { _id: new ObjectId(), name: 'Extra', fields: {} };
-    const all = [c, tom, nobody];
-    expect(W.cutWardrobeLocks({ in_frame: [{ character: 'tom' }] }, all).map((r) => r.name)).toEqual(['Tom']);
-    expect(W.cutWardrobeLocks({ in_frame: [], action_by: '**Sarah**' }, all).map((r) => r.name)).toEqual(['Sarah']);
-    expect(W.cutWardrobeLocks({ characters_in_scene: ['Tom', 'Sarah'] }, all).map((r) => r.name)).toEqual(['Sarah', 'Tom']);
-    expect(W.cutWardrobeLocks({}, all)).toEqual([]);
-  });
 });
 
 describe('wardrobe plate: setter and cascade', () => {

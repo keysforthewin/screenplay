@@ -121,6 +121,20 @@ describe('artwork critique routes', () => {
     expect(c.proposals).toHaveLength(1);
   });
 
+  it('POST validates the stage; DELETE clears the critique', async () => {
+    G._setArtworkCritiqueAnalyzerForTests(analyzer());
+    expect((await post(`/api/beat/${beat._id}/artwork-critique`, { stage: 'nope' })).status).toBe(400);
+    expect((await post(`/api/beat/${beat._id}/artwork-critique`, { stage: 'quality' })).status).toBe(409);
+    const r = await post(`/api/beat/${beat._id}/artwork-critique`, { stage: 'coverage' });
+    expect(r.status).toBe(202);
+    await settle(r.json.job_id);
+    expect((await get(`/api/beat/${beat._id}/artwork-critique`)).json.artwork_critique.status).toBe('done');
+    const del = await fetch(`${baseUrl}/api/beat/${beat._id}/artwork-critique`, { method: 'DELETE' });
+    expect(del.status).toBe(200);
+    expect((await get(`/api/beat/${beat._id}/artwork-critique`)).json).toEqual({ artwork_critique: null, climb: null });
+    expect((await fetch(`${baseUrl}/api/beat/${new ObjectId()}/artwork-critique`, { method: 'DELETE' })).status).toBe(404);
+  });
+
   it('generate validates, returns 202 with a pollable job, and 404s a job from another project', async () => {
     const c = await critiqued();
     const pid = String(c.proposals[0]._id);
@@ -166,6 +180,10 @@ describe('artwork critique routes', () => {
     expect((await post(`${base}/fix`, { prompt: '   ' })).status).toBe(400);
     expect((await post(`${base}/fix`, { model: 'bogus' })).status).toBe(400);
     expect((await post(`${base}/fix/undo`)).status).toBe(409);
+    // A climb edits these artworks itself: a manual fix is refused while it holds the beat.
+    expect(G.holdArtworkClimb(beat._id.toString())).toBe(true);
+    expect((await post(`${base}/fix`, {})).status).toBe(409);
+    G.releaseArtworkClimb(beat._id.toString());
 
     editCalls.length = 0;
     const started = await post(`${base}/fix`, {});

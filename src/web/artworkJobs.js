@@ -409,78 +409,83 @@ export async function startEditArtworkJob({
   return artwork;
 }
 
-async function runEdit(opts) {
-  const {
+// The edit itself, awaited: resolves {fileId, model} once the new image is the
+// artwork's result (the old one in previous_result_image_id), throws on any
+// failure WITHOUT touching the artwork's status. `describe: false` skips the
+// vision re-description — a caller that may undo the edit (the artwork climb)
+// starts it itself once the edit is kept.
+export async function editArtworkImageInline({
+  projectId,
+  hostType,
+  hostId,
+  artworkId,
+  prompt,
+  model = DEFAULT_ARTWORK_MODEL,
+  currentResultImageId,
+  referenceImageIds = [],
+  discordUser = null,
+  channelId = null,
+  describe = true,
+}) {
+  if (!currentResultImageId) {
+    throw new Error('Cannot edit an artwork with no current result image.');
+  }
+  const r = await readImageBuffer(currentResultImageId);
+  if (!r) {
+    throw new Error(`Current result image ${currentResultImageId} not found in GridFS`);
+  }
+  const declared = r.file.contentType || r.file.metadata?.contentType || 'image/png';
+  const referenceImages = await loadImageBuffers(referenceImageIds);
+  const result = await runProviderForEdit({
+    prompt,
+    model,
+    existingImage: { buffer: r.buffer, contentType: declared },
+    referenceImages,
+    discordUser,
+    channelId,
+  });
+  const file = await uploadGeneratedImage(projectId, {
+    buffer: result.buffer,
+    contentType: result.contentType,
+    prompt,
+    generatedBy: result.model || model,
+    ownerType: hostType,
+    ownerId: hostId,
+    filename: `${hostType}-${hostId}-artwork-edit-${Date.now()}.png`,
+  });
+  await patchArtworkViaGateway({
     projectId,
     hostType,
     hostId,
     artworkId,
-    prompt,
-    model,
-    currentResultImageId,
-    referenceImageIds = [],
-    discordUser,
-    channelId,
-    announceUsername,
-  } = opts;
-  try {
-    if (!currentResultImageId) {
-      throw new Error('Cannot edit an artwork with no current result image.');
-    }
-    const r = await readImageBuffer(currentResultImageId);
-    if (!r) {
-      throw new Error(`Current result image ${currentResultImageId} not found in GridFS`);
-    }
-    const declared = r.file.contentType || r.file.metadata?.contentType || 'image/png';
-    const referenceImages = await loadImageBuffers(referenceImageIds);
-    const result = await runProviderForEdit({
-      prompt,
-      model,
-      existingImage: { buffer: r.buffer, contentType: declared },
-      referenceImages,
-      discordUser,
-      channelId,
-    });
-    const file = await uploadGeneratedImage(projectId, {
-      buffer: result.buffer,
-      contentType: result.contentType,
-      prompt,
-      generatedBy: result.model || model,
-      ownerType: hostType,
-      ownerId: hostId,
-      filename: `${hostType}-${hostId}-artwork-edit-${Date.now()}.png`,
-    });
-    await patchArtworkViaGateway({
-      projectId,
-      hostType,
-      hostId,
-      artworkId,
-      patch: {
-        generation: {
-          requested_model: model,
-          endpoint: result.model || model,
-          mode: 'edit',
-          prompt: String(prompt || ''),
-          existing_image_id: String(currentResultImageId),
-          reference_image_ids: (referenceImageIds || []).map(String),
-          // In edit mode the provider's input count includes the existing
-          // image at position 0; references are everything after it.
-          reference_sent_count: Number.isFinite(result.inputImageCount)
-            ? Math.max(0, result.inputImageCount - 1)
-            : referenceImages.length,
-          completed_at: new Date(),
-        },
+    patch: {
+      last_edit_prompt: prompt,
+      generation: {
+        requested_model: model,
+        endpoint: result.model || model,
+        mode: 'edit',
+        prompt: String(prompt || ''),
+        existing_image_id: String(currentResultImageId),
+        reference_image_ids: (referenceImageIds || []).map(String),
+        // In edit mode the provider's input count includes the existing
+        // image at position 0; references are everything after it.
+        reference_sent_count: Number.isFinite(result.inputImageCount)
+          ? Math.max(0, result.inputImageCount - 1)
+          : referenceImages.length,
+        completed_at: new Date(),
       },
-    });
-    await setArtworkResultViaGateway({
-      projectId,
-      hostType,
-      hostId,
-      artworkId,
-      resultImageId: file._id,
-      rotateToPrevious: true,
-    });
-    // The picture changed, so the old description no longer matches it.
+    },
+  });
+  await setArtworkResultViaGateway({
+    projectId,
+    hostType,
+    hostId,
+    artworkId,
+    resultImageId: file._id,
+    rotateToPrevious: true,
+  });
+  // The picture changed, so the old description no longer matches it.
+  if (describe) {
     kickoffArtworkVisionSeed({
       projectId,
       hostType,
@@ -489,6 +494,14 @@ async function runEdit(opts) {
       buffer: result.buffer,
       contentType: result.contentType,
     });
+  }
+  return { fileId: file._id, model: result.model || model };
+}
+
+async function runEdit(opts) {
+  const { projectId, hostType, hostId, artworkId, prompt, announceUsername } = opts;
+  try {
+    const { fileId } = await editArtworkImageInline(opts);
     if (announceUsername) {
       announceArtwork({
         projectId,
@@ -496,7 +509,7 @@ async function runEdit(opts) {
         hostId,
         username: announceUsername,
         verb: 'edited artwork on',
-        fileId: file._id,
+        fileId,
         prompt,
       });
     }

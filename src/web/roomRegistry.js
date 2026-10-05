@@ -19,8 +19,7 @@
 //   - render fragments to markdown and persist to Mongo on store ticks
 
 import { ObjectId } from 'mongodb';
-import { getPlot, updatePlot, getBeat, updateBeat, setBeatSceneBible } from '../mongo/plots.js';
-import { SCENE_BIBLE_FIELDS } from '../mongo/sceneBible.js';
+import { getPlot, updatePlot, getBeat, updateBeat } from '../mongo/plots.js';
 import { getCharacter, updateCharacter } from '../mongo/characters.js';
 import { getSet, updateSet } from '../mongo/sets.js';
 import { getDirectorNotes, writeDirectorNotesArray } from '../mongo/directorNotes.js';
@@ -302,17 +301,11 @@ async function describeBeatRoom(id) {
   const plot = await getPlot(projectId);
   const beat = (plot.beats || []).find((b) => b._id?.toString?.() === id);
   if (!beat) return null;
-  const bibleFieldNames = SCENE_BIBLE_FIELDS.map((f) => `scene_bible.${f}`);
-  const fieldNames = [...BEAT_TOP_FIELDS, ...bibleFieldNames];
+  const fieldNames = [...BEAT_TOP_FIELDS];
 
   function readMongoValue(fieldName) {
     if (BEAT_TOP_FIELDS.includes(fieldName)) {
       return beat[fieldName] != null ? String(beat[fieldName]) : '';
-    }
-    if (fieldName.startsWith('scene_bible.')) {
-      const key = fieldName.slice('scene_bible.'.length);
-      const v = beat.scene_bible?.[key];
-      return v != null ? String(v) : '';
     }
     return '';
   }
@@ -339,22 +332,6 @@ async function describeBeatRoom(id) {
         patch[f] = snapshot[f];
       }
 
-      // Scene bible: whole-object read-modify-write (avoids dotted $set through
-      // a null scene_bible and reuses the normalizing setBeatSceneBible helper).
-      const changedBibleFields = bibleFieldNames.filter(
-        (f) =>
-          snapshot[f] !== undefined &&
-          String(snapshot[f]).trim() !== readMongoValue(f),
-      );
-      if (changedBibleFields.length) {
-        const bible = {};
-        for (const f of SCENE_BIBLE_FIELDS) {
-          const frag = `scene_bible.${f}`;
-          bible[f] = snapshot[frag] !== undefined ? snapshot[frag] : readMongoValue(frag);
-        }
-        await setBeatSceneBible(projectId, id, bible);
-      }
-
       const imgPersist = await persistOwnedImageFragments(snapshot, imageFragments.seed);
       const attachPersist = await persistOwnedAttachmentFragments(
         snapshot,
@@ -367,7 +344,6 @@ async function describeBeatRoom(id) {
       }
       const allChanged = [
         ...entityChangedKeys,
-        ...changedBibleFields,
         ...imgPersist.changedFields,
         ...attachPersist.changedFields,
       ];
@@ -643,18 +619,17 @@ async function describeDialogsRoom(beatId) {
 
 // Video prompts (cuts + scenes) ----------------------------------------------
 //
-// One y-doc per beat (room: "video_prompts:<beatId>") for the Prompts tab.
-// Each cut row exposes three fragments: "item:<cut _id>:title",
-// "item:<cut _id>:prompt", "item:<cut _id>:start_frame_prompt" and
-// "item:<cut _id>:end_frame_prompt" (backing `start_frame.prompt` /
-// `end_frame.prompt`). Each scene of the beat exposes
-// "scene:<scene _id>:floor_plan". Reference images, the shot-table cells, the
-// start-frame image, the rendered video and the scene's read / scope / load
-// are scalar Mongo fields patched through the gateway (which pings the
-// room), not y-doc text.
+// One y-doc per beat (room: "video_prompts:<beatId>") for the Scenes tab.
+// Each cut exposes four fragments: "item:<cut _id>:title",
+// "item:<cut _id>:prompt" (the video-gen prompt),
+// "item:<cut _id>:start_frame_prompt" and "item:<cut _id>:end_frame_prompt"
+// (backing `start_frame.prompt` / `end_frame.prompt`). Each scene exposes
+// "scene:<scene _id>:title". Duration, each frame's reference images and
+// rendered image, and the rendered video are scalar Mongo fields patched
+// through the gateway (which pings the room), not y-doc text.
 
 const VIDEO_PROMPT_FIELD_NAMES = ['title', 'prompt', 'start_frame_prompt', 'end_frame_prompt'];
-const VIDEO_SCENE_FIELD_NAMES = ['floor_plan'];
+const VIDEO_SCENE_FIELD_NAMES = ['title'];
 
 function videoPromptFieldName(promptId, field) {
   return `item:${promptId}:${field}`;
@@ -671,7 +646,7 @@ function videoPromptFieldValue(row, field) {
 }
 
 const VIDEO_PROMPT_ITEM_RE = /^item:([a-f0-9]{24}):(title|prompt|start_frame_prompt|end_frame_prompt)$/;
-const VIDEO_SCENE_RE = /^scene:([a-f0-9]{24}):(floor_plan)$/;
+const VIDEO_SCENE_RE = /^scene:([a-f0-9]{24}):(title)$/;
 
 async function describeVideoPromptsRoom(beatId) {
   const projectId = await verifiedProjectIdForBeat(beatId);
@@ -868,7 +843,7 @@ async function describeLibraryRoom(projectId) {
 // the screenplay's display name in the header; `dialogue_style` is the *global*
 // dialogue style (distinct from each beat's per-beat `dialog_notes`);
 // `directorial_voice` is the project's single directing hand, inherited by every
-// scene bible and every dialogue pass so the whole film reads as one author.
+// critiques and every dialogue pass so the whole film reads as one author.
 
 const PLOT_FIELDS = ['title', 'synopsis', 'dialogue_style', 'directorial_voice'];
 

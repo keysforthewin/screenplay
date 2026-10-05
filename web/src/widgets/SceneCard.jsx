@@ -1,19 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
-import { apiDelete, apiGet, apiPatchJson, apiPostJson } from '../api.js';
+import { useEffect, useState } from 'react';
+import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors } from '@dnd-kit/core';
+import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { apiDelete, apiPostJson } from '../api.js';
 import { CollabField } from '../editor/CollabField.jsx';
-import { BeatVideoPanel } from './BeatVideoPanel.jsx';
-
-const TERMINAL = new Set(['done', 'error']);
-
-export const DIRECTORS_READ_FIELDS = [
-  'dramatic_function', 'turn', 'pov', 'power_shift', 'hidden_want', 'obstacle_tactic',
-  'subtext', 'suppressed_behavior', 'non_transferable_detail', 'stock_solution_refused',
-];
-const SCOPE_BUCKETS = ['already_happened', 'this_scene_only', 'reserved_for_later', 'do_not_show_yet'];
-const words = (s) => String(s || '').replace(/_/g, ' ');
+import { ConfirmDialog } from './Modal.jsx';
+import { CutItem } from './CutItem.jsx';
 
 function readError(e) {
-  let msg = e?.message || 'Update failed.';
+  let msg = e?.message || 'Request failed.';
   try {
     const parsed = JSON.parse(msg);
     if (parsed?.error) msg = parsed.error;
@@ -21,170 +15,107 @@ function readError(e) {
   return msg;
 }
 
-function PatchText({ value, onCommit, disabled, rows = 1, placeholder, className }) {
-  const [draft, setDraft] = useState(value ?? '');
-  useEffect(() => setDraft(value ?? ''), [value]);
-  const commit = () => { if ((draft ?? '') !== (value ?? '')) onCommit(draft); };
-  if (rows > 1) return <textarea className={className} rows={rows} value={draft} disabled={disabled} placeholder={placeholder} onChange={(e) => setDraft(e.target.value)} onBlur={commit} />;
-  return <input className={className} type="text" value={draft} disabled={disabled} placeholder={placeholder} onChange={(e) => setDraft(e.target.value)} onBlur={commit} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />;
-}
-
-export function LoadBadge({ load }) {
-  if (!load || !load.verdict) return null;
-  const s = Number.isFinite(load.s) ? load.s.toFixed(1) : '?';
-  const title = `${load.beats ?? '?'} beats + ${load.load_points ?? '?'} load over ${load.total_seconds ?? '?'} s → S = ${s}. Safe ≥ 3, Stretch 2–3, Ambitious < 2 (split a cut rather than cram).`;
-  return <span className={`scene-load-badge is-${load.verdict}`} title={title}>{load.verdict} · S {s}</span>;
-}
-
-// One scene: its header (title, slug, load), the collapsible director's
-// read / scope / floor plan, and its cuts (children).
-export function SceneCard({ scene, index, count, beatId, disabled, onRefresh, onReplan, onMove, children }) {
-  const id = scene._id?.toString?.() || String(scene._id);
-  const [open, setOpen] = useState(false);
+// One scene: its number, its name, and its cuts (numbered <scene>.<cut>,
+// drag to reorder).
+export function SceneCard({ scene, index, count, beatId, disabled, onRefresh, onMove }) {
+  const sceneId = String(scene._id);
+  const cuts = scene.cuts || [];
+  const ids = cuts.map((c) => String(c._id));
+  const [local, setLocal] = useState(ids);
+  useEffect(() => setLocal(ids), [ids.join(',')]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
-  const [assembling, setAssembling] = useState(false);
-  const pollRef = useRef(null);
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+  const [confirmScene, setConfirmScene] = useState(false);
+  const [confirmCut, setConfirmCut] = useState(null); // { id, label }
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const byId = new Map(cuts.map((c) => [String(c._id), c]));
+  const locked = busy || disabled;
 
-  const cuts = scene.cuts || [];
-  const unrendered = cuts.filter((c) => !c.video_file_id).length;
-  const canAssemble = cuts.length > 0 && unrendered === 0;
-
-  // Join this scene's cut clips into one MP4 (background job, polled).
-  async function assemble() {
-    setError(null);
-    setAssembling(true);
-    try {
-      const r = await apiPostJson(`/video-scene/${id}/assemble`, {});
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = setInterval(async () => {
-        try {
-          const s = await apiGet(`/cuts/assemble/job/${r.job_id}`);
-          if (TERMINAL.has(s.job?.status)) {
-            clearInterval(pollRef.current);
-            pollRef.current = null;
-            setAssembling(false);
-            if (s.job.status === 'error') setError(s.job.error || 'Assembly failed.');
-            onRefresh?.();
-          }
-        } catch (e) {
-          clearInterval(pollRef.current);
-          pollRef.current = null;
-          setAssembling(false);
-          setError(readError(e));
-        }
-      }, 2000);
-    } catch (e) {
-      setAssembling(false);
-      setError(readError(e));
-    }
-  }
-
-  async function patch(body) {
+  async function call(fn) {
     setBusy(true);
     setError(null);
     try {
-      await apiPatchJson(`/video-scene/${id}`, body);
-      onRefresh?.();
+      await fn();
     } catch (e) {
       setError(readError(e));
     } finally {
       setBusy(false);
+      onRefresh?.();
     }
   }
 
-  async function remove() {
-    if (!confirm(`Delete scene ${index + 1} "${scene.title || ''}" and its ${(scene.cuts || []).length} cut(s)?`)) return;
-    setBusy(true);
+  async function onDragEnd(ev) {
+    const { active, over } = ev;
+    if (!over || active.id === over.id) return;
+    const from = local.indexOf(active.id);
+    const to = local.indexOf(over.id);
+    if (from < 0 || to < 0) return;
+    const next = arrayMove(local, from, to);
+    setLocal(next);
     try {
-      await apiDelete(`/video-scene/${id}`);
+      await apiPostJson('/cuts/reorder', { scene_id: sceneId, ordered_ids: next });
       onRefresh?.();
     } catch (e) {
+      setLocal(ids);
       setError(readError(e));
-    } finally {
-      setBusy(false);
     }
   }
-
-  const read = scene.directors_read || {};
-  const scope = scene.scope || {};
 
   return (
     <section className="scene-card">
       <div className="scene-card-header">
-        <span className="scene-card-index">Scene {index + 1}</span>
-        <PatchText className="scene-card-title" value={scene.title} disabled={busy || disabled} placeholder="Scene title" onCommit={(v) => patch({ title: v })} />
-        <PatchText className="scene-card-slug" value={scene.slug} disabled={busy || disabled} placeholder="INT./EXT. LOCATION — TIME" onCommit={(v) => patch({ slug: v })} />
-        {scene.kind === 'montage' ? <span className="cut-chip" title="A montage: every cut is a separate picture with a hook.">montage</span> : null}
-        <LoadBadge load={scene.load} />
-        <div className="scene-card-actions">
-          <button type="button" title="Move scene up" disabled={busy || disabled || index === 0} onClick={() => onMove?.(-1)}>▲</button>
-          <button type="button" title="Move scene down" disabled={busy || disabled || index === count - 1} onClick={() => onMove?.(+1)}>▼</button>
-          <button type="button" onClick={() => setOpen((v) => !v)}>{open ? 'Hide read' : "Director's read…"}</button>
-          <button type="button" disabled={busy || disabled} onClick={() => onReplan?.(scene)} title="Re-plan this scene's cuts (table → blocks → still prompts); other scenes are kept">↻ Replan cuts</button>
-          <button type="button" disabled={busy || disabled || assembling || !canAssemble} onClick={assemble}
-            title={!cuts.length ? 'No cuts in this scene yet' : unrendered ? `${unrendered} cut(s) have no video yet` : 'Join this scene\'s cut clips into one MP4'}>
-            {assembling ? 'Assembling…' : '🎞 Assemble scene'}
-          </button>
-          <button type="button" className="danger" disabled={busy || disabled} onClick={remove}>Delete scene</button>
+        <span className="scene-card-index">Scene {scene.order}</span>
+        <div className="scene-card-title">
+          <CollabField field={`scene:${sceneId}:title`} placeholder="Scene name…" />
         </div>
+        <button type="button" disabled={locked || index === 0} title="Move this scene up" onClick={() => onMove(-1)}>▲</button>
+        <button type="button" disabled={locked || index === count - 1} title="Move this scene down" onClick={() => onMove(1)}>▼</button>
+        <button type="button" className="danger" disabled={locked} onClick={() => setConfirmScene(true)}>Delete scene</button>
       </div>
       {error ? <div className="error-banner small">{error}</div> : null}
-      <div className="scene-card-meta">
-        <span>Sets: {(scene.set_names || []).join(', ') || '—'}</span>
-        <span>Characters: {(scene.character_names || []).join(', ') || '—'}</span>
-        {scene.text_span?.starts_with ? <span title={`…${scene.text_span.ends_with || ''}`}>Starts: “{scene.text_span.starts_with}”</span> : null}
+
+      {local.length ? (
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+          <SortableContext items={local} strategy={verticalListSortingStrategy}>
+            <div className="dialog-list video-prompt-list">
+              {local.map((id, i) => {
+                const c = byId.get(id);
+                if (!c) return null;
+                const label = `${scene.order}.${i + 1}`;
+                return <CutItem key={id} cut={c} label={label} beatId={beatId} disabled={locked} onRefresh={onRefresh} onDelete={() => setConfirmCut({ id, label })} />;
+              })}
+            </div>
+          </SortableContext>
+        </DndContext>
+      ) : (
+        <p className="scene-no-cuts">No cuts in this scene yet.</p>
+      )}
+
+      <div className="scene-card-footer">
+        <button type="button" disabled={locked} onClick={() => call(() => apiPostJson('/cut', { scene_id: sceneId }))}>+ Add cut</button>
       </div>
 
-      {open ? (
-        <div className="scene-card-read">
-          <div className="scene-read-row" title="A montage is a run of separate pictures with a job: the planner gives every cut a hook and takes it from the subjects listed here.">
-            <span className="field-label">Kind</span>
-            <select value={scene.kind || 'scene'} disabled={busy || disabled} onChange={(e) => patch({ kind: e.target.value })}>
-              <option value="scene">Scene</option>
-              <option value="montage">Montage</option>
-            </select>
-          </div>
-          {scene.kind === 'montage' ? (
-            <div className="scene-read-row" title="What must be shown for the montage to do its job — the time's fashions, pastimes, objects, rituals. One per line; Replan cuts to use a changed list.">
-              <span className="field-label">Montage subjects</span>
-              <PatchText rows={Math.max(3, (scene.montage_subjects || []).length)} value={(scene.montage_subjects || []).join('\n')} disabled={busy || disabled} placeholder="one subject per line — three boys sharing one skateboard outside the arcade…" onCommit={(v) => patch({ montage_subjects: v.split('\n').map((s) => s.trim()).filter(Boolean) })} />
-            </div>
-          ) : null}
-          <div className="scene-read-row">
-            <span className="field-label">{scene.kind === 'montage' ? "Intention (the montage's job)" : 'Intention'}</span>
-            <PatchText value={scene.intention} disabled={busy || disabled} placeholder="What this scene must do to the audience, in one sentence" onCommit={(v) => patch({ intention: v })} />
-          </div>
-          <div className="scene-read-row" title="How this scene cuts: the rhythm of long and short cuts. The planner writes it before the shot table and every cut's length follows it.">
-            <span className="field-label">Tempo</span>
-            <PatchText value={scene.tempo} disabled={busy || disabled} placeholder="How it cuts — quick inserts between two slow wides…" onCommit={(v) => patch({ tempo: v })} />
-          </div>
-          <div className="scene-read-grid">
-            {DIRECTORS_READ_FIELDS.map((f) => (
-              <label key={f} className="scene-read-cell">
-                <span className="field-label">{words(f)}</span>
-                <PatchText rows={2} value={read[f]} disabled={busy || disabled} onCommit={(v) => patch({ directors_read: { ...read, [f]: v } })} />
-              </label>
-            ))}
-          </div>
-          <div className="scene-read-grid scene-scope-grid">
-            {SCOPE_BUCKETS.map((b) => (
-              <label key={b} className="scene-read-cell">
-                <span className="field-label">{words(b)}</span>
-                <PatchText rows={2} value={(scope[b] || []).join('\n')} disabled={busy || disabled} placeholder="one fact per line" onCommit={(v) => patch({ scope: { ...scope, [b]: v.split('\n').map((s) => s.trim()).filter(Boolean) } })} />
-              </label>
-            ))}
-          </div>
-          <div className="scene-floor-plan">
-            <CollabField label="Floor plan" field={`scene:${id}:floor_plan`} multiline placeholder="Landmarks, who is where at the start and facing what, the light source and its colour, the axis." />
-          </div>
-        </div>
-      ) : null}
-
-      <BeatVideoPanel entity={scene} prefix="video" title="Scene video" clipNoun="cut" deletePath={`/video-scene/${id}/video`} onRefresh={onRefresh} className="scene-video-panel" />
-
-      <div className="scene-card-cuts">{children}</div>
+      <ConfirmDialog
+        open={confirmScene}
+        title={`Delete scene ${scene.order}?`}
+        message={cuts.length ? `This also deletes its ${cuts.length} cut${cuts.length === 1 ? '' : 's'}, with their generated frames and videos.` : 'This scene has no cuts.'}
+        confirmLabel="Delete scene"
+        danger
+        onConfirm={() => { setConfirmScene(false); call(() => apiDelete(`/video-scene/${sceneId}`)); }}
+        onCancel={() => setConfirmScene(false)}
+      />
+      <ConfirmDialog
+        open={Boolean(confirmCut)}
+        title={`Delete cut ${confirmCut?.label || ''}?`}
+        message="Its prompts, generated frames and video are deleted."
+        confirmLabel="Delete cut"
+        danger
+        onConfirm={() => { const target = confirmCut; setConfirmCut(null); call(() => apiDelete(`/cut/${target.id}`)); }}
+        onCancel={() => setConfirmCut(null)}
+      />
     </section>
   );
 }

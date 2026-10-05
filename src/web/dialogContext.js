@@ -22,8 +22,7 @@ import { formatCharacterBio } from '../util/characterBio.js';
 
 const PREV_BEAT_LINE_LIMIT = 6;
 
-// Re-exported from the shared util so existing importers (sceneBibleAutofill.js)
-// keep working unchanged.
+// Re-exported from the shared util so existing importers keep working unchanged.
 export { formatCharacterBio };
 
 // Resolve character docs for the speakers named on the beat, beat-listed names

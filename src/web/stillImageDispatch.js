@@ -47,8 +47,7 @@ export async function dispatchStillImage({
   inputImages = [],
   mode = 'generate',
   comfyParams = null,
-  // Only the Nano Banana models honour these (the wide master plate of a
-  // sliding camera, panEndFrame.js); every other model renders 16:9.
+  // Only the Nano Banana models honour these; every other model renders 16:9.
   aspectRatio = ASPECT_RATIO,
   resolution = null,
 }) {

@@ -31,7 +31,7 @@ export async function resolvePageContextNote({ projectId, projectTitle, context 
 
   switch (kind) {
     case 'beat':
-    case 'prompts':
+    case 'scenes':
     case 'dialog': {
       if (!ref) return null;
       // These page refs are beat ORDERS (the SPA addresses beats by order).
@@ -44,7 +44,7 @@ export async function resolvePageContextNote({ projectId, projectTitle, context 
       const label = name ? `Beat ${beat.order} — "${name}"` : `Beat ${beat.order}`;
       const id = beat._id ? ` (beat id ${beat._id.toString()})` : '';
       if (kind === 'dialog') return note(`the dialog page for ${label}${id}`);
-      if (kind === 'prompts') return note(`the video prompts page for ${label}${id}`);
+      if (kind === 'scenes') return note(`the scenes & cuts page for ${label}${id}`);
       return note(`${label}${id}`);
     }
     case 'character': {
@@ -73,8 +73,8 @@ export async function resolvePageContextNote({ projectId, projectTitle, context 
       return note('the media library');
     case 'dialog-index':
       return note("the dialog index (all beats' dialogs)");
-    case 'prompts-index':
-      return note("the video prompts index (all beats' prompts)");
+    case 'scenes-index':
+      return note("the scenes index (all beats' scenes and cuts)");
     default:
       return null;
   }

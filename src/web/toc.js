@@ -114,7 +114,6 @@ export function buildTocResponse(
         body_empty: bodyIsEmpty(b.body),
         dialog_count: dialogs.get(id) || 0,
         video_prompt_count: videoPrompts.get(id) || 0,
-        prompts_video_file_id: b.prompts_video_file_id ? String(b.prompts_video_file_id) : null,
         search_text: blob(b.name, b.body, charactersJoined, setsJoined),
         dialog_search_text: dialogTextByBeat.get(id) || '',
       };

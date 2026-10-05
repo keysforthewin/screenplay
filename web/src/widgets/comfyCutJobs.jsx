@@ -2,10 +2,10 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { apiPostJson, apiSseUrl } from '../api.js';
 
 // ComfyUI cut renders as page-level state. A render is a background job on
-// the server (one GPU, strictly first-in first-out); the Prompts page keeps
+// the server (one GPU, strictly first-in first-out); the Scenes page keeps
 // one live snapshot per cut here so the cut's button can show "Queued #2" /
 // "Rendering…" and reopening its dialog shows the live progress, however
-// often the dialog is closed. PromptsBeat owns the store (useComfyCutJobStore),
+// often the dialog is closed. ScenesBeat owns the store (useComfyCutJobStore),
 // feeds it the reattach list from GET /cuts/jobs, and provides it to the cuts.
 
 const TERMINAL = new Set(['done', 'error']);

@@ -12,7 +12,7 @@ const TABS = [
   { id: 'sets', label: 'Sets' },
   { id: 'beats', label: 'Beats' },
   { id: 'dialog', label: 'Dialog' },
-  { id: 'prompts', label: 'Prompts' },
+  { id: 'scenes', label: 'Scenes' },
   { id: 'library', label: 'Library' },
 ];
 const TAB_IDS = TABS.map((t) => t.id);
@@ -204,7 +204,7 @@ export function Toc({ session }) {
       const missing = count === 0;
       return {
         key: b._id,
-        to: `/prompts/${b.order}`,
+        to: `/scenes/${b.order}`,
         order: b.order,
         title,
         missing,
@@ -243,7 +243,7 @@ export function Toc({ session }) {
     sets: sets.length,
     beats: beats.length,
     dialog: dialogBeats.length,
-    prompts: promptBeats.length,
+    scenes: promptBeats.length,
     library: libraryVisible ? Math.max(libraryMatchCount, matches('Library') ? 1 : 0) : 0,
   };
   // While the filter is active, hide tabs whose contents don't match. With no
@@ -462,10 +462,10 @@ export function Toc({ session }) {
         )}
       </div>
 
-      <div className="tab-panel" hidden={displayedTab !== 'prompts' || noResults}>
+      <div className="tab-panel" hidden={displayedTab !== 'scenes' || noResults}>
         <p style={{ color: 'var(--fg-muted)', marginTop: 0 }}>
           Each beat has its own scenes and cuts. <strong>*</strong> marks beats with no
-          cuts planned yet.
+          cuts yet.
         </p>
         {promptBeats.length === 0 ? (
           <p style={{ color: 'var(--fg-muted)' }}>No beats yet.</p>
@@ -478,7 +478,7 @@ export function Toc({ session }) {
               items={promptBeats.map((b) => ({
                 id: b.key,
                 to: b.to,
-                title: b.missing ? 'No cuts planned for this beat yet' : undefined,
+                title: b.missing ? 'No cuts for this beat yet' : undefined,
                 content: `${b.missing ? '* ' : ''}#${b.order} — ${b.title}${b.missing ? '' : ` (${b.count})`}`,
               }))}
             />

@@ -3,7 +3,7 @@
 // Reads the beats that stage in one reusable set/location and runs a single
 // single-tool LLM pass that writes the set's visual bible: several paragraphs
 // of observable production language, written to ground image generation.
-// Mirrors sceneBibleAutofill.js: build context → call Anthropic with a forced
+// Build context → call Anthropic with a forced
 // tool → write the result through the gateway so an open CollabField watches
 // the description replace itself live (y-doc), persisting to sets.description.
 

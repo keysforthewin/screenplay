@@ -50,6 +50,8 @@ services:
     ports:
       - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
       - "${HOCUSPOCUS_PORT:-3001}:${HOCUSPOCUS_PORT:-3001}"
+      # MCP server for coding agents (src/mcp/) — no auth, so this machine only.
+      - "127.0.0.1:${MCP_PORT:-3002}:${MCP_PORT:-3002}"
     volumes:
       # App source — mounted, not baked into the image. `web/dist` is built on
       # the host by deploy.sh. node_modules stays in the image (we mount the

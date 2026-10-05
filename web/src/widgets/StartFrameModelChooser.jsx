@@ -3,9 +3,8 @@ import { ImageModelSelect } from './ImageModelSelect.jsx';
 import { ComfyImageModelPicker } from './ComfyImageModelPicker.jsx';
 import { readStoredCatalogModel, writeStoredImageModel } from './imageModels.js';
 
-// Which model renders a start frame — shared by the single-cut dialog
-// (CutStartFrameDialog) and the whole-beat one (RenderStartFramesDialog), so
-// both remember the same choice. Two providers: fal.ai (the hosted catalog)
+// Which model renders a cut's frame — shared by the start-frame and end-frame
+// panels (CutFramePanel), so both remember the same choice. Two providers: fal.ai (the hosted catalog)
 // or a local ComfyUI model that takes the cut's reference artwork (image
 // model id `comfy:<id>`, with its own render parameters).
 

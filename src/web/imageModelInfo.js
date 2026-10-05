@@ -1,8 +1,8 @@
 // Single source of truth for image-generation model metadata. The per-endpoint
 // reference caps are imported from the fal client so they cannot drift; the
 // rest (resolution, input formats, speed) is curated copy for the model picker.
-// Consumed by GET /api/image-models (SPA display) and by the bulk frame
-// reference auto-fill clamp (src/web/frameReferences.js).
+// Consumed by GET /api/image-models (SPA display) and by the cut-frame
+// reference clamp (src/web/cutFrames.js).
 
 import {
   FLUX_2_PRO_EDIT_MAX_INPUTS,

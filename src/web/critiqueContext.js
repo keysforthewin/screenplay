@@ -1,13 +1,12 @@
 // Assemble the shared context a critique run feeds to every facet.
 // Cheap: reuses plot synopsis + the ordered beat spine (name/desc already on the
 // plot doc) rather than re-summarizing every body. Steering documents
-// (director's notes, directorial voice, scene bible, dialogue style, sets)
+// (director's notes, directorial voice, dialogue style, sets)
 // are loaded best-effort: a failure returns an empty value, never a crash.
 
 import { getPlot, listBeats } from '../mongo/plots.js';
 import { getDirectorNotes } from '../mongo/directorNotes.js';
 import { getCharacter } from '../mongo/characters.js';
-import { renderSceneBibleBlock } from '../mongo/sceneBible.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { SCREENPLAY_STYLE_GUIDE } from '../agent/screenplayStyle.js';
 import { findSetsInBeat, loadDirectorialVoice } from './beatPlanShared.js';
@@ -44,14 +43,6 @@ async function setsInBeat(projectId, beat) {
   }
 }
 
-function sceneBibleText(beat) {
-  try {
-    return renderSceneBibleBlock(beat?.scene_bible) || null;
-  } catch {
-    return null;
-  }
-}
-
 export async function buildCritiqueContext(projectId, beat) {
   const plot = await getPlot(projectId);
   const beats = await listBeats(projectId); // already sorted by order
@@ -78,7 +69,6 @@ export async function buildCritiqueContext(projectId, beat) {
     spine,
     directorNotes,
     directorialVoice,
-    sceneBible: sceneBibleText(beat),
     characters,
     sets,
     styleGuide: SCREENPLAY_STYLE_GUIDE,

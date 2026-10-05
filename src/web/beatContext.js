@@ -1,15 +1,14 @@
 // src/web/beatContext.js
-// Pass 0 of the scene/cut planner: ONE context block holding the ENTIRE beat
-// and everything around it, assembled once per job and reused verbatim by
-// every LLM pass (scenes → cuts → prose → start frames) so the passes share
-// a prompt cache. Unlike the storyboard planner's buildBeatContextBlock this
+// ONE context block holding the ENTIRE beat and everything around it,
+// assembled once per job and reused verbatim by every LLM pass of a job (the
+// writing critique's facets, the artwork critique, the wardrobe backfill) so
+// the passes share a prompt cache. Unlike buildBeatContextBlock this
 // never clips the body and shows every character field the template holds:
 // the user asked for the whole beat in context, so the only cap is a safety
 // ceiling that WARNS rather than truncates.
 
 import { logger } from '../log.js';
 import { listBeats } from '../mongo/plots.js';
-import { renderSceneBibleBlock } from '../mongo/sceneBible.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { WARDROBE_FIELD, wardrobeText, wardrobeOverride } from './wardrobe.js';
 import {
@@ -94,7 +93,7 @@ export function formatCharacterFull(c, { beat = null, wardrobe = 'locked' } = {}
   if (lock && wardrobe === 'default') {
     lines.push(wardrobeOverride(c, beat)
       ? `    wardrobe in THIS beat (set for this beat — the text should agree with it): ${lock}`
-      : `    usual wardrobe (a default, not a rule — the beat may dress them differently for its weather, season, place or period, or as its scene bible says; that is not an inconsistency): ${lock}`);
+      : `    usual wardrobe (a default, not a rule — the beat may dress them differently for its weather, season, place or period; that is not an inconsistency): ${lock}`);
   } else if (lock) {
     lines.push(`    wardrobe (LOCKED — use these exact words in every lock line, handle and still): ${lock}`);
   }
@@ -181,10 +180,6 @@ export function buildFullBeatContextText({
     '# Sets in this beat (the settings/locations; their artwork is the reference pool)',
     sets.length ? sets.map(formatSetFull).join('\n') : '(no sets linked to this beat)',
   );
-  const bible = renderSceneBibleBlock(beat?.scene_bible);
-  if (bible) {
-    lines.push('', '# Scene bible (a look this beat already carries — inherit it, do not restate it)', bible);
-  }
   const notesBlock = formatDirectorNotes(directorNotes);
   if (notesBlock) {
     lines.push('', "# Director's notes (project-wide guidance — every one applies to every cut)", notesBlock);

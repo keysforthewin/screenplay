@@ -96,6 +96,19 @@ export const config = {
       return process.env.ADMIN_USERNAME || null;
     },
   },
+  // MCP server for command-line coding agents (src/mcp/): streamable HTTP, no
+  // auth. MCP_PORT=0 turns it off. Requests whose Host header is not in
+  // MCP_ALLOWED_HOSTS (comma-separated hostnames; `*` = any) are refused —
+  // that is what stops a web page from reaching it through the browser.
+  mcp: {
+    port: process.env.MCP_PORT != null && process.env.MCP_PORT !== '' ? Number(process.env.MCP_PORT) || 0 : 3002,
+    host: process.env.MCP_HOST || '0.0.0.0',
+    allowedHosts: (process.env.MCP_ALLOWED_HOSTS || 'localhost,127.0.0.1,[::1]')
+      .split(',')
+      .map((h) => h.trim())
+      .filter(Boolean),
+    publicUrl: process.env.MCP_PUBLIC_URL || null,
+  },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || null,
     vertex: {
@@ -123,8 +136,6 @@ export const config = {
     // a pure function of config.
     apiKey: process.env.FAL_KEY || null,
     defaultModelId: process.env.FAL_DEFAULT_VIDEO_MODEL || 'kling-3-pro',
-    // How many shot clips the beat renderer keeps in flight at fal at once.
-    videoConcurrency: Math.max(1, Number(process.env.FAL_VIDEO_CONCURRENCY) || 2),
     // Flux Pro Kontext — image-conditioned generation. Single-image endpoint
     // requires `image_url` (singular). The image client picks this when 0 or 1
     // reference images are passed.

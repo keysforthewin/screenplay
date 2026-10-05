@@ -87,14 +87,13 @@ function stdAnalyzer(overrides = {}) {
       ],
       unlinked_mentions: [{ name: 'Car', kind: 'set', quote: 'the car door' }],
     }),
-    audit: async ({ subject, artworks }) => ({
-      coverage: [
-        { requirement_id: `set:${setDoc._id}:1`, status: 'covered', artwork_indexes: [1], note: 'front plate' },
-        { requirement_id: `set:${setDoc._id}:2`, status: 'missing', artwork_indexes: [], note: '' },
-      ],
-      artworks: [{ index: 2, issues: [{ kind: 'light', note: 'daylight, beat is dusk' }], suggested_edit: 'Grade to dusk.' }],
-      accuracy_score: 6,
-      summary: `audit of ${subject.name} with ${artworks.length} images`,
+    // Per artwork: A covers the first set requirement, B fits nothing and is too bright.
+    audit: async ({ artworks }) => ({
+      artworks: artworks.map((a, i) => {
+        if (String(a._id) === String(artworkA._id)) return { index: i + 1, fits: [{ requirement_id: `set:${setDoc._id}:1`, fit: 'covered', lacking: '' }], score: 6, issues: [], suggested_edit: '' };
+        if (String(a._id) === String(artworkB._id)) return { index: i + 1, fits: [], score: 6, issues: [{ kind: 'light', note: 'daylight, beat is dusk' }], suggested_edit: 'Grade to dusk.' };
+        return { index: i + 1, fits: [], score: 5, issues: [], suggested_edit: '' };
+      }),
     }),
     proposals: async ({ subject, requirements }) => ({
       proposals: requirements.map((r) => ({ requirement_ids: [r.id], name: `Gen ${r.summary}`, prompt: `render ${r.summary}`, reference_indexes: subject.kind === 'set' ? [1] : [], rationale: 'needed' })),
@@ -136,7 +135,12 @@ describe('runArtworkCritique', () => {
     expect(chProp.prompt).toContain('Jodie Comer');
     expect(chProp.reference_image_ids).toEqual([]);
     // essential covered (2) + useful missing (1) + essential missing (2): 2/5 → 40%
-    expect(c.coverage).toEqual({ total: 3, covered: 1, partial: 0, missing: 2, pct: 40 });
+    // quality: the covering plate scores 6/10 → 2 × 0.6 / 5 → 24%
+    expect(c.coverage).toEqual({ total: 3, covered: 1, partial: 0, missing: 2, reviewed: 1, pct: 40, quality_pct: 24 });
+    expect(set.inventory).toMatchObject({ total: 2, matched: 2, reviewed: 2 });
+    // The page follows the run: matching, then the review.
+    expect(snaps.map((s) => s.phase)).toEqual(expect.arrayContaining(['requirements', 'matching', 'auditing', 'done']));
+    expect(snaps.at(-1).subjects.find((s) => s.kind === 'set')).toMatchObject({ audited: 2, reused: 0 });
     expect(snaps.at(-1).status).toBe('done');
     expect(snaps.at(-1).subjects.find((s) => s.kind === 'set')).toMatchObject({ status: 'done', requirement_count: 2, covered: 1, missing: 1 });
   });
@@ -158,6 +162,219 @@ describe('runArtworkCritique', () => {
     const done = await G.runArtworkCritique({ projectId, job });
     expect(done.status).toBe('done');
     expect(done.warnings[0]).toMatch(/no linked sets or characters/);
+  });
+
+  it('a second run reuses the requirements, the audits and the proposals — no model call at all', async () => {
+    const calls = { requirements: 0, audit: 0, proposals: 0 };
+    const counted = (over = {}) => {
+      const base = stdAnalyzer(over);
+      return {
+        requirements: async (a) => { calls.requirements += 1; return base.requirements(a); },
+        audit: async (a) => { calls.audit += 1; return base.audit(a); },
+        proposals: async (a) => { calls.proposals += 1; return base.proposals(a); },
+      };
+    };
+    G._setArtworkCritiqueAnalyzerForTests(counted());
+    const id = beat._id.toString();
+    await G.runArtworkCritique({ projectId, job: G.createArtworkCritiqueJob(id) });
+    expect(calls).toEqual({ requirements: 1, audit: 1, proposals: 2 });
+    const first = await AC.getBeatArtworkCritique(projectId, id);
+    await G.setProposalStatus({ projectId, beatId: id, proposalId: first.proposals[0]._id, status: 'dismissed' });
+
+    const second = await G.runArtworkCritique({ projectId, job: G.createArtworkCritiqueJob(id) });
+    expect(second.status).toBe('done');
+    expect(calls).toEqual({ requirements: 1, audit: 1, proposals: 2 });
+    const c = await AC.getBeatArtworkCritique(projectId, id);
+    expect(c.proposals.map((p) => String(p._id))).toEqual(first.proposals.map((p) => String(p._id)));
+    expect(c.proposals[0].status).toBe('dismissed'); // a dismissal survives the re-run
+    expect(c.coverage).toEqual(first.coverage);
+    expect(second.subjects.find((s) => s.kind === 'set')).toMatchObject({ audited: 0, reused: 2 });
+
+    // One image changes: only that artwork goes back to vision.
+    const seen = [];
+    G._setArtworkCritiqueAnalyzerForTests(counted({ audit: async (a) => { seen.push(a.artworks.map((x) => String(x._id))); return stdAnalyzer().audit(a); } }));
+    await fakeDb.collection('sets').updateOne({ _id: setDoc._id, 'artworks._id': artworkB._id }, { $set: { 'artworks.$.result_image_id': new ObjectId() } });
+    await G.runArtworkCritique({ projectId, job: G.createArtworkCritiqueJob(id) });
+    expect(seen).toEqual([[String(artworkB._id)]]);
+    expect(calls.requirements).toBe(1);
+
+    // force: everything again.
+    await G.runArtworkCritique({ projectId, job: G.createArtworkCritiqueJob(id, { force: true }) });
+    expect(calls.requirements).toBe(2);
+    expect(seen.at(-1)).toHaveLength(2);
+  });
+
+  it('check coverage starts from nothing and looks at no image; check quality reviews in place, again each time', async () => {
+    const calls = { requirements: 0, audit: 0, proposals: 0 };
+    const base = stdAnalyzer();
+    G._setArtworkCritiqueAnalyzerForTests({
+      requirements: async (a) => { calls.requirements += 1; return base.requirements(a); },
+      audit: async (a) => { calls.audit += 1; return base.audit(a); },
+      proposals: async (a) => { calls.proposals += 1; return base.proposals(a); },
+    });
+    const id = beat._id.toString();
+    const Climbs = await import('../src/mongo/climbs.js');
+    await Climbs.setBeatClimb(projectId, id, 'artwork', { kind: 'artwork', status: 'done', stop_reason: 'stalled' });
+
+    // Quality before any coverage check: refused.
+    await expect(G.startArtworkCritiqueJob({ projectId, beatId: id, stage: 'quality' })).rejects.toMatchObject({ status: 409 });
+
+    const cov = await G.startArtworkCritiqueJob({ projectId, beatId: id, stage: 'coverage' });
+    expect(await Climbs.getBeatClimb(projectId, id, 'artwork')).toBeNull(); // a manual run ends the climb
+    const covJob = await settle(cov, G.getArtworkCritiqueJob);
+    expect(covJob).toMatchObject({ status: 'done', stage: 'coverage', review_mode: 'none' });
+    expect(calls).toMatchObject({ requirements: 1, audit: 0 });
+    let c = await AC.getBeatArtworkCritique(projectId, id);
+    const setSubject = () => c.subjects.find((s) => s.kind === 'set');
+    expect(setSubject().artworks.length).toBeGreaterThan(0);
+    expect(setSubject().artworks.every((a) => a.audited_image_id == null && a.score == null)).toBe(true);
+    // The character has no artwork: its requirement is missing and drafted.
+    expect(c.proposals.some((p) => p.host_type === 'character' && p.status === 'proposed')).toBe(true);
+    expect(c.coverage.reviewed).toBe(0);
+
+    // Quality: the pieces are looked at; the requirements are not derived again.
+    await settle(await G.startArtworkCritiqueJob({ projectId, beatId: id, stage: 'quality' }), G.getArtworkCritiqueJob);
+    expect(calls).toMatchObject({ requirements: 1, audit: 1 });
+    c = await AC.getBeatArtworkCritique(projectId, id);
+    expect(setSubject().artworks.some((a) => a.audited_image_id)).toBe(true);
+
+    // Quality again: nothing changed, and everything is still looked at again.
+    await settle(await G.startArtworkCritiqueJob({ projectId, beatId: id, stage: 'quality' }), G.getArtworkCritiqueJob);
+    expect(calls).toMatchObject({ requirements: 1, audit: 2 });
+
+    // Coverage again wipes the reviews and derives the requirements again.
+    await settle(await G.startArtworkCritiqueJob({ projectId, beatId: id, stage: 'coverage' }), G.getArtworkCritiqueJob);
+    expect(calls).toMatchObject({ requirements: 2, audit: 2 });
+    c = await AC.getBeatArtworkCritique(projectId, id);
+    expect(setSubject().artworks.every((a) => a.audited_image_id == null)).toBe(true);
+  });
+
+  it('clearArtworkCritique removes the critique and the climb status; 409 while a run is going', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    G._setArtworkCritiqueAnalyzerForTests(stdAnalyzer({ requirements: async () => { await gate; return stdAnalyzer().requirements(); } }));
+    const id = beat._id.toString();
+    const jobId = await G.startArtworkCritiqueJob({ projectId, beatId: id });
+    await expect(G.clearArtworkCritique({ projectId, beatId: id })).rejects.toMatchObject({ status: 409 });
+    release();
+    await settle(jobId, G.getArtworkCritiqueJob);
+    const Climbs = await import('../src/mongo/climbs.js');
+    await Climbs.setBeatClimb(projectId, id, 'artwork', { kind: 'artwork', status: 'done' });
+    await G.clearArtworkCritique({ projectId, beatId: id });
+    expect(await AC.getBeatArtworkCritique(projectId, id)).toBeNull();
+    expect(await Climbs.getBeatClimb(projectId, id, 'artwork')).toBeNull();
+  });
+
+  it('coverage comes from the descriptions; the review confirms or rejects it; a climb still filling coverage reviews nothing on file', async () => {
+    const id = beat._id.toString();
+    const looked = [];
+    const R = (n) => `set:${setDoc._id}:${n}`;
+    const analyzer = stdAnalyzer({
+      // By description: A is the entrance view, B is the car.
+      match: async ({ text }) => {
+        expect(text).toContain('1. "Lot front"');
+        return {
+          matches: [
+            { requirement_id: R(1), artworks: [{ index: 1, fit: 'covered', lacking: '' }] },
+            { requirement_id: R(2), artworks: [{ index: 2, fit: 'partial', lacking: 'door not described' }] },
+          ],
+          duplicate_groups: [],
+        };
+      },
+      // Looked at: A is right; B turns out not to be the car at all.
+      audit: async ({ artworks, text }) => {
+        looked.push(artworks.map((a) => String(a._id)));
+        expect(text).toContain(`[description suggests: ${R(1)}]`);
+        return {
+          artworks: artworks.map((a, i) => (String(a._id) === String(artworkA._id)
+            ? { index: i + 1, fits: [{ requirement_id: R(1), fit: 'covered', lacking: '' }], criteria: ['requirement', 'beat', 'subject', 'reference', 'technical'].map((key) => ({ key, score: 8, note: 'ok' })), issues: [], action: 'keep', suggested_edit: '', regenerate_reason: '' }
+            : { index: i + 1, fits: [], criteria: ['requirement', 'beat', 'subject', 'reference', 'technical'].map((key) => ({ key, score: 3, note: 'a van' })), issues: [], action: 'regenerate', suggested_edit: '', regenerate_reason: 'It is a van, not the sedan.' })),
+        };
+      },
+    });
+    G._setArtworkCritiqueAnalyzerForTests(analyzer);
+    // A climb's run ('auto') with the character's requirement missing: phase 1 only.
+    await G.runArtworkCritiqueForClimb({ projectId, beatId: id });
+    expect(looked).toEqual([]);
+    let c = await AC.getBeatArtworkCritique(projectId, id);
+    let set = c.subjects.find((s) => s.kind === 'set');
+    expect(set.requirements.map((r) => r.status)).toEqual(['covered', 'partial']);
+    expect(set.artworks.map((e) => [e.score, e.audited_image_id])).toEqual([[null, null], [null, null]]);
+    // set 2 + 1 answered of 5 → 60% covered; nothing looked at → quality 0
+    expect(c.coverage).toMatchObject({ pct: 60, quality_pct: 0, reviewed: 0, missing: 1 });
+    expect(c.proposals.map((p) => p.host_type)).toEqual(['character']); // only what is missing gets a proposal
+
+    // The manual run reviews: the reviewer rejects B, so the car is missing after all.
+    await G.runArtworkCritique({ projectId, job: G.createArtworkCritiqueJob(id) });
+    expect(looked).toEqual([[String(artworkA._id), String(artworkB._id)]]);
+    c = await AC.getBeatArtworkCritique(projectId, id);
+    set = c.subjects.find((s) => s.kind === 'set');
+    expect(set.requirements.map((r) => r.status)).toEqual(['covered', 'missing']);
+    const b = set.artworks.find((e) => String(e.artwork_id) === String(artworkB._id));
+    expect(b).toMatchObject({ score: 3, action: 'regenerate', regenerate_reason: 'It is a van, not the sedan.', fits: [] });
+    expect(set.artworks.find((e) => String(e.artwork_id) === String(artworkA._id))).toMatchObject({ score: 8, action: 'keep' });
+    expect(c.coverage).toMatchObject({ pct: 40, quality_pct: 32, reviewed: 1 });
+    expect(c.proposals.map((p) => p.host_type).sort()).toEqual(['character', 'set']);
+  });
+
+  it('a large library is matched by description: every artwork is read, only the candidates go to vision', async () => {
+    const extra = [];
+    for (let i = 0; i < 38; i++) {
+      extra.push((await Artworks.appendDoneArtwork({ projectId, hostType: 'set', hostId: setDoc._id, resultImageId: new ObjectId(), name: `Plate ${i}` })).artwork);
+    }
+    const described = [];
+    const shortlistSaw = [];
+    const audited = [];
+    const carId = String(extra[30]._id);
+    G._setArtworkCritiqueAnalyzerForTests(stdAnalyzer({
+      describe: async ({ artwork }) => { described.push(String(artwork._id)); return `what ${artwork.name} shows`; },
+      shortlist: async ({ artworks, text }) => {
+        shortlistSaw.push(artworks.length);
+        expect(text).toContain('what Plate 37 shows');
+        // artwork 1 = Lot front, artwork 33 = Plate 30 (the car); 5 and 6 are the same picture.
+        return {
+          candidates: [
+            { requirement_id: `set:${setDoc._id}:1`, artwork_indexes: [1] },
+            { requirement_id: `set:${setDoc._id}:2`, artwork_indexes: [33] },
+          ],
+          duplicate_groups: [[5, 6], [9]],
+        };
+      },
+      audit: async ({ artworks }) => {
+        audited.push(artworks.map((a) => String(a._id)));
+        return {
+          artworks: artworks.map((a, i) => ({
+            index: i + 1,
+            fits: String(a._id) === carId
+              ? [{ requirement_id: `set:${setDoc._id}:2`, fit: 'partial', lacking: 'the door is closed' }]
+              : [{ requirement_id: `set:${setDoc._id}:1`, fit: 'covered', lacking: '' }],
+            score: 8,
+            issues: [],
+            suggested_edit: String(a._id) === carId ? 'Open the driver door.' : '',
+          })),
+        };
+      },
+    }));
+    const id = beat._id.toString();
+    const job = await G.runArtworkCritique({ projectId, job: G.createArtworkCritiqueJob(id) });
+    expect(job.status).toBe('done');
+    expect(job.warnings.some((w) => /only the newest/.test(w))).toBe(false);
+    expect(described).toHaveLength(40);
+    expect(shortlistSaw).toEqual([40]);
+    expect(audited).toEqual([[String(artworkA._id), carId]]);
+    const c = await AC.getBeatArtworkCritique(projectId, id);
+    const set = c.subjects.find((s) => s.kind === 'set');
+    expect(set.inventory).toMatchObject({ total: 40, matched: 2, reviewed: 2 });
+    expect(set.inventory.duplicates.map((g) => g.map(String))).toEqual([[String(extra[2]._id), String(extra[3]._id)]]);
+    expect(set.requirements.map((r) => r.status)).toEqual(['covered', 'partial']);
+    expect(set.requirements[1].note).toBe('the door is closed');
+    expect(String(set.requirements[1].covered_by[0])).toBe(carId);
+    expect(set.summary).toContain('40 artworks on file, 2 matched to this beat by description, 2 reviewed');
+
+    // Again with nothing changed: no describe, no shortlist, no vision.
+    await G.runArtworkCritique({ projectId, job: G.createArtworkCritiqueJob(id) });
+    expect(shortlistSaw).toEqual([40]);
+    expect(audited).toHaveLength(1);
   });
 
   it('startArtworkCritiqueJob: 404 unknown beat, 409 while running', async () => {

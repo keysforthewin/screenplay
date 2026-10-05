@@ -31,6 +31,20 @@ export async function getBeatArtworkCritique(projectId, beatId) {
   return beat?.artwork_critique || null;
 }
 
+// Remove the critique altogether ("Clear critique", and the first step of a
+// re-check of everything): the page goes back to "not critiqued".
+export async function clearBeatArtworkCritique(projectId, beatId) {
+  projectId = await resolveProjectId(projectId);
+  const beatOid = await resolveBeatOid(projectId, beatId);
+  const now = new Date();
+  await col().updateOne(
+    { project_id: projectId },
+    { $set: { 'beats.$[b].artwork_critique': null, 'beats.$[b].updated_at': now, updated_at: now } },
+    { arrayFilters: [{ 'b._id': beatOid }] },
+  );
+  logger.info(`mongo: artwork critique cleared beat=${beatOid}`);
+}
+
 // Overwrite the whole object with a fresh pending run. `subjects` are stubs
 // ({kind, id, name}); proposals start empty.
 export async function setArtworkCritiquePending(projectId, beatId, { model, subjects = [] } = {}) {
@@ -66,7 +80,66 @@ export async function setArtworkCritiquePending(projectId, beatId, { model, subj
   return doc;
 }
 
-const SUBJECT_KEYS = ['requirements', 'artworks', 'accuracy_score', 'summary', 'status', 'error_message'];
+// Start a run that KEEPS what the last one learned: requirements, audited
+// artwork entries, the inventory, the proposals and the last run's warnings
+// stay (the page keeps showing them while the run works; finalize replaces
+// the warnings); only the run status resets. Subjects no longer on the beat's roster are dropped
+// (with their proposals), new ones start as stubs. With no critique on file
+// this is setArtworkCritiquePending.
+export async function beginArtworkCritiqueRun(projectId, beatId, { model, subjects = [] } = {}) {
+  projectId = await resolveProjectId(projectId);
+  const prior = await getBeatArtworkCritique(projectId, beatId);
+  if (!prior) return setArtworkCritiquePending(projectId, beatId, { model, subjects });
+  const beatOid = await resolveBeatOid(projectId, beatId);
+  const now = new Date();
+  const same = (a, b) => a.kind === b.kind && String(a.id) === String(b.id);
+  const doc = {
+    ...prior,
+    status: 'pending',
+    model: String(model || ''),
+    subjects: subjects.map((s) => {
+      const old = (prior.subjects || []).find((p) => same(p, s));
+      return {
+        kind: s.kind,
+        id: oid(s.id),
+        name: String(s.name || ''),
+        accuracy_score: null,
+        summary: '',
+        requirements: [],
+        artworks: [],
+        ...(old || {}),
+        status: 'pending',
+        error_message: null,
+      };
+    }),
+    proposals: (prior.proposals || []).filter((p) => subjects.some((s) => s.kind === p.host_type && String(s.id) === String(p.host_id))),
+  };
+  await col().updateOne(
+    { project_id: projectId },
+    { $set: { 'beats.$[b].artwork_critique': doc, 'beats.$[b].updated_at': now, updated_at: now } },
+    { arrayFilters: [{ 'b._id': beatOid }] },
+  );
+  logger.info(`mongo: artwork critique run (incremental) beat=${beatOid} subjects=${doc.subjects.length}`);
+  return doc;
+}
+
+// Top-level fields a run sets besides status/coverage: the fingerprint of
+// what the requirements were derived from, and the proposal list as a whole
+// (pruning — appends go through appendArtworkCritiqueProposals).
+const META_KEYS = ['requirements_sig', 'unlinked_mentions', 'proposals'];
+
+export async function setArtworkCritiqueMeta(projectId, beatId, patch = {}) {
+  projectId = await resolveProjectId(projectId);
+  const beatOid = await resolveBeatOid(projectId, beatId);
+  const $set = {};
+  for (const k of META_KEYS) {
+    if (patch[k] !== undefined) $set[`beats.$[b].artwork_critique.${k}`] = patch[k];
+  }
+  if (!Object.keys($set).length) return;
+  await col().updateOne({ project_id: projectId }, { $set }, { arrayFilters: [{ 'b._id': beatOid }] });
+}
+
+const SUBJECT_KEYS = ['requirements', 'artworks', 'accuracy_score', 'summary', 'status', 'error_message', 'inventory', 'req_sig'];
 
 export async function updateArtworkCritiqueSubject(projectId, beatId, subjectId, patch = {}) {
   projectId = await resolveProjectId(projectId);

@@ -1,0 +1,161 @@
+import { useState } from 'react';
+import { apiDelete, apiPatchJson, apiPostJson, imageUrl, thumbUrl } from '../api.js';
+import { CollabField } from '../editor/CollabField.jsx';
+import { Modal } from './Modal.jsx';
+import { ImageLightbox } from './ImageLightbox.jsx';
+import { PromptReferencePicker } from './PromptReferencePicker.jsx';
+import { StartFrameModelChooser, useStartFrameModel } from './StartFrameModelChooser.jsx';
+import { frameJobKey, isFrameJobActive, useCutFrameJobs } from './cutFrameJobs.jsx';
+
+const MAX_REFS = 9;
+
+function readError(e) {
+  let msg = e?.message || 'Request failed.';
+  try {
+    const parsed = JSON.parse(msg);
+    if (parsed?.error) msg = parsed.error;
+  } catch {}
+  return msg;
+}
+
+// One still of a cut — its start frame or its end frame: the prompt, the
+// reference images sent to the image model with that prompt, and the rendered
+// picture. Each frame has its own references.
+export function CutFramePanel({ cut, frame, beatId, disabled, onRefresh }) {
+  const id = String(cut._id);
+  const label = frame === 'end' ? 'End frame' : 'Start frame';
+  const sf = cut[`${frame}_frame`] || null;
+  const image = sf?.image_id ? String(sf.image_id) : null;
+  const refIds = (sf?.reference_ids || []).map(String);
+  // The end frame can take the cut's own start frame as a reference.
+  const startImage = frame === 'end' && cut.start_frame?.image_id ? String(cut.start_frame.image_id) : null;
+
+  const store = useCutFrameJobs();
+  const key = frameJobKey(id, frame);
+  const job = store?.jobs?.[key] || null;
+  const rendering = isFrameJobActive(job);
+  const model = useStartFrameModel();
+
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [renderOpen, setRenderOpen] = useState(false);
+  const [lightbox, setLightbox] = useState(false);
+  const locked = busy || disabled || rendering;
+
+  async function call(fn) {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      onRefresh?.();
+    } catch (e) {
+      setError(readError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const setRefs = (ids) => call(() => apiPatchJson(`/cut/${id}/${frame}-frame`, { reference_ids: ids }));
+
+  async function render() {
+    setError(null);
+    store?.dismiss(key);
+    try {
+      const r = await apiPostJson(`/cut/${id}/${frame}-frame/generate`, model.requestFields());
+      model.remember();
+      setRenderOpen(false);
+      store?.track({ job_id: r.job_id, cut_id: id, frame, status: 'running' });
+    } catch (e) {
+      setError(readError(e));
+    }
+  }
+
+  return (
+    <div className="cut-frame">
+      <div className="cut-frame-picture">
+        <div className="field-label">{label}</div>
+        {image ? (
+          <img src={thumbUrl(image)} alt={label} loading="lazy" onClick={() => setLightbox(true)} />
+        ) : (
+          <div className="cut-frame-empty">{rendering ? 'Rendering…' : 'Not generated yet'}</div>
+        )}
+        <div className="cut-frame-buttons">
+          <button type="button" className={image ? '' : 'primary'} disabled={locked} onClick={() => setRenderOpen(true)}>
+            {rendering ? 'Rendering…' : image ? 'Regenerate…' : 'Generate…'}
+          </button>
+          {sf?.previous_image_id ? (
+            <button type="button" disabled={locked} title="Restore the previous image" onClick={() => call(() => apiPostJson(`/cut/${id}/${frame}-frame/undo`, {}))}>Undo</button>
+          ) : null}
+          {image ? (
+            <button
+              type="button"
+              className="danger"
+              disabled={locked}
+              onClick={() => {
+                if (confirm(`Remove the generated ${label.toLowerCase()}? Its prompt and reference images are kept.`)) call(() => apiDelete(`/cut/${id}/${frame}-frame`));
+              }}
+            >
+              Remove
+            </button>
+          ) : null}
+        </div>
+        {job?.status === 'error' ? <div className="error-banner small">{job.error || 'The render failed.'}</div> : null}
+        {error ? <div className="error-banner small">{error}</div> : null}
+      </div>
+
+      <div className="cut-frame-text">
+        <CollabField label={`${label} prompt`} field={`item:${id}:${frame}_frame_prompt`} multiline placeholder={`What the ${frame === 'end' ? 'last' : 'first'} frame of this cut shows…`} />
+        <div className="field-label">Reference images</div>
+        <div className="video-prompt-ref-strip">
+          {refIds.map((rid) => (
+            <div key={rid} className="video-prompt-ref-chip" title={rid === startImage ? "This cut's start frame" : 'Reference image'}>
+              <img src={thumbUrl(rid)} alt="Reference" loading="lazy" />
+              {rid === startImage ? <span className="video-prompt-ref-owner">start frame</span> : null}
+              <div className="video-prompt-ref-actions">
+                <button type="button" title="Remove" disabled={locked} onClick={() => setRefs(refIds.filter((x) => x !== rid))}>×</button>
+              </div>
+            </div>
+          ))}
+          <button type="button" className="video-prompt-ref-add" disabled={locked || refIds.length >= MAX_REFS} onClick={() => setPickerOpen(true)}>+ Add reference</button>
+          {startImage && !refIds.includes(startImage) ? (
+            <button type="button" className="video-prompt-ref-add" disabled={locked || refIds.length >= MAX_REFS} title="Send this cut's start frame along, so the end frame is the same place and the same people" onClick={() => setRefs([...refIds, startImage])}>+ Start frame</button>
+          ) : null}
+        </div>
+      </div>
+
+      <Modal
+        open={renderOpen}
+        title={`${image ? 'Regenerate' : 'Generate'} the ${label.toLowerCase()}`}
+        onClose={() => setRenderOpen(false)}
+        size="xl"
+        footer={
+          <>
+            <button type="button" onClick={() => setRenderOpen(false)}>Cancel</button>
+            <button type="button" className="primary" disabled={!model.ready} onClick={render}>{image ? 'Regenerate' : 'Generate'}</button>
+          </>
+        }
+      >
+        <p style={{ color: 'var(--fg-muted)', marginTop: 0 }}>
+          The {label.toLowerCase()} prompt is sent with {refIds.length ? `its ${refIds.length} reference image${refIds.length === 1 ? '' : 's'}` : 'no reference images'}.
+        </p>
+        {error ? <div className="error-banner small">{error}</div> : null}
+        <div className="cut-frame-models">
+          <StartFrameModelChooser state={model} referenceCount={refIds.length} />
+        </div>
+      </Modal>
+      <PromptReferencePicker
+        open={pickerOpen}
+        beatId={beatId}
+        existingIds={refIds}
+        maxTotal={MAX_REFS}
+        onClose={() => setPickerOpen(false)}
+        onPick={(ids) => {
+          setPickerOpen(false);
+          setRefs([...refIds, ...ids]);
+        }}
+      />
+      {lightbox && image ? <ImageLightbox src={imageUrl(image)} alt={label} onClose={() => setLightbox(false)} /> : null}
+    </div>
+  );
+}

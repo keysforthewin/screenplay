@@ -19,7 +19,9 @@ import {
   setCritiquePending,
   updateCritiqueFacet,
   finalizeCritique,
+  restoreBeatCritique,
 } from '../mongo/critiques.js';
+import { setBeatClimb } from '../mongo/climbs.js';
 
 const TERMINAL_RETENTION_MS = 5 * 60 * 1000;
 
@@ -131,7 +133,7 @@ export function facetOutputSchema(facet) {
         items: {
           type: 'object',
           additionalProperties: false,
-          required: ['key', 'applicable', 'score', 'evidence', 'rationale'],
+          required: ['key', 'applicable', 'score', 'evidence', 'rationale', 'to_raise'],
           properties: {
             key: { type: 'string', enum: keys },
             applicable: { type: 'boolean', description: 'false only when the context this criterion needs is absent' },
@@ -149,6 +151,7 @@ export function facetOutputSchema(facet) {
               },
             },
             rationale: { type: 'string', description: 'One or two sentences: why this anchor' },
+            to_raise: { type: 'string', description: 'How to fix this criterion in this beat: name or quote the line(s) and say what to write, cut or move to reach the 9 anchor. Empty only for a 10 or applicable=false' },
           },
         },
       },
@@ -318,6 +321,9 @@ export async function startCritiqueJob({ projectId, beatId }) {
     throw httpError('A critique is already running for this beat.', 409);
   }
   busyBeats.add(busyKey);
+  // A manual critique replaces what the last climb left: its status goes.
+  await setBeatClimb(projectId, busyKey, 'writing', null)
+    .catch((e) => logger.warn(`critique gen: clearing the climb failed: ${e.message}`));
   const job = createCritiqueJob(busyKey);
   setImmediate(() => {
     runCritique({ projectId, job })
@@ -327,4 +333,17 @@ export async function startCritiqueJob({ projectId, beatId }) {
       .finally(() => busyBeats.delete(busyKey));
   });
   return job.job_id;
+}
+
+// "Clear critique": remove the stored critique (scores, issues, rewrite
+// strategy) and the last climb's status. The Undo slot is left alone. 409
+// while a critique or a climb is running for the beat.
+export async function clearCritique({ projectId, beatId }) {
+  projectId = await resolveProjectId(projectId);
+  const beat = await getBeat(projectId, String(beatId));
+  if (!beat) throw httpError(`beat not found: ${beatId}`, 404);
+  const key = beat._id.toString();
+  if (busyBeats.has(key)) throw httpError('A critique or a climb is running for this beat; wait for it to finish.', 409);
+  await restoreBeatCritique(projectId, key, null);
+  await setBeatClimb(projectId, key, 'writing', null);
 }

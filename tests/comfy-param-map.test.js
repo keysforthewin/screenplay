@@ -209,27 +209,19 @@ describe('buildSlotOverrides', () => {
 
 describe('assembleCutPrompt', () => {
   const cut = {
-    prompt: 'Medium shot from the aisle. **Sarah** slides the cup an inch. Same light: warm tubes. Camera in the aisle. Stop when her hand lets go.',
-    reference_binding: '@Image1 controls Sarah’s identity and wardrobe only; ignore the room from it.',
-    exclusions: ['Do not show the door opening yet.', ''],
+    prompt: 'Medium shot from the aisle. **Sarah** slides the cup an inch. Stop when her hand lets go.',
+    // Fields of the retired planner: never part of the prompt any more.
+    reference_binding: '@Image1 controls Sarah’s identity and wardrobe only.',
+    exclusions: ['Do not show the door opening yet.'],
   };
   const strip = (s) => s.replace(/\*\*/g, '');
 
-  it('appends only the exclusions the block does not already contain', () => {
-    const dup = { ...cut, exclusions: ['Stop when her hand lets go.', 'No door.'] };
-    const out = assembleCutPrompt(getComfyVideoModel('ltx-2.5-i2v'), dup, { stripMarkdown: strip });
-    expect(out.split('Stop when her hand lets go.').length).toBe(2);
-    expect(out.endsWith('No door.')).toBe(true);
-  });
-
-  it('prepends the binding only for reference-taking models and appends exclusions', () => {
-    const i2v = assembleCutPrompt(getComfyVideoModel('ltx-2.5-i2v'), cut, { stripMarkdown: strip });
-    expect(i2v.startsWith('Medium shot')).toBe(true);
-    expect(i2v).not.toContain('@Image1');
-    expect(i2v.endsWith('Do not show the door opening yet.')).toBe(true);
-    expect(i2v).toContain('Sarah slides');
-    const r2v = assembleCutPrompt(getComfyVideoModel('seedance-2.0-r2v'), cut, { stripMarkdown: strip });
-    expect(r2v.startsWith('@Image1 controls')).toBe(true);
+  it('is the cut’s own prompt, markdown stripped, for every model', () => {
+    const expected = 'Medium shot from the aisle. Sarah slides the cup an inch. Stop when her hand lets go.';
+    expect(assembleCutPrompt(getComfyVideoModel('ltx-2.5-i2v'), cut, { stripMarkdown: strip })).toBe(expected);
+    expect(assembleCutPrompt(getComfyVideoModel('seedance-2.0-r2v'), cut, { stripMarkdown: strip })).toBe(expected);
+    expect(assembleCutPrompt(getComfyVideoModel('ltx-2.5-i2v'), { prompt: '  padded  ' })).toBe('padded');
+    expect(assembleCutPrompt(getComfyVideoModel('ltx-2.5-i2v'), {})).toBe('');
   });
 
   it('an override replaces everything', () => {

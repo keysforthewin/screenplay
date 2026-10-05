@@ -1,10 +1,10 @@
 // The numbered reference-image CATALOG for a beat: the ARTWORK of the beat's
 // characters and sets (done artworks only — uploaded portraits, character
 // sheets and gallery images are deliberately excluded; the Artwork section is
-// the curated look), numbered 1..N with a description. The cut planner
-// (src/web/cutPlanner.js) offers it to the model, the PATCH /cut/:id route
-// resolves picked ids against it, and GET /cuts/candidates hands it to the
-// SPA's "+ Add reference" picker.
+// the curated look), numbered 1..N with a description. The artwork critique
+// offers it to its proposal planner, the cut-frame renderer
+// (src/web/cutFrames.js) reads who each reference shows from it, and
+// GET /cuts/candidates hands it to the SPA's "+ Add reference" picker.
 
 import { logger } from '../log.js';
 import { findImageFile, imageFileToMeta } from '../mongo/images.js';
@@ -13,9 +13,11 @@ import { wardrobeImageId } from './wardrobe.js';
 import { findCharactersInBeat, findSetsInBeat } from './beatPlanShared.js';
 import { clipBlock } from './setDescriptionGenerate.js';
 
-// Catalog cap: enough for two or three characters' artwork and a set or two,
-// small enough that the context stays a list rather than a wall.
-export const MAX_CATALOG_ENTRIES = 40;
+// Catalog cap: every done artwork of a beat's cast and sets should fit — one
+// beat is dozens of cuts, two stills each, each picking from this pool (40
+// was a fraction of one lead's artwork). Only a guard against a runaway
+// library; past it the hosts share the cap evenly.
+export const MAX_CATALOG_ENTRIES = 200;
 
 // ─── Reference image catalog ────────────────────────────────────────────────
 
@@ -72,8 +74,8 @@ function hostImageSlots(host, ownerType = 'set') {
 // [{ index (1-based), image_id (string), owner_type, owner_id, owner_name,
 //    label, description, wardrobe? }] deduped by image id and capped at
 //    MAX_CATALOG_ENTRIES.
-// Exported for the /cuts/candidates route (the SPA's picker), the PATCH
-// /cut/:id route's id → entry resolution and the cut planner.
+// Exported for the /cuts/candidates route (the SPA's picker), the cut-frame
+// renderer and the artwork critique.
 export async function buildReferenceCatalog(projectId, beat) {
   const [characters, sets] = await Promise.all([
     findCharactersInBeat(projectId, beat),
@@ -83,14 +85,25 @@ export async function buildReferenceCatalog(projectId, beat) {
     ...characters.map((c) => ({ doc: c, ownerType: 'character' })),
     ...sets.map((s) => ({ doc: s, ownerType: 'set' })),
   ];
-  const out = [];
+  // Every host gets a fair share of the cap, handed out one slot at a time
+  // in turn: filling it host by host let one character with 58 artworks take
+  // all 40 entries, so no set artwork (and not his own wardrobe plate, which
+  // sat last) was ever offered to a cut. A wardrobe plate goes first.
   const seen = new Set();
-  for (const { doc, ownerType } of hosts) {
+  const queues = hosts.map(({ doc, ownerType }) => {
+    const slots = hostImageSlots(doc, ownerType).filter((slot) => !seen.has(slot.id) && seen.add(slot.id));
+    return { doc, ownerType, slots: [...slots.filter((x) => x.wardrobe), ...slots.filter((x) => !x.wardrobe)], take: 0 };
+  });
+  for (let left = MAX_CATALOG_ENTRIES, gave = true; left > 0 && gave;) {
+    gave = false;
+    for (const q of queues) {
+      if (left > 0 && q.take < q.slots.length) { q.take += 1; left -= 1; gave = true; }
+    }
+  }
+  const out = [];
+  for (const { doc, ownerType, slots, take } of queues) {
     const ownerName = stripMarkdown(doc?.name || '').trim() || (ownerType === 'set' ? 'Set' : 'Character');
-    for (const slot of hostImageSlots(doc, ownerType)) {
-      if (seen.has(slot.id)) continue;
-      if (out.length >= MAX_CATALOG_ENTRIES) break;
-      seen.add(slot.id);
+    for (const slot of slots.slice(0, take)) {
       const meta = await imageMeta(slot.id);
       const description = meta?.description || slot.caption || '';
       const nameBit = meta?.name ? ` (${meta.name})` : '';
@@ -105,7 +118,6 @@ export async function buildReferenceCatalog(projectId, beat) {
         ...(slot.wardrobe ? { wardrobe: true } : {}),
       });
     }
-    if (out.length >= MAX_CATALOG_ENTRIES) break;
   }
   return out;
 }

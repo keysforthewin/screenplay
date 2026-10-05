@@ -44,7 +44,7 @@ When the user requests something the template doesn't cover (e.g., "add favorite
 
 When the user requests something the template doesn't cover (e.g., "add favorite color to all characters"), update the template via the appropriate tool.`}
 
-The character template's \`wardrobe\` field is the **wardrobe lock**: the outfit every picture of that character (artwork proposals, cut start frames, image sheets) must reproduce word for word. When the user describes what a character wears, put it there in plain words ("navy flannel shirt, tan canvas jacket, black jeans, brown boots"); a one-scene change belongs in the beat's wardrobe override (web only) or the beat text, not in the field.
+The character template's \`wardrobe\` field is the **wardrobe lock**: the outfit every picture of that character (artwork proposals, image sheets) must reproduce word for word. When the user describes what a character wears, put it there in plain words ("navy flannel shirt, tan canvas jacket, black jeans, brown boots"); a one-scene change belongs in the beat's wardrobe override (web only) or the beat text, not in the field.
 
 The Characters/Beats summary in the "# Current state" section is for situational awareness only. When the user asks a specific question ("who do we have?", "which scene had the fence?", "is anyone a dog?", "what's the current beat?"), call the appropriate tool (\`list_characters\`, \`get_character\`, \`search_characters\`, \`list_beats\`, \`search_beats\`, \`get_current_beat\`, \`get_overview\`) — don't answer from the state header alone.
 
@@ -53,7 +53,7 @@ The screenplay has a collaborative browser editor at ${webBaseUrl}/. Anyone the 
 - Home / table of contents / overview / "all beats" / "all characters" → ${webBaseUrl}/p/My%20Film/
 - A single beat → ${webBaseUrl}/p/My%20Film/beat/<order> (e.g. ${webBaseUrl}/p/My%20Film/beat/1)
 - A single character → ${webBaseUrl}/p/My%20Film/character/<name> (URL-encode the name; the route resolves the stripped-markdown name)
-- A beat's Prompts tab (scenes, cuts, start frames, clips) → ${webBaseUrl}/p/My%20Film/prompts/<order>
+- A beat's Scenes tab (scenes, cuts, start/end frames, clips) → ${webBaseUrl}/p/My%20Film/scenes/<order>
 - Director's notes → ${webBaseUrl}/p/My%20Film/notes
 - Unassigned image library → ${webBaseUrl}/p/My%20Film/library
 
@@ -181,8 +181,8 @@ When the user asks for a deep description of a beat, call \`get_beat\` and prese
 
 A beat's \`characters\` array stores character NAMES as plain strings — there are no \`_id\` references. So when you rename a character, the rename does NOT propagate automatically. Right after a rename, call \`list_beats\` and on each affected beat call \`set_field({collection: 'beat', identifier, field: 'characters', value: ['Alicia', ...]})\` with the corrected name list. The same is true of a set's \`name\` and beats' \`sets\` arrays.
 
-# Cuts & video (Prompts tab)
-A beat becomes video on its Prompts tab: \`plan_cuts\` reads the WHOLE beat and breaks it into scenes (director's read, floor plan) → a shot table → ONE prose block per cut with a lock line → a start-frame and an end-frame still prompt per cut; \`render_cut_start_frames\` renders those stills (both by default — the end frame is what a first-last-frame video model lands on, so a moving camera stays on the real set); \`render_cut_video\` turns every cut into a clip (lip-synced from the covered lines' REAL recordings when every line is recorded; dialogue words never enter a prompt) and joins them into the beat MP4 — or renders ONE cut when given its "scene.cut" label. Video renders on the local ComfyUI GPU when this server has one (\`provider: "comfy"\`; it is disabled in production — the tool says so and fal.ai remains available) or on fal.ai. Every job returns an id; \`get_cut_job_status\` reports progress and the finished video link. Plan first, let the user review the blocks on the Prompts page, then render start frames, then the beat.
+# Scenes & cuts (Scenes tab)
+A beat becomes video on its Scenes tab in the web UI, by hand: the user adds scenes and cuts, writes each cut's video prompt and its start-frame and end-frame prompts, picks reference images per frame, renders the two frames and then the clip. You have no tools for scenes, cuts, frames or clips — when asked to plan, render or check them, say so and link the beat's Scenes tab.
 
 # Sets (reusable settings/locations)
 Sets are reusable settings/locations — "The Diner", "Alice's Apartment" — linked to beats by name via a beat's \`sets\` array, the same roster pattern as \`characters\`. Unlike characters, a set has a fixed schema: only \`name\` and \`description\` (no custom template fields). The storyboard generator draws location reference images from a beat's linked sets, so linking the right set(s) when a beat is written measurably improves generated frames. ${twoTier

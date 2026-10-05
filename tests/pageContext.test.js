@@ -39,10 +39,11 @@ describe('resolvePageContextNote', () => {
     expect(note).toContain('beat id');
   });
 
-  it('phrases prompts/dialog pages relative to their beat', async () => {
-    const sb = await resolve({ kind: 'prompts', ref: '2' });
-    expect(sb).toContain('video prompts page for Beat 2');
+  it('phrases scenes/dialog pages relative to their beat', async () => {
+    const sb = await resolve({ kind: 'scenes', ref: '2' });
+    expect(sb).toContain('scenes & cuts page for Beat 2');
     expect(await resolve({ kind: 'storyboard', ref: '2' })).toBeNull();
+    expect(await resolve({ kind: 'prompts', ref: '2' })).toBeNull();
     expect(sb).toContain('beat id');
     const dlg = await resolve({ kind: 'dialog', ref: '2' });
     expect(dlg).toContain('dialog page for Beat 2');
@@ -61,6 +62,8 @@ describe('resolvePageContextNote', () => {
     expect(await resolve({ kind: 'notes' })).toContain("director's notes");
     expect(await resolve({ kind: 'library' })).toContain('media library');
     expect(await resolve({ kind: 'dialog-index' })).toContain('dialog index');
+    expect(await resolve({ kind: 'scenes-index' })).toContain('scenes index');
+    expect(await resolve({ kind: 'prompts-index' })).toBeNull();
   });
 
   it('returns null for a stale entity ref, an unknown kind, or a missing project', async () => {

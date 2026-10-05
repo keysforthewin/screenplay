@@ -1,9 +1,9 @@
 // Shared beat-planning helpers: resolving a beat's characters and sets,
 // loading the project-wide steering (director's notes, directorial voice,
 // dialogue), and formatting it all into the context block an LLM planner
-// reads. Used by the Prompts-tab cut planner (beatContext.js, cutPlanner.js,
-// cutStartFrames.js, referenceCatalog.js), the image-sheet planners, the
-// scene-bible autofill and the set-description generator.
+// reads. Used by the critiques (beatContext.js), the reference catalog, the
+// cut-frame renderer (cutFrames.js), the image-sheet planners, the
+// set-description generator.
 //
 // (Extracted from the retired storyboard pipeline.)
 

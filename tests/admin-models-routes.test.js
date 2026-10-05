@@ -69,7 +69,7 @@ describe('GET /api/admin/models', () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     const keys = json.slots.map((s) => s.key);
-    expect(keys).toEqual(['agent', 'writer', 'dialog', 'storyboard', 'critique', 'analysis', 'enhancer']);
+    expect(keys).toEqual(['agent', 'writer', 'dialog', 'storyboard', 'critique', 'artwork_review', 'analysis', 'enhancer']);
     const writer = json.slots.find((s) => s.key === 'writer');
     expect(writer.override).toBeNull();
     expect(writer.default).toBe(config.anthropic.model);

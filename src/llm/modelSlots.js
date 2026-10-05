@@ -41,14 +41,20 @@ export const MODEL_SLOTS = Object.freeze([
   },
   {
     key: 'storyboard',
-    label: 'Scene & cut planning',
-    help: 'The Prompts-tab planner (scenes, shot table, blocks, still prompts), plate planners for image sheets, scene bible autofill and set description generation. (Slot key stays "storyboard" so saved overrides keep working.)',
+    label: 'Planning & vision',
+    help: 'Plate planners for image sheets, set description generation and the artwork critique. (Slot key stays "storyboard" so saved overrides keep working.)',
     family: 'creative',
   },
   {
     key: 'critique',
     label: 'Critique & rewrite',
     help: 'Beat critique facets, and the beat rewrite / normalize passes.',
+    family: 'creative',
+  },
+  {
+    key: 'artwork_review',
+    label: 'Artwork reviewer',
+    help: 'Looks at the artwork matched to a beat and scores each piece on the review rubric (does the job, agrees with the beat, true to the subject, usable as a reference, technically clean), then says keep / edit / regenerate. Needs vision. Used by the artwork critique and its Climb.',
     family: 'creative',
   },
   {

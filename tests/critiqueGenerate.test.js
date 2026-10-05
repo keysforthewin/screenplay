@@ -52,7 +52,7 @@ describe('runCritique', () => {
     G._setFacetGeneratorForTests(async (facet) => {
       if (facet.key !== 'format') {
         return {
-          criteria: facet.criteria.map((c) => ({ key: c.key, applicable: true, score: 8, evidence: [], rationale: '' })),
+          criteria: facet.criteria.map((c) => ({ key: c.key, applicable: true, score: 8, evidence: [], rationale: '', to_raise: `raise ${c.key}` })),
           issues: [],
           strengths: ['tight'],
           summary: `sum-${facet.key}`,
@@ -84,6 +84,8 @@ describe('runCritique', () => {
     expect(fmt.criteria.find((x) => x.key === 'dialogue_format').applicable).toBe(false);
     expect(fmt.issues[0]).toMatchObject({ severity: 'must_fix', criterion: 'screen_text', fix: 'Add AT THE WINDOW.' });
     expect(c.facets.find((f) => f.key === 'pacing').score).toBe(8);
+    expect(c.facets.find((f) => f.key === 'pacing').criteria.map((x) => x.to_raise)).toContain('raise exit');
+    expect(fmt.criteria[0].to_raise).toBe(''); // a 10 has nothing to raise
     // (7*1.5 + 8*1.5 + 8*5) / 8 = 62.5 / 8 = 7.8
     expect(c.overall).toBe(7.8);
     expect(done.overall).toBe(7.8);
@@ -176,5 +178,37 @@ describe('startCritiqueJob busy guard', () => {
       if (!j || terminal(j.status)) break;
       await new Promise((r) => setTimeout(r, 5));
     }
+  });
+});
+
+describe('clearing', () => {
+  const finish = async (id) => {
+    for (let i = 0; i < 100; i++) {
+      const j = G.getCritiqueJob(id);
+      if (!j || ['done', 'partial', 'error'].includes(j.status)) return;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  };
+
+  it('a manual critique clears the last climb status; clearCritique removes both and 409s while a run is going', async () => {
+    const Climbs = await import('../src/mongo/climbs.js');
+    const beat = await seedBeat();
+    const id = beat._id.toString();
+    await Climbs.setBeatClimb(projectId, id, 'writing', { kind: 'writing', status: 'done', stop_reason: 'stalled' });
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    G._setFacetGeneratorForTests(async () => { await gate; return { score: 5, comments: 'x' }; });
+    const jobId = await G.startCritiqueJob({ projectId, beatId: id });
+    expect(await Climbs.getBeatClimb(projectId, id, 'writing')).toBeNull();
+    await expect(G.clearCritique({ projectId, beatId: id })).rejects.toMatchObject({ status: 409 });
+    release();
+    await finish(jobId);
+    await new Promise((r) => setTimeout(r, 10));
+    expect((await C.getBeatCritique(projectId, id)).status).toBe('done');
+
+    await Climbs.setBeatClimb(projectId, id, 'writing', { kind: 'writing', status: 'done' });
+    await G.clearCritique({ projectId, beatId: id });
+    expect(await C.getBeatCritique(projectId, id)).toBeNull();
+    expect(await Climbs.getBeatClimb(projectId, id, 'writing')).toBeNull();
   });
 });

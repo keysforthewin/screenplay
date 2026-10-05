@@ -34,6 +34,6 @@ COPY --chown=node:node package.json package-lock.json* ./
 RUN npm ci
 ENV PDF_EXPORT_DIR=/data/exports
 ENV BACKUP_DIR=/data/backups
-EXPOSE 3000 3010 5173
+EXPOSE 3000 3002 3010 5173
 # Default command — overridden per-service in compose.
 CMD ["node", "--watch", "src/index.js"]

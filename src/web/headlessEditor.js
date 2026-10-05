@@ -57,7 +57,7 @@ const STARTER_KIT_OPTS = {
 // unsubscribes (yjs 13.6), so every short-lived editor we create stayed pinned
 // to the room's Y.Doc — markdown-it, schema, plugins, ~0.5 MB each — for as
 // long as a browser kept the room loaded. The store hook renders every field
-// of a room on every tick, so a plan writing 25 cuts into an open Prompts tab
+// of a room on every tick, so a job writing 25 cuts into an open cuts page
 // leaked thousands of editors and ran the heap out. Headless editors never
 // undo, and the sync plugin treats a missing undo state as "no undo manager".
 const HeadlessCollaboration = Collaboration.extend({

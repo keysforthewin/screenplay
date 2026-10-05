@@ -28,7 +28,7 @@ function modelAccepts(model, key) {
 
 // Haystack for the free-text model filter: name, endpoint id, lab/family,
 // and the catalog description.
-function modelSearchText(m) {
+export function modelSearchText(m) {
   return [m.display_name, m.label, m.endpoint_id, m.model_lab, m.model_family, m.description]
     .filter(Boolean)
     .join(' ')
@@ -53,7 +53,7 @@ function defaultAssignment(model, sb) {
 
 // Capability facets shown in the picker. Order is the column order in the
 // matrix and the checkbox order below it.
-const FACETS = [
+export const FACETS = [
   { key: 'lip_sync', short: 'lip', label: 'Lip sync (avatar)' },
   { key: 'start_frame', short: 'start', label: 'Start frame' },
   { key: 'end_frame', short: 'end', label: 'End frame' },
@@ -62,7 +62,7 @@ const FACETS = [
   { key: 'video_input', short: 'video', label: 'Video input (v2v)' },
 ];
 
-const EMPTY_FACETS = Object.freeze({
+export const EMPTY_FACETS = Object.freeze({
   lip_sync: false,
   start_frame: false,
   end_frame: false,
@@ -71,31 +71,27 @@ const EMPTY_FACETS = Object.freeze({
   video_input: false,
 });
 
-// Seedance 2.5 reference-to-video: the endpoint the Prompts-tab generator
-// writes for (up to 9 @ImageN references, up to 30 s, bracketed multi-shot).
-const PROMPT_DEFAULT_ENDPOINT = 'bytedance/seedance-2.5/reference-to-video';
-
 // localStorage key for the most recently generated-with video model. We persist
 // the endpoint_id (not model_id) because the picker selects rows by endpoint —
 // a single registered model can have multiple endpoint variants in the catalog.
 const LAST_MODEL_KEY = 'screenplay.video.last_model_endpoint';
 
-function readLastEndpoint() {
+export function readLastEndpoint() {
   try { return localStorage.getItem(LAST_MODEL_KEY) || null; } catch { return null; }
 }
-function writeLastEndpoint(endpointId) {
+export function writeLastEndpoint(endpointId) {
   try { if (endpointId) localStorage.setItem(LAST_MODEL_KEY, endpointId); } catch {}
 }
 
-// "Generate video (fal.ai)…" dialog for one Prompts-tab cut. Lets the user
+// "Generate video (fal.ai)…" dialog for one Scenes-tab cut. Lets the user
 // filter the fal.ai catalog (data/fal-models.json), pick a model, preview the
 // exact payload, then POSTs the request and opens an EventSource on the job
 // stream so the progress bar follows fal's queue. The fal task continues
 // server-side if the dialog closes; the clip appears via the room's ping.
-// The cut's ordered reference_images ship as @Image1..N (no slot editing);
-// generate_audio and director's notes default OFF. `storyboardId` is the cut
+// The cut's start and end frames are the model's frames; generate_audio and
+// director's notes default OFF. `storyboardId` is the cut
 // id (prop name kept from the retired storyboard dialog); `promptField` is the
-// y-doc fragment holding the live block text.
+// y-doc fragment holding the live video prompt.
 export function GenerateVideoDialog({
   open,
   onClose,
@@ -269,7 +265,7 @@ export function GenerateVideoDialog({
     setPreviewLoading(false);
     setGenerateAudio(false);
     setIncludeDirectorNotes(false);
-    setActiveFacets({ ...EMPTY_FACETS, reference_images: true });
+    setActiveFacets({ ...EMPTY_FACETS, start_frame: true, end_frame: true });
     setSearch('');
     // Prefer the live y-doc fragment text over the (possibly stale) sb prop:
     // sb.text_prompt comes from the last REST fetch, which lags any in-flight
@@ -286,7 +282,7 @@ export function GenerateVideoDialog({
       }
     }
     if (!initialPrompt) {
-      initialPrompt = typeof sb?.text_prompt === 'string' ? sb.text_prompt : '';
+      initialPrompt = typeof sb?.prompt === 'string' ? sb.prompt : '';
     }
     setPrompt(initialPrompt);
     const storedEndpoint = readLastEndpoint();
@@ -295,13 +291,12 @@ export function GenerateVideoDialog({
       const findRegistered = (endpoint) => (endpoint
         ? registry.models.find((m) => m.endpoint_id === endpoint && m.is_registered) || null
         : null);
-      // Cut blocks are written for a reference-to-video model: this browser's
-      // last pick, then the project's direct-render default, then Seedance 2.5
-      // reference-to-video, then any reference model.
+      // A cut is a start frame and an end frame: this browser's last pick,
+      // then any model that runs between two frames, then one that takes a
+      // start frame.
       const defaultRow = findRegistered(storedEndpoint)
-        || findRegistered(modelDefaults?.video_direct)
-        || findRegistered(PROMPT_DEFAULT_ENDPOINT)
-        || registry.models.find((m) => m.is_registered && m.capabilities?.reference_images === true)
+        || registry.models.find((m) => m.is_registered && m.capabilities?.start_frame === true && m.capabilities?.end_frame === true)
+        || registry.models.find((m) => m.is_registered && m.capabilities?.start_frame === true)
         || registry.models.find((m) => m.is_registered)
         || null;
       setSelectedEndpoint(defaultRow?.endpoint_id || null);
@@ -359,12 +354,11 @@ export function GenerateVideoDialog({
   // disable the button and show a tooltip without a round-trip.
   // Reset the assignment to order-based defaults whenever the chosen model or
   // the frame pool changes. User edits below override until the next reset.
-  // A prompt row carries its images as reference_images (not frames); expose
-  // them as a frame pool so the slot defaults and the pre-flight check see
-  // them the same way the server's owner shim does.
+  // A cut's frame pool is its rendered start frame then its end frame — the
+  // same pool the server's owner shim builds.
   const slotRow = useMemo(() => {
-    const refs = Array.isArray(sb?.reference_images) ? sb.reference_images : [];
-    return { ...sb, frames: refs.map((r) => ({ image_id: r.image_id })) };
+    const frames = [sb?.start_frame?.image_id, sb?.end_frame?.image_id].filter(Boolean);
+    return { ...sb, frames: frames.map((image_id) => ({ image_id })) };
   }, [sb]);
   const framesSig = useMemo(() => frameImageIds(slotRow).join(','), [slotRow]);
   useEffect(() => {
@@ -606,13 +600,11 @@ export function GenerateVideoDialog({
 
         {missing.length ? (
           <div className="warn-banner small" style={{ fontSize: 13, color: '#ffb86b' }}>
-            This model needs: <b>{missing.join(', ')}</b>. Add them to the scene first.
+            This model needs: <b>{missing.join(', ')}</b>, which this cut does not have.
           </div>
         ) : null}
 
         {generating || job ? <VideoProgressBar job={job} /> : null}
-
-        <PromptReferenceStrip sb={sb} chosenModel={chosenModel} />
 
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <span className="field-label">Prompt</span>
@@ -789,48 +781,6 @@ export function GenerateVideoDialog({
       </div>
 
     </Modal>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// PromptReferenceStrip: read-only view of a Prompts-tab row's ordered
-// references — what ships as @Image1..N. Editing the list happens on the
-// prompt row itself, not per generation, because the prompt text's handles
-// depend on the order.
-
-function PromptReferenceStrip({ sb, chosenModel }) {
-  const refs = Array.isArray(sb?.reference_images) ? sb.reference_images : [];
-  const acceptsRefs = modelAccepts(chosenModel, 'referenceImages');
-  const acceptsStart = modelAccepts(chosenModel, 'startFrame');
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <span className="field-label">Reference images (sent as @Image1…@Image{refs.length || 'N'})</span>
-      {refs.length === 0 ? (
-        <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-          No reference images on this prompt. Add some on the prompt row if the model needs them.
-        </div>
-      ) : (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {refs.map((r, i) => {
-            const id = r.image_id?.toString?.() || String(r.image_id);
-            return (
-              <div key={id} className="video-prompt-ref-chip" title={r.label || ''}>
-                <img src={thumbUrl(id)} alt={r.label || `Reference ${i + 1}`} loading="lazy" />
-                <span className="video-prompt-ref-handle">@Image{i + 1}</span>
-                <span className="video-prompt-ref-owner">{r.owner_name || ''}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {chosenModel && refs.length > 0 && !acceptsRefs ? (
-        <div style={{ fontSize: 12, color: '#ffb86b' }}>
-          {acceptsStart
-            ? 'This model takes a single start frame: only @Image1 is used and the other handles in the prompt will not resolve.'
-            : 'This model takes no images: the @Image handles in the prompt will not resolve. Pick a reference-image model (e.g. Seedance) for this row.'}
-        </div>
-      ) : null}
-    </div>
   );
 }
 
@@ -1110,7 +1060,7 @@ function safeParse(text) {
 // ModelPicker: 5 facet checkboxes + filtered model list, full width.
 // Stateless — the parent dialog owns selection / facets / registry state.
 
-function ModelPicker({
+export function ModelPicker({
   registry,
   generating,
   activeFacets,
@@ -1456,7 +1406,7 @@ function Pill({ children, title, solid, accent }) {
 // `resolutions` array. Includes the same set the pricing tier table
 // supports.
 const RESOLUTION_FALLBACKS = ['480p', '720p', '1080p'];
-const FPS_OPTIONS = [16, 24, 30];
+export const FPS_OPTIONS = [16, 24, 30];
 
 function modelNeedsDuration(model) {
   const k = model?.pricing?.kind;
@@ -1464,7 +1414,7 @@ function modelNeedsDuration(model) {
   return k === 'per_second' || k === 'per_second_tiered' || k === 'per_megapixel';
 }
 
-function shouldShowResolution(model) {
+export function shouldShowResolution(model) {
   if (!model) return false;
   const k = model.pricing?.kind;
   if (k === 'per_second_tiered' || k === 'per_megapixel') return true;
@@ -1472,7 +1422,7 @@ function shouldShowResolution(model) {
   return modelDeclares(model, 'resolution') || modelDeclares(model, 'video_size');
 }
 
-function shouldShowFps(model) {
+export function shouldShowFps(model) {
   if (!model) return false;
   if (model.pricing?.kind === 'per_megapixel') return true;
   return modelDeclares(model, 'fps');
@@ -1485,14 +1435,14 @@ function modelDeclares(model, paramName) {
   );
 }
 
-function resolutionOptions(model) {
+export function resolutionOptions(model) {
   const declared = Array.isArray(model?.resolutions) ? model.resolutions : [];
   const filtered = declared.filter((r) => r && r !== 'auto');
   if (filtered.length) return filtered;
   return RESOLUTION_FALLBACKS;
 }
 
-function pickDefaultResolution(model) {
+export function pickDefaultResolution(model) {
   if (!model) return null;
   if (model.pricing?.default_resolution) {
     return model.pricing.default_resolution;
@@ -1502,7 +1452,7 @@ function pickDefaultResolution(model) {
   return options[0] || null;
 }
 
-function pickDefaultFps(model) {
+export function pickDefaultFps(model) {
   return model?.pricing?.default_fps || 24;
 }
 

@@ -75,7 +75,6 @@ describe('buildTocResponse', () => {
         body_empty: true,
         dialog_count: 0,
         video_prompt_count: 0,
-        prompts_video_file_id: null,
         search_text: 'opening\nalice',
         dialog_search_text: '',
       },

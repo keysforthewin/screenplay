@@ -103,13 +103,11 @@ describe('critique facet registry', () => {
       ...MIN_CTX,
       plot: { ...MIN_CTX.plot, dialogue_style: 'STYLE-SAMPLE-TEXT' },
       directorialVoice: 'VOICE-TEXT',
-      sceneBible: 'Intention: BIBLE-TEXT',
       characters: [{ name: 'Alice', hollywood_actor: 'Jodie Comer', fields: { backstory: 'BACKSTORY-TEXT' } }],
       sets: [{ name: 'Kitchen', description: 'SET-DESC-TEXT' }],
     };
     const direction = getFacet('direction').buildContext(ctx);
     expect(direction).toContain('VOICE-TEXT');
-    expect(direction).toContain('BIBLE-TEXT');
     expect(getFacet('dialogue').buildContext(ctx)).toContain('STYLE-SAMPLE-TEXT');
     const voice = getFacet('voice').buildContext(ctx);
     expect(voice).toContain('Jodie Comer');
@@ -153,4 +151,12 @@ describe('the critics read the page with its line breaks', () => {
     expect(text).toContain('INT. LOBBY — NIGHT\n\nKEYS\n(flat)\nCompliance.\n\ncrawl line');
     expect(text).not.toContain('KEYS (flat)');
   });
+});
+
+it('the pacing critic fixes slow by adding, and cuts only text that is weak in itself', () => {
+  const pacing = getFacet('pacing');
+  expect(pacing.systemPrompt).toContain('Pacing is rhythm, not brevity');
+  expect(pacing.systemPrompt).toContain('the default is to ADD, not to cut');
+  expect(pacing.systemPrompt).toContain('Recommend a cut ONLY when the passage is weak in itself');
+  expect(pacing.criteria.find((c) => c.key === 'proportion').anchors[6]).toContain('thin');
 });

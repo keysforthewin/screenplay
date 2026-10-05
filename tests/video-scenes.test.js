@@ -1,4 +1,4 @@
-// Unit tests for the `video_scenes` collection helpers (Prompts tab scenes).
+// Unit tests for the `video_scenes` collection helpers (Scenes tab scenes).
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ObjectId } from 'mongodb';
@@ -29,108 +29,62 @@ async function makeBeat(name = 'Diner') {
   return Plots.createBeat({ projectId, name, desc: '', body: '' });
 }
 
-describe('video_scenes normalizers', () => {
-  it('normalizeDirectorsRead fills every field and drops unknown keys', () => {
-    const read = VS.normalizeDirectorsRead({ turn: ' waiting to leaving ', bogus: 'x', pov: 7 });
-    expect(Object.keys(read)).toEqual([...VS.DIRECTORS_READ_FIELDS]);
-    expect(read.turn).toBe('waiting to leaving');
-    expect(read.pov).toBe('7');
-    expect(read.hidden_want).toBe('');
-    expect(read.bogus).toBeUndefined();
-    expect(VS.normalizeDirectorsRead(null).dramatic_function).toBe('');
-  });
-
-  it('normalizeScope fills every bucket with string arrays', () => {
-    const scope = VS.normalizeScope({ already_happened: ['Tom got wet', 3, ''], nope: ['x'] });
-    expect(Object.keys(scope)).toEqual([...VS.SCOPE_BUCKETS]);
-    expect(scope.already_happened).toEqual(['Tom got wet', '3']);
-    expect(scope.do_not_show_yet).toEqual([]);
-    expect(VS.normalizeScope('junk').reserved_for_later).toEqual([]);
-  });
-
-  it('normalizeTextSpan and normalizeLoad coerce shapes', () => {
-    expect(VS.normalizeTextSpan({ starts_with: ' INT. ', ends_with: null })).toEqual({
-      starts_with: 'INT.',
-      ends_with: '',
-    });
-    expect(VS.normalizeLoad({ beats: '5', load_points: 2, total_seconds: 15, s: 2.1, verdict: 'Stretch' })).toEqual({
-      beats: 5,
-      load_points: 2,
-      total_seconds: 15,
-      s: 2.1,
-      verdict: 'stretch',
-    });
-    expect(VS.normalizeLoad({ verdict: 'wild', s: 'nan' })).toEqual({
-      beats: null,
-      load_points: null,
-      total_seconds: null,
-      s: null,
-      verdict: null,
-    });
-  });
-});
-
 describe('video_scenes collection', () => {
-  it('createVideoScene appends with contiguous order, stamps project_id and normalizes fields', async () => {
+  it('createVideoScene appends with contiguous order, stamps project_id and stores only the scene shape', async () => {
     const beat = await makeBeat();
-    const dialogId = new ObjectId();
+    const id = new ObjectId();
     const a = await VS.createVideoScene({
+      id,
       projectId,
       beatId: beat._id,
       title: 'Sarah waits',
+      // Fields of the retired planner are not part of a scene any more.
       slug: 'INT. DINER — NIGHT',
-      setNames: ['Diner', ''],
-      characterNames: ['Sarah', 'Tom'],
-      textSpan: { starts_with: 'Sarah waits', ends_with: 'she leaves.' },
-      directorsRead: { turn: 'waiting to leaving' },
-      intention: 'Make the audience feel her certainty crack.',
-      tempo: ' Two long holds around a run of quick inserts. ',
-      scope: { reserved_for_later: ['the phone call'] },
       floorPlan: 'A night diner, the door at the far end.',
-      dialogIds: [dialogId, dialogId, 'nope'],
-      load: { beats: 5, load_points: 2, total_seconds: 15, s: 2.1, verdict: 'stretch' },
+      directorsRead: { turn: 'waiting to leaving' },
     });
     const b = await VS.createVideoScene({ projectId, beatId: beat._id, title: 'Tom arrives' });
+    expect(a._id.toString()).toBe(id.toString());
     expect(a.order).toBe(1);
     expect(b.order).toBe(2);
     expect(a.project_id).toBe(projectId);
-    expect(a.set_names).toEqual(['Diner']);
-    expect(a.directors_read.turn).toBe('waiting to leaving');
-    expect(a.directors_read.pov).toBe('');
-    expect(a.scope.reserved_for_later).toEqual(['the phone call']);
-    expect(a.scope.already_happened).toEqual([]);
-    expect(a.dialog_ids.map(String)).toEqual([dialogId.toString()]);
-    expect(a.load.verdict).toBe('stretch');
-    expect(a.tempo).toBe('Two long holds around a run of quick inserts.');
-    expect(b.tempo).toBe('');
-    expect((await VS.updateVideoScene(projectId, b._id, { tempo: 'Cut on the music.' })).tempo).toBe('Cut on the music.');
-    expect(b.floor_plan).toBe('');
-    expect(b.load).toEqual({ beats: null, load_points: null, total_seconds: null, s: null, verdict: null });
+    expect(Object.keys(a).sort()).toEqual(['_id', 'beat_id', 'created_at', 'order', 'project_id', 'title', 'updated_at']);
+    expect(Object.keys(fakeDb.collection('video_scenes')._docs[0]).sort()).toEqual(Object.keys(a).sort());
+    expect((await VS.createVideoScene({ projectId, beatId: beat._id })).title).toBe('');
+    const explicit = await VS.createVideoScene({ projectId, beatId: beat._id, order: 9, title: 'Late' });
+    expect(explicit.order).toBe(9);
     const list = await VS.listVideoScenes({ projectId, beatId: beat._id });
-    expect(list.map((s) => s.title)).toEqual(['Sarah waits', 'Tom arrives']);
+    expect(list.map((s) => s.title)).toEqual(['Sarah waits', 'Tom arrives', '', 'Late']);
     await expect(VS.createVideoScene({ projectId })).rejects.toThrow(/beatId required/);
   });
 
-  it('updateVideoScene whitelists fields and normalizes', async () => {
+  it('updateVideoScene accepts only title and order', async () => {
     const beat = await makeBeat();
     const s = await VS.createVideoScene({ projectId, beatId: beat._id, title: 'A' });
-    const updated = await VS.updateVideoScene(projectId, s._id, {
-      title: ' B ',
-      floor_plan: 'Counter along the right wall.',
-      directors_read: { pov: 'hers' },
-      scope: { do_not_show_yet: ['the exit'] },
-      load: { verdict: 'safe', s: 3.2 },
-      set_names: ['Diner'],
-    });
-    expect(updated.title).toBe('B');
-    expect(updated.floor_plan).toBe('Counter along the right wall.');
-    expect(updated.directors_read.pov).toBe('hers');
-    expect(updated.scope.do_not_show_yet).toEqual(['the exit']);
-    expect(updated.load.verdict).toBe('safe');
-    expect(updated.set_names).toEqual(['Diner']);
+    // The title is stored exactly as the y-doc fragment renders it.
+    const updated = await VS.updateVideoScene(projectId, s._id, { title: ' B ', order: '3' });
+    expect(updated.title).toBe(' B ');
+    expect(updated.order).toBe(3);
+    for (const gone of ['floor_plan', 'directors_read', 'scope', 'load', 'set_names', 'slug', 'tempo', 'kind']) {
+      await expect(VS.updateVideoScene(projectId, s._id, { [gone]: 'x' })).rejects.toThrow(/unknown field/);
+    }
     await expect(VS.updateVideoScene(projectId, s._id, { bogus: 1 })).rejects.toThrow(/unknown field/);
     await expect(VS.updateVideoScene(projectId, s._id, { order: 'x' })).rejects.toThrow(/order must be/);
     await expect(VS.updateVideoScene(projectId, s._id, {})).rejects.toThrow(/no changes/);
+    await expect(VS.updateVideoScene(projectId, s._id, null)).rejects.toThrow(/must be an object/);
+  });
+
+  it('the planner-era exports are gone', () => {
+    for (const name of [
+      'normalizeDirectorsRead',
+      'normalizeScope',
+      'normalizeTextSpan',
+      'normalizeLoad',
+      'setVideoSceneVideo',
+      'countVideoScenesByBeat',
+    ]) {
+      expect(VS[name]).toBeUndefined();
+    }
   });
 
   it('getVideoScene verifies the project — a cross-project id behaves as not-found', async () => {
@@ -158,15 +112,12 @@ describe('video_scenes collection', () => {
     ).rejects.toThrow(/not in this beat/);
   });
 
-  it('deleteVideoScene / deleteVideoScenesForBeat / countVideoScenesByBeat', async () => {
+  it('deleteVideoScene / deleteVideoScenesForBeat', async () => {
     const beatA = await makeBeat('A');
     const beatB = await makeBeat('B');
     const s1 = await VS.createVideoScene({ projectId, beatId: beatA._id });
     await VS.createVideoScene({ projectId, beatId: beatB._id });
     await VS.createVideoScene({ projectId, beatId: beatB._id });
-    const counts = await VS.countVideoScenesByBeat(projectId);
-    expect(counts.get(beatA._id.toString())).toBe(1);
-    expect(counts.get(beatB._id.toString())).toBe(2);
     const gone = await VS.deleteVideoScene(s1._id);
     expect(gone._id.toString()).toBe(s1._id.toString());
     expect(await VS.listVideoScenes({ projectId, beatId: beatA._id })).toHaveLength(0);

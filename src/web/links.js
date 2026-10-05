@@ -47,9 +47,9 @@ export function beatUrl(projectTitle, beat) {
   return `${publicBase()}${projectSegment(projectTitle)}/beat/${beat.order}`;
 }
 
-export function promptsUrl(projectTitle, beat) {
+export function scenesUrl(projectTitle, beat) {
   if (!beat || !Number.isFinite(beat.order)) return null;
-  return `${publicBase()}${projectSegment(projectTitle)}/prompts/${beat.order}`;
+  return `${publicBase()}${projectSegment(projectTitle)}/scenes/${beat.order}`;
 }
 
 export function notesUrl(projectTitle) {

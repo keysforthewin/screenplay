@@ -40,6 +40,32 @@ describe('artwork critique mongo helpers', () => {
     expect(c.proposals).toEqual([]);
   });
 
+  it('beginArtworkCritiqueRun keeps what the last run learned and drops subjects that left the roster', async () => {
+    const beat = await Plots.createBeat({ projectId, name: 'B', body: 'b' });
+    const id = beat._id.toString();
+    // Nothing on file yet → a plain pending doc.
+    expect((await A.beginArtworkCritiqueRun(projectId, id, { model: 'm', subjects })).proposals).toEqual([]);
+    const entry = { artwork_id: new ObjectId(), score: 8, fits: [], audited_image_id: new ObjectId(), req_sig: 's' };
+    await A.updateArtworkCritiqueSubject(projectId, id, setId, { requirements: [{ id: 'r1' }], artworks: [entry], status: 'done', req_sig: 's', inventory: { total: 1 } });
+    await A.appendArtworkCritiqueProposals(projectId, id, [
+      { _id: new ObjectId(), name: 'set one', status: 'dismissed', host_type: 'set', host_id: setId },
+      { _id: new ObjectId(), name: 'char one', status: 'proposed', host_type: 'character', host_id: charId },
+    ]);
+    await A.setArtworkCritiqueMeta(projectId, id, { requirements_sig: 'run', bogus: 1 });
+    await A.finalizeArtworkCritique(projectId, id, { status: 'done', coverage: { pct: 50 }, warnings: ['old'] });
+
+    const newId = new ObjectId();
+    await A.beginArtworkCritiqueRun(projectId, id, { model: 'm2', subjects: [subjects[0], { kind: 'set', id: newId, name: 'Lobby' }] });
+    const c = await A.getBeatArtworkCritique(projectId, id);
+    expect(c).toMatchObject({ status: 'pending', model: 'm2', warnings: ['old'], requirements_sig: 'run', coverage: { pct: 50 } });
+    expect(c.bogus).toBeUndefined();
+    expect(c.subjects.map((s) => s.name)).toEqual(['Lot', 'Lobby']);
+    expect(c.subjects[0]).toMatchObject({ status: 'pending', req_sig: 's', requirements: [{ id: 'r1' }], inventory: { total: 1 } });
+    expect(c.subjects[0].artworks[0].score).toBe(8);
+    expect(c.subjects[1]).toMatchObject({ status: 'pending', requirements: [], artworks: [] });
+    expect(c.proposals.map((p) => p.name)).toEqual(['set one']); // the character left the beat
+  });
+
   it('backfills artwork_critique on a legacy beat', async () => {
     const beat = await Plots.createBeat({ projectId, name: 'B', body: 'b' });
     const plots = fakeDb.collection('plots');

@@ -185,23 +185,11 @@ export function buildSlotOverrides(
   return { overrides, warnings };
 }
 
-// The prompt a cut ships to a model: the compiled block, with the reference
-// binding prepended only for reference-taking models (the start frame carries
-// identity everywhere else) and the clip-scope exclusions appended — only the
-// ones the planner did not already write into the block, so nothing repeats.
+// The prompt a cut ships to a model: the cut's video prompt as written (or a
+// one-off override).
 export function assembleCutPrompt(model, cut, { promptOverride = null, stripMarkdown = (s) => s } = {}) {
   if (typeof promptOverride === 'string' && promptOverride.trim()) return promptOverride.trim();
-  const parts = [];
-  const takesRefs = model?.inputs?.referenceImages && model.inputs.referenceImages !== 'unused';
-  const binding = stripMarkdown(String(cut?.reference_binding || '')).trim();
-  if (takesRefs && binding) parts.push(binding);
-  const body = stripMarkdown(String(cut?.prompt || '')).trim();
-  if (body) parts.push(body);
-  const exclusions = (Array.isArray(cut?.exclusions) ? cut.exclusions : [])
-    .map((e) => stripMarkdown(String(e || '')).trim())
-    .filter((e) => e && !body.includes(e));
-  if (exclusions.length) parts.push(exclusions.join(' '));
-  return parts.join('\n\n').trim();
+  return stripMarkdown(String(cut?.prompt || '')).trim();
 }
 
 // Extract the addresses from a `list_workflow_slots` result.

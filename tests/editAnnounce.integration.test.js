@@ -62,8 +62,8 @@ function fakeDoc(fields) {
 const beatDesc = () => ({
   type: 'beat',
   id: beatId.toString(),
-  fields: ['name', 'body', 'desc', 'scene_bible.location'],
-  seed: { name: 'Scene One', body: 'old body', desc: '', 'scene_bible.location': '' },
+  fields: ['name', 'body', 'desc'],
+  seed: { name: 'Scene One', body: 'old body', desc: '' },
 });
 
 describe('handleRoomChange (beat writing edits)', () => {
@@ -101,7 +101,7 @@ describe('handleRoomChange (beat writing edits)', () => {
     primeRoomCache(beatRoom(), beatDesc());
     await handleRoomChange({
       documentName: beatRoom(),
-      // body/name/desc unchanged vs seed; scene_bible isn't an announce field
+      // body/name/desc unchanged vs seed
       document: fakeDoc({ name: 'Scene One', body: 'old body', desc: '' }),
       context: { user: { name: 'Alice' } },
     });

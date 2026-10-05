@@ -2,7 +2,21 @@ import { describe, it, expect } from 'vitest';
 import { ObjectId } from 'mongodb';
 import {
   normalizeRequirements,
-  normalizeAudit,
+  normalizeArtworkAudit,
+  deriveRequirementStatus,
+  subjectAccuracy,
+  requirementsSignature,
+  auditEntryIsCurrent,
+  normalizeMatches,
+  buildMatchText,
+  matchedEntry,
+  reviewCandidates,
+  requirementNeedsRegeneration,
+  deriveArtworkScore,
+  normalizeReviewCriteria,
+  REVIEW_CRITERIA,
+  AUDIT_SYSTEM_PROMPT,
+  composeClimbEditPrompt,
   normalizeProposals,
   rebindCharacterPrompt,
   computeCoverage,
@@ -69,7 +83,7 @@ describe('normalizeRequirements', () => {
   });
 });
 
-describe('normalizeAudit', () => {
+describe('audit normalizers', () => {
   const artworks = [
     { _id: new ObjectId(), result_image_id: new ObjectId(), name: 'Front', description: '' },
     { _id: new ObjectId(), result_image_id: new ObjectId(), name: 'Side', description: '' },
@@ -80,28 +94,126 @@ describe('normalizeAudit', () => {
     { id: 'r3', summary: 'c', detail: '', quote: '', importance: 'useful', category: 'view' },
   ];
 
-  it('maps indexes to artwork ids, defaults unmentioned requirements to missing, clamps the score', () => {
-    const out = normalizeAudit({
-      coverage: [
-        { requirement_id: 'r1', status: 'covered', artwork_indexes: [1, 9], note: 'ok' },
-        { requirement_id: 'r2', status: 'partial', artwork_indexes: [], note: 'no image' },
-      ],
+  it('normalizeArtworkAudit: per-artwork fits, issues and score; an unanswered artwork stays un-audited', () => {
+    const out = normalizeArtworkAudit({
       artworks: [
-        { index: 2, issues: [{ kind: 'wardrobe', note: 'wrong coat' }, { kind: 'bogus', note: 'x' }, { kind: 'light', note: '' }], suggested_edit: 'Change the coat.' },
-        { index: 7, issues: [{ kind: 'light', note: 'ignored' }], suggested_edit: '' },
+        { index: 1, fits: [{ requirement_id: 'r1', fit: 'covered', lacking: 'ignored' }, { requirement_id: 'zz', fit: 'covered', lacking: '' }, { requirement_id: 'r1', fit: 'partial', lacking: 'dup' }], score: 14, issues: [], suggested_edit: 'ignored when nothing is wrong' },
+        { index: 7, fits: [], score: 3, issues: [{ kind: 'light', note: 'ignored' }], suggested_edit: '' },
       ],
-      accuracy_score: 14,
-      summary: 'sum',
+    }, { requirements, artworks, reqSig: 'sig' });
+    expect(out[0]).toMatchObject({ artwork_id: artworks[0]._id, score: 10, fits: [{ requirement_id: 'r1', fit: 'covered', lacking: '' }], issues: [], suggested_edit: '', req_sig: 'sig' });
+    expect(String(out[0].audited_image_id)).toBe(String(artworks[0].result_image_id));
+    expect(out[1]).toMatchObject({ score: null, fits: [], audited_image_id: null });
+    const two = normalizeArtworkAudit({
+      artworks: [{ index: 2, fits: [{ requirement_id: 'r2', fit: 'partial', lacking: 'wrong coat' }], score: 6, issues: [{ kind: 'wardrobe', note: 'wrong coat' }, { kind: 'bogus', note: 'x' }, { kind: 'light', note: '' }], suggested_edit: 'Change the coat.' }],
+    }, { requirements, artworks, reqSig: 'sig' });
+    expect(two[1].issues).toEqual([{ kind: 'wardrobe', note: 'wrong coat' }, { kind: 'other', note: 'x' }]);
+    expect(two[1].suggested_edit).toBe('Change the coat.');
+    expect(auditEntryIsCurrent(two[1], artworks[1], 'sig')).toBe(true);
+    expect(auditEntryIsCurrent(two[1], artworks[1], 'other')).toBe(false);
+    expect(auditEntryIsCurrent(two[1], { ...artworks[1], result_image_id: new ObjectId() }, 'sig')).toBe(false);
+    expect(auditEntryIsCurrent(two[0], artworks[0], 'sig')).toBe(false);
+  });
+
+  it('deriveRequirementStatus: covered beats partial, best score first, a partial carries what is lacking', () => {
+    const entries = [
+      { artwork_id: artworks[0]._id, score: 6, fits: [{ requirement_id: 'r1', fit: 'covered', lacking: '' }, { requirement_id: 'r2', fit: 'partial', lacking: 'too dark' }] },
+      { artwork_id: artworks[1]._id, score: 9, fits: [{ requirement_id: 'r1', fit: 'covered', lacking: '' }, { requirement_id: 'r1x', fit: 'covered', lacking: '' }] },
+    ];
+    const out = deriveRequirementStatus(requirements, entries);
+    expect(out.map((r) => r.status)).toEqual(['covered', 'partial', 'missing']);
+    expect(out[0].covered_by.map(String)).toEqual([String(artworks[1]._id), String(artworks[0]._id)]);
+    expect(out[1]).toMatchObject({ note: 'too dark' });
+    expect(out[1].covered_by.map(String)).toEqual([String(artworks[0]._id)]);
+    expect(subjectAccuracy(entries)).toBe(7.5);
+    // A piece the reviewer has looked at outranks one only its description vouches for.
+    const looked = deriveRequirementStatus(requirements, [{ ...entries[0], audited_image_id: 'img' }, entries[1]]);
+    expect(looked[0].covered_by.map(String)).toEqual([String(artworks[0]._id), String(artworks[1]._id)]);
+    expect(subjectAccuracy([])).toBeNull();
+    expect(requirementsSignature(requirements, 'a')).not.toBe(requirementsSignature(requirements, 'b'));
+    expect(requirementsSignature(requirements, 'a')).toBe(requirementsSignature(requirements.map((r) => ({ ...r, status: 'covered' })), 'a'));
+  });
+
+  it('normalizeMatches: per requirement, best first, with the fit the description supports', () => {
+    const out = normalizeMatches({
+      matches: [
+        { requirement_id: 'r1', artworks: [{ index: 2, fit: 'covered', lacking: 'ignored' }, { index: 2, fit: 'partial', lacking: '' }, { index: 1, fit: 'partial', lacking: 'from the side' }, { index: 9, fit: 'covered', lacking: '' }] },
+        { requirement_id: 'nope', artworks: [{ index: 1, fit: 'covered', lacking: '' }] },
+      ],
+      duplicate_groups: [[1, 2], [2], [1, 44]],
     }, { requirements, artworks });
-    expect(out.requirements[0]).toMatchObject({ status: 'covered', note: 'ok' });
-    expect(out.requirements[0].covered_by.map(String)).toEqual([String(artworks[0]._id)]);
-    expect(out.requirements[1].status).toBe('missing'); // partial with no covering image → missing
-    expect(out.requirements[2].status).toBe('missing');
-    expect(out.artworks[0]).toMatchObject({ artwork_id: artworks[0]._id, issues: [], suggested_edit: '' });
-    expect(out.artworks[1].issues).toEqual([{ kind: 'wardrobe', note: 'wrong coat' }, { kind: 'other', note: 'x' }]);
-    expect(out.artworks[1].suggested_edit).toBe('Change the coat.');
-    expect(out.accuracy_score).toBe(10);
-    expect(out.summary).toBe('sum');
+    expect(out.matches).toEqual([
+      { requirement_id: 'r1', artwork_id: String(artworks[1]._id), fit: 'covered', lacking: '' },
+      { requirement_id: 'r1', artwork_id: String(artworks[0]._id), fit: 'partial', lacking: 'from the side' },
+    ]);
+    expect(out.duplicates).toEqual([[String(artworks[0]._id), String(artworks[1]._id)]]);
+    // The older shortlist shape still reads: worth a look, not vouched for.
+    const old = normalizeMatches({ candidates: [{ requirement_id: 'r1', artwork_indexes: [2, 2, 9] }], duplicate_groups: [] }, { requirements, artworks });
+    expect(old.matches).toEqual([{ requirement_id: 'r1', artwork_id: String(artworks[1]._id), fit: 'partial', lacking: '' }]);
+    expect(buildMatchText({ beat: { order: 1, name: 'B' }, subject: subjects[0], subjectCard: '', requirements, artworks })).toContain('2. "Side"');
+    expect(matchedEntry(artworks[0], [{ requirement_id: 'r1', fit: 'covered', lacking: '' }], 'sig')).toMatchObject({ score: null, audited_image_id: null, action: null, req_sig: 'sig' });
+  });
+
+  it('reviewCandidates: the best matches per requirement, a rejected piece making room for the next', () => {
+    const a = (n) => `a${n}`;
+    const matches = [1, 2, 3, 4].map((n) => ({ requirement_id: 'r1', artwork_id: a(n), fit: 'covered', lacking: '' }));
+    expect([...reviewCandidates([{ id: 'r1' }], matches, new Map())]).toEqual([a(1), a(2)]);
+    // a1 was looked at and is not it; a2 was looked at and fits → a3 is next.
+    const reviewed = new Map([[a(1), { fits: [] }], [a(2), { fits: [{ requirement_id: 'r1', fit: 'covered' }] }]]);
+    expect([...reviewCandidates([{ id: 'r1' }], matches, reviewed)]).toEqual([a(2), a(3)]);
+  });
+
+  it('the rubric: the score is the weighted mean of the criteria, held near "does the job"', () => {
+    expect(REVIEW_CRITERIA.map((c) => c.key)).toEqual(['requirement', 'beat', 'subject', 'reference', 'technical']);
+    for (const c of REVIEW_CRITERIA) expect(AUDIT_SYSTEM_PROMPT).toContain(c.anchors[9]);
+    const all = (n) => REVIEW_CRITERIA.map((c) => ({ key: c.key, score: n }));
+    expect(deriveArtworkScore(all(8))).toBe(8);
+    // (2×9 + 1.5×6 + 1.5×9 + 9 + 0.5×9) / 6.5 → 8.3
+    expect(deriveArtworkScore(all(9).map((c) => (c.key === 'beat' ? { ...c, score: 6 } : c)))).toBe(8.3);
+    // A clean picture of the wrong thing: 3 + 2, not the 8.2 the mean gives.
+    expect(deriveArtworkScore(all(10).map((c) => (c.key === 'requirement' ? { ...c, score: 3 } : c)))).toBe(5);
+    expect(deriveArtworkScore([])).toBeNull();
+    expect(normalizeReviewCriteria([{ key: 'beat', score: 14, note: 'x' }, { key: 'beat', score: 2 }, { key: 'bogus', score: 5 }, { key: 'subject' }])).toEqual([{ key: 'beat', score: 10, note: 'x' }]);
+  });
+
+  it('normalizeArtworkAudit: criteria give the score; the action is held to what the answer supports', () => {
+    const crit = (n) => REVIEW_CRITERIA.map((c) => ({ key: c.key, score: n, note: 'n' }));
+    const out = normalizeArtworkAudit({
+      artworks: [
+        { index: 1, fits: [{ requirement_id: 'r1', fit: 'partial', lacking: 'door closed' }], criteria: crit(6), issues: [], action: 'edit', suggested_edit: 'Open the door.', regenerate_reason: '' },
+        { index: 2, fits: [{ requirement_id: 'r1', fit: 'covered', lacking: '' }], criteria: crit(9), issues: [], action: 'edit', suggested_edit: 'Tweak.', regenerate_reason: '' },
+      ],
+    }, { requirements, artworks, reqSig: 's' });
+    expect(out[0]).toMatchObject({ score: 6, action: 'edit', suggested_edit: 'Open the door.', regenerate_reason: '' });
+    expect(out[0].criteria).toHaveLength(5);
+    expect(out[1]).toMatchObject({ score: 9, action: 'keep', suggested_edit: '' }); // nothing wrong, 9/10
+    const regen = normalizeArtworkAudit({ artworks: [{ index: 1, fits: [], criteria: crit(4), issues: [{ kind: 'angle', note: 'from behind' }], action: 'regenerate', suggested_edit: 'x', regenerate_reason: 'Wrong viewpoint.' }] }, { requirements, artworks: [artworks[0]], reqSig: 's' });
+    expect(regen[0]).toMatchObject({ action: 'regenerate', suggested_edit: '', regenerate_reason: 'Wrong viewpoint.' });
+    // An edit with no instruction cannot be applied.
+    const noEdit = normalizeArtworkAudit({ artworks: [{ index: 1, fits: [], criteria: crit(5), issues: [{ kind: 'light', note: 'day' }], action: 'edit', suggested_edit: '', regenerate_reason: '' }] }, { requirements, artworks: [artworks[0]], reqSig: 's' });
+    expect(noEdit[0].action).toBe('regenerate');
+  });
+
+  it('requirementNeedsRegeneration: the reviewer said so, or edits stopped helping — until the renders run out', () => {
+    const r = { id: 'r1', status: 'covered', covered_by: ['a'] };
+    const e = (over) => [{ artwork_id: 'a', audited_image_id: 'i', score: 5, action: 'edit', ...over }];
+    expect(requirementNeedsRegeneration(r, e({}), [])).toBe(false);
+    expect(requirementNeedsRegeneration(r, e({ action: 'regenerate' }), [])).toBe(true);
+    expect(requirementNeedsRegeneration(r, e({ edit_attempts: 2 }), [])).toBe(true);
+    expect(requirementNeedsRegeneration(r, e({ edit_attempts: 2, score: 9 }), [])).toBe(false);
+    expect(requirementNeedsRegeneration(r, e({ action: 'regenerate', audited_image_id: null }), [])).toBe(false); // not looked at
+    const made = [1, 2, 3].map(() => ({ status: 'done', requirement_ids: ['r1'] }));
+    expect(requirementNeedsRegeneration(r, e({ action: 'regenerate' }), made)).toBe(false);
+    expect(requirementNeedsRegeneration({ ...r, status: 'missing' }, [], [])).toBe(false);
+  });
+
+  it('composeClimbEditPrompt: the suggested edit, what is lacking, and what must survive', () => {
+    const p = composeClimbEditPrompt({ suggestedEdit: 'Grade to dusk.', lacking: [{ summary: 'The car', lacking: 'door closed' }], keep: ['Lot from the entrance'], direction: 'wet tarmac' });
+    expect(p).toContain('Grade to dusk.');
+    expect(p).toContain('"The car" — still missing or different: door closed');
+    expect(p).toContain('keep what it already shows — Lot from the entrance');
+    expect(p).toContain('wet tarmac');
+    expect(composeClimbEditPrompt({})).toBe('');
   });
 
   it('buildAuditText numbers the artwork in attachment order and lists every requirement', () => {
@@ -258,13 +370,23 @@ describe('rebindCharacterPrompt', () => {
 });
 
 describe('computeCoverage', () => {
-  it('weights essential requirements double and partial half', () => {
+  it('coverage is "a picture answers it"; quality is the rubric score of the best reviewed piece', () => {
     const subjects = [
       { requirements: [{ importance: 'essential', status: 'covered' }, { importance: 'useful', status: 'partial' }, { importance: 'useful', status: 'missing' }] },
       { requirements: [{ importance: 'essential', status: 'missing' }] },
     ];
-    // weights: 2 + 1 + 1 + 2 = 6; covered 2 + 0.5 = 2.5 → 42%
-    expect(computeCoverage(subjects)).toEqual({ total: 4, covered: 1, partial: 1, missing: 2, pct: 42 });
-    expect(computeCoverage([])).toEqual({ total: 0, covered: 0, partial: 0, missing: 0, pct: null });
+    // weights: 2 + 1 + 1 + 2 = 6; answered 2 + 1 = 3 → 50%; nothing reviewed → quality 0
+    expect(computeCoverage(subjects)).toEqual({ total: 4, covered: 1, partial: 1, missing: 2, reviewed: 0, pct: 50, quality_pct: 0 });
+    expect(computeCoverage([])).toEqual({ total: 0, covered: 0, partial: 0, missing: 0, reviewed: 0, pct: null, quality_pct: null });
+    const scored = [{
+      artworks: [{ artwork_id: 'a', score: 5, audited_image_id: 'i' }, { artwork_id: 'b', score: 8, audited_image_id: 'i' }, { artwork_id: 'c', score: null }],
+      requirements: [
+        { importance: 'essential', status: 'covered', covered_by: ['a', 'b'] },
+        { importance: 'useful', status: 'partial', covered_by: ['a'] },
+        { importance: 'useful', status: 'covered', covered_by: ['c'] }, // matched by description, not looked at
+      ],
+    }];
+    // (2 × 0.8 + 1 × 0.5 + 0) / 4 → 53%; coverage 100%
+    expect(computeCoverage(scored)).toMatchObject({ pct: 100, quality_pct: 53, reviewed: 2 });
   });
 });

@@ -26,6 +26,14 @@ took was the craft reasoning underneath it, and we are grateful for it. The Prom
 scene → cut → start frame → video pipeline (`src/web/cutPlanner.js`) is a direct
 adaptation of that method's directing engine and prompt compiler.
 
+**Update, 2026-10-04:** that planner-driven Prompts tab was retired in favour of a
+hand-driven Scenes tab (the user writes each cut's prompts and picks its references), and
+the modules named in the table below — `cutPlanner.js`, `cutRules.js`, `cutLoad.js`,
+`cutPromptLint.js` and most of `promptConstraints.js` — were removed with it. The table is
+kept as the record of what the project took from this work while that pipeline existed; the
+code is in the git history. The reference-binding idea (roles and non-transfer) lives on in
+`src/web/startFramePrompt.js`.
+
 ### What we adopted, and where it lives
 
 | Idea | Source in that repo | Where it landed here |
@@ -38,9 +46,9 @@ adaptation of that method's directing engine and prompt compiler.
 | Time as a trajectory prior — one cause with visible consequences beats a list | `references/model-mechanics.md` (mechanism 4), `skills/seedance-motion` | the cause-and-consequence rule in `VIDEO_PROMPT_RULES` |
 | Three-tier action hierarchy for multi-person shots | `skills/seedance-characters` | the ensemble-discipline block of `PERFORMANCE_RULES` |
 | Emotion is not directable — convert feeling into visible behavior | `references/directing-engine.md` (Step 4) | `PERFORMANCE_RULES`; the dialogue system prompt |
-| The Director's Read: function, turn, POV, power, subtext → one intention | `references/directing-engine.md` (Steps 1–2) | `intention` and `turn` on the scene bible; the Pass-1 planner prompt |
+| The Director's Read: function, turn, POV, power, subtext → one intention | `references/directing-engine.md` (Steps 1–2) | `intention` and `turn` on the (since retired) scene bible; the Pass-1 planner prompt |
 | `felt_intent` per clip — what the viewer should feel or notice | `references/prompt-compiler.md`, `skills/seedance-sequence` | `felt_intent` on each planned shot |
-| The Director's Voice held across a whole project | `references/directing-engine.md` (Steps 6, 8) | `plots.directorial_voice`, inherited by scene bibles, storyboard prompts, and dialogue |
+| The Director's Voice held across a whole project | `references/directing-engine.md` (Steps 6, 8) | `plots.directorial_voice`, inherited by the critiques and dialogue |
 | Known-fragile areas of generation | `references/failure-atlas.md`, `references/field-observed-tips.md`, `skills/seedance-troubleshoot` | `FRAGILITY_RULES`; the `fragility` critique lens in `src/web/storyboardCritique.js` |
 | Objective / obstacle / tactic; subtext through contradiction | `references/directing-engine.md` (Step 4) | the `plan` field and system prompt in `src/web/dialogGenerate.js`; the rubric in `src/web/dialogCritique.js` |
 | The full ten-field Director's Read per scene, and the scope firewall (already happened / this scene only / reserved / do not show yet) | `references/directing-engine.md` (Steps 1–3) | `directors_read` and `scope` on `video_scenes`; `DIRECTORS_READ_RULES`, `SCOPE_RULES` in `src/web/cutRules.js` |

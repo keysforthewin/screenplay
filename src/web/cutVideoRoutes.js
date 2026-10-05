@@ -54,7 +54,7 @@ function parseFalBody(req, res) {
 }
 
 function sendFalRouteError(e, res) {
-  if (e?.code === 'BEAT_BUSY') return res.status(409).json({ error: e.message });
+  if (e?.code === 'CUT_BUSY') return res.status(409).json({ error: e.message, code: e.code, job_id: e.job_id });
   if (e?.code === 'MISSING_INPUTS') return res.status(400).json({ error: e.message, missing: e.missing });
   if (e?.code === 'FAL_NOT_CONFIGURED') return res.status(503).json({ error: e.message });
   if (e?.code === 'UNKNOWN_MODEL') return res.status(400).json({ error: e.message });

@@ -38,9 +38,9 @@ describe('pageContextFromPath', () => {
     });
   });
 
-  it('distinguishes prompts/dialog indexes from per-beat pages', () => {
-    expect(pageContextFromPath('/p/Heist/prompts')).toEqual({ kind: 'prompts-index', ref: null, label: 'Prompts' });
-    expect(pageContextFromPath('/p/Heist/prompts/3')).toEqual({ kind: 'prompts', ref: '3', label: 'Prompts · Beat 3' });
+  it('distinguishes scenes/dialog indexes from per-beat pages', () => {
+    expect(pageContextFromPath('/p/Heist/scenes')).toEqual({ kind: 'scenes-index', ref: null, label: 'Scenes' });
+    expect(pageContextFromPath('/p/Heist/scenes/3')).toEqual({ kind: 'scenes', ref: '3', label: 'Scenes · Beat 3' });
     expect(pageContextFromPath('/p/Heist/dialog')).toEqual({ kind: 'dialog-index', ref: null, label: 'Dialogs' });
     expect(pageContextFromPath('/p/Heist/dialog/3')).toEqual({ kind: 'dialog', ref: '3', label: 'Dialog · Beat 3' });
   });

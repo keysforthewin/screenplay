@@ -5,7 +5,7 @@
 //
 // Routes live under /p/:projectTitle/* (see web/src/App.jsx); strip that prefix
 // and match the remainder against the project-scoped route table. Per-beat
-// dialog/prompts regexes are checked before the bare index paths.
+// dialog/scenes regexes are checked before the bare index paths.
 //
 // Pass a basename-relative pathname (react-router's useLocation().pathname), NOT
 // window.location.pathname: the /p/:title prefix strip assumes no app base-path
@@ -42,12 +42,12 @@ export function pageContextFromPath(pathname) {
     const ref = decodeURIComponent(dialogBeat[1]);
     return { kind: 'dialog', ref, label: `Dialog · Beat ${ref}` };
   }
-  const promptsBeat = remainder.match(/^\/prompts\/(.+)$/);
-  if (promptsBeat) {
-    const ref = decodeURIComponent(promptsBeat[1]);
-    return { kind: 'prompts', ref, label: `Prompts · Beat ${ref}` };
+  const scenesBeat = remainder.match(/^\/scenes\/(.+)$/);
+  if (scenesBeat) {
+    const ref = decodeURIComponent(scenesBeat[1]);
+    return { kind: 'scenes', ref, label: `Scenes · Beat ${ref}` };
   }
-  if (remainder === '/prompts') return { kind: 'prompts-index', ref: null, label: 'Prompts' };
+  if (remainder === '/scenes') return { kind: 'scenes-index', ref: null, label: 'Scenes' };
   if (remainder === '/dialog') return { kind: 'dialog-index', ref: null, label: 'Dialogs' };
   if (remainder === '/notes') return { kind: 'notes', ref: null, label: 'Notes' };
   if (remainder === '/library') return { kind: 'library', ref: null, label: 'Library' };

@@ -86,7 +86,7 @@ export async function setModelDefaults(projectId, patch = {}) {
 
 // ── ComfyUI video defaults ───────────────────────────────────────────────────
 //
-// The Prompts tab's ComfyUI dialog remembers the last model the project
+// The Scenes tab's ComfyUI dialog remembers the last model the project
 // rendered with and the parameters used per model, under `comfy_video`
 // (separate from `model_defaults`, whose keys are fal endpoint ids):
 //   { model_id: string|null, params_by_model: { [model_id]: { ...params } } }

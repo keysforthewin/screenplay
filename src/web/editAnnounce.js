@@ -16,7 +16,7 @@ import { beatLabel, characterLabel, setLabel } from './announceHelpers.js';
 const BEAT_WRITING_FIELDS = ['name', 'body', 'desc'];
 
 // Which fragments in a resolved room count as an announce-worthy text edit.
-// Beats: name/body/desc only (excludes scene_bible.* and image/attachment
+// Beats: name/body/desc only (excludes image/attachment
 // captions). Characters: every text field except media caption fragments.
 export function announceFieldsForDesc(desc) {
   if (!desc) return [];

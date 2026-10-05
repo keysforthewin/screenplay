@@ -157,4 +157,23 @@ describe('buildReferenceCatalog', () => {
     expect(await Gen.buildReferenceCatalog(projectId, beat)).toEqual([]);
     expect(Gen.formatReferenceCatalog([])).toMatch(/no artwork available/);
   });
+  it('shares the cap between hosts: a character with more artwork than the cap does not crowd out the set or his own wardrobe plate', async () => {
+    const art = (n) => Array.from({ length: n }, (_, i) => ({ _id: new ObjectId(), status: 'done', result_image_id: newImage(`art ${i}`), name: `A${i}`, description: '' }));
+    const plate = newImage('wardrobe plate');
+    await fakeDb.collection('characters').insertOne({
+      _id: new ObjectId(), project_id: projectId, name: 'Tom', name_lower: 'tom', fields: {},
+      images: [{ _id: plate, caption: 'striped tee' }], wardrobe_image_id: plate, artworks: art(Gen.MAX_CATALOG_ENTRIES + 18),
+    });
+    await fakeDb.collection('sets').insertOne({ _id: new ObjectId(), project_id: projectId, name: 'Theater', name_lower: 'theater', description: '', artworks: art(Gen.MAX_CATALOG_ENTRIES) });
+    await fakeDb.collection('sets').insertOne({ _id: new ObjectId(), project_id: projectId, name: 'Stars', name_lower: 'stars', description: '', artworks: art(6) });
+    const beat = await Plots.createBeat({ projectId, name: 'B', characters: ['Tom'], sets: ['Theater', 'Stars'] });
+    const catalog = await Gen.buildReferenceCatalog(projectId, beat);
+    expect(catalog).toHaveLength(Gen.MAX_CATALOG_ENTRIES);
+    const count = (name) => catalog.filter((e) => e.owner_name === name).length;
+    expect(count('Stars')).toBe(6);
+    expect(count('Tom')).toBe((Gen.MAX_CATALOG_ENTRIES - 6) / 2);
+    expect(count('Theater')).toBe((Gen.MAX_CATALOG_ENTRIES - 6) / 2);
+    expect(catalog[0]).toMatchObject({ owner_name: 'Tom', wardrobe: true, image_id: plate.toString() });
+    expect(catalog.map((e) => e.index)).toEqual(catalog.map((_, n) => n + 1));
+  });
 });

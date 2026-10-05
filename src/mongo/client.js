@@ -116,6 +116,8 @@ export async function connectMongo() {
   await db.collection('dialogs').createIndex({ project_id: 1, beat_id: 1 });
   await db.collection('video_prompts').createIndex({ beat_id: 1, order: 1 });
   await db.collection('video_prompts').createIndex({ project_id: 1, beat_id: 1 });
+  await db.collection('video_prompts').createIndex({ scene_id: 1, cut_index: 1 });
+  await db.collection('video_scenes').createIndex({ beat_id: 1, order: 1 });
   await db.collection('eleven_voices').createIndex({ project_id: 1, voice_id: 1 }, { unique: true });
   await db.collection('users').createIndex({ name_lower: 1 }, { unique: true });
   await db.collection('plots').createIndex(

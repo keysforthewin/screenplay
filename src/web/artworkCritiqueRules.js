@@ -3,10 +3,15 @@
 // coverage arithmetic. No I/O here — src/web/artworkCritique.js owns the calls.
 //
 // Pass A (requirements): what pictures must exist for this beat, per subject.
-// Pass B (audit, vision): which existing artwork covers each requirement, and
-//          what in each image disagrees with the writing.
-// Pass C (proposals): a generation prompt per missing/partial requirement.
+// Phase 1 (match, TEXT): every artwork's description against the requirements
+//          → which pieces answer which requirement. This alone is COVERAGE.
+// Phase 2 (review, VISION): the matched pieces are looked at and scored on a
+//          rubric (REVIEW_CRITERIA); the score is derived in code and the
+//          reviewer says keep / edit / regenerate (cached per image).
+// Pass C (proposals): a generation prompt per requirement nothing answers, or
+//          whose best piece the reviewer wants regenerated.
 
+import { createHash } from 'node:crypto';
 import { ObjectId } from 'mongodb';
 import { stripMarkdown } from '../util/markdown.js';
 import { STATIC_PLATE_CONSTRAINTS } from './beatSheetPlanner.js';
@@ -15,7 +20,19 @@ import { NO_TEXT_RULES } from './promptConstraints.js';
 import { WARDROBE_LINE_RE, wardrobeImageId, wardrobeLine, wardrobeText } from './wardrobe.js';
 
 export const MAX_SUBJECTS = 8;
-export const MAX_ARTWORKS_PER_SUBJECT = 12;
+export const AUDIT_BATCH_SIZE = 8;
+export const MAX_CANDIDATES_PER_REQUIREMENT = 6;
+// How many of a requirement's description matches the reviewer looks at
+// (best first; a piece the reviewer rejected makes room for the next).
+export const REVIEW_PER_REQUIREMENT = 2;
+// A reviewed piece at or above this is good enough to render frames from.
+export const KEEP_SCORE = 9;
+// Renders made for one requirement (its first, then regenerations of a piece
+// the reviewer turned down) before the requirement is left to a human.
+export const MAX_REGENERATIONS = 3;
+// Part of every review fingerprint: bump to re-review everything on file.
+export const REVIEW_RUBRIC_VERSION = 'rubric-1';
+export const REVIEW_ACTIONS = ['keep', 'edit', 'regenerate'];
 export const MAX_REQUIREMENTS_PER_SUBJECT = 12;
 export const MAX_PROPOSALS_PER_SUBJECT = 8;
 export const MAX_PROPOSAL_REFERENCES = 12;
@@ -24,6 +41,7 @@ export const SET_CATEGORIES = ['view', 'sub_location', 'vehicle', 'building', 'p
 export const CHARACTER_CATEGORIES = ['costume', 'expression', 'pose', 'action', 'held_prop'];
 export const REQUIREMENT_CATEGORIES = [...SET_CATEGORIES, ...CHARACTER_CATEGORIES];
 export const COVERAGE_STATUSES = ['covered', 'partial', 'missing'];
+export const FIT_STATUSES = ['covered', 'partial'];
 export const ARTWORK_ISSUE_KINDS = ['wardrobe', 'identity', 'expression', 'pose', 'prop', 'layout', 'light', 'time_of_day', 'angle', 'text_in_image', 'style', 'other'];
 
 function plain(s, max = Infinity) {
@@ -35,6 +53,115 @@ function clampInt(n) {
   const v = Math.round(Number(n));
   if (!Number.isFinite(v)) return null;
   return Math.min(10, Math.max(1, v));
+}
+
+// ───────────────────────────── The review rubric ─────────────────────────────
+// What a reviewed artwork is scored on. Each criterion is scored 1–10 against
+// its written anchors; the artwork's score is the weighted mean, derived in
+// code (deriveArtworkScore) — the reviewer never states an overall.
+export const REVIEW_CRITERIA = [
+  {
+    key: 'requirement',
+    label: 'Does the job',
+    weight: 2,
+    focus: 'Does the picture show what the requirement(s) it is matched to ask for — that view, costume, expression, pose, prop — at the angle and distance described?',
+    anchors: {
+      3: 'A different view, pose or expression; only the subject is the same.',
+      6: 'The right picture in outline, but the angle, pose, expression or garment differs in a way a frame would show.',
+      9: 'Exactly what the requirement describes; nothing a frame built on it would have to change.',
+    },
+  },
+  {
+    key: 'beat',
+    label: 'Agrees with the beat',
+    weight: 1.5,
+    focus: 'Time of day, light, weather, season, the state of the place and the props the beat names — does anything in the picture contradict the writing?',
+    anchors: {
+      3: 'Contradicts the beat outright (daylight for a night scene, the wrong vehicle, a prop the beat depends on absent).',
+      6: 'Right in the main, one visible detail the beat states is off or missing.',
+      9: 'Every detail the beat states about this moment is in the picture.',
+    },
+  },
+  {
+    key: 'subject',
+    label: 'True to the subject',
+    weight: 1.5,
+    focus: 'A character: the same face, hair, age and build as the subject card, and every garment of a LOCKED WARDROBE. A set: the same place — construction, layout, period — as its description.',
+    anchors: {
+      3: 'A different person or a different place; or the locked wardrobe replaced by another outfit.',
+      6: 'Recognisably the subject, but the likeness, one garment, or a part of the construction differs.',
+      9: 'Unmistakably this subject, wardrobe and construction as written.',
+    },
+  },
+  {
+    key: 'reference',
+    label: 'Usable as a reference',
+    weight: 1,
+    focus: 'Can a frame be built from it? One clear subject, nothing in the way, no stray people in a set plate, no lettering or captions, not a collage or a sheet when a single still is needed.',
+    anchors: {
+      3: 'Cluttered, cropped through the subject, a multi-panel sheet, or carrying text an image model would copy.',
+      6: 'Usable with care: a stray figure, a tight crop or a busy background a frame would inherit.',
+      9: 'A clean single still of the subject that a frame can be rendered from as it is.',
+    },
+  },
+  {
+    key: 'technical',
+    label: 'Technically clean',
+    weight: 0.5,
+    focus: 'Rendering faults: malformed hands or faces, melted geometry, garbled signage, smeared detail.',
+    anchors: {
+      3: 'Obvious faults a viewer would notice at once.',
+      6: 'A fault on close inspection.',
+      9: 'No visible faults.',
+    },
+  },
+];
+const REVIEW_CRITERION_KEYS = REVIEW_CRITERIA.map((c) => c.key);
+
+function clampScore(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return null;
+  return Math.round(Math.min(10, Math.max(1, v)) * 10) / 10;
+}
+
+// Reviewer criteria → stored rows [{key, score, note}], unknown keys dropped.
+export function normalizeReviewCriteria(raw) {
+  const seen = new Set();
+  const rows = [];
+  for (const c of Array.isArray(raw) ? raw : []) {
+    const key = String(c?.key || '');
+    const score = clampInt(c?.score);
+    if (!REVIEW_CRITERION_KEYS.includes(key) || seen.has(key) || score == null) continue;
+    seen.add(key);
+    rows.push({ key, score, note: plain(c?.note, 240) });
+  }
+  return rows;
+}
+
+// The artwork's score: the weighted mean of its criteria, one decimal. A
+// picture that is the wrong picture cannot be carried by being clean: the
+// score never exceeds its `requirement` criterion by more than 2.
+export function deriveArtworkScore(criteria) {
+  const rows = (criteria || []).filter((c) => Number.isFinite(c?.score));
+  if (!rows.length) return null;
+  let wsum = 0;
+  let sum = 0;
+  for (const c of rows) {
+    const w = REVIEW_CRITERIA.find((d) => d.key === c.key)?.weight ?? 1;
+    wsum += w;
+    sum += w * c.score;
+  }
+  let score = sum / wsum;
+  const job = rows.find((c) => c.key === 'requirement');
+  if (job) score = Math.min(score, job.score + 2);
+  return clampScore(score);
+}
+
+function rubricText() {
+  return REVIEW_CRITERIA.map((c) => [
+    `- ${c.key} (${c.label}, weight ${c.weight}): ${c.focus}`,
+    ...Object.entries(c.anchors).map(([n, t]) => `    ${n} = ${t}`),
+  ].join('\n')).join('\n');
 }
 
 export function subjectKey(kind, id) {
@@ -159,19 +286,30 @@ export function normalizeRequirements(raw, subjects) {
 }
 
 // ───────────────────────────── Pass B: audit ─────────────────────────────
+// One ARTWORK is the unit: the auditor says, for each attached image, which
+// requirements it satisfies and how well it does. A subject's library is
+// audited in batches of AUDIT_BATCH_SIZE images; an entry is cached on the
+// critique and reused while the image and the requirements are the ones it
+// was audited against (`audited_image_id` + `req_sig`). The status of every
+// requirement is then DERIVED in code from the entries.
 
 export const AUDIT_SYSTEM_PROMPT = [
-  'You are the art director checking ONE subject\'s artwork library against ONE screenplay beat. The artwork images are attached and numbered; the requirements the beat imposes on this subject follow them. LOOK at the images — never judge from their descriptions alone.',
+  'You are the art director REVIEWING artwork from ONE subject\'s library against ONE screenplay beat. The artwork images are attached and numbered; the requirements the beat imposes on this subject follow them. Each artwork is listed with the requirements its DESCRIPTION suggested it answers — you are the check on that: LOOK at the image and say what it really shows. Judge every image on its own: other images in this message never change an image\'s verdict.',
   '',
-  '# Coverage',
-  '- For EVERY requirement say which artwork covers it: covered = some image shows exactly that view / costume / expression / pose; partial = the subject is there but the angle, costume, expression, light or state differs from what the requirement describes; missing = nothing on file shows it. artwork_indexes lists the covering images (1-based); note says what is right or what differs.',
+  '# For EVERY attached artwork',
+  '- fits: the requirements THIS image answers, judged from the picture. fit = covered when the image shows exactly that view / costume / expression / pose; partial when the subject is there and the picture is close but the angle, costume, expression, light or state differs from what the requirement describes — then `lacking` says, in one sentence, exactly what is missing or different. A requirement the image does not answer is LEFT OUT, even if its description suggested it. An image that answers nothing has an empty list.',
+  '- criteria: score EVERY rubric criterion below from 1 to 10 for this image, against the requirements it fits (an image that fits nothing is scored against the subject alone, and its `requirement` criterion is 3 or below). Use the anchors; `note` is one short sentence of evidence from the picture.',
+  '- issues: ONLY disagreements with THIS BEAT\'S WRITING — a wrong jacket, daylight where the beat is night, a smile where the beat says fury, a prop the beat names that is absent, lettering in the picture, a layout the beat contradicts. Never taste notes, never style preferences, never faults that do not touch this beat.',
+  '- A character with a LOCKED WARDROBE (stated under the subject): every garment, colour and piece of footwear in the image is compared with that text — any difference is a `wardrobe` issue, whether or not the beat mentions clothes. The suggested_edit then names the locked garments.',
+  '- action: what should happen to this image so a frame can be rendered from it.',
+  '    keep = it does its job as it is (every criterion at 9 or above, or what is off does not matter to this beat).',
+  '    edit = the picture is right in its composition and a LOCAL change fixes it: a garment, a colour, the light or time of day, a prop added or removed, an expression, a stray figure or lettering removed.',
+  '    regenerate = an edit cannot get there: the wrong viewpoint or framing, the wrong pose or staging, a different person or place, a sheet or collage, or faults across the whole picture. A new image has to be made from a prompt and references.',
+  '- suggested_edit: when action is edit — ONE imperative sentence an image-edit model could apply to THAT image alone ("Change the jacket to a worn brown leather bomber; keep everything else exactly as it is."). Empty otherwise.',
+  '- regenerate_reason: when action is regenerate — one sentence on what the new picture must do that this one cannot be edited into. Empty otherwise.',
   '',
-  '# Accuracy of what exists',
-  '- For every artwork, list ONLY disagreements with THIS BEAT\'S WRITING: a wrong jacket, daylight where the beat is night, a smile where the beat says fury, a prop the beat names that is absent, lettering in the picture, a layout the beat contradicts. Never taste notes, never style preferences, never faults that do not touch this beat.',
-  '- A character with a LOCKED WARDROBE (stated under the subject): every garment, colour and piece of footwear in each image is compared with that text — any difference is a `wardrobe` issue, whether or not the beat mentions clothes. The suggested_edit then names the locked garments.',
-  '- suggested_edit: ONE imperative sentence an image-edit model could apply to THAT image alone to fix the issues ("Change the jacket to a worn brown leather bomber; keep everything else exactly as it is."). Empty string when the image is fine.',
-  '- accuracy_score: 1–10 for how faithful the existing artwork as a whole is to this beat\'s writing. 10 = everything on file matches; 5 or below = a frame rendered from this artwork would contradict the beat.',
-  '- summary: two or three sentences for the art department — what is on file, what is wrong, what is missing.',
+  '# Rubric',
+  rubricText(),
   '',
   'Return only the JSON object the schema describes.',
 ].join('\n');
@@ -179,30 +317,42 @@ export const AUDIT_SYSTEM_PROMPT = [
 export const AUDIT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['coverage', 'artworks', 'accuracy_score', 'summary'],
+  required: ['artworks'],
   properties: {
-    coverage: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['requirement_id', 'status', 'artwork_indexes', 'note'],
-        properties: {
-          requirement_id: { type: 'string' },
-          status: { type: 'string', enum: COVERAGE_STATUSES },
-          artwork_indexes: { type: 'array', items: { type: 'integer' } },
-          note: { type: 'string' },
-        },
-      },
-    },
     artworks: {
       type: 'array',
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['index', 'issues', 'suggested_edit'],
+        required: ['index', 'fits', 'criteria', 'issues', 'action', 'suggested_edit', 'regenerate_reason'],
         properties: {
           index: { type: 'integer' },
+          fits: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['requirement_id', 'fit', 'lacking'],
+              properties: {
+                requirement_id: { type: 'string' },
+                fit: { type: 'string', enum: FIT_STATUSES },
+                lacking: { type: 'string' },
+              },
+            },
+          },
+          criteria: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['key', 'score', 'note'],
+              properties: {
+                key: { type: 'string', enum: REVIEW_CRITERION_KEYS },
+                score: { type: 'integer', description: '1-10, against the anchors' },
+                note: { type: 'string' },
+              },
+            },
+          },
           issues: {
             type: 'array',
             items: {
@@ -215,16 +365,21 @@ export const AUDIT_SCHEMA = {
               },
             },
           },
+          action: { type: 'string', enum: REVIEW_ACTIONS },
           suggested_edit: { type: 'string' },
+          regenerate_reason: { type: 'string' },
         },
       },
     },
-    accuracy_score: { type: 'integer', description: '1-10' },
-    summary: { type: 'string' },
   },
 };
 
-export function buildAuditText({ beat, subject, subjectCard, requirements, artworks }) {
+// `matched`: Map artwork id → requirement ids its description suggested.
+export function buildAuditText({ beat, subject, subjectCard, requirements, artworks, matched = null }) {
+  const suggested = (a) => {
+    const ids = matched?.get(String(a._id)) || [];
+    return ids.length ? ` [description suggests: ${ids.join(', ')}]` : '';
+  };
   const lock = subject.kind === 'character' ? wardrobeText(subject.doc, beat) : '';
   const lines = [
     `# Beat #${beat?.order ?? '?'}: ${plain(beat?.name) || 'Untitled'}`,
@@ -234,69 +389,346 @@ export function buildAuditText({ beat, subject, subjectCard, requirements, artwo
     subjectCard || '',
     ...(lock ? [`LOCKED WARDROBE (every image must match these words): ${lock}`] : []),
     '',
-    '# Artwork on file (attached above, in this order)',
+    '# Artwork to audit (attached above, in this order)',
     ...(artworks.length
-      ? artworks.map((a, i) => `Artwork ${i + 1} — "${plain(a.name, 80) || 'untitled'}"${a.description ? `: ${plain(a.description, 300)}` : ''}`)
+      ? artworks.map((a, i) => `Artwork ${i + 1} — "${plain(a.name, 80) || 'untitled'}"${suggested(a)}${a.description ? `: ${plain(a.description, 300)}` : ''}`)
       : ['(none)']),
     '',
     '# Requirements this beat imposes on the subject',
     ...requirements.map((r) => `${r.id} [${r.category}${r.importance === 'essential' ? ', essential' : ''}] ${r.summary} — ${r.detail}${r.quote ? ` (beat: "${r.quote}")` : ''}`),
     '',
-    'For every requirement say which artwork covers it; for every artwork say what disagrees with the writing.',
+    'For every artwork: which requirements it really fits, every rubric criterion scored, what disagrees with the writing, and keep / edit / regenerate.',
   ];
   return lines.join('\n');
 }
 
-// → { requirements (with status/covered_by/note), artworks: [{artwork_id, result_image_id, name, issues, suggested_edit}], accuracy_score, summary }
-export function normalizeAudit(raw, { requirements, artworks }) {
-  const byReq = new Map();
-  for (const c of Array.isArray(raw?.coverage) ? raw.coverage : []) {
-    if (!c || typeof c !== 'object' || byReq.has(c.requirement_id)) continue;
-    byReq.set(String(c.requirement_id), c);
-  }
-  const indexToId = (i) => {
-    const n = Number(i);
-    return Number.isInteger(n) && n >= 1 && n <= artworks.length ? artworks[n - 1] : null;
-  };
-  const outReqs = requirements.map((r) => {
-    const c = byReq.get(r.id);
-    if (!c) return { ...r, status: 'missing', covered_by: [], note: '' };
-    const covered = (Array.isArray(c.artwork_indexes) ? c.artwork_indexes : []).map(indexToId).filter(Boolean);
-    let status = COVERAGE_STATUSES.includes(c.status) ? c.status : 'missing';
-    if (status !== 'missing' && !covered.length) status = 'missing';
-    return {
-      ...r,
-      status,
-      covered_by: [...new Set(covered.map((a) => String(a._id)))].map((id) => new ObjectId(id)),
-      note: plain(c.note, 400),
-    };
-  });
+// Fingerprint of what a subject's artwork is audited AGAINST: its
+// requirements and (characters) the locked wardrobe. A cached entry is reused
+// only while this is unchanged.
+export function requirementsSignature(requirements, lock = '') {
+  const rows = (requirements || []).map((r) => [r.id, r.category, r.summary, r.detail, r.importance]);
+  return createHash('sha1').update(JSON.stringify([rows, String(lock || ''), REVIEW_RUBRIC_VERSION])).digest('hex');
+}
+
+// A stored entry still describes the artwork as it is now.
+export function auditEntryIsCurrent(entry, artwork, reqSig) {
+  return !!entry && !!entry.audited_image_id && entry.req_sig === reqSig
+    && String(entry.audited_image_id) === String(artwork?.result_image_id || '');
+}
+
+// One audit answer (a batch of `artworks`) → stored entries
+// [{artwork_id, result_image_id, name, score, criteria, fits, issues, action,
+//   suggested_edit, regenerate_reason, audited_image_id, req_sig}]. The score
+// is derived from the criteria; an answer with none (an old stub) keeps the
+// score it states.
+// An artwork the model did not answer for keeps `audited_image_id: null`, so
+// the next run asks again instead of caching "fits nothing".
+export function normalizeArtworkAudit(raw, { requirements, artworks, reqSig = '' }) {
+  const reqIds = new Set((requirements || []).map((r) => r.id));
   const byIndex = new Map();
   for (const a of Array.isArray(raw?.artworks) ? raw.artworks : []) {
     if (!a || typeof a !== 'object') continue;
     const n = Number(a.index);
     if (Number.isInteger(n) && n >= 1 && n <= artworks.length && !byIndex.has(n)) byIndex.set(n, a);
   }
-  const outArtworks = artworks.map((a, i) => {
+  return artworks.map((a, i) => {
     const v = byIndex.get(i + 1);
+    const seen = new Set();
+    const fits = (Array.isArray(v?.fits) ? v.fits : [])
+      .filter((f) => f && reqIds.has(String(f.requirement_id)) && !seen.has(String(f.requirement_id)) && seen.add(String(f.requirement_id)))
+      .map((f) => {
+        const fit = f.fit === 'covered' ? 'covered' : 'partial';
+        return { requirement_id: String(f.requirement_id), fit, lacking: fit === 'partial' ? plain(f.lacking, 300) : '' };
+      });
     const issues = (Array.isArray(v?.issues) ? v.issues : [])
       .map((x) => ({ kind: ARTWORK_ISSUE_KINDS.includes(x?.kind) ? x.kind : 'other', note: plain(x?.note, 300) }))
       .filter((x) => x.note)
       .slice(0, 8);
+    const criteria = normalizeReviewCriteria(v?.criteria);
+    const score = v ? (criteria.length ? deriveArtworkScore(criteria) : clampInt(v.score)) : null;
+    const flawed = issues.length > 0 || fits.some((f) => f.fit === 'partial');
+    const edit = plain(v?.suggested_edit, 600);
+    // The reviewer's call, held to what the answer supports: nothing wrong and
+    // a keep-worthy score is a keep; an edit needs an instruction.
+    let action = REVIEW_ACTIONS.includes(v?.action) ? v.action : (flawed && edit ? 'edit' : 'keep');
+    if (action === 'edit' && !edit) action = flawed ? 'regenerate' : 'keep';
+    if (action !== 'keep' && !flawed && (score ?? 0) >= KEEP_SCORE) action = 'keep';
     return {
       artwork_id: a._id,
       result_image_id: a.result_image_id,
       name: plain(a.name, 120),
+      score,
+      criteria,
+      fits,
       issues,
-      suggested_edit: issues.length ? plain(v?.suggested_edit, 600) : '',
+      action: v ? action : null,
+      suggested_edit: action === 'edit' ? edit : '',
+      regenerate_reason: action === 'regenerate' ? plain(v?.regenerate_reason, 300) : '',
+      audited_image_id: v ? a.result_image_id : null,
+      req_sig: reqSig,
     };
   });
-  return {
-    requirements: outReqs,
-    artworks: outArtworks,
-    accuracy_score: clampInt(raw?.accuracy_score),
-    summary: plain(raw?.summary, 1200),
+}
+
+// The entries that answer a requirement, best first: a piece the reviewer has
+// LOOKED at before one only its description vouches for, covered before
+// partial, then the higher score.
+export function entriesForRequirement(requirementId, entries) {
+  const rows = [];
+  for (const e of entries || []) {
+    const fit = (e?.fits || []).find((f) => f.requirement_id === requirementId);
+    if (fit) rows.push({ entry: e, fit });
+  }
+  const rank = (r) => (r.entry.audited_image_id ? 1000 : 0) + (r.fit.fit === 'covered' ? 100 : 0) + (r.entry.score ?? 0);
+  return rows.sort((a, b) => rank(b) - rank(a));
+}
+
+// Requirement status from the audited entries: covered when some artwork
+// covers it, partial when the closest one is only near, missing otherwise.
+// `covered_by` lists the artworks at that level, best first; a partial
+// requirement's note is what its closest artwork lacks.
+export function deriveRequirementStatus(requirements, entries) {
+  return (requirements || []).map((r) => {
+    const rows = entriesForRequirement(r.id, entries);
+    if (!rows.length) return { ...r, status: 'missing', covered_by: [], note: '' };
+    const status = rows[0].fit.fit;
+    const level = rows.filter((x) => x.fit.fit === status);
+    return {
+      ...r,
+      status,
+      covered_by: level.map((x) => new ObjectId(String(x.entry.artwork_id))),
+      note: status === 'partial' ? rows[0].fit.lacking : '',
+    };
+  });
+}
+
+// 1–10 for the artwork the beat actually leans on: the mean score of every
+// entry that answers a requirement. Null when nothing does.
+export function subjectAccuracy(entries) {
+  const scores = (entries || []).filter((e) => (e.fits || []).length && Number.isFinite(e.score)).map((e) => e.score);
+  if (!scores.length) return null;
+  return Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10;
+}
+
+// What is on file, for the proposal planner and the subject card.
+export function summarizeSubjectAudit({ requirements, entries, total }) {
+  const count = (st) => (requirements || []).filter((r) => r.status === st).length;
+  const matched = (entries || []).length;
+  const reviewed = (entries || []).filter((e) => e.audited_image_id).length;
+  const head = `${total} artwork${total === 1 ? '' : 's'} on file, ${matched} matched to this beat by description, ${reviewed} reviewed: `
+    + `${count('covered')} requirement${count('covered') === 1 ? '' : 's'} covered, ${count('partial')} partly, ${count('missing')} missing.`;
+  const flawed = (entries || []).filter((e) => (e.issues || []).length).length;
+  return flawed ? `${head} ${flawed} image${flawed === 1 ? ' disagrees' : 's disagree'} with the writing.` : head;
+}
+
+// ───────────────────────────── Phase 1: match (text) ─────────────────────────────
+// COVERAGE is decided here, without looking at a single image: one text call
+// per subject reads EVERY artwork's name and description and says, for each
+// requirement, which pieces answer it (best first) — plus groups of pieces
+// that describe the same picture. The result is cached on the subject
+// (`inventory`) while the requirements and the library read the same.
+
+export const MATCH_SYSTEM_PROMPT = [
+  'You are the art department\'s librarian. One subject (a set or a character) has an artwork library; each piece is listed with a number, its name and a description of what the picture shows. A screenplay beat imposes the listed requirements on this subject. For each requirement, say which pieces on file answer it — from the descriptions alone.',
+  '',
+  `- matches: for EVERY requirement, up to ${MAX_CANDIDATES_PER_REQUIREMENT} pieces, best first. fit = covered when the description says the picture shows what the requirement asks for (that view, costume, expression, pose). fit = partial when it is CLOSE — the right place from a slightly different angle, the right person in nearly the right costume or pose — and could be edited into it; then \`lacking\` says in one sentence what differs. Be generous with partial: a piece left out is never looked at, and the picture would be made again. An empty list only when nothing on file is near.`,
+  '- duplicate_groups: groups of two or more artwork numbers whose descriptions say they are the same picture (same view, same pose, same light). Only clear cases.',
+  '',
+  'Return only the JSON object the schema describes.',
+].join('\n');
+
+export const MATCH_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['matches', 'duplicate_groups'],
+  properties: {
+    matches: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['requirement_id', 'artworks'],
+        properties: {
+          requirement_id: { type: 'string' },
+          artworks: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['index', 'fit', 'lacking'],
+              properties: {
+                index: { type: 'integer' },
+                fit: { type: 'string', enum: FIT_STATUSES },
+                lacking: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+    duplicate_groups: { type: 'array', items: { type: 'array', items: { type: 'integer' } } },
+  },
+};
+
+export function buildMatchText({ beat, subject, subjectCard, requirements, artworks }) {
+  const lock = subject.kind === 'character' ? wardrobeText(subject.doc, beat) : '';
+  return [
+    `# Beat #${beat?.order ?? '?'}: ${plain(beat?.name) || 'Untitled'}`,
+    plain(beat?.desc, 600) || '',
+    '',
+    `# Subject: ${subject.kind.toUpperCase()} "${plain(subject.name)}"`,
+    subjectCard || '',
+    ...(lock ? [`LOCKED WARDROBE: ${lock}`] : []),
+    '',
+    '# Requirements this beat imposes on the subject',
+    ...requirements.map((r) => `${r.id} [${r.category}${r.importance === 'essential' ? ', essential' : ''}] ${r.summary} — ${r.detail}`),
+    '',
+    `# Artwork library (${artworks.length} pieces)`,
+    ...artworks.map((a, i) => `${i + 1}. "${plain(a.name, 80) || 'untitled'}" — ${plain(a.description, 300) || '(no description)'}`),
+  ].join('\n');
+}
+
+// → { matches: [{requirement_id, artwork_id, fit, lacking}] (per requirement,
+//     best first), duplicates: [[artwork id string]] }.
+// Also reads the older shortlist shape ({candidates: [{requirement_id,
+// artwork_indexes}]}) — those count as partial: worth a look, not vouched for.
+export function normalizeMatches(raw, { requirements, artworks }) {
+  const reqIds = new Set((requirements || []).map((r) => r.id));
+  const at = (i) => {
+    const n = Number(i);
+    return Number.isInteger(n) && n >= 1 && n <= artworks.length ? String(artworks[n - 1]._id) : null;
   };
+  const groups = [
+    ...(Array.isArray(raw?.matches) ? raw.matches : []),
+    ...(Array.isArray(raw?.candidates) ? raw.candidates : []).map((c) => ({
+      requirement_id: c?.requirement_id,
+      artworks: (Array.isArray(c?.artwork_indexes) ? c.artwork_indexes : []).map((index) => ({ index, fit: 'partial', lacking: '' })),
+    })),
+  ];
+  const matches = [];
+  const done = new Set();
+  for (const g of groups) {
+    const rid = String(g?.requirement_id || '');
+    if (!reqIds.has(rid) || done.has(rid)) continue;
+    done.add(rid);
+    const seen = new Set();
+    for (const m of Array.isArray(g.artworks) ? g.artworks : []) {
+      const id = at(m?.index);
+      if (!id || seen.has(id) || seen.size >= MAX_CANDIDATES_PER_REQUIREMENT) continue;
+      seen.add(id);
+      const fit = m.fit === 'covered' ? 'covered' : 'partial';
+      matches.push({ requirement_id: rid, artwork_id: id, fit, lacking: fit === 'partial' ? plain(m.lacking, 300) : '' });
+    }
+  }
+  const duplicates = (Array.isArray(raw?.duplicate_groups) ? raw.duplicate_groups : [])
+    .map((g) => [...new Set((Array.isArray(g) ? g : []).map(at).filter(Boolean))])
+    .filter((g) => g.length > 1)
+    .slice(0, 40);
+  return { matches, duplicates };
+}
+
+// An artwork known only by its description: the entry phase 1 stores for a
+// matched piece the reviewer has not looked at (score null, not audited).
+export function matchedEntry(artwork, fits, reqSig = '') {
+  return {
+    artwork_id: artwork._id,
+    result_image_id: artwork.result_image_id,
+    name: plain(artwork.name, 120),
+    score: null,
+    criteria: [],
+    fits,
+    issues: [],
+    action: null,
+    suggested_edit: '',
+    regenerate_reason: '',
+    audited_image_id: null,
+    req_sig: reqSig,
+  };
+}
+
+// Which matched pieces the reviewer should look at: per requirement the first
+// REVIEW_PER_REQUIREMENT matches (best first) that a current review has not
+// already rejected for it. `reviewed`: Map artwork id → current reviewed entry.
+export function reviewCandidates(requirements, matches, reviewed) {
+  const ids = new Set();
+  for (const r of requirements || []) {
+    let n = 0;
+    for (const m of (matches || []).filter((x) => x.requirement_id === r.id)) {
+      const e = reviewed?.get(String(m.artwork_id));
+      if (e && !(e.fits || []).some((f) => f.requirement_id === r.id)) continue; // looked at: not it
+      ids.add(String(m.artwork_id));
+      n += 1;
+      if (n >= REVIEW_PER_REQUIREMENT) break;
+    }
+  }
+  return ids;
+}
+
+// A requirement whose best piece the reviewer wants made again (or that edits
+// stopped improving) and that has not used up its regenerations.
+export function requirementNeedsRegeneration(requirement, entries, proposals, maxEditAttempts = 2) {
+  if (requirement.status === 'missing') return false;
+  const best = (entries || []).find((e) => String(e.artwork_id) === String((requirement.covered_by || [])[0] || ''));
+  if (!best || !best.audited_image_id) return false;
+  const stuck = best.action === 'regenerate'
+    || ((best.edit_attempts || 0) >= maxEditAttempts && (best.score ?? 10) < KEEP_SCORE);
+  if (!stuck) return false;
+  const made = (proposals || []).filter((p) => p.status === 'done' && (p.requirement_ids || []).map(String).includes(requirement.id)).length;
+  return made < MAX_REGENERATIONS;
+}
+
+// What the reviewer found wrong with one artwork, in plain sentences: its
+// issues, what each partial fit lacks, and the note of every rubric criterion
+// scored 6 or below. This is the explanation shown to the user AND what an
+// edit or a remake is told to put right.
+export function reviewFindings(entry) {
+  const out = [];
+  for (const i of entry?.issues || []) if (i?.note) out.push(i.note);
+  for (const f of entry?.fits || []) if (f?.fit === 'partial' && f.lacking) out.push(f.lacking);
+  for (const c of entry?.criteria || []) {
+    if (Number.isFinite(c?.score) && c.score <= 6 && c.note) {
+      out.push(`${REVIEW_CRITERIA.find((d) => d.key === c.key)?.label || c.key} (${c.score}/10): ${c.note}`);
+    }
+  }
+  return [...new Set(out.map((x) => plain(x, 300)).filter(Boolean))].slice(0, 10);
+}
+
+// Why a requirement's picture is being MADE AGAIN, for the planner and the
+// user: the reviewer's reason, everything it found wrong, and the edit that
+// was tried when edits are what failed.
+export function regenerationBrief(entry) {
+  if (!entry) return '';
+  const parts = [];
+  if (entry.regenerate_reason) parts.push(entry.regenerate_reason);
+  const found = reviewFindings(entry);
+  if (found.length) parts.push(`Wrong in "${plain(entry.name, 80) || 'the piece on file'}": ${found.join('; ')}`);
+  if ((entry.edit_attempts || 0) > 0 && entry.suggested_edit) parts.push(`${entry.edit_attempts} in-place edit(s) did not fix it ("${plain(entry.suggested_edit, 300)}") — the new picture must show that from the start`);
+  return parts.join('. ');
+}
+
+// ───────────────────────────── Climb: in-place edits ─────────────────────────────
+
+// The edit a climb applies to ONE artwork: the auditor's suggested edit, what
+// each partly-met requirement still lacks, and what the image already covers
+// (which the edit must not lose).
+export function composeClimbEditPrompt({ suggestedEdit = '', lacking = [], keep = [], direction = '', findings = [] }) {
+  const parts = [];
+  const edit = plain(suggestedEdit, 600);
+  if (edit) parts.push(edit);
+  // Everything the reviewer found wrong goes to the edit model, not only the
+  // one-sentence instruction — a fault the sentence left out is still fixed.
+  const wrong = [...new Set((findings || []).map((f) => plain(f, 300)).filter(Boolean))].filter((f) => !edit.includes(f));
+  if (wrong.length) parts.push(`The reviewer found these wrong in the picture — correct every one: ${wrong.join('; ')}.`);
+  for (const l of lacking) {
+    const text = plain(l?.lacking, 300);
+    if (text && !edit.includes(text)) parts.push(`The picture must show "${plain(l.summary, 120)}" — still missing or different: ${text}`);
+  }
+  if (!parts.length) return '';
+  const kept = keep.map((k) => plain(k, 120)).filter(Boolean);
+  parts.push(`Change nothing else: same framing, same subject, same light${kept.length ? `, and keep what it already shows — ${kept.join('; ')}` : ''}.`);
+  const dir = String(direction || '').trim();
+  if (dir) parts.push(`Director's direction: ${plain(dir, 400)}`);
+  return parts.join(' ').slice(0, 4000);
 }
 
 // ───────────────────────────── Pass C: proposals ─────────────────────────────
@@ -318,13 +750,14 @@ const CHARACTER_PROPOSAL_RULES = [
 ].join('\n');
 
 export const PROPOSALS_SYSTEM_PROMPT = [
-  'You are the art director briefing image generation for the artwork a screenplay beat is missing. You are given one subject (a set or a character), the requirements the beat imposes on it that are MISSING or only PARTIALLY covered, the audit of what is on file, and a numbered catalog of the project\'s existing artwork to use as references. Write one generation proposal per picture the library needs.',
+  'You are the art director briefing image generation for the artwork a screenplay beat is missing. You are given one subject (a set or a character), the requirements the beat imposes on it that still need a picture MADE — MISSING (nothing on file answers it) or REGENERATE (the piece on file was reviewed and cannot be edited into it; the requirement line says what was wrong, and the new picture must not repeat it) — the audit of what is on file, and a numbered catalog of the project\'s existing artwork to use as references. Write one generation proposal per picture the library needs.',
   '',
   SET_PROPOSAL_RULES,
   '',
   CHARACTER_PROPOSAL_RULES,
   '',
   '# Every proposal',
+  '- A requirement marked REGENERATE, or a MISSING one that says a previous render was turned down, carries the reviewer\'s findings after "review:". The new prompt MUST put every one of them right, stated as what the picture SHOWS (the reviewer said "daylight, the beat is dusk" → the prompt says dusk light; "shot from behind" → the prompt states the front three-quarter view). Do not reuse the turned-down piece as a reference when its fault is its composition, viewpoint or the person\'s identity.',
   '- requirement_ids: the requirement ids this picture satisfies (at least one).',
   '- name: a card label of at most 60 characters.',
   '- prompt: sent VERBATIM to the image model together with ONLY the references you pick. Purely visual. No justification, no quotes from the beat, no character names.',
@@ -373,8 +806,8 @@ export function buildProposalsText({ beat, subject, subjectCard, requirements, a
     '# Audit of what is on file',
     audit?.summary || '(no artwork on file — every proposal is standalone, with no references)',
     '',
-    '# Requirements to satisfy (missing or partial)',
-    ...requirements.map((r) => `${r.id} [${r.category}${r.importance === 'essential' ? ', essential' : ''}, ${r.status}] ${r.summary} — ${r.detail}${r.note ? ` (audit: ${r.note})` : ''}${r.quote ? ` (beat: "${r.quote}")` : ''}`),
+    '# Requirements to satisfy (missing, or to be made again)',
+    ...requirements.map((r) => `${r.id} [${r.category}${r.importance === 'essential' ? ', essential' : ''}, ${r.status}] ${r.summary} — ${r.detail}${r.review ? ` (review: ${r.review})` : r.note ? ` (audit: ${r.note})` : ''}${r.quote ? ` (beat: "${r.quote}")` : ''}`),
     '',
     '# Artwork catalog (reference_indexes point here)',
     catalogText || '(empty)',
@@ -537,23 +970,45 @@ export function normalizeProposals(raw, { subject, requirements, catalog, beat =
 
 // ───────────────────────────── Coverage ─────────────────────────────
 
-// Essential requirements weigh 2, useful 1; partial counts half.
+// Essential requirements weigh 2, useful 1.
+// `pct` is COVERAGE: the share of requirements a picture on file answers
+// (covered, or close enough to be edited into it) — decided by phase 1.
+// `quality_pct` (what a climb climbs) weighs each requirement by the rubric
+// score of the best REVIEWED artwork answering it; a requirement nothing
+// reviewed answers yet counts 0, so quality only exists once phase 2 has
+// looked. `reviewed` counts the requirements whose answer has been looked at.
 export function computeCoverage(subjects) {
   let total = 0;
   let covered = 0;
   let partial = 0;
   let missing = 0;
+  let reviewed = 0;
   let wsum = 0;
   let wcov = 0;
+  let wqual = 0;
   for (const s of subjects || []) {
+    const scores = new Map((s?.artworks || []).filter((e) => e.audited_image_id).map((e) => [String(e.artwork_id), e.score]));
     for (const r of s?.requirements || []) {
       const w = r.importance === 'essential' ? 2 : 1;
       total += 1;
       wsum += w;
-      if (r.status === 'covered') { covered += 1; wcov += w; }
-      else if (r.status === 'partial') { partial += 1; wcov += w / 2; }
-      else missing += 1;
+      if (r.status === 'covered') covered += 1;
+      else if (r.status === 'partial') partial += 1;
+      else { missing += 1; continue; }
+      wcov += w;
+      const known = (r.covered_by || []).map((id) => scores.get(String(id))).filter(Number.isFinite);
+      if (!known.length) continue;
+      reviewed += 1;
+      wqual += w * (Math.max(...known) / 10);
     }
   }
-  return { total, covered, partial, missing, pct: wsum ? Math.round((wcov / wsum) * 100) : null };
+  return {
+    total,
+    covered,
+    partial,
+    missing,
+    reviewed,
+    pct: wsum ? Math.round((wcov / wsum) * 100) : null,
+    quality_pct: wsum ? Math.round((wqual / wsum) * 100) : null,
+  };
 }

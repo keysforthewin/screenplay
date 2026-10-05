@@ -1,7 +1,7 @@
-// Gateway flows for Prompts-tab rows in fallback mode (no Hocuspocus):
-// create seeds text through the fallback write, delete renumbers, the
-// video patch persists + broadcasts, and the beat/project cascades cover
-// the new collection.
+// Gateway flows for Scenes-tab cuts in fallback mode (no Hocuspocus): create
+// appends to a scene with its text on the row, delete renumbers, the duration
+// and video patches persist + broadcast, and the beat/project cascades cover
+// the collection.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ObjectId } from 'mongodb';
@@ -51,6 +51,7 @@ vi.mock('../src/rag/indexer.js', () => ({
 const { createProject } = await import('../src/mongo/projects.js');
 const Gateway = await import('../src/web/gateway.js');
 const VP = await import('../src/mongo/videoPrompts.js');
+const VS = await import('../src/mongo/videoScenes.js');
 const Plots = await import('../src/mongo/plots.js');
 
 let projectId;
@@ -65,94 +66,134 @@ async function makeBeat() {
   return Plots.createBeat({ projectId, name: 'Diner', desc: 'A diner scene.' });
 }
 
-describe('video prompt gateway (fallback)', () => {
-  it('createVideoPromptViaGateway seeds title/prompt via the fallback write and pings the room', async () => {
-    const beat = await makeBeat();
+// A beat with one scene; `scene` is what cuts are appended to.
+async function makeScene(title = 'Scene') {
+  const beat = await makeBeat();
+  const scene = await VS.createVideoScene({ projectId, beatId: beat._id, title });
+  return { beat, scene, sceneId: scene._id.toString() };
+}
+
+describe('cut gateway (fallback)', () => {
+  it('createVideoPromptViaGateway appends to the scene with its text on the row and pings the room', async () => {
+    const { beat, sceneId } = await makeScene();
     const p = await Gateway.createVideoPromptViaGateway({
       projectId,
-      beatId: beat._id,
+      sceneId,
       title: 'Arrival',
-      prompt: '@Image1 is Sarah.',
+      prompt: 'Sarah walks in.',
       durationSeconds: 12,
-      referenceImages: [{ image_id: new ObjectId(), owner_type: 'character', owner_name: 'Sarah', label: 'Sarah — sheet' }],
-      order: 1,
-      seedFragments: { title: 'Arrival', prompt: '@Image1 is Sarah.' },
+      startFramePrompt: 'The door, closed.',
+      endFramePrompt: 'The door, open.',
     });
     expect(p._id).toBeInstanceOf(ObjectId);
     const stored = await VP.getVideoPrompt(projectId, p._id);
+    expect(stored.beat_id.toString()).toBe(beat._id.toString());
+    expect(stored.scene_id.toString()).toBe(sceneId);
     expect(stored.title).toBe('Arrival');
-    expect(stored.prompt).toBe('@Image1 is Sarah.');
+    expect(stored.prompt).toBe('Sarah walks in.');
     expect(stored.duration_seconds).toBe(12);
-    expect(stored.reference_images).toHaveLength(1);
+    expect(stored.start_frame).toMatchObject({ prompt: 'The door, closed.', image_id: null, reference_ids: [] });
+    expect(stored.end_frame.prompt).toBe('The door, open.');
+    expect([stored.cut_index, stored.order]).toEqual([1, 1]);
     const ping = broadcasts.find((b) => b.room === `video_prompts:${beat._id}`);
-    expect(ping).toBeTruthy();
+    expect(ping.payload.changed).toEqual(['video_prompts']);
     expect(ping.payload.added_video_prompt_id).toBe(p._id.toString());
   });
 
-  it('setVideoPromptTextFieldViaGateway writes through the fallback and rejects unknown fields', async () => {
-    const beat = await makeBeat();
-    const p = await Gateway.createVideoPromptViaGateway({ projectId, beatId: beat._id });
+  it('a bare cut is empty, and cuts number scene by scene whatever order they were added in', async () => {
+    const { beat, sceneId } = await makeScene('One');
+    const two = await VS.createVideoScene({ projectId, beatId: beat._id, title: 'Two' });
+    const a = await Gateway.createVideoPromptViaGateway({ projectId, sceneId });
+    expect(a).toMatchObject({ title: '', prompt: '', duration_seconds: null, start_frame: null, end_frame: null });
+    await Gateway.createVideoPromptViaGateway({ projectId, sceneId: two._id.toString(), title: '2.1' });
+    await Gateway.createVideoPromptViaGateway({ projectId, sceneId, title: '1.2' });
+    const list = await VP.listVideoPrompts({ beatId: beat._id });
+    expect(list.map((c) => [c.title, c.order, c.cut_index])).toEqual([
+      ['', 1, 1],
+      ['1.2', 2, 2],
+      ['2.1', 3, 1],
+    ]);
+    await expect(
+      Gateway.createVideoPromptViaGateway({ projectId, sceneId: new ObjectId().toString() }),
+    ).rejects.toThrow(/Video scene not found/);
+  });
+
+  it('setVideoPromptTextFieldViaGateway writes all four text fields through the fallback and rejects unknown fields', async () => {
+    const { sceneId } = await makeScene();
+    const p = await Gateway.createVideoPromptViaGateway({ projectId, sceneId });
+    await Gateway.setVideoPromptTextFieldViaGateway({ projectId, promptId: p._id, field: 'title', text: 'Name' });
     await Gateway.setVideoPromptTextFieldViaGateway({ projectId, promptId: p._id, field: 'prompt', text: 'new text' });
-    expect((await VP.getVideoPrompt(projectId, p._id)).prompt).toBe('new text');
+    await Gateway.setVideoPromptTextFieldViaGateway({ projectId, promptId: p._id, field: 'start_frame_prompt', text: 'first' });
+    await Gateway.setVideoPromptTextFieldViaGateway({ projectId, promptId: p._id, field: 'end_frame_prompt', text: 'last' });
+    const stored = await VP.getVideoPrompt(projectId, p._id);
+    expect(stored.title).toBe('Name');
+    expect(stored.prompt).toBe('new text');
+    expect(stored.start_frame.prompt).toBe('first');
+    expect(stored.end_frame.prompt).toBe('last');
     await expect(
       Gateway.setVideoPromptTextFieldViaGateway({ projectId, promptId: p._id, field: 'body', text: 'x' }),
     ).rejects.toThrow(/unknown video prompt field/);
+    await expect(
+      Gateway.setVideoPromptTextFieldViaGateway({ projectId, promptId: new ObjectId().toString(), field: 'prompt', text: 'x' }),
+    ).rejects.toThrow(/not found/);
   });
 
-  it('updateVideoPromptScalarsViaGateway patches duration + ordered references and pings', async () => {
-    const beat = await makeBeat();
-    const p = await Gateway.createVideoPromptViaGateway({ projectId, beatId: beat._id });
-    const a = new ObjectId();
-    const b = new ObjectId();
+  it('setVideoPromptDurationViaGateway stores the length in half-second steps and pings', async () => {
+    const { beat, sceneId } = await makeScene();
+    const p = await Gateway.createVideoPromptViaGateway({ projectId, sceneId });
     broadcasts.length = 0;
-    const updated = await Gateway.updateVideoPromptScalarsViaGateway({
-      projectId,
-      promptId: p._id,
-      durationSeconds: 20,
-      referenceImages: [
-        { image_id: b, owner_type: 'set', owner_name: 'Diner', label: 'Diner — main' },
-        { image_id: a, owner_type: 'character', owner_name: 'Sarah', label: 'Sarah — sheet' },
-      ],
-    });
-    expect(updated.duration_seconds).toBe(20);
-    expect(updated.reference_images.map((r) => r.image_id.toString())).toEqual([b.toString(), a.toString()]);
-    const ping = broadcasts.find((x) => x.room === `video_prompts:${beat._id}`);
-    expect(ping.payload.changed).toEqual(['duration_seconds', 'reference_images']);
-    expect(ping.payload.video_prompt_id).toBe(p._id.toString());
+    const updated = await Gateway.setVideoPromptDurationViaGateway({ projectId, promptId: p._id, durationSeconds: 3.2 });
+    expect(updated.duration_seconds).toBe(3);
+    expect(broadcasts).toEqual([
+      {
+        room: `video_prompts:${beat._id}`,
+        payload: expect.objectContaining({ changed: ['duration_seconds'], video_prompt_id: p._id.toString() }),
+      },
+    ]);
+    expect(
+      (await Gateway.setVideoPromptDurationViaGateway({ projectId, promptId: p._id, durationSeconds: null })).duration_seconds,
+    ).toBeNull();
+    await expect(
+      Gateway.setVideoPromptDurationViaGateway({ projectId, promptId: p._id, durationSeconds: -1 }),
+    ).rejects.toThrow(/positive/);
+    await expect(
+      Gateway.setVideoPromptDurationViaGateway({ projectId, promptId: new ObjectId().toString(), durationSeconds: 2 }),
+    ).rejects.toThrow(/not found/);
   });
 
   it('deleteVideoPromptViaGateway renumbers the rest and deletes the rendered video file', async () => {
-    const beat = await makeBeat();
-    const a = await Gateway.createVideoPromptViaGateway({ projectId, beatId: beat._id, title: 'A' });
-    const b = await Gateway.createVideoPromptViaGateway({ projectId, beatId: beat._id, title: 'B' });
-    const c = await Gateway.createVideoPromptViaGateway({ projectId, beatId: beat._id, title: 'C' });
+    const { beat, sceneId } = await makeScene();
+    await Gateway.createVideoPromptViaGateway({ projectId, sceneId, title: 'A' });
+    const b = await Gateway.createVideoPromptViaGateway({ projectId, sceneId, title: 'B' });
+    await Gateway.createVideoPromptViaGateway({ projectId, sceneId, title: 'C' });
     const fileId = new ObjectId();
     await VP.updateVideoPrompt(projectId, b._id, { video_file_id: fileId });
+    broadcasts.length = 0;
     const result = await Gateway.deleteVideoPromptViaGateway({ projectId, promptId: b._id });
     expect(result).toEqual({ ok: true, beat_id: beat._id.toString() });
     const list = await VP.listVideoPrompts({ beatId: beat._id });
-    expect(list.map((p) => [p.title, p.order])).toEqual([['A', 1], ['C', 2]]);
+    expect(list.map((p) => [p.title, p.order, p.cut_index])).toEqual([['A', 1, 1], ['C', 2, 2]]);
     expect(deletedAttachments).toContain(fileId.toString());
-    void a; void c;
+    expect(broadcasts[0].payload.removed_video_prompt_id).toBe(b._id.toString());
   });
 
-  it('reorderVideoPromptsViaGateway persists the new order and pings', async () => {
-    const beat = await makeBeat();
-    const a = await Gateway.createVideoPromptViaGateway({ projectId, beatId: beat._id, title: 'A' });
-    const b = await Gateway.createVideoPromptViaGateway({ projectId, beatId: beat._id, title: 'B' });
+  it('reorderCutsInSceneViaGateway persists the new order and pings', async () => {
+    const { sceneId } = await makeScene();
+    const a = await Gateway.createVideoPromptViaGateway({ projectId, sceneId, title: 'A' });
+    const b = await Gateway.createVideoPromptViaGateway({ projectId, sceneId, title: 'B' });
     broadcasts.length = 0;
-    const result = await Gateway.reorderVideoPromptsViaGateway({
+    const result = await Gateway.reorderCutsInSceneViaGateway({
       projectId,
-      beatId: beat._id,
+      sceneId,
       orderedIds: [b._id.toString(), a._id.toString()],
     });
-    expect(result.map((p) => p.title)).toEqual(['B', 'A']);
-    expect(broadcasts[0].payload.changed).toEqual(['order']);
+    expect(result.map((p) => [p.title, p.cut_index])).toEqual([['B', 1], ['A', 2]]);
+    expect(broadcasts[0].payload).toMatchObject({ changed: ['order'], video_scene_id: sceneId });
   });
 
   it('setVideoPromptVideoViaGateway records the model snapshot and clears it on null', async () => {
-    const beat = await makeBeat();
-    const p = await Gateway.createVideoPromptViaGateway({ projectId, beatId: beat._id });
+    const { beat, sceneId } = await makeScene();
+    const p = await Gateway.createVideoPromptViaGateway({ projectId, sceneId });
     const fileId = new ObjectId();
     broadcasts.length = 0;
     const withVideo = await Gateway.setVideoPromptVideoViaGateway({
@@ -175,51 +216,67 @@ describe('video prompt gateway (fallback)', () => {
     expect(withVideo.video_parameters).toEqual({ duration_seconds: 15, generate_audio: false });
     expect(withVideo.video_cost_usd).toBe(0.42);
     expect(withVideo.video_generated_at).toBeInstanceOf(Date);
+    expect(withVideo.video_provider).toBe('fal');
     const ping = broadcasts.find((x) => x.room === `video_prompts:${beat._id}`);
-    expect(ping.payload.changed).toContain('video_file_id');
+    expect(ping.payload.changed).toEqual(['video']);
     expect(ping.payload.video_prompt_id).toBe(p._id.toString());
+
+    const comfy = await Gateway.setVideoPromptVideoViaGateway({
+      projectId,
+      promptId: p._id,
+      videoFileId: fileId,
+      provider: 'comfy',
+      comfy: { model_id: 'ltx-2.5-i2v', prompt_id: 'abc' },
+    });
+    expect(comfy.video_provider).toBe('comfy');
+    expect(comfy.video_comfy).toEqual({ model_id: 'ltx-2.5-i2v', prompt_id: 'abc' });
 
     const cleared = await Gateway.setVideoPromptVideoViaGateway({ projectId, promptId: p._id, videoFileId: null });
     expect(cleared.video_file_id).toBeNull();
     expect(cleared.video_model_label).toBeNull();
     expect(cleared.video_cost_usd).toBeNull();
     expect(cleared.video_generated_at).toBeNull();
+    expect(cleared.video_provider).toBeNull();
+    expect(cleared.video_comfy).toBeNull();
   });
 
-  it('deleteAllVideoPromptsForBeatViaGateway wipes rows and their video files, then pings cleared', async () => {
-    const beat = await makeBeat();
-    const a = await Gateway.createVideoPromptViaGateway({ projectId, beatId: beat._id });
-    await Gateway.createVideoPromptViaGateway({ projectId, beatId: beat._id });
-    const fileId = new ObjectId();
-    await VP.updateVideoPrompt(projectId, a._id, { video_file_id: fileId });
-    broadcasts.length = 0;
-    const result = await Gateway.deleteAllVideoPromptsForBeatViaGateway({ projectId, beatId: beat._id });
-    expect(result).toEqual({ ok: true, removed_count: 2, scenes_removed: 0 });
-    expect(await VP.listVideoPrompts({ beatId: beat._id })).toHaveLength(0);
-    expect(deletedAttachments).toContain(fileId.toString());
-    expect(broadcasts[0].payload.cleared).toBe(true);
+  it('the planner-era cut helpers are gone', () => {
+    for (const name of [
+      'updateVideoPromptScalarsViaGateway',
+      'reorderVideoPromptsViaGateway',
+      'deleteAllVideoPromptsForBeatViaGateway',
+      'setVideoPromptAudioViaGateway',
+      'setBeatPromptsVideoViaGateway',
+      'clearAssembledVideosForBeat',
+    ]) {
+      expect(Gateway[name]).toBeUndefined();
+    }
   });
 
-  it('deleteBeatViaGateway cascades to video prompts (rows + video files)', async () => {
-    const beat = await makeBeat();
-    const p = await Gateway.createVideoPromptViaGateway({ projectId, beatId: beat._id });
+  it('deleteBeatViaGateway cascades to scenes and cuts (rows + video files)', async () => {
+    const { beat, sceneId } = await makeScene();
+    const p = await Gateway.createVideoPromptViaGateway({ projectId, sceneId });
     const fileId = new ObjectId();
     await VP.updateVideoPrompt(projectId, p._id, { video_file_id: fileId });
     const res = await Gateway.deleteBeatViaGateway(projectId, beat._id.toString());
     expect(res.video_prompts_removed).toBe(1);
+    expect(res.video_scenes_removed).toBe(1);
     expect(await VP.listVideoPrompts({ beatId: beat._id })).toHaveLength(0);
+    expect(await VS.listVideoScenes({ beatId: beat._id })).toHaveLength(0);
     expect(deletedAttachments).toContain(fileId.toString());
   });
 
-  it('deleteProjectCascade removes the video_prompts collection rows and room', async () => {
-    const beat = await makeBeat();
-    await Gateway.createVideoPromptViaGateway({ projectId, beatId: beat._id });
+  it('deleteProjectCascade removes the video_prompts / video_scenes rows and the room', async () => {
+    const { beat, sceneId } = await makeScene();
+    await Gateway.createVideoPromptViaGateway({ projectId, sceneId });
     await fakeDb.collection('yjs_docs').insertOne({ _id: `video_prompts:${beat._id}`, state: Buffer.alloc(0) });
     const { deleteProjectCascade } = await import('../src/web/projectDelete.js');
     await createProject('Keeper'); // so the deleted one isn't the last project
     const result = await deleteProjectCascade(projectId);
     expect(result.deleted.video_prompts).toBe(1);
+    expect(result.deleted.video_scenes).toBe(1);
     expect(await fakeDb.collection('video_prompts').find({}).toArray()).toHaveLength(0);
+    expect(await fakeDb.collection('video_scenes').find({}).toArray()).toHaveLength(0);
     expect(await fakeDb.collection('yjs_docs').find({}).toArray()).toHaveLength(0);
   });
 });

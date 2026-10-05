@@ -96,27 +96,82 @@ describe('project-scoped room names', () => {
     expect(await projectIdForRoom(`character:${new ObjectId().toString()}`)).toBeNull();
   });
 
-  it('video_prompts rooms expose item:<id>:title|prompt|start_frame_prompt|end_frame_prompt fragments and persist through updateVideoPrompt', async () => {
+  it('video_prompts rooms expose scene:<id>:title and item:<id>:title|prompt|start_frame_prompt|end_frame_prompt fragments and persist them', async () => {
     const p = await Projects.createProject('Western');
     const pid = p._id.toString();
     const Plots = await import('../src/mongo/plots.js');
     const VP = await import('../src/mongo/videoPrompts.js');
+    const VS = await import('../src/mongo/videoScenes.js');
     const beat = await Plots.createBeat({ projectId: pid, name: 'B1' });
-    const row = await VP.createVideoPrompt({ projectId: pid, beatId: beat._id, title: 'T', prompt: 'P' });
+    const scene = await VS.createVideoScene({ projectId: pid, beatId: beat._id, title: 'S' });
+    const row = await VP.createVideoPrompt({
+      projectId: pid,
+      beatId: beat._id,
+      sceneId: scene._id,
+      title: 'T',
+      prompt: 'P',
+      endFrame: { prompt: 'E' },
+    });
     const desc = await resolveRoom(`video_prompts:${beat._id.toString()}`);
     expect(desc.type).toBe('video_prompts');
     const id = row._id.toString();
-    expect(desc.fields).toEqual([`item:${id}:title`, `item:${id}:prompt`, `item:${id}:start_frame_prompt`, `item:${id}:end_frame_prompt`]);
+    const sid = scene._id.toString();
+    expect(desc.fields).toEqual([
+      `scene:${sid}:title`,
+      `item:${id}:title`,
+      `item:${id}:prompt`,
+      `item:${id}:start_frame_prompt`,
+      `item:${id}:end_frame_prompt`,
+    ]);
+    expect(desc.fields.some((f) => f.includes('floor_plan'))).toBe(false);
     expect(desc.seed).toEqual({
+      [`scene:${sid}:title`]: 'S',
       [`item:${id}:title`]: 'T',
       [`item:${id}:prompt`]: 'P',
       [`item:${id}:start_frame_prompt`]: '',
-      [`item:${id}:end_frame_prompt`]: '',
+      [`item:${id}:end_frame_prompt`]: 'E',
     });
-    const result = await desc.persistFields({ [`item:${id}:title`]: 'T', [`item:${id}:prompt`]: 'P2' });
-    expect(result).toEqual({ changed: true, fields: [`item:${id}:prompt`] });
-    expect((await VP.getVideoPrompt(pid, id)).prompt).toBe('P2');
+    const result = await desc.persistFields({
+      [`scene:${sid}:title`]: 'S',
+      [`item:${id}:title`]: 'T',
+      [`item:${id}:prompt`]: 'P2',
+      [`item:${id}:start_frame_prompt`]: 'First frame.',
+      [`item:${id}:end_frame_prompt`]: 'E',
+    });
+    expect(result).toEqual({ changed: true, fields: [`item:${id}:prompt`, `item:${id}:start_frame_prompt`] });
+    const stored = await VP.getVideoPrompt(pid, id);
+    expect(stored.prompt).toBe('P2');
+    expect(stored.start_frame.prompt).toBe('First frame.');
+    expect(stored.end_frame.prompt).toBe('E');
     expect(await resolveRoom(`video_prompts:${new ObjectId().toString()}`)).toBeNull();
+  });
+
+  it('a scene:<id>:title fragment persists to the video_scenes row; unknown fragments and unchanged text are ignored', async () => {
+    const p = await Projects.createProject('Western');
+    const pid = p._id.toString();
+    const Plots = await import('../src/mongo/plots.js');
+    const VS = await import('../src/mongo/videoScenes.js');
+    const beat = await Plots.createBeat({ projectId: pid, name: 'B1' });
+    const one = await VS.createVideoScene({ projectId: pid, beatId: beat._id, title: 'One' });
+    const two = await VS.createVideoScene({ projectId: pid, beatId: beat._id });
+    const desc = await resolveRoom(`video_prompts:${beat._id.toString()}`);
+    expect(desc.fields).toEqual([`scene:${one._id}:title`, `scene:${two._id}:title`]);
+    expect(desc.seed).toEqual({ [`scene:${one._id}:title`]: 'One', [`scene:${two._id}:title`]: '' });
+    expect(await desc.persistFields({ [`scene:${one._id}:title`]: 'One', [`scene:${two._id}:title`]: '' })).toEqual({
+      changed: false,
+    });
+    const result = await desc.persistFields({
+      [`scene:${one._id}:title`]: 'The **diner**',
+      [`scene:${two._id}:title`]: '',
+      // The retired floor-plan fragment, a scene that is not in this room, and junk.
+      [`scene:${one._id}:floor_plan`]: 'Door at the far end.',
+      [`scene:${new ObjectId()}:title`]: 'ghost',
+      bogus: 'x',
+    });
+    expect(result).toEqual({ changed: true, fields: [`scene:${one._id}:title`] });
+    const scenes = await VS.listVideoScenes({ projectId: pid, beatId: beat._id });
+    expect(scenes.map((s) => s.title)).toEqual(['The **diner**', '']);
+    expect(fakeDb.collection('video_scenes')._docs[0]).not.toHaveProperty('floor_plan');
   });
 
   it('resolveRoom returns null for a singleton room of an unknown project', async () => {

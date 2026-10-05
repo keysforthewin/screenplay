@@ -2,12 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { apiGet, thumbUrl } from '../api.js';
 import { Modal } from './Modal.jsx';
 
-// Picker for a Prompts-tab row's reference images. Offers exactly the
-// catalog the auto-generator picks from (GET /cuts/candidates: the
-// ARTWORK of the beat's characters and sets — done artworks only, never
+// Picker for a cut frame's reference images. Offers the ARTWORK of the beat's
+// characters and sets (GET /cuts/candidates — done artworks only, never
 // uploaded portraits, sheets or gallery images), grouped by owner. Multi-pick;
-// the chosen ids are APPENDED to the row's ordered list in the order they
-// were clicked, so the next @ImageN handle is predictable.
+// the chosen ids are APPENDED to the frame's ordered list in the order they
+// were clicked.
 export function PromptReferencePicker({ open, beatId, existingIds, maxTotal, onClose, onPick }) {
   const [catalog, setCatalog] = useState(null);
   const [error, setError] = useState(null);
@@ -67,8 +66,7 @@ export function PromptReferencePicker({ open, beatId, existingIds, maxTotal, onC
             disabled={!picked.length}
             onClick={() => onPick(picked)}
           >
-            Add {picked.length ? `${picked.length} ` : ''}as @Image{existing.size + 1}
-            {picked.length > 1 ? `–@Image${existing.size + picked.length}` : ''}
+            Add {picked.length || ''} reference{picked.length === 1 ? '' : 's'}
           </button>
         </>
       }
@@ -85,7 +83,7 @@ export function PromptReferencePicker({ open, beatId, existingIds, maxTotal, onC
       ) : null}
       {remaining === 0 ? (
         <p style={{ color: '#ffb86b', fontSize: 13 }}>
-          This prompt already has the maximum of {maxTotal || 9} reference images.
+          This frame already has the maximum of {maxTotal || 9} reference images.
         </p>
       ) : null}
       {groups.map((g) => (
@@ -115,7 +113,7 @@ export function PromptReferencePicker({ open, beatId, existingIds, maxTotal, onC
                   <span className="video-prompt-picker-label">{e.label.replace(`${g.owner_name} — `, '')}</span>
                   {isExisting ? <span className="video-prompt-picker-badge">added</span> : null}
                   {idx >= 0 ? (
-                    <span className="video-prompt-picker-badge is-picked">@Image{existing.size + idx + 1}</span>
+                    <span className="video-prompt-picker-badge is-picked">{existing.size + idx + 1}</span>
                   ) : null}
                 </button>
               );

@@ -54,6 +54,7 @@ vi.mock('../src/rag/indexer.js', () => ({
 
 const { createProject } = await import('../src/mongo/projects.js');
 const Gateway = await import('../src/web/gateway.js');
+const Hocuspocus = await import('../src/web/hocuspocus.js');
 const Plots = await import('../src/mongo/plots.js');
 const { fragmentToMarkdown } = await import('../src/web/headlessEditor.js');
 
@@ -68,11 +69,16 @@ beforeEach(async () => {
 });
 
 describe('gateway create helpers seed fragments before the row exists', () => {
-  it('cut: every fragment is written before the insert, and the row carries the same text', async () => {
+  it('cut: all four fragments are written before the insert, and the row carries the same text', async () => {
+    const scene = await Gateway.createVideoSceneViaGateway({ projectId, beatId: beat._id.toString(), title: 'Scene' });
+    seedWrites.length = 0;
     const p = await Gateway.createVideoPromptViaGateway({
       projectId,
-      beatId: beat._id,
-      seedFragments: { title: 'Cut 1', prompt: 'Wide from the counter end.', start_frame_prompt: 'Frontal wide.', end_frame_prompt: 'Door shut.' },
+      sceneId: scene._id.toString(),
+      title: 'Cut 1',
+      prompt: 'Wide from the counter end.',
+      startFramePrompt: 'Frontal wide.',
+      endFramePrompt: 'Door shut.',
     });
     const id = p._id.toString();
     expect(seedWrites.map((w) => w.field)).toEqual([
@@ -82,16 +88,36 @@ describe('gateway create helpers seed fragments before the row exists', () => {
       `item:${id}:end_frame_prompt`,
     ]);
     expect(seedWrites.every((w) => !w.rowExists)).toBe(true);
+    expect(p.title).toBe('Cut 1');
     expect(p.prompt).toBe('Wide from the counter end.');
     expect(p.start_frame.prompt).toBe('Frontal wide.');
     expect(p.end_frame.prompt).toBe('Door shut.');
-    expect(fragmentToMarkdown(docs.get(`video_prompts:${beat._id}`), `item:${id}:prompt`)).toBe('Wide from the counter end.');
+    const doc = docs.get(`video_prompts:${beat._id}`);
+    expect(fragmentToMarkdown(doc, `item:${id}:title`)).toBe('Cut 1');
+    expect(fragmentToMarkdown(doc, `item:${id}:prompt`)).toBe('Wide from the counter end.');
+    expect(fragmentToMarkdown(doc, `item:${id}:start_frame_prompt`)).toBe('Frontal wide.');
+    expect(fragmentToMarkdown(doc, `item:${id}:end_frame_prompt`)).toBe('Door shut.');
   });
 
-  it('scene: the floor plan is seeded before the insert and stored on the row', async () => {
-    const s = await Gateway.createVideoSceneViaGateway({ projectId, beatId: beat._id, seedFragments: { floor_plan: 'Door at the far end.' } });
-    expect(seedWrites).toEqual([{ roomName: `video_prompts:${beat._id}`, field: `scene:${s._id}:floor_plan`, rowExists: false }]);
-    expect(s.floor_plan).toBe('Door at the far end.');
+  it('cut: a bare POST /cut-style create still seeds its four (empty) fragments before the insert', async () => {
+    const scene = await Gateway.createVideoSceneViaGateway({ projectId, beatId: beat._id.toString() });
+    seedWrites.length = 0;
+    const calls = Hocuspocus.withDirectDocument.mock.calls.length;
+    const p = await Gateway.createVideoPromptViaGateway({ projectId, sceneId: scene._id.toString() });
+    const id = p._id.toString();
+    // One direct write per fragment, each addressed to this beat's room.
+    const mine = Hocuspocus.withDirectDocument.mock.calls.slice(calls);
+    expect(mine.map((c) => c[0])).toEqual(Array(4).fill(`video_prompts:${beat._id}`));
+    expect(seedWrites.every((w) => w.field.startsWith(`item:${id}:`) && !w.rowExists)).toBe(true);
+    expect(p).toMatchObject({ title: '', prompt: '', start_frame: null, end_frame: null });
+  });
+
+  it('scene: the title is seeded before the insert and stored on the row', async () => {
+    const s = await Gateway.createVideoSceneViaGateway({ projectId, beatId: beat._id.toString(), title: 'The diner' });
+    expect(seedWrites).toEqual([{ roomName: `video_prompts:${beat._id}`, field: `scene:${s._id}:title`, rowExists: false }]);
+    expect(s.title).toBe('The diner');
+    expect(s.order).toBe(1);
+    expect(fragmentToMarkdown(docs.get(`video_prompts:${beat._id}`), `scene:${s._id}:title`)).toBe('The diner');
   });
 
   it('dialog: body and character are seeded before the insert and stored on the row', async () => {

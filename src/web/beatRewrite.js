@@ -10,7 +10,7 @@
 //             passages at fault, applied in code (applyBeatEdits), so text the
 //             critique did not fault cannot change.
 // Every call is given what the critics score against (`ctx`, from
-// buildCritiqueContext: scene bible, director's notes, voice, dialogue style,
+// buildCritiqueContext: director's notes, voice, dialogue style,
 // character profiles, sets, neighbours) — a writer who cannot see the scene
 // bible fixes the pacing and gets the boy's age wrong.
 
@@ -34,7 +34,7 @@ import {
   plainText,
 } from './critiqueFacets.js';
 import { buildCritiqueContext } from './critiqueContext.js';
-import { collectRankedIssues, scoreLevers, SEVERITY_ORDER } from './critiqueScoring.js';
+import { collectRankedIssues, scoreLevers, deriveFacetScore, SEVERITY_ORDER } from './critiqueScoring.js';
 import { hardBreaksToLines, linesToHardBreaks } from '../util/markdown.js';
 
 const STRATEGY_MAX_TOKENS = 6000;
@@ -84,7 +84,9 @@ const NORMALIZE_SYSTEM = [
 // numbers are deriveFacetScore's (critiqueScoring.js).
 const SCORE_MECHANICS = 'How the score works: each facet is the mean of its criteria, then capped by its issues — one MUST FIX caps the facet at 7, two cap it at 5, and three or more SHOULD FIX cap it at 8. The "Score levers" table says which cap binds each facet and what lifting it is worth to the overall score. A facet stays capped until its must-fix issues are ALL gone and it holds at most two should-fix issues, so half-clearing a facet gains nothing.';
 
-const FIXED_FACTS_RULE = 'The documents under "What this beat must agree with" are fixed facts: ages, time of day, light, the layout of a set, who knows what, and what the director\'s notes ask for. Never contradict them. Where an issue\'s suggested fix would, find a fix that satisfies both. Clothing has an order of authority: a wardrobe set for this beat and what the scene bible says people wear come first; a character\'s usual wardrobe is only the default for when the scene says nothing, so a character dressed for the scene\'s weather, season or place is correct and is not changed back to the default.';
+const KEEP_RULE = '"Keep" lists lines the critics praised. It protects them from changes nobody asked for; it never blocks a fix. When an issue\'s fix or a target\'s "To raise it" says to replace, compress or cut a passage, do it — whole sequence included — even where praised lines sit inside it.';
+
+const FIXED_FACTS_RULE = 'The documents under "What this beat must agree with" are fixed facts: ages, time of day, light, the layout of a set, who knows what, and what the director\'s notes ask for. Never contradict them. Leaving a detail out is not contradicting it: a fix that cuts or compresses a passage is carried out even when a document describes that moment — only stating something different from the documents is a contradiction. For the same reason, never add a scene, location, shot or camera move the beat does not have because a document describes one: the beat may have been cut down on purpose, and a recommendation to put such material back is not carried out. Where an issue\'s suggested fix would contradict them, find a fix that satisfies both. Clothing has an order of authority: a wardrobe set for this beat comes first; a character\'s usual wardrobe is only the default for when the scene says nothing, so a character dressed for the scene\'s weather, season or place is correct and is not changed back to the default.';
 
 // Pass 1: order the critique into ONE plan that lifts the caps without
 // trading one facet off against another.
@@ -96,9 +98,11 @@ const SYNTHESIZE_SYSTEM = [
   '- Every MUST FIX issue gets its own numbered step that quotes the line it changes and gives the replacement.',
   '- In every facet holding three or more SHOULD FIX issues, resolve enough of them to leave two at most, and resolve the others, and the NITS, wherever that costs nothing in another facet.',
   '- Then EVERY facet gets a step, not only the capped or low ones: "Targets" lists each criterion short of a 9 with what its 9 looks like. For each facet listed there, name the concrete change that moves its criteria toward that 9 — a facet at 8 with no issue still has a step. Only a facet with nothing under "Targets" is left alone.',
+'- Under "Targets", a criterion\'s "To raise it" line is the critic\'s own recommendation for that criterion in this beat. The plan has a step that carries out each one, quoting the line it changes. Where one would contradict the fixed documents, serve it as far as they allow and say so.',
   `- ${FIXED_FACTS_RULE}`,
   '- Where two facets pull against each other, say how to serve both: a detail one critic wants and another calls clutter is said in fewer words, or moved to where it does not stall the action. A rewrite that raises one facet by lowering another is a net loss.',
-  '- End with a "Leave alone" list: the lines and choices the critics named as strengths, which the rewrite must keep word for word.',
+  `- ${KEEP_RULE}`,
+  '- End with a "Leave alone" list: the praised lines and choices that no step of the plan changes, which the rewrite must keep word for word.',
   '- Be specific and directive — name the exact changes (lines to add, cut or reshape, sluglines, blocking, subtext), not general advice.',
   "- Keep the story's intent and the characters intact. An issue whose fix lies outside this beat (a neighbouring beat, the beat's place in the story) is noted as out of reach, not forced into the text.",
   'Output ONLY the numbered plan. Do NOT write the rewritten beat.',
@@ -111,7 +115,9 @@ const REGEN_SYSTEM = [
   'You are a screenwriter rewriting one beat of a screenplay from its critique.',
   'You are given the documents the beat must agree with, the critique (each issue quotes a line and gives a fix), a plan that orders the issues and settles the conflicts between them, and the current beat.',
   '- Resolve every MUST FIX and every SHOULD FIX issue. Where the plan and an issue\'s own fix differ, follow the plan.',
-  '- Change only what an issue or the plan calls for — the plan has a step for every facet short of a 9, and each of those steps is carried out, not only the fixes. A line neither an issue nor the plan names stays as written, word for word, and so does everything on the plan\'s "Leave alone" list and under "Keep".',
+  '- Change only what an issue or the plan calls for — the plan has a step for every facet short of a 9, and each of those steps is carried out, not only the fixes. A line neither an issue nor the plan names stays as written, word for word, and so does everything on the plan\'s "Leave alone" list.',
+  `- ${KEEP_RULE}`,
+  '- Under "Targets", a criterion\'s "To raise it" line is the critic\'s own recommendation for that criterion in this beat. Carry each one out, in the way the plan settles it.',
   `- ${FIXED_FACTS_RULE}`,
   '- Add nothing a fix does not need — no new props, wardrobe inventories, camera moves or lines of dialogue. Additions are where new faults come from, and the next critique will count them.',
   "- Preserve the story's intent and the characters present. The rewrite MUST conform to standard screenplay format per the guide below.",
@@ -135,10 +141,13 @@ const EDITS_SYSTEM = [
   'Rules:',
   '- Resolve every MUST FIX. In every facet holding three or more SHOULD FIX issues, resolve enough to leave two at most; resolve the others, and the NITS, where it costs nothing in another facet. Work down the levers table.',
   '- Then improve EVERY facet, not only the capped or low ones: for each facet with a criterion under "Targets", make the edits that move it toward its 9. A facet at 8 with no issue still gets an edit where one passage holds it back; say in the plan which facet each such edit serves.',
+'- Under "Targets", a criterion\'s "To raise it" line is the critic\'s own recommendation for that criterion in this beat. Each one gets an edit; name in the plan any you left and why. Where one would contradict the fixed documents, serve it as far as they allow and say so.',
   `- ${FIXED_FACTS_RULE}`,
   '- Edits are applied in order and must not overlap. To move text, cut it with one edit and insert it with another (find the line it should follow; replace with that line plus the moved text).',
   '- To insert, find the line before the insertion point and replace it with itself plus the new text.',
-  '- Add nothing a fix or a target does not need. Edit only a passage an issue names or a target calls for; everything under "Keep" stays word for word.',
+  '- Add nothing a fix or a target does not need. Edit only a passage an issue names or a target calls for.',
+  `- ${KEEP_RULE}`,
+  '- To replace or cut a run of several paragraphs, use one edit per paragraph: the first carries the replacement text, the others replace their paragraph with an empty string. Do not leave a sequence in place because it is long.',
   '- The corrected text follows standard screenplay format per the guide below.',
   `- ${LAYOUT_RULE} A cue, parenthetical or speech that shares a line with another is itself a fault to correct: replace the line with the same words on separate lines.`,
   '- An issue whose fix lies outside this beat gets no edit; name it in the plan as out of reach.',
@@ -259,7 +268,8 @@ export function formatScoreLevers(critique) {
 const KEEP_FROM = 9;
 
 // What a 9 looks like for every criterion that is short of it, in every
-// facet — a rewrite aims at all of them, not only the low ones.
+// facet — a rewrite aims at all of them, not only the low ones — with the
+// critic's reason for the score and its recommendation for raising it.
 export function formatTargets(critique) {
   const out = [];
   for (const f of critique?.facets || []) {
@@ -268,27 +278,42 @@ export function formatTargets(critique) {
     for (const c of f.criteria || []) {
       if (c.applicable === false || c.score == null || c.score >= KEEP_FROM) continue;
       const anchor = def?.criteria?.find((d) => d.key === c.key)?.anchors?.[9];
-      if (anchor) out.push(`- ${f.label} / ${c.label || c.key} (now ${c.score}): a 9 is — ${anchor}`);
+      if (!anchor) continue;
+      out.push(`- ${f.label} / ${c.label || c.key} (now ${c.score}): a 9 is — ${anchor}`);
+      const why = String(c.rationale || '').trim();
+      const raise = String(c.to_raise || '').trim();
+      if (why) out.push(`  Why ${c.score}: ${why}`);
+      if (raise) out.push(`  To raise it: ${raise}`);
     }
   }
-  return out.length ? ['# Targets (every criterion short of a 9, and what the critics score a 9)', ...out, ''] : [];
+  return out.length ? ['# Targets (every criterion short of a 9: what the critics score a 9, why it scored what it did, and the critic\'s own way to raise it)', ...out, ''] : [];
 }
 
 // What the critics praised: strengths, and the lines quoted as evidence for a
-// criterion at 9 or 10. A rewrite that loses these loses points it already had.
+// criterion at 9 or 10 — minus any line an issue quotes. It guards against
+// changes nobody asked for; the prompts say an issue or a target outranks it
+// (a keep list that outranked them left every faulted sequence in place).
 export function formatKeepList(critique) {
   const out = [];
+  // A line an issue quotes is at fault, whatever another critic said of it.
+  const faulted = (critique?.facets || [])
+    .filter((f) => f.status === 'done')
+    .flatMap((f) => f.issues || [])
+    .map((i) => String(i.quote || '').trim())
+    .filter(Boolean);
+  const isFaulted = (quote) => faulted.some((q) => q.includes(quote) || quote.includes(q));
   for (const f of critique?.facets || []) {
     if (f.status !== 'done') continue;
     for (const s of f.strengths || []) out.push(`- [${f.label}] ${s}`);
     for (const c of f.criteria || []) {
       if (c.applicable === false || (c.score ?? 0) < KEEP_FROM) continue;
       for (const e of c.evidence || []) {
-        if (e.quote) out.push(`- [${f.label} / ${c.label || c.key}, scored ${c.score}] "${e.quote}"`);
+        const quote = String(e.quote || '').trim();
+        if (quote && !isFaulted(quote)) out.push(`- [${f.label} / ${c.label || c.key}, scored ${c.score}] "${quote}"`);
       }
     }
   }
-  return out.length ? ['# Keep (the critics praised these — do not change them)', ...out, ''] : [];
+  return out.length ? ['# Keep (the critics praised these — leave them as written unless an issue or a target above replaces or cuts the passage they are in)', ...out, ''] : [];
 }
 
 // Everything the critics score the beat against, as one block. `ctx` is
@@ -299,7 +324,6 @@ export function formatRewriteContext(ctx) {
   const out = [
     '# What this beat must agree with (fixed — the rewrite may not contradict any of it)',
     ...section('What this beat is for (its description)', plainText(ctx.beat?.desc)),
-    ...section('Scene bible for this beat', plainText(ctx.sceneBible)),
     ...section('Beat-level direction', plainText(ctx.beat?.dialog_notes)),
     ...section("Director's notes (project-wide)", (ctx.directorNotes || []).length ? notesText(ctx.directorNotes) : ''),
     ...section('Directorial voice', plainText(ctx.directorialVoice)),
@@ -311,6 +335,48 @@ export function formatRewriteContext(ctx) {
     ...section('The beat after this one (this beat hands off to it)', ctx.nextBeat ? neighborBlock('NEXT beat', ctx.nextBeat) : ''),
   ];
   return out.length > 1 ? out : [];
+}
+
+// ── Applying part of a critique ──
+// The Regenerate dialog lets the human tick which facets and criteria the
+// rewrite acts on. `apply` is {facetKey: true | [criterionKey, …]}: a facet
+// that is absent (or has an empty list) is set aside whole; `true` — or a
+// facet stored without criteria — applies all of it. A falsy `apply` applies
+// everything. Returns the critique as the rewrite calls should read it and
+// `setAside`, one line per facet or criterion left out. A facet with criteria
+// set aside loses their issues, has its score derived again from what is
+// left, and drops its summary (which speaks for the whole facet). Pure.
+export function scopeCritique(critique, apply) {
+  if (!apply || typeof apply !== 'object') return { critique, setAside: [] };
+  const setAside = [];
+  const facets = [];
+  for (const f of critique?.facets || []) {
+    if (f.status !== 'done') { facets.push(f); continue; }
+    const sel = apply[f.key];
+    const criteria = f.criteria || [];
+    const keys = new Set(Array.isArray(sel) ? sel.map(String) : []);
+    const whole = sel === true || (Array.isArray(sel) && !criteria.length);
+    if (!whole && !criteria.some((c) => keys.has(c.key))) {
+      setAside.push(`${f.label} (the whole facet)`);
+      continue;
+    }
+    if (whole || criteria.every((c) => keys.has(c.key))) { facets.push(f); continue; }
+    const kept = criteria.filter((c) => keys.has(c.key));
+    const issues = (f.issues || []).filter((i) => !i.criterion || keys.has(i.criterion));
+    for (const c of criteria) if (!keys.has(c.key) && c.applicable !== false) setAside.push(`${f.label} / ${c.label || c.key}`);
+    facets.push({ ...f, criteria: kept, issues, score: deriveFacetScore(kept, issues, getFacet(f.key)), summary: '', comments: '' });
+  }
+  return { critique: { ...critique, facets }, setAside };
+}
+
+function scopeBlock(setAside) {
+  if (!setAside?.length) return [];
+  return [
+    '# Scope of this rewrite (chosen by the director)',
+    'Only the parts of the critique shown below are applied. The director set these aside — make no change on their account, whatever the rubric says a 9 looks like for them:',
+    ...setAside.map((line) => `- ${line}`),
+    '',
+  ];
 }
 
 function directionBlock(direction) {
@@ -369,10 +435,11 @@ function critiqueBlocks(critique) {
 // Pass 1 — order the critique into one concrete plan. `ctx` is the critics'
 // source material, `direction` the human's steer, `history` the discarded
 // attempts of a climb; all optional.
-export async function synthesizeRewriteStrategy({ beat, critique, ctx = null, direction = '', history = [] }) {
+export async function synthesizeRewriteStrategy({ beat, critique, ctx = null, direction = '', history = [], setAside = [] }) {
   const user = [
     ...formatRewriteContext(ctx),
     ...directionBlock(direction),
+    ...scopeBlock(setAside),
     ...historyBlock(history),
     ...critiqueBlocks(critique),
     '# Current beat body',
@@ -382,10 +449,11 @@ export async function synthesizeRewriteStrategy({ beat, critique, ctx = null, di
 }
 
 // Pass 2 — rewrite the beat body from the plan and the critique.
-export async function regenerateBeatBody({ beat, strategy, critique = null, ctx = null, direction = '' }) {
+export async function regenerateBeatBody({ beat, strategy, critique = null, ctx = null, direction = '', setAside = [] }) {
   const user = [
     ...formatRewriteContext(ctx),
     ...directionBlock(direction),
+    ...scopeBlock(setAside),
     ...(critique ? ['# Critique (each issue quotes the line at fault and gives a fix)', formatCritiqueForRewrite(critique), '', ...formatTargets(critique), ...formatKeepList(critique)] : []),
     '# The plan (follow it; it orders the issues and settles the conflicts between them)',
     String(strategy || ''),
@@ -456,6 +524,8 @@ export function applyBeatEdits(body, edits) {
     if (reason) skipped.push({ ...edit, reason });
     else applied.push(edit);
   }
+  // A cut paragraph leaves its blank lines behind; close the gaps.
+  if (applied.length) text = text.replace(/\n[ \t]*(?:\n[ \t]*){2,}/g, '\n\n').trim();
   return { body: toStoredBody(text), applied, skipped };
 }
 
@@ -491,7 +561,9 @@ export async function loadRewriteContext(projectId, beat) {
   }
 }
 
-export async function regenerateBeat(projectId, beatId) {
+// `apply` picks the facets / criteria the rewrite acts on (see scopeCritique;
+// omitted = the whole critique), `direction` is the human's steer.
+export async function regenerateBeat(projectId, beatId, { apply = null, direction = '' } = {}) {
   projectId = await resolveProjectId(projectId);
   const beat = await getBeat(projectId, String(beatId));
   if (!beat) throw httpError(`beat not found: ${beatId}`, 404);
@@ -501,14 +573,19 @@ export async function regenerateBeat(projectId, beatId) {
   }
   // Pass 1: order the critique into one concrete plan. Pass 2: rewrite from
   // the plan and the critique. Stash only after both model calls succeed.
+  const scoped = scopeCritique(critique, apply);
+  if (!scoped.critique.facets.some((f) => f.status === 'done')) {
+    throw httpError('Nothing is selected to apply. Tick at least one part of the critique.', 400);
+  }
   const ctx = await loadRewriteContext(projectId, beat);
-  const strategy = await synthesizeRewriteStrategy({ beat, critique, ctx });
-  const body = await regenerateBeatBody({ beat, strategy, critique, ctx });
+  const args = { beat, critique: scoped.critique, ctx, direction, setAside: scoped.setAside };
+  const strategy = await synthesizeRewriteStrategy(args);
+  const body = await regenerateBeatBody({ ...args, strategy });
   if (!body) throw new Error('The rewrite came back empty.');
   await stashPreviousBody(projectId, beat._id, String(beat.body || ''));
   await setBeatBodyViaGateway(projectId, beat._id, body);
   await setCritiqueStrategy(projectId, beat._id, strategy);
-  logger.info(`beatRewrite: regenerate beat=${beat._id} strategy_chars=${strategy.length} body_chars=${body.length}`);
+  logger.info(`beatRewrite: regenerate beat=${beat._id} set_aside=${scoped.setAside.length} strategy_chars=${strategy.length} body_chars=${body.length}`);
   return { body, strategy };
 }
 
