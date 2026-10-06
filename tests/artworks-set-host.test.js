@@ -46,6 +46,40 @@ describe("artworks 'set' host type", () => {
     expect(listed.artworks.length).toBe(1);
   });
 
+  it('the first finished artwork becomes the main image of a set that has none', async () => {
+    const make = async (extra = {}) => {
+      const { artwork } = await Artworks.createPendingArtwork({
+        projectId: p1, hostType: 'set', hostId: setId, prompt: 'p', model: 'm', ...extra,
+      });
+      const result = new ObjectId();
+      const done = await Artworks.setArtworkResult({
+        projectId: p1, hostType: 'set', hostId: setId, artworkId: artwork._id, resultImageId: result,
+      });
+      return { result, done };
+    };
+    // A prop plate is not a picture of the place.
+    const prop = await make({ prop: 'hacky sack' });
+    expect(prop.done.mainImageIdChange).toBeNull();
+    expect((await Sets.getSet(p1, setId)).main_image_id).toBeNull();
+
+    const first = await make();
+    expect(first.done.mainImageIdChange.changed).toBe(true);
+    expect((await Sets.getSet(p1, setId)).main_image_id.equals(first.result)).toBe(true);
+
+    const second = await make();
+    expect(second.done.mainImageIdChange).toBeNull();
+    expect((await Sets.getSet(p1, setId)).main_image_id.equals(first.result)).toBe(true);
+  });
+
+  it('an imported artwork becomes the main image of a set that has none', async () => {
+    const result = new ObjectId();
+    const out = await Artworks.appendDoneArtwork({
+      projectId: p1, hostType: 'set', hostId: setId, resultImageId: result,
+    });
+    expect(out.mainImageIdChange.changed).toBe(true);
+    expect((await Sets.getSet(p1, setId)).main_image_id.equals(result)).toBe(true);
+  });
+
   it('set host resolves by name too', async () => {
     const { artwork } = await Artworks.appendDoneArtwork({
       projectId: p1,

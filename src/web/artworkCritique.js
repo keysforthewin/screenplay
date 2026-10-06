@@ -20,6 +20,7 @@
 // full snapshots to SSE subscribers, five-minute retention).
 
 import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { ObjectId } from 'mongodb';
 import sharp from 'sharp';
 import { logger } from '../log.js';
@@ -55,10 +56,16 @@ import { createPendingArtworkViaGateway, setArtworkStatusViaGateway, setCharacte
 import { wardrobeImageId, wardrobeLine } from './wardrobe.js';
 import { generateArtworkImageInline, startEditArtworkJob, undoArtworkEdit } from './artworkJobs.js';
 import {
-  MAX_SUBJECTS,
+  PROPOSAL_BATCH_SIZE,
   AUDIT_BATCH_SIZE,
   MATCH_SYSTEM_PROMPT,
   MATCH_SCHEMA,
+  MATCH_BATCH_SIZE,
+  DUPLICATES_SYSTEM_PROMPT,
+  DUPLICATES_SCHEMA,
+  buildDuplicatesText,
+  normalizeDuplicateGroups,
+  mergeMatchBatches,
   buildMatchText,
   normalizeMatches,
   matchedEntry,
@@ -87,13 +94,18 @@ import {
   characterPortraitId,
   orderCharacterReferences,
   rebindCharacterPrompt,
+  setAnchorId,
+  orderSetReferences,
+  rebindSetPrompt,
 } from './artworkCritiqueRules.js';
 import { getCharacter } from '../mongo/characters.js';
+import { getSet } from '../mongo/sets.js';
 import { describeArtwork } from './artworkVisionWorker.js';
 
 const TERMINAL_RETENTION_MS = 5 * 60 * 1000;
 const SUBJECT_CONCURRENCY = 2;
 const DESCRIBE_CONCURRENCY = 3;
+const MATCH_CONCURRENCY = 2;
 const RENDER_CONCURRENCY = 3;
 const VISION_WIDTH = 1024;
 const MAX_OVERRIDE_PROMPT = 2000;
@@ -152,11 +164,11 @@ async function callStructured({ system, schema, content, imageBuffers = [], labe
   });
   const textOf = (r) => (r?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
   const parse = (r) => { try { return JSON.parse(textOf(r)); } catch { return null; } };
-  let resp = await ask();
+  let resp = await guard(ask());
   let parsed = parse(resp);
   if (!parsed) {
     logger.warn(`artwork critique: ${label} returned no JSON (stop_reason ${resp?.stop_reason || '?'}); asking again`);
-    resp = await ask();
+    resp = await guard(ask());
     parsed = parse(resp);
   }
   await recordUsage({ model, resp, imageBuffers });
@@ -181,7 +193,7 @@ async function deriveRequirements({ text, subjects, beat = null }) {
   const userText = `${text}\n\n${buildSubjectRoster(subjects, { beat })}`;
   if (analyzerOverride) {
     if (typeof analyzerOverride.requirements !== 'function') throw new Error('test analyzer has no requirements()');
-    return analyzerOverride.requirements({ text: userText, subjects });
+    return guard(analyzerOverride.requirements({ text: userText, subjects }));
   }
   return callStructured({
     system: REQUIREMENTS_SYSTEM_PROMPT,
@@ -196,7 +208,7 @@ async function auditArtworkBatch({ beat, subject, requirements, artworks, matche
   const text = buildAuditText({ beat, subject, subjectCard: subject.card, requirements, artworks, matched });
   if (analyzerOverride) {
     if (typeof analyzerOverride.audit !== 'function') throw new Error('test analyzer has no audit()');
-    return analyzerOverride.audit({ text, subject, artworks, requirements });
+    return guard(analyzerOverride.audit({ text, subject, artworks, requirements }));
   }
   const images = [];
   const content = [];
@@ -218,10 +230,21 @@ async function matchArtworks({ beat, subject, requirements, artworks }) {
   const text = buildMatchText({ beat, subject, subjectCard: subject.card, requirements, artworks });
   if (analyzerOverride) {
     const fn = analyzerOverride.match || analyzerOverride.shortlist;
-    if (typeof fn === 'function') return fn({ text, subject, artworks, requirements });
+    if (typeof fn === 'function') return guard(fn({ text, subject, artworks, requirements }));
     return { candidates: requirements.map((r) => ({ requirement_id: r.id, artwork_indexes: artworks.map((_, i) => i + 1) })), duplicate_groups: [] };
   }
   return callStructured({ system: MATCH_SYSTEM_PROMPT, schema: MATCH_SCHEMA, content: [{ type: 'text', text }], label: `match ${subject.name}` });
+}
+
+// Duplicates across the whole library (one text call; the batched match only
+// sees 8 pieces at a time).
+async function findDuplicates({ subject, artworks }) {
+  if (artworks.length < 2) return { duplicate_groups: [] };
+  if (analyzerOverride) {
+    if (typeof analyzerOverride.duplicates === 'function') return guard(analyzerOverride.duplicates({ subject, artworks }));
+    return { duplicate_groups: [] };
+  }
+  return callStructured({ system: DUPLICATES_SYSTEM_PROMPT, schema: DUPLICATES_SCHEMA, content: [{ type: 'text', text: buildDuplicatesText({ subject, artworks }) }], label: `duplicates ${subject.name}` });
 }
 
 // The match reads descriptions, so every piece needs one. An artwork with
@@ -254,7 +277,7 @@ async function proposeForSubject({ beat, subject, requirements, audit, catalogTe
   const text = buildProposalsText({ beat, subject, subjectCard: subject.card, requirements, audit, catalogText, direction });
   if (analyzerOverride) {
     if (typeof analyzerOverride.proposals !== 'function') throw new Error('test analyzer has no proposals()');
-    return analyzerOverride.proposals({ text, subject, requirements });
+    return guard(analyzerOverride.proposals({ text, subject, requirements }));
   }
   return callStructured({ system: PROPOSALS_SYSTEM_PROMPT, schema: PROPOSALS_SCHEMA, content: [{ type: 'text', text }], label: `proposals ${subject.name}` });
 }
@@ -269,6 +292,64 @@ const busyBeats = new Set();
 // same two jobs itself (`climb: true`).
 const climbHolds = new Set();
 const CLIMB_BUSY = 'A climb is running for this beat; wait for it to finish or cancel it.';
+
+// ── Cancelling a run ──
+// The job a run belongs to rides along in async context, so the model calls
+// deep inside it can be abandoned the moment Cancel is pressed: `guard` races
+// a call against the job's cancel signal and the run unwinds at once. A call
+// already under way (a CLI agent can take minutes) is left to finish in the
+// background; its answer is discarded and nothing more is written.
+const runContext = new AsyncLocalStorage();
+
+class CritiqueCancelledError extends Error {
+  constructor() { super('The artwork critique was cancelled.'); this.cancelled = true; }
+}
+const isCancel = (e) => !!e?.cancelled;
+
+function checkCancelled() {
+  if (runContext.getStore()?.cancel_requested) throw new CritiqueCancelledError();
+}
+
+function guard(promise) {
+  const job = runContext.getStore();
+  if (!job?.cancelled) return promise;
+  checkCancelled();
+  Promise.resolve(promise).catch(() => {});
+  return Promise.race([promise, job.cancelled]);
+}
+
+// The run a person started for this beat that is still going (never a
+// climb's own critique runs) — what a reopened page reattaches to.
+export function activeArtworkCritiqueJob(beatId) {
+  let found = null;
+  for (const job of jobs.values()) {
+    if (job.manual && job.beat_id === String(beatId) && !JOB_ENDED.has(job.status)) found = job;
+  }
+  return found;
+}
+const JOB_ENDED = new Set(['done', 'partial', 'error', 'cancelled']);
+
+// "Cancel": stop the beat's manual run now. 409 when none is running.
+export async function requestArtworkCritiqueCancel({ projectId, beatId }) {
+  projectId = await resolveProjectId(projectId);
+  const beat = await getBeat(projectId, String(beatId));
+  if (!beat) throw httpError(`beat not found: ${beatId}`, 404);
+  const job = activeArtworkCritiqueJob(beat._id.toString());
+  if (!job) throw httpError('No artwork critique is running for this beat.', 409);
+  job.cancel_requested = true;
+  job.cancel();
+  return job;
+}
+
+// Why this beat's artwork cannot be changed right now (a run, a generation or
+// a climb holds it), or null.
+export function artworkCritiqueBusyReason(beatId) {
+  const key = String(beatId);
+  if (climbHolds.has(key)) return CLIMB_BUSY;
+  if (busyBeats.has(key)) return 'An artwork critique is running for this beat; wait for it to finish.';
+  if (generatingBeats.has(key)) return 'Artwork is being generated for this beat; wait for it to finish.';
+  return null;
+}
 
 export function getArtworkCritiqueJob(jobId) {
   return jobs.get(jobId) || null;
@@ -301,7 +382,22 @@ export function serializeArtworkCritiqueJob(job) {
     error: job.error,
     warnings: [...job.warnings],
     subjects: job.subjects.map((s) => ({ ...s })),
+    // Phase 1, picture by picture (the SPA's coverage carousel).
+    images: (job.images || []).map((i) => ({ ...i })),
+    images_done: (job.images || []).filter((i) => IMAGE_DONE.has(i.status)).length,
+    images_total: (job.images || []).length,
   };
+}
+
+// job.images[].status: queued → checking → relevant (its description answers
+// a requirement) | irrelevant | skipped (the subject has no requirement to
+// check it against) | error.
+const IMAGE_DONE = new Set(['relevant', 'irrelevant', 'skipped', 'error']);
+
+function markImages(job, artworks, status) {
+  const ids = new Set((artworks || []).map((a) => String(a._id)));
+  for (const i of job.images || []) if (ids.has(i.artwork_id)) i.status = status;
+  publish(job);
 }
 
 function publish(job) {
@@ -345,6 +441,9 @@ export function createArtworkCritiqueJob(beatId, { direction = '', force = false
     started_at: new Date(),
     finished_at: null,
   };
+  // Rejects when the run is cancelled (see `guard`).
+  job.cancelled = new Promise((_, reject) => { job.cancel = () => reject(new CritiqueCancelledError()); });
+  job.cancelled.catch(() => {});
   jobs.set(job.job_id, job);
   return job;
 }
@@ -357,10 +456,7 @@ function collectSubjects(ctx, warnings, beat = null) {
     ...(ctx.sets || []).map((doc) => ({ kind: 'set', doc })),
     ...(ctx.characters || []).map((doc) => ({ kind: 'character', doc })),
   ];
-  if (all.length > MAX_SUBJECTS) {
-    warnings.push(`${all.length} linked subjects; only the first ${MAX_SUBJECTS} were audited (sets first).`);
-  }
-  return all.slice(0, MAX_SUBJECTS).map(({ kind, doc }) => ({
+  return all.map(({ kind, doc }) => ({
     kind,
     id: doc._id,
     name: String(doc.name || ''),
@@ -373,6 +469,7 @@ function collectSubjects(ctx, warnings, beat = null) {
         result_image_id: a.result_image_id,
         name: String(a.name || ''),
         description: String(a.description || a.prompt || ''),
+        ...(a.prop ? { prop: String(a.prop) } : {}),
       })),
   }));
 }
@@ -396,7 +493,7 @@ function sameSubject(a, b) {
 // as `inventory` while the requirements and the library read the same) →
 // which pieces answer which requirement. No image is looked at. Returns the
 // working state phase 2 continues from.
-async function matchSubject({ projectId, beat, subject, priorSubject, warnings, stats, rereview = false }) {
+async function matchSubject({ projectId, beat, subject, priorSubject, warnings, stats, rereview = false, onImages = () => {} }) {
   const lock = subject.kind === 'character' ? wardrobeLine(subject.doc, beat) : '';
   const reqSig = requirementsSignature(subject.requirements, lock);
   const total = subject.artworks.length;
@@ -406,25 +503,65 @@ async function matchSubject({ projectId, beat, subject, priorSubject, warnings, 
     warnings.push(`${subject.name} has no artwork on file — every requirement is missing and its proposals carry no references.`);
     return state;
   }
-  if (!subject.requirements.length) return state;
+  if (!subject.requirements.length) { onImages(subject.artworks, 'skipped'); return state; }
+  onImages(subject.artworks.filter((a) => !a.description), 'checking');
   stats.described += await ensureArtworkDescriptions({ projectId, subject, warnings });
   const library = subject.artworks.map((a) => `${String(a._id)}:${createHash('sha1').update(`${a.name}\n${a.description}`).digest('hex')}`).join(',');
   const librarySig = createHash('sha1').update(`${reqSig}|${library}`).digest('hex');
   const stored = priorSubject?.inventory;
   let matches;
   let duplicates;
-  if (Array.isArray(stored?.matches) && stored.req_sig === reqSig && stored.sig === librarySig) {
+  // Pieces no batch matched to ANY requirement (what the page offers to
+  // delete). Not "left out of the final six per requirement": a piece that
+  // answers a requirement eight others answer better is still relevant.
+  let irrelevant;
+  if (Array.isArray(stored?.matches) && Array.isArray(stored.irrelevant) && stored.req_sig === reqSig && stored.sig === librarySig) {
     matches = stored.matches.map((m) => ({ ...m, artwork_id: String(m.artwork_id) }));
     duplicates = stored.duplicates || [];
+    irrelevant = stored.irrelevant.map(String);
+    const out = new Set(irrelevant);
+    onImages(subject.artworks.filter((a) => !out.has(String(a._id))), 'relevant');
+    onImages(subject.artworks.filter((a) => out.has(String(a._id))), 'irrelevant');
   } else {
-    const raw = await matchArtworks({ beat, subject, requirements: subject.requirements, artworks: subject.artworks });
-    const normalized = normalizeMatches(raw, { requirements: subject.requirements, artworks: subject.artworks });
-    matches = normalized.matches;
-    duplicates = normalized.duplicates.map((g) => g.map((id) => new ObjectId(id)));
-    stats.matches += 1;
+    // In batches, so the run can report picture by picture. A batch that
+    // fails fails the subject, as the single call did.
+    const batches = [];
+    for (let i = 0; i < subject.artworks.length; i += MATCH_BATCH_SIZE) batches.push(subject.artworks.slice(i, i + MATCH_BATCH_SIZE));
+    const answers = new Array(batches.length);
+    let failure = null;
+    await runPool(batches.map((batch, i) => ({ batch, i })), MATCH_CONCURRENCY, async ({ batch, i }) => {
+      if (failure) return;
+      onImages(batch, 'checking');
+      try {
+        const raw = await matchArtworks({ beat, subject, requirements: subject.requirements, artworks: batch });
+        answers[i] = normalizeMatches(raw, { requirements: subject.requirements, artworks: batch });
+        const hit = new Set(answers[i].matches.map((m) => m.artwork_id));
+        onImages(batch.filter((a) => hit.has(String(a._id))), 'relevant');
+        onImages(batch.filter((a) => !hit.has(String(a._id))), 'irrelevant');
+        stats.matches += 1;
+      } catch (e) {
+        failure = failure || e;
+        onImages(batch, 'error');
+      }
+    });
+    if (failure) throw failure;
+    const merged = mergeMatchBatches(answers, subject.requirements);
+    matches = merged.matches;
+    const hitAny = new Set(answers.flatMap((a) => a.matches.map((m) => m.artwork_id)));
+    irrelevant = subject.artworks.map((a) => String(a._id)).filter((id) => !hitAny.has(id));
+    // Duplicates: the batches' own finds plus one pass over the whole library.
+    let across = [];
+    try {
+      across = normalizeDuplicateGroups(await findDuplicates({ subject, artworks: subject.artworks }), subject.artworks);
+    } catch (e) {
+      if (isCancel(e)) throw e;
+      warnings.push(`${subject.name}: the duplicate check failed (${e.message}) — duplicates are not listed.`);
+    }
+    const grouped = new Set(across.flat());
+    duplicates = [...across, ...merged.duplicates.filter((g) => !g.some((id) => grouped.has(id)))].map((g) => g.map((id) => new ObjectId(id)));
   }
   state.matches = matches;
-  state.inventory = { total, sig: librarySig, req_sig: reqSig, matches: matches.map((m) => ({ ...m, artwork_id: new ObjectId(m.artwork_id) })), duplicates };
+  state.inventory = { total, sig: librarySig, req_sig: reqSig, matches: matches.map((m) => ({ ...m, artwork_id: new ObjectId(m.artwork_id) })), duplicates, irrelevant: irrelevant.map((id) => new ObjectId(id)) };
   // Reviews on file that still describe the picture as it is now.
   for (const a of subject.artworks) {
     const e = priorEntries.get(String(a._id));
@@ -545,6 +682,10 @@ function auditForPlanner(subject, audit) {
 // `job.focus` (a climb round) lists artwork ids to review whatever their
 // descriptions matched.
 export async function runArtworkCritique({ projectId, job }) {
+  return runContext.run(job, () => runCritique({ projectId, job }));
+}
+
+async function runCritique({ projectId, job }) {
   projectId = await resolveProjectId(projectId);
   try {
     const beat = await getBeat(projectId, job.beat_id);
@@ -553,12 +694,17 @@ export async function runArtworkCritique({ projectId, job }) {
     job.warnings.push(...(ctx.warnings || []));
     const subjects = collectSubjects(ctx, job.warnings, beat);
     job.subjects = subjects.map((s) => ({ kind: s.kind, id: String(s.id), name: s.name, status: 'pending', requirement_count: 0, covered: 0, partial: 0, missing: 0, artworks_total: s.artworks.length, audited: 0, reused: 0 }));
+    job.images = subjects.flatMap((s) => s.artworks.map((a) => ({ artwork_id: String(a._id), image_id: String(a.result_image_id), name: a.name, subject_kind: s.kind, subject_name: s.name, status: 'queued' })));
     // `force` forgets what the last run learned: nothing is reused below and
     // the stored critique is replaced by empty stubs, so the page fills again
     // as each subject is matched and each review batch lands. An incremental
     // run keeps the stored critique on the page and updates it in place.
     const stored = await getBeatArtworkCritique(projectId, beat._id);
-    const fresh = job.force || job.stage === 'coverage';
+    // Only `force` forgets the last run. A coverage check keeps the list of
+    // requirements while the beat reads the same, so checking again after
+    // artwork was created measures against the SAME list (a list derived anew
+    // each time never reached 100%: it named a few new things every run).
+    const fresh = job.force;
     const prior = fresh ? null : stored;
     const model = modelFor('storyboard');
     if (prior) await beginArtworkCritiqueRun(projectId, beat._id, { model, subjects });
@@ -636,6 +782,7 @@ export async function runArtworkCritique({ projectId, job }) {
     // Write a subject as it stands (after its match, after every review
     // batch): the page follows the run instead of waiting for its end.
     const store = async (s, opts) => {
+      checkCancelled();
       const js = jobSubject(job, s);
       const state = states.get(s);
       const result = subjectResult(s, state, opts);
@@ -665,9 +812,11 @@ export async function runArtworkCritique({ projectId, job }) {
       jobSubject(job, s).status = 'matching';
       publish(job);
       try {
-        states.set(s, await matchSubject({ projectId, beat, subject: s, priorSubject: priorSubject(s), warnings: job.warnings, stats: statsOf.get(s), rereview: job.stage === 'quality' }));
+        states.set(s, await matchSubject({ projectId, beat, subject: s, priorSubject: priorSubject(s), warnings: job.warnings, stats: statsOf.get(s), rereview: job.stage === 'quality', onImages: (list, status) => markImages(job, list, status) }));
         await store(s, { provisional: true });
       } catch (e) {
+        markImages(job, s.artworks.filter((a) => !IMAGE_DONE.has((job.images || []).find((i) => i.artwork_id === String(a._id))?.status)), 'error');
+        if (isCancel(e)) throw e;
         await fail(s, e);
       }
     });
@@ -692,6 +841,7 @@ export async function runArtworkCritique({ projectId, job }) {
         await reviewSubject({ beat, subject: s, state: states.get(s), forced, mode, stats: statsOf.get(s), onBatch: () => store(s, { provisional: true }) });
         await store(s);
       } catch (e) {
+        if (isCancel(e)) throw e;
         await fail(s, e);
       }
     });
@@ -734,10 +884,19 @@ export async function runArtworkCritique({ projectId, job }) {
           js.status = 'proposing';
           publish(job);
           if (!catalog) {
-            catalog = await buildReferenceCatalog(projectId, beat);
+            // The planner's catalog also offers each set's uploaded photos:
+            // the real place the set was built from, which a new plate of
+            // it has to reproduce (the cut-frame picker stays artwork-only).
+            catalog = await buildReferenceCatalog(projectId, beat, { setUploads: true });
             catalogText = formatReferenceCatalog(catalog);
           }
-          const propRaw = await proposeForSubject({ beat, subject: s, requirements: gaps, audit: auditForPlanner(s, audits.get(s)), catalogText, direction: job.direction });
+          // Every gap gets a draft: the planner is asked a few requirements
+          // at a time, so a subject missing thirty pictures is not cut off.
+          const propRaw = { proposals: [] };
+          for (let i = 0; i < gaps.length; i += PROPOSAL_BATCH_SIZE) {
+            const part = await proposeForSubject({ beat, subject: s, requirements: gaps.slice(i, i + PROPOSAL_BATCH_SIZE), audit: auditForPlanner(s, audits.get(s)), catalogText, direction: job.direction });
+            propRaw.proposals.push(...(Array.isArray(part?.proposals) ? part.proposals : []));
+          }
           const { proposals: drafted, warnings: propWarnings } = normalizeProposals(propRaw, { subject: s, requirements: gaps, catalog, beat });
           job.warnings.push(...propWarnings);
           if (!drafted.length) job.warnings.push(`${s.name}: ${gaps.length} requirement(s) uncovered but the planner proposed nothing.`);
@@ -754,6 +913,7 @@ export async function runArtworkCritique({ projectId, job }) {
         await updateArtworkCritiqueSubject(projectId, beat._id, s.id, { status: 'done', error_message: null });
         publish(job);
       } catch (e) {
+        if (isCancel(e)) throw e;
         await fail(s, e);
       }
     });
@@ -770,6 +930,31 @@ export async function runArtworkCritique({ projectId, job }) {
     publish(job);
     logger.info(`artwork critique: beat=${beat._id} status=${job.status} subjects=${subjects.length} audited=${job.subjects.reduce((n, s) => n + s.audited, 0)} reused=${job.subjects.reduce((n, s) => n + s.reused, 0)} review=${mode}${reuse ? ' (requirements reused)' : ''}`);
   } catch (e) {
+    if (isCancel(e)) {
+      // What the run had stored stays; subjects it had not finished stop
+      // saying they are waiting.
+      job.status = 'cancelled';
+      job.phase = 'done';
+      job.finished_at = new Date();
+      job.warnings.push('The check was cancelled before it finished — what it had stored up to then is shown.');
+      try {
+        const stored = await getBeatArtworkCritique(projectId, job.beat_id);
+        for (const s of stored?.subjects || []) {
+          if (s.status === 'pending') await updateArtworkCritiqueSubject(projectId, job.beat_id, s.id, { status: 'cancelled' });
+        }
+        await finalizeArtworkCritique(projectId, job.beat_id, {
+          status: 'cancelled',
+          coverage: computeCoverage((stored?.subjects || []).map((s) => ({ requirements: s.requirements || [], artworks: s.artworks || [] }))),
+          warnings: job.warnings,
+          unlinked_mentions: stored?.unlinked_mentions || [],
+        });
+      } catch (err) {
+        logger.warn(`artwork critique: could not store the cancelled state: ${err.message}`);
+      }
+      publish(job);
+      logger.info(`artwork critique: beat=${job.beat_id} cancelled`);
+      return job;
+    }
     job.status = 'error';
     job.phase = 'done';
     job.error = e.message;
@@ -799,7 +984,7 @@ export async function startArtworkCritiqueJob({ projectId, beatId, force = false
   // A coverage check (or `force`) starts from nothing, and the page is
   // emptied before the 202 so no client can read the old audit back while
   // the run is starting.
-  const fresh = force || stage === 'coverage';
+  const fresh = force;
   try {
     await setBeatClimb(projectId, busyKey, 'artwork', null);
     if (fresh) await clearBeatArtworkCritique(projectId, busyKey);
@@ -808,6 +993,7 @@ export async function startArtworkCritiqueJob({ projectId, beatId, force = false
     throw e;
   }
   const job = createArtworkCritiqueJob(busyKey, { force, stage });
+  job.manual = true;
   setImmediate(() => {
     runArtworkCritique({ projectId, job })
       .catch((e) => logger.error(`artwork critique: background run failed: ${e.message}`))
@@ -1032,6 +1218,43 @@ async function anchorCharacterItems({ projectId, beat = null, items }) {
   }
 }
 
+// The set counterpart of anchorCharacterItems: every VIEW proposal of a set
+// goes out with the set's main image (a photo of the real place, usually) as
+// reference image 1, its other photos next, its artwork last, and a binding
+// that names what each is — so a plate rendered from a proposal stored
+// before this rule, or one whose references an override trimmed, still looks
+// like THIS theatre. Prop plates are left alone (the object, not the place).
+// A reference belonging to another host is dropped. Roles come from GridFS
+// metadata: an upload is a photo, anything generated is artwork.
+async function anchorSetItems({ projectId, items }) {
+  const anchors = new Map();
+  for (const item of items) {
+    if (item.host_type !== 'set' || item.prop) continue;
+    if (!anchors.has(item.host_id)) {
+      const set = await getSet(projectId, item.host_id);
+      const anchorId = setAnchorId(set);
+      anchors.set(item.host_id, { anchorId: anchorId && (await findImageFile(anchorId)) ? anchorId : '', setId: set?._id ? String(set._id) : item.host_id });
+    }
+    const anchor = anchors.get(item.host_id);
+    const picks = [];
+    for (const id of item.reference_image_ids) {
+      if (id === anchor.anchorId) continue;
+      const file = await findImageFile(id);
+      if (!file) continue;
+      const meta = file.metadata || {};
+      picks.push({
+        image_id: id,
+        owner_type: meta.owner_type === 'set' ? 'set' : meta.owner_type || 'other',
+        owner_id: meta.owner_id ? String(meta.owner_id) : '',
+        upload: !meta.generated_by && (meta.source || 'upload') === 'upload',
+      });
+    }
+    const ordered = orderSetReferences({ anchorId: anchor.anchorId, picks, setId: anchor.setId });
+    item.reference_image_ids = ordered.map((r) => r.image_id);
+    item.prompt = rebindSetPrompt(item.prompt, ordered);
+  }
+}
+
 // Auto-promote: the first finished costume render of a character with no
 // wardrobe plate becomes the plate, so the next render (this job or the next
 // run) copies its clothes. Re-reads the character so a sibling render that
@@ -1077,6 +1300,7 @@ async function renderProposal({ projectId, beatId, job, item, discordUser }) {
       model: job.model,
       referenceImageIds: item.reference_image_ids,
       jobId: job.job_id,
+      prop: item.prop || null,
     });
     artworkId = artwork._id;
     const { fileId } = await generateArtworkImageInline({
@@ -1188,6 +1412,7 @@ export async function startArtworkGenerateJob({ projectId, beatId, proposalIds, 
       host_id: String(p.host_id),
       host_name: p.host_name,
       name: p.name,
+      prop: p.prop || null,
       prompt: o.prompt ?? p.prompt,
       reference_image_ids: (o.reference_image_ids ?? (p.reference_image_ids || [])).map(String),
       requirement_ids: p.requirement_ids || [],
@@ -1199,6 +1424,7 @@ export async function startArtworkGenerateJob({ projectId, beatId, proposalIds, 
   }
   if (!items.length) throw httpError('None of the selected proposals can be generated (already done or dismissed).', 400);
   await anchorCharacterItems({ projectId, beat, items });
+  await anchorSetItems({ projectId, items });
   await assertShotsSatisfyModelReferences({
     model,
     explicitShots: items.map((i) => ({ name: i.name, model, reference_image_ids: i.reference_image_ids })),

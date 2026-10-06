@@ -7,6 +7,8 @@
 // beat room, so the generation job is polled.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import CoverageCarousel from './CoverageCarousel.jsx';
+import IrrelevantArtwork from './IrrelevantArtwork.jsx';
 import { apiGet, apiPatchJson, apiPostJson, apiDelete, apiSseUrl, thumbUrl } from '../api.js';
 import { readStoredCatalogModel, writeStoredImageModel } from './imageModels.js';
 import { ImageModelSelect } from './ImageModelSelect.jsx';
@@ -340,7 +342,7 @@ function ProposalRow({ p, checked, onToggle, override, onOverride, requirementLa
             ))}
           </div>
         )}
-        {refs.length === 0 && selectable ? <div className="artwork-critique-muted">No reference artwork — the look comes from the prompt alone.</div> : null}
+        {refs.length === 0 && selectable ? <div className="artwork-critique-muted">No reference images — the look comes from the prompt alone (upload a photo of the place to the set's Images, or add artwork).</div> : null}
       </div>
       <div className="proposal-status">
         {p.status === 'generating' && <span className="artwork-critique-muted">generating…</span>}
@@ -432,6 +434,9 @@ function WardrobeStrip({ beatId, refreshKey }) {
   );
 }
 
+// A critique job that is no longer running.
+const JOB_ENDED = new Set(['done', 'partial', 'error', 'cancelled']);
+
 export function ArtworkCritiqueSection({ beatId }) {
   const [critique, setCritique] = useState(null);
   const [job, setJob] = useState(null);
@@ -445,6 +450,7 @@ export function ArtworkCritiqueSection({ beatId }) {
   const [climb, setClimb] = useState(null);
   const [climbOpen, setClimbOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const esRef = useRef(null);
   const pollRef = useRef(null);
   const logRef = useRef(null);
@@ -459,6 +465,13 @@ export function ArtworkCritiqueSection({ beatId }) {
     const c = r.artwork_critique || null;
     setCritique(c);
     setClimb(r.climb || null);
+    // A critique run this page is not following yet (the page was left and
+    // reopened, or another tab started it): pick it up where it is.
+    if (r.job && !JOB_ENDED.has(r.job.status) && !esRef.current) {
+      setJob(r.job);
+      setRunning(true);
+      follow(r.job.job_id);
+    }
     if (!quiet) {
       setSelected(new Set((c?.proposals || []).filter((p) => p.status === 'proposed' || p.status === 'error').map((p) => String(p._id))));
       setOverrides({});
@@ -520,38 +533,54 @@ export function ArtworkCritiqueSection({ beatId }) {
   // draft for everything missing; the page empties and fills as it lands.
   // 'quality': the matched pieces are looked at and scored, updated in place.
   // Either one ends the last climb: its status is cleared.
+  // Follow a critique run over its SSE stream — one this page just started,
+  // or one found running when the page (re)opened. The first event is a
+  // snapshot of the job as it stands, so progress resumes where it is.
+  function follow(jobId) {
+    closeStream();
+    const es = new EventSource(apiSseUrl(`/beat/${beatId}/artwork-critique/${jobId}/events`));
+    esRef.current = es;
+    // The run writes each subject as it goes (after its match, after every
+    // review batch): refresh the page on every progress event.
+    const apply = (ev) => {
+      const snap = safeParse(ev.data);
+      if (!snap) return null;
+      setJob(snap);
+      load({ quiet: true }).catch(() => {});
+      return snap;
+    };
+    const finish = async (ev, failed) => {
+      apply(ev);
+      closeStream();
+      setCancelling(false);
+      try { await load(); } catch (e) { setError(e.message); }
+      setRunning(false);
+      if (failed) setError('The artwork critique finished with errors.');
+    };
+    es.addEventListener('snapshot', (ev) => { const snap = apply(ev); if (snap && JOB_ENDED.has(snap.status)) finish(ev, snap.status === 'error'); });
+    es.addEventListener('update', apply);
+    es.addEventListener('done', (ev) => finish(ev, false));
+    es.addEventListener('error', (ev) => {
+      if (ev?.data) finish(ev, true);
+      else if (es.readyState === EventSource.CLOSED) { closeStream(); setRunning(false); setCancelling(false); setError('Connection lost.'); }
+    });
+  }
+
   async function run(stage) {
-    setRunning(true); setError(null); setJob(null);
+    setRunning(true); setError(null); setJob(null); setCancelling(false);
     try {
       const r = await apiPostJson(`/beat/${beatId}/artwork-critique`, { stage });
       setClimb(null);
       setGenJob(null);
-      if (stage === 'coverage') { setCritique(null); setSelected(new Set()); setOverrides({}); }
-      const es = new EventSource(apiSseUrl(`/beat/${beatId}/artwork-critique/${r.job_id}/events`));
-      esRef.current = es;
-      // The run writes each subject as it goes (after its match, after every
-      // review batch): refresh the page on every progress event.
-      const apply = (ev) => {
-        const snap = safeParse(ev.data);
-        if (!snap) return;
-        setJob(snap);
-        load({ quiet: true }).catch(() => {});
-      };
-      const finish = async (ev, failed) => {
-        apply(ev);
-        closeStream();
-        try { await load(); } catch (e) { setError(e.message); }
-        setRunning(false);
-        if (failed) setError('The artwork critique finished with errors.');
-      };
-      es.addEventListener('snapshot', apply);
-      es.addEventListener('update', apply);
-      es.addEventListener('done', (ev) => finish(ev, false));
-      es.addEventListener('error', (ev) => {
-        if (ev?.data) finish(ev, true);
-        else if (es.readyState === EventSource.CLOSED) { setRunning(false); setError('Connection lost.'); }
-      });
+      follow(r.job_id);
     } catch (e) { setRunning(false); setError(e.message); }
+  }
+
+  // Stop the run now. What it had already stored stays on the page.
+  async function cancelRun() {
+    setCancelling(true); setError(null);
+    try { await apiPostJson(`/beat/${beatId}/artwork-critique/cancel`, {}); }
+    catch (e) { setCancelling(false); setError(e.message); }
   }
 
   function startPolling(jobId) {
@@ -698,7 +727,7 @@ export function ArtworkCritiqueSection({ beatId }) {
 
   const progressLine = running && job ? (
     job.phase === 'requirements' ? 'Reading the beat for what it needs…'
-      : job.phase === 'matching' ? 'Coverage — matching the requirements against the artwork descriptions…'
+      : job.phase === 'matching' ? `Coverage — matching the requirements against the artwork descriptions… ${job.images_done ?? 0}/${job.images_total ?? 0} images`
         : job.phase === 'proposing' ? 'Coverage — drafting the missing artwork…'
         : job.phase === 'auditing' ? `Quality — reviewing the matched artwork… ${job.subjects.filter((s) => s.status === 'done' || s.status === 'error').length}/${job.subjects.length} subjects · ${job.subjects.reduce((n, s) => n + (s.audited || 0), 0)} looked at, ${job.subjects.reduce((n, s) => n + (s.reused || 0), 0)} unchanged`
         : 'Starting…'
@@ -713,7 +742,7 @@ export function ArtworkCritiqueSection({ beatId }) {
           type="button"
           className={hasCoverage ? undefined : 'primary'}
           disabled={busy}
-          title="Step 1 — start fresh: list the artwork this beat needs and compare it with the artwork on file (by description; no image is looked at). What is missing is drafted for Create missing."
+          title="Step 1 — list the artwork this beat needs and compare it with every artwork on file (by description; no image is looked at). The list is kept while the beat's text and roster are unchanged, so a re-check after creating artwork is measured against the same list — Clear critique first to start from nothing. What is missing is drafted for Create missing."
           onClick={() => run('coverage')}
         >
           {running && job?.stage !== 'quality' ? 'Checking coverage…' : 'Check coverage'}
@@ -729,6 +758,11 @@ export function ArtworkCritiqueSection({ beatId }) {
         >
           {running && job?.stage === 'quality' ? 'Checking quality…' : 'Check quality'}
         </button>
+        {running && !climbing ? (
+          <button type="button" disabled={cancelling} title="Stop this check now. What it has already stored stays; a model call already under way is left to finish in the background and its answer is discarded." onClick={cancelRun}>
+            {cancelling ? 'Cancelling…' : 'Cancel'}
+          </button>
+        ) : null}
         <button
           type="button"
           disabled={busy}
@@ -743,6 +777,7 @@ export function ArtworkCritiqueSection({ beatId }) {
           </button>
         ) : null}
       </div>
+      {job?.stage === 'coverage' ? <CoverageCarousel job={job} running={running} /> : null}
       {error && <div className="critique-error">{error}</div>}
       <ClimbPanel climb={climb} onCancel={cancelClimb} />
       <ClimbDialog
@@ -827,6 +862,9 @@ export function ArtworkCritiqueSection({ beatId }) {
           })}
         </div>
       )}
+      {critique && !running ? (
+        <IrrelevantArtwork beatId={beatId} version={String(critique.generated_at || '')} disabled={busy} onChanged={() => load({ quiet: true }).catch(() => {})} />
+      ) : null}
     </CritiqueSection>
   );
 }

@@ -104,6 +104,23 @@ describe('generateSetDescription (module)', () => {
     expect(result.beats_used).toBe(2);
   });
 
+  it('scopes a multi-location beat to the place the set is named for', async () => {
+    await Sets.createSet({ projectId, name: 'Alley' });
+    await Plots.createBeat({
+      projectId,
+      name: 'Run',
+      body: 'EXT. ALLEY - NIGHT\nShe runs.\n\nINT. DINER - NIGHT\nShe hides.',
+      sets: ['Alley', 'Diner', 'alley', 'Rooftop'],
+    });
+    await generateSetDescription({ projectId, setId: 'Alley' });
+
+    const text = sentUserText();
+    expect(text).toContain('Use only the passages that happen in "Alley"');
+    expect(text).toContain('Other sets in this beat (their own places — leave them out): Diner; Rooftop');
+    expect(text).toContain('Write the visual description of THIS set — "Alley"');
+    expect(h.createCalls[0].system).toContain("THE SET'S NAME DECIDES");
+  });
+
   it('restricts context to the selected beatIds', async () => {
     const set = await Sets.createSet({ projectId, name: 'Alley' });
     const b1 = await Plots.createBeat({ projectId, name: 'One', body: 'FIRST BEAT TEXT', sets: ['Alley'] });

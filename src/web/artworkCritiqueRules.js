@@ -19,9 +19,10 @@ import { CHARACTER_SHEET_OUTPUT_RULES, buildSubjectHandle } from './characterShe
 import { NO_TEXT_RULES } from './promptConstraints.js';
 import { WARDROBE_LINE_RE, wardrobeImageId, wardrobeLine, wardrobeText } from './wardrobe.js';
 
-export const MAX_SUBJECTS = 8;
 export const AUDIT_BATCH_SIZE = 8;
-export const MAX_CANDIDATES_PER_REQUIREMENT = 6;
+// Phase 1 reads the library this many descriptions per call, so a coverage
+// check can say which pictures it is on and how many are done.
+export const MATCH_BATCH_SIZE = 8;
 // How many of a requirement's description matches the reviewer looks at
 // (best first; a piece the reviewer rejected makes room for the next).
 export const REVIEW_PER_REQUIREMENT = 2;
@@ -33,8 +34,11 @@ export const MAX_REGENERATIONS = 3;
 // Part of every review fingerprint: bump to re-review everything on file.
 export const REVIEW_RUBRIC_VERSION = 'rubric-1';
 export const REVIEW_ACTIONS = ['keep', 'edit', 'regenerate'];
-export const MAX_REQUIREMENTS_PER_SUBJECT = 12;
-export const MAX_PROPOSALS_PER_SUBJECT = 8;
+// Nothing is capped: every subject on the roster, every requirement the beat
+// imposes and every prop plate is kept and checked (the user's rule,
+// 2026-10-05 — a cap of 12 per subject silently dropped props and views).
+// The planner drafts the missing pictures this many requirements per call.
+export const PROPOSAL_BATCH_SIZE = 8;
 export const MAX_PROPOSAL_REFERENCES = 12;
 
 export const SET_CATEGORIES = ['view', 'sub_location', 'vehicle', 'building', 'prop', 'light'];
@@ -178,11 +182,19 @@ export const REQUIREMENTS_SYSTEM_PROMPT = [
   '- Time of day and light are a separate requirement only when the beat MOVES between two (dusk to night) — otherwise fold the light into the view\'s detail.',
   '- The fewest requirements that cover the beat. An element the beat only pans past or mentions in passing gets at most one modest requirement — never a wide + detail pair the beat does not dwell on. There is no target count; a short beat often needs 1–3.',
   '',
+  '# Props',
+  '- Every distinct physical OBJECT the action depends on — one a character handles, throws, kicks, catches, wears as a featured item or hands over, one the camera singles out in a close-up or an insert, or one that comes back later in the beat (a ball, a watch, a ticket, a tub of popcorn, a skateboard) — gets exactly ONE requirement of category prop: the PROP PLATE, a picture of the object ALONE that every frame showing it will copy it from. File it under the SET where the object first appears, never under a character. importance: essential.',
+  '- A prop plate\'s summary is the object\'s plain name and nothing else, at most 5 words ("crocheted hacky sack", "black digital watch"). Its detail is the object itself as the beat describes it — shape, size, material, colours, pattern, wear — and never the place, the light, a pose or a moment of the action.',
+  '- List the prop plate requirements FIRST, before any view of the set. Every object named in a character\'s held_prop requirement must also have its own prop plate requirement — a held_prop with no prop plate for the same object is an error.',
+  '- Something built into the place — a marquee, a sign, a ticket window, a counter, a door — is not a prop: it is a building, a sub_location or a view.',
+  '- Go through the beat object by object: a handled or featured object with no prop plate requirement is the most common omission. Set dressing nobody touches and the camera does not single out (parked cars, posters, seats) is NOT a prop — it belongs to a view.',
+  '- A character\'s held_prop requirement (below) is a different picture — the PERSON holding the object — and is listed in addition to the object\'s prop plate, not instead of it.',
+  '',
   '# Characters',
   '- costume: a character whose subject line carries a LOCKED WARDROBE gets exactly ONE costume requirement whose detail is that wardrobe text VERBATIM (quote: "wardrobe lock"), plus a further costume requirement ONLY for a garment the beat text explicitly adds, removes or changes (a jacket off, a torn sleeve). Never invent or paraphrase a locked wardrobe. Only a character with NO lock gets what the text says they wear — and if the text says nothing, one requirement for "the costume this beat implies" with the quote that implies it.',
   '- expression: every distinct facial expression the beat plays on this character (fear, fury, a held-back smile) — one requirement each, named in plain words.',
   '- pose / action: the positions and physical actions the beat stages (seated in the back seat, leaning on the counter, dragging a parent by the hand) — one requirement per distinct staging the camera will need.',
-  '- held_prop: an object the character holds or handles on screen.',
+  '- held_prop: the character holding or handling an object on screen (the object alone is the set\'s prop plate — see Props).',
   '',
   '# Every requirement',
   '- subject_id: the exact id from the subject list. Never invent a subject; a place or person the beat names that is NOT in the list goes in unlinked_mentions instead.',
@@ -254,15 +266,10 @@ export function normalizeRequirements(raw, subjects) {
       continue;
     }
     const key = subjectKey(subject.kind, subject.id);
-    const n = (counts.get(key) || 0) + 1;
-    if (n > MAX_REQUIREMENTS_PER_SUBJECT) {
-      if (n === MAX_REQUIREMENTS_PER_SUBJECT + 1) warnings.push(`${subject.name}: more than ${MAX_REQUIREMENTS_PER_SUBJECT} requirements — the rest were dropped`);
-      counts.set(key, n);
-      continue;
-    }
-    counts.set(key, n);
     const allowed = subject.kind === 'set' ? SET_CATEGORIES : CHARACTER_CATEGORIES;
     const category = allowed.includes(r.category) ? r.category : allowed[0];
+    const n = (counts.get(key) || 0) + 1;
+    counts.set(key, n);
     requirements.push({
       id: `${key}:${n}`,
       subject_key: key,
@@ -531,11 +538,54 @@ export function summarizeSubjectAudit({ requirements, entries, total }) {
 export const MATCH_SYSTEM_PROMPT = [
   'You are the art department\'s librarian. One subject (a set or a character) has an artwork library; each piece is listed with a number, its name and a description of what the picture shows. A screenplay beat imposes the listed requirements on this subject. For each requirement, say which pieces on file answer it — from the descriptions alone.',
   '',
-  `- matches: for EVERY requirement, up to ${MAX_CANDIDATES_PER_REQUIREMENT} pieces, best first. fit = covered when the description says the picture shows what the requirement asks for (that view, costume, expression, pose). fit = partial when it is CLOSE — the right place from a slightly different angle, the right person in nearly the right costume or pose — and could be edited into it; then \`lacking\` says in one sentence what differs. Be generous with partial: a piece left out is never looked at, and the picture would be made again. An empty list only when nothing on file is near.`,
+  `- matches: for EVERY requirement, EVERY piece that answers it, best first — leave none out, and check each piece against each requirement. fit = covered when the description says the picture shows what the requirement asks for (that view, costume, expression, pose). fit = partial when it is CLOSE — the right place from a slightly different angle, the right person in nearly the right costume or pose — and could be edited into it; then \`lacking\` says in one sentence what differs. Be generous with partial: a piece left out is never looked at, and the picture would be made again. An empty list only when nothing on file is near.`,
+  '- A [prop] requirement asks for a PROP PLATE: the object alone, whole and close, on a plain background. Only a piece marked [PROP PLATE] whose object is this one is covered. A picture of a place or a person in which the object merely appears — lying on the ground, in a hand, on a foot — does NOT answer it: leave it out of that requirement\'s matches altogether (it cannot be edited into a plate).',
   '- duplicate_groups: groups of two or more artwork numbers whose descriptions say they are the same picture (same view, same pose, same light). Only clear cases.',
   '',
   'Return only the JSON object the schema describes.',
 ].join('\n');
+
+// One pass over the WHOLE library for duplicates: the match reads it in
+// batches, and two copies of a picture rarely land in the same one.
+export const DUPLICATES_SYSTEM_PROMPT = [
+  'You are the art department\'s librarian, clearing out a library of reference pictures of one subject. Each piece is listed with a number, its name and a description of what the picture shows. Find the pieces that are the SAME picture as another: the same view or pose, from the same angle and distance, in the same light, showing the same things — one would never need both. Two pictures of the same place or person that differ in angle, framing, pose, expression, costume or time of day are NOT duplicates.',
+  '',
+  '- duplicate_groups: groups of two or more artwork numbers that are the same picture, the best-described one first. Only clear cases; when unsure, leave it out. No piece in two groups.',
+  '',
+  'Return only the JSON object the schema describes.',
+].join('\n');
+
+export const DUPLICATES_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['duplicate_groups'],
+  properties: { duplicate_groups: { type: 'array', items: { type: 'array', items: { type: 'integer' } } } },
+};
+
+export function buildDuplicatesText({ subject, artworks }) {
+  return [
+    `# Subject: ${subject.kind.toUpperCase()} "${plain(subject.name)}"`,
+    '',
+    `# Artwork library (${artworks.length} pieces)`,
+    ...artworks.map((a, i) => `${i + 1}. ${a.prop ? `[PROP PLATE: ${plain(a.prop, 80)}] ` : ''}"${plain(a.name, 80) || 'untitled'}" — ${plain(a.description, 300) || '(no description)'}`),
+  ].join('\n');
+}
+
+// → [[artwork id, …], …] — each id once, groups of 2+.
+export function normalizeDuplicateGroups(raw, artworks) {
+  const seen = new Set();
+  const out = [];
+  for (const g of Array.isArray(raw?.duplicate_groups) ? raw.duplicate_groups : []) {
+    const ids = [];
+    for (const i of Array.isArray(g) ? g : []) {
+      const n = Number(i);
+      const id = Number.isInteger(n) && n >= 1 && n <= artworks.length ? String(artworks[n - 1]._id) : null;
+      if (id && !seen.has(id)) { seen.add(id); ids.push(id); }
+    }
+    if (ids.length > 1) out.push(ids);
+  }
+  return out.slice(0, 40);
+}
 
 export const MATCH_SCHEMA = {
   type: 'object',
@@ -584,7 +634,7 @@ export function buildMatchText({ beat, subject, subjectCard, requirements, artwo
     ...requirements.map((r) => `${r.id} [${r.category}${r.importance === 'essential' ? ', essential' : ''}] ${r.summary} — ${r.detail}`),
     '',
     `# Artwork library (${artworks.length} pieces)`,
-    ...artworks.map((a, i) => `${i + 1}. "${plain(a.name, 80) || 'untitled'}" — ${plain(a.description, 300) || '(no description)'}`),
+    ...artworks.map((a, i) => `${i + 1}. ${a.prop ? `[PROP PLATE: ${plain(a.prop, 80)}] ` : ''}"${plain(a.name, 80) || 'untitled'}" — ${plain(a.description, 300) || '(no description)'}`),
   ].join('\n');
 }
 
@@ -614,7 +664,7 @@ export function normalizeMatches(raw, { requirements, artworks }) {
     const seen = new Set();
     for (const m of Array.isArray(g.artworks) ? g.artworks : []) {
       const id = at(m?.index);
-      if (!id || seen.has(id) || seen.size >= MAX_CANDIDATES_PER_REQUIREMENT) continue;
+      if (!id || seen.has(id)) continue;
       seen.add(id);
       const fit = m.fit === 'covered' ? 'covered' : 'partial';
       matches.push({ requirement_id: rid, artwork_id: id, fit, lacking: fit === 'partial' ? plain(m.lacking, 300) : '' });
@@ -625,6 +675,19 @@ export function normalizeMatches(raw, { requirements, artworks }) {
     .filter((g) => g.length > 1)
     .slice(0, 40);
   return { matches, duplicates };
+}
+
+// The library is matched in batches (MATCH_BATCH_SIZE). Their answers joined:
+// per requirement, covered pieces before partial ones, each in library order,
+// every one kept.
+export function mergeMatchBatches(batches, requirements) {
+  const all = (batches || []).flatMap((b) => b?.matches || []);
+  const matches = [];
+  for (const r of requirements || []) {
+    const mine = all.filter((m) => m.requirement_id === r.id);
+    matches.push(...[...mine.filter((m) => m.fit === 'covered'), ...mine.filter((m) => m.fit !== 'covered')]);
+  }
+  return { matches, duplicates: (batches || []).flatMap((b) => b?.duplicates || []).slice(0, 40) };
 }
 
 // An artwork known only by its description: the entry phase 1 stores for a
@@ -733,11 +796,19 @@ export function composeClimbEditPrompt({ suggestedEdit = '', lacking = [], keep 
 
 // ───────────────────────────── Pass C: proposals ─────────────────────────────
 
+// A [prop] requirement is answered by a prop plate: the object alone. It is
+// the one set proposal the clean-plate rules above do not describe.
+const PROP_PLATE_RULES = [
+  '- EXCEPTION — a requirement of category prop is a PROP PLATE, not a view of the set, and none of the plate rules above apply to it. One proposal per prop requirement, answering that requirement alone. The prompt is a product photograph of the ONE object by itself: whole, sharp, filling about half the frame, three-quarter view at its own eye level, resting on (or, for a ball, just above) a plain seamless mid-grey studio background under soft even light, true colours. State its shape, real-world size ("the size of a plum"), material, every colour and where it sits, the pattern and the wear. Say what it must not be mistaken for when the shape is ambiguous (a crocheted ball, not a hat or a beanie). No hands, no people, no place, no ground texture, no second object, no text. reference_indexes: empty, unless a catalog entry is marked as a prop plate of this same object.',
+].join('\n');
+
 const SET_PROPOSAL_RULES = [
   '# Set proposals',
   '- Each proposal is one still of the SET for the art library: the view, sub-location, vehicle, building or set piece the requirement names, at the time of day and in the light the beat describes.',
-  '- reference_indexes may name only catalog entries of THIS SAME SET. With references the prompt is a MINIMAL EDIT: anchor on the reference ("Edit this photo of the theatre lot…"), one blanket keep clause ("keep everything exactly as it is: same architecture, all existing signage unchanged"), then ONLY the change the requirement needs (a new angle is NOT an edit — a different vantage is a refless proposal). Without references it is a complete standalone scene description: location, layout (foreground / midground / background, left / right), time of day, lighting, palette, lens and framing, and explicit OCCUPANCY (the seats are empty, the lot is unoccupied).',
+  '- THE PLACE MUST LOOK LIKE THE PLACE. reference_indexes may name only catalog entries of THIS SAME SET, and when the catalog has any, every view proposal attaches the ones that show the same place or part of it: the set\'s PHOTOS ([SET PHOTO] entries — the real location the set was built from; the main image is attached automatically as reference image 1) first, then its artwork that shows the same part of the place (an interior for an interior, the facade for the facade). Pick the pictures whose architecture, signage, materials and dressing the new picture must reproduce; leave out a picture of an unrelated part of the set. A binding line naming what each attached image is leads the prompt automatically — do not restate it; write "the place in the reference images" and describe what the NEW picture shows: the vantage and framing, the part of the place in frame, time of day, lighting, palette, lens, and explicit OCCUPANCY (the seats are empty, the lot is unoccupied). Never describe the architecture, colours or signage differently from the references; a different vantage or a different time of day is NOT a reason to drop them.',
+  '- Only when the catalog holds no picture of this set is the prompt a complete standalone scene description: location, layout (foreground / midground / background, left / right), time of day, lighting, palette, lens and framing, and occupancy.',
   STATIC_PLATE_CONSTRAINTS,
+  PROP_PLATE_RULES,
 ].join('\n');
 
 const CHARACTER_PROPOSAL_RULES = [
@@ -761,9 +832,9 @@ export const PROPOSALS_SYSTEM_PROMPT = [
   '- requirement_ids: the requirement ids this picture satisfies (at least one).',
   '- name: a card label of at most 60 characters.',
   '- prompt: sent VERBATIM to the image model together with ONLY the references you pick. Purely visual. No justification, no quotes from the beat, no character names.',
-  '- reference_indexes: catalog entries to attach (the same subject\'s artwork for continuity; for a character pose, optionally one set plate). Empty when nothing on file depicts the subject.',
+  '- reference_indexes: catalog entries to attach (the same subject\'s photos and artwork for continuity; for a character pose, optionally one set plate). Empty only when nothing on file depicts the subject.',
   '- rationale: one sentence for the reviewer — why this picture, and what in the beat calls for it.',
-  `- At most ${MAX_PROPOSALS_PER_SUBJECT} proposals.`,
+  '- Every listed requirement must be answered by a proposal — one picture may answer several, none may be left out.',
   '',
   NO_TEXT_RULES,
   '',
@@ -906,6 +977,68 @@ export function rebindCharacterPrompt(prompt, references, { wardrobe = '' } = {}
   return out.filter((l, i, a) => !(l === '' && a[i - 1] === '')).join('\n');
 }
 
+// The set's look anchor: its main image (an uploaded photo of the real place,
+// usually), else its first gallery upload. Like the character portrait, it is
+// attached to every view proposal whether or not the planner picked it — a
+// theatre rendered from the prompt alone is some theatre, not this one.
+export function setAnchorId(set) {
+  const main = set?.main_image_id ? String(set.main_image_id) : '';
+  if (main) return main;
+  const first = (set?.images || [])[0];
+  const id = first?._id ?? first;
+  return id ? String(id) : '';
+}
+
+// Order a set proposal's references: the anchor first, then the set's other
+// photos (`upload`), then its artwork — only pictures of THIS set; a pick of
+// another host is dropped (the rules forbid it, the code enforces it).
+// Returns [{ image_id, role: 'photo'|'artwork' }], deduped and capped.
+export function orderSetReferences({ anchorId, picks = [], setId = '' }) {
+  const seen = new Set();
+  const out = [];
+  const add = (image_id, role) => {
+    const k = String(image_id || '');
+    if (!k || seen.has(k) || out.length >= MAX_PROPOSAL_REFERENCES) return;
+    seen.add(k);
+    out.push({ image_id: k, role });
+  };
+  if (anchorId) add(anchorId, 'photo');
+  const mine = picks.filter((p) => p.owner_type === 'set' && (!setId || !p.owner_id || String(p.owner_id) === String(setId)));
+  for (const p of mine) if (p.upload) add(p.image_id, 'photo');
+  for (const p of mine) if (!p.upload) add(p.image_id, 'artwork');
+  return out;
+}
+
+// What each attached image of a set proposal is, in attachment order.
+export function describeSetReferences(refs) {
+  if (!refs?.length) return '';
+  return refs
+    .map((r, i) => {
+      const n = `Reference image ${i + 1}`;
+      return r.role === 'photo'
+        ? `${n} is a photograph of this same PLACE: the authority on its architecture, materials, signage, colours and dressing — reproduce them exactly; only the vantage, framing, time of day, light and occupancy change, as the prompt says.`
+        : `${n} shows this same PLACE as it has already been rendered: match its architecture, materials, signage and colours; take the vantage and the light from the prompt, not from it.`;
+    })
+    .join('\n');
+}
+
+// The set still's prompt: the reference binding leads, then the planner's
+// prose. `references` is the ordered [{image_id, role}] list from
+// orderSetReferences; with none, the prompt is sent as written.
+export function composeSetProposalPrompt(prompt, { references = [] } = {}) {
+  const binding = describeSetReferences(references);
+  return [binding, '', plain(prompt, 2000)].filter((l, i, a) => !(l === '' && (i === 0 || a[i - 1] === ''))).join('\n');
+}
+
+// Rewrite a STORED set prompt's binding to match the references that will
+// actually be sent (see rebindCharacterPrompt for why).
+export function rebindSetPrompt(prompt, references) {
+  const kept = String(prompt || '').split('\n').filter((l) => !BINDING_LINE.test(l.trim()));
+  while (kept.length && kept[0] === '') kept.shift();
+  const binding = describeSetReferences(references);
+  return [...(binding ? [binding, ''] : []), ...kept].filter((l, i, a) => !(l === '' && a[i - 1] === '')).join('\n');
+}
+
 // → proposals ready to store: {_id, host_type, host_id, host_name, requirement_ids, name, prompt, reference_image_ids, rationale, status, model, artwork_id, error_message, generated_at}
 export function normalizeProposals(raw, { subject, requirements, catalog, beat = null }) {
   const reqIds = new Set((requirements || []).map((r) => r.id));
@@ -916,9 +1049,14 @@ export function normalizeProposals(raw, { subject, requirements, catalog, beat =
   };
   const portraitId = subject.kind === 'character' ? characterPortraitId(subject.doc) : '';
   const wardrobeId = subject.kind === 'character' ? wardrobeImageId(subject.doc) : '';
+  const anchorId = subject.kind === 'set' ? setAnchorId(subject.doc) : '';
+  const setHasPictures = subject.kind === 'set' && (!!anchorId || (catalog || []).some((c) => c.owner_type === 'set' && (!c.owner_id || String(c.owner_id) === String(subject.id))));
   const out = [];
   const warnings = [];
   const any = Array.isArray(raw?.proposals) && raw.proposals.length > 0;
+  if (subject.kind === 'set' && any && !setHasPictures && (requirements || []).some((r) => r.category !== 'prop')) {
+    warnings.push(`${subject.name}: no picture of the set on file — its look comes from the prompts alone; upload a photo of the place to the set's Images`);
+  }
   if (subject.kind === 'character' && !portraitId && any) {
     warnings.push(`${subject.name}: no portrait on file — the proposals rely on artwork alone for the likeness`);
   }
@@ -933,22 +1071,29 @@ export function normalizeProposals(raw, { subject, requirements, catalog, beat =
       warnings.push(`${subject.name}: a proposal with no requirement or no prompt was dropped`);
       continue;
     }
-    if (out.length >= MAX_PROPOSALS_PER_SUBJECT) {
-      warnings.push(`${subject.name}: more than ${MAX_PROPOSALS_PER_SUBJECT} proposals — the rest were dropped`);
-      break;
-    }
     const picks = (Array.isArray(p.reference_indexes) ? p.reference_indexes : []).map(indexToEntry).filter(Boolean);
+    // A proposal that answers a prop requirement renders a PROP PLATE: the
+    // artwork it makes carries the object's name (`prop`), which is how the
+    // reference catalog and the frame renderer know it is an object, not a
+    // view of the set.
+    const propReq = subject.kind === 'set' ? requirements.find((r) => ids.includes(r.id) && r.category === 'prop') : null;
     let refs;
     let prompt;
     if (subject.kind === 'character') {
       const ordered = orderCharacterReferences({ portraitId, wardrobeId, picks });
       refs = ordered.map((r) => r.image_id);
       prompt = composeCharacterProposalPrompt(promptText, subject.doc, { references: ordered, beat });
-    } else {
-      refs = [...new Set(picks.map((e) => String(e.image_id)))].slice(0, MAX_PROPOSAL_REFERENCES);
+    } else if (propReq) {
+      // A prop plate shows the object alone: no view of the place is attached.
+      refs = [...new Set(picks.filter((e) => e.prop).map((e) => String(e.image_id)))].slice(0, MAX_PROPOSAL_REFERENCES);
       prompt = promptText;
+    } else {
+      const ordered = orderSetReferences({ anchorId, picks, setId: subject.id });
+      refs = ordered.map((r) => r.image_id);
+      prompt = composeSetProposalPrompt(promptText, { references: ordered });
     }
     out.push({
+      ...(propReq ? { prop: plain(propReq.summary, 80) } : {}),
       _id: new ObjectId(),
       host_type: subject.kind,
       host_id: new ObjectId(String(subject.id)),

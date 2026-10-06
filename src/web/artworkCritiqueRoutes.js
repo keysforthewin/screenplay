@@ -13,6 +13,14 @@
 //                                                           {stage: 'quality'}: review the matched pieces again, in
 //                                                           place (409 before a coverage check). Every manual run
 //                                                           clears the last climb's status
+//   POST   /beat/:id/artwork-critique/cancel                stop the manual run now (409 none running); what it
+//                                                           had stored stays, status `cancelled`. The GET above returns
+//                                                           `job` — the run still going — so a reopened page reattaches
+//   GET    /beat/:id/artwork-critique/irrelevant            the artwork the critique set aside — flawed (reviewed and
+//                                                           turned down), duplicate, or not relevant to this beat —
+//                                                           with picture, description, why, and what still uses it
+//   POST   /beat/:id/artwork-critique/irrelevant/delete     {artwork_ids} → {deleted, skipped}; only listed, unprotected
+//                                                           pieces; irreversible; 409 busy
 //   DELETE /beat/:id/artwork-critique                       clear the critique and the climb status (409 busy)
 //          (pre-auth SSE twin: /beat/:id/artwork-critique/:jobId/events?session_id= in entityRoutes.js)
 //   POST   /beat/:id/artwork-critique/climb                 edit the close / low-scoring artwork in place, render only
@@ -36,6 +44,9 @@
 import { getBeat } from '../mongo/plots.js';
 import {
   startArtworkCritiqueJob,
+  activeArtworkCritiqueJob,
+  requestArtworkCritiqueCancel,
+  serializeArtworkCritiqueJob,
   clearArtworkCritique,
   startArtworkGenerateJob,
   getArtworkGenerateJob,
@@ -48,6 +59,7 @@ import {
 } from './artworkCritique.js';
 
 import { startArtworkClimb } from './artworkClimb.js';
+import { listIrrelevantArtworks, deleteIrrelevantArtworks } from './artworkCritiqueIrrelevant.js';
 import { getClimbView, requestClimbCancel } from './climbCore.js';
 
 const HEX24 = /^[a-f0-9]{24}$/i;
@@ -71,12 +83,40 @@ export function registerArtworkCritiqueRoutes(router) {
     return next(e);
   };
 
+  router.get('/beat/:id/artwork-critique/irrelevant', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      res.json(await listIrrelevantArtworks({ projectId: req.projectId, beatId }));
+    } catch (e) { fail(res, next, e); }
+  });
+
+  router.post('/beat/:id/artwork-critique/irrelevant/delete', async (req, res, next) => {
+    try {
+      const beatId = await resolveBeatId(req);
+      if (!beatId) return res.status(404).json({ error: 'beat not found' });
+      res.json(await deleteIrrelevantArtworks({ projectId: req.projectId, beatId, artworkIds: req.body?.artwork_ids }));
+    } catch (e) { fail(res, next, e); }
+  });
+
+  router.post('/beat/:id/artwork-critique/cancel', async (req, res, next) => {
+    try {
+      const job = await requestArtworkCritiqueCancel({ projectId: req.projectId, beatId: String(req.params.id) });
+      res.json({ job: serializeArtworkCritiqueJob(job) });
+    } catch (e) { fail(res, next, e); }
+  });
+
   router.get('/beat/:id/artwork-critique', async (req, res, next) => {
     try {
       const beatId = await resolveBeatId(req);
       if (!beatId) return res.status(404).json({ error: 'beat not found' });
       const critique = await syncArtworkFixes({ projectId: req.projectId, beatId });
-      res.json({ artwork_critique: critique || null, climb: (await getClimbView(req.projectId, beatId, 'artwork')) || null });
+      res.json({
+        artwork_critique: critique || null,
+        climb: (await getClimbView(req.projectId, beatId, 'artwork')) || null,
+        // The manual run still going for this beat: a reopened page follows it.
+        job: serializeArtworkCritiqueJob(activeArtworkCritiqueJob(beatId)),
+      });
     } catch (e) { next(e); }
   });
 

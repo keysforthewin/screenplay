@@ -3151,6 +3151,25 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Artwork critique */
 .artwork-critique-progress { font-size: 12px; color: var(--fg-muted); }
+.coverage-carousel { margin: 8px 0 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.coverage-carousel-head { display: flex; align-items: center; gap: 10px; font-size: 12px; margin-bottom: 8px; }
+.coverage-carousel-count { font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.coverage-carousel-meter { flex: 0 0 180px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.coverage-carousel-fill { height: 100%; background: #2e9e5b; transition: width 0.3s ease; }
+.coverage-carousel-status { color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coverage-carousel-strip { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+.coverage-thumb { position: relative; flex: 0 0 auto; width: 96px; height: 54px; border-radius: 4px; overflow: hidden; border: 2px solid transparent; background: var(--border); }
+.coverage-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.coverage-thumb.is-queued img { opacity: 0.35; }
+.coverage-thumb.is-irrelevant img, .coverage-thumb.is-skipped img { opacity: 0.55; filter: grayscale(0.6); }
+.coverage-thumb.is-checking { border-color: #3b82f6; }
+.coverage-thumb.is-relevant { border-color: #2e9e5b; }
+.coverage-thumb.is-irrelevant, .coverage-thumb.is-error { border-color: #c0392b; }
+.coverage-thumb-mark { position: absolute; right: 3px; bottom: 3px; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; line-height: 1; color: #fff; background: #6b7280; }
+.coverage-thumb.is-relevant .coverage-thumb-mark { background: #2e9e5b; }
+.coverage-thumb.is-irrelevant .coverage-thumb-mark, .coverage-thumb.is-error .coverage-thumb-mark { background: #c0392b; }
+.coverage-thumb-spin { position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); border-top-color: #fff; animation: coverage-spin 0.8s linear infinite; }
+@keyframes coverage-spin { to { transform: rotate(360deg); } }
 .artwork-critique-muted { font-size: 12px; color: var(--fg-muted); }
 .artwork-critique-empty { font-size: 12px; color: var(--fg-muted); padding: 4px 0; }
 .artwork-critique-warnings { margin: 6px 0; padding-left: 18px; font-size: 12px; color: var(--warning, #e7c14b); }
@@ -3196,6 +3215,20 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .artwork-critique-proposals-tools > :first-child { flex: 1; min-width: 240px; }
 .artwork-critique-proposal { display: grid; grid-template-columns: 24px 1fr 150px; gap: 8px; padding: 8px 0; border-top: 1px solid #1e2127; font-size: 12px; }
 .artwork-critique-proposal.is-dismissed { opacity: .55; }
+.artwork-critique-irrelevant { border-top: 1px solid #23262d; margin-top: 10px; padding-top: 10px; font-size: 12px; }
+.artwork-critique-irrelevant > summary { cursor: pointer; font-size: 13px; }
+.irrelevant-intro { margin: 6px 0 8px; }
+.irrelevant-row { display: grid; grid-template-columns: 24px 160px auto 1fr; gap: 10px; align-items: start; padding: 8px 0; border-top: 1px solid #1e2127; cursor: pointer; }
+.irrelevant-row.is-protected { opacity: .6; cursor: default; }
+.irrelevant-row img { width: 160px; height: 90px; object-fit: cover; border-radius: 4px; display: block; background: var(--border); }
+.irrelevant-desc { margin-top: 4px; color: var(--fg-muted); max-height: 5.6em; overflow: auto; }
+.irrelevant-protected { margin-top: 3px; color: #d9a441; }
+.irrelevant-row img.irrelevant-twin { width: 96px; height: 54px; opacity: .8; }
+.irrelevant-why { margin-top: 3px; }
+.irrelevant-reason { display: inline-block; padding: 0 6px; border-radius: 3px; font-weight: 600; color: #fff; background: #6b7280; }
+.irrelevant-reason.is-flawed { background: #c0392b; }
+.irrelevant-reason.is-duplicate { background: #b7791f; }
+.irrelevant-warn { margin-top: 3px; color: #d9a441; }
 .artwork-critique-proposal.is-done { border-left: 3px solid var(--ok, #5fd07e); padding-left: 6px; }
 .artwork-critique-proposal.is-error { border-left: 3px solid var(--danger, #f1736e); padding-left: 6px; }
 .proposal-check { padding-top: 2px; }

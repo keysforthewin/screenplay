@@ -165,21 +165,23 @@ describe('renderCutFrame: what the image model is sent', () => {
     expect(dispatched[1].prompt.endsWith('The shot:\n\nThe booth, empty.')).toBe(true);
   });
 
-  it('binds each reference by what it is: character art first, the wardrobe plate next, set art after', async () => {
+  it('binds each reference by what it is, numbered in the STORED order — never re-sorted', async () => {
     const { beat, scene, sarahArt, sarahPlate, dinerArt } = await seed();
     const stray = img('An uploaded photo');
     const cut = await makeCut(beat, scene, {
       startFrame: { prompt: 'She sits.', reference_ids: [dinerArt, stray, sarahPlate, sarahArt] },
     });
     await CF.renderCutFrame({ projectId, cut });
-    // All four, and only those four; the model gets people before places.
-    expect(sent(dispatched[0])).toEqual(['Sarah, grey coat', 'Sarah, wardrobe plate', 'Diner interior, night', 'An uploaded photo']);
+    // All four, only those four, in the order listed: the frame prompt refers
+    // to them as "Image N", so the Nth stored id must be image N.
+    expect(sent(dispatched[0])).toEqual(['Diner interior, night', 'An uploaded photo', 'Sarah, wardrobe plate', 'Sarah, grey coat']);
     const p = dispatched[0].prompt;
-    expect(p).toContain('Image 1 is Sarah: take only the face');
-    expect(p).toContain("Image 2 is Sarah's wardrobe plate");
-    expect(p).toContain('Image 3 shows the set "Diner" from a different camera');
+    expect(p).toContain('numbered in the order they are attached');
+    expect(p).toContain('Image 1 shows the set "Diner" from a different camera');
     // An image that is nobody's artwork is still sent, as a look reference.
-    expect(p).toContain('Image 4 shows this subject from a different camera');
+    expect(p).toContain('Image 2 shows this subject from a different camera');
+    expect(p).toContain("Image 3 is Sarah's wardrobe plate");
+    expect(p).toContain('Image 4 is Sarah: take only the face');
   });
 
   it('an empty reference list renders from the prompt alone: no input images, no binding preamble', async () => {
@@ -304,12 +306,12 @@ describe('renderCutFrame: what is stored', () => {
 });
 
 describe('the end frame and the cut\'s start frame', () => {
-  it('the cut\'s start image among the end frame\'s references is bound as the opening frame (continuity), last', async () => {
+  it('the cut\'s start image among the end frame\'s references is bound as the opening frame (continuity), at its listed position', async () => {
     const { beat, scene, sarahArt, dinerArt } = await seed();
     const startImage = img('the rendered start frame');
     const cut = await makeCut(beat, scene, {
       startFrame: { prompt: 'She sits.', image_id: startImage },
-      endFrame: { prompt: 'She has stood up.', reference_ids: [startImage, dinerArt, sarahArt] },
+      endFrame: { prompt: 'She has stood up.', reference_ids: [sarahArt, dinerArt, startImage] },
     });
     await CF.renderCutFrame({ projectId, cut, frame: 'end' });
     expect(sent(dispatched[0])).toEqual(['Sarah, grey coat', 'Diner interior, night', 'the rendered start frame']);
@@ -321,7 +323,7 @@ describe('the end frame and the cut\'s start frame', () => {
     expect(uploads[0].filename).toMatch(new RegExp(`^cut-${cut._id}-end-frame-`));
     const saved = await getCut(cut);
     expect(String(saved.end_frame.image_id)).toBe(String(uploads[0].id));
-    expect(saved.end_frame.reference_ids.map(String)).toEqual([startImage, dinerArt, sarahArt].map(String));
+    expect(saved.end_frame.reference_ids.map(String)).toEqual([sarahArt, dinerArt, startImage].map(String));
     // The start frame is untouched by an end-frame render.
     expect(String(saved.start_frame.image_id)).toBe(String(startImage));
     expect(saved.start_frame.previous_image_id).toBeNull();

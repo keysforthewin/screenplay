@@ -1060,6 +1060,7 @@ export async function createPendingArtworkViaGateway({
   model,
   referenceImageIds = [],
   jobId = null,
+  prop = null,
 }) {
   const result = await mongoCreatePendingArtwork({
     projectId,
@@ -1070,6 +1071,7 @@ export async function createPendingArtworkViaGateway({
     model,
     referenceImageIds,
     jobId,
+    prop,
   });
   broadcastFieldsUpdated(artworkRoomName(hostType, result.host_id), {
     changed: ['artworks'],
@@ -1124,7 +1126,7 @@ export async function createArtworkFromImageViaGateway({
     name,
   });
   broadcastFieldsUpdated(artworkRoomName(hostType, result.host_id), {
-    changed: ['artworks'],
+    changed: artworkChangedFields(result),
   });
   return result;
 }
@@ -2187,6 +2189,21 @@ export async function deleteVideoSceneViaGateway({ projectId, sceneId }) {
     removed_video_scene_id: s._id.toString(),
   });
   return { ok: true, beat_id: beatId, cuts_removed: cuts.length };
+}
+
+// Delete EVERY scene of a beat with all their cuts (clips + frame images
+// best-effort) — the Scenes tab's "Delete all scenes" button. Leaves the beat
+// with no scenes and no cuts; one broadcast so open pages refetch.
+export async function deleteAllVideoScenesViaGateway({ projectId, beatId }) {
+  const scenes = await listVideoScenes({ projectId, beatId });
+  const cuts = await mongoDeleteVideoPromptsForBeat(beatId);
+  await deleteCutMedia(cuts);
+  await mongoDeleteVideoScenesForBeat(beatId);
+  broadcastFieldsUpdated(buildRoomName('video_prompts', String(beatId)), {
+    changed: ['video_scenes', 'video_prompts'],
+    removed_video_scene_ids: scenes.map((s) => s._id.toString()),
+  });
+  return { ok: true, beat_id: String(beatId), scenes_removed: scenes.length, cuts_removed: cuts.length };
 }
 
 export async function reorderVideoScenesViaGateway({ projectId, beatId, orderedIds }) {

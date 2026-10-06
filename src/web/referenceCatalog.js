@@ -1,7 +1,8 @@
 // The numbered reference-image CATALOG for a beat: the ARTWORK of the beat's
 // characters and sets (done artworks only — uploaded portraits, character
 // sheets and gallery images are deliberately excluded; the Artwork section is
-// the curated look), numbered 1..N with a description. The artwork critique
+// the curated look — except a set's uploaded photos when `setUploads` is
+// asked for, see hostImageSlots), numbered 1..N with a description. The artwork critique
 // offers it to its proposal planner, the cut-frame renderer
 // (src/web/cutFrames.js) reads who each reference shows from it, and
 // GET /cuts/candidates hands it to the SPA's "+ Add reference" picker.
@@ -46,14 +47,33 @@ async function imageMeta(id) {
 // One exception: a character's WARDROBE PLATE (src/web/wardrobe.js) is
 // always offered, even when it is a gallery upload rather than artwork —
 // it is the picture every still copies the clothes from.
-function hostImageSlots(host, ownerType = 'set') {
+// With `setUploads`, a SET's gallery uploads (`images[]`, the Images list on
+// its Attachments tab — the photographs of the real place the set was built
+// from) are offered too, the main image first (kind `photo`, `upload: true`).
+// The artwork critique's proposal planner asks for them: a new plate of the
+// theatre has to look like THE theatre, and the uploads are the ground truth
+// the artwork itself was rendered from. Cut frames and the picker keep the
+// artwork-only catalog.
+function hostImageSlots(host, ownerType = 'set', { setUploads = false } = {}) {
   const slots = [];
+  if (ownerType === 'set' && setUploads) {
+    const main = host?.main_image_id ? String(host.main_image_id) : '';
+    const uploads = (host?.images || [])
+      .map((img) => ({ id: img?._id ?? img, caption: String(img?.caption || '').trim() }))
+      .filter((x) => x.id && /^[0-9a-f]{24}$/i.test(String(x.id)))
+      .map((x) => ({ ...x, id: String(x.id) }));
+    for (const u of [...uploads.filter((u) => u.id === main), ...uploads.filter((u) => u.id !== main)]) {
+      slots.push({ id: u.id, kind: u.id === main ? 'photo (main image)' : 'photo', caption: u.caption, upload: true });
+    }
+  }
   for (const a of host?.artworks || []) {
     if (a?.status !== 'done' || !a.result_image_id) continue;
+    const prop = String(a.prop || '').trim();
     slots.push({
       id: String(a.result_image_id),
-      kind: `artwork${a.name ? `: ${String(a.name).trim()}` : ''}`,
+      kind: prop ? `prop plate: ${prop}` : `artwork${a.name ? `: ${String(a.name).trim()}` : ''}`,
       caption: (String(a.description || '').trim() || String(a.prompt || '').trim()),
+      ...(prop ? { prop } : {}),
     });
   }
   const plate = ownerType === 'character' ? wardrobeImageId(host) : '';
@@ -76,7 +96,7 @@ function hostImageSlots(host, ownerType = 'set') {
 //    MAX_CATALOG_ENTRIES.
 // Exported for the /cuts/candidates route (the SPA's picker), the cut-frame
 // renderer and the artwork critique.
-export async function buildReferenceCatalog(projectId, beat) {
+export async function buildReferenceCatalog(projectId, beat, { setUploads = false } = {}) {
   const [characters, sets] = await Promise.all([
     findCharactersInBeat(projectId, beat),
     findSetsInBeat(projectId, beat),
@@ -91,8 +111,9 @@ export async function buildReferenceCatalog(projectId, beat) {
   // sat last) was ever offered to a cut. A wardrobe plate goes first.
   const seen = new Set();
   const queues = hosts.map(({ doc, ownerType }) => {
-    const slots = hostImageSlots(doc, ownerType).filter((slot) => !seen.has(slot.id) && seen.add(slot.id));
-    return { doc, ownerType, slots: [...slots.filter((x) => x.wardrobe), ...slots.filter((x) => !x.wardrobe)], take: 0 };
+    const slots = hostImageSlots(doc, ownerType, { setUploads }).filter((slot) => !seen.has(slot.id) && seen.add(slot.id));
+    const first = (x) => x.wardrobe || !!x.prop || !!x.upload; // plates and photos are never squeezed out by the cap
+    return { doc, ownerType, slots: [...slots.filter(first), ...slots.filter((x) => !first(x))], take: 0 };
   });
   for (let left = MAX_CATALOG_ENTRIES, gave = true; left > 0 && gave;) {
     gave = false;
@@ -116,6 +137,8 @@ export async function buildReferenceCatalog(projectId, beat) {
         label: `${ownerName} — ${slot.kind}${nameBit}`,
         description,
         ...(slot.wardrobe ? { wardrobe: true } : {}),
+        ...(slot.prop ? { prop: slot.prop } : {}),
+        ...(slot.upload ? { upload: true } : {}),
       });
     }
   }
@@ -126,7 +149,7 @@ export function formatReferenceCatalog(catalog) {
   if (!catalog?.length) return '(no artwork available for this beat\'s characters and sets — write the prompts without @Image handles)';
   return catalog
     .map((e) => {
-      const tag = e.owner_type === 'set' ? 'SET' : 'CHARACTER';
+      const tag = e.prop ? 'PROP' : e.upload ? 'SET PHOTO' : e.owner_type === 'set' ? 'SET' : 'CHARACTER';
       const desc = e.description ? ` — ${clipBlock(e.description, 240)}` : '';
       return `${e.index}. [${tag} ${e.owner_name}] ${e.label}${desc}`;
     })

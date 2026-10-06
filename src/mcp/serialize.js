@@ -188,7 +188,8 @@ export function serializeOwnerImages(doc, ownerType) {
       description: String(a.description || '').trim(),
       prompt: String(a.prompt || '').trim() || null,
       model: a.model || null,
-      roles: roles(id),
+      roles: [...roles(id), ...(a.prop ? ['prop_plate'] : [])],
+      ...(a.prop ? { prop: String(a.prop) } : {}),
     });
   }
   for (const img of doc.images || []) {

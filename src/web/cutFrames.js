@@ -28,7 +28,7 @@ import { loadImageInput } from './beatPlanShared.js';
 import { cutFrameKey, setVideoPromptStartFrameViaGateway } from './gateway.js';
 import { maxReferenceImagesFor } from './imageModelInfo.js';
 import { isTerminalJobStatus, RECENT_JOB_MS } from './jobLookup.js';
-import { composeStartFramePrompt, orderReferencesByRole } from './startFramePrompt.js';
+import { composeStartFramePrompt } from './startFramePrompt.js';
 import { dispatchStillImage } from './stillImageDispatch.js';
 
 export const DEFAULT_FRAME_MODEL = 'nano-banana-pro';
@@ -84,7 +84,7 @@ async function referenceRoster(projectId, beat) {
   try {
     const { buildReferenceCatalog } = await import('./referenceCatalog.js');
     for (const e of await buildReferenceCatalog(projectId, beat)) {
-      roster.set(String(e.image_id), { name: e.owner_name, ownerType: e.owner_type, wardrobe: !!e.wardrobe });
+      roster.set(String(e.image_id), { name: e.owner_name, ownerType: e.owner_type, wardrobe: !!e.wardrobe, prop: e.prop || '' });
     }
   } catch (e) {
     logger.warn(`cut frame: reference roster failed: ${e?.message || e}`);
@@ -93,8 +93,12 @@ async function referenceRoster(projectId, beat) {
 }
 
 // The frame's references, loaded and labelled, in the order the model gets
-// them. Exactly the listed images (capped at what the model accepts) — an
-// empty list renders from the prompt alone.
+// them — which is the STORED order, unchanged: the binding preamble numbers
+// them "Image 1…" in this order and the frame prompt refers to them by those
+// numbers, so the Nth id in `reference_ids` is always Image N (2026-10-05;
+// the renderer used to re-sort by role, and a prompt written against the
+// stored list named the wrong picture). Exactly the listed images (capped at
+// what the model accepts) — an empty list renders from the prompt alone.
 async function loadReferences({ projectId, beat, cut, frame, model }) {
   const ids = (cut[cutFrameKey(frame)]?.reference_ids || []).map(String).slice(0, maxReferenceImagesFor(model));
   if (!ids.length) return [];
@@ -110,6 +114,9 @@ async function loadReferences({ projectId, beat, cut, frame, model }) {
     if (id === startImage) {
       role = 'continuity';
       label = 'the opening frame of this shot';
+    } else if (who?.prop) {
+      role = 'prop';
+      label = who.prop;
     } else if (who?.ownerType === 'character') {
       role = who.wardrobe ? 'wardrobe' : 'identity';
       label = who.name;
@@ -118,7 +125,7 @@ async function loadReferences({ projectId, beat, cut, frame, model }) {
     }
     out.push({ buffer: ref.buffer, contentType: ref.contentType, label, role });
   }
-  return orderReferencesByRole(out);
+  return out;
 }
 
 // Render one frame of one cut and store it. Returns the updated cut.

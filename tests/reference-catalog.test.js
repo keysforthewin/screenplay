@@ -109,6 +109,37 @@ async function seedBeatWithRefs() {
 }
 
 describe('buildReferenceCatalog', () => {
+  it('with setUploads, offers a set\'s uploaded photos first (main image leading), tagged SET PHOTO; characters\' uploads stay out', async () => {
+    const { beat } = await seedBeatWithRefs();
+    const second = newImage('Diner facade (uploaded)');
+    const diner = await fakeDb.collection('sets').findOne({ name_lower: 'diner' });
+    await fakeDb.collection('sets').updateOne({ _id: diner._id }, { $push: { images: { _id: second, caption: 'facade, daylight' } } });
+    const plain = await Gen.buildReferenceCatalog(projectId, beat);
+    expect(plain.some((e) => e.upload)).toBe(false);
+    const catalog = await Gen.buildReferenceCatalog(projectId, beat, { setUploads: true });
+    const sets = catalog.filter((e) => e.owner_type === 'set');
+    expect(sets[0]).toMatchObject({ image_id: String(diner.main_image_id), upload: true, label: 'Diner — photo (main image)', description: 'Diner interior (uploaded main)' });
+    expect(sets[1]).toMatchObject({ image_id: second.toString(), upload: true, label: 'Diner — photo', description: 'Diner facade (uploaded)' });
+    expect(sets.slice(2).some((e) => e.upload)).toBe(false);
+    expect(sets).toHaveLength(4);
+    expect(catalog.filter((e) => e.owner_type === 'character').some((e) => e.upload)).toBe(false);
+    expect(Gen.formatReferenceCatalog(catalog)).toContain('[SET PHOTO Diner] Diner — photo (main image)');
+  });
+
+  it('a prop plate is offered first for its set, labelled and tagged with the object', async () => {
+    const { beat } = await seedBeatWithRefs();
+    const plate = newImage('A sugar shaker on grey');
+    const diner = await fakeDb.collection('sets').findOne({ name_lower: 'diner' });
+    await fakeDb.collection('sets').updateOne({ _id: diner._id }, {
+      $push: { artworks: { _id: new ObjectId(), status: 'done', result_image_id: plate, name: 'Shaker plate', prop: 'sugar shaker', description: '' } },
+    });
+    const catalog = await Gen.buildReferenceCatalog(projectId, beat);
+    const sets = catalog.filter((e) => e.owner_type === 'set');
+    expect(sets[0]).toMatchObject({ image_id: plate.toString(), prop: 'sugar shaker', label: 'Diner — prop plate: sugar shaker' });
+    expect(sets.slice(1).some((e) => 'prop' in e)).toBe(false);
+    expect(Gen.formatReferenceCatalog(catalog)).toContain('[PROP Diner] Diner — prop plate: sugar shaker');
+  });
+
   it('numbers done artworks only (characters then sets), skipping uploaded sheets/portraits/gallery and non-done artworks', async () => {
     const { beat, sheet, portrait, setMain, artworkId } = await seedBeatWithRefs();
     const catalog = await Gen.buildReferenceCatalog(projectId, beat);

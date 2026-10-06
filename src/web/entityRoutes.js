@@ -427,6 +427,7 @@ export function buildApiRouter() {
       } = await import('./artworkCritique.js');
       const job = getArtworkCritiqueJob(req.params.jobId);
       if (!job) { res.status(404).json({ error: 'job not found' }); return; }
+      const isTerminal = (s) => s === 'done' || s === 'partial' || s === 'error' || s === 'cancelled';
 
       res.set({
         'Content-Type': 'text/event-stream',
@@ -437,7 +438,6 @@ export function buildApiRouter() {
       res.flushHeaders?.();
       res.write(`event: snapshot\ndata: ${JSON.stringify(serializeArtworkCritiqueJob(job))}\n\n`);
 
-      const isTerminal = (s) => s === 'done' || s === 'partial' || s === 'error';
       const listener = (snap) => {
         const terminal = isTerminal(snap.status);
         const eventName = terminal ? (snap.status === 'error' ? 'error' : 'done') : 'update';

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { apiDownload, apiGet, apiPostJson } from '../api.js';
+import { apiDelete, apiDownload, apiGet, apiPostJson } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { SceneCard } from '../widgets/SceneCard.jsx';
 import { BeatTabs } from '../widgets/BeatTabs.jsx';
@@ -9,6 +9,7 @@ import { ComfyCutJobsProvider, comfyQueueSummary, useComfyCutJobStore } from '..
 import { CutFrameJobsProvider, useCutFrameJobStore } from '../widgets/cutFrameJobs.jsx';
 import { CutBatchBanner, CutVideoBatchProvider, useCutVideoBatchStore } from '../widgets/cutVideoBatch.jsx';
 import { GenerateAllVideosDialog } from '../widgets/GenerateAllVideosDialog.jsx';
+import { ConfirmDialog } from '../widgets/Modal.jsx';
 
 function readError(e) {
   let msg = e?.message || 'Request failed.';
@@ -32,6 +33,8 @@ export function ScenesBeat({ session }) {
   const [tocBeats, setTocBeats] = useState([]);
   const [batchOpen, setBatchOpen] = useState(false);
   const [download, setDownload] = useState(null); // the step shown while ffmpeg joins the clips
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
+  const [deletingAll, setDeletingAll] = useState(false);
   const mounted = useRef(true);
   // Set on every mount: StrictMode runs this cleanup once right after the
   // first mount, and a ref left false would make every async action bail.
@@ -132,6 +135,21 @@ export function ScenesBeat({ session }) {
     }
   }
 
+  // "Delete all scenes": every scene of the beat with every cut, frame and clip.
+  async function deleteAllScenes() {
+    setConfirmDeleteAll(false);
+    setDeletingAll(true);
+    setActionError(null);
+    try {
+      await apiDelete(`/video-scenes?beat_id=${encodeURIComponent(beatId)}`);
+    } catch (e) {
+      setActionError(readError(e));
+    } finally {
+      if (mounted.current) setDeletingAll(false);
+      onRefresh();
+    }
+  }
+
   async function moveScene(i, dir) {
     const ids = scenes.map((s) => String(s._id));
     const j = i + dir;
@@ -175,7 +193,26 @@ export function ScenesBeat({ session }) {
             >
               {download ? <><span className="spinner cut-batch-spinner" aria-hidden="true" /> {download}</> : 'Download all videos'}
             </button>
+            <button
+              type="button"
+              className="danger"
+              disabled={deletingAll || videoBatch.running || scenes.length === 0}
+              onClick={() => setConfirmDeleteAll(true)}
+              title={videoBatch.running ? 'Stop the video batch first' : scenes.length ? 'Delete every scene of this beat, with every cut, frame and video' : 'This beat has no scenes'}
+            >
+              {deletingAll ? 'Deleting all scenes…' : 'Delete all scenes'}
+            </button>
           </div>
+
+          <ConfirmDialog
+            open={confirmDeleteAll}
+            title={`Delete all ${scenes.length} scene${scenes.length === 1 ? '' : 's'} of beat #${data.beat.order}?`}
+            message={`Every scene is deleted with ${allCuts.length ? `its cuts (${allCuts.length} in all)` : 'its cuts'}, their prompts, generated frames and videos. This cannot be undone.`}
+            confirmLabel="Delete all scenes"
+            danger
+            onConfirm={deleteAllScenes}
+            onCancel={() => setConfirmDeleteAll(false)}
+          />
 
           {actionError ? <div className="error-banner">{actionError}</div> : null}
           <CutBatchBanner store={videoBatch} />

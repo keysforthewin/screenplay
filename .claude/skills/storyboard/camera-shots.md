@@ -4,11 +4,15 @@ One collection, compiled from three sources (fetched 2026-10-04):
 runway.com/resources/ai-camera-prompts (vocabulary), aicameramovements.com
 (46 move templates), atlabs.ai "100 cinematic camera prompts" (worked examples).
 
-How to use it: every cut names ONE move from Part 2 (or "static"). Paste that
-move's template into the cut's video prompt as the camera sentence, after the
-action. Part 1 gives the words for shot size, angle, focus and composition used
-in the frame prompts. Part 3 is for ideas on how a move reads in a full prompt;
-borrow the phrasing, never the subject matter.
+How to use it: every cut names ONE move from Part 2 (or "static"). The
+template's clauses are the CONTENT of the cut's video prompt's camera sentence,
+rewritten as prose — LTX-2.5 reads a flowing paragraph, not labelled fields, so
+"dolly in. Movement: … Speed: … End: finish in a tighter composition" becomes
+"The camera dollies in smoothly at a constant height toward her and settles on a
+tight composition of her face." The `End:` clause is still what the cut's END
+FRAME must show. Part 1 gives the words for shot size, angle, focus and
+composition used in the frame prompts. Part 3 is for ideas on how a move reads
+in a full prompt; borrow the phrasing, never the subject matter.
 
 ## Part 1 — Vocabulary
 

@@ -78,7 +78,7 @@ const frame = z.enum(['start', 'end']).describe('Which frame of the cut.');
 const refIds = z
   .array(z.string())
   .max(MAX_REFERENCE_IMAGES)
-  .describe(`Ordered reference image ids for rendering this frame (at most ${MAX_REFERENCE_IMAGES}); take them from list_artwork / list_reference_images, or use the cut's own start-frame image_id on the end frame. Replaces the list.`);
+  .describe(`Ordered reference image ids for rendering this frame (at most ${MAX_REFERENCE_IMAGES}); the renderer sends them in THIS order and binds them as "Image 1", "Image 2"… above the frame prompt, so refer to the Nth id as Image N in the prompt. Take them from list_artwork / list_reference_images, or use the cut's own start-frame image_id on the end frame (list it last). Replaces the list.`);
 
 // The fields of a cut, shared by create_scene.cuts[], create_cut and update_cut.
 const cutFields = {
@@ -275,7 +275,7 @@ export function buildMcpServer({ uploadBase } = {}) {
 
   tool(
     'list_reference_images',
-    'One beat\'s reference pool in a single call: the finished artwork of every character and set on the beat\'s roster, plus wardrobe plates (what the Scenes tab\'s own picker offers). For everything one character or set has, use list_artwork.',
+    'One beat\'s reference pool in a single call: the finished artwork of every character and set on the beat\'s roster, plus wardrobe plates and prop plates (`prop` = the object the picture shows by itself; attach it to every frame that object is in) — what the Scenes tab\'s own picker offers. For everything one character or set has, use list_artwork.',
     { project, beat },
     READ,
     async (a) => {
@@ -289,6 +289,7 @@ export function buildMcpServer({ uploadBase } = {}) {
           label: e.label,
           description: e.description,
           ...(e.wardrobe ? { wardrobe_plate: true } : {}),
+          ...(e.prop ? { prop: e.prop } : {}),
           url: imageUrl(e.image_id),
         })),
       };

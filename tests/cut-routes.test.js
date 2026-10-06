@@ -285,6 +285,39 @@ describe('scenes', () => {
   });
 });
 
+describe('delete all scenes', () => {
+  it('DELETE /video-scenes?beat_id= removes every scene of the beat with its cuts and media; other beats untouched', async () => {
+    const { beat } = await seedBeat();
+    const { s1, s2, c1, c2, c3 } = await seedScenes(beat);
+    const clip = new ObjectId();
+    const frame = img('frame');
+    const endFrame = img('end');
+    await VP.updateVideoPrompt(projectId, c1._id, { video_file_id: clip, start_frame: { image_id: frame } });
+    await VP.updateVideoPrompt(projectId, c3._id, { end_frame: { image_id: endFrame } });
+
+    expect((await call('DELETE', '/api/video-scenes')).status).toBe(400);
+    expect((await call('DELETE', `/api/video-scenes?beat_id=${new ObjectId()}`)).status).toBe(404);
+    const other = (await createProject('Other'))._id.toString();
+    expect((await call('DELETE', `/api/video-scenes?beat_id=${beat._id}`, undefined, other)).status).toBe(404);
+    expect((await list(beat)).scenes).toHaveLength(2);
+
+    const r = await call('DELETE', `/api/video-scenes?beat_id=${beat._id}`);
+    expect(r.status).toBe(200);
+    expect(r.json).toEqual({ ok: true, beat_id: String(beat._id), scenes_removed: 2, cuts_removed: 3 });
+    expect((await list(beat)).scenes).toEqual([]);
+    expect(await VP.listVideoPrompts({ beatId: beat._id })).toEqual([]);
+    for (const c of [c1, c2, c3]) expect(await VP.getVideoPrompt(projectId, String(c._id))).toBeNull();
+    expect(deletedAttachments).toEqual([String(clip)]);
+    expect(deleted.sort()).toEqual([String(frame), String(endFrame)].sort());
+    const room = `video_prompts:${beat._id}`;
+    const ping = broadcasts.find((b) => b.room === room && b.payload?.removed_video_scene_ids);
+    expect(ping.payload.removed_video_scene_ids.sort()).toEqual([String(s1._id), String(s2._id)].sort());
+
+    // Idempotent on an empty beat, and the beat is still addressable by order.
+    expect((await call('DELETE', `/api/video-scenes?beat_id=${beat.order}`)).json).toEqual({ ok: true, beat_id: String(beat._id), scenes_removed: 0, cuts_removed: 0 });
+  });
+});
+
 describe('cuts', () => {
   it('POST /cut appends cut N.M to the scene; 404 for an unknown scene', async () => {
     const { beat } = await seedBeat();
@@ -445,11 +478,12 @@ describe('frames', () => {
     expect(r.json.cut.start_frame.reference_ids).toEqual(many.slice(0, VP.MAX_REFERENCE_IMAGES));
     r = await call('PATCH', `/api/cut/${cut._id}/start-frame`, { reference_ids: [String(dinerArt), String(sarahArt)] });
 
-    // A second render uses the new list and makes the first image the undo target.
+    // A second render uses the new list, in the stored order (Image 1 = the
+    // first id), and makes the first image the undo target.
     r = await call('POST', `/api/cut/${cut._id}/start-frame/generate`, {});
     job = await waitFrame(r.json.job_id);
     expect(job.status).toBe('done');
-    expect(dispatched[1].inputImages.map((i) => i.buffer.toString())).toEqual(['Sarah, grey coat', 'Diner interior']);
+    expect(dispatched[1].inputImages.map((i) => i.buffer.toString())).toEqual(['Diner interior', 'Sarah, grey coat']);
     const second = await frameOf(cut);
     expect(String(second.previous_image_id)).toBe(String(first.image_id));
     expect(String(second.image_id)).not.toBe(String(first.image_id));

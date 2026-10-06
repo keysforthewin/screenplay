@@ -64,10 +64,24 @@ const SYSTEM_PROMPT = [
   'actually use: the sub-locations, entrances, props, and times of day they stage. Where',
   'the beats are silent, invent details consistent with the story and the directorial voice.',
   '',
-  'INTENT AND PROPORTION: first identify the PRIMARY visual subject — the image the beats',
-  'actually dwell on. A beat that opens on a starfield and only pans down to a building at',
-  'the end is ABOUT the starfield: the starfield gets the paragraphs, the building gets one',
-  'or two grounding sentences at the end. Never give a minor or transitional element — a',
+  'SCOPE — THE SET\'S NAME DECIDES WHAT YOU DESCRIBE: a beat often moves through several',
+  'places, and each place is its own set. This set\'s name says which ONE of them it is.',
+  'Before writing, mark the passages of each beat that happen in the place the name names',
+  '(sluglines, mini-slugs and "we move to…" lines show where a beat changes place) and use',
+  'ONLY those passages. Everything a beat stages somewhere else — another room, another',
+  'building, the street outside, a vehicle, a different planet — belongs to another set and',
+  'must not appear in this description at all: not its layout, not its props, not its light,',
+  'not as a closing sentence. Each beat lists its other sets; those are the places to leave',
+  'out. When the name is narrower than the beat (one room of a house the beat roams), describe',
+  'only that room. When no passage of a beat happens in this set, take nothing from that beat.',
+  'What is physically visible FROM this set (the view through its window, the lot seen from',
+  'its doorway) is part of it, described only as seen from here.',
+  '',
+  'INTENT AND PROPORTION (inside that scope): identify the PRIMARY visual subject — the image',
+  'the in-scope passages actually dwell on. A passage that opens on a starfield and only pans',
+  'down to a building at the end is ABOUT the starfield: the starfield gets the paragraphs, the',
+  'building gets one or two grounding sentences at the end — unless the set is named for the',
+  'building, in which case the building is the subject. Never give a minor or transitional element — a',
   'place the camera merely passes, lands on, or mentions in passing — a full architectural',
   'treatment. The description\'s proportions must mirror the beats\' emphasis, because image',
   'plates are planned directly from this text: over-describing a minor element produces',
@@ -95,6 +109,21 @@ export function clipBlock(raw, max = BEAT_BODY_CLIP) {
   return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
+// The beat's roster minus this set: the places a multi-location beat stages
+// that are NOT this one, so the pass knows what to leave out.
+function otherSetNames(beat, selfLower) {
+  const seen = new Set([selfLower]);
+  const out = [];
+  for (const raw of Array.isArray(beat?.sets) ? beat.sets : []) {
+    const name = stripMarkdown(typeof raw === 'string' ? raw : '').trim();
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
 function buildContext({ plot, set, beats, direction }) {
   const sections = [];
 
@@ -118,17 +147,28 @@ function buildContext({ plot, set, beats, direction }) {
   const setLines = [`# The set: ${setName}`];
   const existing = stripMarkdown(set?.description || '').trim();
   if (existing) {
-    setLines.push('Current description (you are replacing this — keep what still fits):', '', existing);
+    setLines.push(
+      'Current description (you are replacing this — keep what still fits the place the name names; drop anything about another place):',
+      '',
+      existing,
+    );
   }
   sections.push(setLines.join('\n'));
 
   if (beats.length) {
-    const beatSections = ['# Beats that take place in this set'];
+    const beatSections = [
+      `# Beats linked to this set\nA beat may also stage in other places. Use only the passages that happen in "${setName}".`,
+    ];
+    const selfLower = setName.toLowerCase();
     for (const b of beats) {
       const name = stripMarkdown(b?.name || '').trim() || 'Untitled';
       const lines = [`## Beat #${b?.order ?? '?'}: ${name}`];
       const desc = clipField(b?.desc);
       if (desc) lines.push(desc);
+      const others = otherSetNames(b, selfLower);
+      if (others.length) {
+        lines.push(`Other sets in this beat (their own places — leave them out): ${others.join('; ')}`);
+      }
       const body = clipBlock(b?.body);
       if (body) lines.push('', body);
       beatSections.push(lines.join('\n'));
@@ -166,7 +206,7 @@ export async function generateSetDescription({ projectId, setId, beatIds = [], d
   const userText = [
     buildContext({ plot, set, beats, direction }),
     '',
-    'Write the visual description of THIS set using the write_set_description tool.',
+    `Write the visual description of THIS set — "${stripMarkdown(set?.name || '').trim() || 'Untitled set'}", and only the part of each beat that happens there — using the write_set_description tool.`,
   ].join('\n');
 
   const client = getAnthropic();

@@ -101,7 +101,7 @@ async function critiqued() {
 
 describe('artwork critique routes', () => {
   it('GET returns null before a run and 404 for an unknown beat', async () => {
-    expect((await get(`/api/beat/${beat._id}/artwork-critique`)).json).toEqual({ artwork_critique: null, climb: null });
+    expect((await get(`/api/beat/${beat._id}/artwork-critique`)).json).toEqual({ artwork_critique: null, climb: null, job: null });
     expect((await get(`/api/beat/${new ObjectId()}/artwork-critique`)).status).toBe(404);
     expect((await get(`/api/beat/99/artwork-critique`)).status).toBe(404);
   });
@@ -131,7 +131,7 @@ describe('artwork critique routes', () => {
     expect((await get(`/api/beat/${beat._id}/artwork-critique`)).json.artwork_critique.status).toBe('done');
     const del = await fetch(`${baseUrl}/api/beat/${beat._id}/artwork-critique`, { method: 'DELETE' });
     expect(del.status).toBe(200);
-    expect((await get(`/api/beat/${beat._id}/artwork-critique`)).json).toEqual({ artwork_critique: null, climb: null });
+    expect((await get(`/api/beat/${beat._id}/artwork-critique`)).json).toEqual({ artwork_critique: null, climb: null, job: null });
     expect((await fetch(`${baseUrl}/api/beat/${new ObjectId()}/artwork-critique`, { method: 'DELETE' })).status).toBe(404);
   });
 

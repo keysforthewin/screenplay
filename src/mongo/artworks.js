@@ -268,10 +268,28 @@ export async function appendDoneArtwork({
     updated_at: now,
   };
   await pushArtwork(host, artwork);
+  const mainImageIdChange = await promoteFirstSetArtwork(host, artwork);
   logger.info(
     `mongo: ${host.kind} artwork import id=${host._id} artwork=${artwork._id} result=${artwork.result_image_id}`,
   );
-  return { artwork, host_id: host._id };
+  return { artwork, host_id: host._id, mainImageIdChange };
+}
+
+// A set with no main image takes its first finished artwork as its thumbnail
+// (the same rule pushSetImage applies to the first gallery image). Sets only:
+// a character's main image is the portrait every likeness is anchored to.
+// A prop plate shows one object, not the place, so it is never promoted.
+function shouldPromoteToSetMain(host, artwork) {
+  return host.kind === 'set' && !readHostMainImageId(host) && !artwork?.prop;
+}
+
+async function promoteFirstSetArtwork(host, artwork) {
+  if (!shouldPromoteToSetMain(host, artwork)) return null;
+  await getDb().collection(host.col).updateOne(
+    { _id: host._id },
+    { $set: { main_image_id: artwork.result_image_id } },
+  );
+  return { changed: true, value: artwork.result_image_id };
 }
 
 // Create a pending artwork on the host. The caller (the jobs runner)
@@ -286,12 +304,16 @@ export async function createPendingArtwork({
   model,
   referenceImageIds = [],
   jobId,
+  prop = null,
 }) {
   const host = await loadHost(projectId, hostType, hostId);
   const now = new Date();
   const artwork = {
     _id: new ObjectId(),
     name: String(name || ''),
+    // A prop plate: the name of the one object this artwork shows by itself
+    // (set by the artwork critique's prop proposals; PATCHABLE too).
+    ...(String(prop || '').trim() ? { prop: String(prop).trim().slice(0, 80) } : {}),
     description: '',
     prompt: String(prompt || ''),
     model: String(model || ''),
@@ -317,6 +339,7 @@ export async function createPendingArtwork({
 // don't drift into untyped territory.
 const PATCHABLE = new Set([
   'name',
+  'prop',
   'description',
   'prompt',
   'model',
@@ -436,9 +459,10 @@ export async function setArtworkResult({
     job_id: null,
   };
   const opts = {};
-  const mainImageIdChange = oidEquals(hostMain, replacedId)
-    ? { changed: true, value: newResult }
-    : null;
+  const mainImageIdChange =
+    oidEquals(hostMain, replacedId) || shouldPromoteToSetMain(host, current)
+      ? { changed: true, value: newResult }
+      : null;
   if (mainImageIdChange) opts.hostMainImageId = newResult;
   const wardrobeImageIdChange = oidEquals(readHostWardrobeImageId(host), replacedId)
     ? { changed: true, value: newResult }

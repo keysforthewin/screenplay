@@ -58,6 +58,9 @@ export function BeatSets({ beat, toc, onRefresh }) {
     </div>
   );
 
+  // Tells the set page which beat to go back to (see routes/Set.jsx).
+  const linkState = { fromBeat: beat.order };
+
   const linkedKeys = useMemo(() => {
     return new Set(linked.map((l) => l.plain.toLowerCase()).filter(Boolean));
   }, [linked]);
@@ -145,7 +148,7 @@ export function BeatSets({ beat, toc, onRefresh }) {
               </div>
               <div className="beat-set-name">
                 {tocEntry ? (
-                  <Link to={linkPath}>{plain || raw}</Link>
+                  <Link to={linkPath} state={linkState}>{plain || raw}</Link>
                 ) : (
                   <span style={{ color: 'var(--fg-muted)' }}>
                     {plain || raw} <em>(missing)</em>
@@ -154,7 +157,7 @@ export function BeatSets({ beat, toc, onRefresh }) {
               </div>
               <div className="beat-set-actions">
                 {tocEntry && (
-                  <Link className="icon-link" to={linkPath}>
+                  <Link className="icon-link" to={linkPath} state={linkState}>
                     Open
                   </Link>
                 )}

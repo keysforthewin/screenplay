@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { apiGet } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
@@ -19,6 +19,11 @@ function readInitialTab() {
 export function Set({ session }) {
   const { name } = useParams();
   const navigate = useNavigate();
+  // The beat the breadcrumb goes back to: the one whose Sets tab opened this
+  // page (widgets/BeatSets.jsx), else the first beat that uses the set.
+  const cameFrom = useLocation().state?.fromBeat;
+  const [firstBeat, setFirstBeat] = useState(null);
+  const fromBeat = cameFrom || firstBeat;
   const [set, setSet] = useState(null);
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -41,6 +46,20 @@ export function Set({ session }) {
     return () => { cancelled = true; };
   }, [name, refreshKey]);
 
+  const setId = set?._id;
+  useEffect(() => {
+    if (!setId || cameFrom) return undefined;
+    let cancelled = false;
+    apiGet(`/set/${setId}/beats`)
+      .then((r) => {
+        if (cancelled) return;
+        const orders = (r.beats || []).map((x) => x.order).filter(Boolean);
+        setFirstBeat(orders.length ? Math.min(...orders) : null);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [setId, cameFrom]);
+
   useEffect(() => {
     function onHash() {
       const next = readInitialTab();
@@ -55,7 +74,8 @@ export function Set({ session }) {
     if (typeof window !== 'undefined') {
       const newHash = tab === 'background' ? '' : `#${tab}`;
       if (window.location.hash !== newHash) {
-        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${newHash}`);
+        // Keep history.state: the router stores `fromBeat` there.
+        window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}${newHash}`);
       }
     }
   }
@@ -72,7 +92,13 @@ export function Set({ session }) {
   return (
     <main className="app">
       <p>
-        <a href="#" onClick={(e) => { e.preventDefault(); navigate('/'); }}>← Back to TOC</a>
+        {fromBeat ? (
+          <a href="#" onClick={(e) => { e.preventDefault(); navigate(`/beat/${fromBeat}#sets`); }}>
+            ← Back to Beat #{fromBeat}
+          </a>
+        ) : (
+          <a href="#" onClick={(e) => { e.preventDefault(); navigate('/'); }}>← Back to TOC</a>
+        )}
       </p>
       <h1 style={{ marginTop: 0 }}>{set.name || 'Set'}</h1>
 

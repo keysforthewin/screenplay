@@ -18,6 +18,8 @@ import {
   AUDIT_SYSTEM_PROMPT,
   composeClimbEditPrompt,
   normalizeProposals,
+  composeSetProposalPrompt,
+  rebindSetPrompt,
   rebindCharacterPrompt,
   computeCoverage,
   buildSubjectRoster,
@@ -25,8 +27,6 @@ import {
   REQUIREMENTS_SCHEMA,
   AUDIT_SCHEMA,
   PROPOSALS_SCHEMA,
-  MAX_REQUIREMENTS_PER_SUBJECT,
-  MAX_PROPOSALS_PER_SUBJECT,
 } from '../src/web/artworkCritiqueRules.js';
 
 const setId = new ObjectId();
@@ -53,13 +53,13 @@ describe('schemas', () => {
 });
 
 describe('normalizeRequirements', () => {
-  it('drops unknown subjects, re-keys ids per subject, clamps and caps', () => {
+  it('drops unknown subjects, re-keys ids per subject, clamps, and drops nothing', () => {
     const raw = {
       requirements: [
         { subject_id: String(setId), subject_kind: 'set', category: 'view', summary: 'Lot from the kerb', detail: 'd', quote: 'EXT. LOT', importance: 'essential' },
         { subject_id: 'nope', subject_kind: 'set', category: 'view', summary: 'ghost', detail: '', quote: '', importance: 'useful' },
         { subject_id: String(charId), subject_kind: 'character', category: 'view', summary: 'x'.repeat(200), detail: 'd', quote: 'q', importance: 'maybe' },
-        ...Array.from({ length: MAX_REQUIREMENTS_PER_SUBJECT + 2 }, (_, i) => ({ subject_id: String(setId), subject_kind: 'set', category: 'prop', summary: `p${i}`, detail: '', quote: '', importance: 'useful' })),
+        ...Array.from({ length: 14 }, (_, i) => ({ subject_id: String(setId), subject_kind: 'set', category: 'view', summary: `p${i}`, detail: '', quote: '', importance: 'useful' })),
       ],
       unlinked_mentions: [{ name: 'Parking lot', kind: 'set', quote: 'the lot' }, { name: '', kind: 'set', quote: '' }],
     };
@@ -70,10 +70,10 @@ describe('normalizeRequirements', () => {
     expect(charReq.category).toBe('costume'); // set category on a character → first character category
     expect(charReq.summary.length).toBeLessThanOrEqual(120);
     expect(charReq.importance).toBe('useful');
-    expect(requirements.filter((r) => r.subject_kind === 'set')).toHaveLength(MAX_REQUIREMENTS_PER_SUBJECT);
+    expect(requirements.filter((r) => r.subject_kind === 'set')).toHaveLength(15); // nothing is dropped
     expect(unlinked_mentions).toEqual([{ name: 'Parking lot', kind: 'set', quote: 'the lot' }]);
     expect(warnings.some((w) => /unknown subject/.test(w))).toBe(true);
-    expect(warnings.some((w) => /more than/.test(w))).toBe(true);
+    expect(warnings.some((w) => /more than/.test(w))).toBe(false);
   });
 
   it('buildSubjectRoster lists ids the model must echo', () => {
@@ -320,13 +320,70 @@ describe('normalizeProposals', () => {
     expect(two.warnings.filter((w) => /no portrait/.test(w))).toHaveLength(1);
   });
 
-  it('leaves a set prompt as written and caps the count', () => {
-    const many = Array.from({ length: MAX_PROPOSALS_PER_SUBJECT + 1 }, (_, i) => ({ requirement_ids: ['set:y:1'], name: `p${i}`, prompt: `prompt ${i}`, reference_indexes: [1], rationale: '' }));
+  it('binds a set proposal to the set artwork it picked and keeps every proposal', () => {
+    const many = Array.from({ length: 9 }, (_, i) => ({ requirement_ids: ['set:y:1'], name: `p${i}`, prompt: `prompt ${i}`, reference_indexes: [1], rationale: '' }));
     const { proposals, warnings } = normalizeProposals({ proposals: many }, { subject: subjects[0], requirements: [{ id: 'set:y:1', summary: 's' }], catalog });
-    expect(proposals).toHaveLength(MAX_PROPOSALS_PER_SUBJECT);
-    expect(proposals[0].prompt).toBe('prompt 0');
+    expect(proposals).toHaveLength(9);
+    expect(proposals[0].reference_image_ids.map(String)).toEqual(['a'.repeat(24)]);
+    expect(proposals[0].prompt.split('\n')).toEqual([
+      'Reference image 1 shows this same PLACE as it has already been rendered: match its architecture, materials, signage and colours; take the vantage and the light from the prompt, not from it.',
+      '',
+      'prompt 0',
+    ]);
     expect(proposals[0].host_type).toBe('set');
-    expect(warnings.some((w) => /more than/.test(w))).toBe(true);
+    expect(warnings.some((w) => /more than|no picture/.test(w))).toBe(false);
+  });
+
+  it('a set proposal leads with the set\'s main photo, then its other photos, then artwork — and never another host\'s picture', () => {
+    const main = 'd'.repeat(24);
+    const photo = 'e'.repeat(24);
+    const theatre = { ...subjects[0], doc: { name: 'Theatre lot', main_image_id: new ObjectId(main), images: [{ _id: new ObjectId(photo) }, { _id: new ObjectId(main) }] } };
+    const rich = [
+      { index: 1, image_id: 'a'.repeat(24), owner_type: 'set', owner_id: String(setId), owner_name: 'Theatre lot' },
+      { index: 2, image_id: 'b'.repeat(24), owner_type: 'character', owner_name: 'Sarah' },
+      { index: 3, image_id: photo, owner_type: 'set', owner_id: String(setId), owner_name: 'Theatre lot', upload: true },
+      { index: 4, image_id: main, owner_type: 'set', owner_id: String(setId), owner_name: 'Theatre lot', upload: true },
+      { index: 5, image_id: 'f'.repeat(24), owner_type: 'set', owner_id: 'g'.repeat(24), owner_name: 'Diner' },
+    ];
+    const { proposals, warnings } = normalizeProposals({
+      // The planner listed artwork first and forgot the main photo; another set's plate and a character sneak in.
+      proposals: [{ requirement_ids: ['set:y:1'], name: 'Lot at dusk', prompt: 'the lot from the curb at dusk', reference_indexes: [1, 2, 3, 5], rationale: '' }],
+    }, { subject: theatre, requirements: [{ id: 'set:y:1', category: 'view', summary: 's' }], catalog: rich });
+    const p = proposals[0];
+    expect(p.reference_image_ids.map(String)).toEqual([main, photo, 'a'.repeat(24)]);
+    const lines = p.prompt.split('\n');
+    expect(lines[0]).toMatch(/^Reference image 1 is a photograph of this same PLACE/);
+    expect(lines[1]).toMatch(/^Reference image 2 is a photograph of this same PLACE/);
+    expect(lines[2]).toMatch(/^Reference image 3 shows this same PLACE as it has already been rendered/);
+    expect(lines.at(-1)).toBe('the lot from the curb at dusk');
+    expect(warnings).toEqual([]);
+  });
+
+  it('a set with no picture on file warns once; a prop plate carries no view of the place', () => {
+    const bare = { ...subjects[0], doc: { name: 'Theatre lot', images: [] } };
+    const requirements = [{ id: 'set:y:1', category: 'view', summary: 'v' }, { id: 'set:y:2', category: 'prop', summary: 'hacky sack' }];
+    const cat = [{ index: 1, image_id: 'a'.repeat(24), owner_type: 'set', owner_id: 'g'.repeat(24), owner_name: 'Diner' }];
+    const { proposals, warnings } = normalizeProposals({
+      proposals: [
+        { requirement_ids: ['set:y:1'], name: 'v', prompt: 'the lot', reference_indexes: [1], rationale: '' },
+        { requirement_ids: ['set:y:2'], name: 'sack', prompt: 'a crocheted ball', reference_indexes: [1], rationale: '' },
+      ],
+    }, { subject: bare, requirements, catalog: cat });
+    expect(proposals[0].reference_image_ids).toEqual([]);
+    expect(proposals[0].prompt).toBe('the lot');
+    expect(proposals[1].reference_image_ids).toEqual([]);
+    expect(proposals[1].prompt).toBe('a crocheted ball');
+    expect(warnings.filter((w) => /no picture of the set/.test(w))).toHaveLength(1);
+  });
+
+  it('rebindSetPrompt replaces a stored binding with the one for the references actually sent', () => {
+    const stored = composeSetProposalPrompt('the lot at dusk', { references: [{ image_id: 'a'.repeat(24), role: 'artwork' }] });
+    const rebound = rebindSetPrompt(stored, [{ image_id: 'd'.repeat(24), role: 'photo' }, { image_id: 'a'.repeat(24), role: 'artwork' }]);
+    const lines = rebound.split('\n');
+    expect(lines[0]).toMatch(/^Reference image 1 is a photograph/);
+    expect(lines[1]).toMatch(/^Reference image 2 shows this same PLACE/);
+    expect(lines.slice(2)).toEqual(['', 'the lot at dusk']);
+    expect(rebindSetPrompt(stored, [])).toBe('the lot at dusk');
   });
 });
 

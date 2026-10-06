@@ -59,7 +59,7 @@ let artworkB;
 const settle = async (jobId, get) => {
   for (let i = 0; i < 200; i++) {
     const j = get(jobId);
-    if (!j || ['done', 'partial', 'error'].includes(j.status)) return j;
+    if (!j || ['done', 'partial', 'error', 'cancelled'].includes(j.status)) return j;
     await new Promise((r) => setTimeout(r, 5));
   }
   throw new Error('job did not finish');
@@ -204,7 +204,7 @@ describe('runArtworkCritique', () => {
     expect(seen.at(-1)).toHaveLength(2);
   });
 
-  it('check coverage starts from nothing and looks at no image; check quality reviews in place, again each time', async () => {
+  it('check coverage looks at no image and keeps its list of requirements; check quality reviews in place, again each time', async () => {
     const calls = { requirements: 0, audit: 0, proposals: 0 };
     const base = stdAnalyzer();
     G._setArtworkCritiqueAnalyzerForTests({
@@ -242,8 +242,15 @@ describe('runArtworkCritique', () => {
     await settle(await G.startArtworkCritiqueJob({ projectId, beatId: id, stage: 'quality' }), G.getArtworkCritiqueJob);
     expect(calls).toMatchObject({ requirements: 1, audit: 2 });
 
-    // Coverage again wipes the reviews and derives the requirements again.
+    // Coverage again, the beat unchanged: measured against the SAME list
+    // (a list derived anew every time never reaches 100%), reviews kept.
     await settle(await G.startArtworkCritiqueJob({ projectId, beatId: id, stage: 'coverage' }), G.getArtworkCritiqueJob);
+    expect(calls).toMatchObject({ requirements: 1, audit: 2 });
+    c = await AC.getBeatArtworkCritique(projectId, id);
+    expect(setSubject().artworks.some((a) => a.audited_image_id)).toBe(true);
+
+    // `force` is what starts from nothing.
+    await settle(await G.startArtworkCritiqueJob({ projectId, beatId: id, stage: 'coverage', force: true }), G.getArtworkCritiqueJob);
     expect(calls).toMatchObject({ requirements: 2, audit: 2 });
     c = await AC.getBeatArtworkCritique(projectId, id);
     expect(setSubject().artworks.every((a) => a.audited_image_id == null)).toBe(true);
@@ -329,15 +336,15 @@ describe('runArtworkCritique', () => {
     G._setArtworkCritiqueAnalyzerForTests(stdAnalyzer({
       describe: async ({ artwork }) => { described.push(String(artwork._id)); return `what ${artwork.name} shows`; },
       shortlist: async ({ artworks, text }) => {
+        // The library is read in batches of 8; each answer numbers its own batch.
         shortlistSaw.push(artworks.length);
-        expect(text).toContain('what Plate 37 shows');
-        // artwork 1 = Lot front, artwork 33 = Plate 30 (the car); 5 and 6 are the same picture.
+        expect(text).toContain(`what ${artworks[0].name} shows`);
+        const at = (id) => artworks.findIndex((a) => String(a._id) === String(id)) + 1;
+        const pick = (rid, id) => (at(id) ? [{ requirement_id: rid, artwork_indexes: [at(id)] }] : []);
+        // Lot front and Plate 30 (the car) answer one requirement each; Plates 2 and 3 are the same picture.
         return {
-          candidates: [
-            { requirement_id: `set:${setDoc._id}:1`, artwork_indexes: [1] },
-            { requirement_id: `set:${setDoc._id}:2`, artwork_indexes: [33] },
-          ],
-          duplicate_groups: [[5, 6], [9]],
+          candidates: [...pick(`set:${setDoc._id}:1`, artworkA._id), ...pick(`set:${setDoc._id}:2`, carId)],
+          duplicate_groups: at(extra[2]._id) ? [[at(extra[2]._id), at(extra[3]._id)], [1]] : [],
         };
       },
       audit: async ({ artworks }) => {
@@ -360,8 +367,14 @@ describe('runArtworkCritique', () => {
     expect(job.status).toBe('done');
     expect(job.warnings.some((w) => /only the newest/.test(w))).toBe(false);
     expect(described).toHaveLength(40);
-    expect(shortlistSaw).toEqual([40]);
+    expect(shortlistSaw).toEqual([8, 8, 8, 8, 8]);
     expect(audited).toEqual([[String(artworkA._id), carId]]);
+    // Picture by picture, for the SPA's coverage carousel.
+    const snap = G.serializeArtworkCritiqueJob(job);
+    expect(snap).toMatchObject({ images_total: 40, images_done: 40 });
+    expect(snap.images.filter((i) => i.status === 'relevant').map((i) => i.artwork_id)).toEqual([String(artworkA._id), carId]);
+    expect(snap.images.filter((i) => i.status === 'irrelevant')).toHaveLength(38);
+    expect(snap.images[0]).toMatchObject({ image_id: String(artworkA.result_image_id), subject_kind: 'set', name: artworkA.name });
     const c = await AC.getBeatArtworkCritique(projectId, id);
     const set = c.subjects.find((s) => s.kind === 'set');
     expect(set.inventory).toMatchObject({ total: 40, matched: 2, reviewed: 2 });
@@ -373,7 +386,7 @@ describe('runArtworkCritique', () => {
 
     // Again with nothing changed: no describe, no shortlist, no vision.
     await G.runArtworkCritique({ projectId, job: G.createArtworkCritiqueJob(id) });
-    expect(shortlistSaw).toEqual([40]);
+    expect(shortlistSaw).toEqual([8, 8, 8, 8, 8]);
     expect(audited).toHaveLength(1);
   });
 
@@ -386,6 +399,89 @@ describe('runArtworkCritique', () => {
     await expect(G.startArtworkCritiqueJob({ projectId, beatId: beat._id.toString() })).rejects.toMatchObject({ status: 409 });
     release();
     await settle(id, G.getArtworkCritiqueJob);
+  });
+});
+
+describe('artwork to clear out', () => {
+  const onlyA = () => ({
+    shortlist: async ({ artworks }) => {
+      const at = artworks.findIndex((a) => String(a._id) === String(artworkA._id)) + 1;
+      return { candidates: at ? [{ requirement_id: `set:${setDoc._id}:1`, artwork_indexes: [at] }] : [], duplicate_groups: [] };
+    },
+  });
+
+  it('lists what matched nothing, protects what is in use, deletes what is ticked', async () => {
+    const I = await import('../src/web/artworkCritiqueIrrelevant.js');
+    const id = beat._id.toString();
+    G._setArtworkCritiqueAnalyzerForTests(stdAnalyzer(onlyA()));
+    await settle(await G.startArtworkCritiqueJob({ projectId, beatId: id, stage: 'coverage' }), G.getArtworkCritiqueJob);
+    let { items } = await I.listIrrelevantArtworks({ projectId, beatId: id });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ artwork_id: String(artworkB._id), reason: 'irrelevant', host_type: 'set', host_name: 'Theatre lot', name: 'Lot side', protected: [] });
+
+    // The set's main image is never deletable from here.
+    await fakeDb.collection('sets').updateOne({ _id: setDoc._id }, { $set: { main_image_id: artworkB.result_image_id } });
+    ({ items } = await I.listIrrelevantArtworks({ projectId, beatId: id }));
+    expect(items[0].protected).toEqual(['main image of the set']);
+    let r = await I.deleteIrrelevantArtworks({ projectId, beatId: id, artworkIds: [String(artworkB._id), String(artworkA._id)] });
+    expect(r.deleted).toEqual([]);
+    expect(r.skipped.map((x) => x.artwork_id)).toEqual([String(artworkB._id), String(artworkA._id)]); // A is relevant: not on the list
+
+    await fakeDb.collection('sets').updateOne({ _id: setDoc._id }, { $set: { main_image_id: null } });
+    r = await I.deleteIrrelevantArtworks({ projectId, beatId: id, artworkIds: [String(artworkB._id)] });
+    expect(r.deleted).toEqual([String(artworkB._id)]);
+    const set = await Sets.getSet(projectId, String(setDoc._id));
+    expect(set.artworks.map((a) => String(a._id))).toEqual([String(artworkA._id)]);
+    expect((await I.listIrrelevantArtworks({ projectId, beatId: id })).items).toEqual([]);
+    await expect(I.deleteIrrelevantArtworks({ projectId, beatId: id, artworkIds: [] })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('lists a duplicate beside the copy that is kept, and a piece the reviewer turned down', async () => {
+    const I = await import('../src/web/artworkCritiqueIrrelevant.js');
+    const id = beat._id.toString();
+    G._setArtworkCritiqueAnalyzerForTests(stdAnalyzer({
+      ...onlyA(),
+      duplicates: async ({ artworks }) => ({ duplicate_groups: [[2, 1].map((n) => n).filter((n) => n <= artworks.length)] }),
+      audit: async ({ artworks }) => ({ artworks: artworks.map((a, i) => ({ index: i + 1, fits: [], score: 3, issues: [{ kind: 'other', note: 'melted hands' }], suggested_edit: '' })) }),
+    }));
+    await settle(await G.startArtworkCritiqueJob({ projectId, beatId: id, stage: 'coverage' }), G.getArtworkCritiqueJob);
+    let { items } = await I.listIrrelevantArtworks({ projectId, beatId: id });
+    // B is the same picture as A, and A is the copy the beat uses.
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ artwork_id: String(artworkB._id), reason: 'duplicate', twin_image_id: String(artworkA.result_image_id), twin_name: 'Lot front' });
+
+    await settle(await G.startArtworkCritiqueJob({ projectId, beatId: id, stage: 'quality' }), G.getArtworkCritiqueJob);
+    ({ items } = await I.listIrrelevantArtworks({ projectId, beatId: id }));
+    const a = items.find((x) => x.artwork_id === String(artworkA._id));
+    expect(a).toMatchObject({ reason: 'flawed' });
+    expect(a.detail).toContain('melted hands');
+  });
+});
+
+describe('cancelling a run', () => {
+  it('stops at once, keeps the beat free for the next run, and 409s when nothing is running', async () => {
+    const id = beat._id.toString();
+    await expect(G.requestArtworkCritiqueCancel({ projectId, beatId: id })).rejects.toMatchObject({ status: 409 });
+    // The requirements call never returns: only a cancel can end this run.
+    let matched = 0;
+    G._setArtworkCritiqueAnalyzerForTests(stdAnalyzer({
+      requirements: () => new Promise(() => {}),
+      shortlist: async () => { matched += 1; return { candidates: [], duplicate_groups: [] }; },
+    }));
+    const jobId = await G.startArtworkCritiqueJob({ projectId, beatId: id, stage: 'coverage' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(G.activeArtworkCritiqueJob(id)?.job_id).toBe(jobId);
+    const snap = G.serializeArtworkCritiqueJob(await G.requestArtworkCritiqueCancel({ projectId, beatId: id }));
+    expect(snap.job_id).toBe(jobId);
+    const job = await settle(jobId, G.getArtworkCritiqueJob);
+    expect(job.status).toBe('cancelled');
+    expect(matched).toBe(0);
+    expect(G.activeArtworkCritiqueJob(id)).toBeNull();
+    expect((await AC.getBeatArtworkCritique(projectId, id)).status).toBe('cancelled');
+    // The beat is free again.
+    G._setArtworkCritiqueAnalyzerForTests(stdAnalyzer());
+    const again = await G.startArtworkCritiqueJob({ projectId, beatId: id });
+    expect((await settle(again, G.getArtworkCritiqueJob)).status).toBe('done');
   });
 });
 
@@ -444,6 +540,43 @@ describe('startArtworkGenerateJob', () => {
     const host = p1.host_type === 'set' ? await Sets.getSet(projectId, setDoc._id.toString()) : await Characters.getCharacter(projectId, charDoc._id.toString());
     expect(host.artworks.some((a) => a.status === 'error')).toBe(true);
     expect(h.dispatch.calls).toBe(1);
+  });
+
+  it('anchors every set render on the set\'s main photo, photos before artwork, and drops another host\'s picture', async () => {
+    const Images = await import('../src/mongo/images.js');
+    const mainPhoto = new ObjectId();
+    const otherPhoto = new ObjectId();
+    const plate = String(artworkA.result_image_id);
+    const foreign = new ObjectId(); // a character's image that an override dragged in
+    Images.findImageFile.mockImplementation(async (id) => {
+      const k = String(id);
+      if (k === plate) return { _id: new ObjectId(k), metadata: { owner_type: 'set', owner_id: setDoc._id, source: 'generated', generated_by: 'fal/nano-banana-pro' } };
+      if (k === String(foreign)) return { _id: new ObjectId(k), metadata: { owner_type: 'character', owner_id: charDoc._id, source: 'upload' } };
+      return { _id: new ObjectId(k), metadata: { owner_type: 'set', owner_id: setDoc._id, source: 'upload' } };
+    });
+    await fakeDb.collection('sets').updateOne({ _id: setDoc._id }, { $set: { main_image_id: mainPhoto, images: [{ _id: otherPhoto }, { _id: mainPhoto }] } });
+    const c = await critiqued();
+    const setProp = c.proposals.find((p) => p.host_type === 'set');
+    // Stored as the pre-photo code left it: artwork only, no binding.
+    await AC.updateArtworkCritiqueProposal(projectId, beat._id, setProp._id, { prompt: 'the lot from the curb at dusk', reference_image_ids: [new ObjectId(plate)] });
+    const beatId = beat._id.toString();
+    const pid = String(setProp._id);
+    const { job_id } = await G.startArtworkGenerateJob({
+      projectId, beatId, proposalIds: [pid], model: 'nano-banana-pro',
+      overrides: { [pid]: { reference_image_ids: [plate, String(foreign), String(otherPhoto)] } },
+    });
+    expect((await settle(job_id, G.getArtworkGenerateJob)).status).toBe('done');
+    const call = h.dispatch.perCall.at(-1);
+    expect(call.inputCount).toBe(3); // main photo + other photo + artwork; the character's picture dropped
+    const lines = call.prompt.split('\n');
+    expect(lines[0]).toMatch(/^Reference image 1 is a photograph of this same PLACE/);
+    expect(lines[1]).toMatch(/^Reference image 2 is a photograph of this same PLACE/);
+    expect(lines[2]).toMatch(/^Reference image 3 shows this same PLACE as it has already been rendered/);
+    expect(lines.at(-1)).toBe('the lot from the curb at dusk');
+    const after = await AC.getBeatArtworkCritique(projectId, beatId);
+    const stored = after.proposals.find((p) => String(p._id) === pid);
+    expect(stored.reference_image_ids.map(String)).toEqual([String(mainPhoto), String(otherPhoto), plate]);
+    Images.findImageFile.mockImplementation(async (id) => ({ _id: new ObjectId(String(id)), metadata: {} }));
   });
 
   it('anchors every character render on the portrait — including a retry of a stale proposal that carried only a set plate', async () => {

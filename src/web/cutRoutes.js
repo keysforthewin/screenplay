@@ -6,6 +6,7 @@
 //   GET    /video-scenes?beat_id=            { beat, scenes:[{…, cuts}] }
 //   POST   /video-scene {beat_id, title?}    append a scene
 //   DELETE /video-scene/:id                  the scene and its cuts
+//   DELETE /video-scenes?beat_id=            every scene of the beat with its cuts
 //   POST   /video-scenes/reorder {beat_id, ordered_ids}
 //   POST   /cut {scene_id}                   append a cut to a scene
 //   PATCH  /cut/:id {duration_seconds}
@@ -108,6 +109,20 @@ export function registerCutRoutes(router) {
       if (!scene) return res.status(404).json({ error: 'scene not found' });
       const { deleteVideoSceneViaGateway } = await import('./gateway.js');
       res.json(await deleteVideoSceneViaGateway({ projectId: req.projectId, sceneId: String(scene._id) }));
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // Every scene of the beat, with every cut and its media.
+  router.delete('/video-scenes', async (req, res, next) => {
+    try {
+      const beatRef = req.query.beat_id ?? req.body?.beat_id;
+      if (beatRef == null || beatRef === '') return res.status(400).json({ error: 'beat_id required' });
+      const beat = await resolveBeat(req, beatRef);
+      if (!beat) return res.status(404).json({ error: 'beat not found' });
+      const { deleteAllVideoScenesViaGateway } = await import('./gateway.js');
+      res.json(await deleteAllVideoScenesViaGateway({ projectId: req.projectId, beatId: beat._id.toString() }));
     } catch (e) {
       next(e);
     }
