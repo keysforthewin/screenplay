@@ -286,6 +286,28 @@ describe('cut render routes', () => {
     expect(client.calls).toHaveLength(0);
   });
 
+  it('a request without model_id renders with the admin default video renderer (400 NO_VIDEO_DEFAULT without one)', async () => {
+    const client = fakeClient();
+    Client._setComfyClientForTests(client);
+    const cut = await seedCut();
+    const none = await call('POST', `/api/cut/${cut._id}/video/preview`, { params: { duration_seconds: 3 } });
+    expect(none.status).toBe(400);
+    expect(none.json).toMatchObject({ code: 'NO_VIDEO_DEFAULT' });
+
+    const Settings = await import('../src/mongo/appSettings.js');
+    await Settings.setVideoDefaultSettings({ provider: 'comfy', model_id: 'ltx-2.5-i2v', params: { fps: 24 } });
+    const r = await call('POST', `/api/cut/${cut._id}/video/preview`, { params: { duration_seconds: 3 } });
+    expect(r.status).toBe(200);
+    expect(r.json.model.id).toBe('ltx-2.5-i2v');
+    expect(r.json.overrides.find((o) => o.address === '398.value_2').value).toBe(3);
+
+    // A fal default does not serve the ComfyUI route.
+    await Settings.setVideoDefaultSettings({ provider: 'fal', model_id: 'fal-ai/x' });
+    const other = await call('POST', `/api/cut/${cut._id}/video/preview`, {});
+    expect(other.status).toBe(400);
+    expect(other.json.error).toMatch(/not comfy/);
+  });
+
   it('generate returns 202, the job snapshot is readable, and the SSE stream needs a valid session', async () => {
     Client._setComfyClientForTests(fakeClient());
     const cut = await seedCut();

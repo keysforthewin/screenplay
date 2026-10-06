@@ -7,6 +7,7 @@ import { CharacterSelect } from './CharacterSelect.jsx';
 import { AudioSlot } from './AudioSlot.jsx';
 import { DialogItemCollapsed } from './DialogItemCollapsed.jsx';
 import { DialogContextStrip } from './DialogContextStrip.jsx';
+import { ElevenVoiceField } from './ElevenVoiceField.jsx';
 
 export function DialogItem({
   dialog,
@@ -20,6 +21,9 @@ export function DialogItem({
   onExpandToggle,
   prevDialog,
   nextDialog,
+  voice,
+  characterVoice,
+  voicesKnown,
 }) {
   const id = dialog._id?.toString?.() || String(dialog._id);
   const [alternatives, setAlternatives] = useState(null);
@@ -204,6 +208,16 @@ export function DialogItem({
             characters={characters}
             onChange={(plainName) => onCharacterChange(id, plainName)}
           />
+          {voicesKnown && (
+            <div className="dialog-item-voice">
+              <ElevenVoiceField
+                dialogId={id}
+                value={dialog.eleven_voice || null}
+                inherited={characterVoice}
+                onChange={onApplied}
+              />
+            </div>
+          )}
         </div>
         <DialogContextStrip dialog={prevDialog} kind="prev" />
         <div className="dialog-item-direction">
@@ -243,7 +257,9 @@ export function DialogItem({
           <CollabField
             field={`item:${id}:body`}
             multiline
-            placeholder="What the character says…"
+            placeholder={voice
+              ? 'What the character says, with audio tags — [quietly] I know. [long pause] I always knew.'
+              : 'What the character says…'}
           />
           {altPicker}
         </div>

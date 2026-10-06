@@ -5,7 +5,7 @@ import { apiGet } from '../api.js';
 // server; the Scenes page keeps one snapshot per frame here (key
 // `<cutId>:<start|end>`) so the frame's panel shows "Rendering…" however the
 // page is re-rendered, and a reopened page picks running jobs up again from
-// GET /cuts/jobs. ScenesBeat owns the store (useCutFrameJobStore).
+// GET /cuts/jobs. ScenesPanel owns the store (useCutFrameJobStore).
 
 const POLL_MS = 1500;
 const TERMINAL = new Set(['done', 'error']);

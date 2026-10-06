@@ -13,6 +13,7 @@
 // through falVideoGenerate's video_prompt owner shim.
 
 import { logger } from '../log.js';
+import { resolveVideoRenderer } from './videoDefault.js';
 import { getSession, touchSession } from '../mongo/auth.js';
 import { getBeat } from '../mongo/plots.js';
 import { getVideoPrompt } from '../mongo/videoPrompts.js';
@@ -27,7 +28,7 @@ const HEX24 = /^[a-f0-9]{24}$/i;
 // 30 s; the model snaps anything longer), and generate_audio /
 // include_director_notes default OFF — the block already folded the notes
 // in, and real voices are recorded separately.
-function parseFalBody(req, res) {
+async function parseFalBody(req, res) {
   const prompt = typeof req.body?.prompt === 'string' && req.body.prompt.trim() ? req.body.prompt.trim() : null;
   if (prompt && prompt.length > 2000) {
     res.status(400).json({ error: 'prompt must be ≤ 2000 chars' });
@@ -43,7 +44,16 @@ function parseFalBody(req, res) {
     }
     durationSeconds = n;
   }
-  const modelId = typeof req.body?.model_id === 'string' && req.body.model_id.trim() ? req.body.model_id.trim() : null;
+  let modelId = typeof req.body?.model_id === 'string' && req.body.model_id.trim() ? req.body.model_id.trim() : null;
+  if (!modelId) {
+    // The admin's default video renderer, when it is a fal.ai model.
+    try {
+      modelId = (await resolveVideoRenderer({ provider: 'fal' })).modelId;
+    } catch (e) {
+      res.status(e.status || 400).json({ error: e.message, code: e.code });
+      return ERR;
+    }
+  }
   const generateAudio = Boolean(req.body?.generate_audio);
   const includeDirectorNotes = Boolean(req.body?.include_director_notes);
   const resolution = parseResolutionField(req.body?.resolution, res);
@@ -175,7 +185,7 @@ export function registerCutFalVideoRoutes(router) {
     try {
       const cutId = await resolveCutId(req);
       if (!cutId) return res.status(404).json({ error: 'cut not found' });
-      const parsed = parseFalBody(req, res);
+      const parsed = await parseFalBody(req, res);
       if (parsed === ERR) return;
       const Fal = await import('./falVideoGenerate.js');
       try {
@@ -197,7 +207,7 @@ export function registerCutFalVideoRoutes(router) {
     try {
       const cutId = await resolveCutId(req);
       if (!cutId) return res.status(404).json({ error: 'cut not found' });
-      const parsed = parseFalBody(req, res);
+      const parsed = await parseFalBody(req, res);
       if (parsed === ERR) return;
       const Fal = await import('./falVideoGenerate.js');
       try {

@@ -11,6 +11,7 @@
 // { configured: false, ... } and every render route returns 503.
 
 import express from 'express';
+import { resolveVideoRenderer } from './videoDefault.js';
 import { config } from '../config.js';
 import { logger } from '../log.js';
 import { getVideoPrompt } from '../mongo/videoPrompts.js';
@@ -205,10 +206,25 @@ export function buildComfyRouter() {
 
 // ─── Per-cut render routes (main router, after auth) ────────────────────────
 
-function parseRenderBody(req) {
+const ERR_SENT = Symbol('error sent');
+
+// No `model_id` → the admin's default video renderer (Admin → Video
+// renderer), when it is a ComfyUI model; its stored params seed the render's
+// params under the request's own. 400 when neither names a model.
+async function parseRenderBody(req, res) {
   const body = req.body || {};
-  const modelId = typeof body.model_id === 'string' ? body.model_id.trim() : '';
-  const params = body.params && typeof body.params === 'object' && !Array.isArray(body.params) ? body.params : {};
+  let modelId = typeof body.model_id === 'string' ? body.model_id.trim() : '';
+  let params = body.params && typeof body.params === 'object' && !Array.isArray(body.params) ? body.params : {};
+  if (!modelId) {
+    try {
+      const d = await resolveVideoRenderer({ provider: 'comfy' });
+      modelId = d.modelId;
+      params = { ...d.params, ...params };
+    } catch (e) {
+      res.status(e.status || 400).json({ error: e.message, code: e.code });
+      return ERR_SENT;
+    }
+  }
   const advanced = Array.isArray(body.advanced) ? body.advanced : [];
   const confirmSpend = body.confirm_spend === true;
   const promptOverride = typeof body.prompt === 'string' && body.prompt.trim() ? body.prompt.slice(0, 20_000) : null;
@@ -227,8 +243,8 @@ export function registerCutVideoRoutes(router) {
     try {
       const cutId = await resolveCutId(req);
       if (!cutId) return res.status(404).json({ error: 'cut not found' });
-      const parsed = parseRenderBody(req);
-      if (!parsed.modelId) return res.status(400).json({ error: 'model_id required' });
+      const parsed = await parseRenderBody(req, res);
+      if (parsed === ERR_SENT) return;
       try {
         res.json(await buildComfyPayloadPreview({ projectId: req.projectId, cutId, ...parsed }));
       } catch (e) {
@@ -244,8 +260,8 @@ export function registerCutVideoRoutes(router) {
     try {
       const cutId = await resolveCutId(req);
       if (!cutId) return res.status(404).json({ error: 'cut not found' });
-      const parsed = parseRenderBody(req);
-      if (!parsed.modelId) return res.status(400).json({ error: 'model_id required' });
+      const parsed = await parseRenderBody(req, res);
+      if (parsed === ERR_SENT) return;
       try {
         const { job_id } = await startComfyCutVideoJob({
           projectId: req.projectId,

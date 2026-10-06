@@ -67,6 +67,10 @@ const SYSTEM_PROMPT = [
   'action line as speech. Reward restraint, evasion, interruption, and lines that leave something',
   'unsaid. A short flat line can score high if it is the right move.',
   '',
+  'Square-bracket tags inside a line ([whispering], [long pause], [dry, amused]) are ElevenLabs voice',
+  'directions for the actor, not spoken words and not stage direction: judge the words, never',
+  'penalise a line for carrying them.',
+  '',
   'Return one entry per line via the score_dialog tool, using each line\'s number. Keep the issue',
   'note to a few words; use an empty string for strong lines.',
 ].join('\n');

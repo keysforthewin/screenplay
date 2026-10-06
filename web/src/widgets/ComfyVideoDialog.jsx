@@ -155,13 +155,20 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
     setAdvancedOpen(false);
     (async () => {
       try {
-        const [reg, defs] = await Promise.all([apiGet('/comfy/models'), apiGet('/comfy/defaults').catch(() => null)]);
+        const [reg, defs, vd] = await Promise.all([
+          apiGet('/comfy/models'),
+          apiGet('/comfy/defaults').catch(() => null),
+          apiGet('/video-default').catch(() => null),
+        ]);
         if (cancelled) return;
         setRegistry(reg);
         setDefaults(defs || { model_id: null, params_by_model: {} });
         const list = reg?.models || [];
+        // The admin's default video renderer (Admin → Video renderer) wins;
+        // then the model this project last rendered with; then the first local one.
+        const adminDefault = vd?.default?.provider === 'comfy' ? list.find((m) => m.id === vd.default.model_id && m.available) : null;
         const remembered = list.find((m) => m.id === defs?.model_id && m.available);
-        const first = remembered || list.find((m) => m.available && m.kind === 'local') || list.find((m) => m.available) || null;
+        const first = adminDefault || remembered || list.find((m) => m.available && m.kind === 'local') || list.find((m) => m.available) || null;
         setModelId(first?.id || null);
       } catch (e) {
         if (!cancelled) setRegistryError(parseError(e));

@@ -734,7 +734,7 @@ export function ArtworkCritiqueSection({ beatId }) {
   ) : null;
 
   return (
-    <CritiqueSection title="Artwork" meta={meta} defaultOpen={false}>
+    <CritiqueSection title="Coverage" meta={meta}>
       <div className="tab-actions critique-head">
         {progressLine ? <span className="artwork-critique-progress">{progressLine}</span> : null}
         <span className="spacer" />

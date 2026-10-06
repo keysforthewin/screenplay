@@ -1,29 +1,28 @@
 // web/src/widgets/PlayAllButton.jsx
 // "Play all" control for the TOC Beats tab: reads every beat in order via
 // startPlayAll. The beat list is snapshotted (and empty bodies dropped) when
-// Play is clicked. Unmount (navigating away from the TOC) stops the run.
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+// Play is clicked. The run belongs to the tab (tts/nowPlaying.js): navigating
+// away from the TOC leaves it reading, with the site-wide mini player
+// (TtsMiniPlayer.jsx) keeping the controls.
+import { useSyncExternalStore } from 'react';
 import { apiGet } from '../api.js';
 import { getSharedController } from '../tts/controller.js';
-import { getSavedVoice } from '../tts/voices.js';
 import { markdownToText } from '../tts/markdownToText.js';
-import { startPlayAll } from '../tts/playAll.js';
-import { VoiceSelect } from './VoiceSelect.jsx';
-import { KeepModelButton, modelLoadLabel, PauseButton } from './TtsControls.jsx';
+import { playAllBeats, skipBeat, stopPlayback } from '../tts/nowPlaying.js';
+import { useNowPlaying } from './TtsMiniPlayer.jsx';
+import { modelLoadLabel, PauseButton } from './TtsControls.jsx';
 
-export function PlayAllButton({ beats, onBeatChange }) {
+export function PlayAllButton({ beats }) {
   const controller = getSharedController();
   const state = useSyncExternalStore(
     (cb) => controller.subscribe(cb),
     () => controller.getState(),
   );
-  const runRef = useRef(null);
-  const [running, setRunning] = useState(false);
-  useEffect(() => () => runRef.current?.stop(), []);
+  const running = useNowPlaying()?.kind === 'all';
 
   function onPlayAll() {
     if (running) {
-      runRef.current?.stop();
+      stopPlayback();
       return;
     }
     const items = [...(beats || [])]
@@ -31,20 +30,10 @@ export function PlayAllButton({ beats, onBeatChange }) {
       .filter((b) => !b.body_empty)
       .map((b) => ({ order: b.order, name: b.plain_name || b.name || 'Untitled' }));
     if (!items.length) return;
-    const run = startPlayAll({
+    playAllBeats({
       items,
       fetchBody: async (order) => (await apiGet(`/beat?order=${order}`)).beat?.body || '',
-      controller,
-      voice: getSavedVoice(),
       toText: markdownToText,
-      onBeat: (order) => onBeatChange?.(order),
-    });
-    runRef.current = run;
-    setRunning(true);
-    run.promise.finally(() => {
-      runRef.current = null;
-      setRunning(false);
-      onBeatChange?.(null);
     });
   }
 
@@ -53,14 +42,12 @@ export function PlayAllButton({ beats, onBeatChange }) {
 
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-      <VoiceSelect />
-      <button type="button" onClick={onPlayAll} title="Read every beat aloud in order (client-side TTS)">
+      <button type="button" onClick={onPlayAll} title="Read every beat aloud in order (client-side TTS) — keeps playing while you move around the site">
         {label}
       </button>
       {running && <PauseButton controller={controller} state={state} />}
-      <KeepModelButton controller={controller} state={state} />
       {running && (
-        <button type="button" onClick={() => runRef.current?.skip()} title="Skip to the next beat">
+        <button type="button" onClick={skipBeat} title="Skip to the next beat">
           ⏭ Skip
         </button>
       )}

@@ -17,6 +17,13 @@ import { listDialogs } from '../mongo/dialogs.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { getAnthropic } from '../anthropic/client.js';
 import {
+  VOICED_LINE_MARK,
+  applyVoiceTagPolicy,
+  audioTagPromptSection,
+  hasOwnVoiceOutsideCast,
+  loadVoiceCast,
+} from './dialogVoices.js';
+import {
   createDialogViaGateway,
   deleteDialogViaGateway,
   reorderDialogsViaGateway,
@@ -33,6 +40,8 @@ const SYSTEM_PROMPT = [
   'You may not also update or move an item you have deleted in the same batch.',
   '',
   'A dialog item has two fields: `character` (the speaker) and `body` (what they say). When updating, supply only the field(s) you are changing. When adding, supply both.',
+  '',
+  'Square-bracket audio tags in a body ([whispering], [long pause]) are ElevenLabs performance directions, not spoken words. When the message has a "Voice performance" section, any body you write or rewrite for a speaker it lists as VOICED carries such tags as it describes, and keeps the ones already there unless the instruction changes the delivery; bodies of every other speaker carry none.',
   '',
   'If the instruction is ambiguous or does not actually require any change, emit no tool calls and explain why in your text reply.',
 ].join('\n');
@@ -114,19 +123,25 @@ export async function editDialog({ projectId, beatId, instructions }) {
   const N = originals.length;
 
   // Build the user message: numbered list of current items + instruction.
+  const cast = await loadVoiceCast(projectId);
   const numberedList = originals.length
     ? originals
         .map((d, i) => {
           const speaker = stripMarkdown(d.character || '').trim() || '(no speaker)';
           const body = stripMarkdown(d.body || '').trim() || '(empty)';
-          return `${i + 1}. ${speaker}: ${body}`;
+          const own = hasOwnVoiceOutsideCast(cast, d) ? ` ${VOICED_LINE_MARK}` : '';
+          return `${i + 1}. ${speaker}${own}: ${body}`;
         })
         .join('\n')
     : '(no items yet)';
+  const voiceSection = audioTagPromptSection(cast, {
+    voicedLines: originals.some((d) => hasOwnVoiceOutsideCast(cast, d)),
+  });
   const userText = [
     'Current dialog items:',
     numberedList,
     '',
+    ...(voiceSection ? [voiceSection, ''] : []),
     'User instructions:',
     instructions.trim(),
   ].join('\n');
@@ -166,6 +181,17 @@ export async function editDialog({ projectId, beatId, instructions }) {
 
   // Phase 2: build a working list of plan entries and apply ops.
   const result = applyOps(ops, originals);
+  // A body written for a speaker with no ElevenLabs voice never keeps a tag.
+  // (A line's own voice counts — it stays with the line through the edit.)
+  const originalById = new Map(originals.map((d) => [d._id.toString(), d]));
+  for (const entry of result.updates) {
+    if (entry.bodyChanged) {
+      entry.body = applyVoiceTagPolicy(cast, entry.character, entry.body, originalById.get(String(entry.id)));
+    }
+  }
+  for (const entry of result.creates) {
+    entry.body = applyVoiceTagPolicy(cast, entry.character, entry.body);
+  }
 
   // Phase 3: commit. Order matters because each gateway call broadcasts.
   // (1) Deletes first so the SPA's count drops before adds arrive.

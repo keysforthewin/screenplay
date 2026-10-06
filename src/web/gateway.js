@@ -939,6 +939,18 @@ export async function addCharacterImageViaGateway({ projectId, character, imageM
   return result;
 }
 
+// The ElevenLabs voice a character's dialogue is generated with. `voice: null`
+// clears it. A scalar Mongo field, so connected pages are pinged to refetch.
+export async function setCharacterElevenVoiceViaGateway({ projectId, character, voice }) {
+  const c = await getCharacter(projectId, character);
+  if (!c) throw new Error(`Character not found: ${character}`);
+  const result = await mongoUpdateCharacter(projectId, c._id.toString(), { eleven_voice: voice || null });
+  broadcastFieldsUpdated(buildRoomName('character', c._id.toString()), {
+    changed: ['eleven_voice'],
+  });
+  return result;
+}
+
 export async function setCharacterMainImageViaGateway({ projectId, character, imageId }) {
   const c = await getCharacter(projectId, character);
   if (!c) throw new Error(`Character not found: ${character}`);
@@ -2417,6 +2429,19 @@ export async function setDialogAudioViaGateway({ projectId, dialogId, audioFileI
     dialog_id: String(dialogId),
   });
   return mongoGetDialog(projectId, dialogId);
+}
+
+// A dialog line's own ElevenLabs voice (outranks the speaker's character
+// voice). `voice: null` clears it — the line follows its character again.
+export async function setDialogElevenVoiceViaGateway({ projectId, dialogId, voice }) {
+  const d = await mongoGetDialog(projectId, dialogId);
+  if (!d) throw new Error(`Dialog not found: ${dialogId}`);
+  const result = await mongoUpdateDialog(projectId, dialogId, { eleven_voice: voice || null });
+  broadcastFieldsUpdated(buildRoomName('dialogs', d.beat_id.toString()), {
+    changed: ['eleven_voice'],
+    dialog_id: String(dialogId),
+  });
+  return result;
 }
 
 // ─── Library ───────────────────────────────────────────────────────────────

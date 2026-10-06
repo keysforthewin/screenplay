@@ -5,6 +5,8 @@
 //     updated_at, updated_by }             — Admin → Models (src/llm/modelSlots.js)
 //   { _id: 'comfy_models', models: [registry entry…], updated_at, updated_by }
 //                                          — Admin → ComfyUI templates
+//   { _id: 'video_default', provider: 'comfy'|'fal', model_id, params, updated_at, updated_by }
+//                                          — Admin → Video renderer (src/web/videoDefault.js)
 // Absent doc / null slot = use the env default.
 
 import { getDb } from './client.js';
@@ -21,6 +23,9 @@ import { registerComfyVideoModels } from '../comfy/videoModels.js';
 const COL = 'app_settings';
 const MODELS_ID = 'models';
 const COMFY_MODELS_ID = 'comfy_models';
+const VIDEO_DEFAULT_ID = 'video_default';
+export const VIDEO_DEFAULT_PROVIDERS = Object.freeze(['comfy', 'fal']);
+const MAX_VIDEO_MODEL_ID = 300;
 
 function emptySlots() {
   const out = {};
@@ -131,4 +136,53 @@ export async function loadComfyModelOverrides() {
   const { models } = await getComfyModelSettings();
   registerComfyVideoModels(models);
   return models;
+}
+
+// ── Default video renderer (Admin → Video renderer) ────────────────────────
+// The provider + model every cut video is rendered with when the caller
+// names none: the Scenes-tab dialogs preselect it, the REST routes and the
+// MCP `render_videos` tool fall back to it. `params` are the ComfyUI
+// parameters to render with (ignored for fal). Absent doc = no default.
+
+function emptyVideoDefault() {
+  return { provider: null, model_id: null, params: {}, updated_at: null, updated_by: null };
+}
+
+export async function getVideoDefaultSettings() {
+  const doc = await getDb().collection(COL).findOne({ _id: VIDEO_DEFAULT_ID });
+  const out = emptyVideoDefault();
+  if (!doc) return out;
+  if (VIDEO_DEFAULT_PROVIDERS.includes(doc.provider) && typeof doc.model_id === 'string' && doc.model_id.trim()) {
+    out.provider = doc.provider;
+    out.model_id = doc.model_id.trim();
+    if (doc.params && typeof doc.params === 'object' && !Array.isArray(doc.params)) out.params = { ...doc.params };
+  }
+  out.updated_at = doc.updated_at || null;
+  out.updated_by = doc.updated_by || null;
+  return out;
+}
+
+// Replace the default: `{ provider: 'comfy', model_id: 'ltx2-5-flf2v', params? }`,
+// or `null` / `{ model_id: null }` to clear it. Callers check that the model
+// exists for its provider (the registry lives in src/comfy/videoModels.js and
+// src/fal/videoModels.js, which this module does not import).
+export async function setVideoDefaultSettings(value, { updatedBy = null } = {}) {
+  const now = new Date();
+  let next;
+  if (value == null || value.model_id == null || value.model_id === '') {
+    next = { provider: null, model_id: null, params: {} };
+  } else {
+    if (typeof value !== 'object' || Array.isArray(value)) throw new Error('value must be an object');
+    if (!VIDEO_DEFAULT_PROVIDERS.includes(value.provider)) throw new Error('provider must be "comfy" or "fal"');
+    const id = typeof value.model_id === 'string' ? value.model_id.trim() : '';
+    if (!id || id.length > MAX_VIDEO_MODEL_ID) throw new Error('invalid model id');
+    const params = value.params && typeof value.params === 'object' && !Array.isArray(value.params) ? { ...value.params } : {};
+    next = { provider: value.provider, model_id: id, params };
+  }
+  await getDb().collection(COL).updateOne(
+    { _id: VIDEO_DEFAULT_ID },
+    { $set: { ...next, updated_at: now, updated_by: updatedBy } },
+    { upsert: true },
+  );
+  return getVideoDefaultSettings();
 }

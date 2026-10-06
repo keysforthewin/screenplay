@@ -1,15 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
 import { apiDelete, apiDownload, apiGet, apiPostJson } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
-import { SceneCard } from '../widgets/SceneCard.jsx';
-import { BeatTabs } from '../widgets/BeatTabs.jsx';
-import { BeatPager } from '../widgets/BeatPager.jsx';
-import { ComfyCutJobsProvider, comfyQueueSummary, useComfyCutJobStore } from '../widgets/comfyCutJobs.jsx';
-import { CutFrameJobsProvider, useCutFrameJobStore } from '../widgets/cutFrameJobs.jsx';
-import { CutBatchBanner, CutVideoBatchProvider, useCutVideoBatchStore } from '../widgets/cutVideoBatch.jsx';
-import { GenerateAllVideosDialog } from '../widgets/GenerateAllVideosDialog.jsx';
-import { ConfirmDialog } from '../widgets/Modal.jsx';
+import { SceneCard } from './SceneCard.jsx';
+import { ComfyCutJobsProvider, comfyQueueSummary, useComfyCutJobStore } from './comfyCutJobs.jsx';
+import { CutFrameJobsProvider, useCutFrameJobStore } from './cutFrameJobs.jsx';
+import { CutBatchBanner, CutVideoBatchProvider, useCutVideoBatchStore } from './cutVideoBatch.jsx';
+import { GenerateAllVideosDialog } from './GenerateAllVideosDialog.jsx';
+import { ConfirmDialog } from './Modal.jsx';
 
 function readError(e) {
   let msg = e?.message || 'Request failed.';
@@ -20,17 +17,17 @@ function readError(e) {
   return msg;
 }
 
-// The Scenes tab for one beat: the beat's scenes, each
+// The Scenes panel of the beat page (routes/Beat.jsx): the beat's scenes, each
 // with its cuts (name, duration, video prompt, start and end frames, clip).
-export function ScenesBeat({ session }) {
-  const { order } = useParams();
-  const navigate = useNavigate();
+// The page mounts it on the first visit to the tab and keeps it mounted,
+// hidden, afterwards; `active` says whether it is the tab on screen.
+export function ScenesPanel({ beat, session, active = true }) {
+  const beatKey = String(beat._id);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [actionError, setActionError] = useState(null);
   const [adding, setAdding] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [tocBeats, setTocBeats] = useState([]);
   const [batchOpen, setBatchOpen] = useState(false);
   const [download, setDownload] = useState(null); // the step shown while ffmpeg joins the clips
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
@@ -47,13 +44,9 @@ export function ScenesBeat({ session }) {
     let cancelled = false;
     (async () => {
       try {
-        const [r, toc] = await Promise.all([
-          apiGet(`/video-scenes?beat_id=${encodeURIComponent(order)}`),
-          apiGet('/toc'),
-        ]);
+        const r = await apiGet(`/video-scenes?beat_id=${encodeURIComponent(beatKey)}`);
         if (!cancelled) {
           setData(r);
-          setTocBeats(toc.beats || []);
           setError(null);
         }
       } catch (e) {
@@ -61,7 +54,7 @@ export function ScenesBeat({ session }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [order, refreshKey]);
+  }, [beatKey, refreshKey]);
 
   const onRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
   const beatId = data?.beat?._id ? String(data.beat._id) : null;
@@ -87,10 +80,9 @@ export function ScenesBeat({ session }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [beatId]);
 
-  if (error) return <div className="app"><div className="error-banner">{error}</div></div>;
-  if (!data) return <div className="app"><p style={{ color: 'var(--fg-muted)' }}>Loading scenes for beat #{order}…</p></div>;
+  if (error) return <div className="error-banner">{error}</div>;
+  if (!data) return <p style={{ color: 'var(--fg-muted)' }}>Loading scenes…</p>;
 
-  const beatTitle = (data.beat?.name || '').trim() || 'Untitled';
   const scenes = data.scenes || [];
   const comfyQueue = comfyQueueSummary(comfyJobs.jobs);
   const allCuts = scenes.flatMap((s) => s.cuts || []);
@@ -169,12 +161,7 @@ export function ScenesBeat({ session }) {
     <CutFrameJobsProvider store={frameJobs}>
       <ComfyCutJobsProvider store={comfyJobs}>
        <CutVideoBatchProvider store={videoBatch}>
-        <main className="app">
-          <p><a href="#" onClick={(e) => { e.preventDefault(); navigate('/scenes'); }}>← Back to all scenes</a></p>
-          <BeatPager beats={tocBeats} currentId={data.beat?._id} basePath="/scenes" />
-          <h1>Scenes · Beat #{data.beat.order} — {beatTitle}</h1>
-          <BeatTabs order={data.beat.order} active="scenes" />
-
+        <>
           <div className="scenes-toolbar">
             <button
               type="button"
@@ -224,7 +211,7 @@ export function ScenesBeat({ session }) {
             </div>
           ) : null}
 
-          <CollabSurface room={`video_prompts:${beatId}`} session={session} onPing={onRefresh}>
+          <CollabSurface room={`video_prompts:${beatId}`} session={session} active={active} onPing={onRefresh}>
             {scenes.length === 0 ? (
               <p style={{ color: 'var(--fg-muted)' }}>
                 No scenes yet. Add a scene, then add cuts to it.
@@ -238,7 +225,7 @@ export function ScenesBeat({ session }) {
             </div>
           </CollabSurface>
           <GenerateAllVideosDialog open={batchOpen} onClose={() => setBatchOpen(false)} beatId={beatId} scenes={scenes} onQueued={videoBatch.started} />
-        </main>
+        </>
        </CutVideoBatchProvider>
       </ComfyCutJobsProvider>
     </CutFrameJobsProvider>

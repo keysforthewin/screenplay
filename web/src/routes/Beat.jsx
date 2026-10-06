@@ -1,53 +1,36 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { apiDelete, apiGet, apiPostJson } from '../api.js';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { apiDelete, apiGet } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
 import { BeatCharacters } from '../widgets/BeatCharacters.jsx';
 import { BeatSets } from '../widgets/BeatSets.jsx';
 import { BeatPager } from '../widgets/BeatPager.jsx';
-import { BeatTabs } from '../widgets/BeatTabs.jsx';
+import { BeatTabs, beatTabBase, beatTabFromLocation, beatTabPath } from '../widgets/BeatTabs.jsx';
+import { DialogPanel } from '../widgets/DialogPanel.jsx';
+import { ScenesPanel } from '../widgets/ScenesPanel.jsx';
 import { CritiqueTab } from '../widgets/CritiqueTab.jsx';
+import { CoverageTab } from '../widgets/CoverageTab.jsx';
 import { PlayBeatButton } from '../widgets/PlayBeatButton.jsx';
-import { VoiceSelect } from '../widgets/VoiceSelect.jsx';
 import { readFragmentText } from '../editor/fragmentRead.js';
 
-// The beat editor's "Story" section (/beat/:order), reached via <BeatTabs>,
-// renders this component over the beat:<id> y-doc room. The `background` tab
-// is labelled "Writing". Beat artwork is retired — sets own artwork now (see
-// routes/Set.jsx); the old /artwork/:order route redirects to /beat/:order.
-const SECTION_TABS = {
-  writing: ['background', 'sets', 'characters', 'critique'],
-};
-
-function tabsFor(section) {
-  return SECTION_TABS[section] || SECTION_TABS.writing;
-}
-
-function readInitialTab(section) {
-  const tabs = tabsFor(section);
-  if (typeof window === 'undefined') return tabs[0];
-  const h = (window.location.hash || '').replace(/^#/, '');
-  return tabs.includes(h) ? h : tabs[0];
-}
-
-export function Beat({ session, section = 'writing' }) {
-  const { order } = useParams();
+// The one beat page behind all seven tabs of <BeatTabs>. It is the element of
+// three routes — /beat/:order (Story, and by URL hash Sets, Characters,
+// Critique, Coverage: /beat/3#sets), /dialog/:order and /scenes/:order — and
+// stays mounted while the tab changes, so the header, pager and tab row never
+// reload. The five /beat panels share the beat:<id> y-doc room; Dialogue and
+// Scenes are their own panels on their own rooms, mounted on the first visit
+// and kept mounted (hidden) after that. Beat artwork is retired — sets own
+// artwork now (see routes/Set.jsx); the old /artwork/:order route redirects to
+// /beat/:order.
+export function Beat({ session }) {
+  const { order, projectTitle } = useParams();
   const navigate = useNavigate();
-  const tabs = tabsFor(section);
   const [beat, setBeat] = useState(null);
   const [toc, setToc] = useState(null);
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [activeTab, setActiveTab] = useState(() => readInitialTab(section));
   const [liveDoc, setLiveDoc] = useState(null);
-
-  // <BeatTabs> reuses this component across router slots (writing section
-  // only, currently), so switching sections updates `section` without a
-  // remount — resync the tab to the new section's URL hash (or its first tab).
-  useEffect(() => {
-    setActiveTab(readInitialTab(section));
-  }, [section]);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,37 +50,40 @@ export function Beat({ session, section = 'writing' }) {
     return () => { cancelled = true; };
   }, [order, refreshKey]);
 
-  useEffect(() => {
-    function onHash() {
-      setActiveTab(readInitialTab(section));
-    }
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  }, [section]);
+  // The URL is the one source of the active tab, so links, the pager and
+  // Back/Forward all land on the right panel.
+  const location = useLocation();
+  const currentTab = beatTabFromLocation(location);
+  const basePath = beatTabBase(currentTab);
+  // The beat's plain name as the TOC has it (what the pager shows too).
+  const beatName = (toc?.beats?.find((b) => String(b._id) === String(beat?._id))?.plain_name || '').trim();
+  const onStoryRoute = basePath === '/beat';
+
+  // In-page moves (tabs, pager) carry the project prefix: a bare /beat/2 goes
+  // through the app-root redirect, which remounts the whole project shell.
+  const projectPrefix = `/p/${encodeURIComponent(projectTitle)}`;
 
   function selectTab(tab) {
-    setActiveTab(tab);
-    if (typeof window !== 'undefined') {
-      const newHash = tab === tabs[0] ? '' : `#${tab}`;
-      if (window.location.hash !== newHash) {
-        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${newHash}`);
-      }
-    }
+    // Panels of the same route swap in place; crossing routes is a history entry.
+    navigate(`${projectPrefix}${beatTabPath(tab, order)}`, { replace: beatTabBase(tab) === basePath });
   }
 
   const room = beat?._id ? `beat:${beat._id}` : null;
-  // Clamp to the active section so a stale tab (e.g. left over after a section
-  // switch on a reused instance) never hides every panel.
-  const currentTab = tabs.includes(activeTab) ? activeTab : tabs[0];
+
+  // Dialogue and Scenes mount on the first visit for this beat, then stay.
+  const beatId = beat?._id ? String(beat._id) : null;
+  const [visited, setVisited] = useState({ beatId: null, tabs: {} });
+  useEffect(() => {
+    if (!beatId) return;
+    setVisited((v) => {
+      const tabs = v.beatId === beatId ? v.tabs : {};
+      if (v.beatId === beatId && tabs[currentTab]) return v;
+      return { beatId, tabs: { ...tabs, [currentTab]: true } };
+    });
+  }, [beatId, currentTab]);
+  const mounted = (tab) => currentTab === tab || (visited.beatId === beatId && Boolean(visited.tabs[tab]));
 
   function onRefresh() { setRefreshKey((k) => k + 1); }
-
-  const [bgBusy, setBgBusy] = useState(null); // 'undo' | null
-  async function undoBody() {
-    setBgBusy('undo');
-    try { await apiPostJson(`/beat/${beat._id}/restore-body`, {}); onRefresh(); }
-    catch (e) { setError(e.message); } finally { setBgBusy(null); }
-  }
 
   // Whole-beat delete. The server cascades to the beat's dialogs, scenes and cuts
   // and images and renumbers the rest, so we land back on the TOC (this beat's
@@ -123,98 +109,79 @@ export function Beat({ session, section = 'writing' }) {
     return <div className="app"><p style={{ color: 'var(--fg-muted)' }}>Loading beat #{order}…</p></div>;
   }
 
-  const basePath = '/beat';
-
   return (
     <main className="app">
       <p>
         <a href="#" onClick={(e) => { e.preventDefault(); navigate('/'); }}>← Back to TOC</a>
       </p>
-      <BeatPager beats={toc?.beats} currentId={beat._id} basePath={basePath} />
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
-        <h1 style={{ marginTop: 0 }}>Beat #{beat.order}</h1>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <VoiceSelect />
+      <BeatPager beats={toc?.beats} currentId={beat._id} basePath={`${projectPrefix}${basePath}`} />
+      <h1 className="beat-title" title={`Beat ${beat.order}${beatName ? ` · ${beatName}` : ''}`}>
+        Beat {beat.order}{beatName ? ` · ${beatName}` : ''}
+      </h1>
+
+      <div className="beat-tabs-row">
+        <BeatTabs active={currentTab} onSelect={selectTab} />
+        {/* Story tab only. Playback outlives the button (the site-wide mini
+            player keeps it); the narration voice is picked on the Admin page. */}
+        {currentTab === 'story' && (
           <PlayBeatButton
-            key={beat._id}
+            order={beat.order}
+            name={beatName}
             disabled={!liveDoc}
             getText={() => readFragmentText(liveDoc, 'body')}
           />
+        )}
+      </div>
+
+      <CollabSurface room={room} session={session} active={onStoryRoute} onPing={onRefresh} onDocReady={setLiveDoc}>
+        <div className="tab-panel" hidden={currentTab !== 'story'}>
+          <CollabField label="Name" field="name" />
+          <CollabField label="Body" field="body" multiline />
         </div>
-      </div>
 
-      <BeatTabs order={beat.order} active={section} />
+        <div className="tab-panel" hidden={currentTab !== 'sets'}>
+          <BeatSets beat={beat} toc={toc} onRefresh={onRefresh} />
+        </div>
 
-      <div className="tab-nav" role="tablist">
-        {tabs.map((t) => (
-          <button
-            key={t}
-            type="button"
-            role="tab"
-            aria-selected={currentTab === t}
-            className={`tab-button${currentTab === t ? ' is-active' : ''}`}
-            onClick={() => selectTab(t)}
-          >
-            {tabLabel(t)}
-          </button>
-        ))}
-      </div>
+        <div className="tab-panel" hidden={currentTab !== 'characters'}>
+          <BeatCharacters beat={beat} toc={toc} onRefresh={onRefresh} />
+        </div>
 
-      <CollabSurface room={room} session={session} onPing={onRefresh} onDocReady={setLiveDoc}>
-        {tabs.includes('background') && (
-          <div className="tab-panel" hidden={currentTab !== 'background'}>
-            {beat.previous_body && (
-              <div className="tab-actions">
-                <button type="button" disabled={bgBusy} onClick={undoBody}>
-                  {bgBusy === 'undo' ? 'Undoing…' : 'Undo'}
-                </button>
-              </div>
-            )}
-            <CollabField label="Name" field="name" />
-            <CollabField label="Body" field="body" multiline />
-          </div>
-        )}
+        <div className="tab-panel" hidden={currentTab !== 'critique'}>
+          <CritiqueTab
+            beatId={beat._id}
+            hasPreviousBody={Boolean(beat.previous_body)}
+            onRefresh={onRefresh}
+          />
+        </div>
 
-        {tabs.includes('sets') && (
-          <div className="tab-panel" hidden={currentTab !== 'sets'}>
-            <BeatSets beat={beat} toc={toc} onRefresh={onRefresh} />
-          </div>
-        )}
-
-        {tabs.includes('characters') && (
-          <div className="tab-panel" hidden={currentTab !== 'characters'}>
-            <BeatCharacters beat={beat} toc={toc} onRefresh={onRefresh} />
-          </div>
-        )}
-
-        {tabs.includes('critique') && (
-          <div className="tab-panel" hidden={currentTab !== 'critique'}>
-            <CritiqueTab
-              beatId={beat._id}
-              hasPreviousBody={Boolean(beat.previous_body)}
-              onRefresh={onRefresh}
-            />
-          </div>
-        )}
+        <div className="tab-panel" hidden={currentTab !== 'coverage'}>
+          <CoverageTab beatId={beat._id} />
+        </div>
       </CollabSurface>
 
-      <BeatPager beats={toc?.beats} currentId={beat._id} basePath={basePath} />
+      {mounted('dialog') && (
+        <div className="tab-panel" hidden={currentTab !== 'dialog'}>
+          <DialogPanel key={beat._id} beat={beat} toc={toc} session={session} active={currentTab === 'dialog'} />
+        </div>
+      )}
 
-      <div className="beat-danger-zone">
-        <button type="button" className="danger" disabled={deleting} onClick={deleteBeat}>
-          {deleting ? 'Deleting…' : 'Delete beat'}
-        </button>
-      </div>
+      {mounted('scenes') && (
+        <div className="tab-panel" hidden={currentTab !== 'scenes'}>
+          <ScenesPanel key={beat._id} beat={beat} session={session} active={currentTab === 'scenes'} />
+        </div>
+      )}
+
+      <BeatPager beats={toc?.beats} currentId={beat._id} basePath={`${projectPrefix}${basePath}`} />
+
+      {onStoryRoute && (
+        <div className="beat-danger-zone">
+          <button type="button" className="danger" disabled={deleting} onClick={deleteBeat}>
+            {deleting ? 'Deleting…' : 'Delete beat'}
+          </button>
+        </div>
+      )}
     </main>
   );
 }
 
-function tabLabel(tab) {
-  switch (tab) {
-    case 'background': return 'Writing';
-    case 'sets': return 'Sets';
-    case 'characters': return 'Characters';
-    case 'critique': return 'Critique';
-    default: return tab;
-  }
-}

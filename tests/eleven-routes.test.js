@@ -21,6 +21,7 @@ const elevenMock = vi.hoisted(() => ({
   searchSharedVoices: vi.fn(),
   addSharedVoice: vi.fn(),
   textToSpeech: vi.fn(),
+  listAccountVoices: vi.fn(),
   speechToSpeech: vi.fn(),
   isolateAudio: vi.fn(),
   speechToText: vi.fn(),
@@ -44,7 +45,7 @@ const attachmentsMock = vi.hoisted(() => ({
 }));
 vi.mock('../src/mongo/attachments.js', () => attachmentsMock);
 
-const { buildElevenRouter } = await import('../src/web/elevenRoutes.js');
+const { buildElevenRouter, _resetAccountVoicesCacheForTests } = await import('../src/web/elevenRoutes.js');
 const { addVoiceToCollection, getCollectionVoice, listCollectionVoices } =
   await import('../src/mongo/elevenVoices.js');
 
@@ -68,6 +69,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   fakeDb.reset();
+  _resetAccountVoicesCacheForTests();
   for (const fn of Object.values(elevenMock)) fn.mockReset?.();
   elevenMock.isConfigured.mockReturnValue(true);
   enhanceMock.enhanceWithAudioTags.mockReset();
@@ -91,6 +93,32 @@ describe('GET /info', () => {
     const body = await r.json();
     expect(body.configured).toBe(true);
     expect(body.tags.Reactions).toContain('laughs');
+  });
+});
+
+describe('GET /voices', () => {
+  it('lists the account voices sorted by name, cached until refresh', async () => {
+    elevenMock.listAccountVoices.mockResolvedValue([
+      { voice_id: 'v2', name: 'Zed', category: 'premade', preview_url: 'https://x/z.mp3', labels: { gender: 'male' }, internal: 1 },
+      { voice_id: 'v1', name: 'amy', category: 'cloned' },
+    ]);
+    const r = await fetch(`${baseUrl}/api/eleven/voices`);
+    expect(r.status).toBe(200);
+    const body = await r.json();
+    expect(body.voices).toEqual([
+      { voice_id: 'v1', name: 'amy', category: 'cloned', description: null, preview_url: null, labels: {} },
+      { voice_id: 'v2', name: 'Zed', category: 'premade', description: null, preview_url: 'https://x/z.mp3', labels: { gender: 'male' } },
+    ]);
+    await fetch(`${baseUrl}/api/eleven/voices`);
+    expect(elevenMock.listAccountVoices).toHaveBeenCalledTimes(1);
+    await fetch(`${baseUrl}/api/eleven/voices?refresh=1`);
+    expect(elevenMock.listAccountVoices).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns 503 when unconfigured', async () => {
+    elevenMock.isConfigured.mockReturnValue(false);
+    const r = await fetch(`${baseUrl}/api/eleven/voices`);
+    expect(r.status).toBe(503);
   });
 });
 
@@ -119,6 +147,39 @@ describe('GET /library', () => {
     elevenMock.isConfigured.mockReturnValue(false);
     const r = await fetch(`${baseUrl}/api/eleven/library`);
     expect(r.status).toBe(503);
+  });
+});
+
+describe('POST /library/add', () => {
+  const post = (body) => fetch(`${baseUrl}/api/eleven/library/add`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+
+  it('adds the shared voice to the account and returns the re-read voice list', async () => {
+    elevenMock.addSharedVoice.mockResolvedValueOnce({ voice_id: 'acct1' });
+    elevenMock.listAccountVoices.mockResolvedValue([{ voice_id: 'acct1', name: 'Noir' }]);
+    const r = await post({ voice_id: 'v1', public_owner_id: 'o1', name: 'Noir' });
+    expect(r.status).toBe(200);
+    const body = await r.json();
+    expect(elevenMock.addSharedVoice).toHaveBeenCalledWith({ publicOwnerId: 'o1', voiceId: 'v1', newName: 'Noir' });
+    expect(body.voice_id).toBe('acct1');
+    expect(body.voices.map((v) => v.voice_id)).toEqual(['acct1']);
+  });
+
+  it('treats a voice that is already in the account as added', async () => {
+    elevenMock.addSharedVoice.mockRejectedValueOnce(new Error('voice already exists in your library'));
+    elevenMock.listAccountVoices.mockResolvedValue([{ voice_id: 'v1', name: 'Noir' }]);
+    const r = await post({ voice_id: 'v1', public_owner_id: 'o1', name: 'Noir' });
+    expect(r.status).toBe(200);
+    expect((await r.json()).voice_id).toBe('v1');
+  });
+
+  it('400s without the ids and passes an ElevenLabs failure through', async () => {
+    expect((await post({ voice_id: 'v1' })).status).toBe(400);
+    elevenMock.addSharedVoice.mockRejectedValueOnce(Object.assign(new Error('voice limit reached'), { status: 422 }));
+    const r = await post({ voice_id: 'v1', public_owner_id: 'o1' });
+    expect(r.status).toBe(422);
+    expect((await r.json()).error).toBe('voice limit reached');
   });
 });
 

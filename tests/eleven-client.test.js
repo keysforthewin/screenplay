@@ -93,6 +93,21 @@ describe('searchSharedVoices', () => {
   });
 });
 
+describe('listAccountVoices', () => {
+  it('walks every page of /v2/voices', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ voices: [{ voice_id: 'a' }], has_more: true, next_page_token: 'tok' }))
+      .mockResolvedValueOnce(jsonResponse({ voices: [{ voice_id: 'b' }], has_more: false }));
+    const voices = await eleven.listAccountVoices();
+    expect(voices.map((v) => v.voice_id)).toEqual(['a', 'b']);
+    const first = new URL(fetchMock.mock.calls[0][0]);
+    expect(first.pathname).toBe('/v2/voices');
+    expect(first.searchParams.get('page_size')).toBe('100');
+    expect(first.searchParams.has('next_page_token')).toBe(false);
+    expect(new URL(fetchMock.mock.calls[1][0]).searchParams.get('next_page_token')).toBe('tok');
+  });
+});
+
 describe('textToSpeech', () => {
   it('POSTs json to the voice path and returns audio bytes', async () => {
     fetchMock.mockResolvedValueOnce(audioResponse([1, 2, 3]));

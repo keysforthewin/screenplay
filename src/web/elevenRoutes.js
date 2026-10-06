@@ -24,7 +24,7 @@ import { readAttachmentBuffer, uploadAttachmentBuffer } from '../mongo/attachmen
 import { logger } from '../log.js';
 
 const TTS_MODELS = new Set([
-  'eleven_v3', 'eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5',
+  'eleven_v4', 'eleven_v4_turbo', 'eleven_v3', 'eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5',
 ]);
 const MAX_TTS_CHARS = 10_000;
 
@@ -75,6 +75,39 @@ function collectionVoiceView(doc) {
     source: doc.source,
     added_to_account: Boolean(doc.added_to_account),
   };
+}
+
+function accountVoiceView(v) {
+  return {
+    voice_id: v.voice_id,
+    name: v.name || 'Unnamed voice',
+    category: v.category || null,
+    description: v.description || null,
+    preview_url: v.preview_url || null,
+    labels: v.labels && typeof v.labels === 'object' ? v.labels : {},
+  };
+}
+
+// Every voice of the ElevenLabs account (My Voices), sorted by name. Listing
+// is several paginated calls, so the result is kept for a minute; `refresh`
+// re-reads it (the character page's ↻ button).
+const ACCOUNT_VOICES_TTL_MS = 60_000;
+let accountVoicesCache = null; // { at, voices }
+
+export async function getAccountVoices({ refresh = false } = {}) {
+  if (!refresh && accountVoicesCache && Date.now() - accountVoicesCache.at < ACCOUNT_VOICES_TTL_MS) {
+    return accountVoicesCache.voices;
+  }
+  const voices = (await eleven.listAccountVoices())
+    .filter((v) => v?.voice_id)
+    .map(accountVoiceView)
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  accountVoicesCache = { at: Date.now(), voices };
+  return voices;
+}
+
+export function _resetAccountVoicesCacheForTests() {
+  accountVoicesCache = null;
 }
 
 // Load an audio ref from GridFS, enforcing playground ownership within this
@@ -150,6 +183,15 @@ export function buildElevenRouter() {
     res.json({ configured: eleven.isConfigured(), tags: AUDIO_TAGS });
   });
 
+  // The account's own voices — what a character's "ElevenLabs Voice" dropdown offers.
+  router.get('/voices', requireConfigured, async (req, res) => {
+    try {
+      res.json({ voices: await getAccountVoices({ refresh: req.query?.refresh === '1' }) });
+    } catch (e) {
+      sendError(res, e);
+    }
+  });
+
   router.get('/library', requireConfigured, async (req, res) => {
     try {
       const q = req.query || {};
@@ -169,6 +211,36 @@ export function buildElevenRouter() {
         voices: (r?.voices || []).map(libraryVoiceView),
         has_more: Boolean(r?.has_more),
       });
+    } catch (e) {
+      sendError(res, e);
+    }
+  });
+
+  // Save a shared-library voice to the account's My Voices — the character
+  // page's "Find new voices" search. Answers with the re-read account list so
+  // the dropdown can offer the voice at once.
+  router.post('/library/add', requireConfigured, async (req, res) => {
+    try {
+      const b = req.body || {};
+      const voiceId = String(b.voice_id || '').trim();
+      const publicOwnerId = String(b.public_owner_id || '').trim();
+      if (!voiceId || !publicOwnerId) {
+        res.status(400).json({ error: 'voice_id and public_owner_id required' });
+        return;
+      }
+      let accountVoiceId = voiceId;
+      try {
+        const added = await eleven.addSharedVoice({
+          publicOwnerId,
+          voiceId,
+          newName: String(b.name || '').trim() || 'Library voice',
+        });
+        if (added?.voice_id) accountVoiceId = String(added.voice_id);
+      } catch (e) {
+        if (!/already/i.test(e?.message || '')) throw e;
+      }
+      const voices = await getAccountVoices({ refresh: true });
+      res.json({ voice_id: accountVoiceId, voices });
     } catch (e) {
       sendError(res, e);
     }

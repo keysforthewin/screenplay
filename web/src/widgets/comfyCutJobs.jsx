@@ -5,7 +5,7 @@ import { apiPostJson, apiSseUrl } from '../api.js';
 // the server (one GPU, strictly first-in first-out); the Scenes page keeps
 // one live snapshot per cut here so the cut's button can show "Queued #2" /
 // "Rendering…" and reopening its dialog shows the live progress, however
-// often the dialog is closed. ScenesBeat owns the store (useComfyCutJobStore),
+// often the dialog is closed. ScenesPanel owns the store (useComfyCutJobStore),
 // feeds it the reattach list from GET /cuts/jobs, and provides it to the cuts.
 
 const TERMINAL = new Set(['done', 'error']);

@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { apiGet, apiPostJson, thumbUrl } from '../api.js';
 import { LibraryPanel } from '../widgets/LibraryPanel.jsx';
 import { PlayAllButton } from '../widgets/PlayAllButton.jsx';
+import { useNowPlaying } from '../widgets/TtsMiniPlayer.jsx';
 import { SortableBeatList } from '../widgets/SortableBeatList.jsx';
 import { useRoomBroadcast } from '../hooks/useRoomBroadcast.js';
 import { useProject } from '../project/ProjectContext.jsx';
@@ -36,7 +37,8 @@ export function Toc({ session }) {
   const [error, setError] = useState(null);
   const [query, setQuery] = useState('');
   const [activeTab, setActiveTab] = useState(readInitialTab);
-  const [playingOrder, setPlayingOrder] = useState(null);
+  // The beat the read-aloud player is on (it keeps playing across pages).
+  const playingOrder = useNowPlaying()?.order ?? null;
 
   const { id: projectId } = useProject();
 
@@ -416,7 +418,7 @@ export function Toc({ session }) {
             }}
             onError={setError}
           />
-          <PlayAllButton beats={toc.beats || []} onBeatChange={setPlayingOrder} />
+          <PlayAllButton beats={toc.beats || []} />
         </div>
         {beats.length === 0 ? (
           <p style={{ color: 'var(--fg-muted)' }}>No beats yet.</p>

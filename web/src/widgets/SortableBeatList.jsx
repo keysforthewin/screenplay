@@ -1,6 +1,6 @@
 // Drag-and-drop reorderable beat list for the Table of Contents. Reordering
 // posts the full new id sequence to /beats/reorder, which renumbers beats
-// 1..N server-side. Mirrors the dnd-kit wiring in DialogBeat.jsx. `items` are
+// 1..N server-side. Mirrors the dnd-kit wiring in DialogPanel.jsx. `items` are
 // pre-sorted rows; `content` is the caller's per-tab label so the Beats /
 // Dialog / Scenes tabs keep their distinct row text.
 import { useEffect, useMemo, useState } from 'react';

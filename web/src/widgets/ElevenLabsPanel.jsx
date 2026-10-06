@@ -19,6 +19,8 @@ const TOOLS = [
 ];
 
 const TTS_MODELS = [
+  ['eleven_v4', 'Eleven v4 (audio tags)'],
+  ['eleven_v4_turbo', 'Eleven v4 Turbo (audio tags)'],
   ['eleven_v3', 'Eleven v3 (audio tags)'],
   ['eleven_multilingual_v2', 'Multilingual v2'],
   ['eleven_turbo_v2_5', 'Turbo v2.5'],
@@ -217,7 +219,7 @@ export function ElevenLabsPanel() {
             placeholder="Type or paste the text to speak. Click tags below (or ✨ Enhance) to add [laughs], [whispers], [sarcastic]…"
             onChange={(e) => { setText(e.target.value); setPreEnhanceText(null); }}
           />
-          {modelId === 'eleven_v3' && <AudioTagPalette tags={info?.tags} onInsert={insertTag} />}
+          {/^eleven_v[34]/.test(modelId) && <AudioTagPalette tags={info?.tags} onInsert={insertTag} />}
         </div>
       )}
 

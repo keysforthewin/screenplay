@@ -28,6 +28,7 @@ import {
   deleteAllDialogsForBeatViaGateway,
 } from './gateway.js';
 import { isBeatLocked, withBeatLock } from './beatLocks.js';
+import { applyVoiceTagPolicy, audioTagPromptSection, loadVoiceCast } from './dialogVoices.js';
 
 const POPULATE_TOOL = {
   name: 'populate_dialog',
@@ -56,7 +57,8 @@ const POPULATE_TOOL = {
               type: 'string',
               description:
                 'What is spoken. Write it to fit the beat and the speaker\'s voice. ' +
-                'No speaker prefix, no quotation marks, no parentheticals, no stage direction.',
+                'No speaker prefix, no quotation marks, no parentheticals, no stage direction. ' +
+                'The one exception: square-bracket audio tags, ONLY when the prompt lists the speaker as VOICED.',
             },
           },
           required: ['character', 'body'],
@@ -116,7 +118,8 @@ const SYSTEM_PROMPT = [
   '',
   'Format:',
   '- `body` is what is spoken — no quotation marks, no speaker prefix, no parentheticals, no stage',
-  '  direction.',
+  '  direction. The one exception: when the prompt has a "Voice performance" section, the lines of',
+  '  the speakers it lists as VOICED carry square-bracket audio tags as that section describes.',
   '- `character` is the speaker. For roster characters use the exact roster name; for non-character',
   '  sources use a descriptive uppercase label.',
   '- A single character speaking continuously is one entry; split only when another speaker or a',
@@ -220,8 +223,12 @@ async function runDialogGenerationJob({ job, beat, projectId }) {
 
 async function extractEntries({ beat, projectId }) {
   const context = await buildDialogContext(projectId, beat);
+  // Speakers with an ElevenLabs voice get Eleven v4 audio tags in their lines.
+  const cast = await loadVoiceCast(projectId);
+  const voiceSection = audioTagPromptSection(cast);
   const userText = [
     context,
+    ...(voiceSection ? ['', voiceSection] : []),
     '',
     `# This beat — #${beat.order}: ${stripMarkdown(beat.name || '') || 'Untitled'}`,
     '',
@@ -260,5 +267,6 @@ async function extractEntries({ beat, projectId }) {
       character: typeof e?.character === 'string' ? e.character.trim() : '',
       body: typeof e?.body === 'string' ? e.body.trim() : '',
     }))
+    .map((e) => ({ ...e, body: applyVoiceTagPolicy(cast, e.character, e.body) }))
     .filter((e) => e.body && e.character);
 }

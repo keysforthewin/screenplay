@@ -46,7 +46,9 @@ export function RedirectToProject() {
         return;
       }
       const suffix = `${location.pathname}${location.search}${location.hash}`;
-      navigate(`/p/${encodeURIComponent(target.title)}${suffix}`, { replace: true });
+      // Carry the link's router state across (e.g. the `fromBeat` a beat page
+      // hands to the character/set page for its breadcrumb).
+      navigate(`/p/${encodeURIComponent(target.title)}${suffix}`, { replace: true, state: location.state });
     })();
     return () => { cancelled = true; };
     // Carried improvement 2: include location parts as deps so a navigation

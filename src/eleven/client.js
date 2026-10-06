@@ -121,6 +121,25 @@ export async function addSharedVoice({ publicOwnerId, voiceId, newName }) {
   );
 }
 
+/**
+ * Every voice in the account's My Voices (cloned, designed, professional,
+ * premade and saved library voices). /v2/voices is paginated — this walks
+ * every page.
+ */
+export async function listAccountVoices() {
+  const voices = [];
+  let token = null;
+  for (let page = 0; page < 50; page++) {
+    const r = await elevenFetch('/v2/voices', {
+      query: { page_size: 100, next_page_token: token },
+    });
+    voices.push(...(r?.voices || []));
+    token = r?.has_more ? r?.next_page_token : null;
+    if (!token) break;
+  }
+  return voices;
+}
+
 export async function textToSpeech({ voiceId, text, modelId = 'eleven_v3' }) {
   return elevenFetch(`/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
     method: 'POST',

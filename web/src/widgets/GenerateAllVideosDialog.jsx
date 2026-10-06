@@ -95,28 +95,37 @@ export function GenerateAllVideosDialog({ open, onClose, beatId, scenes, onQueue
     const stored = readLastEndpoint();
     setLastUsed(stored);
     (async () => {
-      const [reg, defs, falReg] = await Promise.all([
+      const [reg, defs, falReg, vd] = await Promise.all([
         apiGet('/comfy/models').catch(() => ({ configured: false, models: [] })),
         apiGet('/comfy/defaults').catch(() => null),
         apiGet('/video-models').catch((e) => ({ configured: false, models: [], catalog_error: parseError(e) })),
+        apiGet('/video-default').catch(() => null),
       ]);
       if (cancelled) return;
+      // The admin's default video renderer (Admin → Video renderer) picks the
+      // tab and the model; the project's last-used model and the first local
+      // one are the fallbacks.
+      const adminDefault = vd?.default?.model_id ? vd.default : null;
       setComfy(reg);
       setComfyDefaults(defs || { model_id: null, params_by_model: {} });
       const usable = (reg.models || []).filter((m) => m.available && batchable(m));
-      const firstComfy = usable.find((m) => m.id === defs?.model_id) || usable.find((m) => m.kind === 'local') || usable[0] || null;
+      const firstComfy = (adminDefault?.provider === 'comfy' ? usable.find((m) => m.id === adminDefault.model_id) : null)
+        || usable.find((m) => m.id === defs?.model_id) || usable.find((m) => m.kind === 'local') || usable[0] || null;
       setComfyModelId(firstComfy?.id || null);
 
       setFal(falReg);
       const registered = (falReg.models || []).filter((m) => m.is_registered);
-      const firstFal = registered.find((m) => m.endpoint_id === stored)
+      const firstFal = (adminDefault?.provider === 'fal' ? registered.find((m) => m.endpoint_id === adminDefault.model_id || m.id === adminDefault.model_id) : null)
+        || registered.find((m) => m.endpoint_id === stored)
         || registered.find((m) => m.capabilities?.start_frame === true && m.capabilities?.end_frame === true)
         || registered[0]
         || null;
       setEndpoint(firstFal?.endpoint_id || null);
 
       const comfyReady = reg.configured && (reg.server ? reg.server.running : true) && firstComfy;
-      setProvider(comfyReady || !falReg.configured ? 'comfy' : 'fal');
+      if (adminDefault?.provider === 'fal' && firstFal && falReg.configured) setProvider('fal');
+      else if (adminDefault?.provider === 'comfy' && comfyReady && firstComfy?.id === adminDefault.model_id) setProvider('comfy');
+      else setProvider(comfyReady || !falReg.configured ? 'comfy' : 'fal');
     })();
     return () => { cancelled = true; };
   }, [open]);

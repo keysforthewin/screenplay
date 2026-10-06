@@ -24,6 +24,7 @@ import { slotAddressesFromListing } from '../comfy/paramMap.js';
 import { autoMapTemplate, inactiveNodeIds, summarizeGalleryRow } from '../comfy/templateMap.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { describeHarnessProviders } from '../llm/harness/catalog.js';
+import { describeVideoDefault, updateVideoDefault, VideoDefaultError } from './videoDefault.js';
 import { logger } from '../log.js';
 
 const HEX24 = /^[a-f0-9]{24}$/i;
@@ -121,6 +122,43 @@ export function buildAdminRouter() {
         updated_at: settings.updated_at,
         updated_by: settings.updated_by,
       });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // ── Default video renderer ────────────────────────────────────────────
+  // The provider + model every cut video is rendered with when nothing is
+  // named (Scenes-tab dialogs preselect it; REST and the MCP render_videos
+  // tool fall back to it). GET also lists what can be picked.
+  router.get('/video-default', async (_req, res, next) => {
+    try {
+      const { loadCatalog } = await import('../fal/videoModels.js');
+      const { config } = await import('../config.js');
+      const fal = config.fal.apiKey ? await loadCatalog().catch(() => ({ models: [] })) : { models: [] };
+      res.json({
+        default: await describeVideoDefault(),
+        comfy_models: listComfyVideoModels().map((m) => ({ id: m.id, label: m.label, builtin: !m.registered })),
+        fal_models: (fal.models || []).filter((m) => m.is_registered).map((m) => ({ id: m.id || m.endpoint_id, label: m.display_name || m.label || m.endpoint_id })),
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  // PUT { provider: 'comfy'|'fal', model_id, params? } sets it; { model_id: null } clears it.
+  router.put('/video-default', async (req, res, next) => {
+    try {
+      const body = req.body || {};
+      let d;
+      try {
+        d = await updateVideoDefault(body.model_id ? body : null, { updatedBy: req.session?.username || null });
+      } catch (e) {
+        if (e instanceof VideoDefaultError) return res.status(e.status || 400).json({ error: e.message });
+        throw e;
+      }
+      logger.info(`admin: default video renderer set by ${req.session?.username || '?'}: ${d.provider || '-'} ${d.model_id || '(none)'}`);
+      res.json({ default: d });
     } catch (e) {
       next(e);
     }

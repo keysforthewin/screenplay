@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
 import {
   DndContext,
   KeyboardSensor,
@@ -17,16 +16,18 @@ import {
 import { apiDelete, apiGet, apiPatchJson, apiPostJson } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
-import { DialogItem } from '../widgets/DialogItem.jsx';
-import { ConfirmDialog } from '../widgets/Modal.jsx';
-import { DialogEditDialog } from '../widgets/DialogEditDialog.jsx';
-import { DialogPerform } from '../widgets/DialogPerform.jsx';
-import { BeatTabs } from '../widgets/BeatTabs.jsx';
-import { BeatPager } from '../widgets/BeatPager.jsx';
+import { DialogItem } from './DialogItem.jsx';
+import { ConfirmDialog } from './Modal.jsx';
+import { DialogEditDialog } from './DialogEditDialog.jsx';
+import { DialogPerform } from './DialogPerform.jsx';
+import { DialogVoicesBanner, GenerateVoicesDialog } from './DialogVoices.jsx';
 
-export function DialogBeat({ session }) {
-  const { order } = useParams();
-  const navigate = useNavigate();
+// The Dialogue panel of the beat page (routes/Beat.jsx): the beat's dialogue
+// lines over the dialogs:<beatId> room. The page mounts it on the first visit
+// to the tab and keeps it mounted, hidden, afterwards; `active` says whether
+// it is the tab on screen.
+export function DialogPanel({ beat, toc, session, active = true }) {
+  const beatKey = String(beat._id);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -47,22 +48,23 @@ export function DialogBeat({ session }) {
   const [preparingNotes, setPreparingNotes] = useState(false);
   const [prepareError, setPrepareError] = useState(null);
 
-  const [characters, setCharacters] = useState([]);
-  const [tocBeats, setTocBeats] = useState([]);
+  // "Generate all voices" (ElevenLabs v4): the confirm dialog's counts and the
+  // beat's batch, polled while it runs.
+  const [voicePreview, setVoicePreview] = useState(null);
+  const [voiceDialogOpen, setVoiceDialogOpen] = useState(false);
+  const [voiceJob, setVoiceJob] = useState(null);
+  const [voiceError, setVoiceError] = useState(null);
+  const [dismissedVoiceJob, setDismissedVoiceJob] = useState(null);
+  const voicePollRef = useRef(null);
+
+  const characters = toc?.characters || [];
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [r, toc] = await Promise.all([
-          apiGet(`/dialogs?beat_id=${encodeURIComponent(order)}`),
-          apiGet('/toc'),
-        ]);
-        if (!cancelled) {
-          setData(r);
-          setCharacters(toc.characters || []);
-          setTocBeats(toc.beats || []);
-        }
+        const r = await apiGet(`/dialogs?beat_id=${encodeURIComponent(beatKey)}`);
+        if (!cancelled) setData(r);
       } catch (e) {
         if (!cancelled) setError(e.message);
       }
@@ -70,7 +72,7 @@ export function DialogBeat({ session }) {
     return () => {
       cancelled = true;
     };
-  }, [order, refreshKey]);
+  }, [beatKey, refreshKey]);
 
   const onRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
@@ -249,6 +251,91 @@ export function DialogBeat({ session }) {
     };
   }, []);
 
+  const beatId = data?.beat?._id || null;
+
+  function stopVoicePoll() {
+    if (voicePollRef.current) clearInterval(voicePollRef.current);
+    voicePollRef.current = null;
+  }
+
+  // Follow the beat's voice batch until it ends. Finished lines reach the
+  // list through the room's pings; the last refresh catches the tail.
+  const followVoiceJob = useCallback((id) => {
+    stopVoicePoll();
+    voicePollRef.current = setInterval(async () => {
+      try {
+        const r = await apiGet(`/dialogs/voices?beat_id=${encodeURIComponent(id)}`);
+        setVoiceJob(r.job);
+        if (r.job?.status !== 'running') {
+          stopVoicePoll();
+          onRefresh();
+        }
+      } catch {
+        // Transient; the next tick retries.
+      }
+    }, 2000);
+  }, [onRefresh]);
+
+  // Reattach to a batch already running for this beat (reload, second tab).
+  useEffect(() => {
+    if (!beatId) return undefined;
+    let cancelled = false;
+    setVoiceJob(null);
+    (async () => {
+      try {
+        const r = await apiGet(`/dialogs/voices?beat_id=${encodeURIComponent(beatId)}`);
+        if (cancelled) return;
+        setVoiceJob(r.job);
+        if (r.job?.status === 'running') followVoiceJob(beatId);
+      } catch {
+        // The button still works; it reports its own errors.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      stopVoicePoll();
+    };
+  }, [beatId, followVoiceJob]);
+
+  async function openVoiceDialog() {
+    setVoiceError(null);
+    try {
+      const r = await apiGet(`/dialogs/voices?beat_id=${encodeURIComponent(beatId)}`);
+      setVoicePreview(r.preview);
+      setVoiceDialogOpen(true);
+    } catch (e) {
+      setVoiceError(e.message);
+    }
+  }
+
+  async function generateVoices({ overwrite }) {
+    setVoiceDialogOpen(false);
+    setVoiceError(null);
+    try {
+      const r = await apiPostJson('/dialogs/voices/generate-all', { beat_id: beatId, overwrite });
+      setVoiceJob(r.job);
+      followVoiceJob(beatId);
+    } catch (e) {
+      setVoiceError(e.message);
+    }
+  }
+
+  async function cancelVoices() {
+    try {
+      const r = await apiPostJson('/dialogs/voices/cancel', { beat_id: beatId });
+      setVoiceJob(r.job);
+    } catch (e) {
+      setVoiceError(e.message);
+    }
+  }
+
+  const voiceByCharacter = useMemo(() => {
+    const map = new Map();
+    for (const v of data?.voice_cast || []) map.set(String(v.character).toLowerCase(), v);
+    return map;
+  }, [data]);
+  const voicesRunning = voiceJob?.status === 'running';
+
   useEffect(() => {
     if (!justAddedRef.current) return;
     justAddedRef.current = false;
@@ -263,90 +350,72 @@ export function DialogBeat({ session }) {
   const room = data?.beat?._id ? `dialogs:${data.beat._id}` : null;
 
   if (error) {
-    return (
-      <div className="app">
-        <div className="error-banner">{error}</div>
-      </div>
-    );
+    return <div className="error-banner">{error}</div>;
   }
   if (!data) {
-    return (
-      <div className="app">
-        <p style={{ color: 'var(--fg-muted)' }}>Loading dialog for beat #{order}…</p>
-      </div>
-    );
+    return <p style={{ color: 'var(--fg-muted)' }}>Loading dialogue…</p>;
   }
 
-  const beatTitle = (data.beat?.name || '').trim() || 'Untitled';
-
   return (
-    <main className="app">
-      <p>
-        <a href="#" onClick={(e) => { e.preventDefault(); navigate('/dialog'); }}>
-          ← Back to all dialog
-        </a>
-      </p>
-
-      <BeatPager beats={tocBeats} currentId={data.beat?._id} basePath="/dialog" />
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
-        <h1 style={{ marginTop: 0 }}>
-          Dialog · Beat #{data.beat.order}: {beatTitle}
-        </h1>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button
-            className="primary"
-            onClick={onGenerateClick}
-            disabled={generating}
-            title={
-              sortedItems.length
-                ? 'Replace existing dialog with a freshly extracted set'
-                : "Auto-extract every spoken line from the beat body"
-            }
-          >
-            {generating ? 'Generating…' : 'Generate'}
-          </button>
-          <button
-            onClick={() => setEditOpen(true)}
-            disabled={generating || sortedItems.length === 0}
-            title="Open the LLM-driven edit dialog to add/move/delete/update items in batch"
-          >
-            Edit…
-          </button>
-          <button
-            onClick={critique}
-            disabled={generating || critiquing || sortedItems.length === 0}
-            title="Score each line for naturalness and flag the weak ones"
-          >
-            {critiquing ? 'Critiquing…' : 'Critique'}
-          </button>
-          <button
-            onClick={prepareNotes}
-            disabled={generating || preparingNotes || sortedItems.length === 0}
-            title="Generate a performance Direction note for every line in this beat"
-          >
-            {preparingNotes ? 'Preparing…' : 'Prepare notes'}
-          </button>
-          <button
-            onClick={() => setPerforming(true)}
-            disabled={generating || sortedItems.length === 0}
-            title="Open a distraction-free view to read context, see direction, and record each line"
-          >
-            ▶ Perform
-          </button>
-          <button onClick={addDialog} disabled={generating}>+ Add dialog</button>
-          <button
-            className="danger"
-            onClick={() => setConfirmDeleteAll(true)}
-            disabled={generating || sortedItems.length === 0}
-            title="Delete every dialog item for this beat"
-          >
-            Delete all
-          </button>
-        </div>
+    <>
+      <div className="scenes-toolbar">
+        <button
+          className="primary"
+          onClick={onGenerateClick}
+          disabled={generating}
+          title={
+            sortedItems.length
+              ? 'Replace existing dialog with a freshly extracted set'
+              : "Auto-extract every spoken line from the beat body"
+          }
+        >
+          {generating ? 'Generating…' : 'Generate'}
+        </button>
+        <button
+          onClick={() => setEditOpen(true)}
+          disabled={generating || sortedItems.length === 0}
+          title="Open the LLM-driven edit dialog to add/move/delete/update items in batch"
+        >
+          Edit…
+        </button>
+        <button
+          onClick={critique}
+          disabled={generating || critiquing || sortedItems.length === 0}
+          title="Score each line for naturalness and flag the weak ones"
+        >
+          {critiquing ? 'Critiquing…' : 'Critique'}
+        </button>
+        <button
+          onClick={prepareNotes}
+          disabled={generating || preparingNotes || sortedItems.length === 0}
+          title="Generate a performance Direction note for every line in this beat"
+        >
+          {preparingNotes ? 'Preparing…' : 'Prepare notes'}
+        </button>
+        <button
+          onClick={openVoiceDialog}
+          disabled={generating || voicesRunning || sortedItems.length === 0}
+          title="Generate every line's audio with its character's ElevenLabs voice (Eleven v4, audio tags)"
+        >
+          {voicesRunning ? 'Generating voices…' : '🎙 Generate all voices'}
+        </button>
+        <button
+          onClick={() => setPerforming(true)}
+          disabled={generating || sortedItems.length === 0}
+          title="Open a distraction-free view to read context, see direction, and record each line"
+        >
+          ▶ Perform
+        </button>
+        <button onClick={addDialog} disabled={generating}>+ Add dialog</button>
+        <button
+          className="danger"
+          onClick={() => setConfirmDeleteAll(true)}
+          disabled={generating || sortedItems.length === 0}
+          title="Delete every dialog item for this beat"
+        >
+          Delete all
+        </button>
       </div>
-
-      <BeatTabs order={data.beat.order} active="dialog" />
 
       {generationError && (
         <div className="error-banner">Generation error: {generationError}</div>
@@ -359,6 +428,16 @@ export function DialogBeat({ session }) {
       )}
       {prepareError && (
         <div className="error-banner">Prepare notes failed: {prepareError}</div>
+      )}
+      {voiceError && (
+        <div className="error-banner">Voice generation: {voiceError}</div>
+      )}
+      {voiceJob && voiceJob.job_id !== dismissedVoiceJob && (
+        <DialogVoicesBanner
+          job={voiceJob}
+          onCancel={cancelVoices}
+          onDismiss={() => setDismissedVoiceJob(voiceJob.job_id)}
+        />
       )}
       {generating && generationStatus && (
         <div
@@ -378,7 +457,7 @@ export function DialogBeat({ session }) {
       )}
 
       {room && (
-        <CollabSurface room={room} session={session} onPing={onRefresh}>
+        <CollabSurface room={room} session={session} active={active} onPing={onRefresh}>
           {performing ? (
             <DialogPerform
               items={sortedItems}
@@ -414,6 +493,11 @@ export function DialogBeat({ session }) {
                 <div className="dialog-list">
                   {sortedItems.map((d, i) => {
                     const sid = d._id?.toString?.() || String(d._id);
+                    const characterVoice = voiceByCharacter.get(plainSpeaker(d.character)) || null;
+                    // A line's own voice outranks its character's.
+                    const lineVoice = d.eleven_voice?.voice_id
+                      ? { voice_id: d.eleven_voice.voice_id, voice_name: d.eleven_voice.name }
+                      : null;
                     return (
                       <DialogItem
                         key={sid}
@@ -421,6 +505,9 @@ export function DialogBeat({ session }) {
                         characters={characters}
                         prevDialog={sortedItems[i - 1] || null}
                         nextDialog={sortedItems[i + 1] || null}
+                        voice={lineVoice || characterVoice}
+                        characterVoice={characterVoice}
+                        voicesKnown={Array.isArray(data.voice_cast)}
                         onDelete={() => deleteDialog(d._id)}
                         onCharacterChange={setDialogCharacter}
                         onAudioChange={onRefresh}
@@ -468,6 +555,13 @@ export function DialogBeat({ session }) {
         onCancel={() => setConfirmDeleteAll(false)}
       />
 
+      <GenerateVoicesDialog
+        open={voiceDialogOpen}
+        preview={voicePreview}
+        onConfirm={generateVoices}
+        onCancel={() => setVoiceDialogOpen(false)}
+      />
+
       <DialogEditDialog
         open={editOpen}
         items={sortedItems}
@@ -475,8 +569,18 @@ export function DialogBeat({ session }) {
         onClose={() => setEditOpen(false)}
         onApplied={() => { setEditOpen(false); onRefresh(); }}
       />
-
-      <BeatPager beats={tocBeats} currentId={data.beat?._id} basePath="/dialog" />
-    </main>
+    </>
   );
+}
+
+// A stored speaker name (markdown) as the plain lower-cased key the voice cast uses.
+function plainSpeaker(name) {
+  return String(name || '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
 }

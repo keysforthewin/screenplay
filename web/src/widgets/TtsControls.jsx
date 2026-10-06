@@ -1,35 +1,8 @@
 // web/src/widgets/TtsControls.jsx
 // Pieces shared by the beat Play button and the TOC "Play all" control: the
 // model-load label, the Pause/Resume toggle, and the save-as-WAV button.
-
-import { useState } from 'react';
-import { pinStorage } from '../tts/persistStorage.js';
-
-// Shown only while the browser refuses persistent storage: without it the
-// cached model is evictable and would have to be downloaded again.
-export function KeepModelButton({ controller, state }) {
-  const [refused, setRefused] = useState(false);
-  if (state.persisted !== false) return null;
-  async function keep() {
-    const ok = await pinStorage();
-    controller.setPersisted(ok);
-    setRefused(!ok);
-  }
-  return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--fg-muted)' }}>
-      <button
-        type="button"
-        onClick={keep}
-        title="Ask the browser to never evict the downloaded voice model (it may ask for notification permission — that is what unlocks persistent storage in Chrome)"
-      >
-        📌 Keep model
-      </button>
-      {refused
-        ? 'Browser refused — bookmark this site (or allow notifications), then click again.'
-        : 'The browser may evict the 326MB model and re-download it.'}
-    </span>
-  );
-}
+// (Keeping the downloaded model needs no button: the controller quietly asks
+// the browser for persistent storage on every Play — tts/persistStorage.js.)
 
 export function modelLoadLabel(state) {
   if (state.status !== 'loading') return null;

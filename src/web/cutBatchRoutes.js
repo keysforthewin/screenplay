@@ -1,8 +1,9 @@
 // Whole-beat video routes of the Scenes tab, mounted from entityRoutes.js:
 //
 //   POST /cuts/videos/generate-all     202 { batch } — render every cut that has both frames
-//        { beat_id, provider: 'comfy'|'fal', model_id, skip_existing?,
+//        { beat_id, provider?: 'comfy'|'fal', model_id?, skip_existing?,
 //          params?, confirm_spend?            (ComfyUI)
+//        provider + model_id omitted → the admin's default video renderer
 //          resolution?, fps?, generate_audio? (fal.ai) }
 //   GET  /cuts/videos/batch?beat_id=   { batch | null } — what the page polls
 //   POST /cuts/videos/batch/cancel     { batch } — stop after the renders in flight
@@ -13,6 +14,7 @@
 // The batch runner is cutVideoBatch.js, the ffmpeg join cutVideoJoin.js.
 
 import fs from 'fs';
+import { resolveVideoRenderer } from './videoDefault.js';
 import { getBeat } from '../mongo/plots.js';
 import { ComfyNotConfiguredError } from '../comfy/client.js';
 import { ERR, parseResolutionField, parseFpsField } from './videoRouteParams.js';
@@ -47,9 +49,17 @@ export function registerCutBatchRoutes(router) {
     try {
       const body = req.body || {};
       if (body.beat_id == null || body.beat_id === '') return res.status(400).json({ error: 'beat_id required' });
-      if (!BATCH_PROVIDERS.includes(body.provider)) return res.status(400).json({ error: 'provider must be "comfy" or "fal"' });
-      const modelId = typeof body.model_id === 'string' ? body.model_id.trim() : '';
-      if (!modelId) return res.status(400).json({ error: 'model_id required' });
+      if (body.provider != null && !BATCH_PROVIDERS.includes(body.provider)) return res.status(400).json({ error: 'provider must be "comfy" or "fal"' });
+      // No model (and optionally no provider) → the admin's default video
+      // renderer; its stored ComfyUI params go under the request's own.
+      let renderer;
+      try {
+        renderer = await resolveVideoRenderer({ provider: body.provider || null, modelId: body.model_id });
+      } catch (e) {
+        return res.status(e.status || 400).json({ error: e.message, code: e.code });
+      }
+      const modelId = renderer.modelId;
+      const params = body.params && typeof body.params === 'object' && !Array.isArray(body.params) ? body.params : {};
       const resolution = parseResolutionField(body.resolution, res);
       if (resolution === ERR) return;
       const fps = parseFpsField(body.fps, res);
@@ -58,9 +68,9 @@ export function registerCutBatchRoutes(router) {
         const batch = await startCutVideoBatch({
           projectId: req.projectId,
           beatId: body.beat_id,
-          provider: body.provider,
+          provider: renderer.provider,
           modelId,
-          params: body.params && typeof body.params === 'object' && !Array.isArray(body.params) ? body.params : {},
+          params: { ...renderer.params, ...params },
           confirmSpend: body.confirm_spend === true,
           resolution,
           fps,

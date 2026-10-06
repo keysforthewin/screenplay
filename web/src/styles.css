@@ -1915,10 +1915,11 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .tab-panel { padding-top: 16px; }
 
-/* Per-beat section switcher (Writing / Dialog / Storyboard). A segmented
-   control, visually distinct from the inner content `.tab-nav` above. */
+/* The one row of beat tabs (Story / Dialogue / Sets / Characters / Critique /
+   Coverage / Scenes). A segmented control; wraps on narrow screens. */
 .beat-section-tabs {
   display: inline-flex;
+  flex-wrap: wrap;
   gap: 2px;
   margin: 4px 0 8px;
   padding: 3px;
@@ -4055,3 +4056,53 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .wardrobe-chip { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--accent); color: var(--bg); white-space: nowrap; }
 .wardrobe-chip.is-missing { background: transparent; color: var(--fg-muted); border: 1px dashed var(--border); }
 .is-wardrobe-badge { color: var(--accent); font-size: 12px; background: transparent; border-color: transparent; }
+
+/* ElevenLabs voice on a character page + the dialogue page's voice batch. */
+.eleven-voice-field { margin: 0 0 14px; }
+.eleven-voice-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.eleven-voice-row select { flex: 1 1 260px; min-width: 0; max-width: 520px; }
+.eleven-voice-filter { flex: 0 1 180px; min-width: 120px; }
+.eleven-voice-hint { font-size: 12px; margin-top: 4px; }
+.eleven-voice-finder {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.dialog-item-voice { margin-top: 8px; }
+.dialog-item-voice .eleven-voice-field { margin: 0; }
+.dialog-voices-banner {
+  background: var(--accent-bg, rgba(255, 255, 255, 0.04));
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+.dialog-voices-banner-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.dialog-voices-errors { margin: 6px 0 0; padding-left: 18px; font-size: 12px; color: var(--danger, #e66); }
+.dialog-voices-summary { margin: 0; padding-left: 18px; }
+.dialog-voices-summary li { margin: 4px 0; }
+.dialog-voices-overwrite { display: block; margin-top: 2px; font-size: 13px; }
+
+/* Site-wide read-aloud player (widgets/TtsMiniPlayer.jsx): pinned bottom-left,
+   clear of the chat panel on the right. */
+.tts-mini-player {
+  position: fixed; left: 16px; bottom: 16px; z-index: 900;
+  display: flex; align-items: center; gap: 8px;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 8px 12px; border-radius: 10px;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+.tts-mini-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.tts-mini-text strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tts-mini-status { font-size: 12px; color: var(--fg-muted); }
+.tts-mini-player button { white-space: nowrap; }
+
+/* Beat page head: the title has the full width on one line; under it the tab
+   row with the Play button at its right end. Nothing here wraps — a long
+   title is cut with an ellipsis, a narrow screen scrolls the tabs sideways. */
+.beat-title { margin-top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.beat-tabs-row { display: flex; align-items: center; gap: 12px; margin: 4px 0 8px; }
+.beat-tabs-row .beat-section-tabs { flex: 0 1 auto; min-width: 0; margin: 0; flex-wrap: nowrap; overflow-x: auto; }
+.beat-tabs-row .beat-section-tab { white-space: nowrap; flex: none; }
+.play-beat { display: inline-flex; align-items: center; gap: 8px; flex: none; margin-left: auto; white-space: nowrap; }

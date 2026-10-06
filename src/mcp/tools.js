@@ -2,8 +2,10 @@
 //
 // The MCP tool surface: a coding agent reads the story (beats, dialogue,
 // cast, reference images) and plans a beat's Scenes tab — scenes, cuts, frame
-// prompts, frame images, clips. Storage only: nothing here calls a model or
-// renders anything.
+// prompts, frame images, clips. Storage only — with one exception: the
+// `render_videos` tool starts the Scenes tab's own whole-beat video batch
+// (src/web/cutVideoBatch.js), with the admin's default video renderer when
+// no model is named, so a skill never has to pick a model itself.
 
 import sharp from 'sharp';
 import { z } from 'zod';
@@ -18,6 +20,8 @@ import { listProjects } from '../mongo/projects.js';
 import { getSet, listSets } from '../mongo/sets.js';
 import { MAX_REFERENCE_IMAGES, countVideoPromptsByBeat } from '../mongo/videoPrompts.js';
 import { listVideoScenes } from '../mongo/videoScenes.js';
+import { cancelCutVideoBatch, getCutVideoBatchForBeat, serializeCutBatch, startCutVideoBatch } from '../web/cutVideoBatch.js';
+import { describeVideoDefault, resolveVideoRenderer } from '../web/videoDefault.js';
 import { findCharactersInBeat, findSetsInBeat } from '../web/beatPlanShared.js';
 import { cleanIdList, isOidHex } from '../web/cutValidation.js';
 import {
@@ -65,6 +69,8 @@ export function buildInstructions(uploadBase = 'http://localhost:3002') {
     'Reading: list_beats → get_beat (the page text and its dialogue lines) → get_cast (who and where) → get_scenes (what is already planned). Artwork: list_artwork gives every picture of one character or set, list_reference_images the whole beat\'s pool; their image_id values are what a frame\'s reference list takes, their URLs are the files. view_image shows you any image.',
     'Writing: create_scene (pass `cuts` to create a whole scene in one call), create_cut, update_scene, update_cut, reorder_*, delete_*. Edits appear live in open browsers.',
     `Media: set_frame_image takes an image URL (or the id of an image already in the project, which is copied). A local file goes over plain HTTP instead: curl -T frame.png "${uploadBase}/upload?cut_id=<cut id>&target=start_frame" (targets: start_frame, end_frame, video). Replacing a frame image keeps the previous one for a one-step undo_frame_image.`,
+    '',
+    'Video: render_videos renders every cut of a beat that has both frames and a prompt, through the app\'s own batch runner, with the default video renderer set on the Admin page unless you name a provider and model — do not pick a model yourself. Poll get_video_batch until its status is no longer "running".',
     '',
     'Every beat-addressed tool takes an optional `project` (title or id; the default project when omitted) and a `beat` (its number, id or name). Scene and cut tools take the id alone.',
   ].join('\n');
@@ -509,6 +515,65 @@ export function buildMcpServer({ uploadBase } = {}) {
   tool('clear_cut_video', 'Delete a cut\'s clip.', { cut_id: cutId }, DESTROY, async (a) => {
     const { projectId, cut } = await resolveCut(a.cut_id);
     return { cut: await clearCutVideo({ projectId, cut }) };
+  });
+
+  // ─── Rendering clips ─────────────────────────────────────────────────────
+
+  tool(
+    'render_videos',
+    'Render the clips of a beat: every cut with both frames and a video prompt, in page order, through the same batch the Scenes tab\'s "Generate all videos" runs (open pages show it). With no provider/model it renders with the default video renderer from the Admin page — the normal case; name a model only when the user asked for one. Returns the batch; poll get_video_batch until status != "running".',
+    {
+      project,
+      beat,
+      provider: z.enum(['comfy', 'fal']).optional().describe('Omit to use the admin default.'),
+      model_id: z.string().optional().describe('A ComfyUI registry id or a fal.ai endpoint id. Omit to use the admin default.'),
+      skip_existing: z.boolean().optional().describe('Leave cuts that already have a clip alone. Default true.'),
+      confirm_spend: z.boolean().optional().describe('ComfyUI API-billed models need this to be true.'),
+    },
+    WRITE,
+    async (a) => {
+      const { projectId, beat: b } = await resolveBeat(a.project, a.beat);
+      let renderer;
+      try {
+        renderer = await resolveVideoRenderer({ provider: a.provider || null, modelId: a.model_id || null });
+      } catch (e) {
+        throw new McpInputError(e.message);
+      }
+      try {
+        const batch = await startCutVideoBatch({
+          projectId,
+          beatId: b._id,
+          provider: renderer.provider,
+          modelId: renderer.modelId,
+          params: renderer.params,
+          confirmSpend: a.confirm_spend === true,
+          skipExisting: a.skip_existing !== false,
+          announceUsername: 'mcp',
+        });
+        return { renderer: { provider: renderer.provider, model_id: renderer.modelId, from_default: renderer.fromDefault }, batch: serializeCutBatch(batch) };
+      } catch (e) {
+        if (e?.status || e?.code) throw new McpInputError(e.message);
+        throw e;
+      }
+    },
+  );
+
+  tool(
+    'get_video_batch',
+    'The beat\'s video batch as it stands (null when none was started since the server booted): per cut queued | running | done | error | skipped | cancelled, plus counts. Also tells which default video renderer is set.',
+    { project, beat },
+    READ,
+    async (a) => {
+      const { beat: b } = await resolveBeat(a.project, a.beat);
+      return { batch: serializeCutBatch(getCutVideoBatchForBeat(b._id.toString())), default_renderer: await describeVideoDefault() };
+    },
+  );
+
+  tool('cancel_video_batch', 'Stop a beat\'s video batch before the cuts still waiting (renders in flight finish).', { project, beat }, WRITE, async (a) => {
+    const { beat: b } = await resolveBeat(a.project, a.beat);
+    const batch = await cancelCutVideoBatch(b._id.toString());
+    if (!batch) throw new McpInputError('no batch for this beat');
+    return { batch: serializeCutBatch(batch) };
   });
 
   return server;

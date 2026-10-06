@@ -105,6 +105,7 @@ export async function updateCharacter(projectId, identifier, patch) {
       k === 'character_sheet_image_id' ||
       k === 'fal_character_id' ||
       k === 'fal_character_image_hash' ||
+      k === 'eleven_voice' ||
       k === 'unset',
   );
   if (!hasRecognized) {
@@ -153,6 +154,21 @@ export async function updateCharacter(projectId, identifier, patch) {
         );
       }
       set.fal_character_image_hash = v === null ? null : v;
+    } else if (k === 'eleven_voice') {
+      // The ElevenLabs voice this character speaks with: null (clear) or a
+      // snapshot of the account voice { voice_id, name, preview_url, category }.
+      if (v === null) {
+        set.eleven_voice = null;
+      } else if (v && typeof v === 'object' && typeof v.voice_id === 'string' && v.voice_id.trim()) {
+        set.eleven_voice = {
+          voice_id: v.voice_id.trim(),
+          name: String(v.name || '').slice(0, 200),
+          preview_url: v.preview_url ? String(v.preview_url) : null,
+          category: v.category ? String(v.category) : null,
+        };
+      } else {
+        throw new Error('update_character: eleven_voice must be null or an object with a voice_id.');
+      }
     } else if (k === 'unset') {
       if (!Array.isArray(v)) {
         throw new Error(

@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { apiGet, apiPutJson } from '../api.js';
 import { ModelSlotsPanel } from '../widgets/ModelSlotsPanel.jsx';
 import { ComfyTemplatesPanel } from '../widgets/ComfyTemplatesPanel.jsx';
+import { VideoDefaultPanel } from '../widgets/VideoDefaultPanel.jsx';
+import { VoiceSelect } from '../widgets/VoiceSelect.jsx';
 
 // Admin page: every user who has ever been approved, with checkboxes for
 // which projects they can access. Admin-only — the route in App.jsx redirects
@@ -85,7 +87,15 @@ export function Admin({ session }) {
 
       <ModelSlotsPanel />
 
+      <VideoDefaultPanel />
+
       <ComfyTemplatesPanel />
+
+      <h2 style={{ marginTop: 40 }}>Narration voice</h2>
+      <p style={{ color: 'var(--fg-muted)' }}>
+        The voice the ▶ Play buttons read beats aloud with. Saved in this browser.
+      </p>
+      <VoiceSelect />
 
       <h2 style={{ marginTop: 40 }}>Project access</h2>
       <p style={{ color: 'var(--fg-muted)' }}>

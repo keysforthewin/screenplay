@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { apiGet, apiPostJson, apiDelete, apiSseUrl } from '../api.js';
 import { scoreBand, formatScore, sortIssues, issueCounts, hasCriteria, SEVERITY_LABELS } from './critiqueDisplay.js';
 import { CritiqueSection } from './CritiqueSection.jsx';
-import { ArtworkCritiqueSection } from './ArtworkCritiqueSection.jsx';
 import { ClimbDialog, ClimbPanel, ClimbChip, isClimbRunning } from './Climb.jsx';
 import { RegenerateDialog } from './RegenerateDialog.jsx';
 
@@ -222,10 +221,9 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
   return (
     <div className="critique-panel">
       <p className="tab-intro">
-        Two critiques of this beat. <b>Writing</b> scores the text against anchored criteria — quoting the lines it judges and ranking
-        every issue by severity — using the previous and next beats, the whole-story spine, the director's notes and the dialogue style;
-        you can then rewrite the beat from it. <b>Artwork</b> reads the beat, lists the set views and character looks it needs, checks the
-        sets' and characters' artwork libraries against them, and drafts the missing pieces for generation.
+        Scores the beat's text against anchored criteria — quoting the lines it judges and ranking every issue by severity — using the
+        previous and next beats, the whole-story spine, the director's notes and the dialogue style; you can then rewrite the beat from it.
+        The artwork is checked on the <b>Coverage</b> tab.
       </p>
 
       <CritiqueSection title="Writing" meta={writingMeta}>
@@ -284,8 +282,6 @@ export function CritiqueTab({ beatId, hasPreviousBody, onRefresh }) {
       />
 
       <RegenerateDialog open={regenOpen} facets={facets} onStart={regenerate} onClose={() => setRegenOpen(false)} />
-
-      <ArtworkCritiqueSection beatId={beatId} />
     </div>
   );
 }

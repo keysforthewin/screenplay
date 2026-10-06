@@ -150,7 +150,7 @@ describe('reading', () => {
       'list_projects', 'get_story', 'list_beats', 'get_beat', 'get_dialogue', 'get_cast', 'list_characters', 'list_sets',
       'list_artwork', 'list_reference_images', 'get_scenes', 'view_image', 'create_scene', 'update_scene', 'delete_scene',
       'reorder_scenes', 'create_cut', 'update_cut', 'delete_cut', 'reorder_cuts', 'set_frame_image', 'clear_frame_image',
-      'undo_frame_image', 'set_cut_video', 'clear_cut_video',
+      'undo_frame_image', 'set_cut_video', 'clear_cut_video', 'render_videos', 'get_video_batch', 'cancel_video_batch',
     ]));
     expect(client.getInstructions()).toContain('curl -T frame.png "http://localhost:3002/upload?cut_id=');
   });
@@ -345,6 +345,64 @@ describe('frame images and clips', () => {
     await expect(call('set_cut_video', { cut_id: id, video_url: 'https://x/page' })).rejects.toThrow(/not a video/);
     expect((await call('clear_cut_video', { cut_id: id })).cut.video).toBeNull();
     expect(deletedAttachments).toContain(two.video.attachment_id);
+  });
+});
+
+describe('render_videos', () => {
+  let started;
+  beforeEach(async () => {
+    const Batch = await import('../src/web/cutVideoBatch.js');
+    Batch._resetCutBatchesForTests();
+    started = [];
+    const factory = async (opts) => ({
+      opts,
+      preflight: async () => {},
+      start: async (cutId) => { started.push({ cutId, modelId: opts.modelId, params: opts.params }); return { job_id: `job-${cutId}` }; },
+      get: () => ({ status: 'done' }),
+      subscribe: (_jobId, cb) => { setTimeout(() => cb({ status: 'done' }), 5); },
+      unsubscribe: () => {},
+      cancel: async () => {},
+    });
+    Batch._setCutBatchProvidersForTests({ comfy: factory, fal: factory }, { pollMs: 10 });
+  });
+  afterEach(async () => {
+    const Batch = await import('../src/web/cutVideoBatch.js');
+    Batch._setCutBatchProvidersForTests(null);
+    Batch._resetCutBatchesForTests();
+  });
+
+  async function readyCut() {
+    const scene = (await call('create_scene', { beat: beat.order, title: 'S' })).scene;
+    const cut = (await call('create_cut', { scene_id: scene.id, prompt: 'A clip.' })).cut;
+    await call('set_frame_image', { cut_id: cut.id, frame: 'start', image_id: img('start').toString() });
+    await call('set_frame_image', { cut_id: cut.id, frame: 'end', image_id: img('end').toString() });
+    return cut;
+  }
+
+  it('refuses to pick a model: no default set → an error naming the Admin page', async () => {
+    await readyCut();
+    await expect(call('render_videos', { beat: beat.order })).rejects.toThrow(/Admin → Video renderer/);
+    expect((await call('get_video_batch', { beat: beat.order })).batch).toBeNull();
+  });
+
+  it('renders every ready cut with the admin default when no model is named', async () => {
+    const cut = await readyCut();
+    const Settings = await import('../src/mongo/appSettings.js');
+    await Settings.setVideoDefaultSettings({ provider: 'comfy', model_id: 'wan-2.2-14b-flf2v', params: { steps: 20 } });
+    const r = await call('render_videos', { beat: beat.order });
+    expect(r.renderer).toEqual({ provider: 'comfy', model_id: 'wan-2.2-14b-flf2v', from_default: true });
+    expect(r.batch.items.map((it) => it.cut_id)).toEqual([cut.id]);
+    await new Promise((res) => setTimeout(res, 60));
+    expect(started).toEqual([{ cutId: cut.id, modelId: 'wan-2.2-14b-flf2v', params: { steps: 20 } }]);
+    const g = await call('get_video_batch', { beat: beat.order });
+    expect(g.batch.status).toBe('done');
+    expect(g.default_renderer.model_id).toBe('wan-2.2-14b-flf2v');
+  });
+
+  it('an explicit model is kept as given', async () => {
+    await readyCut();
+    const r = await call('render_videos', { beat: beat.order, provider: 'comfy', model_id: 'ltx-2.5-i2v' });
+    expect(r.renderer).toMatchObject({ model_id: 'ltx-2.5-i2v', from_default: false });
   });
 });
 

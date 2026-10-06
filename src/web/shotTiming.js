@@ -5,6 +5,7 @@
 // cues, plus punctuation pauses and a breath per line.
 
 import { stripMarkdown } from '../util/markdown.js';
+import { stripAudioTags } from '../eleven/dialogTags.js';
 
 export const WORDS_PER_SECOND = 2.5;
 export const BREATH_PER_LINE_SECONDS = 0.5;
@@ -39,12 +40,15 @@ export function estimateLineSeconds(line) {
   if (!line) return 0;
   const rec = Number(line.audio_duration_seconds);
   if (Number.isFinite(rec) && rec > 0) return rec;
-  const words = countWords(line.body);
+  // ElevenLabs audio tags ([whispering], [long pause]…) direct the delivery;
+  // they are not spoken words.
+  const body = stripAudioTags(line.body);
+  const words = countWords(body);
   if (!words) return 0;
   let s = words / WORDS_PER_SECOND;
   if (EMOTIONAL_CUES.test(String(line.direction || ''))) s *= EMOTIONAL_SLOWDOWN;
-  s += countSentencePauses(line.body) * SENTENCE_PAUSE_SECONDS;
-  s += countCommaPauses(line.body) * COMMA_PAUSE_SECONDS;
+  s += countSentencePauses(body) * SENTENCE_PAUSE_SECONDS;
+  s += countCommaPauses(body) * COMMA_PAUSE_SECONDS;
   s += BREATH_PER_LINE_SECONDS;
   return s;
 }

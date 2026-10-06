@@ -17,6 +17,7 @@ import { buildAdminRouter } from './adminRoutes.js';
 import { buildElevenRouter } from './elevenRoutes.js';
 import { buildComfyRouter, registerCutVideoRoutes } from './comfyRoutes.js';
 import { registerCutRoutes } from './cutRoutes.js';
+import { registerDialogVoiceRoutes } from './dialogVoiceRoutes.js';
 import { registerArtworkCritiqueRoutes } from './artworkCritiqueRoutes.js';
 import { registerCutFalVideoRoutes, cutVideoJobEventsHandler } from './cutVideoRoutes.js';
 import { registerCutBatchRoutes } from './cutBatchRoutes.js';
@@ -549,6 +550,10 @@ export function buildApiRouter() {
   registerCutFalVideoRoutes(router);
   // Whole-beat batch render + joined download (src/web/cutBatchRoutes.js).
   registerCutBatchRoutes(router);
+
+  // ElevenLabs voices (src/web/dialogVoiceRoutes.js): a character's voice and
+  // the dialogue page's "Generate all voices" batch.
+  registerDialogVoiceRoutes(router);
 
   // Beat artwork critique (src/web/artworkCritiqueRoutes.js): the lower half
   // of the Critique tab — requirements, vision audit, generation proposals.
@@ -3897,6 +3902,17 @@ export function buildApiRouter() {
   // server-side registry (hand-tuned, executable) with data/fal-models.json
   // (the wide catalog of i2v endpoints, browse-only). The SPA picker uses
   // `is_registered` to decide which rows are selectable for generation.
+  // The admin's default video renderer (read-only here; set on Admin → Video
+  // renderer). The Scenes-tab dialogs preselect it.
+  router.get('/video-default', async (_req, res, next) => {
+    try {
+      const { describeVideoDefault } = await import('./videoDefault.js');
+      res.json({ default: await describeVideoDefault() });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.get('/video-models', async (_req, res, next) => {
     try {
       const { loadCatalog } = await import('../fal/videoModels.js');
@@ -4139,6 +4155,7 @@ export function buildApiRouter() {
       const beat = await getBeat(req.projectId, String(beatRef));
       if (!beat) return res.status(404).json({ error: 'beat not found' });
       const items = await listDialogs({ beatId: beat._id });
+      const { loadVoiceCast, voiceCastView } = await import('./dialogVoices.js');
       res.json({
         beat: {
           _id: beat._id,
@@ -4148,6 +4165,9 @@ export function buildApiRouter() {
           characters: beat.characters || [],
         },
         dialogs: items,
+        // Characters with an ElevenLabs voice: their lines carry audio tags
+        // and can be voiced (dialogVoices.js).
+        voice_cast: voiceCastView(await loadVoiceCast(req.projectId)),
       });
     } catch (e) {
       next(e);

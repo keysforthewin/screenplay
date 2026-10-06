@@ -5,6 +5,10 @@
 // stateless ping protocol — when the server broadcasts a {type:'fields_updated'}
 // message, we call the parent-supplied onPing() so the page can refetch its
 // REST data (image gallery, attachment list, plays_self toggle, etc.).
+//
+// A page that keeps several surfaces mounted at once (the beat page: one per
+// tab group) passes `active` — only the active surface feeds the header's
+// presence list and save status; a hidden one stays connected but silent.
 
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import * as Y from 'yjs';
@@ -21,7 +25,7 @@ export function useCollabRoom() {
   return ctx;
 }
 
-export function CollabSurface({ room, session, onPing, onDocReady, children }) {
+export function CollabSurface({ room, session, onPing, onDocReady, active = true, children }) {
   const [provider, setProvider] = useState(null);
   const [ydoc, setYdoc] = useState(null);
   const [error, setError] = useState(null);
@@ -30,6 +34,12 @@ export function CollabSurface({ room, session, onPing, onDocReady, children }) {
   onPingRef.current = onPing;
   const onDocReadyRef = useRef(onDocReady);
   onDocReadyRef.current = onDocReady;
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  // What this surface last knew, so it can hand it to the header when it
+  // becomes the active one.
+  const usersRef = useRef([]);
+  const savedAtRef = useRef(null);
 
   useEffect(() => {
     if (!room || !session?.session_id) return;
@@ -74,14 +84,18 @@ export function CollabSurface({ room, session, onPing, onDocReady, children }) {
         // 'origin' is null for local-typed edits, the provider for remote ones.
         // Only show "saving" for local edits — remote updates are already saved.
         if (origin === nextProvider) return;
-        setSaveStatus({ state: 'saving', lastSaved: Date.now() });
+        savedAtRef.current = Date.now();
+        if (activeRef.current) setSaveStatus({ state: 'saving', lastSaved: Date.now() });
         clearTimeout(savedTimer);
         savedTimer = setTimeout(() => {
-          setSaveStatus({ state: 'saved', lastSaved: Date.now() });
+          savedAtRef.current = Date.now();
+          if (activeRef.current) setSaveStatus({ state: 'saved', lastSaved: Date.now() });
         }, 2200);
       };
       nextDoc.on('update', onDocUpdate);
       nextProvider.on('synced', () => {
+        if (!savedAtRef.current) savedAtRef.current = Date.now();
+        if (!activeRef.current) return;
         setSaveStatus((s) => ({ state: 'saved', lastSaved: s.lastSaved || Date.now() }));
       });
 
@@ -90,7 +104,8 @@ export function CollabSurface({ room, session, onPing, onDocReady, children }) {
         const list = (states || [])
           .map((s) => s.user)
           .filter(Boolean);
-        setUsers(list);
+        usersRef.current = list;
+        if (activeRef.current) setUsers(list);
       });
 
       // Stateless ping → parent refetches REST widgets.
@@ -117,13 +132,31 @@ export function CollabSurface({ room, session, onPing, onDocReady, children }) {
 
     return () => {
       cancelled = true;
-      setUsers([]);
-      setSaveStatus({ state: 'idle', lastSaved: null });
+      usersRef.current = [];
+      savedAtRef.current = null;
+      if (activeRef.current) {
+        setUsers([]);
+        setSaveStatus({ state: 'idle', lastSaved: null });
+      }
       onDocReadyRef.current?.(null);
       try { nextProvider?.destroy(); } catch {}
       try { nextDoc?.destroy(); } catch {}
     };
   }, [room, session?.session_id, session?.username, setUsers, setSaveStatus]);
+
+  // Becoming the active surface: the header shows this room from now on.
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) {
+      setUsers(usersRef.current);
+      setSaveStatus(
+        savedAtRef.current
+          ? { state: 'saved', lastSaved: savedAtRef.current }
+          : { state: 'idle', lastSaved: null },
+      );
+    }
+    wasActive.current = active;
+  }, [active, setUsers, setSaveStatus]);
 
   if (error) {
     return <div className="error-banner">Collaboration error: {error}</div>;

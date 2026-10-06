@@ -1,6 +1,6 @@
 ---
 name: storyboard
-description: Storyboard a screenplay beat end to end through the screenplay MCP server - read the beat, plan scenes and cuts (single-shot by default, multi-shot LTX clips for short sequences), write an LTX-2.5 video prompt and a Nano Banana start and end frame prompt for every cut that names each reference image by number, chain the cuts of a continuous shot frame to frame, assign 4 reference images to each frame, then render every frame on fal.ai with Nano Banana Pro. Use when the user asks to storyboard a beat, plan its scenes/cuts/frames, fill the Scenes tab, or (re)render a beat's start/end frames.
+description: Storyboard a screenplay beat end to end through the screenplay MCP server - read the beat, plan scenes and cuts (single-shot by default, multi-shot LTX clips for short sequences), write an LTX-2.5 video prompt and a Nano Banana start and end frame prompt for every cut that names each reference image by number, chain the cuts of a continuous shot frame to frame, assign 4 reference images to each frame, then render every frame on fal.ai with Nano Banana Pro; on request, render the clips through the app's render_videos MCP tool with the Admin page's default video renderer (never a hand-picked model). Use when the user asks to storyboard a beat, plan its scenes/cuts/frames, fill the Scenes tab, (re)render a beat's start/end frames, or render/encode a beat's videos.
 ---
 
 # Storyboard a beat
@@ -13,7 +13,7 @@ Everything is stored through the `screenplay` MCP server (`mcp__screenplay__*`).
 
 - **Image model: Nano Banana Pro** (app key `nano-banana-pro`, fal endpoint `fal-ai/nano-banana-pro/edit` when references are attached). Do not use Nano Banana 2: the user judged its frames not good enough (2026-10-04). Use another model only when the user names one.
 - **Frame prompts are written for the Nano Banana family**: one descriptive paragraph (never a keyword list), and every attached reference is named as `Image N` using the renderer's numbering — see "Reference numbering".
-- **Video prompts are written for LTX-2.5** (ComfyUI `ltx-2.5-i2v`: start frame only, 1–20 s, 24 fps, synchronized audio, native multi-shot; the fal LTX endpoints take the same prose). The end frame still drives chains and the Wan first-last-frame model. The prompt enhancer stays off — our prompts are already complete.
+- **Video prompts are written for LTX-2.5** (1–20 s, 24 fps, synchronized audio, native multi-shot; every LTX endpoint takes the same prose). Which model RENDERS a clip is not this skill's choice: `render_videos` uses the Admin page's default video renderer (a first-frame/last-frame model — both frames drive the clip). The end frame also drives chains. The prompt enhancer stays off — our prompts are already complete.
 - **4 references on every frame.** On an END frame, 3 come from the library and the cut's own rendered start frame is the LAST one (Image 4).
 - **A continuous shot is a chain of cuts.** The next cut's start frame IS the previous cut's end frame — the same picture, copied, never rendered a second time. See "Continuous shots".
 - **A cut is one take by default.** A short shot/reverse-shot, insert or reaction run may be one multi-shot cut instead of several cuts. See "Multi-shot cuts".
@@ -108,9 +108,20 @@ python3 .claude/skills/storyboard/scripts/sb.py sheet <beat> <scratchpad>/frames
 
 `verify` also checks every frame prompt against its references: an `Image N` with no Nth image, a reference the prompt never names, a start frame that is not the last end reference. `refs` prints the numbering per frame as the renderer binds it. Read every sheet (tiles are start,end pairs in cut order). Check each frame against the list under "Problems that keep happening". Fix by editing the prompt or references with `update_cut`, then re-render with `FORCE=1 ONLY=<labels>` — start frames first, then the end frames of every cut whose start frame changed. In a chain, fix a keyframe by re-rendering the END frame that produced it (`FRAME=end FORCE=1 ONLY=<label>`); the pass then re-copies it forward and re-renders every end frame after it in the chain, since each was built on the one before — so fix chains from the first bad keyframe, and expect the later ones to change. Never render a chained start frame by itself. A seam is right when the end tile of one cut and the start tile of the next are the same picture on the sheet. Re-check with `sb.py sheet <beat> <dir> <labels…>`.
 
-### 7. Report
+### 7. Render videos (only when asked)
 
-Scene/cut table (mark chains and multi-shot cuts), what was re-rendered and why, and what still needs a hand (legible signage, pairs whose cameras disagree, cuts with weak references). Tell the user to reload the Scenes page: the render process writes Mongo directly, so open pages do not refresh.
+Clips are rendered ONLY through the screenplay MCP tool `render_videos` — never by calling fal.ai, ComfyUI or any other video model yourself, and never by picking a model: with no `provider`/`model_id` the tool renders with the **default video renderer set on the app's Admin page** (Admin → Video renderer; the user keeps it on the first-frame/last-frame model they want), through the same whole-beat batch the Scenes tab's "Generate all videos" runs, so the open page shows the progress. Name a model only when the user names one in this conversation.
+
+```
+render_videos {beat}                 # every cut with both frames and a prompt, skipping cuts that already have a clip
+get_video_batch {beat}               # poll every ~15 s until status != "running"; per cut: queued | running | done | error | skipped
+```
+
+If `render_videos` answers that no default video renderer is set, stop and tell the user to set one on the Admin page — do not choose one. A local ComfyUI batch renders one cut at a time and can take minutes per cut; report errors per cut from `get_video_batch` (`cancel_video_batch` stops it). A clip is rendered from the cut's stored video prompt, start frame and end frame, so finish steps 4–6 first.
+
+### 8. Report
+
+Scene/cut table (mark chains and multi-shot cuts), what was re-rendered and why, which cuts got a clip (and with which renderer, from `render_videos`'s `renderer`), and what still needs a hand (legible signage, pairs whose cameras disagree, cuts with weak references). Tell the user to reload the Scenes page: the frame render process writes Mongo directly, so open pages do not refresh.
 
 ## Reference numbering (what the renderer tells the model)
 

@@ -190,6 +190,32 @@ describe('generate all videos', () => {
     expect(g.json.batch.counts).toMatchObject({ total: 4, done: 1, error: 1, skipped: 2, queued: 0, running: 0 });
   });
 
+  it('renders with the admin default video renderer when no model is named, and refuses when none is set', async () => {
+    const { beatId, a, d } = await seed();
+    let r = await call('POST', '/api/cuts/videos/generate-all', { beat_id: beatId });
+    expect(r.status).toBe(400);
+    expect(r.json).toMatchObject({ code: 'NO_VIDEO_DEFAULT' });
+
+    const Settings = await import('../src/mongo/appSettings.js');
+    await Settings.setVideoDefaultSettings({ provider: 'comfy', model_id: 'wan-2.2-14b-flf2v', params: { steps: 20, cfg: 4 } });
+    r = await call('POST', '/api/cuts/videos/generate-all', { beat_id: beatId, params: { cfg: 3 } });
+    expect(r.status).toBe(202);
+    expect(r.json.batch).toMatchObject({ provider: 'comfy', model_id: 'wan-2.2-14b-flf2v' });
+    // The default's params seed the render; the request's own win.
+    expect(provider.opts).toMatchObject({ modelId: 'wan-2.2-14b-flf2v', params: { steps: 20, cfg: 3 } });
+    await until(() => provider.started.length === 1);
+    expect(provider.started).toEqual([a]);
+    provider.settle(a);
+    await until(() => provider.started.length === 2);
+    provider.settle(d);
+    await until(() => Batch.getCutVideoBatchForBeat(beatId).status === 'done');
+
+    // Naming the other provider without a model does not borrow the ComfyUI default.
+    r = await call('POST', '/api/cuts/videos/generate-all', { beat_id: beatId, provider: 'fal', skip_existing: false });
+    expect(r.status).toBe(400);
+    expect(r.json.error).toMatch(/not fal/);
+  });
+
   it('skip_existing: false re-renders cuts that have a clip; fal renders two side by side', async () => {
     const { beatId, a, c, d } = await seed();
     const r = await call('POST', '/api/cuts/videos/generate-all', {

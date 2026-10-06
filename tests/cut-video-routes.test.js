@@ -100,11 +100,13 @@ const realFetch = global.fetch;
 const { createProject } = await import('../src/mongo/projects.js');
 const Plots = await import('../src/mongo/plots.js');
 const VP = await import('../src/mongo/videoPrompts.js');
+const VS = await import('../src/mongo/videoScenes.js');
 const BeatLocks = await import('../src/web/beatLocks.js');
 const Falgen = await import('../src/web/falVideoGenerate.js');
 const { buildApiRouter } = await import('../src/web/entityRoutes.js');
 
-const REF_MODEL = 'bytedance/seedance-2.5/reference-to-video';
+// A registry model (no dependency on the untracked fal catalog in data/).
+const FLF_MODEL = 'veo-3-1-flf';
 
 let server, baseUrl, projectId;
 beforeAll(async () => {
@@ -162,7 +164,8 @@ async function seedBeat() {
     created_at: new Date(), updated_at: new Date(),
   });
   const beat = await Plots.createBeat({ projectId, name: 'Arrival', body: 'Sarah enters.', characters: ['Sarah'], sets: ['Diner'] });
-  return { beat, sheet, setMain };
+  const scene = await VS.createVideoScene({ projectId, beatId: beat._id, title: 'Arrival' });
+  return { beat, scene, sheet, setMain };
 }
 
 describe('cut video routes', () => {
@@ -176,60 +179,49 @@ describe('cut video routes', () => {
     expect((await call('GET', `/api/cuts/candidates?beat_id=${new ObjectId()}`)).status).toBe(404);
   });
 
-  it('POST /cut/:id/fal-video/preview ships the references in stored order as image_urls', async () => {
-    const VideoModels = await import('../src/fal/videoModels.js');
-    if (!(await VideoModels.getVideoModelOrCatalog(REF_MODEL))) return; // manifest drift
-    const { beat, sheet, setMain } = await seedBeat();
+  it('POST /cut/:id/fal-video/preview ships the start and end frames and the cut prompt', async () => {
+    const { beat, scene, sheet, setMain } = await seedBeat();
     const p = await VP.createVideoPrompt({
-      projectId, beatId: beat._id, prompt: '@Image1 is the diner, @Image2 is Sarah.', durationSeconds: 20,
-      referenceImages: [
-        { image_id: setMain, owner_type: 'set', owner_name: 'Diner', label: 'Diner — main image' },
-        { image_id: sheet, owner_type: 'character', owner_name: 'Sarah', label: 'Sarah — character sheet' },
-      ],
+      projectId, beatId: beat._id, sceneId: scene._id, prompt: 'Sarah crosses the diner.', durationSeconds: 6,
+      startFrame: { image_id: setMain }, endFrame: { image_id: sheet },
     });
-    const r = await call('POST', `/api/cut/${p._id}/fal-video/preview`, { model_id: REF_MODEL });
+    const r = await call('POST', `/api/cut/${p._id}/fal-video/preview`, { model_id: FLF_MODEL });
     expect(r.status).toBe(200);
-    expect(r.json.payload.image_urls).toEqual([
-      `screenplay-preview://image/${setMain}`,
-      `screenplay-preview://image/${sheet}`,
-    ]);
-    expect(r.json.prompt).toBe('@Image1 is the diner, @Image2 is Sarah.');
+    expect(r.json.payload.first_frame_url).toBe(`screenplay-preview://image/${setMain}`);
+    expect(r.json.payload.last_frame_url).toBe(`screenplay-preview://image/${sheet}`);
+    expect(r.json.payload.image_urls).toBeUndefined();
+    expect(r.json.prompt).toBe('Sarah crosses the diner.');
     expect(r.json.prompt).not.toMatch(/Director's notes/);
-    expect(r.json.duration_seconds).toBe(20);
-    expect(r.json.generate_audio).toBe(false);
-    expect((await call('POST', `/api/cut/${p._id}/fal-video/preview`, { model_id: REF_MODEL, duration_seconds: 61 })).status).toBe(400);
-    expect((await call('POST', `/api/cut/${new ObjectId()}/fal-video/preview`, { model_id: REF_MODEL })).status).toBe(404);
+    expect(r.json.duration_seconds).toBe(6);
+    expect((await call('POST', `/api/cut/${new ObjectId()}/fal-video/preview`, { model_id: FLF_MODEL })).status).toBe(404);
     expect((await call('POST', `/api/cut/${p._id}/fal-video/preview`, { model_id: 'no/such-model' })).status).toBe(400);
     falStubs.configured = false;
-    expect((await call('POST', `/api/cut/${p._id}/fal-video/preview`, { model_id: REF_MODEL })).status).toBe(503);
+    expect((await call('POST', `/api/cut/${p._id}/fal-video/preview`, { model_id: FLF_MODEL })).status).toBe(503);
   });
 
   it('POST /cut/:id/fal-video/generate renders, persists on the cut, the job is readable, and DELETE /cut/:id/video discards', async () => {
-    const VideoModels = await import('../src/fal/videoModels.js');
-    if (!(await VideoModels.getVideoModelOrCatalog(REF_MODEL))) return;
     global.fetch = vi.fn(async () => ({
       ok: true, status: 200, headers: { get: () => 'video/mp4' }, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
     }));
-    const { beat, sheet, setMain } = await seedBeat();
+    const { beat, scene, sheet, setMain } = await seedBeat();
     const p = await VP.createVideoPrompt({
-      projectId, beatId: beat._id, prompt: '@Image1 is Sarah, @Image2 is the diner.', durationSeconds: 12,
-      referenceImages: [
-        { image_id: sheet, owner_type: 'character', owner_name: 'Sarah', label: 'Sarah — character sheet' },
-        { image_id: setMain, owner_type: 'set', owner_name: 'Diner', label: 'Diner — main image' },
-      ],
+      projectId, beatId: beat._id, sceneId: scene._id, prompt: 'Sarah crosses the diner.', durationSeconds: 8,
+      startFrame: { image_id: setMain }, endFrame: { image_id: sheet },
     });
-    const r = await call('POST', `/api/cut/${p._id}/fal-video/generate`, { model_id: REF_MODEL });
+    const r = await call('POST', `/api/cut/${p._id}/fal-video/generate`, { model_id: FLF_MODEL });
     expect(r.status).toBe(202);
-    await BeatLocks.withBeatLock(beat._id, () => {});
+    await vi.waitFor(() => {
+      const st = Falgen.getVideoGenerationJob(r.json.job_id)?.status;
+      if (st !== 'done' && st !== 'error') throw new Error(`job still ${st}`);
+    });
     const job = Falgen.getVideoGenerationJob(r.json.job_id);
     expect(job.status).toBe('done');
     expect(job.owner_type).toBe('video_prompt');
     expect(job.owner_id).toBe(p._id.toString());
-    expect(falStubs.storageUploads).toEqual(['sheet', 'diner']);
-    expect(falStubs.submitCalls[0].args.input.image_urls).toEqual([
-      'https://fal.media/inputs/sheet', 'https://fal.media/inputs/diner',
-    ]);
-    expect(falStubs.submitCalls[0].args.input.prompt).toBe('@Image1 is Sarah, @Image2 is the diner.');
+    expect([...falStubs.storageUploads].sort()).toEqual(['diner', 'sheet']);
+    expect(falStubs.submitCalls[0].args.input.first_frame_url).toBe('https://fal.media/inputs/diner');
+    expect(falStubs.submitCalls[0].args.input.last_frame_url).toBe('https://fal.media/inputs/sheet');
+    expect(falStubs.submitCalls[0].args.input.prompt).toBe('Sarah crosses the diner.');
     expect(uploadedAttachments[0].filename).toMatch(/^video-prompt-/);
     expect(String(uploadedAttachments[0].metadata.owner_id)).toBe(beat._id.toString());
 
@@ -242,7 +234,7 @@ describe('cut video routes', () => {
 
     const row = await VP.getVideoPrompt(projectId, p._id);
     expect(String(row.video_file_id)).toBe(uploadedAttachments[0]._id.toString());
-    expect(row.video_fal_model).toBe(REF_MODEL);
+    expect(row.video_model_id).toBe(FLF_MODEL);
 
     const del = await call('DELETE', `/api/cut/${p._id}/video`);
     expect(del.status).toBe(200);

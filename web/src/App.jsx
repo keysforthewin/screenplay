@@ -7,9 +7,7 @@ import { Character } from './routes/Character.jsx';
 import { Set } from './routes/Set.jsx';
 import { Library } from './routes/Library.jsx';
 import { DialogIndex } from './routes/DialogIndex.jsx';
-import { DialogBeat } from './routes/DialogBeat.jsx';
 import { ScenesIndex } from './routes/ScenesIndex.jsx';
-import { ScenesBeat } from './routes/ScenesBeat.jsx';
 import { About } from './routes/About.jsx';
 import { Playground } from './routes/Playground.jsx';
 import { Header } from './widgets/Header.jsx';
@@ -19,6 +17,8 @@ import { ProjectProvider } from './project/ProjectContext.jsx';
 import { RedirectToProject } from './project/RedirectToProject.jsx';
 import { loadSession, saveSession, validateSession, clearSession } from './auth/session.js';
 import { Admin } from './routes/Admin.jsx';
+import { TtsMiniPlayer } from './widgets/TtsMiniPlayer.jsx';
+import { stopPlayback } from './tts/nowPlaying.js';
 
 // Everything project-scoped lives under /p/:projectTitle/*. ProjectProvider
 // resolves the title (and blocks children until the api.js store is set);
@@ -71,19 +71,21 @@ function ProjectShell({ session, onLogout }) {
       <div className={'chat-shell' + (chatOpen ? ' chat-open' : '')}>
         <Routes>
           <Route path="/" element={<Toc session={session} />} />
-          <Route path="/beat/:order" element={<Beat session={session} section="writing" />} />
+          {/* One beat page behind three paths: <Beat> stays mounted while its
+              tabs move between them (see routes/Beat.jsx). */}
+          <Route path="/beat/:order" element={<Beat session={session} />} />
           <Route path="/artwork/:order" element={<ArtworkRedirect />} />
           <Route path="/character/:name" element={<Character session={session} />} />
           <Route path="/set/:name" element={<Set session={session} />} />
           <Route path="/library" element={<Library session={session} />} />
           <Route path="/dialog" element={<DialogIndex session={session} />} />
-          <Route path="/dialog/:order" element={<DialogBeat session={session} />} />
+          <Route path="/dialog/:order" element={<Beat session={session} />} />
           <Route path="/storyboard" element={<ScenesRedirect />} />
           <Route path="/storyboard/:order" element={<ScenesRedirect />} />
           <Route path="/prompts" element={<ScenesRedirect />} />
           <Route path="/prompts/:order" element={<ScenesRedirect />} />
           <Route path="/scenes" element={<ScenesIndex session={session} />} />
-          <Route path="/scenes/:order" element={<ScenesBeat session={session} />} />
+          <Route path="/scenes/:order" element={<Beat session={session} />} />
           <Route path="/about" element={<About session={session} />} />
           <Route
             path="/admin"
@@ -152,18 +154,23 @@ export function App() {
     );
   }
 
+  // The read-aloud player sits beside the routes, not inside them, so it (and
+  // the playback it controls) survives every navigation.
   return (
+    <>
+    <TtsMiniPlayer />
     <Routes>
       <Route
         path="/p/:projectTitle/*"
         element={
           <ProjectShell
             session={session}
-            onLogout={() => { clearSession(); setSession(null); }}
+            onLogout={() => { stopPlayback(); clearSession(); setSession(null); }}
           />
         }
       />
       <Route path="*" element={<RedirectToProject />} />
     </Routes>
+    </>
   );
 }

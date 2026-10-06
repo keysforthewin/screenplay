@@ -14,6 +14,14 @@ import { getBeat } from '../mongo/plots.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { getAnthropic } from '../anthropic/client.js';
 import { buildDialogContext } from './dialogContext.js';
+import {
+  VOICED_LINE_MARK,
+  applyVoiceTagPolicy,
+  audioTagPromptSection,
+  hasOwnVoiceOutsideCast,
+  loadVoiceCast,
+  voiceForDialog,
+} from './dialogVoices.js';
 
 const ALTERNATIVE_COUNT = 3;
 
@@ -47,7 +55,9 @@ const SYSTEM_PROMPT = [
   '- stay in that character\'s voice and serve the moment (subtext over on-the-nose);',
   '- be a different angle from the others, not three rewordings of the same line.',
   '',
-  'Return only the spoken words — no speaker prefix, no quotation marks, no parentheticals.',
+  'Return only the spoken words — no speaker prefix, no quotation marks, no parentheticals. The one',
+  'exception: when the prompt has a "Voice performance" section and the speaker is listed as VOICED,',
+  'each alternative carries square-bracket audio tags as that section describes.',
 ].join('\n');
 
 export async function generateAlternatives({ projectId, dialogId, count = ALTERNATIVE_COUNT } = {}) {
@@ -62,18 +72,24 @@ export async function generateAlternatives({ projectId, dialogId, count = ALTERN
 
   // Render the full line list with the target marked, so the model sees the
   // exact surrounding lines it must fit between.
+  const cast = await loadVoiceCast(projectId);
+  const voicedLines = all.some((d) => hasOwnVoiceOutsideCast(cast, d));
   const lineList = all
     .map((d) => {
       const s = stripMarkdown(d.character || '').trim() || '(unknown)';
       const body = stripMarkdown(d.body || '').trim();
       const marker = d._id.toString() === targetId ? '  <<< REWRITE THIS LINE' : '';
-      return `${s}: ${body}${marker}`;
+      const own = hasOwnVoiceOutsideCast(cast, d) ? ` ${VOICED_LINE_MARK}` : '';
+      return `${s}${own}: ${body}${marker}`;
     })
     .join('\n');
 
   const context = await buildDialogContext(projectId, beat);
+  const voiced = Boolean(voiceForDialog(cast, dialog));
+  const voiceSection = audioTagPromptSection(cast, { voicedLines });
   const userText = [
     context,
+    ...(voiceSection ? ['', voiceSection] : []),
     '',
     `# This beat — #${beat.order}: ${stripMarkdown(beat.name || '') || 'Untitled'}`,
     stripMarkdown(beat.desc || '') || '',
@@ -82,7 +98,12 @@ export async function generateAlternatives({ projectId, dialogId, count = ALTERN
     lineList,
     '',
     `Rewrite only the line marked "<<< REWRITE THIS LINE" — spoken by ${speaker}. ` +
-      `Propose ${count} alternatives with the propose_alternatives tool.`,
+      `Propose ${count} alternatives with the propose_alternatives tool.` +
+      (voiceSection
+        ? voiced
+          ? ' This line is VOICED: direct each alternative with audio tags.'
+          : ' This line has no ElevenLabs voice: no square-bracket tags.'
+        : ''),
   ].join('\n');
 
   const client = getAnthropic();
@@ -104,7 +125,7 @@ export async function generateAlternatives({ projectId, dialogId, count = ALTERN
   }
   const alternatives = Array.isArray(toolUse.input?.alternatives)
     ? toolUse.input.alternatives
-        .map((a) => (typeof a === 'string' ? a.trim() : ''))
+        .map((a) => (typeof a === 'string' ? applyVoiceTagPolicy(cast, dialog.character, a.trim(), dialog) : ''))
         .filter(Boolean)
         .slice(0, count)
     : [];

@@ -49,7 +49,35 @@ function FacetSelect({ label, value, options, onChange }) {
   );
 }
 
-export function VoiceLibraryBrowser({ collectionIds, onAdded }) {
+// Default add: into the project's playground collection.
+async function addToCollection(v) {
+  await apiPostJson('/eleven/collection', {
+    voice_id: v.voice_id,
+    public_owner_id: v.public_owner_id,
+    name: v.name,
+    description: v.description,
+    preview_url: v.preview_url,
+    category: v.category,
+    labels: {
+      gender: v.gender, age: v.age, accent: v.accent,
+      language: v.language, use_case: v.use_case, descriptive: v.descriptive,
+    },
+  });
+}
+
+// Props: collectionIds (Set of voice ids already added), onAdded. The
+// character page saves to the ElevenLabs account instead: it passes its own
+// `addVoice(v)`, the two button labels, and `onUse(v)` — a second button
+// shown on an added voice.
+export function VoiceLibraryBrowser({
+  collectionIds,
+  onAdded,
+  addVoice = addToCollection,
+  addLabel = '+ Add to collection',
+  addedLabel = '✓ In collection',
+  onUse = null,
+  useLabel = 'Use',
+}) {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [page, setPage] = useState(0);
   const [items, setItems] = useState(null); // null = not loaded
@@ -113,19 +141,8 @@ export function VoiceLibraryBrowser({ collectionIds, onAdded }) {
     setAddingId(v.voice_id);
     setError(null);
     try {
-      await apiPostJson('/eleven/collection', {
-        voice_id: v.voice_id,
-        public_owner_id: v.public_owner_id,
-        name: v.name,
-        description: v.description,
-        preview_url: v.preview_url,
-        category: v.category,
-        labels: {
-          gender: v.gender, age: v.age, accent: v.accent,
-          language: v.language, use_case: v.use_case, descriptive: v.descriptive,
-        },
-      });
-      onAdded();
+      await addVoice(v);
+      onAdded?.(v);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -195,8 +212,11 @@ export function VoiceLibraryBrowser({ collectionIds, onAdded }) {
                 disabled={inCollection || addingId === v.voice_id}
                 onClick={() => add(v)}
               >
-                {inCollection ? '✓ In collection' : addingId === v.voice_id ? 'Adding…' : '+ Add to collection'}
+                {inCollection ? addedLabel : addingId === v.voice_id ? 'Adding…' : addLabel}
               </button>
+              {onUse && inCollection && (
+                <button type="button" className="primary" onClick={() => onUse(v)}>{useLabel}</button>
+              )}
             </div>
           );
         })}

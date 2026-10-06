@@ -5,7 +5,7 @@ import { apiGet, apiPostJson } from '../api.js';
 // (src/web/cutVideoBatch.js) for hours; the Scenes page polls its snapshot
 // here so every cut can show whether it is waiting, rendering, done or
 // failed, and a page opened the next morning picks the batch up again.
-// ScenesBeat owns the store (useCutVideoBatchStore) and provides it.
+// ScenesPanel owns the store (useCutVideoBatchStore) and provides it.
 
 const POLL_MS = 4000;
 

@@ -15,6 +15,10 @@
 //                                      gateway; legacy rows are probed lazily by
 //                                      ensureDialogAudioDurations. Drives shot
 //                                      duration + lip-sync planning)
+//   eleven_voice: { voice_id, name, preview_url, category } | null — this line's
+//                 own ElevenLabs voice. Set, it outranks the speaker's
+//                 character voice (and voices a line whose speaker is not a
+//                 character at all); null = the character's voice, if any.
 //   created_at, updated_at: Date
 
 import { ObjectId } from 'mongodb';
@@ -53,6 +57,7 @@ function backfill(doc) {
     character: typeof doc.character === 'string' ? doc.character : '',
     direction: typeof doc.direction === 'string' ? doc.direction : '',
     audio_file_id: doc.audio_file_id ?? null,
+    eleven_voice: doc.eleven_voice?.voice_id ? doc.eleven_voice : null,
     audio_duration_seconds:
       typeof doc.audio_duration_seconds === 'number' &&
       Number.isFinite(doc.audio_duration_seconds) &&
@@ -157,6 +162,19 @@ export async function updateDialog(projectId, id, patch) {
       set[k] = String(v ?? '');
     } else if (ID_FIELDS.has(k)) {
       set[k] = normalizeFileId(v);
+    } else if (k === 'eleven_voice') {
+      if (v === null) {
+        set.eleven_voice = null;
+      } else if (v && typeof v === 'object' && typeof v.voice_id === 'string' && v.voice_id.trim()) {
+        set.eleven_voice = {
+          voice_id: v.voice_id.trim(),
+          name: String(v.name || '').slice(0, 200),
+          preview_url: v.preview_url ? String(v.preview_url) : null,
+          category: v.category ? String(v.category) : null,
+        };
+      } else {
+        throw new Error('update_dialog: eleven_voice must be null or an object with a voice_id.');
+      }
     } else if (k === 'audio_duration_seconds') {
       if (v == null) {
         set[k] = null;

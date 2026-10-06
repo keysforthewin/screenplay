@@ -22,6 +22,9 @@ export function BeatCharacters({ beat, toc, onRefresh }) {
   const [busy, setBusy] = useState(false);
   const [pickerKey, setPickerKey] = useState(0);
 
+  // Tells the character page which beat to go back to (routes/Character.jsx).
+  const linkState = { fromBeat: beat.order, fromBeatName: plainOf(beat.name) };
+
   const linkedNames = useMemo(() => beat.characters || [], [beat.characters]);
 
   const tocByPlain = useMemo(() => {
@@ -123,7 +126,7 @@ export function BeatCharacters({ beat, toc, onRefresh }) {
               </div>
               <div className="beat-character-name">
                 {tocEntry ? (
-                  <Link to={linkPath}>{plain || raw}</Link>
+                  <Link to={linkPath} state={linkState}>{plain || raw}</Link>
                 ) : (
                   <span style={{ color: 'var(--fg-muted)' }}>
                     {plain || raw} <em>(missing)</em>
@@ -132,7 +135,7 @@ export function BeatCharacters({ beat, toc, onRefresh }) {
               </div>
               <div className="beat-character-actions">
                 {tocEntry && (
-                  <Link className="icon-link" to={linkPath}>
+                  <Link className="icon-link" to={linkPath} state={linkState}>
                     Open
                   </Link>
                 )}

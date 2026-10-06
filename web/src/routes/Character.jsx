@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { apiGet } from '../api.js';
 import { CollabSurface } from '../editor/CollabSurface.jsx';
 import { CollabField } from '../editor/CollabField.jsx';
 import { ImageGallery } from '../widgets/ImageGallery.jsx';
 import { AttachmentList } from '../widgets/AttachmentList.jsx';
 import { ArtworkTab } from '../widgets/ArtworkTab.jsx';
+import { ElevenVoiceField } from '../widgets/ElevenVoiceField.jsx';
 
 const TABS = ['background', 'attachments', 'artwork'];
 
@@ -18,6 +19,9 @@ function readInitialTab() {
 export function Character({ session }) {
   const { name } = useParams();
   const navigate = useNavigate();
+  // The beat whose Characters tab opened this page (widgets/BeatCharacters.jsx);
+  // the breadcrumb goes back there instead of to the TOC.
+  const { fromBeat, fromBeatName } = useLocation().state || {};
   const [character, setCharacter] = useState(null);
   const [template, setTemplate] = useState(null);
   const [error, setError] = useState(null);
@@ -58,7 +62,7 @@ export function Character({ session }) {
     if (typeof window !== 'undefined') {
       const newHash = tab === 'background' ? '' : `#${tab}`;
       if (window.location.hash !== newHash) {
-        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${newHash}`);
+        window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}${newHash}`);
       }
     }
   }
@@ -76,7 +80,13 @@ export function Character({ session }) {
   return (
     <main className="app">
       <p>
-        <a href="#" onClick={(e) => { e.preventDefault(); navigate('/'); }}>← Back to TOC</a>
+        {fromBeat ? (
+          <a href="#" onClick={(e) => { e.preventDefault(); navigate(`/beat/${fromBeat}#characters`); }}>
+            ← Beat #{fromBeat}{fromBeatName ? ` — ${fromBeatName}` : ''}
+          </a>
+        ) : (
+          <a href="#" onClick={(e) => { e.preventDefault(); navigate('/'); }}>← Back to TOC</a>
+        )}
       </p>
       <h1 style={{ marginTop: 0 }}>{character.name || 'Character'}</h1>
 
@@ -99,6 +109,11 @@ export function Character({ session }) {
         <div className="tab-panel" hidden={activeTab !== 'background'}>
           <CollabField label="Name" field="name" />
           <CollabField label="Hollywood actor" field="hollywood_actor" />
+          <ElevenVoiceField
+            characterId={character._id}
+            value={character.eleven_voice || null}
+            onChange={onRefresh}
+          />
 
           {customFields.map((f) => (
             <div key={f.name}>
