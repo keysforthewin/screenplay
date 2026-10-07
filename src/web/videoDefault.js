@@ -43,18 +43,21 @@ export async function resolveVideoRenderer({ provider = null, modelId = null } =
   return { provider: d.provider, modelId: d.model_id, params: { ...d.params }, fromDefault: true };
 }
 
-// What the Admin page shows and the dialogs read: the stored default plus,
-// for a ComfyUI default, whether that model is still in the registry.
+// What the Admin page shows and the Scenes tab reads: the stored default plus,
+// for a ComfyUI default, whether that model is still in the registry and
+// whether it bills Comfy credits (the batch then needs confirm_spend).
 export async function describeVideoDefault() {
   const d = await getVideoDefaultSettings();
   let label = d.model_id;
   let known = d.model_id ? true : null;
+  let spendsCredits = d.provider === 'fal' && !!d.model_id;
   if (d.provider === 'comfy' && d.model_id) {
     const m = getComfyVideoModel(d.model_id);
     known = !!m;
     if (m) label = m.label;
+    spendsCredits = !!m?.spends_credits;
   }
-  return { ...d, label, known };
+  return { ...d, label, known, spends_credits: spendsCredits };
 }
 
 // Admin PUT: validate the model against its provider's registry, then store.

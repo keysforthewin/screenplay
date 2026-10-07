@@ -4022,7 +4022,7 @@ button.danger:disabled { opacity: 0.5; cursor: not-allowed; }
 /* Whole-beat actions: Generate all videos / Download all videos. */
 .scenes-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 12px; }
 .scenes-toolbar button { display: inline-flex; align-items: center; gap: 6px; }
-.batch-provider-tabs { display: flex; gap: 6px; }
+.scenes-toolbar-note { font-size: 12px; color: var(--fg-muted); }
 .cut-batch-banner { display: flex; align-items: center; gap: 10px; }
 .cut-batch-banner > span:not(.spinner) { flex: 1; }
 .cut-batch-spinner { width: 14px; height: 14px; flex: none; display: inline-block; border-color: color-mix(in srgb, var(--accent, #8ab4f8) 30%, transparent); border-top-color: var(--accent, #8ab4f8); }

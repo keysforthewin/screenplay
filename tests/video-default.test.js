@@ -89,14 +89,15 @@ describe('/api/admin/video-default', () => {
     res = await put('/admin/video-default', { provider: 'comfy', model_id: 'wan-2.2-14b-flf2v' }, admin);
     expect(res.status).toBe(200);
     json = await res.json();
-    expect(json.default).toMatchObject({ provider: 'comfy', model_id: 'wan-2.2-14b-flf2v', label: 'Wan 2.2 14B (first → last frame)', known: true, updated_by: 'boss' });
+    expect(json.default).toMatchObject({ provider: 'comfy', model_id: 'wan-2.2-14b-flf2v', label: 'Wan 2.2 14B (first → last frame)', known: true, spends_credits: false, updated_by: 'boss' });
 
-    // The effective default is readable outside /admin (the dialogs preselect
-    // it); with ADMIN_USERNAME set a member needs a project grant to reach any
-    // project route, so the admin stands in for a plain session here.
+    // The effective default is readable outside /admin (the Scenes tab's
+    // Generate all videos button renders with it); with ADMIN_USERNAME set a
+    // member needs a project grant to reach any project route, so the admin
+    // stands in for a plain session here.
     res = await get('/video-default', admin);
     expect(res.status).toBe(200);
-    expect((await res.json()).default.model_id).toBe('wan-2.2-14b-flf2v');
+    expect((await res.json()).default).toMatchObject({ model_id: 'wan-2.2-14b-flf2v', spends_credits: false });
 
     res = await put('/admin/video-default', { model_id: null }, admin);
     expect((await res.json()).default.model_id).toBeNull();

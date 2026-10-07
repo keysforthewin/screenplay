@@ -138,9 +138,12 @@ async function seedCut({ withStartFrame = true, videoFileId = null, prompt = CUT
 
 // A scripted comfy-mcp: records every call, serves statuses in order, and
 // writes a clip into the out_dir fetch_outputs is asked for.
-function fakeClient({ statuses = ['queued', 'running', 'completed'], errorDetail = null, failRun = false } = {}) {
+// `failPolls` status polls throw first, as comfy-mcp does while ComfyUI's
+// HTTP server is not answering.
+function fakeClient({ statuses = ['queued', 'running', 'completed'], errorDetail = null, failRun = false, failPolls = 0 } = {}) {
   const calls = [];
   let i = 0;
+  let failed = 0;
   const client = {
     calls,
     validated: [],
@@ -165,6 +168,10 @@ function fakeClient({ statuses = ['queued', 'running', 'completed'], errorDetail
           return { prompt_id: 'prompt-1', status: 'queued' };
         case 'job': {
           if (args.action === 'error') return errorDetail;
+          if (failed < failPolls) {
+            failed += 1;
+            throw new Client.ComfyToolError('job', 'Error executing tool job');
+          }
           const status = statuses[Math.min(i, statuses.length - 1)];
           i += 1;
           return { prompt_id: args.prompt_id, status };
@@ -437,6 +444,29 @@ describe('comfy cut render job', () => {
     const job = await waitForTerminal(job_id);
     expect(job.status).toBe('error');
     expect(job.error).toMatch(/timed out/);
+  });
+
+  it('keeps polling through a ComfyUI outage and stores the clip the render went on to make', async () => {
+    Gen._setComfyRunnerOptionsForTests({ pollIntervalMs: 2, jobTimeoutMs: 5000, statusOutageMs: 1000 });
+    const client = fakeClient({ failPolls: 5 });
+    Client._setComfyClientForTests(client);
+    const { cut } = await seedCut();
+    const { job_id } = await Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v' });
+    const job = await waitForTerminal(job_id);
+    expect(job.status).toBe('done');
+    expect(client.calls.filter((c) => c.name === 'job' && c.args.action === 'status').length).toBeGreaterThan(5);
+    expect(uploadedAttachments).toHaveLength(1);
+  });
+
+  it('gives up when ComfyUI stays unreachable past the outage window', async () => {
+    Gen._setComfyRunnerOptionsForTests({ pollIntervalMs: 2, jobTimeoutMs: 5000, statusOutageMs: 30 });
+    Client._setComfyClientForTests(fakeClient({ failPolls: Infinity }));
+    const { cut } = await seedCut();
+    const { job_id } = await Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v' });
+    const job = await waitForTerminal(job_id);
+    expect(job.status).toBe('error');
+    expect(job.error).toContain('Error executing tool job');
+    expect(uploadedAttachments).toHaveLength(0);
   });
 
   it('reports tool errors from run_workflow as the job error', async () => {

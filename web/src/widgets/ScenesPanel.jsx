@@ -5,8 +5,7 @@ import { SceneCard } from './SceneCard.jsx';
 import { ComfyCutJobsProvider, comfyQueueSummary, useComfyCutJobStore } from './comfyCutJobs.jsx';
 import { CutFrameJobsProvider, useCutFrameJobStore } from './cutFrameJobs.jsx';
 import { CutBatchBanner, CutVideoBatchProvider, useCutVideoBatchStore } from './cutVideoBatch.jsx';
-import { GenerateAllVideosDialog } from './GenerateAllVideosDialog.jsx';
-import { ConfirmDialog } from './Modal.jsx';
+import { ConfirmDialog, Modal } from './Modal.jsx';
 
 function readError(e) {
   let msg = e?.message || 'Request failed.';
@@ -28,7 +27,9 @@ export function ScenesPanel({ beat, session, active = true }) {
   const [actionError, setActionError] = useState(null);
   const [adding, setAdding] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [batchOpen, setBatchOpen] = useState(false);
+  const [videoDefault, setVideoDefault] = useState(undefined); // the admin's default video renderer; undefined while loading
+  const [queuing, setQueuing] = useState(false);
+  const [askRender, setAskRender] = useState(false); // the "re-render every cut?" question
   const [download, setDownload] = useState(null); // the step shown while ffmpeg joins the clips
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
   const [deletingAll, setDeletingAll] = useState(false);
@@ -55,6 +56,16 @@ export function ScenesPanel({ beat, session, active = true }) {
     })();
     return () => { cancelled = true; };
   }, [beatKey, refreshKey]);
+
+  // "Generate all videos" renders with the admin's default video renderer
+  // (Admin → Video renderer) — set once, so the button asks for no model.
+  useEffect(() => {
+    let cancelled = false;
+    apiGet('/video-default')
+      .then((r) => { if (!cancelled) setVideoDefault(r?.default?.model_id ? r.default : null); })
+      .catch(() => { if (!cancelled) setVideoDefault(null); });
+    return () => { cancelled = true; };
+  }, []);
 
   const onRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
   const beatId = data?.beat?._id ? String(data.beat._id) : null;
@@ -88,6 +99,39 @@ export function ScenesPanel({ beat, session, active = true }) {
   const allCuts = scenes.flatMap((s) => s.cuts || []);
   const withVideo = allCuts.filter((c) => c.video_file_id).length;
   const renderable = allCuts.filter((c) => c.start_frame?.image_id && c.end_frame?.image_id).length;
+  const rendererLabel = videoDefault ? videoDefault.label || videoDefault.model_id : null;
+
+  // What the batch can render: every cut with both frames and a video prompt.
+  const eligible = allCuts.filter((c) => c.start_frame?.image_id && c.end_frame?.image_id && String(c.prompt || '').trim());
+  const missingVideo = eligible.filter((c) => !c.video_file_id).length;
+
+  // Every eligible cut — or, when the user says not to re-render, only those
+  // without a video — through the default video renderer.
+  async function startBatch(skipExisting) {
+    setAskRender(false);
+    setQueuing(true);
+    setActionError(null);
+    try {
+      const r = await apiPostJson('/cuts/videos/generate-all', {
+        beat_id: beatId,
+        skip_existing: skipExisting,
+        ...(videoDefault.spends_credits ? { confirm_spend: true } : {}),
+      });
+      videoBatch.started(r?.batch || null);
+    } catch (e) {
+      if (mounted.current) setActionError(readError(e));
+    } finally {
+      if (mounted.current) setQueuing(false);
+    }
+  }
+
+  const generateTitle = videoBatch.running
+    ? 'A batch is already running for this beat'
+    : !renderable
+      ? 'No cut has both a start frame and an end frame yet'
+      : videoDefault === null
+        ? 'No default video renderer is set (Admin → Video renderer)'
+        : `Render the cuts that have both frames with ${rendererLabel || 'the default video renderer'}`;
 
   // Join every cut's clip into one MP4 on the server (ffmpeg), then save it.
   async function downloadAll() {
@@ -166,11 +210,11 @@ export function ScenesPanel({ beat, session, active = true }) {
             <button
               type="button"
               className="primary"
-              disabled={videoBatch.running || !renderable}
-              onClick={() => setBatchOpen(true)}
-              title={videoBatch.running ? 'A batch is already running for this beat' : renderable ? 'Queue a video for every cut that has both frames' : 'No cut has both a start frame and an end frame yet'}
+              disabled={queuing || videoBatch.running || !renderable || !videoDefault}
+              onClick={() => setAskRender(true)}
+              title={generateTitle}
             >
-              {videoBatch.running ? 'Generating all videos…' : 'Generate all videos…'}
+              {videoBatch.running ? 'Generating all videos…' : queuing ? 'Queuing…' : 'Generate all videos'}
             </button>
             <button
               type="button"
@@ -189,7 +233,47 @@ export function ScenesPanel({ beat, session, active = true }) {
             >
               {deletingAll ? 'Deleting all scenes…' : 'Delete all scenes'}
             </button>
+            {videoDefault !== undefined ? (
+              <span className="scenes-toolbar-note">
+                {videoDefault
+                  ? <>Video renderer: {rendererLabel}{videoDefault.known === false ? ' (no longer in the ComfyUI registry)' : ''} · Admin → Video renderer</>
+                  : 'No default video renderer is set — choose one on Admin → Video renderer.'}
+              </span>
+            ) : null}
           </div>
+
+          <Modal
+            open={askRender}
+            title="Re-render every cut?"
+            onClose={() => setAskRender(false)}
+            footer={
+              <>
+                <button type="button" onClick={() => setAskRender(false)}>Cancel</button>
+                <button type="button" disabled={!eligible.length} onClick={() => startBatch(false)}>
+                  Re-render every cut ({eligible.length})
+                </button>
+                <button type="button" className="primary" disabled={!missingVideo} onClick={() => startBatch(true)}>
+                  Only missing videos ({missingVideo})
+                </button>
+              </>
+            }
+          >
+            <p style={{ margin: 0 }}>
+              {eligible.length - missingVideo} of the {eligible.length} cut{eligible.length === 1 ? '' : 's'} ready to render already
+              {eligible.length - missingVideo === 1 ? ' has' : ' have'} a video. <b>Re-render every cut</b> renders all {eligible.length} with {rendererLabel},
+              replacing each video as its new one lands; <b>Only missing videos</b> renders the {missingVideo} without one.
+            </p>
+            {eligible.length < renderable ? (
+              <p style={{ margin: '8px 0 0', color: 'var(--fg-muted)' }}>
+                {renderable - eligible.length} cut{renderable - eligible.length === 1 ? ' has' : 's have'} no video prompt and {renderable - eligible.length === 1 ? 'is' : 'are'} skipped.
+              </p>
+            ) : null}
+            {videoDefault?.spends_credits ? (
+              <p style={{ margin: '8px 0 0', color: 'var(--fg-muted)' }}>
+                Every render is billed ({videoDefault.provider === 'fal' ? 'fal.ai' : 'Comfy credits'}).
+              </p>
+            ) : null}
+          </Modal>
 
           <ConfirmDialog
             open={confirmDeleteAll}
@@ -224,7 +308,6 @@ export function ScenesPanel({ beat, session, active = true }) {
               <button type="button" className="primary" disabled={adding} onClick={addScene}>+ Add scene</button>
             </div>
           </CollabSurface>
-          <GenerateAllVideosDialog open={batchOpen} onClose={() => setBatchOpen(false)} beatId={beatId} scenes={scenes} onQueued={videoBatch.started} />
         </>
        </CutVideoBatchProvider>
       </ComfyCutJobsProvider>

@@ -134,11 +134,20 @@ const TERMINAL_RETENTION_MS = 5 * 60 * 1000;
 const runnerOptions = {
   pollIntervalMs: null, // null → config.comfy.pollIntervalMs at run time
   jobTimeoutMs: null,
+  statusOutageMs: null, // null → STATUS_OUTAGE_MS
 };
+
+// How long a status poll may keep failing before the render is given up.
+// ComfyUI's HTTP server stops answering for minutes while it loads a large
+// model under memory pressure (LTX-2.5: a 20 GB transformer after a 14 GB
+// text encoder), and the prompt keeps running meanwhile — failing on the
+// first unanswered poll orphaned a render that went on to finish.
+const STATUS_OUTAGE_MS = 15 * 60 * 1000;
 
 export function _setComfyRunnerOptionsForTests(opts = null) {
   runnerOptions.pollIntervalMs = opts?.pollIntervalMs ?? null;
   runnerOptions.jobTimeoutMs = opts?.jobTimeoutMs ?? null;
+  runnerOptions.statusOutageMs = opts?.statusOutageMs ?? null;
 }
 
 export function _resetComfyJobsForTests() {
@@ -687,10 +696,28 @@ function describeError(e) {
 export async function waitForComfyPrompt(promptId, { onStatus = null } = {}) {
   const pollMs = runnerOptions.pollIntervalMs ?? config.comfy.pollIntervalMs;
   const timeoutMs = runnerOptions.jobTimeoutMs ?? config.comfy.jobTimeoutMs;
+  const outageMs = runnerOptions.statusOutageMs ?? STATUS_OUTAGE_MS;
   const deadline = Date.now() + timeoutMs;
   let lastStatus = null;
+  let failingSince = null;
   for (;;) {
-    const st = await comfy.job('status', promptId);
+    let st;
+    try {
+      st = await comfy.job('status', promptId);
+      failingSince = null;
+    } catch (e) {
+      // ComfyUI not answering is not the render failing: keep polling until
+      // the outage outlasts outageMs (or the render's own deadline passes).
+      failingSince ??= Date.now();
+      if (Date.now() - failingSince >= outageMs || Date.now() > deadline) throw e;
+      if (lastStatus !== 'unreachable') {
+        lastStatus = 'unreachable';
+        logger.warn(`comfy prompt ${promptId}: status poll failed (${e?.message || e}) — retrying`);
+        onStatus?.('ComfyUI not answering, retrying');
+      }
+      await sleep(pollMs);
+      continue;
+    }
     const status = String(st?.status || '').toLowerCase();
     if (status !== lastStatus) {
       lastStatus = status;
