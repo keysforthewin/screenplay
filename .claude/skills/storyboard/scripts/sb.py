@@ -3,10 +3,10 @@
 
   sb.py catalog BEAT                 compact list of the beat's reference pool (prop plates are tagged [PROP: name])
   sb.py refsheet OUT.jpg ID [ID...]  contact sheet of reference images (numbered in argument order)
-  sb.py refs BEAT [LABEL..]          per frame, the references as the renderer binds them: "Image N  role  label"
+  sb.py refs BEAT [LABEL..]          per frame (start, each keyframe, end), the references as the renderer binds them: "Image N  role  label"
   sb.py link-end BEAT                end frame refs = its first 3 library refs + [own start frame image] (render.mjs's end pass does this too)
   sb.py verify BEAT                  check every cut: prompts (relative wording, Image N vs refs), 4 refs per frame, images, start image last in end refs; lists the chains
-  sb.py sheet BEAT OUTDIR [LABEL..]  contact sheet(s) of rendered frames, one per scene: start,end pairs in cut order
+  sb.py sheet BEAT OUTDIR [LABEL..]  contact sheet(s) of rendered frames, one per scene: start, keyframes, end per cut in order
 Add --project "Title" anywhere for a non-default project.
 
 The renderer sends a frame's references in STORED order and binds them "Image 1",
@@ -18,6 +18,11 @@ end frame = continuity (list it last).
 A cut whose start frame prompt is the same text as the previous cut's end frame
 prompt (same scene) is CHAINED - one continuous shot. Its start frame is a copy
 of the previous end frame, made by render.mjs's end pass (never rendered).
+
+A cut's KEYFRAMES (c["keyframes"], time order) are frames between the two: each
+follows the picture before it (the previous keyframe, else the start frame),
+which render.mjs puts LAST in its references; the end frame of a keyframed cut
+follows the last keyframe. A keyframed cut is never chained.
 """
 import json, os, re, subprocess, sys, urllib.request
 
@@ -60,12 +65,38 @@ def catalog(beat):
         else: out[im["image_id"]] = ("look", f'the set "{im["owner_name"]}"')
     return out
 
+def keyframes(c): return sorted(c.get("keyframes") or [], key=lambda k: k["at_seconds"])
+
+def frames_of(c):
+    """[(name, frame doc)] in time order: start, kf@<t>s..., end."""
+    return [("start", c["start_frame"])] + [(f'kf@{k["at_seconds"]}s', k) for k in keyframes(c)] + [("end", c["end_frame"])]
+
+def previous_image(c, name):
+    """The picture a frame follows (what render.mjs puts last): the end frame follows the last keyframe
+    with an image, a keyframe the one before it, else the start frame."""
+    ks = keyframes(c)
+    if name == "end":
+        with_img = [k for k in ks if k.get("image_id")]
+        return with_img[-1]["image_id"] if with_img else c["start_frame"]["image_id"]
+    if name.startswith("kf@"):
+        i = [f'kf@{k["at_seconds"]}s' for k in ks].index(name)
+        for k in reversed(ks[:i]):
+            if k.get("image_id"): return k["image_id"]
+        return c["start_frame"]["image_id"]
+    return None
+
+def frame_doc(c, name):
+    return dict(frames_of(c))[name]
+
 def bound(c, frame, cat):
     """[(n, role, label, id)] for one frame, in the order the renderer binds them."""
-    fr = c[frame + "_frame"]; start = c["start_frame"]["image_id"] if frame == "end" else None
+    fr = frame_doc(c, frame); prev = previous_image(c, frame)
+    own = {c["start_frame"]["image_id"]} | {k.get("image_id") for k in keyframes(c)}
     rows = []
     for n, i in enumerate(fr["reference_ids"], 1):
-        role, label = ("continuity", "the opening frame of this shot") if i == start else cat.get(i, ("look", "this subject (not in the beat catalog!)"))
+        if i == prev: role, label = ("continuity", "the picture this frame follows (the opening frame / previous keyframe)")
+        elif i in own: role, label = ("continuity", "an earlier frame of this cut (not the one this frame follows!)")
+        else: role, label = cat.get(i, ("look", "this subject (not in the beat catalog!)"))
         rows.append((n, role, label, i))
     return rows
 
@@ -98,9 +129,9 @@ elif cmd == "refs":
     beat, only = beat_arg(args[1]), set(args[2:]); cat = catalog(beat)
     for c in cuts(beat):
         if only and c["label"] not in only: continue
-        for frame in ("start", "end"):
+        for frame, fr in frames_of(c):
             if frame == "start" and c["prev"]: print(f'{c["label"]} start: chained (copy of {c["prev"]["label"]} end), no references'); continue
-            rows = bound(c, frame, cat); named = mentions(c[frame + "_frame"]["prompt"])
+            rows = bound(c, frame, cat); named = mentions(fr["prompt"])
             print(f'{c["label"]} {frame}:')
             for n, role, label, i in rows:
                 print(f'  Image {n}  {role:10} {label}  {i}' + ("" if n in named else "  (not named in the prompt)"))
@@ -120,8 +151,20 @@ elif cmd == "verify":
         if c["prev"]: (chains[-1] if chains and chains[-1][-1] == c["prev"]["label"] else chains.append([c["prev"]["label"]]) or chains[-1]).append(c["label"])
     for ch in chains: print("continuous shot:", " → ".join(ch))
     for c in cs:
+        if keyframes(c): print(f'keyframed cut: {c["label"]} ({c["duration_seconds"]}s) at ' + ", ".join(f'{k["at_seconds"]}s' for k in keyframes(c)))
+    for c in cs:
         s, e = c["start_frame"], c["end_frame"]; why = []
         if not (c["prompt"] and s["prompt"] and e["prompt"]): why.append("missing prompt")
+        ks = keyframes(c)
+        if ks and c["prev"]: why.append("a keyframed cut must not be chained")
+        for k in ks:
+            if not k["prompt"]: why.append(f'kf@{k["at_seconds"]}s: no prompt')
+            if not k["image_id"]: why.append(f'kf@{k["at_seconds"]}s: no image')
+            if not (0.5 <= k["at_seconds"] <= (c["duration_seconds"] or 0) - 0.5): why.append(f'kf@{k["at_seconds"]}s: outside the cut')
+            if not re.match(r"\s*Image \d+ exactly", k["prompt"] or ""): why.append(f'kf@{k["at_seconds"]}s: not written as an edit ("Image N exactly — …")')
+        if ks and not re.match(r"\s*Image \d+ exactly", e["prompt"] or ""): why.append('end: a keyframed cut\'s end frame is an edit of the last keyframe ("Image N exactly — …")')
+        for t1, t2 in zip([k["at_seconds"] for k in ks], [k["at_seconds"] for k in ks][1:]):
+            if t2 - t1 < 1: why.append(f'keyframes {t1}s and {t2}s are under 1 s apart (jitter risk)')
         if c["prev"]:
             src = c["prev"]["end_frame"]["image_id"]
             if s["image_id"] and s.get("model") != f"chain:{src}": why.append(f'start frame is not the end frame of {c["prev"]["label"]}')
@@ -129,16 +172,21 @@ elif cmd == "verify":
         if len(e["reference_ids"]) != 4: why.append(f'end refs={len(e["reference_ids"])}')
         if not s["image_id"]: why.append("no start image")
         if not e["image_id"]: why.append("no end image")
-        if s["image_id"]:
-            if s["image_id"] not in e["reference_ids"]: why.append("start frame not in end refs")
-            elif e["reference_ids"][-1] != s["image_id"]: why.append("start frame is not the LAST end ref (the end prompt's Image 4)")
+        prev_end = previous_image(c, "end")
+        if prev_end:
+            what = "start frame" if prev_end == s["image_id"] else "last keyframe"
+            if prev_end not in e["reference_ids"]: why.append(f"{what} not in end refs")
+            elif e["reference_ids"][-1] != prev_end: why.append(f"{what} is not the LAST end ref (the end prompt's Image 4)")
+        for name, _ in frames_of(c)[1:-1]:
+            p = previous_image(c, name)
+            if p and (not frame_doc(c, name)["reference_ids"] or frame_doc(c, name)["reference_ids"][-1] != p): why.append(f'{name}: the picture it follows is not its LAST reference')
         rel = relative(c["prompt"])
         if rel: why.append(f'video prompt refers outside itself: {", ".join(rel)}')
-        for frame in ("start", "end"):
+        for frame, fr in frames_of(c):
             if frame == "start" and c["prev"]: continue
-            rel = relative(c[frame + "_frame"]["prompt"])
+            rel = relative(fr["prompt"])
             if rel: why.append(f'{frame} prompt refers outside itself: {", ".join(rel)}')
-            rows = bound(c, frame, cat); named = mentions(c[frame + "_frame"]["prompt"]); have = {r[0] for r in rows}
+            rows = bound(c, frame, cat); named = mentions(fr["prompt"]); have = {r[0] for r in rows}
             if named - have: why.append(f'{frame} prompt names Image {",".join(map(str, sorted(named - have)))} but has no such image')
             if have - named: why.append(f'{frame} refs not named in the prompt: Image {",".join(map(str, sorted(have - named)))}')
         if why: bad.append(f'{c["label"]}: {", ".join(why)}')
@@ -148,7 +196,8 @@ elif cmd == "sheet":
     os.makedirs(outdir, exist_ok=True); by = {}
     for c in cuts(beat):
         if only and c["label"] not in only: continue
-        for f, fr in (("a", c["start_frame"]), ("b", c["end_frame"])):
+        tiles = [("a", c["start_frame"])] + [(f'k{i + 1}', k) for i, k in enumerate(keyframes(c))] + [("z", c["end_frame"])]
+        for f, fr in tiles:
             if not fr["image_id"]: continue
             p = f'{outdir}/{c["label"]}{f}.png'; urllib.request.urlretrieve(fr["image_url"], p)
             by.setdefault("fix" if only else c["label"].split(".")[0], []).append(p)

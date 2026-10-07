@@ -18,17 +18,52 @@ function readError(e) {
   return msg;
 }
 
-// One still of a cut — its start frame or its end frame: the prompt, the
-// reference images sent to the image model with that prompt, and the rendered
-// picture. Each frame has its own references.
-export function CutFramePanel({ cut, frame, beatId, disabled, onRefresh }) {
+// Where a frame of a cut lives: `frame` is 'start', 'end' or 'kf:<keyframe id>'
+// (the key the server's routes and jobs use). The three differ only in their
+// sub-document, their prompt fragment and their URLs.
+export function frameApi(cut, frame) {
   const id = String(cut._id);
-  const label = frame === 'end' ? 'End frame' : 'Start frame';
-  const sf = cut[`${frame}_frame`] || null;
+  const kf = /^kf:([a-f0-9]{24})$/.exec(String(frame || ''));
+  if (kf) {
+    const entry = (cut.keyframes || []).find((k) => String(k.id) === kf[1]) || null;
+    const t = entry?.at_seconds;
+    return {
+      kind: 'keyframe',
+      doc: entry,
+      label: 'Keyframe',
+      title: t != null ? `Keyframe at ${t} s` : 'Keyframe',
+      promptField: `item:${id}:kf:${kf[1]}:prompt`,
+      promptPlaceholder: 'What this frame of the cut shows at this moment…',
+      base: `/cut/${id}/keyframe/${kf[1]}`,
+      imagePath: `/cut/${id}/keyframe/${kf[1]}/image`,
+    };
+  }
+  const which = frame === 'end' ? 'end' : 'start';
+  return {
+    kind: which,
+    doc: cut[`${which}_frame`] || null,
+    label: which === 'end' ? 'End frame' : 'Start frame',
+    title: which === 'end' ? 'End frame' : 'Start frame',
+    promptField: `item:${id}:${which}_frame_prompt`,
+    promptPlaceholder: `What the ${which === 'end' ? 'last' : 'first'} frame of this cut shows…`,
+    base: `/cut/${id}/${which}-frame`,
+    imagePath: `/cut/${id}/${which}-frame`,
+  };
+}
+
+// One still of a cut — its start frame, its end frame or a keyframe: the
+// prompt, the reference images sent to the image model with that prompt, and
+// the rendered picture. Each frame has its own references. `header` renders
+// beside the label (a keyframe's time and strength controls).
+export function CutFramePanel({ cut, frame, beatId, disabled, onRefresh, header = null }) {
+  const id = String(cut._id);
+  const api = frameApi(cut, frame);
+  const label = api.title;
+  const sf = api.doc;
   const image = sf?.image_id ? String(sf.image_id) : null;
   const refIds = (sf?.reference_ids || []).map(String);
-  // The end frame can take the cut's own start frame as a reference.
-  const startImage = frame === 'end' && cut.start_frame?.image_id ? String(cut.start_frame.image_id) : null;
+  // Every frame but the start frame can take the cut's own start frame as a reference.
+  const startImage = api.kind !== 'start' && cut.start_frame?.image_id ? String(cut.start_frame.image_id) : null;
 
   const store = useCutFrameJobs();
   const key = frameJobKey(id, frame);
@@ -56,13 +91,13 @@ export function CutFramePanel({ cut, frame, beatId, disabled, onRefresh }) {
     }
   }
 
-  const setRefs = (ids) => call(() => apiPatchJson(`/cut/${id}/${frame}-frame`, { reference_ids: ids }));
+  const setRefs = (ids) => call(() => apiPatchJson(api.base, { reference_ids: ids }));
 
   async function render() {
     setError(null);
     store?.dismiss(key);
     try {
-      const r = await apiPostJson(`/cut/${id}/${frame}-frame/generate`, model.requestFields());
+      const r = await apiPostJson(`${api.base}/generate`, model.requestFields());
       model.remember();
       setRenderOpen(false);
       store?.track({ job_id: r.job_id, cut_id: id, frame, status: 'running' });
@@ -72,9 +107,9 @@ export function CutFramePanel({ cut, frame, beatId, disabled, onRefresh }) {
   }
 
   return (
-    <div className="cut-frame">
+    <div className={`cut-frame${api.kind === 'keyframe' ? ' cut-frame-keyframe' : ''}`}>
       <div className="cut-frame-picture">
-        <div className="field-label">{label}</div>
+        {header ? <div className="cut-frame-header">{header}</div> : <div className="field-label">{label}</div>}
         {image ? (
           <img src={thumbUrl(image)} alt={label} loading="lazy" onClick={() => setLightbox(true)} />
         ) : (
@@ -85,7 +120,7 @@ export function CutFramePanel({ cut, frame, beatId, disabled, onRefresh }) {
             {rendering ? 'Rendering…' : image ? 'Regenerate…' : 'Generate…'}
           </button>
           {sf?.previous_image_id ? (
-            <button type="button" disabled={locked} title="Restore the previous image" onClick={() => call(() => apiPostJson(`/cut/${id}/${frame}-frame/undo`, {}))}>Undo</button>
+            <button type="button" disabled={locked} title="Restore the previous image" onClick={() => call(() => apiPostJson(`${api.base}/undo`, {}))}>Undo</button>
           ) : null}
           {image ? (
             <button
@@ -93,7 +128,7 @@ export function CutFramePanel({ cut, frame, beatId, disabled, onRefresh }) {
               className="danger"
               disabled={locked}
               onClick={() => {
-                if (confirm(`Remove the generated ${label.toLowerCase()}? Its prompt and reference images are kept.`)) call(() => apiDelete(`/cut/${id}/${frame}-frame`));
+                if (confirm(`Remove the generated ${label.toLowerCase()}? Its prompt and reference images are kept.`)) call(() => apiDelete(api.imagePath));
               }}
             >
               Remove
@@ -105,7 +140,7 @@ export function CutFramePanel({ cut, frame, beatId, disabled, onRefresh }) {
       </div>
 
       <div className="cut-frame-text">
-        <CollabField label={`${label} prompt`} field={`item:${id}:${frame}_frame_prompt`} multiline placeholder={`What the ${frame === 'end' ? 'last' : 'first'} frame of this cut shows…`} />
+        <CollabField label={`${api.label} prompt`} field={api.promptField} multiline placeholder={api.promptPlaceholder} />
         <div className="field-label">Reference images</div>
         <div className="video-prompt-ref-strip">
           {refIds.map((rid) => (
@@ -119,7 +154,7 @@ export function CutFramePanel({ cut, frame, beatId, disabled, onRefresh }) {
           ))}
           <button type="button" className="video-prompt-ref-add" disabled={locked || refIds.length >= MAX_REFS} onClick={() => setPickerOpen(true)}>+ Add reference</button>
           {startImage && !refIds.includes(startImage) ? (
-            <button type="button" className="video-prompt-ref-add" disabled={locked || refIds.length >= MAX_REFS} title="Send this cut's start frame along, so the end frame is the same place and the same people" onClick={() => setRefs([...refIds, startImage])}>+ Start frame</button>
+            <button type="button" className="video-prompt-ref-add" disabled={locked || refIds.length >= MAX_REFS} title={`Send this cut's start frame along, so the ${api.label.toLowerCase()} is the same place and the same people`} onClick={() => setRefs([...refIds, startImage])}>+ Start frame</button>
           ) : null}
         </div>
       </div>

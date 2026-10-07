@@ -646,7 +646,15 @@ function videoPromptFieldValue(row, field) {
 }
 
 const VIDEO_PROMPT_ITEM_RE = /^item:([a-f0-9]{24}):(title|prompt|start_frame_prompt|end_frame_prompt)$/;
+// A keyframe's prompt: "item:<cut _id>:kf:<keyframe id>:prompt" (backing
+// `keyframes[].prompt`). The list is dynamic — a store tick re-resolves the
+// room, so new keyframes are enumerated from the current rows.
+const VIDEO_PROMPT_KF_RE = /^item:([a-f0-9]{24}):kf:([a-f0-9]{24}):prompt$/;
 const VIDEO_SCENE_RE = /^scene:([a-f0-9]{24}):(title)$/;
+
+function videoPromptKeyframeFieldName(promptId, keyframeId) {
+  return `item:${promptId}:kf:${keyframeId}:prompt`;
+}
 
 async function describeVideoPromptsRoom(beatId) {
   const projectId = await verifiedProjectIdForBeat(beatId);
@@ -676,6 +684,11 @@ async function describeVideoPromptsRoom(beatId) {
       fields.push(fieldName);
       seed[fieldName] = videoPromptFieldValue(r, f);
     }
+    for (const k of r.keyframes || []) {
+      const fieldName = videoPromptKeyframeFieldName(id, k.id.toString());
+      fields.push(fieldName);
+      seed[fieldName] = k.prompt || '';
+    }
   }
   return {
     type: 'video_prompts',
@@ -697,6 +710,20 @@ async function describeVideoPromptsRoom(beatId) {
             changedFields.push(field);
           } catch (e) {
             logger.warn(`video_scenes persist failed scene=${sId} field=${fieldName}: ${e.message}`);
+          }
+          continue;
+        }
+        const km = field.match(VIDEO_PROMPT_KF_RE);
+        if (km) {
+          const row = rowById.get(km[1]);
+          const kf = row?.keyframes?.find((k) => k.id.toString() === km[2]);
+          if (!kf) continue; // the keyframe was deleted under its fragment
+          if (value === (kf.prompt || '')) continue;
+          try {
+            await updateVideoPrompt(projectId, km[1], { keyframe_prompts: { [km[2]]: value } });
+            changedFields.push(field);
+          } catch (e) {
+            logger.warn(`video_prompts persist failed prompt=${km[1]} keyframe=${km[2]}: ${e.message}`);
           }
           continue;
         }

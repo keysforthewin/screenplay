@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 // Manual live check of the ComfyUI provider. Not part of the test suite.
 //
-//   COMFYUI_URL=http://127.0.0.1:8188 node scripts/comfy-smoke.js [model-id] [--audio <file.mp3>]
+//   COMFYUI_URL=http://127.0.0.1:8188 node scripts/comfy-smoke.js [model-id] [--audio <file.mp3>] [--long] [--size WxH]
 //
 // Spawns comfy-mcp, prints server_info, ensures the model's template is
 // fetched and runnable, renders a ~3 s low-res clip from a generated PNG (a
 // lip-sync model such as ltx-2.3-ia2v also needs --audio, the recording it
 // syncs to; the clip runs its length), and prints where the output landed.
 // No Mongo involved.
+//
+// A builder model (ltx-2.5-keyframes) has no template: the graph is built by
+// src/comfy/ltxKeyframeWorkflow.js with a red start, a green keyframe at 1/3,
+// a yellow keyframe at 2/3 and a blue end (5 s) — the clip's colour must
+// change at those times. `--long` renders 30 s with context windows instead
+// (the VRAM check for long_clip; default 1280×720, `--size 960x544` to fall
+// back when it runs out of memory).
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -18,6 +25,7 @@ import { comfy, isComfyConfigured, closeComfyClient } from '../src/comfy/client.
 import { getComfyVideoModel } from '../src/comfy/videoModels.js';
 import { ensureTemplateFile } from '../src/comfy/templates.js';
 import { validateComfyParams, buildSlotOverrides } from '../src/comfy/paramMap.js';
+import { buildLtxKeyframeWorkflow, ltxFrameCount, placeKeyframes } from '../src/comfy/ltxKeyframeWorkflow.js';
 
 async function main() {
   if (!isComfyConfigured()) {
@@ -27,7 +35,11 @@ async function main() {
   const argv = process.argv.slice(2);
   const audioIdx = argv.indexOf('--audio');
   const audioPath = audioIdx >= 0 ? argv[audioIdx + 1] : null;
-  const positional = argv.filter((a, i) => a !== '--audio' && (audioIdx < 0 || i !== audioIdx + 1));
+  const long = argv.includes('--long');
+  const sizeIdx = argv.indexOf('--size');
+  const size = sizeIdx >= 0 ? argv[sizeIdx + 1].split(/[x×]/).map(Number) : null;
+  const skip = new Set([audioIdx + 1, sizeIdx + 1].filter((i) => i > 0));
+  const positional = argv.filter((a, i) => !['--audio', '--long', '--size'].includes(a) && !skip.has(i));
   const modelId = positional[0] || 'ltx-2.5-i2v';
   const model = getComfyVideoModel(modelId);
   if (!model) {
@@ -43,11 +55,13 @@ async function main() {
   const info = await comfy.serverInfo();
   console.log(JSON.stringify({ server: info?.server, gpu: info?.hardware?.gpu, target: info?.comfy_target }, null, 2));
 
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'comfy-smoke-'));
+  if (model.graph) return smokeBuilder(model, dir, { long, size });
+
   console.log(`ensuring template ${model.template}…`);
   const tpl = await ensureTemplateFile(model);
   console.log('template', tpl.path, 'local_check', JSON.stringify(tpl.local_check));
 
-  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'comfy-smoke-'));
   const png = path.join(dir, 'smoke-start.png');
   await sharp({
     create: { width: 640, height: 352, channels: 3, background: { r: 180, g: 40, b: 40 } },
@@ -102,6 +116,71 @@ async function main() {
   console.log('setting slots…', overrides.map((o) => o.address).join(', '));
   await comfy.setWorkflowSlot(wf, overrides, { stdout: false });
 
+  await submitAndFetch(wf, dir);
+}
+
+async function solid(file, w, h, rgb) {
+  await sharp({ create: { width: w, height: h, channels: 3, background: { r: rgb[0], g: rgb[1], b: rgb[2] } } }).png().toFile(file);
+  return file;
+}
+
+async function smokeBuilder(model, dir, { long, size }) {
+  const seconds = long ? 30 : 5;
+  const [width, height] = size || (long ? [1280, 720] : [512, 288]);
+  const fps = 24;
+  const frames = ltxFrameCount(seconds, fps);
+  const files = {
+    start: await solid(path.join(dir, 'kf-start.png'), 640, 352, [180, 40, 40]),
+    k1: await solid(path.join(dir, 'kf-1.png'), 640, 352, [40, 170, 60]),
+    k2: await solid(path.join(dir, 'kf-2.png'), 640, 352, [220, 200, 40]),
+    end: await solid(path.join(dir, 'kf-end.png'), 640, 352, [40, 60, 190]),
+  };
+  console.log(`uploading start + 2 keyframes + end…`);
+  const up = await comfy.uploadFile(Object.values(files), { overwrite: true });
+  console.log('upload', JSON.stringify(up).slice(0, 400));
+
+  const { params, warnings, errors } = validateComfyParams(model, {
+    prompt: 'A flat field of colour filling the frame, perfectly still, evenly lit. The colour slowly shifts over time.',
+    duration_seconds: seconds,
+    width,
+    height,
+    fps,
+    long_clip: long,
+  });
+  if (errors.length) throw new Error(errors.join('; '));
+  for (const w of warnings) console.log('warning:', w);
+  const placed = placeKeyframes(
+    [
+      { filename: path.basename(files.k1), at_seconds: seconds / 3, strength: 0.7 },
+      { filename: path.basename(files.k2), at_seconds: (2 * seconds) / 3, strength: 0.7 },
+    ],
+    { fps, frames, defaultStrength: params.guide_strength },
+  );
+  for (const w of placed.warnings) console.log('warning:', w);
+  const built = buildLtxKeyframeWorkflow({
+    prompt: params.prompt,
+    width: params.width,
+    height: params.height,
+    frames,
+    fps,
+    seed: params.seed,
+    images: { start_frame: path.basename(files.start), end_frame: path.basename(files.end), keyframes: placed.guides },
+    guideStrength: params.guide_strength,
+    longClip: !!params.long_clip,
+    filenamePrefix: 'video/screenplay/smoke-kf',
+  });
+  console.log(`graph: ${Object.keys(built.workflow).length} nodes, guides at frames ${built.guides.map((g) => g.frame_idx).join(', ')} of ${frames}${long ? ' (context windows)' : ''}`);
+  const wf = path.join(dir, 'workflow.json');
+  await fsp.writeFile(wf, JSON.stringify(built.workflow));
+  console.log('validating…');
+  const report = await comfy.validateWorkflow(wf);
+  console.log('validation', JSON.stringify(report).slice(0, 600));
+  if (report?.valid === false) throw new Error('the graph failed validation');
+  await submitAndFetch(wf, dir);
+  console.log(`expect: red until ~${(seconds / 3).toFixed(1)} s, green, yellow from ~${((2 * seconds) / 3).toFixed(1)} s, blue at the end.`);
+}
+
+async function submitAndFetch(wf, dir) {
   console.log('submitting…');
   const submitted = await comfy.runWorkflow(wf, { wait: false });
   const promptId = submitted?.prompt_id || submitted?.id;

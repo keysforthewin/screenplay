@@ -505,11 +505,117 @@ describe('frames', () => {
     expect((await call('DELETE', `/api/cut/${new ObjectId()}/start-frame`)).status).toBe(404);
   });
 
+  it('keyframes: add → generate (with the start frame as continuity) → undo → remove image → PATCH → DELETE; validation', async () => {
+    const { beat, cut, sarahArt, dinerArt } = await seedCut((a) => ({
+      durationSeconds: 10,
+      startFrame: { prompt: 'Opening.', reference_ids: [a.dinerArt] },
+    }));
+    // Render the start frame first so a keyframe can reference it.
+    let r = await call('POST', `/api/cut/${cut._id}/start-frame/generate`, {});
+    await waitFrame(r.json.job_id);
+    const startImage = String((await frameOf(cut)).image_id);
+
+    // Validation.
+    expect((await call('POST', `/api/cut/${new ObjectId()}/keyframe`, { at_seconds: 2 })).status).toBe(400 + 4); // 404
+    let bad = await call('POST', `/api/cut/${cut._id}/keyframe`, { at_seconds: 9.8 });
+    expect(bad.status).toBe(400);
+    expect(bad.json.error).toMatch(/between 0.5 and 9.5/);
+    expect((await call('POST', `/api/cut/${cut._id}/keyframe`, { at_seconds: 2, strength: 3 })).status).toBe(400);
+    expect((await call('POST', `/api/cut/${cut._id}/keyframe`, { at_seconds: 2, reference_ids: ['x'] })).status).toBe(400);
+    const noLength = await VP.createVideoPrompt({ projectId, beatId: beat._id, sceneId: cut.scene_id, title: 'n' });
+    bad = await call('POST', `/api/cut/${noLength._id}/keyframe`, { at_seconds: 2 });
+    expect(bad.status).toBe(400);
+    expect(bad.json.error).toMatch(/length/);
+
+    // Add: 201 with the id; the start frame may be listed as a reference.
+    r = await call('POST', `/api/cut/${cut._id}/keyframe`, {
+      at_seconds: 4,
+      strength: 0.5,
+      prompt: 'Image 2 exactly — the sack higher.',
+      reference_ids: [String(sarahArt), startImage],
+    });
+    expect(r.status).toBe(201);
+    const kid = r.json.keyframe_id;
+    expect(kid).toMatch(/^[a-f0-9]{24}$/);
+    expect(r.json.cut.keyframes).toHaveLength(1);
+    expect(r.json.cut.keyframes[0]).toMatchObject({ id: kid, at_seconds: 4, strength: 0.5, prompt: 'Image 2 exactly — the sack higher.', image_id: null });
+    expect(r.json.cut.keyframes[0].reference_ids).toEqual([String(sarahArt), startImage]);
+    expect(broadcasts.at(-1).payload).toMatchObject({ changed: ['keyframes'], keyframe_id: kid });
+
+    // Generate: the job carries the frame key; the render gets the two
+    // references in order, the second bound as the opening frame.
+    expect((await call('POST', `/api/cut/${cut._id}/keyframe/${new ObjectId()}/generate`, {})).status).toBe(404);
+    r = await call('POST', `/api/cut/${cut._id}/keyframe/${kid}/generate`, {});
+    expect(r.status).toBe(202);
+    expect(r.json.frame).toBe(`kf:${kid}`);
+    let job = await waitFrame(r.json.job_id);
+    expect(job).toMatchObject({ status: 'done', frame: `kf:${kid}`, cut_id: String(cut._id) });
+    const render = dispatched.at(-1);
+    expect(render.inputImages.map((i) => i.buffer.toString())).toEqual(['Sarah, grey coat', 'render-1']);
+    expect(render.prompt).toMatch(/Image 2 is the opening frame/);
+    const kf1 = (await frameOf(cut, 'keyframes'))[0];
+    expect(kf1.image_id).toBeTruthy();
+    expect(kf1.at_seconds).toBe(4);
+
+    // 409 for the same keyframe while it renders; the start frame still starts.
+    const g = holdRenders();
+    const first = await call('POST', `/api/cut/${cut._id}/keyframe/${kid}/generate`, {});
+    expect(first.status).toBe(202);
+    const busy = await call('POST', `/api/cut/${cut._id}/keyframe/${kid}/generate`, {});
+    expect(busy.status).toBe(409);
+    expect(busy.json.error).toMatch(/keyframe at 4 s is already rendering/);
+    expect((await call('POST', `/api/cut/${cut._id}/start-frame/generate`, {})).status).toBe(202);
+    const jobs = await call('GET', `/api/cuts/jobs?beat_id=${beat._id}`);
+    expect(jobs.json.frames.map((j) => j.frame).sort()).toEqual([`kf:${kid}`, 'start'].sort());
+    g.release();
+    job = await waitFrame(first.json.job_id);
+    expect(job.status).toBe('done');
+    const kf2 = (await frameOf(cut, 'keyframes'))[0];
+    expect(String(kf2.previous_image_id)).toBe(String(kf1.image_id));
+    // The start frame re-rendered → the keyframe's continuity reference followed it.
+    const newStart = String((await frameOf(cut)).image_id);
+    expect(newStart).not.toBe(startImage);
+    expect(kf2.reference_ids.map(String)).toEqual([String(sarahArt), newStart]);
+
+    // Undo, then remove the image: the entry stays.
+    r = await call('POST', `/api/cut/${cut._id}/keyframe/${kid}/undo`);
+    expect(r.status).toBe(200);
+    expect(r.json.cut.keyframes[0].image_id).toBe(String(kf1.image_id));
+    expect(deleted).toContain(String(kf2.image_id));
+    expect((await call('POST', `/api/cut/${cut._id}/keyframe/${kid}/undo`)).status).toBe(400);
+    r = await call('DELETE', `/api/cut/${cut._id}/keyframe/${kid}/image`);
+    expect(r.status).toBe(200);
+    expect(r.json.cut.keyframes).toHaveLength(1);
+    expect(r.json.cut.keyframes[0]).toMatchObject({ image_id: null, prompt: 'Image 2 exactly — the sack higher.', at_seconds: 4 });
+    expect(deleted).toContain(String(kf1.image_id));
+
+    // PATCH scalars.
+    expect((await call('PATCH', `/api/cut/${cut._id}/keyframe/${kid}`, {})).status).toBe(400);
+    expect((await call('PATCH', `/api/cut/${cut._id}/keyframe/${kid}`, { at_seconds: 12 })).status).toBe(400);
+    expect((await call('PATCH', `/api/cut/${cut._id}/keyframe/${new ObjectId()}`, { at_seconds: 2 })).status).toBe(404);
+    r = await call('PATCH', `/api/cut/${cut._id}/keyframe/${kid}`, { at_seconds: 7.5, strength: null, reference_ids: [String(dinerArt)] });
+    expect(r.status).toBe(200);
+    expect(r.json.cut.keyframes[0]).toMatchObject({ at_seconds: 7.5, strength: null, reference_ids: [String(dinerArt)] });
+    // Shrinking the cut pulls the keyframe inside.
+    r = await call('PATCH', `/api/cut/${cut._id}`, { duration_seconds: 5 });
+    expect(r.json.cut.keyframes[0].at_seconds).toBe(4.5);
+
+    // DELETE the keyframe (with its images).
+    r = await call('POST', `/api/cut/${cut._id}/keyframe/${kid}/generate`, {});
+    await waitFrame(r.json.job_id);
+    const lastImage = String((await frameOf(cut, 'keyframes'))[0].image_id);
+    r = await call('DELETE', `/api/cut/${cut._id}/keyframe/${kid}`);
+    expect(r.status).toBe(200);
+    expect(r.json.cut.keyframes).toEqual([]);
+    expect(deleted).toContain(lastImage);
+    expect((await call('DELETE', `/api/cut/${cut._id}/keyframe/${kid}`)).status).toBe(404);
+  });
+
   it('a frame with no references is rendered from its prompt alone; one with no prompt is a 400', async () => {
     const { cut } = await seedCut({ startFrame: { prompt: 'An empty road.' } });
     let r = await call('POST', `/api/cut/${cut._id}/end-frame/generate`, {});
     expect(r.status).toBe(400);
-    expect(r.json.error).toMatch(/no end-frame prompt/);
+    expect(r.json.error).toMatch(/end frame has no prompt/);
     r = await call('POST', `/api/cut/${cut._id}/start-frame/generate`);
     expect(r.status).toBe(202);
     await waitFrame(r.json.job_id);

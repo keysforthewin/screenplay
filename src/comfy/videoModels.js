@@ -32,6 +32,8 @@ export const CANONICAL_PARAM_ORDER = Object.freeze([
   'cfg',
   'generate_audio',
   'prompt_enhance',
+  'long_clip',
+  'guide_strength',
 ]);
 
 export const PARAM_LABELS = Object.freeze({
@@ -49,7 +51,14 @@ export const PARAM_LABELS = Object.freeze({
   cfg: 'CFG',
   generate_audio: 'Generate audio',
   prompt_enhance: 'Prompt enhancer',
+  long_clip: 'Long clip (context windows)',
+  guide_strength: 'Keyframe strength',
 });
+
+// The longest clip LTX-2.5 renders in one pass; beyond it a render needs
+// context windows (`long_clip`).
+export const LTX_NATIVE_MAX_SECONDS = 20;
+export const LTX_LONG_CLIP_MAX_SECONDS = 60;
 
 export const INPUT_NEEDS = Object.freeze({
   REQUIRED: 'required',
@@ -128,6 +137,67 @@ export const COMFY_VIDEO_MODELS = [
     fixed: [],
     constraints: { resolution_multiple: 32 },
     notes: 'Width/height are driven by the ResolutionSelector node (aspect ratio + megapixels).',
+  },
+  {
+    // A BUILDER model: no gallery template. The graph is emitted per render
+    // by src/comfy/ltxKeyframeWorkflow.js (`graph` names the builder), with
+    // one LTXVAddGuide per picture — the start frame, every keyframe of the
+    // cut at its time, the end frame — so a clip is conditioned on N
+    // keyframes in one generation. Params carry no slot addresses.
+    id: 'ltx-2.5-keyframes',
+    label: 'LTX-2.5 keyframes (start + keyframes + end)',
+    family: 'LTX-2.5',
+    lab: 'Lightricks',
+    template: null,
+    graph: 'ltx25-keyframes',
+    kind: 'local',
+    spends_credits: false,
+    available: true,
+    verified: true,
+    description:
+      "Local LTX-2.5 22B distilled, built per render: the cut's start frame, each of its keyframes at its time and the end frame pin the clip in ONE generation — keyframe spacing is the speed. Up to 20 s natively; `long_clip` adds context windows for 30 s+ (try 960×540 if it runs out of memory).",
+    inputs: {
+      startFrame: INPUT_NEEDS.REQUIRED,
+      endFrame: INPUT_NEEDS.REQUIRED,
+      keyframes: INPUT_NEEDS.OPTIONAL,
+      referenceImages: INPUT_NEEDS.UNUSED,
+      audio: INPUT_NEEDS.UNUSED,
+    },
+    imageSlots: [],
+    maxReferenceImages: 0,
+    params: {
+      prompt: { type: 'string', default: '' },
+      negative_prompt: { type: 'string', default: null, help: "Blank = the LTX-2.5 template's own negative prompt." },
+      duration_seconds: {
+        type: 'float',
+        default: 5,
+        min: 1,
+        max: LTX_LONG_CLIP_MAX_SECONDS,
+        step: 0.5,
+        help: `Up to ${LTX_NATIVE_MAX_SECONDS} s in one pass; longer needs "long clip".`,
+      },
+      width: { type: 'int', default: 1280, min: 256, max: 1920, step: 32, multiple: 32 },
+      height: { type: 'int', default: 720, min: 256, max: 1920, step: 32, multiple: 32 },
+      fps: { type: 'int', default: 24, min: 12, max: 60, step: 1 },
+      seed: { ...SEED_SPEC },
+      long_clip: {
+        type: 'bool',
+        default: false,
+        help: `Context windows: one render beyond ${LTX_NATIVE_MAX_SECONDS} s. Try 960×540 if it runs out of memory.`,
+      },
+      guide_strength: {
+        type: 'float',
+        default: 0.7,
+        min: 0.1,
+        max: 1,
+        step: 0.05,
+        help: 'How hard the start frame, the end frame and any keyframe without its own strength are held (the template uses 0.7).',
+      },
+    },
+    output: { filenamePrefix: null },
+    fixed: [],
+    constraints: { resolution_multiple: 32 },
+    notes: 'Builder model: the workflow is generated per render (API format) and validated against ComfyUI before it runs. Keyframes snap to the 8-frame latent grid.',
   },
   {
     id: 'ltx-2.3-ia2v',
@@ -498,6 +568,7 @@ export function validateRegistryEntry(raw, slotAddresses = null) {
   if (byId.has(id)) errors.push(`id "${id}" collides with a built-in model`);
   const template = String(e.template || '').trim();
   if (!template) errors.push('template is required');
+  if (e.graph) errors.push('builder models (graph) are built in; a registered model names a gallery template');
   const label = String(e.label || '').trim() || id;
   const kind = e.kind === 'api' ? 'api' : 'local';
   const spendsCredits = !!e.spends_credits;
@@ -610,6 +681,7 @@ export function describeComfyVideoModel(m) {
     family: m.family,
     lab: m.lab,
     template: m.template,
+    graph: m.graph || null,
     kind: m.kind,
     spends_credits: !!m.spends_credits,
     available: m.available !== false,

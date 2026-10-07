@@ -141,6 +141,11 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
   const endFrameId = idOf(cut?.end_frame?.image_id);
   const missingEnd = model?.inputs?.endFrame === 'required' && !endFrameId;
   const missingRefs = needsRefs && refCount === 0;
+  // Keyframes with a picture: a keyframe model renders them, others ignore them.
+  const keyframes = (cut?.keyframes || []).filter((k) => k.image_id).slice().sort((a, b) => a.at_seconds - b.at_seconds);
+  const usesKeyframes = !!model?.inputs?.keyframes && model.inputs.keyframes !== 'unused';
+  // A builder model emits its own graph: there is no template and no slots.
+  const builder = !!model?.graph;
 
   // Load registry + defaults on open.
   useEffect(() => {
@@ -347,6 +352,8 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
             missingStart={missingStart}
             missingEnd={missingEnd}
             missingRefs={missingRefs}
+            keyframes={keyframes}
+            usesKeyframes={usesKeyframes}
           />
 
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -391,7 +398,7 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
             </label>
           ) : null}
 
-          <div>
+          {builder ? null : <div>
             <button type="button" onClick={() => setAdvancedOpen((v) => !v)} disabled={!model || generating}>
               {advancedOpen ? 'Hide advanced slots' : 'Advanced slots…'}
             </button>
@@ -413,7 +420,7 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
                 }}
               />
             ) : null}
-          </div>
+          </div>}
 
           {preview ? <PreviewPanel preview={preview} /> : null}
           {error ? <div className="error-banner">{error}</div> : null}
@@ -423,7 +430,7 @@ export function ComfyVideoDialog({ open, onClose, cut, beatId, onRefresh }) {
   );
 }
 
-function InputsStrip({ model, startFrameId, endFrameId, missingStart, missingEnd, missingRefs }) {
+function InputsStrip({ model, startFrameId, endFrameId, missingStart, missingEnd, missingRefs, keyframes = [], usesKeyframes = false }) {
   if (!model) return null;
   const usesStart = model.inputs?.startFrame && model.inputs.startFrame !== 'unused';
   const usesEnd = model.inputs?.endFrame && model.inputs.endFrame !== 'unused';
@@ -450,6 +457,27 @@ function InputsStrip({ model, startFrameId, endFrameId, missingStart, missingEnd
               {missingStart ? 'This model needs a start frame — render the cut\'s start frame first.' : 'No start frame yet (optional for this model).'}
             </div>
           )}
+        </div>
+      ) : null}
+      {usesKeyframes ? (
+        <div>
+          <span className="field-label">Keyframes</span>
+          {keyframes.length ? (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', maxWidth: 420 }}>
+              {keyframes.map((k) => (
+                <div key={String(k.id)} style={{ textAlign: 'center', fontSize: 11, color: 'var(--fg-muted)' }}>
+                  <img src={thumbUrl(String(k.image_id))} alt={`Keyframe at ${k.at_seconds} s`} style={{ width: 96, borderRadius: 4, display: 'block' }} />
+                  t = {k.at_seconds} s{k.strength != null ? ` · ${k.strength}` : ''}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: 'var(--fg-muted)', maxWidth: 220 }}>No keyframes with an image — the clip is pinned by the two frames only.</div>
+          )}
+        </div>
+      ) : keyframes.length ? (
+        <div style={{ fontSize: 12, color: '#ffb86b', maxWidth: 260 }}>
+          This model ignores the {keyframes.length} keyframe{keyframes.length === 1 ? '' : 's'} of this cut — only a keyframe model (LTX-2.5 keyframes) renders them.
         </div>
       ) : null}
       {usesEnd ? (
@@ -625,7 +653,9 @@ function PreviewPanel({ preview }) {
   return (
     <details open style={{ fontSize: 12 }}>
       <summary style={{ cursor: 'pointer' }}>
-        Payload preview · {preview.overrides?.length || 0} slot overrides
+        Payload preview · {preview.workflow ? `built graph (${Object.keys(preview.workflow).length} nodes)` : `${preview.overrides?.length || 0} slot overrides`}
+        {preview.keyframes?.length ? ` · ${preview.keyframes.length} keyframe${preview.keyframes.length === 1 ? '' : 's'}` : ''}
+        {preview.ignored_keyframes ? ` · ${preview.ignored_keyframes} ignored` : ''}
         {preview.spends_credits ? ' · spends credits' : ''}
       </summary>
       {preview.warnings?.length ? (
@@ -635,8 +665,14 @@ function PreviewPanel({ preview }) {
           ))}
         </ul>
       ) : null}
+      {preview.keyframes?.length ? (
+        <div style={{ margin: '6px 0' }}>
+          Guides: {preview.keyframes.map((k) => `${k.at_seconds} s → frame ${k.frame_idx} (strength ${k.strength})`).join(' · ')}
+          {preview.frames ? ` · ${preview.frames} frames` : ''}
+        </div>
+      ) : null}
       <pre style={{ maxHeight: 200, overflow: 'auto', fontSize: 11, margin: '6px 0 0' }}>
-        {JSON.stringify(preview.overrides, null, 2)}
+        {JSON.stringify(preview.workflow || preview.overrides, null, 2)}
       </pre>
     </details>
   );

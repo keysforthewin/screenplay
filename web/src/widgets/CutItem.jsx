@@ -10,6 +10,7 @@ import { isComfyJobActive, useComfyCutJobs } from './comfyCutJobs.jsx';
 import { ClipVideoPanel } from './ClipVideoPanel.jsx';
 import { CutBatchStatus, useCutVideoBatch } from './cutVideoBatch.jsx';
 import { CutFramePanel } from './CutFramePanel.jsx';
+import { CutKeyframes } from './CutKeyframes.jsx';
 
 function readError(e) {
   let msg = e?.message || 'Update failed.';
@@ -21,7 +22,7 @@ function readError(e) {
 }
 
 // One cut: its name, length, the prompt for the video model, its start and
-// end frames, and the clip generated between them.
+// end frames (with any keyframes between them), and the clip generated.
 export function CutItem({ cut, label, beatId, disabled, onRefresh, onDelete }) {
   const comfyAvail = useComfyAvailability();
   const comfyOff = comfyAvail ? !comfyAvail.configured : false;
@@ -112,6 +113,7 @@ export function CutItem({ cut, label, beatId, disabled, onRefresh, onDelete }) {
         <CollabField label="Video prompt" field={`item:${id}:prompt`} multiline placeholder="What happens in this cut — the prompt the video model receives…" />
 
         <CutFramePanel cut={cut} frame="start" beatId={beatId} disabled={disabled} onRefresh={onRefresh} />
+        <CutKeyframes cut={cut} beatId={beatId} disabled={disabled} onRefresh={onRefresh} />
         <CutFramePanel cut={cut} frame="end" beatId={beatId} disabled={disabled} onRefresh={onRefresh} />
 
         <div className="video-prompt-actions">

@@ -56,6 +56,9 @@ import {
   undoFrameImage,
   updateCut,
   updateScene,
+  addKeyframe,
+  updateKeyframe,
+  deleteKeyframe,
 } from './store.js';
 
 export const MCP_SERVER_NAME = 'screenplay';
@@ -64,11 +67,11 @@ export function buildInstructions(uploadBase = 'http://localhost:3002') {
   return [
     'Storage for a screenplay project: read the story, then plan and store a beat\'s Scenes tab. Nothing here generates text, images or video — you do the planning and bring the media.',
     '',
-    'Model: a project has beats (numbered story sections). In the Scenes tab a beat has scenes, a scene has cuts (labelled "<scene>.<cut>", e.g. 2.3). A cut has a title, a length in seconds, a video prompt, and a start frame and an end frame — each with its own image prompt, an ordered list of reference image ids, and one image — plus the rendered clip.',
+    'Model: a project has beats (numbered story sections). In the Scenes tab a beat has scenes, a scene has cuts (labelled "<scene>.<cut>", e.g. 2.3). A cut has a title, a length in seconds, a video prompt, and a start frame and an end frame — each with its own image prompt, an ordered list of reference image ids, and one image — plus the rendered clip. A cut may also carry KEYFRAMES: pictures at a time inside the cut (at_seconds, 0.5 s steps) that the clip must pass through, each a frame like the start and end frame (own prompt, references, image) with an optional strength (0–1; null = the renderer\'s default). A keyframe video renderer conditions the whole clip on start + keyframes + end in ONE generation, so a continuous shot is ONE cut with keyframes — and keyframe spacing is speed (the same distance over a shorter interval moves faster). Other renderers ignore keyframes.',
     '',
     'Reading: list_beats → get_beat (the page text and its dialogue lines) → get_cast (who and where) → get_scenes (what is already planned). Artwork: list_artwork gives every picture of one character or set, list_reference_images the whole beat\'s pool; their image_id values are what a frame\'s reference list takes, their URLs are the files. view_image shows you any image.',
-    'Writing: create_scene (pass `cuts` to create a whole scene in one call), create_cut, update_scene, update_cut, reorder_*, delete_*. Edits appear live in open browsers.',
-    `Media: set_frame_image takes an image URL (or the id of an image already in the project, which is copied). A local file goes over plain HTTP instead: curl -T frame.png "${uploadBase}/upload?cut_id=<cut id>&target=start_frame" (targets: start_frame, end_frame, video). Replacing a frame image keeps the previous one for a one-step undo_frame_image.`,
+    'Writing: create_scene (pass `cuts` to create a whole scene in one call; a cut spec may carry `keyframes`), create_cut, update_scene, update_cut, reorder_*, delete_*; keyframes after creation: add_keyframe, update_keyframe, delete_keyframe. Edits appear live in open browsers.',
+    `Media: set_frame_image takes an image URL (or the id of an image already in the project, which is copied); \`frame\` is start, end or keyframe:<keyframe id>. A local file goes over plain HTTP instead: curl -T frame.png "${uploadBase}/upload?cut_id=<cut id>&target=start_frame" (targets: start_frame, end_frame, video, or keyframe with &keyframe_id=<id>). Replacing a frame image keeps the previous one for a one-step undo_frame_image.`,
     '',
     'Video: render_videos renders every cut of a beat that has both frames and a prompt, through the app\'s own batch runner, with the default video renderer set on the Admin page unless you name a provider and model — do not pick a model yourself. Poll get_video_batch until its status is no longer "running".',
     '',
@@ -80,12 +83,20 @@ const project = z.string().optional().describe('Project title or id. Omit for th
 const beat = z.union([z.string(), z.number()]).describe('The beat: its number (order), id or name.');
 const sceneId = z.string().describe('Scene id (from get_scenes / create_scene).');
 const cutId = z.string().describe('Cut id (from get_scenes / create_cut).');
-const frame = z.enum(['start', 'end']).describe('Which frame of the cut.');
+const frame = z.string().describe('Which frame of the cut: "start", "end" or "keyframe:<keyframe id>".');
 const refIds = z
   .array(z.string())
   .max(MAX_REFERENCE_IMAGES)
   .describe(`Ordered reference image ids for rendering this frame (at most ${MAX_REFERENCE_IMAGES}); the renderer sends them in THIS order and binds them as "Image 1", "Image 2"… above the frame prompt, so refer to the Nth id as Image N in the prompt. Take them from list_artwork / list_reference_images, or use the cut's own start-frame image_id on the end frame (list it last). Replaces the list.`);
 
+const keyframeId = z.string().describe('Keyframe id (from get_scenes / add_keyframe — the `id` inside the cut\'s keyframes).');
+const strength = z.number().min(0).max(1).nullable().optional().describe('How hard the renderer holds this picture (0–1). null = the renderer\'s default (0.7). Below ~0.6 is a soft guide: position and shape without a pixel lock — use it for composited frames.');
+const keyframeFields = {
+  at_seconds: z.number().positive().describe('Time inside the cut in 0.5 s steps, at least 0.5 s from either end.'),
+  strength,
+  prompt: z.string().optional().describe('Image prompt for this keyframe (markdown).'),
+  reference_ids: refIds.optional(),
+};
 // The fields of a cut, shared by create_scene.cuts[], create_cut and update_cut.
 const cutFields = {
   title: z.string().optional().describe('Short name of the cut.'),
@@ -96,6 +107,12 @@ const cutFields = {
   start_frame_reference_ids: refIds.optional(),
   end_frame_reference_ids: refIds.optional(),
 };
+// Creation only: a replace on update would churn ids and delete images.
+const keyframesOnCreate = z
+  .array(z.object(keyframeFields))
+  .max(60)
+  .optional()
+  .describe('Keyframes of the cut (needs duration_seconds). Use add_keyframe / update_keyframe / delete_keyframe to change them later.');
 const position = (what) => z.number().int().min(1).optional().describe(`1-based position among ${what}.`);
 
 const READ = { readOnlyHint: true };
@@ -350,7 +367,7 @@ export function buildMcpServer({ uploadBase } = {}) {
       beat,
       title: z.string().optional().describe('Name of the scene.'),
       position: position('the beat\'s scenes'),
-      cuts: z.array(z.object(cutFields)).max(60).optional().describe('The scene\'s cuts, first to last.'),
+      cuts: z.array(z.object({ ...cutFields, keyframes: keyframesOnCreate })).max(60).optional().describe('The scene\'s cuts, first to last.'),
     },
     WRITE,
     async (a) => {
@@ -399,7 +416,7 @@ export function buildMcpServer({ uploadBase } = {}) {
   tool(
     'create_cut',
     'Add a cut to a scene (appended unless `position` is given).',
-    { scene_id: sceneId, ...cutFields, position: position('the scene\'s cuts') },
+    { scene_id: sceneId, ...cutFields, keyframes: keyframesOnCreate, position: position('the scene\'s cuts') },
     WRITE,
     async (a) => {
       const { projectId, scene } = await resolveScene(a.scene_id);
@@ -444,11 +461,48 @@ export function buildMcpServer({ uploadBase } = {}) {
     },
   );
 
+  // ─── Keyframes ────────────────────────────────────────────────────────────
+
+  tool(
+    'add_keyframe',
+    'Add a keyframe to a cut: a picture the clip must pass through at `at_seconds`. The cut needs a length. Answers the new keyframe\'s id; store its image with set_frame_image (frame "keyframe:<id>") or the upload endpoint.',
+    { cut_id: cutId, ...keyframeFields },
+    WRITE,
+    async (a) => {
+      const { projectId, cut } = await resolveCut(a.cut_id);
+      const { cut_id: _id, ...spec } = a;
+      return addKeyframe({ projectId, cut, spec });
+    },
+  );
+
+  tool(
+    'update_keyframe',
+    'Change a keyframe\'s time, strength, prompt and/or reference list (only the fields you pass).',
+    { cut_id: cutId, keyframe_id: keyframeId, at_seconds: keyframeFields.at_seconds.optional(), strength, prompt: keyframeFields.prompt, reference_ids: refIds.optional() },
+    WRITE,
+    async (a) => {
+      const { projectId, cut } = await resolveCut(a.cut_id);
+      const { cut_id: _id, keyframe_id, ...patch } = a;
+      return { cut: await updateKeyframe({ projectId, cut, keyframeId: keyframe_id, patch }) };
+    },
+  );
+
+  tool(
+    'delete_keyframe',
+    'Remove a keyframe from a cut with its image. Cannot be undone.',
+    { cut_id: cutId, keyframe_id: keyframeId },
+    DESTROY,
+    async (a) => {
+      const { projectId, cut } = await resolveCut(a.cut_id);
+      return { cut: await deleteKeyframe({ projectId, cut, keyframeId: a.keyframe_id }) };
+    },
+  );
+
   // ─── Frame images and clips ───────────────────────────────────────────────
 
   tool(
     'set_frame_image',
-    'Store a picture as a cut\'s start or end frame, from a URL (png, jpeg or webp) or as a copy of an image already in the project. The image it replaces is kept for one undo. For a local file use the HTTP upload endpoint described in the server instructions.',
+    'Store a picture as a cut\'s start frame, end frame or keyframe, from a URL (png, jpeg or webp) or as a copy of an image already in the project. The image it replaces is kept for one undo. For a local file use the HTTP upload endpoint described in the server instructions.',
     {
       cut_id: cutId,
       frame,

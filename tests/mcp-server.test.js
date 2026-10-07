@@ -151,7 +151,9 @@ describe('reading', () => {
       'list_artwork', 'list_reference_images', 'get_scenes', 'view_image', 'create_scene', 'update_scene', 'delete_scene',
       'reorder_scenes', 'create_cut', 'update_cut', 'delete_cut', 'reorder_cuts', 'set_frame_image', 'clear_frame_image',
       'undo_frame_image', 'set_cut_video', 'clear_cut_video', 'render_videos', 'get_video_batch', 'cancel_video_batch',
+      'add_keyframe', 'update_keyframe', 'delete_keyframe',
     ]));
+    expect(client.getInstructions()).toContain('keyframe spacing is speed');
     expect(client.getInstructions()).toContain('curl -T frame.png "http://localhost:3002/upload?cut_id=');
   });
 
@@ -336,6 +338,72 @@ describe('frame images and clips', () => {
     await expect(call('set_frame_image', { cut_id: id, frame: 'end' })).rejects.toThrow(/exactly one/);
   });
 
+  it('keyframes: created with the cut, added, imaged as "keyframe:<id>", undone, updated, deleted', async () => {
+    // Creation needs a length; a keyframe outside it is refused before anything is written.
+    await expect(call('create_cut', { scene_id: (await call('create_scene', { beat: 1, title: 'K' })).scene.id, keyframes: [{ at_seconds: 2 }] }))
+      .rejects.toThrow(/need duration_seconds/);
+    const { scene } = await call('create_scene', {
+      beat: 1,
+      title: 'S',
+      cuts: [{ title: 'A', duration_seconds: 10, start_frame_prompt: 'sf', keyframes: [{ at_seconds: 6, prompt: 'late' }, { at_seconds: 2, strength: 0.4, reference_ids: [art.coat.toString()] }] }],
+    });
+    const cut = scene.cuts[0];
+    expect(cut.keyframes.map((k) => [k.at_seconds, k.strength, k.prompt, k.reference_ids])).toEqual([
+      [2, 0.4, '', [art.coat.toString()]],
+      [6, null, 'late', []],
+    ]);
+    expect((await call('get_scenes', { beat: 1 })).scenes.find((s) => s.title === 'S').cuts[0].keyframes).toHaveLength(2);
+    await expect(call('create_cut', { scene_id: scene.id, duration_seconds: 5, keyframes: [{ at_seconds: 4.8 }] })).rejects.toThrow(/between 0.5 and 4.5/);
+    // update_cut has no keyframes field: the schema drops it and the list stays.
+    expect((await call('update_cut', { cut_id: cut.id, keyframes: [], title: 'A2' })).cut.keyframes).toHaveLength(2);
+
+    // add_keyframe answers the id; the picture goes in as frame "keyframe:<id>".
+    const added = await call('add_keyframe', { cut_id: cut.id, at_seconds: 4, strength: 0.5, prompt: 'Image 1 exactly — higher.', reference_ids: [art.coat.toString()] });
+    expect(added.keyframe_id).toMatch(/^[a-f0-9]{24}$/);
+    expect(added.cut.keyframes.map((k) => k.at_seconds)).toEqual([2, 4, 6]);
+    const kid = added.keyframe_id;
+    await expect(call('set_frame_image', { cut_id: cut.id, frame: 'middle', image_url: 'https://x/k.png' })).rejects.toThrow(/keyframe:<keyframe id>/);
+    await expect(call('set_frame_image', { cut_id: cut.id, frame: `keyframe:${new ObjectId()}`, image_url: 'https://x/k.png' })).rejects.toThrow(/not found on cut/);
+    const one = (await call('set_frame_image', { cut_id: cut.id, frame: `keyframe:${kid}`, image_url: 'https://x/k1.png', model: 'nb' })).cut;
+    const kf = () => one.keyframes.find((k) => k.id === kid);
+    expect(kf()).toMatchObject({ at_seconds: 4, strength: 0.5, prompt: 'Image 1 exactly — higher.', model: 'nb', can_undo: false });
+    expect(store.get(kf().image_id).buffer.toString()).toBe('bytes of https://x/k1.png');
+    // The start frame is a continuity reference the keyframe follows.
+    const start = (await call('set_frame_image', { cut_id: cut.id, frame: 'start', image_url: 'https://x/s1.png' })).cut.start_frame.image_id;
+    await call('update_keyframe', { cut_id: cut.id, keyframe_id: kid, reference_ids: [art.coat.toString(), start] });
+    const restart = (await call('set_frame_image', { cut_id: cut.id, frame: 'start', image_url: 'https://x/s2.png' })).cut;
+    expect(restart.keyframes.find((k) => k.id === kid).reference_ids).toEqual([art.coat.toString(), restart.start_frame.image_id]);
+
+    const two = (await call('set_frame_image', { cut_id: cut.id, frame: `kf:${kid}`, image_id: art.diner.toString() })).cut;
+    const k2 = two.keyframes.find((k) => k.id === kid);
+    expect(k2.can_undo).toBe(true);
+    expect(k2.image_id).not.toBe(kf().image_id);
+    const undone = (await call('undo_frame_image', { cut_id: cut.id, frame: `keyframe:${kid}` })).cut;
+    expect(undone.keyframes.find((k) => k.id === kid)).toMatchObject({ image_id: kf().image_id, can_undo: false });
+    expect(deleted).toContain(k2.image_id);
+    await expect(call('undo_frame_image', { cut_id: cut.id, frame: `keyframe:${kid}` })).rejects.toThrow(/keyframe at 4 s has no earlier image/);
+    const cleared = (await call('clear_frame_image', { cut_id: cut.id, frame: `keyframe:${kid}` })).cut;
+    expect(cleared.keyframes.find((k) => k.id === kid)).toMatchObject({ image_id: null, prompt: 'Image 1 exactly — higher.' });
+    expect(deleted).toContain(kf().image_id);
+
+    // update_keyframe: scalars and prompt (the answer overlays the prompt just written).
+    await expect(call('update_keyframe', { cut_id: cut.id, keyframe_id: kid })).rejects.toThrow(/nothing to change/);
+    await expect(call('update_keyframe', { cut_id: cut.id, keyframe_id: kid, at_seconds: 11 })).rejects.toThrow(/between 0.5 and 9.5/);
+    await expect(call('update_keyframe', { cut_id: cut.id, keyframe_id: new ObjectId().toString(), at_seconds: 3 })).rejects.toThrow(/not found on cut/);
+    const upd = (await call('update_keyframe', { cut_id: cut.id, keyframe_id: kid, at_seconds: 7.5, strength: null, prompt: 'new words' })).cut;
+    expect(upd.keyframes.map((k) => k.at_seconds)).toEqual([2, 6, 7.5]);
+    expect(upd.keyframes.find((k) => k.id === kid)).toMatchObject({ strength: null, prompt: 'new words' });
+    expect((await VP.getVideoPrompt(projectId, cut.id)).keyframes.find((k) => String(k.id) === kid).prompt).toBe('new words');
+
+    // delete_keyframe takes the picture with it.
+    await call('set_frame_image', { cut_id: cut.id, frame: `keyframe:${kid}`, image_url: 'https://x/k3.png' });
+    const last = (await VP.getVideoPrompt(projectId, cut.id)).keyframes.find((k) => String(k.id) === kid).image_id.toString();
+    const gone = (await call('delete_keyframe', { cut_id: cut.id, keyframe_id: kid })).cut;
+    expect(gone.keyframes.map((k) => k.at_seconds)).toEqual([2, 6]);
+    expect(deleted).toContain(last);
+    await expect(call('delete_keyframe', { cut_id: cut.id, keyframe_id: kid })).rejects.toThrow(/not found on cut/);
+  });
+
   it('stores and replaces a clip from a URL', async () => {
     const id = await oneCut();
     const one = (await call('set_cut_video', { cut_id: id, video_url: 'https://x/a.mp4', duration_seconds: 5, model: 'kling' })).cut;
@@ -431,6 +499,16 @@ describe('HTTP', () => {
     expect(vs).toBe(200);
     expect(video.cut.video.duration_seconds).toBe(3);
     expect(attachments.get(video.cut.video.attachment_id).contentType).toBe('video/mp4');
+
+    // A keyframe takes a file too.
+    await call('update_cut', { cut_id: id, duration_seconds: 6 });
+    const { keyframe_id } = await call('add_keyframe', { cut_id: id, at_seconds: 3 });
+    expect((await put(`cut_id=${id}&target=keyframe`, Buffer.from('k')))[1].error).toMatch(/keyframe_id/);
+    const [ks, kout] = await put(`cut_id=${id}&target=keyframe&keyframe_id=${keyframe_id}&model=comp`, Buffer.from('kf bytes'));
+    expect(ks).toBe(200);
+    const kf = kout.cut.keyframes.find((k) => k.id === keyframe_id);
+    expect(store.get(kf.image_id).buffer.toString()).toBe('kf bytes');
+    expect(kf.model).toBe('comp');
 
     expect((await put(`cut_id=${id}&target=video`, Buffer.from('not a video')))[0]).toBe(400);
     expect((await put(`cut_id=${id}`, Buffer.from('x')))[1].error).toMatch(/target is required/);

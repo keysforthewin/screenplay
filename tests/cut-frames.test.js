@@ -231,7 +231,7 @@ describe('renderCutFrame: what the image model is sent', () => {
     const { beat, scene, sarahArt } = await seed();
     const cut = await makeCut(beat, scene, { startFrame: { prompt: '  ', reference_ids: [sarahArt] } });
     await expect(CF.renderCutFrame({ projectId, cut })).rejects.toMatchObject({ code: 'BAD_FRAME_INPUT', status: 400 });
-    await expect(CF.renderCutFrame({ projectId, cut, frame: 'end' })).rejects.toThrow(/no end-frame prompt/);
+    await expect(CF.renderCutFrame({ projectId, cut, frame: 'end' })).rejects.toThrow(/end frame has no prompt/);
     expect(dispatched).toHaveLength(0);
     expect(uploads).toHaveLength(0);
   });
@@ -479,7 +479,7 @@ describe('startCutFrameJob', () => {
     await expect(CF.startCutFrameJob({ projectId, cutId: String(cut._id), frame: 'end' })).rejects.toMatchObject({
       code: 'BAD_FRAME_INPUT',
       status: 400,
-      message: expect.stringContaining('end-frame prompt'),
+      message: expect.stringContaining('end frame has no prompt'),
     });
     const bare = await makeCut(beat, scene);
     await expect(CF.startCutFrameJob({ projectId, cutId: String(bare._id) })).rejects.toMatchObject({ code: 'BAD_FRAME_INPUT' });
@@ -558,5 +558,68 @@ describe('startCutFrameJob', () => {
     // The failed job does not block a retry.
     CF._setCutFrameDispatcherForTests(async (args) => ({ buffer: Buffer.from('ok'), contentType: 'image/png', model: args.model }));
     expect((await waitJob(await CF.startCutFrameJob({ projectId, cutId: String(cut._id) }))).status).toBe('done');
+  });
+});
+
+describe('keyframes (frame key "kf:<id>")', () => {
+  it('renders a keyframe with its own references, binds the start frame as the opening frame, and stores it on the entry', async () => {
+    const { beat, scene, sarahArt } = await seed();
+    const startImage = img('start render');
+    let cut = await makeCut(beat, scene, {
+      durationSeconds: 8,
+      startFrame: { prompt: 'Opening.', image_id: startImage },
+      keyframes: [{ at_seconds: 3, prompt: 'Image 2 exactly — higher.', reference_ids: [sarahArt, startImage] }],
+    });
+    const kid = cut.keyframes[0].id.toString();
+    const key = `kf:${kid}`;
+    cut = await CF.renderCutFrame({ projectId, cut, frame: key });
+    expect(dispatched).toHaveLength(1);
+    expect(sent(dispatched[0])).toEqual(['Sarah, grey coat', 'start render']);
+    expect(dispatched[0].prompt).toMatch(/Image 2 is the opening frame of this same shot/);
+    expect(cut.keyframes[0].image_id).toBeTruthy();
+    expect(cut.keyframes[0].model).toBe(CF.DEFAULT_FRAME_MODEL);
+    expect(cut.keyframes[0]).toMatchObject({ at_seconds: 3, prompt: 'Image 2 exactly — higher.' });
+    expect(uploads[0].filename).toMatch(new RegExp(`cut-${cut._id}-kf-${kid}-frame-`));
+    // The start frame is untouched.
+    expect(String(cut.start_frame.image_id)).toBe(String(startImage));
+    // Unknown keys never fall back to the start frame.
+    await expect(CF.renderCutFrame({ projectId, cut, frame: 'middle' })).rejects.toThrow(/unknown frame key/);
+    await expect(CF.startCutFrameJob({ projectId, cutId: String(cut._id), frame: `kf:${new ObjectId()}` })).rejects.toMatchObject({ code: 'BAD_FRAME_INPUT' });
+  });
+
+  it('a re-rendered start frame repoints every keyframe that referenced it; a keyframe deleted mid-render is not resurrected', async () => {
+    const { beat, scene } = await seed();
+    const old = img('old start');
+    let cut = await makeCut(beat, scene, {
+      durationSeconds: 8,
+      startFrame: { prompt: 'Opening.', image_id: old },
+      endFrame: { prompt: 'Closing.', reference_ids: [old] },
+      keyframes: [
+        { at_seconds: 2, prompt: 'k1', reference_ids: [old] },
+        { at_seconds: 5, prompt: 'k2', reference_ids: [] },
+      ],
+    });
+    cut = await CF.renderCutFrame({ projectId, cut, frame: 'start' });
+    const fresh = String(cut.start_frame.image_id);
+    expect(fresh).not.toBe(String(old));
+    expect(cut.end_frame.reference_ids.map(String)).toEqual([fresh]);
+    expect(cut.keyframes[0].reference_ids.map(String)).toEqual([fresh]);
+    expect(cut.keyframes[1].reference_ids).toEqual([]);
+
+    // Delete the keyframe while its render is held → the picture is dropped.
+    const kid = cut.keyframes[1].id.toString();
+    const g = holdRenders();
+    const jobId = await CF.startCutFrameJob({ projectId, cutId: String(cut._id), frame: `kf:${kid}` });
+    await until(() => dispatched.length === 2);
+    await Gateway.removeVideoPromptKeyframeViaGateway({ projectId, promptId: String(cut._id), keyframeId: kid });
+    g.release();
+    const job = await waitJob(jobId);
+    expect(job.status).toBe('error');
+    expect(job.error).toMatch(/removed while it rendered/);
+    const after = await getCut(cut);
+    expect(after.keyframes.map((k) => k.id.toString())).toEqual([cut.keyframes[0].id.toString()]);
+    // The uploaded render was deleted again.
+    const rendered = uploads.at(-1).id.toString();
+    expect(deleted).toContain(rendered);
   });
 });

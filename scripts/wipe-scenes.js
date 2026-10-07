@@ -82,7 +82,7 @@ export async function wipeScenes(db, { projectId = null, apply = false } = {}) {
   const frameImages = new Set();
   const attachments = new Set();
   for (const c of cuts) {
-    for (const f of [c.start_frame, c.end_frame]) {
+    for (const f of [c.start_frame, c.end_frame, ...(c.keyframes || [])]) {
       for (const k of ['image_id', 'previous_image_id', 'master_image_id']) if (f?.[k]) frameImages.add(sid(f[k]));
     }
     for (const k of ['video_file_id', 'audio_file_id']) if (c[k]) attachments.add(sid(c[k]));

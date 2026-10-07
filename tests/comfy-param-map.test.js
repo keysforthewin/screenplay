@@ -26,6 +26,17 @@ const SLOTS = JSON.parse(readFileSync(path.join(here, 'fixtures/comfy/slots.json
 describe('registry addresses', () => {
   it('every registered model maps only onto slots comfy-cli reported for its template', () => {
     for (const m of COMFY_VIDEO_MODELS) {
+      if (m.graph) {
+        // A builder model has no template and no addresses; its graph is
+        // covered by tests/ltx-keyframe-workflow.test.js.
+        expect(m.template).toBeNull();
+        expect(m.imageSlots).toEqual([]);
+        for (const [key, spec] of Object.entries(m.params)) {
+          expect(CANONICAL_PARAM_ORDER, `${m.id}.${key} is not canonical`).toContain(key);
+          expect(spec.address).toBeUndefined();
+        }
+        continue;
+      }
       const known = new Set(SLOTS[m.template] || []);
       expect(known.size, `no slot fixture for ${m.template}`).toBeGreaterThan(0);
       for (const [key, spec] of Object.entries(m.params)) {

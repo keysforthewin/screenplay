@@ -8,3 +8,4 @@ mongo-data/
 exports/
 backups/
 tmp/
+__pycache__/

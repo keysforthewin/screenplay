@@ -18,9 +18,14 @@ import {
 } from '../web/cutFrames.js';
 import { MAX_SCENE_TITLE } from '../web/cutValidation.js';
 import {
+  addVideoPromptKeyframeViaGateway,
   createVideoPromptViaGateway,
   createVideoSceneViaGateway,
-  cutFrameKey,
+  frameLabel,
+  getCutFrame,
+  keyframeFrameKey,
+  parseFrameKey,
+  removeVideoPromptKeyframeViaGateway,
   reorderCutsInSceneViaGateway,
   reorderVideoScenesViaGateway,
   setEntityFieldMarkdown,
@@ -29,18 +34,24 @@ import {
   setVideoPromptTextFieldViaGateway,
   setVideoPromptVideoViaGateway,
   undoVideoPromptStartFrameViaGateway,
+  updateVideoPromptKeyframeViaGateway,
 } from '../web/gateway.js';
-import { McpInputError, checkDuration, checkReferenceIds, requireProjectImage } from './resolve.js';
+import { McpInputError, checkDuration, checkKeyframeSpec, checkReferenceIds, requireProjectImage } from './resolve.js';
 import { serializeCut, serializeScene } from './serialize.js';
 
 const CUT_TEXT_FIELDS = ['title', 'prompt', 'start_frame_prompt', 'end_frame_prompt'];
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k) && o[k] !== undefined;
 const text = (v) => (v == null ? '' : String(v));
 
+// "start" | "end" | "keyframe:<id>" (also "kf:<id>", "start_frame"…) → the
+// frame key the gateway understands ('start' | 'end' | 'kf:<id>').
 export function frameName(raw) {
-  const f = String(raw || '').toLowerCase().replace(/[_-]?frame$/, '');
+  const str = String(raw || '').toLowerCase().trim();
+  const kf = str.match(/^(?:keyframe|kf)[:_-]([a-f0-9]{24})$/);
+  if (kf) return keyframeFrameKey(kf[1]);
+  const f = str.replace(/[_-]?frame$/, '');
   if (f === 'start' || f === 'end') return f;
-  throw new McpInputError('frame must be "start" or "end"');
+  throw new McpInputError('frame must be "start", "end" or "keyframe:<keyframe id>"');
 }
 
 // A beat's scenes with their cuts, in order.
@@ -85,6 +96,12 @@ async function checkCutSpec(projectId, spec) {
     const key = `${frame}_frame_reference_ids`;
     if (has(spec, key)) out[frame] = await checkReferenceIds(projectId, spec[key]);
   }
+  if (has(spec, 'keyframes')) {
+    if (!Array.isArray(spec.keyframes)) throw new McpInputError('keyframes must be a list');
+    if (spec.keyframes.length && !(out.duration > 0)) throw new McpInputError('keyframes need duration_seconds on the cut');
+    out.keyframes = [];
+    for (const k of spec.keyframes) out.keyframes.push(await checkKeyframeSpec(projectId, k, out.duration));
+  }
   return out;
 }
 
@@ -94,8 +111,21 @@ async function setReferences(projectId, cutId, frame, ids) {
     projectId,
     promptId: cutId,
     frame,
-    startFrame: { ...(cut?.[cutFrameKey(frame)] || {}), prompt: undefined, reference_ids: ids },
+    startFrame: { ...(getCutFrame(cut, frame) || {}), prompt: undefined, reference_ids: ids },
   });
+}
+
+async function addKeyframes(projectId, cutId, checkedKeyframes) {
+  for (const k of checkedKeyframes) {
+    await addVideoPromptKeyframeViaGateway({
+      projectId,
+      promptId: cutId,
+      atSeconds: k.at_seconds,
+      strength: k.strength,
+      prompt: k.prompt,
+      referenceIds: k.reference_ids,
+    });
+  }
 }
 
 async function readCut(projectId, cutId, texts = {}) {
@@ -134,6 +164,7 @@ async function insertCut(projectId, scene, spec, checked) {
   for (const frame of ['start', 'end']) {
     if (checked[frame]?.length) await setReferences(projectId, id, frame, checked[frame]);
   }
+  if (checked.keyframes?.length) await addKeyframes(projectId, id, checked.keyframes);
   return cut;
 }
 
@@ -165,6 +196,7 @@ export async function updateScene({ projectId, scene, title, position }) {
 // the frame's stored prompt along, and must not run while a new prompt is on
 // its way from the shared document to Mongo.
 export async function updateCut({ projectId, cut, patch }) {
+  if (has(patch, 'keyframes')) throw new McpInputError('update_cut does not take keyframes — use add_keyframe / update_keyframe / delete_keyframe');
   const checked = await checkCutSpec(projectId, patch);
   const id = String(cut._id);
   if (has(patch, 'duration_seconds')) {
@@ -187,11 +219,19 @@ export async function updateCut({ projectId, cut, patch }) {
 
 function refuseWhileRendering(cut, frame) {
   if (activeCutFrameJob(cut._id, frame)) {
-    throw new McpInputError(`This cut's ${frame} frame is being rendered from the Scenes tab right now — try again when it is done.`);
+    throw new McpInputError(`This cut's ${frameLabel(frame, cut)} is being rendered from the Scenes tab right now — try again when it is done.`);
+  }
+}
+
+// A keyframe frame key must name a keyframe of THIS cut.
+function requireFrame(cut, frame) {
+  if (parseFrameKey(frame).kind === 'keyframe' && !getCutFrame(cut, frame)) {
+    throw new McpInputError(`keyframe ${parseFrameKey(frame).kfId} not found on cut ${cut._id}`);
   }
 }
 
 export async function setFrameImage({ projectId, cut, frame, buffer, contentType = null, model = null }) {
+  requireFrame(cut, frame);
   refuseWhileRendering(cut, frame);
   await storeCutFrameImage({ projectId, cut, frame, buffer, contentType, model: model ? String(model).slice(0, 200) : null });
   return readCut(projectId, String(cut._id));
@@ -216,16 +256,64 @@ export async function setFrameImageFrom({ projectId, cut, frame, imageUrl = null
 }
 
 export async function clearFrameImage({ projectId, cut, frame }) {
+  requireFrame(cut, frame);
   refuseWhileRendering(cut, frame);
   await clearCutFrame({ projectId, cut, frame });
   return readCut(projectId, String(cut._id));
 }
 
 export async function undoFrameImage({ projectId, cut, frame }) {
+  requireFrame(cut, frame);
   refuseWhileRendering(cut, frame);
-  if (!cut[cutFrameKey(frame)]?.previous_image_id) throw new McpInputError(`This ${frame} frame has no earlier image to go back to.`);
+  if (!getCutFrame(cut, frame)?.previous_image_id) throw new McpInputError(`This ${frameLabel(frame, cut)} has no earlier image to go back to.`);
   const updated = await undoVideoPromptStartFrameViaGateway({ projectId, promptId: String(cut._id), frame });
   if (frame === 'start') await repointStartFrameReference({ projectId, cut: updated, from: cut.start_frame.image_id });
+  return readCut(projectId, String(cut._id));
+}
+
+// ─── Keyframes ──────────────────────────────────────────────────────────────
+
+export async function addKeyframe({ projectId, cut, spec }) {
+  if (!(cut.duration_seconds > 0)) throw new McpInputError('set duration_seconds on the cut before adding keyframes');
+  const k = await checkKeyframeSpec(projectId, spec, cut.duration_seconds);
+  const { keyframe_id } = await addVideoPromptKeyframeViaGateway({
+    projectId,
+    promptId: String(cut._id),
+    atSeconds: k.at_seconds,
+    strength: k.strength,
+    prompt: k.prompt,
+    referenceIds: k.reference_ids,
+  });
+  const out = await readCut(projectId, String(cut._id));
+  return { keyframe_id, cut: out };
+}
+
+// Scalars first, the prompt last (see updateCut).
+export async function updateKeyframe({ projectId, cut, keyframeId, patch }) {
+  const frame = keyframeFrameKey(keyframeId);
+  requireFrame(cut, frame);
+  const k = await checkKeyframeSpec(projectId, patch, cut.duration_seconds, { partial: true });
+  const scalars = {};
+  if (has(patch, 'at_seconds')) scalars.atSeconds = k.at_seconds;
+  if (has(patch, 'strength')) scalars.strength = k.strength;
+  if (has(patch, 'reference_ids')) scalars.referenceIds = k.reference_ids;
+  if (Object.keys(scalars).length) {
+    await updateVideoPromptKeyframeViaGateway({ projectId, promptId: String(cut._id), keyframeId, ...scalars });
+  }
+  const texts = {};
+  if (has(patch, 'prompt')) {
+    texts[`kf:${keyframeId}:prompt`] = text(patch.prompt);
+    await setVideoPromptTextFieldViaGateway({ projectId, promptId: String(cut._id), field: `kf:${keyframeId}:prompt`, text: texts[`kf:${keyframeId}:prompt`] });
+  }
+  if (!Object.keys(scalars).length && !has(patch, 'prompt')) throw new McpInputError('nothing to change: pass at_seconds, strength, prompt or reference_ids');
+  return readCut(projectId, String(cut._id), texts);
+}
+
+export async function deleteKeyframe({ projectId, cut, keyframeId }) {
+  const frame = keyframeFrameKey(keyframeId);
+  requireFrame(cut, frame);
+  refuseWhileRendering(cut, frame);
+  await removeVideoPromptKeyframeViaGateway({ projectId, promptId: String(cut._id), keyframeId });
   return readCut(projectId, String(cut._id));
 }
 

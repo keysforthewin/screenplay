@@ -79,6 +79,7 @@ const TOOL_TIMEOUTS = {
   fetch_template: 180_000,
   list_workflow_slots: 60_000,
   set_workflow_slot: 60_000,
+  validate_workflow: 60_000,
   list_workflow_notes: 60_000,
   upload_file: 330_000,
   run_workflow: 180_000,
@@ -179,6 +180,9 @@ export const comfy = {
   setWorkflowSlot: (workflowPath, overrides, { stdout = false } = {}) =>
     callComfyTool('set_workflow_slot', { workflow_path: workflowPath, overrides, stdout }),
   listWorkflowNotes: (workflowPath) => callComfyTool('list_workflow_notes', { workflow_path: workflowPath }),
+  // Pre-flight a workflow (API or UI format) against the live object_info:
+  // { valid, errors[], warnings[] }. An invalid graph is a normal answer.
+  validateWorkflow: (workflowPath) => callComfyTool('validate_workflow', { workflow_path: workflowPath }),
   uploadFile: (paths, { overwrite = true } = {}) => callComfyTool('upload_file', { paths, overwrite }),
   runWorkflow: (workflowPath, { wait = false, confirmSpend = false, timeoutSeconds = 110 } = {}) =>
     callComfyTool('run_workflow', {

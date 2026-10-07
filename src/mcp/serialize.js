@@ -90,6 +90,16 @@ export function serializeCut(cut, scene = null, texts = {}) {
     prompt: texts.prompt ?? cut.prompt ?? '',
     start_frame: serializeFrame(cut.start_frame),
     end_frame: serializeFrame(cut.end_frame),
+    // Pictures the clip passes through between its frames, in time order;
+    // `strength` null = the renderer's default. Each is a frame like the two
+    // above (own prompt, references, image, undo) addressed as "keyframe:<id>".
+    keyframes: (cut.keyframes || []).map((k) => ({
+      id: String(k.id),
+      at_seconds: k.at_seconds,
+      strength: k.strength ?? null,
+      ...serializeFrame(k),
+      ...(texts[`kf:${k.id}:prompt`] != null ? { prompt: texts[`kf:${k.id}:prompt`] } : {}),
+    })),
     video: cut.video_file_id
       ? {
           attachment_id: String(cut.video_file_id),

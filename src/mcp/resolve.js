@@ -13,7 +13,7 @@ import { getBeat } from '../mongo/plots.js';
 import { getDefaultProject, getProjectById, getProjectByTitle, listProjects } from '../mongo/projects.js';
 import { MAX_REFERENCE_IMAGES, getVideoPrompt } from '../mongo/videoPrompts.js';
 import { getVideoScene } from '../mongo/videoScenes.js';
-import { isOidHex, isValidCutDuration, MAX_CUT_SECONDS } from '../web/cutValidation.js';
+import { isOidHex, isValidCutDuration, isValidKeyframeTime, isValidStrength, KEYFRAME_MARGIN_SECONDS, MAX_CUT_SECONDS } from '../web/cutValidation.js';
 
 // A mistake in what the caller sent; its message goes back as the tool error.
 export class McpInputError extends Error {}
@@ -90,4 +90,28 @@ export async function requireProjectImage(projectId, imageId) {
   const owner = file.metadata?.project_id;
   if (owner && owner !== projectId) throw new McpInputError(`image ${imageId} belongs to another project`);
   return file;
+}
+
+// One keyframe spec `{at_seconds, strength?, prompt?, reference_ids?}` against
+// the cut's length. `partial` (update_keyframe) checks only the keys given.
+export async function checkKeyframeSpec(projectId, spec, durationSeconds, { partial = false } = {}) {
+  if (!spec || typeof spec !== 'object') throw new McpInputError('a keyframe is an object {at_seconds, strength?, prompt?, reference_ids?}');
+  const out = {};
+  const given = (k) => Object.prototype.hasOwnProperty.call(spec, k) && spec[k] !== undefined;
+  if (!partial || given('at_seconds')) {
+    if (!isValidKeyframeTime(spec.at_seconds, durationSeconds)) {
+      const hi = durationSeconds > 0 ? ` and ${durationSeconds - KEYFRAME_MARGIN_SECONDS}` : '';
+      throw new McpInputError(`at_seconds must be a time inside the cut, between ${KEYFRAME_MARGIN_SECONDS}${hi} s in 0.5 s steps (got ${JSON.stringify(spec.at_seconds)})`);
+    }
+    out.at_seconds = Number(spec.at_seconds);
+  }
+  if (given('strength')) {
+    if (spec.strength !== null && !isValidStrength(spec.strength)) throw new McpInputError('strength must be between 0 and 1, or null for the model default');
+    out.strength = spec.strength === null ? null : Number(spec.strength);
+  } else if (!partial) out.strength = null;
+  if (given('prompt')) out.prompt = spec.prompt == null ? '' : String(spec.prompt);
+  else if (!partial) out.prompt = '';
+  if (given('reference_ids')) out.reference_ids = await checkReferenceIds(projectId, spec.reference_ids);
+  else if (!partial) out.reference_ids = [];
+  return out;
 }

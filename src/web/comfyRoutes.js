@@ -137,6 +137,8 @@ export function buildComfyRouter() {
       const model = getComfyVideoModel(req.params.id);
       if (!model) return res.status(404).json({ error: 'unknown ComfyUI model' });
       if (!isComfyConfigured()) return res.status(503).json({ error: new ComfyNotConfiguredError().message });
+      // A builder model has no template and no slots (its graph is emitted per render).
+      if (model.graph) return res.json({ model_id: model.id, template: null, graph: model.graph, local_check: null, slots: [] });
       const tpl = await ensureTemplateFile(model);
       const listing = await comfy.listWorkflowSlots(tpl.path);
       const slots = Array.isArray(listing?.slots) ? listing.slots : Array.isArray(listing) ? listing : [];

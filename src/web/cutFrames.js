@@ -1,8 +1,10 @@
 // cutFrames.js
 //
-// Rendering a cut's start frame or end frame (Scenes tab). One frame = the
-// frame's own prompt + the frame's own reference images, sent to the image
-// model the user picked — nothing is planned, picked or checked for them:
+// Rendering a cut's frames (Scenes tab): the start frame, the end frame or
+// one of its keyframes — addressed by a FRAME KEY 'start' | 'end' | 'kf:<id>'
+// (gateway.js#parseFrameKey). One frame = the frame's own prompt + the
+// frame's own reference images, sent to the image model the user picked —
+// nothing is planned, picked or checked for them:
 //
 //   frame.prompt + frame.reference_ids → dispatchStillImage → a beat-owned
 //   image → setVideoPromptStartFrameViaGateway (the replaced image becomes
@@ -13,19 +15,19 @@
 // clothes, set artwork the place; the cut's own start frame, when it is among
 // the END frame's references, is the opening frame of the same shot.
 //
-// Jobs are in-memory and per frame: one render at a time for a cut's start
-// frame and one for its end frame; different frames and cuts run side by side.
+// Jobs are in-memory and per frame: one render at a time for each frame of a
+// cut (start, end, each keyframe); different frames and cuts run side by side.
 
 import { ObjectId } from 'mongodb';
 import { logger } from '../log.js';
-import { uploadGeneratedImage } from '../mongo/images.js';
+import { deleteImages, uploadGeneratedImage } from '../mongo/images.js';
 import { getBeat } from '../mongo/plots.js';
 import { getModelDefaults } from '../mongo/projectSettings.js';
 import { getVideoPrompt } from '../mongo/videoPrompts.js';
 import { stripMarkdown } from '../util/markdown.js';
 import { isComfyImageModelId } from '../comfy/imageModels.js';
 import { loadImageInput } from './beatPlanShared.js';
-import { cutFrameKey, setVideoPromptStartFrameViaGateway } from './gateway.js';
+import { frameLabel, getCutFrame, parseFrameKey, setVideoPromptStartFrameViaGateway } from './gateway.js';
 import { maxReferenceImagesFor } from './imageModelInfo.js';
 import { isTerminalJobStatus, RECENT_JOB_MS } from './jobLookup.js';
 import { composeStartFramePrompt } from './startFramePrompt.js';
@@ -50,8 +52,9 @@ export class CutNotFoundError extends Error {
 }
 
 export class CutFrameBusyError extends Error {
-  constructor(frame, jobId) {
-    super(`This cut's ${frame} frame is already rendering.`);
+  // `label` is frameLabel(frame, cut): "start frame", "keyframe at 4 s"…
+  constructor(label, jobId) {
+    super(`This cut's ${label} is already rendering.`);
     this.code = 'CUT_BUSY';
     this.status = 409;
     this.job_id = jobId;
@@ -100,10 +103,12 @@ async function referenceRoster(projectId, beat) {
 // stored list named the wrong picture). Exactly the listed images (capped at
 // what the model accepts) — an empty list renders from the prompt alone.
 async function loadReferences({ projectId, beat, cut, frame, model }) {
-  const ids = (cut[cutFrameKey(frame)]?.reference_ids || []).map(String).slice(0, maxReferenceImagesFor(model));
+  const ids = (getCutFrame(cut, frame)?.reference_ids || []).map(String).slice(0, maxReferenceImagesFor(model));
   if (!ids.length) return [];
   const roster = await referenceRoster(projectId, beat);
-  const startImage = frame === 'end' && cut.start_frame?.image_id ? String(cut.start_frame.image_id) : null;
+  // The end frame and every keyframe may carry the cut's start frame as the
+  // opening frame of the same shot.
+  const startImage = frame !== 'start' && cut.start_frame?.image_id ? String(cut.start_frame.image_id) : null;
   const out = [];
   for (const id of ids) {
     const ref = await loadImageInput(id);
@@ -130,10 +135,10 @@ async function loadReferences({ projectId, beat, cut, frame, model }) {
 
 // Render one frame of one cut and store it. Returns the updated cut.
 export async function renderCutFrame({ projectId, cut, frame = 'start', imageModel = null, comfyParams = null }) {
-  const key = cutFrameKey(frame);
-  const current = cut[key] || null;
+  parseFrameKey(frame);
+  const current = getCutFrame(cut, frame);
   const prompt = stripMarkdown(current?.prompt || '').trim();
-  if (!prompt) throw new CutFrameInputError(`This cut has no ${frame}-frame prompt yet.`);
+  if (!prompt) throw new CutFrameInputError(`This cut's ${frameLabel(frame, cut)} has no prompt yet.`);
   const beat = await getBeat(projectId, String(cut.beat_id));
   const model = await resolveImageModel(projectId, imageModel);
   const refs = await loadReferences({ projectId, beat, cut, frame, model });
@@ -166,8 +171,8 @@ export async function renderCutFrame({ projectId, cut, frame = 'start', imageMod
 // renderer above and by the MCP server, whose agent brings its own pictures.
 // Returns the updated cut.
 export async function storeCutFrameImage({ projectId, cut, frame = 'start', buffer, contentType, prompt = null, model = null, generatedBy = null }) {
-  const key = cutFrameKey(frame);
-  const current = cut[key] || null;
+  const fk = parseFrameKey(frame);
+  const current = getCutFrame(cut, frame);
   const file = await uploadGeneratedImage(projectId, {
     buffer,
     contentType,
@@ -175,12 +180,20 @@ export async function storeCutFrameImage({ projectId, cut, frame = 'start', buff
     generatedBy: generatedBy || model,
     ownerType: 'beat',
     ownerId: cut.beat_id,
-    filename: `cut-${cut._id}-${frame}-frame-${Date.now()}.png`,
+    filename: `cut-${cut._id}-${fk.kind === 'keyframe' ? `kf-${fk.kfId}` : frame}-frame-${Date.now()}.png`,
     description: '',
   });
   // Re-read: the prompt and the reference list are edited live while a
   // render runs, and this write must not put the old ones back.
-  const latest = (await getVideoPrompt(projectId, String(cut._id)))?.[key] || current;
+  const fresh = await getVideoPrompt(projectId, String(cut._id));
+  if (fk.kind === 'keyframe' && fresh && !getCutFrame(fresh, frame)) {
+    // The keyframe was deleted while its picture rendered: never resurrect it.
+    try {
+      await deleteImages([String(file._id)]);
+    } catch {}
+    throw new CutFrameInputError('This keyframe was removed while it rendered.');
+  }
+  const latest = (fresh && getCutFrame(fresh, frame)) || current;
   const updated = await setVideoPromptStartFrameViaGateway({
     projectId,
     promptId: String(cut._id),
@@ -197,31 +210,39 @@ export async function storeCutFrameImage({ projectId, cut, frame = 'start', buff
   return repointStartFrameReference({ projectId, cut: updated, from: latest?.image_id || current?.image_id });
 }
 
-// The end frame may list the cut's start frame as a reference. When the start
-// frame's image changes (a new render, an undo), the end frame's list follows
-// it, so it never points at a replaced picture.
+// The end frame and the keyframes may list the cut's start frame as a
+// reference. When the start frame's image changes (a new render, an undo),
+// every such list follows it, so none points at a replaced picture.
 export async function repointStartFrameReference({ projectId, cut, from }) {
   const to = cut?.start_frame?.image_id ? String(cut.start_frame.image_id) : null;
   const old = from ? String(from) : null;
-  const end = cut?.end_frame;
-  if (!old || !to || old === to || !end) return cut;
-  const ids = (end.reference_ids || []).map(String);
-  if (!ids.includes(old)) return cut;
-  return setVideoPromptStartFrameViaGateway({
-    projectId,
-    promptId: String(cut._id),
-    frame: 'end',
-    startFrame: { ...end, reference_ids: ids.map((id) => (id === old ? to : id)) },
-  });
+  if (!old || !to || old === to) return cut;
+  let updated = cut;
+  const targets = [
+    ['end', cut?.end_frame],
+    ...(cut?.keyframes || []).map((kf) => [`kf:${kf.id}`, kf]),
+  ];
+  for (const [frame, sub] of targets) {
+    if (!sub) continue;
+    const ids = (sub.reference_ids || []).map(String);
+    if (!ids.includes(old)) continue;
+    updated = await setVideoPromptStartFrameViaGateway({
+      projectId,
+      promptId: String(cut._id),
+      frame,
+      startFrame: { ...sub, reference_ids: ids.map((id) => (id === old ? to : id)) },
+    });
+  }
+  return updated;
 }
 
 // Delete a frame's rendered image for good — the current image AND the undo
-// blob — and keep its prompt and references.
+// blob — and keep its prompt and references (a keyframe keeps its entry).
 export async function clearCutFrame({ projectId, cut, frame = 'start' }) {
-  const key = cutFrameKey(frame);
-  const kept = cut[key];
+  const fk = parseFrameKey(frame);
+  const kept = getCutFrame(cut, frame);
   let updated = await setVideoPromptStartFrameViaGateway({ projectId, promptId: String(cut._id), frame, startFrame: null });
-  if (kept) {
+  if (kept && fk.kind !== 'keyframe') {
     updated = await setVideoPromptStartFrameViaGateway({
       projectId,
       promptId: String(cut._id),
@@ -253,7 +274,7 @@ export function serializeCutFrameJob(job) {
 
 // The running render of one frame of one cut, if any.
 export function activeCutFrameJob(cutId, frame) {
-  return activeJobFor(cutId, frame === 'end' ? 'end' : 'start');
+  return activeJobFor(cutId, parseFrameKey(frame).key);
 }
 
 function activeJobFor(cutId, frame) {
@@ -276,14 +297,17 @@ export function listCutFrameJobsForBeat(beatId) {
 // Start rendering one frame of one cut. Resolves to the job id at once; the
 // render runs in the background and ends `done` or `error`.
 export async function startCutFrameJob({ projectId, cutId, frame = 'start', imageModel = null, comfyParams = null }) {
-  const which = frame === 'end' ? 'end' : 'start';
+  const fk = parseFrameKey(frame);
+  const which = fk.key;
   const cut = await getVideoPrompt(projectId, cutId);
   if (!cut) throw new CutNotFoundError(cutId);
-  if (!stripMarkdown(cut[cutFrameKey(which)]?.prompt || '').trim()) {
-    throw new CutFrameInputError(`This cut has no ${which}-frame prompt yet.`);
+  const sub = getCutFrame(cut, which);
+  if (fk.kind === 'keyframe' && !sub) throw new CutFrameInputError(`Keyframe not found: ${fk.kfId}`);
+  if (!stripMarkdown(sub?.prompt || '').trim()) {
+    throw new CutFrameInputError(`This cut's ${frameLabel(which, cut)} has no prompt yet.`);
   }
   const running = activeJobFor(cut._id, which);
-  if (running) throw new CutFrameBusyError(which, running.job_id);
+  if (running) throw new CutFrameBusyError(frameLabel(which, cut), running.job_id);
   const job = {
     job_id: new ObjectId().toString(),
     beat_id: String(cut.beat_id),

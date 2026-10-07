@@ -111,6 +111,9 @@ import {
   getVideoPrompt as mongoGetVideoPrompt,
   recomputeCutOrderForBeat as mongoRecomputeCutOrder,
   reorderCutsInScene as mongoReorderCutsInScene,
+  addVideoPromptKeyframe as mongoAddVideoPromptKeyframe,
+  updateVideoPromptKeyframe as mongoUpdateVideoPromptKeyframe,
+  removeVideoPromptKeyframe as mongoRemoveVideoPromptKeyframe,
   normalizeFrame,
 } from '../mongo/videoPrompts.js';
 import {
@@ -385,6 +388,14 @@ async function readEntityField({ projectId, entityType, entityId, field }) {
       if (!s) throw new Error(`Video scene not found: ${sm[1]}`);
       return String(s.title || '');
     }
+    const km = field.match(VIDEO_PROMPT_KF_FIELD_RE);
+    if (km) {
+      const p = await mongoGetVideoPrompt(projectId, km[1]);
+      if (!p) throw new Error(`Video prompt not found: ${km[1]}`);
+      const kf = (p.keyframes || []).find((k) => k.id.toString() === km[2]);
+      if (!kf) throw new Error(`Keyframe not found: ${km[2]}`);
+      return String(kf.prompt || '');
+    }
     const m = field.match(/^item:([a-f0-9]{24}):(title|prompt|start_frame_prompt|end_frame_prompt)$/);
     if (!m) throw new Error(`gateway fallback: unknown video_prompts field "${field}"`);
     const p = await mongoGetVideoPrompt(projectId, m[1]);
@@ -507,6 +518,8 @@ async function fallbackTextWrite({ projectId, entityType, entityId, field, op, .
   if (entityType === 'video_prompts') {
     const sm = field.match(/^scene:([a-f0-9]{24}):title$/);
     if (sm) return mongoUpdateVideoScene(projectId, sm[1], { title: args.markdown });
+    const km = field.match(VIDEO_PROMPT_KF_FIELD_RE);
+    if (km) return mongoUpdateVideoPrompt(projectId, km[1], { keyframe_prompts: { [km[2]]: args.markdown } });
     const m = field.match(/^item:([a-f0-9]{24}):(title|prompt|start_frame_prompt|end_frame_prompt)$/);
     if (!m) throw new Error(`gateway fallback: unknown video_prompts field "${field}"`);
     return mongoUpdateVideoPrompt(projectId, m[1], { [m[2]]: args.markdown });
@@ -1880,11 +1893,12 @@ export async function deleteAllDialogsForBeatViaGateway({ projectId, beatId }) {
 //
 // One y-doc per beat (room: "video_prompts:<beatId>") with four fragments
 // per cut — "item:<id>:title", "item:<id>:prompt", "item:<id>:start_frame_prompt",
-// "item:<id>:end_frame_prompt" — and one per scene — "scene:<id>:title".
-// Everything else (duration, each frame's reference images and rendered
-// image, the rendered video) lives in Mongo and is patched here with a
-// `fields_updated` ping so open Scenes pages refetch. Rows of `video_prompts`
-// are CUTS; `video_scenes` groups them.
+// "item:<id>:end_frame_prompt" — one per keyframe of a cut —
+// "item:<id>:kf:<keyframe id>:prompt" — and one per scene — "scene:<id>:title".
+// Everything else (duration, each frame's time / strength / reference images
+// and rendered image, the rendered video) lives in Mongo and is patched here
+// with a `fields_updated` ping so open Scenes pages refetch. Rows of
+// `video_prompts` are CUTS; `video_scenes` groups them.
 
 function videoPromptItemField(promptId, field) {
   return `item:${promptId}:${field}`;
@@ -1895,20 +1909,81 @@ function videoSceneField(sceneId, field) {
 }
 
 const VIDEO_PROMPT_TEXT_FIELDS = new Set(['title', 'prompt', 'start_frame_prompt', 'end_frame_prompt']);
+// A keyframe's prompt field, as the room names it ("kf:<keyframe id>:prompt"
+// after the "item:<cut id>:" prefix) — see roomRegistry's VIDEO_PROMPT_KF_RE.
+const VIDEO_PROMPT_KF_TEXT_RE = /^kf:([a-f0-9]{24}):prompt$/;
+const VIDEO_PROMPT_KF_FIELD_RE = /^item:([a-f0-9]{24}):kf:([a-f0-9]{24}):prompt$/;
 
-// The GridFS image ids a cut's start and end frames hold (current + one undo
-// step each). Reference images are artwork owned elsewhere and never listed.
+function isVideoPromptTextField(field) {
+  return VIDEO_PROMPT_TEXT_FIELDS.has(field) || VIDEO_PROMPT_KF_TEXT_RE.test(String(field || ''));
+}
+
+// The GridFS image ids a cut's frames hold — start, end and every keyframe
+// (current + one undo step each). Reference images are artwork owned
+// elsewhere and never listed.
 function cutFrameImageIds(row) {
-  return [row?.start_frame, row?.end_frame]
+  return [row?.start_frame, row?.end_frame, ...(row?.keyframes || [])]
     .filter(Boolean)
     .flatMap((f) => [f.image_id, f.previous_image_id])
     .filter(Boolean)
     .map((id) => String(id));
 }
 
-// 'start' | 'end' → the cut field that holds that frame.
+// ── Frame keys ──────────────────────────────────────────────────────────────
+// A cut's frames are addressed by a FRAME KEY: 'start' | 'end' | 'kf:<keyframe
+// id>'. Anything else throws — a silently coerced key would render the wrong
+// frame.
+const FRAME_KEY_KF_RE = /^kf:([a-f0-9]{24})$/;
+
+export function parseFrameKey(frame) {
+  const s = String(frame ?? 'start');
+  if (s === 'start' || s === 'end') return { kind: s, key: s, kfId: null };
+  const m = s.match(FRAME_KEY_KF_RE);
+  if (m) return { kind: 'keyframe', key: s, kfId: m[1] };
+  throw new Error(`unknown frame key: ${s}`);
+}
+
+export function keyframeFrameKey(keyframeId) {
+  return `kf:${String(keyframeId)}`;
+}
+
+// The frame sub-doc a key names on this cut (null when the keyframe is gone
+// or the start/end frame is unset).
+export function getCutFrame(cut, frame) {
+  const k = parseFrameKey(frame);
+  if (k.kind === 'start') return cut?.start_frame || null;
+  if (k.kind === 'end') return cut?.end_frame || null;
+  return (cut?.keyframes || []).find((kf) => kf.id?.toString() === k.kfId) || null;
+}
+
+// "start frame" / "end frame" / "keyframe at 2.5 s" for messages.
+export function frameLabel(frame, cut = null) {
+  const k = parseFrameKey(frame);
+  if (k.kind !== 'keyframe') return `${k.kind} frame`;
+  const kf = cut ? getCutFrame(cut, frame) : null;
+  return kf ? `keyframe at ${kf.at_seconds} s` : 'keyframe';
+}
+
+// 'start' | 'end' → the cut field that holds that frame. A keyframe has no
+// field of its own (it lives in `keyframes[]`), so a 'kf:' key throws here.
 export function cutFrameKey(frame) {
-  return frame === 'end' ? 'end_frame' : 'start_frame';
+  const k = parseFrameKey(frame);
+  if (k.kind === 'keyframe') throw new Error('a keyframe has no cut field; use getCutFrame / framePatch');
+  return k.kind === 'end' ? 'end_frame' : 'start_frame';
+}
+
+// The Mongo patch that replaces the frame `frame` names with `next` (null
+// clears a start/end frame; a keyframe keeps its entry with the image fields
+// blanked — the entry IS the keyframe).
+function framePatch(cut, frame, next) {
+  const k = parseFrameKey(frame);
+  if (k.kind !== 'keyframe') return { [cutFrameKey(frame)]: next };
+  const keyframes = (cut.keyframes || []).map((kf) => {
+    if (kf.id.toString() !== k.kfId) return kf;
+    if (next == null) return { ...kf, image_id: null, previous_image_id: null, model: null, generated_at: null };
+    return { ...kf, ...next, id: kf.id, at_seconds: kf.at_seconds, strength: kf.strength };
+  });
+  return { keyframes };
 }
 
 // Best-effort media cleanup for a batch of cut rows: rendered clips
@@ -1933,7 +2008,7 @@ async function deleteCutMedia(rows) {
 }
 
 export async function setVideoPromptTextFieldViaGateway({ projectId, promptId, field, text }) {
-  if (!VIDEO_PROMPT_TEXT_FIELDS.has(field)) {
+  if (!isVideoPromptTextField(field)) {
     throw new Error(`unknown video prompt field: ${field}`);
   }
   const p = await mongoGetVideoPrompt(projectId, promptId);
@@ -2093,17 +2168,22 @@ export async function setVideoPromptVideoViaGateway({
 // `prompt` keeps the current prompt (it is a collab fragment the caller may
 // not have in hand).
 export async function setVideoPromptStartFrameViaGateway({ projectId, promptId, startFrame, frame = 'start' }) {
-  const key = cutFrameKey(frame);
+  const fk = parseFrameKey(frame);
   const p = await mongoGetVideoPrompt(projectId, promptId);
   if (!p) throw new Error(`Video prompt not found: ${promptId}`);
-  const prev = p[key] || null;
-  if (startFrame == null) {
-    await deleteCutMedia([{ [key]: prev }]);
-    const cleared = await mongoUpdateVideoPrompt(projectId, p._id.toString(), { [key]: null });
+  const prev = getCutFrame(p, frame);
+  if (fk.kind === 'keyframe' && !prev) throw new Error(`Keyframe not found: ${fk.kfId}`);
+  const changed = fk.kind === 'keyframe' ? ['keyframes'] : [cutFrameKey(frame)];
+  const ping = () =>
     broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
-      changed: [key],
+      changed,
       video_prompt_id: p._id.toString(),
+      ...(fk.kind === 'keyframe' ? { keyframe_id: fk.kfId } : {}),
     });
+  if (startFrame == null) {
+    await deleteCutMedia([{ start_frame: prev }]);
+    const cleared = await mongoUpdateVideoPrompt(projectId, p._id.toString(), framePatch(p, frame, null));
+    ping();
     return cleared;
   }
   const next = normalizeFrame(startFrame);
@@ -2123,11 +2203,8 @@ export async function setVideoPromptStartFrameViaGateway({ projectId, promptId, 
   } else if (!next.previous_image_id && prev?.previous_image_id) {
     next.previous_image_id = prev.previous_image_id;
   }
-  const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), { [key]: next });
-  broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
-    changed: [key],
-    video_prompt_id: p._id.toString(),
-  });
+  const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), framePatch(p, frame, next));
+  ping();
   return updated;
 }
 
@@ -2135,11 +2212,11 @@ export async function setVideoPromptStartFrameViaGateway({ projectId, promptId, 
 // The discarded current image is deleted (best-effort). Throws when there is
 // nothing to undo.
 export async function undoVideoPromptStartFrameViaGateway({ projectId, promptId, frame = 'start' }) {
-  const key = cutFrameKey(frame);
+  const fk = parseFrameKey(frame);
   const p = await mongoGetVideoPrompt(projectId, promptId);
   if (!p) throw new Error(`Video prompt not found: ${promptId}`);
-  const prev = p[key];
-  if (!prev?.previous_image_id) throw new Error(`No previous ${frame} frame to restore`);
+  const prev = getCutFrame(p, frame);
+  if (!prev?.previous_image_id) throw new Error(`No previous ${frameLabel(frame, p)} to restore`);
   const discarded = prev.image_id ? String(prev.image_id) : null;
   const next = {
     ...prev,
@@ -2147,7 +2224,7 @@ export async function undoVideoPromptStartFrameViaGateway({ projectId, promptId,
     previous_image_id: null,
     generated_at: new Date(),
   };
-  const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), { [key]: next });
+  const updated = await mongoUpdateVideoPrompt(projectId, p._id.toString(), framePatch(p, frame, next));
   if (discarded && discarded !== String(next.image_id)) {
     try {
       await deleteImages([discarded]);
@@ -2156,9 +2233,80 @@ export async function undoVideoPromptStartFrameViaGateway({ projectId, promptId,
     }
   }
   broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
-    changed: [key],
+    changed: fk.kind === 'keyframe' ? ['keyframes'] : [cutFrameKey(frame)],
     video_prompt_id: p._id.toString(),
+    ...(fk.kind === 'keyframe' ? { keyframe_id: fk.kfId } : {}),
   });
+  return updated;
+}
+
+// ── Keyframes ───────────────────────────────────────────────────────────────
+
+function pingKeyframes(p, keyframeId, extra = {}) {
+  broadcastFieldsUpdated(buildRoomName('video_prompts', p.beat_id.toString()), {
+    changed: ['keyframes'],
+    video_prompt_id: p._id.toString(),
+    keyframe_id: keyframeId,
+    ...extra,
+  });
+}
+
+// Add a keyframe to a cut. Its prompt fragment is seeded BEFORE the Mongo
+// write (see seedNewRowFragments) so a store tick never blanks it. Returns the
+// updated cut; the new keyframe is the one whose id is `keyframe_id`.
+export async function addVideoPromptKeyframeViaGateway({
+  projectId,
+  promptId,
+  atSeconds,
+  strength = null,
+  prompt = '',
+  referenceIds = [],
+}) {
+  const p = await mongoGetVideoPrompt(projectId, promptId);
+  if (!p) throw new Error(`Video prompt not found: ${promptId}`);
+  const id = new ObjectId();
+  const text = String(prompt || '');
+  await seedNewRowFragments({
+    projectId,
+    entityType: 'video_prompts',
+    beatId: p.beat_id.toString(),
+    fragments: [[videoPromptItemField(p._id.toString(), `kf:${id.toString()}:prompt`), text]],
+    label: 'addVideoPromptKeyframe',
+  });
+  const updated = await mongoAddVideoPromptKeyframe(projectId, p._id.toString(), {
+    id,
+    at_seconds: atSeconds,
+    strength,
+    prompt: text,
+    reference_ids: referenceIds,
+  });
+  pingKeyframes(p, id.toString(), { added_keyframe_id: id.toString() });
+  return { cut: updated, keyframe_id: id.toString() };
+}
+
+// Change a keyframe's time, strength or reference list (never its image —
+// that goes through setVideoPromptStartFrameViaGateway with the 'kf:' key).
+export async function updateVideoPromptKeyframeViaGateway({ projectId, promptId, keyframeId, atSeconds, strength, referenceIds }) {
+  const p = await mongoGetVideoPrompt(projectId, promptId);
+  if (!p) throw new Error(`Video prompt not found: ${promptId}`);
+  const patch = {};
+  if (atSeconds !== undefined) patch.at_seconds = atSeconds;
+  if (strength !== undefined) patch.strength = strength;
+  if (referenceIds !== undefined) patch.reference_ids = referenceIds;
+  const updated = await mongoUpdateVideoPromptKeyframe(projectId, p._id.toString(), keyframeId, patch);
+  pingKeyframes(p, String(keyframeId));
+  return updated;
+}
+
+// Remove a keyframe with its image and undo blob.
+export async function removeVideoPromptKeyframeViaGateway({ projectId, promptId, keyframeId }) {
+  const p = await mongoGetVideoPrompt(projectId, promptId);
+  if (!p) throw new Error(`Video prompt not found: ${promptId}`);
+  const kf = getCutFrame(p, keyframeFrameKey(keyframeId));
+  if (!kf) throw new Error(`Keyframe not found: ${keyframeId}`);
+  await deleteCutMedia([{ start_frame: kf }]);
+  const updated = await mongoRemoveVideoPromptKeyframe(projectId, p._id.toString(), keyframeId);
+  pingKeyframes(p, String(keyframeId), { removed_keyframe_id: String(keyframeId) });
   return updated;
 }
 

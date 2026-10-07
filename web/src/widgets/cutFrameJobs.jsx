@@ -3,7 +3,7 @@ import { apiGet } from '../api.js';
 
 // Frame renders as page-level state. A render is a background job on the
 // server; the Scenes page keeps one snapshot per frame here (key
-// `<cutId>:<start|end>`) so the frame's panel shows "Rendering…" however the
+// `<cutId>:<start|end|kf:<id>>`) so the frame's panel shows "Rendering…" however the
 // page is re-rendered, and a reopened page picks running jobs up again from
 // GET /cuts/jobs. ScenesPanel owns the store (useCutFrameJobStore).
 

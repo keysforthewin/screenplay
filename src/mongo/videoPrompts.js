@@ -21,6 +21,13 @@
 //                  reference_ids: [ObjectId] (the images sent to the image
 //                  model with this frame's prompt, in order), model,
 //                  generated_at, previous_image_id (one-step undo) } | null
+//   keyframes: [{ id: ObjectId, at_seconds (half-second steps, inside the
+//                  cut's length), strength (0..1 | null = the renderer's
+//                  default), ...the frame shape above (prompt is the y-doc
+//                  fragment `item:<id>:kf:<keyframe id>:prompt`) }] — pictures
+//                  the clip must pass through between its start and end
+//                  frame, sorted by at_seconds; only ComfyUI models that
+//                  declare `inputs.keyframes` render them
 //   video_* fields: video_file_id, video_duration_seconds, video_generated_at,
 //                   video_model_id, video_model_label, video_fal_model,
 //                   video_model_lab, video_model_family, video_model_added_at,
@@ -124,6 +131,64 @@ function normalizeDuration(v) {
   return Math.max(0.5, Math.round(n * 2) / 2);
 }
 
+// Keyframes --------------------------------------------------------------
+
+export const KEYFRAME_STEP_SECONDS = 0.5;
+
+// A keyframe's time: a positive number on the half-second grid, or null when
+// unusable (the caller drops such an entry).
+export function normalizeKeyframeTime(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.max(KEYFRAME_STEP_SECONDS, Math.round(n / KEYFRAME_STEP_SECONDS) * KEYFRAME_STEP_SECONDS);
+}
+
+// 0..1, two decimals; null means "the renderer's default".
+export function normalizeStrength(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(Math.min(1, Math.max(0, n)) * 100) / 100;
+}
+
+// One keyframe: the frame shape plus id / at_seconds / strength. Returns null
+// when the time is unusable.
+export function normalizeKeyframe(raw) {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const at = normalizeKeyframeTime(src.at_seconds);
+  if (at == null) return null;
+  return {
+    id: maybeOid(src.id) || new ObjectId(),
+    at_seconds: at,
+    strength: normalizeStrength(src.strength),
+    ...normalizeFrame(src),
+  };
+}
+
+// The list invariants live here and only here: unusable entries dropped,
+// deduped by id, times clamped inside the cut's length when it is known
+// (0.5 s in from either end), sorted by time then id.
+export function normalizeKeyframes(raw, { durationSeconds = null } = {}) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const out = [];
+  const duration = numOrNull(durationSeconds) > 0 ? durationSeconds : null;
+  for (const entry of raw) {
+    const k = normalizeKeyframe(entry);
+    if (!k) continue;
+    const key = k.id.toString();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (duration != null) {
+      const hi = Math.max(KEYFRAME_STEP_SECONDS, duration - KEYFRAME_STEP_SECONDS);
+      if (k.at_seconds > hi) k.at_seconds = hi;
+    }
+    out.push(k);
+  }
+  out.sort((a, b) => a.at_seconds - b.at_seconds || a.id.toString().localeCompare(b.id.toString()));
+  return out;
+}
+
 function intOrNull(v) {
   if (v == null || v === '') return null;
   const n = Number(v);
@@ -147,6 +212,7 @@ function backfill(doc) {
     duration_seconds: numOrNull(doc.duration_seconds) > 0 ? doc.duration_seconds : null,
     start_frame: normalizeFrame(doc.start_frame),
     end_frame: normalizeFrame(doc.end_frame),
+    keyframes: normalizeKeyframes(doc.keyframes, { durationSeconds: doc.duration_seconds }),
     video_file_id: doc.video_file_id ?? null,
     video_duration_seconds: numOrNull(doc.video_duration_seconds),
     video_generated_at: doc.video_generated_at ?? null,
@@ -241,6 +307,7 @@ export async function createVideoPrompt({
   durationSeconds = null,
   startFrame = null,
   endFrame = null,
+  keyframes = [],
 } = {}) {
   if (!beatId) throw new Error('beatId required');
   const sceneOid = maybeOid(sceneId);
@@ -274,6 +341,7 @@ export async function createVideoPrompt({
     duration_seconds: normalizeDuration(durationSeconds),
     start_frame: normalizeFrame(startFrame),
     end_frame: normalizeFrame(endFrame),
+    keyframes: normalizeKeyframes(keyframes, { durationSeconds: normalizeDuration(durationSeconds) }),
     video_file_id: null,
     video_duration_seconds: null,
     video_generated_at: null,
@@ -313,6 +381,12 @@ export async function updateVideoPrompt(projectId, id, patch) {
   if (!existing) throw new Error(`Video prompt not found: ${id}`);
   const set = { updated_at: new Date() };
   const framePrompts = {};
+  const arrayFilters = [];
+  if ('keyframes' in patch && 'keyframe_prompts' in patch) {
+    // Mongo refuses a $set on `keyframes` and on `keyframes.$[x].prompt` in
+    // one update; the gateway never needs both at once.
+    throw new Error('update_video_prompt: keyframes and keyframe_prompts cannot be set in one patch');
+  }
   for (const [k, v] of Object.entries(patch)) {
     if (TEXT_FIELDS.has(k)) {
       set[k] = String(v ?? '');
@@ -352,8 +426,33 @@ export async function updateVideoPrompt(projectId, id, patch) {
       set[k] = normalizeFrame(v);
     } else if (k === 'start_frame_prompt' || k === 'end_frame_prompt') {
       framePrompts[k.replace(/_prompt$/, '')] = typeof v === 'string' ? v : String(v ?? '');
+    } else if (k === 'keyframes') {
+      // Whole-array replace (add / remove / move / strength / image); the
+      // normalizer re-sorts and clamps.
+      const duration = 'duration_seconds' in patch ? normalizeDuration(patch.duration_seconds) : existing.duration_seconds;
+      set.keyframes = normalizeKeyframes(v, { durationSeconds: duration });
+    } else if (k === 'keyframe_prompts') {
+      // The y-doc persist path for `item:<id>:kf:<kfId>:prompt`: an in-place
+      // $set on the matching element — race-free against a concurrent
+      // scalar write, like the dotted frame prompt below. Unknown ids are
+      // skipped (the keyframe was deleted under the fragment).
+      const map = v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+      for (const [kfId, text] of Object.entries(map)) {
+        const oid = maybeOid(kfId);
+        if (!oid || !(existing.keyframes || []).some((kf) => kf.id.toString() === oid.toString())) continue;
+        const name = `kf_${arrayFilters.length}`;
+        set[`keyframes.$[${name}].prompt`] = typeof text === 'string' ? text : String(text ?? '');
+        arrayFilters.push({ [`${name}.id`]: oid });
+      }
     } else {
       throw new Error(`update_video_prompt: unknown field "${k}"`);
+    }
+  }
+  // A shorter cut pulls its keyframes inside the new length.
+  if ('duration_seconds' in set && !('keyframes' in set) && (existing.keyframes || []).length) {
+    const clamped = normalizeKeyframes(existing.keyframes, { durationSeconds: set.duration_seconds });
+    if (JSON.stringify(clamped.map((k) => k.at_seconds)) !== JSON.stringify(existing.keyframes.map((k) => k.at_seconds))) {
+      set.keyframes = clamped;
     }
   }
   for (const [key, text] of Object.entries(framePrompts)) {
@@ -371,13 +470,51 @@ export async function updateVideoPrompt(projectId, id, patch) {
   if (Object.keys(set).length === 1) {
     throw new Error('update_video_prompt: patch produced no changes');
   }
-  await col().updateOne({ _id: existing._id }, { $set: set });
+  // arrayFilters only when a `$[…]` path exists — Mongo rejects an unused one.
+  await col().updateOne({ _id: existing._id }, { $set: set }, arrayFilters.length ? { arrayFilters } : undefined);
   logger.info(
     `mongo: video_prompt update id=${existing._id} fields=[${Object.keys(set)
       .filter((k) => k !== 'updated_at')
       .join(',')}]`,
   );
   return getVideoPrompt(projectId, existing._id);
+}
+
+// Keyframe helpers: read-modify-write through updateVideoPrompt (the list
+// needs a sort, which $push cannot do in the fake Mongo). Each re-reads the
+// row first; the renderer re-reads again right before it writes an image.
+
+// Append a keyframe. `id` may be pre-generated (the gateway seeds the prompt
+// fragment before the write). Returns the updated cut.
+export async function addVideoPromptKeyframe(projectId, cutId, { id = null, at_seconds, strength = null, prompt = '', reference_ids = [] } = {}) {
+  const existing = await getVideoPrompt(projectId, cutId);
+  if (!existing) throw new Error(`Video prompt not found: ${cutId}`);
+  const entry = normalizeKeyframe({ id, at_seconds, strength, prompt, reference_ids });
+  if (!entry) throw new Error(`keyframe at_seconds must be a positive number, got ${at_seconds}`);
+  return updateVideoPrompt(projectId, cutId, { keyframes: [...(existing.keyframes || []), entry] });
+}
+
+// Replace the fields of one keyframe (time, strength, image, references…).
+// Throws when the keyframe is gone.
+export async function updateVideoPromptKeyframe(projectId, cutId, keyframeId, patch = {}) {
+  const existing = await getVideoPrompt(projectId, cutId);
+  if (!existing) throw new Error(`Video prompt not found: ${cutId}`);
+  const key = String(keyframeId);
+  const current = (existing.keyframes || []).find((k) => k.id.toString() === key);
+  if (!current) throw new Error(`Keyframe not found: ${keyframeId}`);
+  const src = patch && typeof patch === 'object' ? patch : {};
+  const next = (existing.keyframes || []).map((k) => (k === current ? { ...k, ...src, id: k.id } : k));
+  return updateVideoPrompt(projectId, cutId, { keyframes: next });
+}
+
+// Drop one keyframe (the entry only — its images are the gateway's business).
+export async function removeVideoPromptKeyframe(projectId, cutId, keyframeId) {
+  const existing = await getVideoPrompt(projectId, cutId);
+  if (!existing) throw new Error(`Video prompt not found: ${cutId}`);
+  const key = String(keyframeId);
+  const next = (existing.keyframes || []).filter((k) => k.id.toString() !== key);
+  if (next.length === (existing.keyframes || []).length) throw new Error(`Keyframe not found: ${keyframeId}`);
+  return updateVideoPrompt(projectId, cutId, { keyframes: next });
 }
 
 export async function deleteVideoPrompt(id) {

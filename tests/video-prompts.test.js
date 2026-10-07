@@ -259,6 +259,79 @@ describe('video_prompts collection (cuts)', () => {
     expect(cleared.end_frame.prompt).toBe('both');
   });
 
+  it('normalizeKeyframes drops unusable entries, dedupes, clamps into the cut and sorts by time', () => {
+    const a = new ObjectId();
+    const b = new ObjectId();
+    const img = new ObjectId();
+    const out = VP.normalizeKeyframes(
+      [
+        { id: b, at_seconds: 9.9, strength: 1.7, image_id: img, prompt: 'late' },
+        { id: a, at_seconds: 1.26, strength: -1 },
+        { id: a.toString(), at_seconds: 3 }, // duplicate id
+        { at_seconds: 0 }, // unusable time
+        { at_seconds: 'x' },
+        'junk',
+      ],
+      { durationSeconds: 8 },
+    );
+    expect(out.map((k) => k.id.toString())).toEqual([a.toString(), b.toString()]);
+    expect(out[0]).toMatchObject({ at_seconds: 1.5, strength: 0, image_id: null, prompt: '', reference_ids: [] });
+    expect(out[1]).toMatchObject({ at_seconds: 7.5, strength: 1, prompt: 'late' }); // clamped to duration − 0.5
+    expect(out[1].image_id.toString()).toBe(img.toString());
+    expect(VP.normalizeKeyframes(undefined)).toEqual([]);
+    // No duration known: times are kept.
+    expect(VP.normalizeKeyframes([{ at_seconds: 40 }])[0].at_seconds).toBe(40);
+    // An entry without an id gets one.
+    expect(VP.normalizeKeyframes([{ at_seconds: 2 }])[0].id).toBeInstanceOf(ObjectId);
+    expect(VP.normalizeStrength(null)).toBeNull();
+    expect(VP.normalizeStrength('0.456')).toBe(0.46);
+  });
+
+  it('keyframes: create, add, prompt via arrayFilters, update, duration shrink clamps, remove', async () => {
+    const beat = await makeBeat();
+    const scene = await makeScene(beat);
+    const p = await VP.createVideoPrompt({
+      projectId,
+      beatId: beat._id,
+      sceneId: scene._id,
+      durationSeconds: 10,
+      keyframes: [{ at_seconds: 6, prompt: 'apex' }],
+    });
+    expect(p.keyframes).toHaveLength(1);
+    expect(p.keyframes[0]).toMatchObject({ at_seconds: 6, strength: null, prompt: 'apex', image_id: null });
+
+    const pre = new ObjectId();
+    const u1 = await VP.addVideoPromptKeyframe(projectId, p._id, { id: pre, at_seconds: 2.5, strength: 0.5, prompt: 'rise' });
+    expect(u1.keyframes.map((k) => k.at_seconds)).toEqual([2.5, 6]); // sorted
+    expect(u1.keyframes[0].id.toString()).toBe(pre.toString());
+    const apexId = u1.keyframes[1].id.toString();
+
+    // The y-doc persist path edits ONE element in place and keeps the rest.
+    const u2 = await VP.updateVideoPrompt(projectId, p._id, { keyframe_prompts: { [apexId]: 'apex, edited', [new ObjectId().toString()]: 'gone' } });
+    expect(u2.keyframes[1].prompt).toBe('apex, edited');
+    expect(u2.keyframes[0].prompt).toBe('rise');
+    await expect(VP.updateVideoPrompt(projectId, p._id, { keyframes: [], keyframe_prompts: {} })).rejects.toThrow(/cannot be set in one patch/);
+    // Only unknown ids → nothing to set.
+    await expect(VP.updateVideoPrompt(projectId, p._id, { keyframe_prompts: { [new ObjectId().toString()]: 'x' } })).rejects.toThrow(/no changes/);
+
+    const img = new ObjectId();
+    const u3 = await VP.updateVideoPromptKeyframe(projectId, p._id, apexId, { image_id: img, model: 'nano', at_seconds: 1 });
+    expect(u3.keyframes.map((k) => k.at_seconds)).toEqual([1, 2.5]); // moved and re-sorted
+    expect(u3.keyframes[0].id.toString()).toBe(apexId);
+    expect(u3.keyframes[0].image_id.toString()).toBe(img.toString());
+    expect(u3.keyframes[0].prompt).toBe('apex, edited');
+    await expect(VP.updateVideoPromptKeyframe(projectId, p._id, new ObjectId().toString(), { at_seconds: 1 })).rejects.toThrow(/Keyframe not found/);
+
+    // Shrinking the cut pulls keyframes inside the new length.
+    const u4 = await VP.updateVideoPrompt(projectId, p._id, { duration_seconds: 2 });
+    expect(u4.keyframes.map((k) => k.at_seconds)).toEqual([1, 1.5]);
+
+    const u5 = await VP.removeVideoPromptKeyframe(projectId, p._id, apexId);
+    expect(u5.keyframes.map((k) => k.id.toString())).toEqual([pre.toString()]);
+    await expect(VP.removeVideoPromptKeyframe(projectId, p._id, apexId)).rejects.toThrow(/Keyframe not found/);
+    await expect(VP.addVideoPromptKeyframe(projectId, p._id, { at_seconds: -2 })).rejects.toThrow(/positive/);
+  });
+
   it('getVideoPrompt verifies the project — a cross-project id behaves as not-found', async () => {
     const beat = await makeBeat();
     const scene = await makeScene(beat);

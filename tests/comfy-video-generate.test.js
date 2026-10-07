@@ -143,6 +143,8 @@ function fakeClient({ statuses = ['queued', 'running', 'completed'], errorDetail
   let i = 0;
   const client = {
     calls,
+    validated: [],
+    validation: null,
     async callTool(name, args) {
       calls.push({ name, args });
       switch (name) {
@@ -152,6 +154,12 @@ function fakeClient({ statuses = ['queued', 'running', 'completed'], errorDetail
           return { slots: [{ address: '398.value' }, { address: '398/373.text' }, { address: '395.image' }, { address: '340.value' }, { address: '340/314.text' }] };
         case 'set_workflow_slot':
           return { ok: true, path: args.workflow_path };
+        case 'validate_workflow': {
+          // The builder test reads the graph the job wrote.
+          const graph = JSON.parse(await fsp.readFile(args.workflow_path, 'utf8'));
+          client.validated.push(graph);
+          return client.validation || { valid: true, errors: [], warnings: [{ message: 'fake warning' }] };
+        }
         case 'run_workflow':
           if (failRun) throw new Client.ComfyToolError('run_workflow', 'spend_consent_required');
           return { prompt_id: 'prompt-1', status: 'queued' };
@@ -280,6 +288,92 @@ describe('comfy cut render job', () => {
     expect(m['84.end_at_step']).toBe(10);
     expect(m['87.start_at_step']).toBe(10);
     expect(m['90.text']).toContain('Sarah pushes the cup');
+  });
+
+  it('builder model (ltx-2.5-keyframes): uploads start + keyframes + end, writes and validates an API graph with one guide per picture, no template or slots', async () => {
+    const client = fakeClient();
+    Client._setComfyClientForTests(client);
+    const { cut } = await seedCut();
+    const id = cut._id.toString();
+    await VP.updateVideoPrompt(projectId, id, { duration_seconds: 10, end_frame: { image_id: newImage(), prompt: 'end' } });
+    // Two keyframes with pictures and one without (never sent). Half-second
+    // times at 24 fps are 12 frames apart, so they never share an 8-frame
+    // slot — collisions are the builder test's business.
+    const k1 = newImage();
+    const k2 = newImage();
+    await VP.updateVideoPrompt(projectId, id, {
+      keyframes: [
+        { at_seconds: 2.5, image_id: k1, prompt: 'a', strength: 0.4 },
+        { at_seconds: 6, prompt: 'no picture yet' },
+        { at_seconds: 7.5, image_id: k2 }, // no strength of its own → guide_strength
+      ],
+    });
+
+    const preview = await Gen.buildComfyPayloadPreview({ projectId, cutId: id, modelId: 'ltx-2.5-keyframes', params: { seed: 5 } });
+    expect(preview.model.graph).toBe('ltx25-keyframes');
+    expect(preview.model.inputs.keyframes).toBe('optional');
+    expect(preview.overrides).toEqual([]);
+    expect(preview.frames).toBe(241); // 10 s × 24 fps → 8k+1
+    expect(preview.ignored_keyframes).toBe(0);
+    expect(preview.keyframes.map((k) => [k.at_seconds, k.frame_idx, k.strength])).toEqual([
+      [2.5, 56, 0.4],
+      [7.5, 176, 0.7], // the default guide_strength
+    ]);
+    expect(Object.values(preview.workflow).filter((n) => n.class_type === 'LTXVAddGuide')).toHaveLength(4);
+
+    const { job_id } = await Gen.startComfyCutVideoJob({ projectId, cutId: id, modelId: 'ltx-2.5-keyframes', params: { seed: 5 }, advanced: [{ address: 'x.y', value: 1 }] });
+    const job = await waitForTerminal(job_id);
+    expect(job.error).toBeNull();
+    expect(job.status).toBe('done');
+    const names = client.calls.map((c) => c.name);
+    expect(names).not.toContain('set_workflow_slot');
+    expect(names).not.toContain('list_workflow_slots');
+    expect(names).not.toContain('fetch_template');
+    expect(names.indexOf('upload_file')).toBeLessThan(names.indexOf('validate_workflow'));
+    expect(names.indexOf('validate_workflow')).toBeLessThan(names.indexOf('run_workflow'));
+    const upload = client.calls.find((c) => c.name === 'upload_file');
+    expect(upload.args.paths.map((p) => path.basename(p))).toEqual([`cut-${id}-start.jpg`, `cut-${id}-end.png`, `cut-${id}-kf-1.png`, `cut-${id}-kf-2.png`]);
+    const graph = client.validated[0];
+    const guides = Object.values(graph).filter((n) => n.class_type === 'LTXVAddGuide');
+    expect(guides.map((n) => [n.inputs.frame_idx, n.inputs.strength])).toEqual([[0, 0.7], [56, 0.4], [176, 0.7], [-1, 0.7]]);
+    const loads = Object.values(graph).filter((n) => n.class_type === 'LoadImage').map((n) => n.inputs.image);
+    expect(loads).toEqual([`cut-${id}-start.jpg`, `cut-${id}-kf-1.png`, `cut-${id}-kf-2.png`, `cut-${id}-end.png`]);
+    expect(Object.values(graph).find((n) => n.class_type === 'EmptyLTXVLatentVideo').inputs.length).toBe(241);
+    expect(Object.values(graph).find((n) => n.class_type === 'RandomNoise').inputs.noise_seed).toBe(5);
+    expect(Object.values(graph).filter((n) => n.class_type === 'LTXVContextWindows')).toHaveLength(0);
+    expect(job.logs.some((l) => /advanced slot overrides are ignored/.test(l.message))).toBe(true);
+    expect(job.logs.some((l) => /validation: fake warning/.test(l.message))).toBe(true);
+
+    expect(uploadedAttachments[0].metadata.generated_by).toBe('comfy/ltx25-keyframes');
+    const after = await VP.getVideoPrompt(projectId, id);
+    expect(after.video_model_id).toBe('comfy:ltx-2.5-keyframes');
+    expect(after.video_comfy).toMatchObject({ template: null, graph: 'ltx25-keyframes', model_id: 'ltx-2.5-keyframes', frames: 241 });
+    const kfs = after.keyframes;
+    expect(after.video_comfy.guides).toEqual([
+      { frame_idx: 0, strength: 0.7, role: 'start' },
+      { frame_idx: 56, strength: 0.4, role: 'keyframe', keyframe_id: kfs[0].id.toString() },
+      { frame_idx: 176, strength: 0.7, role: 'keyframe', keyframe_id: kfs[2].id.toString() },
+      { frame_idx: -1, strength: 0.7, role: 'end' },
+    ]);
+
+    // Gates: a long cut needs long_clip (which adds context windows); a
+    // keyframe outside the clip is refused; an invalid graph fails the job.
+    await VP.updateVideoPrompt(projectId, id, { duration_seconds: 30 });
+    await expect(Gen.prepareCutRender({ projectId, cutId: id, modelId: 'ltx-2.5-keyframes' })).rejects.toMatchObject({ code: 'INVALID_COMFY_PARAMS' });
+    const long = await Gen.buildComfyPayloadPreview({ projectId, cutId: id, modelId: 'ltx-2.5-keyframes', params: { long_clip: true } });
+    expect(long.frames).toBe(721);
+    expect(Object.values(long.workflow).filter((n) => n.class_type === 'LTXVContextWindows')).toHaveLength(1);
+    await expect(Gen.prepareCutRender({ projectId, cutId: id, modelId: 'ltx-2.5-keyframes', params: { long_clip: true, duration_seconds: 3 } })).rejects.toThrow(/keyframe at 7.5 s lies outside/);
+    client.validation = { valid: false, errors: [{ message: 'bad input' }] };
+    const bad = await waitForTerminal((await Gen.startComfyCutVideoJob({ projectId, cutId: id, modelId: 'ltx-2.5-keyframes', params: { long_clip: true } })).job_id);
+    expect(bad.status).toBe('error');
+    expect(bad.error).toMatch(/failed ComfyUI validation: bad input/);
+
+    // Any other model ignores the keyframes and says so.
+    const other = await Gen.buildComfyPayloadPreview({ projectId, cutId: id, modelId: 'ltx-2.5-i2v' });
+    expect(other.ignored_keyframes).toBe(2);
+    expect(other.keyframes).toEqual([]);
+    expect(other.warnings.some((w) => /2 keyframes ignored/.test(w))).toBe(true);
   });
 
   it("renders the cut's own length when no duration is given, snapped up to what the model renders", async () => {
@@ -411,7 +505,7 @@ describe('comfy cut render job', () => {
     await VP.updateVideoPrompt(projectId, cut._id, { end_frame: { image_id: endImage, prompt: 'end' } });
     const preview = await Gen.buildComfyPayloadPreview({ projectId, cutId: cut._id.toString(), modelId: 'kling-3.0', confirmSpend: true });
     expect(Object.keys(preview).sort()).toEqual(
-      ['end_frame_image_id', 'model', 'overrides', 'params', 'prompt', 'reference_image_ids', 'spends_credits', 'start_frame_image_id', 'warnings'].sort(),
+      ['end_frame_image_id', 'frames', 'ignored_keyframes', 'keyframes', 'model', 'overrides', 'params', 'prompt', 'workflow', 'reference_image_ids', 'spends_credits', 'start_frame_image_id', 'warnings'].sort(),
     );
     expect(preview.prompt).toBe(CUT_PROMPT_PLAIN);
     expect(preview.spends_credits).toBe(true);
@@ -470,7 +564,17 @@ describe('comfy cut render job', () => {
       if (name === 'run_workflow') await new Promise((r) => gates.push(r));
       return inner(name, args);
     };
-    return { client, openNext: () => gates.shift()?.() };
+    // Opens the next run_workflow gate, waiting for the job to reach it first
+    // (a fixed tick was too short under a loaded full-suite run).
+    const openNext = async () => {
+      const until = Date.now() + 3000;
+      while (!gates.length) {
+        if (Date.now() > until) throw new Error('no run_workflow call arrived to open');
+        await new Promise((r) => setTimeout(r, 2));
+      }
+      gates.shift()();
+    };
+    return { client, openNext };
   }
 
   async function secondCut(beat) {
@@ -510,18 +614,16 @@ describe('comfy cut render job', () => {
     const listed = Gen.listComfyCutJobsForBeat(beat._id.toString());
     expect(listed.map((j) => j.job_id).sort()).toEqual([a.job_id, b.job_id].sort());
 
-    openNext();
+    await openNext();
     expect((await waitForTerminal(a.job_id)).status).toBe('done');
     await tick();
     expect(Gen.getComfyVideoJob(b.job_id).status).toBe('running');
     expect(Gen.getComfyVideoJob(b.job_id).queue_position).toBe(null);
-    openNext();
+    await openNext();
     expect((await waitForTerminal(b.job_id)).status).toBe('done');
     // Finished: the cut is free for another render.
     const again = await Gen.startComfyCutVideoJob({ projectId, cutId: cut._id.toString(), modelId: 'ltx-2.5-i2v', params: { duration_seconds: 2 } });
-    openNext();
-    await tick();
-    openNext();
+    await openNext();
     expect((await waitForTerminal(again.job_id)).status).toBe('done');
   });
 
@@ -542,7 +644,7 @@ describe('comfy cut render job', () => {
     const c = await Gen.startComfyCutVideoJob({ projectId, cutId: cut2._id.toString(), modelId: 'ltx-2.5-i2v', params: { duration_seconds: 2 } });
     expect(Gen.getComfyVideoJob(c.job_id).queue_position).toBe(1);
     Gen.cancelComfyCutVideoJob(c.job_id);
-    openNext();
+    await openNext();
     expect((await waitForTerminal(a.job_id)).status).toBe('done');
     await tick();
     expect(client.calls.filter((x) => x.name === 'run_workflow')).toHaveLength(1);

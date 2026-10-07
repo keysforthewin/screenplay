@@ -85,10 +85,13 @@ export function buildMcpApp() {
           durationSeconds: req.query.duration_seconds,
           model,
         });
+      } else if (target === 'keyframe' || target === 'kf') {
+        if (!req.query.keyframe_id) throw new McpInputError('target=keyframe needs keyframe_id=<keyframe id>');
+        out = await setFrameImage({ projectId, cut, frame: frameName(`keyframe:${req.query.keyframe_id}`), buffer: body, model });
       } else if (target) {
         out = await setFrameImage({ projectId, cut, frame: frameName(target), buffer: body, model });
       } else {
-        throw new McpInputError('target is required: start_frame, end_frame or video');
+        throw new McpInputError('target is required: start_frame, end_frame, keyframe (with keyframe_id) or video');
       }
       res.json({ ok: true, cut: out });
     } catch (e) {

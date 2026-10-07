@@ -240,6 +240,63 @@ describe('cut gateway (fallback)', () => {
     expect(cleared.video_comfy).toBeNull();
   });
 
+  it('keyframes: add seeds the prompt, set/undo/clear by frame key keep the entry, remove deletes its images', async () => {
+    const { sceneId } = await makeScene();
+    const p = await Gateway.createVideoPromptViaGateway({ projectId, sceneId, durationSeconds: 10 });
+    const cutId = p._id.toString();
+
+    const added = await Gateway.addVideoPromptKeyframeViaGateway({ projectId, promptId: cutId, atSeconds: 4, prompt: 'apex', strength: 0.5 });
+    const kfId = added.keyframe_id;
+    expect(added.cut.keyframes).toHaveLength(1);
+    expect(added.cut.keyframes[0]).toMatchObject({ at_seconds: 4, strength: 0.5, prompt: 'apex', image_id: null });
+    expect(added.cut.keyframes[0].id.toString()).toBe(kfId);
+    expect(broadcasts.at(-1).payload).toMatchObject({ type: 'fields_updated', changed: ['keyframes'], keyframe_id: kfId });
+
+    // Frame keys: parse / label / sub-doc.
+    const key = Gateway.keyframeFrameKey(kfId);
+    expect(Gateway.parseFrameKey(key)).toEqual({ kind: 'keyframe', key, kfId });
+    expect(Gateway.parseFrameKey('end').kind).toBe('end');
+    expect(() => Gateway.parseFrameKey('middle')).toThrow(/unknown frame key/);
+    expect(() => Gateway.cutFrameKey(key)).toThrow(/keyframe/);
+    expect(Gateway.getCutFrame(added.cut, key).prompt).toBe('apex');
+    expect(Gateway.frameLabel(key, added.cut)).toBe('keyframe at 4 s');
+
+    // The prompt fragment writes through the fallback path.
+    await Gateway.setVideoPromptTextFieldViaGateway({ projectId, promptId: cutId, field: `kf:${kfId}:prompt`, text: 'apex, edited' });
+    expect((await VP.getVideoPrompt(projectId, cutId)).keyframes[0].prompt).toBe('apex, edited');
+    await expect(Gateway.setVideoPromptTextFieldViaGateway({ projectId, promptId: cutId, field: 'kf:nothex:prompt', text: 'x' })).rejects.toThrow(/unknown video prompt field/);
+
+    // Image set → undo target → undo → clear keeps the entry.
+    const img1 = new ObjectId();
+    const img2 = new ObjectId();
+    const ref = new ObjectId();
+    let cut = await Gateway.setVideoPromptStartFrameViaGateway({ projectId, promptId: cutId, frame: key, startFrame: { image_id: img1, reference_ids: [ref], model: 'nano' } });
+    expect(cut.keyframes[0]).toMatchObject({ at_seconds: 4, strength: 0.5, prompt: 'apex, edited', model: 'nano' });
+    expect(cut.keyframes[0].image_id.toString()).toBe(img1.toString());
+    cut = await Gateway.setVideoPromptStartFrameViaGateway({ projectId, promptId: cutId, frame: key, startFrame: { image_id: img2, reference_ids: [ref] } });
+    expect(cut.keyframes[0].previous_image_id.toString()).toBe(img1.toString());
+    cut = await Gateway.undoVideoPromptStartFrameViaGateway({ projectId, promptId: cutId, frame: key });
+    expect(cut.keyframes[0].image_id.toString()).toBe(img1.toString());
+    expect(cut.keyframes[0].previous_image_id).toBeNull();
+    await expect(Gateway.undoVideoPromptStartFrameViaGateway({ projectId, promptId: cutId, frame: key })).rejects.toThrow(/No previous keyframe at 4 s/);
+    cut = await Gateway.setVideoPromptStartFrameViaGateway({ projectId, promptId: cutId, frame: key, startFrame: null });
+    expect(cut.keyframes).toHaveLength(1);
+    expect(cut.keyframes[0]).toMatchObject({ image_id: null, previous_image_id: null, prompt: 'apex, edited', at_seconds: 4 });
+    expect(cut.keyframes[0].reference_ids.map(String)).toEqual([ref.toString()]);
+
+    // Scalars.
+    cut = await Gateway.updateVideoPromptKeyframeViaGateway({ projectId, promptId: cutId, keyframeId: kfId, atSeconds: 7, strength: null, referenceIds: [] });
+    expect(cut.keyframes[0]).toMatchObject({ at_seconds: 7, strength: null, reference_ids: [] });
+    await expect(Gateway.setVideoPromptStartFrameViaGateway({ projectId, promptId: cutId, frame: Gateway.keyframeFrameKey(new ObjectId()), startFrame: null })).rejects.toThrow(/Keyframe not found/);
+
+    // Remove.
+    cut = await Gateway.setVideoPromptStartFrameViaGateway({ projectId, promptId: cutId, frame: key, startFrame: { image_id: img2 } });
+    cut = await Gateway.removeVideoPromptKeyframeViaGateway({ projectId, promptId: cutId, keyframeId: kfId });
+    expect(cut.keyframes).toEqual([]);
+    expect(broadcasts.at(-1).payload).toMatchObject({ changed: ['keyframes'], removed_keyframe_id: kfId });
+    await expect(Gateway.removeVideoPromptKeyframeViaGateway({ projectId, promptId: cutId, keyframeId: kfId })).rejects.toThrow(/Keyframe not found/);
+  });
+
   it('the planner-era cut helpers are gone', () => {
     for (const name of [
       'updateVideoPromptScalarsViaGateway',

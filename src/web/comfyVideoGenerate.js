@@ -46,6 +46,8 @@ import {
   randomSeed,
 } from '../comfy/paramMap.js';
 import { ensureTemplateFile } from '../comfy/templates.js';
+import { LTX_NATIVE_MAX_SECONDS, LTX_LONG_CLIP_MAX_SECONDS } from '../comfy/videoModels.js';
+import { buildLtxKeyframeWorkflow, ltxFrameCount, placeKeyframes } from '../comfy/ltxKeyframeWorkflow.js';
 
 // ─── Errors ─────────────────────────────────────────────────────────────────
 
@@ -390,21 +392,75 @@ export async function prepareCutRender({
   if (needs(model, 'referenceImages')) throw new MissingReferenceImagesError(model.label);
 
   const cutKey = idString(cut._id);
+  const warnings = [...validated.warnings];
+
+  // Keyframes: pictures the clip must pass through between its frames. Only
+  // a model that declares `inputs.keyframes` renders them; for any other the
+  // cut's keyframes are ignored, and the preview says so.
+  const keyframesWithImages = (cut.keyframes || []).filter((k) => k.image_id);
+  let keyframes = [];
+  let frames = null;
+  if (accepts(model, 'keyframes')) {
+    const fps = Number(validated.params.fps) || 24;
+    const seconds = Number(validated.params.duration_seconds) || 0;
+    if (model.graph && !validated.params.long_clip && seconds > LTX_NATIVE_MAX_SECONDS) {
+      throw new InvalidComfyParamsError([
+        `${model.label} renders up to ${LTX_NATIVE_MAX_SECONDS} s in one pass; turn on long_clip (context windows) for a ${seconds} s cut`,
+      ]);
+    }
+    if (model.graph && seconds > LTX_LONG_CLIP_MAX_SECONDS) {
+      throw new InvalidComfyParamsError([`${model.label} renders at most ${LTX_LONG_CLIP_MAX_SECONDS} s`]);
+    }
+    frames = ltxFrameCount(seconds, fps);
+    const outside = keyframesWithImages.filter((k) => !(k.at_seconds > 0 && k.at_seconds < seconds));
+    if (outside.length) {
+      throw new InvalidComfyParamsError(
+        outside.map((k) => `keyframe at ${k.at_seconds} s lies outside the ${seconds} s clip — move it or lengthen the cut`),
+      );
+    }
+    const placed = placeKeyframes(
+      keyframesWithImages.map((k, i) => ({
+        filename: `cut-${cutKey}-kf-${i + 1}.png`,
+        at_seconds: k.at_seconds,
+        strength: k.strength,
+        keyframe_id: idString(k.id),
+        image_id: idString(k.image_id),
+      })),
+      { fps, frames, defaultStrength: Number(validated.params.guide_strength) || 0.7 },
+    );
+    warnings.push(...placed.warnings);
+    keyframes = placed.guides.map((g) => {
+      const src = keyframesWithImages.find((k) => `cut-${cutKey}-kf-${keyframesWithImages.indexOf(k) + 1}.png` === g.filename);
+      return { ...g, keyframe_id: idString(src?.id), image_id: idString(src?.image_id) };
+    });
+  } else if (keyframesWithImages.length) {
+    warnings.push(`${keyframesWithImages.length} keyframe${keyframesWithImages.length === 1 ? '' : 's'} ignored: ${model.label} renders a start and an end frame only`);
+  }
+
   const imageFilenames = {
     start_frame: accepts(model, 'startFrame') && startFrameImageId ? `cut-${cutKey}-start.png` : null,
     end_frame: accepts(model, 'endFrame') && endFrameImageId ? `cut-${cutKey}-end.png` : null,
     reference: accepts(model, 'referenceImages')
       ? referenceImageIds.map((_, i) => `cut-${cutKey}-ref-${i + 1}.png`)
       : [],
+    keyframes: keyframes.map((k) => ({ filename: k.filename, frame_idx: k.frame_idx, strength: k.strength })),
     audio: null,
   };
   const advancedList = Array.isArray(advanced) ? advanced : [];
-  const built = buildSlotOverrides(model, {
-    params: validated.params,
-    imageFilenames,
-    advanced: advancedList,
-    filenamePrefix: `video/screenplay/cut-${cutKey}`,
-  });
+  let overrides = [];
+  if (model.graph) {
+    // A builder model takes no slot overrides; `advanced` has nowhere to go.
+    if (advancedList.length) warnings.push('advanced slot overrides are ignored by a builder model');
+  } else {
+    const built = buildSlotOverrides(model, {
+      params: validated.params,
+      imageFilenames,
+      advanced: advancedList,
+      filenamePrefix: `video/screenplay/cut-${cutKey}`,
+    });
+    overrides = built.overrides;
+    warnings.push(...built.warnings);
+  }
   return {
     cut,
     model,
@@ -413,11 +469,38 @@ export async function prepareCutRender({
     startFrameImageId: accepts(model, 'startFrame') ? startFrameImageId : null,
     endFrameImageId: accepts(model, 'endFrame') ? endFrameImageId : null,
     referenceImageIds: accepts(model, 'referenceImages') ? referenceImageIds : [],
+    keyframes,
+    ignoredKeyframes: accepts(model, 'keyframes') ? 0 : keyframesWithImages.length,
+    frames,
     imageFilenames,
-    advanced: advancedList,
-    overrides: built.overrides,
-    warnings: [...validated.warnings, ...built.warnings],
+    advanced: model.graph ? [] : advancedList,
+    overrides,
+    warnings,
   };
+}
+
+// The API-format graph a builder model renders with. `imageFilenames` carries
+// the UPLOADED names (the preview passes the planned ones).
+function buildGraphWorkflow(prep, imageFilenames) {
+  if (prep.model.graph !== 'ltx25-keyframes') throw new Error(`unknown graph builder: ${prep.model.graph}`);
+  const p = prep.params;
+  return buildLtxKeyframeWorkflow({
+    prompt: prep.prompt,
+    negativePrompt: p.negative_prompt || undefined,
+    width: p.width,
+    height: p.height,
+    frames: prep.frames,
+    fps: p.fps,
+    seed: p.seed,
+    images: {
+      start_frame: imageFilenames.start_frame,
+      end_frame: imageFilenames.end_frame,
+      keyframes: imageFilenames.keyframes,
+    },
+    guideStrength: p.guide_strength,
+    longClip: !!p.long_clip,
+    filenamePrefix: `video/screenplay/cut-${idString(prep.cut._id)}`,
+  });
 }
 
 export async function buildComfyPayloadPreview(args) {
@@ -432,6 +515,10 @@ export async function buildComfyPayloadPreview(args) {
     start_frame_image_id: prep.startFrameImageId,
     end_frame_image_id: prep.endFrameImageId,
     reference_image_ids: prep.referenceImageIds,
+    keyframes: prep.keyframes.map(({ keyframe_id, image_id, at_seconds, frame_idx, strength }) => ({ keyframe_id, image_id, at_seconds, frame_idx, strength })),
+    ignored_keyframes: prep.ignoredKeyframes,
+    frames: prep.frames,
+    workflow: prep.model.graph ? buildGraphWorkflow(prep, prep.imageFilenames).workflow : null,
   };
 }
 
@@ -444,7 +531,7 @@ function createJob(prep) {
     owner_id: idString(prep.cut._id),
     beat_id: idString(prep.cut.beat_id),
     model_id: prep.model.id,
-    template: prep.model.template,
+    template: prep.model.template || prep.model.graph,
     status: 'queued',
     step: 'Waiting for the ComfyUI queue',
     queue_position: null,
@@ -641,12 +728,15 @@ async function runJob({ job, prep, projectId, confirmSpend, announceUsername }) 
   try {
     await fsp.mkdir(outDir, { recursive: true });
 
-    // 1. Template.
-    setStep(job, 'running', 'Preparing the workflow template');
-    const tpl = await ensureTemplateFile(model);
+    // 1. Template (a builder model has none — its graph is written in step 3).
+    let tpl = null;
+    if (!model.graph) {
+      setStep(job, 'running', 'Preparing the workflow template');
+      tpl = await ensureTemplateFile(model);
+    }
 
     // 2. Images.
-    const imageFilenames = { start_frame: null, end_frame: null, reference: [], audio: null };
+    const imageFilenames = { start_frame: null, end_frame: null, reference: [], keyframes: [], audio: null };
     const toUpload = [];
     if (prep.startFrameImageId) {
       setStep(job, 'running', 'Uploading the start frame');
@@ -661,6 +751,10 @@ async function runJob({ job, prep, projectId, confirmSpend, announceUsername }) 
       const w = await writeImageToJobDir(prep.referenceImageIds[i], jobDir, prep.imageFilenames.reference[i]);
       toUpload.push({ role: 'reference', ...w });
     }
+    for (const k of prep.keyframes) {
+      const w = await writeImageToJobDir(k.image_id, jobDir, k.filename);
+      toUpload.push({ role: 'keyframe', keyframe: k, ...w });
+    }
     if (toUpload.length) {
       setStep(job, 'running', `Uploading ${toUpload.length} file${toUpload.length === 1 ? '' : 's'} to ComfyUI`);
       const result = await comfy.uploadFile(
@@ -672,28 +766,47 @@ async function runJob({ job, prep, projectId, confirmSpend, announceUsername }) 
         if (u.role === 'start_frame') imageFilenames.start_frame = stored;
         else if (u.role === 'end_frame') imageFilenames.end_frame = stored;
         else if (u.role === 'audio') imageFilenames.audio = stored;
+        else if (u.role === 'keyframe') {
+          imageFilenames.keyframes.push({ filename: stored, frame_idx: u.keyframe.frame_idx, strength: u.keyframe.strength, keyframe_id: u.keyframe.keyframe_id });
+        }
         else imageFilenames.reference.push(stored);
       }
     }
 
-    // 3. Parameterise a copy of the template.
-    setStep(job, 'running', 'Setting workflow parameters');
+    // 3. The workflow: a builder model's graph is written and pre-flighted;
+    //    a template model's copy is parameterised through set_workflow_slot.
     const workflowPath = path.join(jobDir, 'workflow.json');
-    await fsp.copyFile(tpl.path, workflowPath);
-    let slotAddresses = null;
-    if (prep.advanced.length) {
-      const listing = await comfy.listWorkflowSlots(workflowPath);
-      slotAddresses = slotAddressesFromListing(listing);
+    let guides = null;
+    if (model.graph) {
+      setStep(job, 'running', `Building the workflow (${imageFilenames.keyframes.length} keyframe${imageFilenames.keyframes.length === 1 ? '' : 's'})`);
+      for (const w of prep.warnings) pushLog(job, `warning: ${w}`);
+      const built = buildGraphWorkflow(prep, imageFilenames);
+      guides = built.guides;
+      await fsp.writeFile(workflowPath, JSON.stringify(built.workflow));
+      const report = await comfy.validateWorkflow(workflowPath);
+      if (report && report.valid === false) {
+        const findings = (report.errors || []).map((e) => (typeof e === 'string' ? e : e.message || JSON.stringify(e)));
+        throw new Error(`the generated workflow failed ComfyUI validation: ${findings.join('; ') || 'no details'}`);
+      }
+      for (const w of report?.warnings || []) pushLog(job, `validation: ${typeof w === 'string' ? w : w.message || JSON.stringify(w)}`);
+    } else {
+      setStep(job, 'running', 'Setting workflow parameters');
+      await fsp.copyFile(tpl.path, workflowPath);
+      let slotAddresses = null;
+      if (prep.advanced.length) {
+        const listing = await comfy.listWorkflowSlots(workflowPath);
+        slotAddresses = slotAddressesFromListing(listing);
+      }
+      const built = buildSlotOverrides(model, {
+        params: prep.params,
+        imageFilenames,
+        advanced: prep.advanced,
+        slotAddresses,
+        filenamePrefix: `video/screenplay/cut-${job.owner_id}`,
+      });
+      for (const w of built.warnings) pushLog(job, `warning: ${w}`);
+      await comfy.setWorkflowSlot(workflowPath, built.overrides, { stdout: false });
     }
-    const built = buildSlotOverrides(model, {
-      params: prep.params,
-      imageFilenames,
-      advanced: prep.advanced,
-      slotAddresses,
-      filenamePrefix: `video/screenplay/cut-${job.owner_id}`,
-    });
-    for (const w of built.warnings) pushLog(job, `warning: ${w}`);
-    await comfy.setWorkflowSlot(workflowPath, built.overrides, { stdout: false });
 
     // 4. Submit.
     setStep(job, 'running', model.spends_credits ? 'Submitting to the partner API via ComfyUI' : 'Submitting to ComfyUI');
@@ -729,8 +842,26 @@ async function runJob({ job, prep, projectId, confirmSpend, announceUsername }) 
       ownerType: 'beat',
       ownerId: cut.beat_id,
       prompt: prep.prompt,
-      generatedBy: `comfy/${model.template}`,
+      generatedBy: `comfy/${model.template || model.graph}`,
     });
+    // What the clip was rendered with — for a builder model also where each
+    // guide sat (so a clip records the keyframe placement it was given).
+    const comfyRecord = {
+      template: model.template,
+      graph: model.graph || null,
+      model_id: model.id,
+      params: prep.params,
+      prompt_id: promptId,
+      ...(guides
+        ? {
+            guides: guides.map((g) => {
+              const u = g.role === 'keyframe' ? imageFilenames.keyframes.find((k) => k.filename === g.filename) : null;
+              return { frame_idx: g.frame_idx, strength: g.strength, role: g.role, ...(u?.keyframe_id ? { keyframe_id: u.keyframe_id } : {}) };
+            }),
+            frames: prep.frames,
+          }
+        : {}),
+    };
     await setVideoPromptVideoViaGateway({
       projectId,
       promptId: idString(cut._id),
@@ -742,16 +873,10 @@ async function runJob({ job, prep, projectId, confirmSpend, announceUsername }) 
       modelLab: model.kind === 'local' ? 'ComfyUI (local)' : 'ComfyUI (API)',
       modelFamily: model.family,
       modelAddedAt: null,
-      parameters: {
-        provider: 'comfy',
-        template: model.template,
-        model_id: model.id,
-        params: prep.params,
-        prompt_id: promptId,
-      },
+      parameters: { provider: 'comfy', ...comfyRecord },
       costUsd: null,
       provider: 'comfy',
-      comfy: { template: model.template, model_id: model.id, params: prep.params, prompt_id: promptId },
+      comfy: comfyRecord,
     });
     if (previousId && previousId !== idString(file._id)) {
       try {
