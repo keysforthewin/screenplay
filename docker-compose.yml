@@ -22,7 +22,7 @@ services:
     # Host-side default 8599 to avoid colliding with anything else on 8000.
     # Inside the container Chroma always listens on 8000.
     ports:
-      - "${CHROMA_PORT:-8599}:8000"
+      - "127.0.0.1:${CHROMA_PORT:-8599}:8000"
     volumes:
       - chroma-data:/chroma/chroma
     healthcheck:
@@ -48,8 +48,8 @@ services:
       CHROMA_URL: http://chroma:8000
       BACKUP_DIR: /data/backups
     ports:
-      - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
-      - "${HOCUSPOCUS_PORT:-3001}:${HOCUSPOCUS_PORT:-3001}"
+      - "127.0.0.1:${WEB_PORT:-3000}:${WEB_PORT:-3000}"
+      - "127.0.0.1:${HOCUSPOCUS_PORT:-3001}:${HOCUSPOCUS_PORT:-3001}"
       # MCP server for coding agents (src/mcp/) — no auth, so this machine only.
       - "127.0.0.1:${MCP_PORT:-3002}:${MCP_PORT:-3002}"
     volumes:
