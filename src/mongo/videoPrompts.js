@@ -440,7 +440,9 @@ export async function updateVideoPrompt(projectId, id, patch) {
       for (const [kfId, text] of Object.entries(map)) {
         const oid = maybeOid(kfId);
         if (!oid || !(existing.keyframes || []).some((kf) => kf.id.toString() === oid.toString())) continue;
-        const name = `kf_${arrayFilters.length}`;
+        // Mongo rejects an array-filter name that is not [a-z][a-zA-Z0-9]*
+        // ("kf_0" failed every keyframe-prompt persist on a real server).
+        const name = `kf${arrayFilters.length}`;
         set[`keyframes.$[${name}].prompt`] = typeof text === 'string' ? text : String(text ?? '');
         arrayFilters.push({ [`${name}.id`]: oid });
       }

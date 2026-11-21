@@ -147,6 +147,11 @@ function resolveArrayFilterPaths(target, path, arrayFilters) {
     const firstKey = Object.keys(af)[0];
     if (!firstKey) continue;
     const name = firstKey.split('.')[0];
+    // Real Mongo: "The top-level field name must be an alphanumeric string
+    // beginning with a lowercase letter".
+    if (!/^[a-z][a-zA-Z0-9]*$/.test(name)) {
+      throw new Error(`Error parsing array filter :: invalid identifier "${name}"`);
+    }
     filtersByName[name] = af;
   }
   const parts = path.split('.');
