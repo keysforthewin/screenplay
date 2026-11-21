@@ -140,7 +140,10 @@ async function makeServer() {
 export async function startHocuspocus() {
   if (server) return server;
   server = await makeServer();
-  await server.listen();
+  // Cap a single WebSocket message well above the largest stored y-doc
+  // (~300 KB in prod, 2026-11) so a client can't make ws buffer 100 MiB
+  // (the ws default) of fragments before onAuthenticate runs (GHSA-96hv).
+  await server.listen(null, null, { maxPayload: 16 * 1024 * 1024 });
   logger.info(`Hocuspocus listening on port ${config.web.hocuspocusPort}`);
   return server;
 }
