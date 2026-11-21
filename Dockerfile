@@ -10,6 +10,9 @@ FROM node:22-alpine
 WORKDIR /app
 RUN apk add --no-cache mongodb-tools ffmpeg
 COPY package.json package-lock.json* ./
+# onnxruntime-node's postinstall otherwise downloads CUDA EP binaries from a
+# GitHub release that now 404s; this box is CPU-only, so skip them.
+ENV ONNXRUNTIME_NODE_INSTALL_CUDA=skip
 RUN npm ci --omit=dev
 RUN mkdir -p /data/exports /data/backups
 ENV PDF_EXPORT_DIR=/data/exports
